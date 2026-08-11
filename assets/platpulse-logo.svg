@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 360" role="img" aria-labelledby="title desc">
+  <title id="title">PlatPulse</title>
+  <desc id="desc">A connected node network surrounding a real-time pulse, followed by the PlatPulse wordmark.</desc>
+  <defs>
+    <linearGradient id="pulse" x1="40" y1="150" x2="285" y2="150" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#168BFF"/>
+      <stop offset="0.55" stop-color="#20D7F5"/>
+      <stop offset="1" stop-color="#8B5CF6"/>
+    </linearGradient>
+    <linearGradient id="wordmark" x1="420" y1="100" x2="1120" y2="250" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#122A58"/>
+      <stop offset="0.58" stop-color="#168BFF"/>
+      <stop offset="1" stop-color="#20D7F5"/>
+    </linearGradient>
+    <linearGradient id="node" x1="120" y1="20" x2="250" y2="300" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4F46E5"/>
+      <stop offset="0.52" stop-color="#168BFF"/>
+      <stop offset="1" stop-color="#20D7F5"/>
+    </linearGradient>
+  </defs>
+
+  <g transform="translate(40 3)">
+    <circle cx="160" cy="150" r="112" fill="none" stroke="url(#pulse)" stroke-width="9" stroke-dasharray="2 18" stroke-linecap="round" opacity="0.95"/>
+
+    <g fill="url(#node)" stroke="#fff" stroke-opacity="0.78" stroke-width="2">
+      <path d="m160 0 32 19v38l-32 19-32-19V19z"/>
+      <path d="m291 75 32 19v38l-32 19-32-19V94z"/>
+      <path d="m291 207 32 19v38l-32 19-32-19v-38z"/>
+      <path d="m160 282 32 19v38l-32 19-32-19v-38z"/>
+      <path d="m29 207 32 19v38l-32 19-32-19v-38z"/>
+      <path d="m29 75 32 19v38l-32 19-32-19V94z"/>
+    </g>
+
+    <g fill="none" stroke="#fff" stroke-opacity="0.82" stroke-width="2">
+      <path d="m160 17 19 11v22l-19 11-19-11V28z"/>
+      <path d="m291 92 19 11v22l-19 11-19-11v-22z"/>
+      <path d="m291 224 19 11v22l-19 11-19-11v-22z"/>
+      <path d="m160 299 19 11v22l-19 11-19-11v-22z"/>
+      <path d="m29 224 19 11v22l-19 11-19-11v-22z"/>
+      <path d="m29 92 19 11v22l-19 11-19-11v-22z"/>
+    </g>
+
+    <path d="M10 150h62l17 30 27-72 24 111 20-63h72" fill="none" stroke="url(#pulse)" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="10" cy="150" r="14" fill="#168BFF" stroke="#fff" stroke-width="3"/>
+    <circle cx="250" cy="150" r="14" fill="#20D7F5" stroke="#fff" stroke-width="3"/>
+  </g>
+
+  <text x="405" y="226" fill="url(#wordmark)" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif" font-size="142" font-weight="750" letter-spacing="-7">PlatPulse</text>
+</svg>
