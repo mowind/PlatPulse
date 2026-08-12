@@ -7,7 +7,7 @@
 //! route except `POST /login` requires a valid human Session; the session
 //! guard itself lives in `super` and is attached in `build_app`.
 
-use axum::extract::{Extension, Path, Request, State};
+use axum::extract::{Extension, Path, Query, Request, State};
 use axum::http::header::{self, HeaderValue};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::Next;
@@ -339,6 +339,74 @@ pub struct PublicNetwork {
     pub nodes: Vec<PublicNode>,
 }
 
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicBlockHistoryItem {
+    pub node_id: String,
+    pub height: Option<i64>,
+    pub block_time_ms: Option<i64>,
+    pub transaction_count: Option<i64>,
+    pub observed_at: Option<String>,
+    pub freshness: Option<String>,
+    pub gap_from_height: Option<i64>,
+    pub gap_to_height: Option<i64>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/public/v1/nodes/{node_id}/history",
+    tag = "public",
+    params(("node_id" = String, Path), ("limit" = Option<i64>, Query)),
+    responses((status = 200, body = [PublicBlockHistoryItem]))
+)]
+pub(crate) async fn public_node_history(
+    State(state): State<AppState>,
+    Path(node_id): Path<String>,
+    Query(params): Query<HistoryQuery>,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    let limit = params.limit.unwrap_or(50).clamp(1, 200);
+    let rows = sqlx::query_as::<_, (Option<i64>, Option<i64>, Option<i64>, Option<String>, Option<i64>, Option<i64>)>("SELECT block_number, block_timestamp_ms, transaction_count, observed_at, from_height, to_height FROM (SELECT block_number, block_timestamp_ms, transaction_count, observed_at, NULL AS from_height, NULL AS to_height, node_id FROM block_summaries WHERE node_id = ? AND EXISTS (SELECT 1 FROM nodes WHERE node_id = block_summaries.node_id AND visibility = 'public' AND lifecycle = 'active') UNION ALL SELECT NULL, NULL, NULL, created_at, from_height, to_height, node_id FROM block_history_gaps WHERE node_id = ? AND EXISTS (SELECT 1 FROM nodes WHERE node_id = block_history_gaps.node_id AND visibility = 'public' AND lifecycle = 'active')) ORDER BY COALESCE(block_number, from_height) DESC LIMIT ?")
+        .bind(&node_id).bind(&node_id).bind(limit).fetch_all(state.db().pool()).await;
+    match rows {
+        Ok(rows) => Json(
+            rows.into_iter()
+                .map(
+                    |(
+                        height,
+                        block_time_ms,
+                        transaction_count,
+                        observed_at,
+                        from_height,
+                        to_height,
+                    )| PublicBlockHistoryItem {
+                        node_id: node_id.clone(),
+                        height,
+                        block_time_ms,
+                        transaction_count,
+                        freshness: observed_at.clone(),
+                        observed_at,
+                        gap_from_height: from_height,
+                        gap_to_height: to_height,
+                    },
+                )
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
+        Err(_) => error_response(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HistoryQuery {
+    pub limit: Option<i64>,
+}
+
 #[derive(Debug, Serialize, ToSchema, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct PublicNode {
@@ -657,6 +725,7 @@ pub fn router() -> Router<AppState> {
         .route("/networks", get(public_networks))
         .route("/networks/{network_key}", get(public_network))
         .route("/nodes/{node_id}", get(public_node_detail))
+        .route("/nodes/{node_id}/history", get(public_node_history))
         .route("/events", get(public_events))
         .fallback(api_not_found)
         .layer(axum::middleware::from_fn(group_middleware))

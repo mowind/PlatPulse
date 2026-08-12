@@ -27,6 +27,7 @@ use thiserror::Error;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::block::{NodeSubscriptions, load_block_summaries};
 use crate::config::AgentConfig;
 use crate::database::{AgentDatabaseConfig, AgentStore};
 use crate::reporting::ReportStoreError;
@@ -362,7 +363,28 @@ fn collect_node<A: RpcAdapter>(
     }
 }
 
-/// Build a complete report with the supplied clock-skew observation.
+pub fn collect_block_summaries<R: crate::block::BlockResolver>(
+    subscriptions: &mut NodeSubscriptions,
+    resolver: &R,
+    identities: &HashMap<platpulse_core::identity::NodeId, NetworkIdentity>,
+    observed_at: Rfc3339,
+) -> Vec<platpulse_core::block::BlockSummary> {
+    let mut summaries = Vec::new();
+    let ids: Vec<_> = identities.keys().copied().collect();
+    for node_id in ids {
+        if let (Some(subscription), Some(identity)) =
+            (subscriptions.get_mut(&node_id), identities.get(&node_id))
+        {
+            if let Ok(Some(summary)) =
+                subscription.resolve_next(resolver, identity.clone(), observed_at)
+            {
+                summaries.push(summary);
+            }
+        }
+    }
+    summaries
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn collect_report_with_clock_skew<A: RpcAdapter>(
     config: &AgentConfig,
@@ -522,7 +544,7 @@ pub async fn collect_and_persist<A: RpcAdapter>(
         Ok(estimate) => ok(estimate.offset_ms, clock_at),
         Err(error) => clock_skew_error(clock_at, &error.to_string()),
     };
-    let report = collect_report_with_clock_skew(
+    let mut report = collect_report_with_clock_skew(
         config,
         agent_id,
         epoch as u64,
@@ -532,6 +554,10 @@ pub async fn collect_and_persist<A: RpcAdapter>(
         adapter,
         clock_skew,
     )?;
+    report.block_summaries = load_block_summaries(&mut store).await?;
+    report
+        .validate()
+        .map_err(|error| CollectionError::Identity(error.to_string()))?;
     let body = serde_json::to_vec(&report)?;
     let digest = format!("0x{}", hex::encode(sha2::Sha256::digest(&body)));
     let now = report.generated_at.to_string();
@@ -545,6 +571,95 @@ pub async fn collect_and_persist<A: RpcAdapter>(
     Ok(digest)
 }
 
+/// Collect, persist, and include the normal per-Node subscription summaries in
+/// the next immutable report. Each Node receives an independent subscription;
+/// a transport failure is isolated and does not erase current observations.
+pub async fn collect_and_persist_with_blocks<A: RpcAdapter>(
+    config: &AgentConfig,
+    adapter: &A,
+    transport: &crate::block::WebSocketBlockTransport,
+) -> Result<String, CollectionError> {
+    let mut store = AgentStore::open(AgentDatabaseConfig::new(&config.state_db)).await?;
+    let state: Option<(String, i64, Option<String>, i64)> = sqlx::query_as(
+        "SELECT agent_id, agent_epoch, boot_id, report_sequence FROM agent_state WHERE singleton=1",
+    )
+    .fetch_optional(store.connection())
+    .await?;
+    let (agent_text, epoch, boot_text, previous_sequence) =
+        state.ok_or(CollectionError::NotEnrolled)?;
+    let agent_id = AgentId::from_str(&agent_text)
+        .map_err(|error| CollectionError::Identity(error.to_string()))?;
+    let boot_id = match boot_text {
+        Some(value) => BootId::from_str(&value)
+            .map_err(|error| CollectionError::Identity(error.to_string()))?,
+        None => BootId::from_str(&Uuid::new_v4().to_string()).expect("UUID is valid"),
+    };
+    let validated = config
+        .validated_inventory()
+        .map_err(|error| CollectionError::Identity(error.to_string()))?;
+    let clock_at = timestamp();
+    let clock_skew = match crate::time_exchange::exchange_server_time(config).await {
+        Ok(estimate) => ok(estimate.offset_ms, clock_at),
+        Err(error) => clock_skew_error(clock_at, &error.to_string()),
+    };
+    let inventory = validated.inventory;
+    let mut report = collect_report_with_clock_skew(
+        config,
+        agent_id,
+        epoch as u64,
+        boot_id,
+        previous_sequence as u64 + 1,
+        inventory.clone(),
+        adapter,
+        clock_skew,
+    )?;
+    for node in &inventory.nodes {
+        let Some(identity) = report
+            .nodes
+            .iter()
+            .find(|item| item.node_id == node.node_id)
+            .and_then(|item| item.chain.network_identity.latest.clone())
+        else {
+            continue;
+        };
+        match transport
+            .collect_node_summaries(
+                &node.rpc_endpoint,
+                node.node_id,
+                identity,
+                report.generated_at,
+            )
+            .await
+        {
+            Ok(summaries) => {
+                for summary in summaries {
+                    crate::block::persist_block_summary(
+                        &mut store,
+                        &summary,
+                        &report.generated_at.to_string(),
+                    )
+                    .await?;
+                }
+            }
+            Err(_) => { /* block resolution is Node-local; current report remains valid */ }
+        }
+    }
+    report.block_summaries = load_block_summaries(&mut store).await?;
+    report
+        .validate()
+        .map_err(|error| CollectionError::Identity(error.to_string()))?;
+    let body = serde_json::to_vec(&report)?;
+    let digest = format!("0x{}", hex::encode(sha2::Sha256::digest(&body)));
+    let now = report.generated_at.to_string();
+    let mut tx = store.connection().begin().await?;
+    sqlx::query("INSERT INTO reports (report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes, in_flight, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)")
+        .bind(report.report_id.to_string()).bind(report.agent_epoch as i64).bind(report.boot_id.to_string()).bind(report.report_sequence as i64).bind(report.generated_at.to_string()).bind(&body).bind(&digest).bind(body.len() as i64).bind(&now).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO agent_state (singleton, agent_id, agent_epoch, boot_id, report_sequence, inventory_revision, updated_at) VALUES (1, ?, ?, ?, ?, ?, ?) ON CONFLICT(singleton) DO UPDATE SET boot_id=excluded.boot_id, report_sequence=excluded.report_sequence, inventory_revision=excluded.inventory_revision, updated_at=excluded.updated_at")
+        .bind(report.agent_id.to_string()).bind(report.agent_epoch as i64).bind(report.boot_id.to_string()).bind(report.report_sequence as i64).bind(report.inventory.revision as i64).bind(&now).execute(&mut *tx).await?;
+    tx.commit().await?;
+    store.close().await?;
+    Ok(digest)
+}
 /// Apply a stored receipt and delete its report only after the receipt is
 /// durably recorded, in one Agent Store transaction.
 pub async fn apply_receipt(

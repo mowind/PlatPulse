@@ -1,7 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
-import { diagnostics, setVisibility, type VisibilityRequest, type VisibilityResponse } from './generated'
+import { diagnostics, setVisibility, type VisibilityRequest, type VisibilityResponse, type AgentDiagnostic } from './generated'
 
-import type { AgentDiagnostic } from './generated'
+export type AdminHistoryItem = { nodeId: string; height: number | null; blockTimeMs: number | null; transactionCount: number | null; observedAt: string | null; freshness: string | null; gapFromHeight: number | null; gapToHeight: number | null }
+export async function fetchAdminNodeHistory(nodeId: string): Promise<AdminHistoryItem[]> {
+  const response = await fetch(`/api/admin/v1/nodes/${encodeURIComponent(nodeId)}/history`)
+  if (!response.ok) throw new Error('Unable to load Admin block history')
+  return response.json() as Promise<AdminHistoryItem[]>
+}
+
+
 
 export async function fetchAdminDiagnostics(): Promise<AgentDiagnostic[]> {
   const { data, error } = await diagnostics()

@@ -9,6 +9,7 @@
 //! this library so it can be exercised from tests; `main.rs` stays a thin
 //! entry point.
 
+pub mod block;
 pub mod cli;
 pub mod collector;
 pub mod config;

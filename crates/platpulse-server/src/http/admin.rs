@@ -597,9 +597,54 @@ async fn diagnostics(
     Json(result)
 }
 
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminBlockHistoryItem {
+    pub node_id: String,
+    pub height: Option<i64>,
+    pub block_time_ms: Option<i64>,
+    pub transaction_count: Option<i64>,
+    pub observed_at: Option<String>,
+    pub freshness: Option<String>,
+    pub gap_from_height: Option<i64>,
+    pub gap_to_height: Option<i64>,
+}
+
+async fn admin_node_history(
+    State(state): State<AppState>,
+    Extension(_session): Extension<super::AuthenticatedSession>,
+    Path(node_id): Path<String>,
+) -> impl IntoResponse {
+    let rows = sqlx::query_as::<_, (Option<i64>, Option<i64>, Option<i64>, Option<String>, Option<i64>, Option<i64>)>("SELECT block_number, block_timestamp_ms, transaction_count, observed_at, from_height, to_height FROM (SELECT block_number, block_timestamp_ms, transaction_count, observed_at, NULL AS from_height, NULL AS to_height, node_id FROM block_summaries WHERE node_id = ? UNION ALL SELECT NULL, NULL, NULL, created_at, from_height, to_height, node_id FROM block_history_gaps WHERE node_id = ?) ORDER BY COALESCE(block_number, from_height) DESC LIMIT 200")
+        .bind(&node_id).bind(&node_id).fetch_all(state.db().pool()).await.unwrap_or_default();
+    Json(
+        rows.into_iter()
+            .map(
+                |(
+                    height,
+                    block_time_ms,
+                    transaction_count,
+                    observed_at,
+                    from_height,
+                    to_height,
+                )| AdminBlockHistoryItem {
+                    node_id: node_id.clone(),
+                    height,
+                    block_time_ms,
+                    transaction_count,
+                    freshness: observed_at.clone(),
+                    observed_at,
+                    gap_from_height: from_height,
+                    gap_to_height: to_height,
+                },
+            )
+            .collect::<Vec<_>>(),
+    )
+}
 pub fn router() -> Router<AppState> {
     Router::<AppState>::new()
         .route("/events", get(admin_events))
+        .route("/nodes/{node_id}/history", get(admin_node_history))
         .route("/agents", get(diagnostics))
         .route("/nodes/{node_id}/visibility", put(set_visibility))
         .fallback(api_not_found)

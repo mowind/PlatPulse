@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 use thiserror::Error;
 
-use crate::collector::{FailClosedRpcAdapter, collect_and_persist};
+use crate::block::WebSocketBlockTransport;
+use crate::collector::{FailClosedRpcAdapter, collect_and_persist_with_blocks};
 use crate::config::{AgentConfig, AgentConfigFile, generate_node_id};
 use crate::enroll::{EnrollError, enroll_agent};
 
@@ -27,8 +28,8 @@ pub enum Command {
     GenerateNodeId,
     /// Validate the complete agent.toml and all Node declarations.
     ValidateConfig(ValidateConfigArgs),
-    /// Collect one report using the configured production RPC transport.
-    /// This build fails closed because no RPC transport is configured yet.
+    /// Collect one immutable report using independent per-Node WebSocket
+    /// subscriptions and hash-only block resolution.
     CollectReport(CollectReportArgs),
     /// Validate and persist one immutable report before delivery.
     PersistReport(PersistReportArgs),
@@ -91,9 +92,13 @@ pub fn run_validate_config(args: &ValidateConfigArgs) -> Result<(), Box<AgentCli
 
 pub async fn run_collect_report(args: &CollectReportArgs) -> Result<(), AgentCliError> {
     let config = AgentConfig::resolve(&args.config)?;
-    let digest = collect_and_persist(&config, &FailClosedRpcAdapter)
-        .await
-        .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    let digest = collect_and_persist_with_blocks(
+        &config,
+        &FailClosedRpcAdapter,
+        &WebSocketBlockTransport::default(),
+    )
+    .await
+    .map_err(|error| AgentCliError::Collection(error.to_string()))?;
     println!("Persisted immutable collected report (sha256 {digest}).");
     Ok(())
 }

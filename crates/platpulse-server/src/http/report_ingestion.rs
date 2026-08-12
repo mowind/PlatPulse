@@ -54,6 +54,13 @@ fn rejection(code: platpulse_core::RejectionCode, reason: &str) -> platpulse_cor
     }
 }
 
+fn disposition_name(disposition: ReceiptDisposition) -> &'static str {
+    match disposition {
+        ReceiptDisposition::Accepted => "accepted",
+        ReceiptDisposition::PartiallyAccepted => "partially_accepted",
+        ReceiptDisposition::Rejected => "rejected",
+    }
+}
 fn rejected(
     report_id: ReportId,
     hash: Sha256Hex,
@@ -96,10 +103,11 @@ async fn store_rejected(
     request_id: &str,
 ) -> Response {
     let stored = serde_json::to_vec(&receipt).expect("receipt serializes");
-    let result = sqlx::query("INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at) VALUES (?, ?, ?, ?, ?, ?, 'rejected', ?, ?)")
+    let result = sqlx::query("INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .bind(report.report_id.to_string()).bind(report.agent_id.to_string())
         .bind(report.agent_epoch as i64).bind(report.boot_id.to_string())
-        .bind(report.report_sequence as i64).bind(hash.to_string()).bind(&stored)
+        .bind(report.report_sequence as i64).bind(hash.to_string())
+        .bind(disposition_name(receipt.disposition)).bind(&stored)
         .bind(now().to_string()).execute(&mut *tx).await;
     if result.is_err() || tx.commit().await.is_err() {
         return error(
@@ -142,6 +150,37 @@ async fn save_component<T: serde::Serialize>(
         .bind(component.state_revision as i64).bind(component.value_revision as i64)
         .bind(error_code).bind(error_message).execute(&mut **tx).await?;
     Ok(())
+}
+
+async fn block_network_identity_mismatches(
+    tx: &mut Transaction<'_, Sqlite>,
+    report: &AgentReport,
+) -> Result<std::collections::HashSet<platpulse_core::identity::NodeId>, sqlx::Error> {
+    let mut mismatches = std::collections::HashSet::new();
+    for sample in &report.block_summaries {
+        let Some(node) = report
+            .inventory
+            .nodes
+            .iter()
+            .find(|node| node.node_id == sample.node_id)
+        else {
+            continue;
+        };
+        let registered = sqlx::query_as::<_, (String, i64, i64, String)>(
+            "SELECT genesis_hash, chain_id, p2p_network_id, address_hrp FROM networks WHERE network_key = ?",
+        ).bind(node.network_key.as_str()).fetch_optional(&mut **tx).await?;
+        let Some((genesis, chain_id, p2p_network_id, address_hrp)) = registered else {
+            continue;
+        };
+        if sample.network_identity.genesis_hash.to_string() != genesis
+            || sample.network_identity.chain_id != chain_id as u64
+            || sample.network_identity.p2p_network_id != p2p_network_id as u64
+            || sample.network_identity.address_hrp.as_deref().unwrap_or("") != address_hrp
+        {
+            mismatches.insert(sample.node_id);
+        }
+    }
+    Ok(mismatches)
 }
 
 async fn save_current(
@@ -360,6 +399,48 @@ async fn save_current(
                 }
             }
         }
+    }
+    for sample in &report.block_summaries {
+        let node_id = sample.node_id.to_string();
+        let registered_identity = sqlx::query_as::<_, (String, i64, i64, String)>("SELECT genesis_hash, chain_id, p2p_network_id, address_hrp FROM networks n JOIN nodes nd ON nd.network_key = n.network_key WHERE nd.node_id = ?")
+            .bind(&node_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+        let identity_matches = registered_identity.is_some_and(|(genesis, chain_id, p2p, hrp)| {
+            sample.network_identity.genesis_hash.to_string() == genesis
+                && sample.network_identity.chain_id == chain_id as u64
+                && sample.network_identity.p2p_network_id == p2p as u64
+                && sample.network_identity.address_hrp.as_deref().unwrap_or("") == hrp
+        });
+        if !identity_matches {
+            continue;
+        }
+
+        let proposer = match &sample.attribution.protocol_proposer {
+            platpulse_core::block::ProtocolProposer::Verified { identity } => {
+                ("verified", Some(identity.as_str()))
+            }
+            platpulse_core::block::ProtocolProposer::Unknown {} => ("unknown", None),
+        };
+        let signer = match sample.attribution.seal_signer_match {
+            platpulse_core::block::SealSignerMatch::SignerSelf => "self",
+            platpulse_core::block::SealSignerMatch::Other => "other",
+            platpulse_core::block::SealSignerMatch::Unknown => "unknown",
+        };
+        let inserted = sqlx::query("INSERT OR IGNORE INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, block_interval_ms, source, coinbase, seal_signer_key_fingerprint, seal_signer_match, protocol_proposer_kind, protocol_proposer_identity, attribution_reason, accepted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(&node_id).bind(sample.block_number as i64).bind(sample.block_hash.to_string()).bind(sample.parent_hash.to_string())
+            .bind(sample.network_identity.genesis_hash.to_string()).bind(sample.network_identity.chain_id as i64).bind(sample.network_identity.p2p_network_id as i64).bind(sample.network_identity.address_hrp.as_deref().unwrap_or(""))
+            .bind(sample.block_timestamp_ms as i64).bind(sample.observed_at.to_string()).bind(sample.transaction_count as i64).bind(sample.block_interval_ms.map(|v| v as i64)).bind(match sample.source { platpulse_core::block::BlockSource::Subscription => "subscription", platpulse_core::block::BlockSource::GapBackfill => "gap_backfill" })
+            .bind(sample.attribution.coinbase.to_string()).bind(sample.attribution.seal_signer_key_fingerprint.as_ref().map(ToString::to_string)).bind(signer).bind(proposer.0).bind(proposer.1).bind(&sample.attribution.attribution_reason).bind(received_at)
+            .execute(&mut **tx).await?;
+        if inserted.rows_affected() == 0 {
+            continue;
+        }
+        sqlx::query("INSERT INTO observed_network_heads (node_id, block_number, block_hash, observed_at, confidence, eligible_sources) VALUES (?, ?, ?, ?, 'unknown', '[\\\"subscription\\\"]') ON CONFLICT(node_id) DO UPDATE SET block_number=excluded.block_number, block_hash=excluded.block_hash, observed_at=excluded.observed_at, confidence=excluded.confidence, eligible_sources=excluded.eligible_sources")
+            .bind(&node_id).bind(sample.block_number as i64).bind(sample.block_hash.to_string()).bind(sample.observed_at.to_string()).execute(&mut **tx).await?;
+        sqlx::query("INSERT INTO block_history_state (node_id, historical_high_watermark, cumulative_block_count, cumulative_transaction_count, cumulative_self_seal_count, updated_at) VALUES (?, ?, 1, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET historical_high_watermark=MAX(block_history_state.historical_high_watermark, excluded.historical_high_watermark), cumulative_block_count=block_history_state.cumulative_block_count + 1, cumulative_transaction_count=block_history_state.cumulative_transaction_count + excluded.cumulative_transaction_count, cumulative_self_seal_count=block_history_state.cumulative_self_seal_count + excluded.cumulative_self_seal_count, updated_at=excluded.updated_at)")
+            .bind(&node_id).bind(sample.block_number as i64).bind(sample.transaction_count as i64)
+            .bind((sample.attribution.seal_signer_match == platpulse_core::block::SealSignerMatch::SignerSelf) as i64).bind(received_at).execute(&mut **tx).await?;
     }
     Ok(())
 }
@@ -695,6 +776,24 @@ async fn handler(
             "Server database is unavailable",
         );
     }
+    let mismatches = match block_network_identity_mismatches(&mut tx, &parsed).await {
+        Ok(value) => value,
+        Err(_) => {
+            return error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Server database is unavailable",
+            );
+        }
+    };
+    // Keep explicit gap declarations even when their block samples are absent.
+    for gap in &parsed.history_gaps {
+        sqlx::query("INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, created_at) VALUES (?, ?, ?, ?, ?)")
+            .bind(gap.node_id.to_string()).bind(gap.from_height as i64).bind(gap.to_height as i64)
+            .bind(format!("{:?}", gap.kind).to_lowercase()).bind(gap.recorded_at.to_string())
+            .execute(&mut *tx).await.map_err(|_| ()).ok();
+    }
     let nodes = parsed
         .inventory
         .nodes
@@ -709,13 +808,25 @@ async fn handler(
     let samples = parsed
         .block_summaries
         .iter()
-        .map(|sample| SampleDisposition {
-            node_id: sample.node_id,
-            sample: SampleRef::Block {
-                height: sample.block_number,
-            },
-            disposition: SampleDispositionKind::Accepted,
-            rejection: None,
+        .map(|sample| {
+            let rejected = mismatches.contains(&sample.node_id);
+            SampleDisposition {
+                node_id: sample.node_id,
+                sample: SampleRef::Block {
+                    height: sample.block_number,
+                },
+                disposition: if rejected {
+                    SampleDispositionKind::TerminalRejected
+                } else {
+                    SampleDispositionKind::Accepted
+                },
+                rejection: rejected.then(|| {
+                    rejection(
+                        platpulse_core::RejectionCode::NetworkIdentityMismatch,
+                        "Block network identity does not match the registered Network",
+                    )
+                }),
+            }
         })
         .chain(parsed.history_gaps.iter().map(|gap| SampleDisposition {
             node_id: gap.node_id,
@@ -726,10 +837,18 @@ async fn handler(
             disposition: SampleDispositionKind::Accepted,
             rejection: None,
         }))
-        .collect();
+        .collect::<Vec<_>>();
+    let disposition = if samples
+        .iter()
+        .any(|sample| sample.disposition != SampleDispositionKind::Accepted)
+    {
+        ReceiptDisposition::PartiallyAccepted
+    } else {
+        ReceiptDisposition::Accepted
+    };
     let receipt = ReportReceipt {
         report_id: parsed.report_id,
-        disposition: ReceiptDisposition::Accepted,
+        disposition,
         report_body_sha256: hash.clone(),
         server_version: crate::VERSION.to_owned(),
         supported_protocol_majors: SUPPORTED_PROTOCOL_MAJORS.to_vec(),
@@ -741,7 +860,7 @@ async fn handler(
         samples,
     };
     let stored = serde_json::to_vec(&receipt).expect("receipt serializes");
-    let inserted = sqlx::query("INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at) VALUES (?, ?, ?, ?, ?, ?, 'accepted', ?, ?)").bind(parsed.report_id.to_string()).bind(&auth.agent_id).bind(parsed.agent_epoch as i64).bind(parsed.boot_id.to_string()).bind(parsed.report_sequence as i64).bind(hash.to_string()).bind(&stored).bind(&now_text).execute(&mut *tx).await;
+    let inserted = sqlx::query("INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(parsed.report_id.to_string()).bind(&auth.agent_id).bind(parsed.agent_epoch as i64).bind(parsed.boot_id.to_string()).bind(parsed.report_sequence as i64).bind(hash.to_string()).bind(disposition_name(receipt.disposition)).bind(&stored).bind(&now_text).execute(&mut *tx).await;
     if inserted.is_err() {
         return error(
             &request_id.0,
@@ -767,6 +886,12 @@ async fn handler(
             "Server database is unavailable",
         );
     }
+    state
+        .admin_realtime()
+        .publish("node", None::<String>, parsed.report_sequence);
+    state
+        .public_realtime()
+        .publish("node", None::<String>, parsed.report_sequence);
     (StatusCode::OK, Json(ReportResponse { receipt })).into_response()
 }
 

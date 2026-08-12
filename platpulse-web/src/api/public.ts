@@ -19,6 +19,14 @@ export async function fetchNode(nodeId: string): Promise<PublicNode> {
   return data
 }
 
+export type PublicHistoryItem = { nodeId: string; height: number | null; blockTimeMs: number | null; transactionCount: number | null; observedAt: string | null; freshness: string | null; gapFromHeight: number | null; gapToHeight: number | null }
+
+export async function fetchNodeHistory(nodeId: string): Promise<PublicHistoryItem[]> {
+  const response = await fetch(`/api/public/v1/nodes/${encodeURIComponent(nodeId)}/history`)
+  if (!response.ok) throw new Error('Unable to load block history')
+  return response.json() as Promise<PublicHistoryItem[]>
+}
+
 export type RealtimeStatus = 'connecting' | 'connected' | 'disconnected'
 
 export function usePublicRealtime(onInvalidate: () => void): RealtimeStatus {

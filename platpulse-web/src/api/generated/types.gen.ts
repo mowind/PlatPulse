@@ -94,9 +94,26 @@ export type NodeDiagnostic = {
     lifecycle: string;
     network_key: string;
     node_id: string;
+    process?: null | ProcessDiagnostic;
     rpc?: null | RpcDiagnostic;
     sync?: null | SyncDiagnostic;
     visibility: string;
+};
+
+export type ProcessDiagnostic = {
+    attempted_at?: string | null;
+    cpu_percent?: number | null;
+    error_code?: string | null;
+    error_message?: string | null;
+    memory_bytes?: number | null;
+    observed_at?: string | null;
+    pid?: number | null;
+    received_at?: string | null;
+    started_at?: string | null;
+    state: string;
+    state_revision: number;
+    uptime_ms?: number | null;
+    value_revision: number;
 };
 
 export type PublicNetwork = {
@@ -114,6 +131,7 @@ export type PublicNode = {
     hostCpuPercent?: number | null;
     networkKey: string;
     nodeId: string;
+    processState: string;
     rpcState: string;
     syncState: string;
 };

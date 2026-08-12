@@ -948,6 +948,16 @@
           "node_id": {
             "type": "string"
           },
+          "process": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ProcessDiagnostic"
+              }
+            ]
+          },
           "rpc": {
             "oneOf": [
               {
@@ -970,6 +980,91 @@
           },
           "visibility": {
             "type": "string"
+          }
+        }
+      },
+      "ProcessDiagnostic": {
+        "type": "object",
+        "required": [
+          "state",
+          "state_revision",
+          "value_revision"
+        ],
+        "properties": {
+          "attempted_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cpu_percent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "memory_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "observed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pid": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "received_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string"
+          },
+          "state_revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "uptime_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "value_revision": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
@@ -1004,7 +1099,8 @@
           "healthReason",
           "rpcState",
           "syncState",
-          "consensusState"
+          "consensusState",
+          "processState"
         ],
         "properties": {
           "consensusState": {
@@ -1039,6 +1135,9 @@
             "type": "string"
           },
           "nodeId": {
+            "type": "string"
+          },
+          "processState": {
             "type": "string"
           },
           "rpcState": {
