@@ -750,7 +750,15 @@ async fn handler(
             "Server database is unavailable",
         );
     }
-    let updated = sqlx::query("UPDATE agents SET active_boot_id=?, last_report_sequence=?, last_inventory_revision=?, last_received_at=?, agent_capabilities_json=?, updated_at=? WHERE agent_id=?").bind(parsed.boot_id.to_string()).bind(parsed.report_sequence as i64).bind(parsed.inventory.revision as i64).bind(&now_text).bind(capabilities).bind(&now_text).bind(&auth.agent_id).execute(&mut *tx).await;
+    let clock_skew_ms = parsed.host.clock_skew.latest;
+    let clock_status = match clock_skew_ms {
+        Some(value) if value.abs() > crate::http::agent::CLOCK_UNRELIABLE_THRESHOLD_MS => {
+            "clock_unreliable"
+        }
+        Some(_) => "known",
+        None => "unknown",
+    };
+    let updated = sqlx::query("UPDATE agents SET active_boot_id=?, last_report_sequence=?, last_inventory_revision=?, last_received_at=?, clock_skew_ms=?, clock_status=?, agent_capabilities_json=?, updated_at=? WHERE agent_id=?").bind(parsed.boot_id.to_string()).bind(parsed.report_sequence as i64).bind(parsed.inventory.revision as i64).bind(&now_text).bind(clock_skew_ms).bind(clock_status).bind(capabilities).bind(&now_text).bind(&auth.agent_id).execute(&mut *tx).await;
     if updated.is_err() || tx.commit().await.is_err() {
         return error(
             &request_id.0,

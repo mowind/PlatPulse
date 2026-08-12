@@ -8,8 +8,12 @@ export type AgentDiagnostic = {
     agent_epoch: number;
     agent_id: string;
     capabilities: Array<string>;
+    clock_skew_ms?: number | null;
+    clock_status: string;
     host?: null | HostDiagnostic;
+    last_received_at?: string | null;
     last_report_sequence?: number | null;
+    liveness: string;
     nodes: Array<NodeDiagnostic>;
 };
 

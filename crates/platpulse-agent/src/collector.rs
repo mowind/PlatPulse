@@ -205,10 +205,22 @@ fn unsupported<T>() -> ComponentObservation<T> {
     }
 }
 
+/// Build a component error without fabricating a value when the exchange is
+/// unavailable. The Server can still accept the rest of the report.
+fn clock_skew_error(at: Rfc3339, message: &str) -> ComponentObservation<i64> {
+    error(at, "clock_exchange_unavailable", message)
+}
+
 /// Collect Host metrics once for this Agent. Disk/network structures are
 /// intentionally bounded; empty disk and zero throughput are authoritative
 /// snapshots from this minimal collector, not duplicated per Node.
-pub fn collect_host(system: &mut System, disks: &mut Disks, at: Rfc3339) -> HostObservation {
+pub fn collect_host(
+    system: &mut System,
+    disks: &mut Disks,
+    at: Rfc3339,
+    clock_skew: ComponentObservation<i64>,
+) -> HostObservation {
+    let started = std::time::Instant::now();
     system.refresh_cpu_usage();
     system.refresh_memory();
     disks.refresh();
@@ -257,7 +269,8 @@ pub fn collect_host(system: &mut System, disks: &mut Disks, at: Rfc3339) -> Host
             },
             at,
         ),
-        clock_skew: ok(0, at),
+        monotonic_elapsed_ms: Some(started.elapsed().as_millis() as u64),
+        clock_skew,
         spool: ok(
             SpoolDiagnostics {
                 queued_bytes: 0,
@@ -300,6 +313,7 @@ fn collect_node<A: RpcAdapter>(
     attempted: Rfc3339,
     adapter: &A,
 ) -> NodeObservation {
+    let started = std::time::Instant::now();
     let process = disabled();
     let (rpc, network_identity, static_metadata, sync, consensus) =
         match adapter.collect(&node.rpc_endpoint) {
@@ -334,6 +348,7 @@ fn collect_node<A: RpcAdapter>(
     NodeObservation {
         node_id: node.node_id,
         process,
+        monotonic_elapsed_ms: Some(started.elapsed().as_millis() as u64),
         chain: NodeChainObservation {
             rpc,
             sync,
@@ -344,9 +359,9 @@ fn collect_node<A: RpcAdapter>(
     }
 }
 
-/// Build a complete report for every configured Node. Host metrics are sampled
-/// once, while each Node gets an independent RPC attempt and error envelope.
-pub fn collect_report<A: RpcAdapter>(
+/// Build a complete report with the supplied clock-skew observation.
+#[allow(clippy::too_many_arguments)]
+pub fn collect_report_with_clock_skew<A: RpcAdapter>(
     config: &AgentConfig,
     agent_id: AgentId,
     agent_epoch: u64,
@@ -354,12 +369,13 @@ pub fn collect_report<A: RpcAdapter>(
     sequence: u64,
     inventory: NodeInventory,
     adapter: &A,
+    clock_skew: ComponentObservation<i64>,
 ) -> Result<AgentReport, CollectionError> {
     if inventory.nodes.is_empty() {
         let at = timestamp();
         let mut system = System::new_all();
         let mut disks = Disks::new_with_refreshed_list();
-        let host = collect_host(&mut system, &mut disks, at);
+        let host = collect_host(&mut system, &mut disks, at, clock_skew);
         let report = AgentReport {
             protocol_version: platpulse_core::PROTOCOL_VERSION,
             agent_id,
@@ -386,7 +402,7 @@ pub fn collect_report<A: RpcAdapter>(
     let attempted = timestamp();
     let mut system = System::new_all();
     let mut disks = Disks::new_with_refreshed_list();
-    let host = collect_host(&mut system, &mut disks, attempted);
+    let host = collect_host(&mut system, &mut disks, attempted, clock_skew);
     let nodes = inventory
         .nodes
         .iter()
@@ -450,6 +466,30 @@ pub fn collect_report<A: RpcAdapter>(
     Ok(report)
 }
 
+/// Build a complete report for every configured Node. Collection without a
+/// time exchange is explicitly represented as an error, never as zero.
+pub fn collect_report<A: RpcAdapter>(
+    config: &AgentConfig,
+    agent_id: AgentId,
+    agent_epoch: u64,
+    boot_id: BootId,
+    sequence: u64,
+    inventory: NodeInventory,
+    adapter: &A,
+) -> Result<AgentReport, CollectionError> {
+    let at = timestamp();
+    collect_report_with_clock_skew(
+        config,
+        agent_id,
+        agent_epoch,
+        boot_id,
+        sequence,
+        inventory,
+        adapter,
+        clock_skew_error(at, "Server time exchange was unavailable"),
+    )
+}
+
 /// Collect and persist one complete immutable report. Agent state (identity,
 /// boot and sequence) is advanced in the same transaction as the report body.
 pub async fn collect_and_persist<A: RpcAdapter>(
@@ -474,7 +514,12 @@ pub async fn collect_and_persist<A: RpcAdapter>(
     let validated = config
         .validated_inventory()
         .map_err(|error| CollectionError::Identity(error.to_string()))?;
-    let report = collect_report(
+    let clock_at = timestamp();
+    let clock_skew = match crate::time_exchange::exchange_server_time(config).await {
+        Ok(estimate) => ok(estimate.offset_ms, clock_at),
+        Err(error) => clock_skew_error(clock_at, &error.to_string()),
+    };
+    let report = collect_report_with_clock_skew(
         config,
         agent_id,
         epoch as u64,
@@ -482,6 +527,7 @@ pub async fn collect_and_persist<A: RpcAdapter>(
         previous_sequence as u64 + 1,
         validated.inventory,
         adapter,
+        clock_skew,
     )?;
     let body = serde_json::to_vec(&report)?;
     let digest = format!("0x{}", hex::encode(sha2::Sha256::digest(&body)));

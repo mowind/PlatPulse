@@ -175,6 +175,10 @@ pub struct AgentDiagnostic {
     pub agent_id: String,
     pub agent_epoch: i64,
     pub last_report_sequence: Option<i64>,
+    pub clock_status: String,
+    pub clock_skew_ms: Option<i64>,
+    pub liveness: String,
+    pub last_received_at: Option<String>,
     pub capabilities: Vec<String>,
     pub host: Option<HostDiagnostic>,
     pub nodes: Vec<NodeDiagnostic>,
@@ -380,15 +384,38 @@ async fn diagnostics(
     State(state): State<AppState>,
     Extension(_session): Extension<super::AuthenticatedSession>,
 ) -> impl IntoResponse {
-    let agents = sqlx::query_as::<_, (String, i64, Option<i64>, String)>(
-        "SELECT agent_id, agent_epoch, last_report_sequence, agent_capabilities_json FROM agents ORDER BY agent_id",
+    let agents = sqlx::query_as::<_, (String, i64, Option<i64>, String, String, Option<i64>, Option<String>)>(
+        "SELECT agent_id, agent_epoch, last_report_sequence, agent_capabilities_json, clock_status, clock_skew_ms, last_received_at FROM agents ORDER BY agent_id",
     )
     .fetch_all(state.db().pool())
     .await
     .unwrap_or_default();
     let mut result = Vec::with_capacity(agents.len());
-    for (agent_id, agent_epoch, last_report_sequence, capabilities_json) in agents {
+    for (
+        agent_id,
+        agent_epoch,
+        last_report_sequence,
+        capabilities_json,
+        clock_status,
+        clock_skew_ms,
+        last_received_at,
+    ) in agents
+    {
         let capabilities = serde_json::from_str(&capabilities_json).unwrap_or_default();
+        let liveness = last_received_at
+            .as_deref()
+            .and_then(crate::auth::parse_rfc3339)
+            .map(|received| {
+                if (crate::auth::now_utc() - received).whole_seconds()
+                    <= crate::http::agent::AGENT_OFFLINE_AFTER_SECONDS
+                {
+                    "online"
+                } else {
+                    "offline"
+                }
+            })
+            .unwrap_or("unknown")
+            .to_owned();
         let host_components = sqlx::query_as::<_, (String, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, i64, i64)>(
             "SELECT component_key, state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision FROM component_status WHERE agent_id = ? AND scope = 'host' ORDER BY component_key",
         )
@@ -489,6 +516,10 @@ async fn diagnostics(
             agent_id,
             agent_epoch,
             last_report_sequence,
+            clock_status,
+            clock_skew_ms,
+            liveness,
+            last_received_at,
             capabilities,
             host,
             nodes,

@@ -14,12 +14,38 @@ use axum::http::StatusCode;
 use axum::http::header::{HeaderMap, HeaderValue};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Serialize;
 use utoipa::ToSchema;
 
+pub const CLOCK_UNRELIABLE_THRESHOLD_MS: i64 = 5 * 60 * 1000;
+pub const AGENT_OFFLINE_AFTER_SECONDS: i64 = 120;
+
+/// Server-authoritative time exchange. The response timestamp is generated
+/// by the Server, never derived from Agent wall-clock input.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct ServerTimeResponse {
+    pub server_time: String,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/agent/v1/time",
+    tag = "agent",
+    responses((status = 200, body = ServerTimeResponse))
+)]
+pub(crate) async fn server_time(
+    Extension(_auth): Extension<crate::enrollment::AgentAuthInfo>,
+) -> impl IntoResponse {
+    Json(ServerTimeResponse {
+        server_time: format_rfc3339(crate::auth::now_utc()),
+    })
+}
+
 use super::{AppState, ClientIp, ROUTE_GROUP_HEADER, RequestId, api_not_found};
+use crate::auth::format_rfc3339;
 use crate::enrollment::EnrollmentError;
 
 async fn group_middleware(request: Request, next: Next) -> Response {
@@ -167,6 +193,7 @@ fn error_response(
 
 pub fn router() -> Router<AppState> {
     Router::<AppState>::new()
+        .route("/time", get(server_time))
         .route("/enroll", post(enroll_handler))
         .fallback(api_not_found)
         .layer(axum::middleware::from_fn(group_middleware))

@@ -471,6 +471,8 @@
         "required": [
           "agent_id",
           "agent_epoch",
+          "clock_status",
+          "liveness",
           "capabilities",
           "nodes"
         ],
@@ -488,6 +490,16 @@
               "type": "string"
             }
           },
+          "clock_skew_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "clock_status": {
+            "type": "string"
+          },
           "host": {
             "oneOf": [
               {
@@ -498,12 +510,21 @@
               }
             ]
           },
+          "last_received_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "last_report_sequence": {
             "type": [
               "integer",
               "null"
             ],
             "format": "int64"
+          },
+          "liveness": {
+            "type": "string"
           },
           "nodes": {
             "type": "array",

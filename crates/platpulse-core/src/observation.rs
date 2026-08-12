@@ -28,6 +28,15 @@ pub struct HostObservation {
     pub disk: ComponentObservation<DiskCurrent>,
     /// Host network throughput (bytes/s).
     pub network_throughput: ComponentObservation<NetworkThroughput>,
+    /// Monotonic elapsed time spent collecting this Host snapshot, in
+    /// milliseconds. It is a duration and is never compared with wall-clock
+    /// timestamps.
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub monotonic_elapsed_ms: Option<u64>,
     /// Estimated Agent↔Server wall-clock skew, signed milliseconds
     /// (negative = Agent clock behind).
     pub clock_skew: ComponentObservation<i64>,
@@ -117,6 +126,14 @@ pub struct NodeObservation {
     /// Process-level observation; `disabled` when no selector is configured,
     /// `unsupported` when the Agent cannot collect it.
     pub process: ComponentObservation<ProcessCurrent>,
+    /// Agent monotonic elapsed time spent collecting this Node snapshot, in
+    /// milliseconds. This is duration data, not an RFC3339 timestamp.
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub monotonic_elapsed_ms: Option<u64>,
     /// Chain-facing observation of this Node.
     pub chain: NodeChainObservation,
 }
