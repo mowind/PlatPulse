@@ -15,9 +15,9 @@ use crate::http::{AppState, ROUTE_GROUP_HEADER, RequestId};
 use platpulse_core::component::{ComponentKey, ComponentObservation, ComponentStatus};
 use platpulse_core::protocol::SUPPORTED_PROTOCOL_MAJORS;
 use platpulse_core::{
-    AgentReport, InventoryDisposition, NodeCurrentDisposition, NodeReceipt, ReceiptDisposition,
-    ReportId, ReportReceipt, Rfc3339, SampleDisposition, SampleDispositionKind, SampleRef,
-    Sha256Hex,
+    AgentReport, ComponentRevision, InventoryDisposition, NodeCurrentDisposition, NodeReceipt,
+    ReceiptDisposition, ReportId, ReportReceipt, Rfc3339, SampleDisposition, SampleDispositionKind,
+    SampleRef, Sha256Hex,
 };
 
 #[derive(Debug, Serialize, serde::Deserialize)]
@@ -687,6 +687,7 @@ async fn handler(
     let now_text = now().to_string();
     let capabilities =
         serde_json::to_string(&parsed.agent_capabilities).expect("capabilities serialize");
+    let mut ownership_mismatches = std::collections::HashSet::new();
     for node in &parsed.inventory.nodes {
         let known = match sqlx::query_scalar::<_, String>(
             "SELECT network_key FROM networks WHERE network_key = ?",
@@ -737,23 +738,35 @@ async fn handler(
                 }
             };
         if owner.is_some_and(|owner| owner != auth.agent_id) {
-            return store_rejected(
-                tx,
-                &parsed,
-                hash.clone(),
-                rejected(
-                    parsed.report_id,
-                    hash,
-                    platpulse_core::RejectionCode::NodeOwnershipMismatch,
-                    "Node belongs to another Agent",
-                ),
-                &request_id.0,
-            )
-            .await;
+            ownership_mismatches.insert(node.node_id);
         }
     }
-    // A complete, accepted Inventory is authoritative: omitted Nodes are retired.
-    if parsed.inventory.nodes.is_empty() {
+    // Inventory is accepted as a complete set only after structural/network
+    // validation. Ownership-invalid Nodes reject only their own current and
+    // samples; they are not allowed to retire valid siblings.
+    let accepted_inventory_ids = parsed
+        .inventory
+        .nodes
+        .iter()
+        .filter(|node| !ownership_mismatches.contains(&node.node_id))
+        .map(|node| node.node_id.to_string())
+        .collect::<Vec<_>>();
+
+    let inventory_bytes = serde_json::to_vec(&parsed.inventory).expect("inventory serializes");
+    let inventory_hash = format!("0x{:x}", Sha256::digest(&inventory_bytes));
+    let prior_inventory_hash: Option<String> =
+        sqlx::query_scalar("SELECT inventory_sha256 FROM agents WHERE agent_id=?")
+            .bind(&auth.agent_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .unwrap_or(None);
+    let inventory_revision_unchanged = parsed.inventory.revision
+        == agent.last_inventory_revision as u64
+        && prior_inventory_hash.as_deref() == Some(inventory_hash.as_str());
+
+    // Equal-revision content is unchanged; do not retire siblings or rewrite
+    // inventory ownership on a replay. A new revision remains authoritative.
+    if !inventory_revision_unchanged && parsed.inventory.nodes.is_empty() {
         if sqlx::query("UPDATE nodes SET lifecycle='retired', updated_at=? WHERE agent_id=?")
             .bind(&now_text)
             .bind(&auth.agent_id)
@@ -768,16 +781,16 @@ async fn handler(
                 "Server database is unavailable",
             );
         }
-    } else {
-        let placeholders = std::iter::repeat_n("?", parsed.inventory.nodes.len())
+    } else if !inventory_revision_unchanged && !accepted_inventory_ids.is_empty() {
+        let placeholders = std::iter::repeat_n("?", accepted_inventory_ids.len())
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!(
             "UPDATE nodes SET lifecycle='retired', updated_at=? WHERE agent_id=? AND node_id NOT IN ({placeholders})"
         );
         let mut query = sqlx::query(&sql).bind(&now_text).bind(&auth.agent_id);
-        for node in &parsed.inventory.nodes {
-            query = query.bind(node.node_id.to_string());
+        for node_id in &accepted_inventory_ids {
+            query = query.bind(node_id);
         }
         if query.execute(&mut *tx).await.is_err() {
             return error(
@@ -789,6 +802,9 @@ async fn handler(
         }
     }
     for node in &parsed.inventory.nodes {
+        if ownership_mismatches.contains(&node.node_id) {
+            continue;
+        }
         let result = sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', 'private', ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET network_key=excluded.network_key, display_name=COALESCE(nodes.display_name, excluded.display_name), rpc_endpoint=excluded.rpc_endpoint, lifecycle='active', inventory_revision=excluded.inventory_revision, updated_at=excluded.updated_at")
             .bind(node.node_id.to_string()).bind(&auth.agent_id).bind(node.network_key.as_str()).bind(&node.display_name).bind(node.rpc_endpoint.as_str()).bind(parsed.inventory.revision as i64).bind(&now_text).bind(&now_text).execute(&mut *tx).await;
         if result.is_err() {
@@ -800,7 +816,14 @@ async fn handler(
             );
         }
     }
-    if save_current(&mut tx, &parsed, &now_text).await.is_err() {
+    let mut projection_report = parsed.clone();
+    projection_report
+        .nodes
+        .retain(|node| !ownership_mismatches.contains(&node.node_id));
+    if save_current(&mut tx, &projection_report, &now_text)
+        .await
+        .is_err()
+    {
         return error(
             &request_id.0,
             StatusCode::SERVICE_UNAVAILABLE,
@@ -819,29 +842,100 @@ async fn handler(
             );
         }
     };
-    // Keep explicit gap declarations even when their block samples are absent.
+    for sample in &parsed.block_summaries {
+        if ownership_mismatches.contains(&sample.node_id) {
+            sqlx::query("INSERT OR IGNORE INTO block_history_gaps (node_id, from_height, to_height, kind, created_at) VALUES (?, ?, ?, 'server_rejected', ?)")
+                .bind(sample.node_id.to_string())
+                .bind(sample.block_number as i64)
+                .bind(sample.block_number as i64)
+                .bind(&now_text)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| ())
+                .ok();
+        }
+    }
     for gap in &parsed.history_gaps {
+        if ownership_mismatches.contains(&gap.node_id) {
+            continue;
+        }
         sqlx::query("INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, created_at) VALUES (?, ?, ?, ?, ?)")
             .bind(gap.node_id.to_string()).bind(gap.from_height as i64).bind(gap.to_height as i64)
             .bind(format!("{:?}", gap.kind).to_lowercase()).bind(gap.recorded_at.to_string())
             .execute(&mut *tx).await.map_err(|_| ()).ok();
     }
-    let nodes = parsed
+    let nodes: Vec<NodeReceipt> = parsed
         .inventory
         .nodes
         .iter()
-        .map(|node| NodeReceipt {
-            node_id: node.node_id,
-            current: NodeCurrentDisposition::Accepted,
-            accepted_component_revisions: vec![],
-            rejections: vec![],
+        .map(|node| {
+            let rejected = ownership_mismatches.contains(&node.node_id);
+            NodeReceipt {
+                node_id: node.node_id,
+                current: if rejected {
+                    NodeCurrentDisposition::Rejected
+                } else {
+                    NodeCurrentDisposition::Accepted
+                },
+                accepted_component_revisions: if rejected {
+                    vec![]
+                } else if let Some(observed) = parsed
+                    .nodes
+                    .iter()
+                    .find(|candidate| candidate.node_id == node.node_id)
+                {
+                    vec![
+                        ComponentRevision {
+                            component: ComponentKey::Process,
+                            state_revision: observed.process.state_revision,
+                            value_revision: observed.process.value_revision,
+                        },
+                        ComponentRevision {
+                            component: ComponentKey::Rpc,
+                            state_revision: observed.chain.rpc.state_revision,
+                            value_revision: observed.chain.rpc.value_revision,
+                        },
+                        ComponentRevision {
+                            component: ComponentKey::Sync,
+                            state_revision: observed.chain.sync.state_revision,
+                            value_revision: observed.chain.sync.value_revision,
+                        },
+                        ComponentRevision {
+                            component: ComponentKey::Consensus,
+                            state_revision: observed.chain.consensus.state_revision,
+                            value_revision: observed.chain.consensus.value_revision,
+                        },
+                        ComponentRevision {
+                            component: ComponentKey::NetworkIdentity,
+                            state_revision: observed.chain.network_identity.state_revision,
+                            value_revision: observed.chain.network_identity.value_revision,
+                        },
+                        ComponentRevision {
+                            component: ComponentKey::StaticMetadata,
+                            state_revision: observed.chain.static_metadata.state_revision,
+                            value_revision: observed.chain.static_metadata.value_revision,
+                        },
+                    ]
+                } else {
+                    vec![]
+                },
+                rejections: if rejected {
+                    vec![rejection(
+                        platpulse_core::RejectionCode::NodeOwnershipMismatch,
+                        "Node belongs to another Agent",
+                    )]
+                } else {
+                    vec![]
+                },
+            }
         })
         .collect();
     let samples = parsed
         .block_summaries
         .iter()
         .map(|sample| {
-            let rejected = mismatches.contains(&sample.node_id);
+            let rejected = ownership_mismatches.contains(&sample.node_id)
+                || mismatches.contains(&sample.node_id);
             SampleDisposition {
                 node_id: sample.node_id,
                 sample: SampleRef::Block {
@@ -853,26 +947,79 @@ async fn handler(
                     SampleDispositionKind::Accepted
                 },
                 rejection: rejected.then(|| {
+                    let code = if ownership_mismatches.contains(&sample.node_id) {
+                        platpulse_core::RejectionCode::NodeOwnershipMismatch
+                    } else {
+                        platpulse_core::RejectionCode::NetworkIdentityMismatch
+                    };
                     rejection(
-                        platpulse_core::RejectionCode::NetworkIdentityMismatch,
+                        code,
                         "Block network identity does not match the registered Network",
                     )
                 }),
             }
         })
-        .chain(parsed.history_gaps.iter().map(|gap| SampleDisposition {
-            node_id: gap.node_id,
-            sample: SampleRef::Gap {
-                from_height: gap.from_height,
-                to_height: gap.to_height,
-            },
-            disposition: SampleDispositionKind::Accepted,
-            rejection: None,
+        .chain(parsed.history_gaps.iter().map(|gap| {
+            let rejected = ownership_mismatches.contains(&gap.node_id);
+            SampleDisposition {
+                node_id: gap.node_id,
+                sample: SampleRef::Gap {
+                    from_height: gap.from_height,
+                    to_height: gap.to_height,
+                },
+                disposition: if rejected {
+                    SampleDispositionKind::TerminalRejected
+                } else {
+                    SampleDispositionKind::Accepted
+                },
+                rejection: rejected.then(|| {
+                    rejection(
+                        platpulse_core::RejectionCode::NodeOwnershipMismatch,
+                        "Node belongs to another Agent",
+                    )
+                }),
+            }
         }))
         .collect::<Vec<_>>();
-    let disposition = if samples
+    let inventory_bytes = serde_json::to_vec(&parsed.inventory).expect("inventory serializes");
+    let inventory_hash = format!("0x{:x}", Sha256::digest(&inventory_bytes));
+    let prior_inventory_hash: Option<String> =
+        sqlx::query_scalar("SELECT inventory_sha256 FROM agents WHERE agent_id=?")
+            .bind(&auth.agent_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .unwrap_or(None);
+    let inventory_unchanged = parsed.inventory.revision == agent.last_inventory_revision as u64
+        && prior_inventory_hash.as_deref() == Some(inventory_hash.as_str());
+    if parsed.inventory.revision == agent.last_inventory_revision as u64
+        && prior_inventory_hash.is_some()
+        && !inventory_unchanged
+    {
+        return store_rejected(
+            tx,
+            &parsed,
+            hash.clone(),
+            rejected(
+                parsed.report_id,
+                hash,
+                platpulse_core::RejectionCode::InventoryRevisionConflict,
+                "Inventory content conflicts at the accepted revision",
+            ),
+            &request_id.0,
+        )
+        .await;
+    }
+    let inventory_disposition = if inventory_unchanged {
+        InventoryDisposition::Unchanged
+    } else {
+        InventoryDisposition::Accepted
+    };
+    let disposition = if nodes
         .iter()
-        .any(|sample| sample.disposition != SampleDispositionKind::Accepted)
+        .any(|node| node.current == NodeCurrentDisposition::Rejected)
+        || samples
+            .iter()
+            .any(|sample| sample.disposition != SampleDispositionKind::Accepted)
     {
         ReceiptDisposition::PartiallyAccepted
     } else {
@@ -886,7 +1033,7 @@ async fn handler(
         supported_protocol_majors: SUPPORTED_PROTOCOL_MAJORS.to_vec(),
         server_time: now(),
         rotation_hint: None,
-        inventory: Some(InventoryDisposition::Accepted),
+        inventory: Some(inventory_disposition),
         rejections: vec![],
         nodes,
         samples,
@@ -909,7 +1056,7 @@ async fn handler(
         Some(_) => "known",
         None => "unknown",
     };
-    let updated = sqlx::query("UPDATE agents SET active_boot_id=?, last_report_sequence=?, last_inventory_revision=?, last_received_at=?, clock_skew_ms=?, clock_status=?, agent_capabilities_json=?, updated_at=? WHERE agent_id=?").bind(parsed.boot_id.to_string()).bind(parsed.report_sequence as i64).bind(parsed.inventory.revision as i64).bind(&now_text).bind(clock_skew_ms).bind(clock_status).bind(capabilities).bind(&now_text).bind(&auth.agent_id).execute(&mut *tx).await;
+    let updated = sqlx::query("UPDATE agents SET active_boot_id=?, last_report_sequence=?, last_inventory_revision=?, inventory_sha256=?, last_received_at=?, clock_skew_ms=?, clock_status=?, agent_capabilities_json=?, updated_at=? WHERE agent_id=?").bind(parsed.boot_id.to_string()).bind(parsed.report_sequence as i64).bind(parsed.inventory.revision as i64).bind(&inventory_hash).bind(&now_text).bind(clock_skew_ms).bind(clock_status).bind(capabilities).bind(&now_text).bind(&auth.agent_id).execute(&mut *tx).await;
     if updated.is_err() || tx.commit().await.is_err() {
         return error(
             &request_id.0,

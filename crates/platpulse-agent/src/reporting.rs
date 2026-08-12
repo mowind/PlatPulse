@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use thiserror::Error;
 
-use platpulse_core::{ReceiptDisposition, ReportReceipt};
+use platpulse_core::{AgentReport, ReceiptDisposition, ReportReceipt};
 use serde::Deserialize;
 
 use crate::collector::{SpoolCleanupSummary, SpoolPolicy, apply_receipt};
@@ -266,6 +266,20 @@ pub async fn persist_immutable_report(
     .bind(generated_at)
     .execute(&mut *tx)
     .await?;
+    if let Ok(report) = serde_json::from_slice::<AgentReport>(body) {
+        for sample in &report.block_summaries {
+            sqlx::query("INSERT OR IGNORE INTO report_sample_assignments (report_id,node_id,sample_kind,from_height,to_height) VALUES (?,?,?,?,?)")
+                .bind(report_id).bind(sample.node_id.to_string()).bind("block")
+                .bind(sample.block_number as i64).bind(sample.block_number as i64)
+                .execute(&mut *tx).await?;
+        }
+        for gap in &report.history_gaps {
+            sqlx::query("INSERT OR IGNORE INTO report_sample_assignments (report_id,node_id,sample_kind,from_height,to_height) VALUES (?,?,?,?,?)")
+                .bind(report_id).bind(gap.node_id.to_string()).bind("gap")
+                .bind(gap.from_height as i64).bind(gap.to_height as i64)
+                .execute(&mut *tx).await?;
+        }
+    }
     tx.commit().await?;
     Ok(digest)
 }

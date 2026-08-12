@@ -113,6 +113,9 @@ pub enum WireError {
     NodeRejectedWithAcceptedRevisions,
     /// An accepted sample cannot carry a rejection.
     SampleAcceptedWithRejection,
+    /// A rejected Node current may not carry a retryable rejection.
+    NodeRejectedWithRetryableRejection,
+
     /// A retryable/terminal-rejected sample must carry its rejection.
     SampleRejectedWithoutRejection,
     /// The sample disposition contradicts the rejection's retryability.
@@ -287,6 +290,10 @@ impl fmt::Display for WireError {
             Self::NodeRejectedWithAcceptedRevisions => write!(
                 f,
                 "a rejected Node current cannot carry accepted component revisions"
+            ),
+            Self::NodeRejectedWithRetryableRejection => write!(
+                f,
+                "a rejected Node current cannot carry a retryable rejection"
             ),
             Self::SampleAcceptedWithRejection => {
                 write!(f, "an accepted sample cannot carry a rejection")

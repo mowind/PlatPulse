@@ -438,11 +438,41 @@ struct BlockRow {
     attribution_reason: String,
 }
 
+pub async fn load_history_gaps(
+    store: &mut AgentStore,
+) -> Result<Vec<platpulse_core::gap::HistoryGap>, sqlx::Error> {
+    let rows = sqlx::query_as::<_, (String, i64, i64, String, String)>(
+        "SELECT g.node_id, g.from_height, g.to_height, g.kind, g.created_at FROM history_gaps g WHERE NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id=g.node_id AND a.sample_kind='gap' AND a.from_height=g.from_height AND a.to_height=g.to_height) ORDER BY g.created_at, g.gap_id",
+    )
+    .fetch_all(store.connection()).await?;
+    rows.into_iter()
+        .map(|(node_id, from, to, kind, at)| {
+            let kind = match kind.as_str() {
+                "server_rejected" => platpulse_core::gap::GapKind::ServerRejected,
+                "spool_overflow" => platpulse_core::gap::GapKind::SpoolOverflow,
+                _ => platpulse_core::gap::GapKind::UnrecoverableBackfill,
+            };
+            Ok(platpulse_core::gap::HistoryGap {
+                node_id: node_id
+                    .parse()
+                    .map_err(|_| sqlx::Error::Protocol("gap node id".into()))?,
+                kind,
+                from_height: from as u64,
+                to_height: to as u64,
+                reason: "locally retained history gap".to_owned(),
+                recorded_at: at
+                    .parse()
+                    .map_err(|_| sqlx::Error::Protocol("gap timestamp".into()))?,
+            })
+        })
+        .collect()
+}
+
 /// Load all pending block summaries in deterministic oldest-first order.
 pub async fn load_block_summaries(
     store: &mut AgentStore,
 ) -> Result<Vec<BlockSummary>, sqlx::Error> {
-    let rows = sqlx::query_as::<_, BlockRow>("SELECT node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, block_interval_ms, source, coinbase, seal_signer_key_fingerprint, seal_signer_match, protocol_proposer_kind, protocol_proposer_identity, attribution_reason FROM block_summaries ORDER BY created_at, sample_id").fetch_all(store.connection()).await?;
+    let rows = sqlx::query_as::<_, BlockRow>("SELECT b.node_id, b.block_number, b.block_hash, b.parent_hash, b.network_genesis_hash, b.network_chain_id, b.network_p2p_network_id, b.network_address_hrp, b.block_timestamp_ms, b.observed_at, b.transaction_count, b.block_interval_ms, b.source, b.coinbase, b.seal_signer_key_fingerprint, b.seal_signer_match, b.protocol_proposer_kind, b.protocol_proposer_identity, b.attribution_reason FROM block_summaries b WHERE NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id=b.node_id AND a.sample_kind='block' AND a.from_height=b.block_number AND a.to_height=b.block_number) ORDER BY b.created_at, b.sample_id").fetch_all(store.connection()).await?;
     rows.into_iter()
         .map(|row| {
             let BlockRow {

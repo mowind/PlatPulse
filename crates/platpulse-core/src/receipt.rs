@@ -298,6 +298,11 @@ impl ReportReceipt {
             {
                 return Err(WireError::NodeRejectedWithAcceptedRevisions);
             }
+            if node.current == NodeCurrentDisposition::Rejected
+                && node.rejections.iter().any(|rejection| rejection.retryable)
+            {
+                return Err(WireError::NodeRejectedWithRetryableRejection);
+            }
         }
         for sample in &self.samples {
             if let Some(rejection) = &sample.rejection {

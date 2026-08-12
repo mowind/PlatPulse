@@ -18,7 +18,10 @@ use platpulse_core::observation::{
     NodeChainObservation, NodeObservation, NodeStaticMetadata, RpcCurrent, SpoolDiagnostics,
     SyncCurrent,
 };
-use platpulse_core::{AgentCapability, AgentReport, BootTransition, FingerprintHex, Rfc3339};
+use platpulse_core::{
+    AgentCapability, AgentReport, BootTransition, FingerprintHex, NodeCurrentDisposition,
+    ReceiptDisposition, ReportReceipt, Rfc3339, SampleDispositionKind, SampleRef,
+};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use sqlx::Connection;
@@ -597,6 +600,7 @@ pub async fn collect_and_persist<A: RpcAdapter>(
         clock_skew,
     )?;
     report.block_summaries = load_block_summaries(&mut store).await?;
+    report.history_gaps = crate::block::load_history_gaps(&mut store).await?;
     report.host.spool = ok(
         current_spool_diagnostics(&mut store).await?,
         report.generated_at,
@@ -691,6 +695,7 @@ pub async fn collect_and_persist_with_blocks<A: RpcAdapter>(
         }
     }
     report.block_summaries = load_block_summaries(&mut store).await?;
+    report.history_gaps = crate::block::load_history_gaps(&mut store).await?;
     report.host.spool = ok(
         current_spool_diagnostics(&mut store).await?,
         report.generated_at,
@@ -805,8 +810,8 @@ async fn current_spool_diagnostics(
     })
 }
 
-/// Apply a stored receipt and delete its report only after the receipt is
-/// durably recorded, in one Agent Store transaction.
+/// Apply a stored receipt and delete its report only after all receipt
+/// dispositions have been durably processed, in one Agent Store transaction.
 pub async fn apply_receipt(
     store: &mut AgentStore,
     report_id: &str,
@@ -815,11 +820,175 @@ pub async fn apply_receipt(
     receipt_body: &[u8],
     applied_at: &str,
 ) -> Result<(), sqlx::Error> {
+    let envelope: serde_json::Value = serde_json::from_slice(receipt_body)
+        .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+    let receipt: ReportReceipt = serde_json::from_value(
+        envelope
+            .get("receipt")
+            .cloned()
+            .ok_or_else(|| sqlx::Error::Protocol("receipt envelope missing receipt".to_owned()))?,
+    )
+    .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+    receipt
+        .validate()
+        .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+    let expected_disposition = match receipt.disposition {
+        ReceiptDisposition::Accepted => "accepted",
+        ReceiptDisposition::PartiallyAccepted => "partially_accepted",
+        ReceiptDisposition::Rejected => "rejected",
+    };
+    if receipt.report_id.to_string() != report_id
+        || receipt.report_body_sha256.to_string() != body_sha256
+        || expected_disposition != disposition
+    {
+        return Err(sqlx::Error::Protocol(
+            "receipt does not match report".to_owned(),
+        ));
+    }
+
     let mut tx = store.connection().begin().await?;
+    let raw_report =
+        sqlx::query_scalar::<_, Vec<u8>>("SELECT body FROM reports WHERE report_id = ?")
+            .bind(report_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| sqlx::Error::Protocol("report is not in the Agent spool".to_owned()))?;
+    let parsed_report: Option<AgentReport> = serde_json::from_slice(&raw_report).ok();
+    if let Some(parsed_report) = parsed_report.as_ref() {
+        if parsed_report.report_id.to_string() != report_id {
+            return Err(sqlx::Error::Protocol(
+                "stored report id mismatch".to_owned(),
+            ));
+        }
+    }
+    let mut expected_nodes = std::collections::HashSet::new();
+    if let Some(parsed_report) = parsed_report.as_ref() {
+        for node in &parsed_report.inventory.nodes {
+            expected_nodes.insert(node.node_id);
+        }
+    }
+    let mut seen_nodes = std::collections::HashSet::new();
+    for node in &receipt.nodes {
+        if !expected_nodes.contains(&node.node_id) || !seen_nodes.insert(node.node_id) {
+            return Err(sqlx::Error::Protocol(
+                "receipt contains invalid or duplicate node".to_owned(),
+            ));
+        }
+        if node.current == NodeCurrentDisposition::Rejected
+            && node.rejections.iter().any(|r| r.retryable)
+        {
+            return Err(sqlx::Error::Protocol(
+                "rejected Node must be terminal".to_owned(),
+            ));
+        }
+    }
+    let mut expected_samples = std::collections::HashSet::new();
+    if let Some(parsed_report) = parsed_report.as_ref() {
+        for sample in &parsed_report.block_summaries {
+            expected_samples.insert((
+                sample.node_id,
+                "block",
+                sample.block_number,
+                sample.block_number,
+            ));
+        }
+        for gap in &parsed_report.history_gaps {
+            expected_samples.insert((gap.node_id, "gap", gap.from_height, gap.to_height));
+        }
+    }
+    let mut seen_samples = std::collections::HashSet::new();
+    for sample in &receipt.samples {
+        let (kind, from, to) = match sample.sample {
+            SampleRef::Block { height } => ("block", height, height),
+            SampleRef::Gap {
+                from_height,
+                to_height,
+            } => ("gap", from_height, to_height),
+        };
+        if !expected_samples.contains(&(sample.node_id, kind, from, to))
+            || !seen_samples.insert((sample.node_id, kind, from, to))
+        {
+            return Err(sqlx::Error::Protocol(
+                "receipt contains invalid or duplicate sample".to_owned(),
+            ));
+        }
+    }
+
+    // The immutable report has already been parsed and all receipt references
+    // validated above. Current observations are not copied into retry state.
+
+    for sample in &receipt.samples {
+        let (kind, from_height, to_height) = match sample.sample {
+            SampleRef::Block { height } => ("block", height, height),
+            SampleRef::Gap {
+                from_height,
+                to_height,
+            } => ("gap", from_height, to_height),
+        };
+        sqlx::query("DELETE FROM report_sample_assignments WHERE report_id = ? AND node_id = ? AND sample_kind = ? AND from_height = ? AND to_height = ?")
+            .bind(report_id).bind(sample.node_id.to_string()).bind(kind)
+            .bind(from_height as i64).bind(to_height as i64)
+            .execute(&mut *tx).await?;
+        match sample.disposition {
+            SampleDispositionKind::Accepted | SampleDispositionKind::TerminalRejected => {
+                if kind == "block" {
+                    sqlx::query(
+                        "DELETE FROM block_summaries WHERE node_id = ? AND block_number = ?",
+                    )
+                    .bind(sample.node_id.to_string())
+                    .bind(from_height as i64)
+                    .execute(&mut *tx)
+                    .await?;
+                } else {
+                    sqlx::query("DELETE FROM history_gaps WHERE node_id = ? AND from_height = ? AND to_height = ?")
+                        .bind(sample.node_id.to_string())
+                        .bind(from_height as i64)
+                        .bind(to_height as i64)
+                        .execute(&mut *tx)
+                        .await?;
+                }
+                if sample.disposition == SampleDispositionKind::TerminalRejected {
+                    if let Some(rejection) = &sample.rejection {
+                        sqlx::query("INSERT INTO rejection_ledger (report_id, node_id, sample_kind, from_height, to_height, rejection_code, reason, rejected_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+                            .bind(report_id)
+                            .bind(sample.node_id.to_string())
+                            .bind(kind)
+                            .bind(from_height as i64)
+                            .bind(to_height as i64)
+                            .bind(format!("{:?}", rejection.code).to_lowercase())
+                            .bind(&rejection.reason)
+                            .bind(applied_at)
+                            .execute(&mut *tx)
+                            .await?;
+                        sqlx::query("INSERT OR IGNORE INTO history_gaps (node_id, from_height, to_height, kind, created_at) VALUES (?, ?, ?, 'server_rejected', ?)")
+                            .bind(sample.node_id.to_string())
+                            .bind(from_height as i64)
+                            .bind(to_height as i64)
+                            .bind(applied_at)
+                            .execute(&mut *tx)
+                            .await?;
+                    }
+                }
+            }
+            // Leave retryable samples in the durable queue, now detached from
+            // the old report. The next planner includes them once.
+            SampleDispositionKind::RetryableRejected => {}
+        }
+    }
+
     sqlx::query("INSERT INTO report_receipts (report_id, report_body_sha256, disposition, receipt_body, applied_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(report_id) DO NOTHING")
-        .bind(report_id).bind(body_sha256).bind(disposition).bind(receipt_body).bind(applied_at).execute(&mut *tx).await?;
+        .bind(report_id)
+        .bind(body_sha256)
+        .bind(disposition)
+        .bind(receipt_body)
+        .bind(applied_at)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query("DELETE FROM reports WHERE report_id = ? AND EXISTS (SELECT 1 FROM report_receipts WHERE report_id = ?)")
-        .bind(report_id).bind(report_id).execute(&mut *tx).await?;
+        .bind(report_id)
+        .bind(report_id)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await
 }
 
@@ -1065,11 +1234,31 @@ mod tests {
         let mut store = AgentStore::open(AgentDatabaseConfig::new(dir.path().join("agent.db")))
             .await
             .unwrap();
-        sqlx::query("INSERT INTO reports (report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes, created_at) VALUES ('r',1,'b',1,'now',X'01','h',1,'now')").execute(store.connection()).await.unwrap();
-        apply_receipt(&mut store, "r", "h", "accepted", b"{}", "now")
+        let report_id = "0195f2a1-0001-4001-8001-000000000001";
+        let body = br#"{}"#;
+        let hash = "0x0000000000000000000000000000000000000000000000000000000000000000";
+        let receipt_body = format!(
+            r#"{{"receipt":{{"report_id":"{report_id}","disposition":"rejected","report_body_sha256":"{hash}","server_version":"test","supported_protocol_majors":[1],"server_time":"2026-01-01T00:00:00Z","inventory":"rejected","rejections":[{{"code":"invalid_envelope","retryable":false,"reason":"test"}}],"nodes":[],"samples":[]}}}}"#
+        );
+        sqlx::query("INSERT INTO reports (report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes, created_at) VALUES (?,1,'b',1,'now',?, ?,2,'now')")
+            .bind(report_id)
+            .bind(&body[..])
+            .bind(hash)
+            .execute(store.connection())
             .await
             .unwrap();
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM reports WHERE report_id='r'")
+        apply_receipt(
+            &mut store,
+            report_id,
+            hash,
+            "rejected",
+            receipt_body.as_bytes(),
+            "now",
+        )
+        .await
+        .unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM reports WHERE report_id=?")
+            .bind(report_id)
             .fetch_one(store.connection())
             .await
             .unwrap();
