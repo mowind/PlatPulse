@@ -60,6 +60,32 @@ pub struct BlockSummary {
     pub attribution: BlockProductionAttribution,
 }
 
+/// Bounded evidence about the Node key used for a seal comparison. A key
+/// without a complete validity interval is retained as evidence but cannot be
+/// used to claim `SignerSelf`/`Other` for historical blocks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeKeyEvidence {
+    /// Fingerprint of the Node's public P2P key (never the complete key).
+    pub fingerprint: FingerprintHex,
+    /// First block-time at which this key is known to be valid.
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub valid_from: Option<Rfc3339>,
+    /// Last block-time at which this key is known to be valid.
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub valid_until: Option<Rfc3339>,
+    /// Whether the Agent has a complete key history for this interval.
+    pub history_complete: bool,
+}
+
 /// Evidence describing how an observed block relates to the monitored Node.
 ///
 /// Coinbase, Seal Signer Match, and Protocol Proposer are distinct concepts
@@ -79,11 +105,58 @@ pub struct BlockProductionAttribution {
     pub seal_signer_key_fingerprint: Option<FingerprintHex>,
     /// Comparison of the recovered seal signer against the Node's P2P key.
     pub seal_signer_match: SealSignerMatch,
+    /// Bounded evidence for the Node key used in a seal comparison. This is
+    /// omitted when no valid historical key is available.
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub node_key: Option<NodeKeyEvidence>,
+    /// Pinned/fork-aware rule used for seal recovery, when verified.
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub seal_recovery_rule: Option<String>,
+    /// Bounded non-secret evidence summary for the recovery result.
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub seal_evidence: Option<String>,
     /// Protocol proposer; `verified` only with authoritative consensus
     /// evidence (contract limit on identity: 128 chars).
     pub protocol_proposer: ProtocolProposer,
     /// Why this attribution is what it is (contract limit: 256 chars).
     pub attribution_reason: String,
+}
+
+impl BlockProductionAttribution {
+    /// Whether the key evidence is complete enough for a historical match.
+    pub fn historical_match_allowed(&self) -> bool {
+        self.node_key.as_ref().is_some_and(|key| {
+            key.history_complete && key.valid_from.is_some() && key.valid_until.is_some()
+        })
+    }
+
+    /// Construct a conservative attribution when no verified seal evidence is
+    /// available. Coinbase remains visible, while signer and proposer stay
+    /// explicitly unknown.
+    pub fn unknown_attribution(coinbase: Address, reason: impl Into<String>) -> Self {
+        Self {
+            coinbase,
+            seal_signer_key_fingerprint: None,
+            seal_signer_match: SealSignerMatch::Unknown,
+            node_key: None,
+            seal_recovery_rule: None,
+            seal_evidence: None,
+            protocol_proposer: ProtocolProposer::Unknown {},
+            attribution_reason: reason.into(),
+        }
+    }
 }
 
 /// Tri-state comparison between the block's seal-signing key and the
@@ -147,6 +220,34 @@ mod tests {
             serde_json::to_string(&SealSignerMatch::Unknown).unwrap(),
             "\"unknown\""
         );
+    }
+
+    #[test]
+    fn incomplete_node_key_evidence_cannot_authorize_historical_match() {
+        let attribution = BlockProductionAttribution {
+            coinbase: "0x1111111111111111111111111111111111111111"
+                .parse()
+                .unwrap(),
+            seal_signer_key_fingerprint: Some(
+                "0x2222222222222222222222222222222222222222"
+                    .parse()
+                    .unwrap(),
+            ),
+            seal_signer_match: SealSignerMatch::Unknown,
+            node_key: Some(NodeKeyEvidence {
+                fingerprint: "0x3333333333333333333333333333333333333333"
+                    .parse()
+                    .unwrap(),
+                valid_from: None,
+                valid_until: None,
+                history_complete: false,
+            }),
+            seal_recovery_rule: Some("pinned-fork-v1".to_owned()),
+            seal_evidence: Some("header recovery incomplete".to_owned()),
+            protocol_proposer: ProtocolProposer::Unknown {},
+            attribution_reason: "node key validity interval is incomplete".to_owned(),
+        };
+        assert!(!attribution.historical_match_allowed());
     }
 
     #[test]

@@ -35,7 +35,8 @@ pub mod receipt;
 pub mod time;
 
 pub use block::{
-    BlockProductionAttribution, BlockSource, BlockSummary, ProtocolProposer, SealSignerMatch,
+    BlockProductionAttribution, BlockSource, BlockSummary, NodeKeyEvidence, ProtocolProposer,
+    SealSignerMatch,
 };
 pub use component::{BoundedError, ComponentKey, ComponentObservation, ComponentStatus};
 pub use envelope::{AgentCapability, AgentReport, BootTransition};

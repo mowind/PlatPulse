@@ -346,11 +346,40 @@ pub struct PublicBlockHistoryItem {
     pub height: Option<i64>,
     pub block_time_ms: Option<i64>,
     pub transaction_count: Option<i64>,
+    pub coinbase: Option<String>,
+    pub seal_signer_match: Option<String>,
+    pub seal_signer_key_fingerprint: Option<String>,
+    pub node_key_fingerprint: Option<String>,
+    pub node_key_valid_from: Option<String>,
+    pub node_key_valid_until: Option<String>,
+    pub seal_recovery_rule: Option<String>,
+    pub seal_evidence: Option<String>,
+    pub protocol_proposer: Option<String>,
+    pub attribution_reason: Option<String>,
     pub observed_at: Option<String>,
     pub freshness: Option<String>,
     pub gap_from_height: Option<i64>,
     pub gap_to_height: Option<i64>,
 }
+
+pub(crate) type HistoryRow = (
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<i64>,
+);
 
 #[utoipa::path(
     get,
@@ -366,7 +395,7 @@ pub(crate) async fn public_node_history(
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
     let limit = params.limit.unwrap_or(50).clamp(1, 200);
-    let rows = sqlx::query_as::<_, (Option<i64>, Option<i64>, Option<i64>, Option<String>, Option<i64>, Option<i64>)>("SELECT block_number, block_timestamp_ms, transaction_count, observed_at, from_height, to_height FROM (SELECT block_number, block_timestamp_ms, transaction_count, observed_at, NULL AS from_height, NULL AS to_height, node_id FROM block_summaries WHERE node_id = ? AND EXISTS (SELECT 1 FROM nodes WHERE node_id = block_summaries.node_id AND visibility = 'public' AND lifecycle = 'active') UNION ALL SELECT NULL, NULL, NULL, created_at, from_height, to_height, node_id FROM block_history_gaps WHERE node_id = ? AND EXISTS (SELECT 1 FROM nodes WHERE node_id = block_history_gaps.node_id AND visibility = 'public' AND lifecycle = 'active')) ORDER BY COALESCE(block_number, from_height) DESC LIMIT ?")
+    let rows = sqlx::query_as::<_, HistoryRow>("SELECT block_number, block_timestamp_ms, transaction_count, coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, CASE WHEN protocol_proposer_kind = 'verified' THEN protocol_proposer_identity ELSE NULL END, attribution_reason, observed_at, from_height, to_height FROM (SELECT block_number, block_timestamp_ms, transaction_count, coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, protocol_proposer_kind, protocol_proposer_identity, attribution_reason, observed_at, NULL AS from_height, NULL AS to_height, node_id FROM block_summaries WHERE node_id = ? AND EXISTS (SELECT 1 FROM nodes WHERE node_id = block_summaries.node_id AND visibility = 'public' AND lifecycle = 'active') UNION ALL SELECT NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, created_at, from_height, to_height, node_id FROM block_history_gaps WHERE node_id = ? AND EXISTS (SELECT 1 FROM nodes WHERE node_id = block_history_gaps.node_id AND visibility = 'public' AND lifecycle = 'active')) ORDER BY COALESCE(block_number, from_height) DESC LIMIT ?")
         .bind(&node_id).bind(&node_id).bind(limit).fetch_all(state.db().pool()).await;
     match rows {
         Ok(rows) => Json(
@@ -376,6 +405,16 @@ pub(crate) async fn public_node_history(
                         height,
                         block_time_ms,
                         transaction_count,
+                        coinbase,
+                        seal_signer_match,
+                        seal_signer_key_fingerprint,
+                        node_key_fingerprint,
+                        node_key_valid_from,
+                        node_key_valid_until,
+                        seal_recovery_rule,
+                        seal_evidence,
+                        protocol_proposer,
+                        attribution_reason,
                         observed_at,
                         from_height,
                         to_height,
@@ -384,6 +423,16 @@ pub(crate) async fn public_node_history(
                         height,
                         block_time_ms,
                         transaction_count,
+                        coinbase,
+                        seal_signer_match,
+                        seal_signer_key_fingerprint,
+                        node_key_fingerprint,
+                        node_key_valid_from,
+                        node_key_valid_until,
+                        seal_recovery_rule,
+                        seal_evidence,
+                        protocol_proposer,
+                        attribution_reason,
                         freshness: observed_at.clone(),
                         observed_at,
                         gap_from_height: from_height,

@@ -279,15 +279,10 @@ impl WebSocketBlockTransport {
                 transaction_count: resolved.transaction_hashes.len() as u64,
                 block_interval_ms: None,
                 source: BlockSource::Subscription,
-                attribution: BlockProductionAttribution {
-                    coinbase: resolved.coinbase,
-                    seal_signer_key_fingerprint: None,
-                    seal_signer_match: SealSignerMatch::Unknown,
-                    protocol_proposer: ProtocolProposer::Unknown {},
-                    attribution_reason:
-                        "attribution evidence is not collected by the subscription resolver"
-                            .to_owned(),
-                },
+                attribution: BlockProductionAttribution::unknown_attribution(
+                    resolved.coinbase,
+                    "seal recovery rule is not verified for this fork; protocol proposer evidence is unavailable",
+                ),
             });
         }
         Ok(summaries)
@@ -416,7 +411,7 @@ pub async fn persist_block_summary(
     let mut tx = store.connection().begin().await?;
     sqlx::query("INSERT OR IGNORE INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, block_interval_ms, source, coinbase, seal_signer_key_fingerprint, seal_signer_match, protocol_proposer_kind, protocol_proposer_identity, attribution_reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .bind(summary.node_id.to_string()).bind(summary.block_number as i64).bind(summary.block_hash.to_string()).bind(summary.parent_hash.to_string())
-        .bind(summary.network_identity.genesis_hash.to_string()).bind(summary.network_identity.chain_id as i64).bind(summary.network_identity.p2p_network_id as i64).bind(summary.network_identity.address_hrp.as_deref()).bind(summary.block_timestamp_ms as i64).bind(summary.observed_at.to_string()).bind(summary.transaction_count as i64).bind(summary.block_interval_ms.map(|v| v as i64)).bind(match summary.source { BlockSource::Subscription => "subscription", BlockSource::GapBackfill => "gap_backfill" }).bind(summary.attribution.coinbase.to_string()).bind(summary.attribution.seal_signer_key_fingerprint.as_ref().map(ToString::to_string)).bind(match summary.attribution.seal_signer_match { SealSignerMatch::SignerSelf => "self", SealSignerMatch::Other => "other", SealSignerMatch::Unknown => "unknown" }).bind(match &summary.attribution.protocol_proposer { ProtocolProposer::Verified { .. } => "verified", ProtocolProposer::Unknown {} => "unknown" }).bind(match &summary.attribution.protocol_proposer { ProtocolProposer::Verified { identity } => Some(identity.as_str()), ProtocolProposer::Unknown {} => None }).bind(&summary.attribution.attribution_reason).bind(created_at).execute(&mut *tx).await?;
+        .bind(summary.network_identity.genesis_hash.to_string()).bind(summary.network_identity.chain_id as i64).bind(summary.network_identity.p2p_network_id as i64).bind(summary.network_identity.address_hrp.as_deref()).bind(summary.block_timestamp_ms as i64).bind(summary.observed_at.to_string()).bind(summary.transaction_count as i64).bind(summary.block_interval_ms.map(|v| v as i64)).bind(match summary.source { BlockSource::Subscription => "subscription", BlockSource::GapBackfill => "gap_backfill" }).bind(summary.attribution.coinbase.to_string()).bind(summary.attribution.seal_signer_key_fingerprint.as_ref().map(ToString::to_string)).bind(match summary.attribution.seal_signer_match { SealSignerMatch::SignerSelf => "self", SealSignerMatch::Other => "other", SealSignerMatch::Unknown => "unknown" }).bind(summary.attribution.node_key.as_ref().map(|key| key.fingerprint.to_string())).bind(summary.attribution.node_key.as_ref().and_then(|key| key.valid_from.map(|value| value.to_string()))).bind(summary.attribution.node_key.as_ref().and_then(|key| key.valid_until.map(|value| value.to_string()))).bind(summary.attribution.node_key.as_ref().is_some_and(|key| key.history_complete) as i64).bind(summary.attribution.seal_recovery_rule.as_deref()).bind(summary.attribution.seal_evidence.as_deref()).bind(match &summary.attribution.protocol_proposer { ProtocolProposer::Verified { .. } => "verified", ProtocolProposer::Unknown {} => "unknown" }).bind(match &summary.attribution.protocol_proposer { ProtocolProposer::Verified { identity } => Some(identity.as_str()), ProtocolProposer::Unknown {} => None }).bind(&summary.attribution.attribution_reason).bind(created_at).execute(&mut *tx).await?;
     tx.commit().await
 }
 
@@ -521,6 +516,9 @@ pub async fn load_block_summaries(
                         "other" => SealSignerMatch::Other,
                         _ => SealSignerMatch::Unknown,
                     },
+                    node_key: None,
+                    seal_recovery_rule: None,
+                    seal_evidence: None,
                     protocol_proposer: proposer,
                     attribution_reason: reason,
                 },
@@ -609,14 +607,10 @@ impl HeadSubscription {
             transaction_count: resolved.transaction_hashes.len() as u64,
             block_interval_ms: None,
             source: BlockSource::Subscription,
-            attribution: BlockProductionAttribution {
-                coinbase: resolved.coinbase,
-                seal_signer_key_fingerprint: None,
-                seal_signer_match: SealSignerMatch::Unknown,
-                protocol_proposer: ProtocolProposer::Unknown {},
-                attribution_reason:
-                    "attribution evidence is not collected by the subscription resolver".to_owned(),
-            },
+            attribution: BlockProductionAttribution::unknown_attribution(
+                resolved.coinbase,
+                "seal recovery rule is not verified for this fork; protocol proposer evidence is unavailable",
+            ),
         }))
     }
 }

@@ -20,7 +20,7 @@ use thiserror::Error;
 pub static SERVER_MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 /// The latest migration version compiled into the Server binary.
-pub const SERVER_SCHEMA_VERSION: i64 = 7;
+pub const SERVER_SCHEMA_VERSION: i64 = 8;
 
 /// The Server currently serializes all SQLite operations through one pool
 /// connection. Read scaling can be added with a concrete query need; it is
@@ -55,6 +55,7 @@ const REQUIRED_TABLES: &[&str] = &[
     "block_history_gaps",
     "report_sequence_gaps",
     "chain_divergence_observations",
+    "observed_network_heads",
 ];
 
 /// Connection settings for the Server database.
