@@ -132,6 +132,70 @@ pub struct SpoolDiagnostics {
         deserialize_with = "crate::component::strict_optional"
     )]
     pub last_delivery_at: Option<Rfc3339>,
+    /// Configured byte capacity of the durable spool.
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub capacity_bytes: Option<u64>,
+    /// Configured maximum report age in seconds.
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub max_age_seconds: Option<u64>,
+    /// Cumulative dropped sequence range, if capacity cleanup has occurred.
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub dropped_sequence_range: Option<(u64, u64)>,
+    /// Cumulative dropped generated-time range, RFC3339 strings are retained
+    /// as typed values at the projection boundary.
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub dropped_time_range: Option<(Rfc3339, Rfc3339)>,
+    /// Cumulative dropped block-height range.
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub dropped_height_range: Option<(u64, u64)>,
+    /// Number of pending spool-overflow history gaps.
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub pending_history_gaps: Option<u64>,
+    /// The minimum complete current report exceeded the protocol hard limit.
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub report_too_large: Option<bool>,
+    /// Store integrity or quick-check failure is fatal until operator action.
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub store_fatal: Option<bool>,
+    /// Bounded store-failure detail safe for the Admin projection.
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub store_error: Option<String>,
 }
 
 /// One Node's combined current observation (process + chain).

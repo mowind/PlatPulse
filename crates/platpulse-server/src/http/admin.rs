@@ -217,6 +217,37 @@ pub struct AgentDiagnostic {
     pub nodes: Vec<NodeDiagnostic>,
 }
 
+#[derive(Debug, sqlx::FromRow)]
+struct HostProjectionRow {
+    cpu_percent: Option<f64>,
+    memory_total_bytes: Option<i64>,
+    memory_used_bytes: Option<i64>,
+    load1: Option<f64>,
+    load5: Option<f64>,
+    load15: Option<f64>,
+    network_rx_bytes_per_sec: Option<i64>,
+    network_tx_bytes_per_sec: Option<i64>,
+    spool_queued_bytes: Option<i64>,
+    spool_queued_reports: Option<i64>,
+    spool_oldest_queued_age_ms: Option<i64>,
+    spool_in_flight: Option<i64>,
+    spool_last_delivery_error: Option<String>,
+    spool_last_delivery_at: Option<String>,
+    spool_capacity_bytes: Option<i64>,
+    spool_max_age_seconds: Option<i64>,
+    spool_dropped_sequence_from: Option<i64>,
+    spool_dropped_sequence_to: Option<i64>,
+    spool_dropped_time_from: Option<String>,
+    spool_dropped_time_to: Option<String>,
+    spool_dropped_height_from: Option<i64>,
+    spool_dropped_height_to: Option<i64>,
+    spool_pending_history_gaps: Option<i64>,
+    spool_report_too_large: Option<i64>,
+    spool_store_fatal: Option<i64>,
+    spool_store_error: Option<String>,
+    updated_at: String,
+}
+
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct HostDiagnostic {
@@ -234,6 +265,18 @@ pub struct HostDiagnostic {
     pub spool_in_flight: Option<bool>,
     pub spool_last_delivery_error: Option<String>,
     pub spool_last_delivery_at: Option<String>,
+    pub spool_capacity_bytes: Option<i64>,
+    pub spool_max_age_seconds: Option<i64>,
+    pub spool_dropped_sequence_from: Option<i64>,
+    pub spool_dropped_sequence_to: Option<i64>,
+    pub spool_dropped_time_from: Option<String>,
+    pub spool_dropped_time_to: Option<String>,
+    pub spool_dropped_height_from: Option<i64>,
+    pub spool_dropped_height_to: Option<i64>,
+    pub spool_pending_history_gaps: Option<i64>,
+    pub spool_report_too_large: Option<bool>,
+    pub spool_store_fatal: Option<bool>,
+    pub spool_store_error: Option<String>,
     pub updated_at: String,
     pub components: Vec<HostComponentDiagnostic>,
 }
@@ -501,17 +544,19 @@ async fn diagnostics(
             component, state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision,
         })
         .collect::<Vec<_>>();
-        let host = sqlx::query_as::<_, (Option<f64>, Option<i64>, Option<i64>, Option<f64>, Option<f64>, Option<f64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<String>, Option<String>, String)>(
-            "SELECT cpu_percent, memory_total_bytes, memory_used_bytes, load1, load5, load15, network_rx_bytes_per_sec, network_tx_bytes_per_sec, spool_queued_bytes, spool_queued_reports, spool_oldest_queued_age_ms, spool_in_flight, spool_last_delivery_error, spool_last_delivery_at, updated_at FROM current_host_observations WHERE agent_id = ?",
+        let host = sqlx::query_as::<_, HostProjectionRow>(
+            "SELECT h.cpu_percent, h.memory_total_bytes, h.memory_used_bytes, h.load1, h.load5, h.load15, h.network_rx_bytes_per_sec, h.network_tx_bytes_per_sec, h.spool_queued_bytes, h.spool_queued_reports, h.spool_oldest_queued_age_ms, h.spool_in_flight, h.spool_last_delivery_error, h.spool_last_delivery_at, h.spool_capacity_bytes AS spool_capacity_bytes, h.spool_max_age_seconds AS spool_max_age_seconds, h.spool_dropped_sequence_from AS spool_dropped_sequence_from, h.spool_dropped_sequence_to AS spool_dropped_sequence_to, h.spool_dropped_time_from AS spool_dropped_time_from, h.spool_dropped_time_to AS spool_dropped_time_to, h.spool_dropped_height_from AS spool_dropped_height_from, h.spool_dropped_height_to AS spool_dropped_height_to, h.spool_pending_history_gaps AS spool_pending_history_gaps, h.spool_report_too_large AS spool_report_too_large, h.spool_store_fatal AS spool_store_fatal, h.spool_store_error AS spool_store_error, h.updated_at FROM current_host_observations h WHERE h.agent_id = ?",
         )
         .bind(&agent_id)
         .fetch_optional(state.db().pool())
         .await
         .ok()
         .flatten()
-        .map(|(cpu_percent, memory_total_bytes, memory_used_bytes, load1, load5, load15, network_rx_bytes_per_sec, network_tx_bytes_per_sec, spool_queued_bytes, spool_queued_reports, spool_oldest_queued_age_ms, spool_in_flight, spool_last_delivery_error, spool_last_delivery_at, updated_at)| HostDiagnostic {
-            cpu_percent, memory_total_bytes, memory_used_bytes, load1, load5, load15, network_rx_bytes_per_sec, network_tx_bytes_per_sec,
-            spool_queued_bytes, spool_queued_reports, spool_oldest_queued_age_ms, spool_in_flight: spool_in_flight.map(|v| v != 0), spool_last_delivery_error, spool_last_delivery_at, updated_at, components: host_components,
+        .map(|row| HostDiagnostic {
+            cpu_percent: row.cpu_percent, memory_total_bytes: row.memory_total_bytes, memory_used_bytes: row.memory_used_bytes, load1: row.load1, load5: row.load5, load15: row.load15, network_rx_bytes_per_sec: row.network_rx_bytes_per_sec, network_tx_bytes_per_sec: row.network_tx_bytes_per_sec,
+            spool_queued_bytes: row.spool_queued_bytes, spool_queued_reports: row.spool_queued_reports, spool_oldest_queued_age_ms: row.spool_oldest_queued_age_ms, spool_in_flight: row.spool_in_flight.map(|v| v != 0), spool_last_delivery_error: row.spool_last_delivery_error, spool_last_delivery_at: row.spool_last_delivery_at,
+            spool_capacity_bytes: row.spool_capacity_bytes, spool_max_age_seconds: row.spool_max_age_seconds, spool_dropped_sequence_from: row.spool_dropped_sequence_from, spool_dropped_sequence_to: row.spool_dropped_sequence_to, spool_dropped_time_from: row.spool_dropped_time_from, spool_dropped_time_to: row.spool_dropped_time_to, spool_dropped_height_from: row.spool_dropped_height_from, spool_dropped_height_to: row.spool_dropped_height_to, spool_pending_history_gaps: row.spool_pending_history_gaps, spool_report_too_large: row.spool_report_too_large.map(|v| v != 0), spool_store_fatal: row.spool_store_fatal.map(|v| v != 0), spool_store_error: row.spool_store_error,
+            updated_at: row.updated_at, components: host_components,
         });
         let rows = sqlx::query_as::<_, (String, String, Option<String>, String, i64, String)>(
             "SELECT node_id, network_key, display_name, lifecycle, inventory_revision, visibility FROM nodes WHERE agent_id = ? ORDER BY node_id",
