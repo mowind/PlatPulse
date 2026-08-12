@@ -8,7 +8,7 @@ use thiserror::Error;
 use platpulse_core::{ReceiptDisposition, ReportReceipt};
 use serde::Deserialize;
 
-use crate::collector::apply_receipt;
+use crate::collector::{SpoolCleanupSummary, SpoolPolicy, apply_receipt};
 use crate::config::{AgentConfig, AgentConfigError};
 use crate::credential::{CredentialError, load_credential_file};
 use crate::database::{AgentDatabaseConfig, AgentDatabaseError, AgentStore};
@@ -17,8 +17,10 @@ use crate::database::{AgentDatabaseConfig, AgentDatabaseError, AgentStore};
 pub enum ReportStoreError {
     #[error("report body is empty")]
     Empty,
-    #[error("report body exceeds protocol limit")]
-    TooLarge,
+    #[error("minimum complete current report exceeds protocol hard limit")]
+    ReportTooLarge,
+    #[error("Agent Store is in fatal state: {0}")]
+    StoreFatal(String),
     #[error("report is already being delivered")]
     DeliveryInFlight,
     #[error("receipt body is invalid: {0}")]
@@ -245,7 +247,8 @@ pub async fn persist_immutable_report(
         return Err(ReportStoreError::Empty);
     }
     if body.len() > platpulse_core::protocol::MAX_REPORT_BODY_BYTES {
-        return Err(ReportStoreError::TooLarge);
+        let _ = mark_report_too_large(store, generated_at).await;
+        return Err(ReportStoreError::ReportTooLarge);
     }
     let digest = format!("0x{}", hex::encode(Sha256::digest(body)));
     let mut tx = store.connection().begin().await?;
@@ -267,8 +270,89 @@ pub async fn persist_immutable_report(
     Ok(digest)
 }
 
-/// Validate a configured inventory and persist one immutable report from a
-/// file. This is the smallest runtime path used by the Agent CLI before a
+/// Apply a bounded, transactional spool policy. In-flight and newest complete
+/// current report are never deleted; each dropped report contributes one
+/// explicit SpoolOverflow gap based on its bounded block metadata.
+pub async fn enforce_spool_policy(
+    store: &mut AgentStore,
+    policy: &SpoolPolicy,
+    now: &str,
+) -> Result<SpoolCleanupSummary, ReportStoreError> {
+    let mut tx = store.connection().begin().await?;
+    let rows = sqlx::query_as::<_, (String, i64, String, i64)>(
+        "SELECT report_id, report_sequence, generated_at, body_bytes FROM reports ORDER BY created_at, report_id",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    let total: i64 = rows.iter().map(|row| row.3.max(0)).sum();
+    let cutoff = time::OffsetDateTime::parse(now, &time::format_description::well_known::Rfc3339)
+        .ok()
+        .map(|value| value - time::Duration::seconds(policy.max_age_seconds as i64));
+    let mut summary = SpoolCleanupSummary::default();
+    let newest = rows.last().map(|row| row.0.clone());
+    let mut bytes = total;
+    for (report_id, sequence, generated_at, body_bytes) in rows {
+        if bytes <= policy.max_bytes as i64
+            && cutoff.as_ref().is_none_or(|cutoff| {
+                time::OffsetDateTime::parse(
+                    &generated_at,
+                    &time::format_description::well_known::Rfc3339,
+                )
+                .map(|value| value >= *cutoff)
+                .unwrap_or(true)
+            })
+        {
+            continue;
+        }
+        let protected: Option<i64> =
+            sqlx::query_scalar("SELECT in_flight FROM reports WHERE report_id = ?")
+                .bind(&report_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if protected == Some(1) || newest.as_deref() == Some(report_id.as_str()) {
+            continue;
+        }
+        let deleted = sqlx::query("DELETE FROM reports WHERE report_id = ? AND in_flight = 0")
+            .bind(&report_id)
+            .execute(&mut *tx)
+            .await?;
+        if deleted.rows_affected() == 0 {
+            continue;
+        }
+        bytes -= body_bytes.max(0);
+        summary.dropped_reports += 1;
+        summary.sequence_range = Some(
+            summary
+                .sequence_range
+                .map_or((sequence as u64, sequence as u64), |(from, to)| {
+                    (from.min(sequence as u64), to.max(sequence as u64))
+                }),
+        );
+        summary.time_range = Some(summary.time_range.take().map_or(
+            (generated_at.clone(), generated_at.clone()),
+            |(from, to)| (from.min(generated_at.clone()), to.max(generated_at.clone())),
+        ));
+        sqlx::query("INSERT OR IGNORE INTO history_gaps (node_id, from_height, to_height, kind, created_at) VALUES ('00000000-0000-0000-0000-000000000000', 0, 0, 'spool_overflow', ?)").bind(now).execute(&mut *tx).await?;
+        summary.pending_history_gaps += 1;
+    }
+    sqlx::query("UPDATE spool_state SET dropped_reports=dropped_reports+?, dropped_samples=dropped_samples+?, dropped_sequence_from=COALESCE(MIN(dropped_sequence_from, ?), ?), dropped_sequence_to=MAX(COALESCE(dropped_sequence_to, ?), ?), dropped_time_from=COALESCE(MIN(dropped_time_from, ?), ?), dropped_time_to=MAX(COALESCE(dropped_time_to, ?), ?), pending_history_gaps=pending_history_gaps+?, updated_at=? WHERE singleton=1")
+        .bind(summary.dropped_reports as i64).bind(summary.dropped_samples as i64)
+        .bind(summary.sequence_range.map(|v| v.0 as i64)).bind(summary.sequence_range.map(|v| v.0 as i64))
+        .bind(summary.sequence_range.map(|v| v.1 as i64)).bind(summary.sequence_range.map(|v| v.1 as i64))
+        .bind(summary.time_range.as_ref().map(|v| v.0.as_str())).bind(summary.time_range.as_ref().map(|v| v.0.as_str()))
+        .bind(summary.time_range.as_ref().map(|v| v.1.as_str())).bind(summary.time_range.as_ref().map(|v| v.1.as_str()))
+        .bind(summary.pending_history_gaps as i64).bind(now).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(summary)
+}
+
+async fn mark_report_too_large(store: &mut AgentStore, now: &str) -> Result<(), ReportStoreError> {
+    sqlx::query("UPDATE spool_state SET report_too_large=1, store_error='minimum complete current report exceeds protocol limit', updated_at=? WHERE singleton=1")
+        .bind(now).execute(store.connection()).await?;
+    Ok(())
+}
+
+/// This is the smallest runtime path used by the Agent CLI before a
 /// delivery sender is introduced: configuration is loaded and validated as a
 /// whole, the report is revalidated, and the exact bytes are spooled in one
 /// SQLite transaction.

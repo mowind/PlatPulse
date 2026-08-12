@@ -31,6 +31,36 @@ use crate::block::{NodeSubscriptions, load_block_summaries};
 use crate::config::AgentConfig;
 use crate::database::{AgentDatabaseConfig, AgentStore};
 use crate::reporting::ReportStoreError;
+pub const MAX_SPOOL_BYTES: u64 = 2 * 1024 * 1024;
+pub const MAX_SPOOL_AGE_SECONDS: u64 = 24 * 60 * 60;
+pub const PREFLUSH_SPOOL_BYTES: u64 = 1536 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpoolPolicy {
+    pub max_bytes: u64,
+    pub max_age_seconds: u64,
+    pub preflush_bytes: u64,
+}
+
+impl Default for SpoolPolicy {
+    fn default() -> Self {
+        Self {
+            max_bytes: MAX_SPOOL_BYTES,
+            max_age_seconds: MAX_SPOOL_AGE_SECONDS,
+            preflush_bytes: PREFLUSH_SPOOL_BYTES,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SpoolCleanupSummary {
+    pub dropped_reports: u64,
+    pub dropped_samples: u64,
+    pub sequence_range: Option<(u64, u64)>,
+    pub time_range: Option<(String, String)>,
+    pub height_range: Option<(u64, u64)>,
+    pub pending_history_gaps: u64,
+}
 
 /// Result of probing one bounded RPC component. `Unsupported` means the
 /// capability was absent on this running Node; `Error` means the call failed.
@@ -284,6 +314,15 @@ pub fn collect_host(
                 in_flight: None,
                 last_delivery_error: None,
                 last_delivery_at: None,
+                capacity_bytes: Some(MAX_SPOOL_BYTES),
+                max_age_seconds: Some(MAX_SPOOL_AGE_SECONDS),
+                dropped_sequence_range: None,
+                dropped_time_range: None,
+                dropped_height_range: None,
+                pending_history_gaps: Some(0),
+                report_too_large: Some(false),
+                store_fatal: Some(false),
+                store_error: None,
             },
             at,
         ),
@@ -699,17 +738,70 @@ async fn current_spool_diagnostics(
                 })
         })
         .unwrap_or(0);
+    let state = sqlx::query_as::<_, (i64, i64, i64, Option<i64>, Option<i64>, Option<String>, Option<String>, Option<i64>, Option<i64>, i64, Option<String>, i64, i64, i64, i64, String)>(
+        "SELECT max_bytes, max_age_seconds, dropped_reports, dropped_sequence_from, dropped_sequence_to, dropped_time_from, dropped_time_to, dropped_height_from, dropped_height_to, pending_history_gaps, store_error, report_too_large, store_fatal, dropped_samples, preflush_bytes, updated_at FROM spool_state WHERE singleton=1",
+    ).fetch_optional(store.connection()).await?;
+    let (
+        capacity_bytes,
+        max_age_seconds,
+        dropped_reports,
+        dropped_sequence_from,
+        dropped_sequence_to,
+        dropped_time_from,
+        dropped_time_to,
+        dropped_height_from,
+        dropped_height_to,
+        pending_history_gaps,
+        store_error,
+        report_too_large,
+        store_fatal,
+        dropped_samples,
+        _,
+        _,
+    ) = state.unwrap_or((
+        MAX_SPOOL_BYTES as i64,
+        MAX_SPOOL_AGE_SECONDS as i64,
+        0,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        0,
+        None,
+        0,
+        0,
+        0,
+        PREFLUSH_SPOOL_BYTES as i64,
+        String::new(),
+    ));
     Ok(SpoolDiagnostics {
         queued_bytes: row.1.max(0) as u64,
         queued_reports: row.0.max(0) as u64,
         oldest_queued_age_ms,
-        dropped_reports: 0,
-        dropped_samples: 0,
+        dropped_reports: dropped_reports.max(0) as u64,
+        dropped_samples: dropped_samples.max(0) as u64,
         in_flight: Some(row.2 != 0),
         last_delivery_error: failure.as_ref().and_then(|value| value.0.clone()),
         last_delivery_at: failure
             .and_then(|value| value.1)
             .and_then(|value| value.parse().ok()),
+        capacity_bytes: Some(capacity_bytes.max(0) as u64),
+        max_age_seconds: Some(max_age_seconds.max(0) as u64),
+        dropped_sequence_range: dropped_sequence_from
+            .zip(dropped_sequence_to)
+            .map(|(from, to)| (from.max(0) as u64, to.max(0) as u64)),
+        dropped_time_range: dropped_time_from
+            .zip(dropped_time_to)
+            .and_then(|(from, to)| Some((from.parse().ok()?, to.parse().ok()?))),
+        dropped_height_range: dropped_height_from
+            .zip(dropped_height_to)
+            .map(|(from, to)| (from.max(0) as u64, to.max(0) as u64)),
+        pending_history_gaps: Some(pending_history_gaps.max(0) as u64),
+        report_too_large: Some(report_too_large != 0),
+        store_fatal: Some(store_fatal != 0),
+        store_error,
     })
 }
 
