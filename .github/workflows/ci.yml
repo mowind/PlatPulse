@@ -35,6 +35,12 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+      - name: OpenAPI spec freshness
+        run: |
+          cargo run -p platpulse-server --quiet -- --print-openapi > docs/openapi/openapi.json
+          test -z "$(git status --porcelain -- docs/openapi/openapi.json)" \
+            || { echo 'OpenAPI spec is not fresh'; git status --porcelain -- docs/openapi/openapi.json; exit 1; }
+
   web:
     name: WebUI
     runs-on: ubuntu-latest
@@ -64,3 +70,33 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Generated API client freshness
+        run: |
+          npm run generate:api
+          test -z "$(git status --porcelain -- src/api/generated)" \
+            || { echo 'Generated API client is not fresh'; git status --porcelain -- src/api/generated; exit 1; }
+
+  web-e2e:
+    name: WebUI e2e (fixed viewports)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: platpulse-web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: platpulse-web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright projects
+        run: npm run e2e

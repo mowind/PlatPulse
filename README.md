@@ -108,6 +108,7 @@ The Phase 0 baseline ships with quality gates for both halves of the workspace:
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --workspace
+cargo deny check && cargo audit
 
 # Web (platpulse-web)
 npm install
@@ -115,11 +116,22 @@ npm run lint
 npm run typecheck
 npm test
 npm run build
+npm run e2e  # Playwright: phone-360-touch, phone-390-touch, tablet-768-touch, desktop-1280
 ```
 
-CI (`.github/workflows/ci.yml`) runs the same gates on every push to `main` and on every pull request. Later phases extend it with `cargo deny`/`cargo audit`, OpenAPI regeneration checks, and Playwright projects once the corresponding tickets land.
+Generated API artifacts are committed and CI verifies they are fresh:
 
-The three Rust crates keep thin binaries (`src/main.rs`) and testable libraries. The Agent and Server now include only the SQLx SQLite startup/migration dependencies required by their storage boundary; the remaining framework stack arrives with the tickets that first need it.
+```bash
+# Full OpenAPI 3 spec (written to docs/openapi/openapi.json)
+cargo run -p platpulse-server -- --print-openapi
+
+# Browser TypeScript client (drops agent operations; written to src/api/generated/)
+npm run generate:api
+```
+
+CI (`.github/workflows/ci.yml`) runs the same gates on every push to `main` and on every pull request, plus regeneration checks for both artifacts and the Playwright viewport matrix. Later phases extend it with `cargo deny`/`cargo audit`.
+
+The three Rust crates keep thin binaries (`src/main.rs`) and testable libraries. The Agent includes only the SQLx SQLite startup/migration dependencies required by its storage boundary; the Server additionally carries the Axum/Tower HTTP stack, utoipa OpenAPI generation, and Web asset serving needed by Phase 0 routes. The remaining framework stack arrives with the tickets that first need it.
 
 ## Documentation
 

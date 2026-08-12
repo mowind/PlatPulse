@@ -1,0 +1,143 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "platpulse-server",
+    "description": "PlatPulse central ingestion, projection, and Web asset server",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/health/live": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "live",
+        "responses": {
+          "200": {
+            "description": "Event loop is responding",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "ready",
+        "responses": {
+          "200": {
+            "description": "Server is ready to serve",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadyResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is not ready",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadyResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "LiveResponse": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "ReadyComponent": {
+        "type": "object",
+        "required": [
+          "name",
+          "status"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/ReadyState"
+          }
+        }
+      },
+      "ReadyResponse": {
+        "type": "object",
+        "required": [
+          "status",
+          "components"
+        ],
+        "properties": {
+          "components": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReadyComponent"
+            }
+          },
+          "status": {
+            "$ref": "#/components/schemas/ReadyState"
+          }
+        }
+      },
+      "ReadyState": {
+        "type": "string",
+        "enum": [
+          "ready",
+          "not_ready"
+        ]
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "system",
+      "description": "Operational health endpoints"
+    },
+    {
+      "name": "public",
+      "description": "Home Public Projection routes and DTOs"
+    },
+    {
+      "name": "admin",
+      "description": "Owner administration routes and DTOs"
+    },
+    {
+      "name": "agent",
+      "description": "Agent enrollment, recovery, and report ingestion; never generated into the browser client"
+    }
+  ]
+}
