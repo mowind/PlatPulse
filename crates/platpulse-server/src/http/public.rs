@@ -8,11 +8,16 @@
 //! guard itself lives in `super` and is attached in `build_app`.
 
 use axum::extract::{Extension, Path, Request, State};
-use axum::http::StatusCode;
 use axum::http::header::{self, HeaderValue};
+use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::Next;
+use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use tokio_stream::Stream;
+
+use crate::http::realtime::{keepalive_interval, parse_last_event_id};
+
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -25,6 +30,18 @@ use crate::http::{
     AppState, AuthenticatedSession, ClientIp, ROUTE_GROUP_HEADER, RequestId, api_not_found,
 };
 
+async fn public_events(
+    State(state): State<AppState>,
+    Extension(_session): Extension<AuthenticatedSession>,
+    headers: HeaderMap,
+) -> Sse<impl Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>> {
+    let cursor = parse_last_event_id(headers.get("last-event-id").and_then(|v| v.to_str().ok()));
+    Sse::new(state.public_realtime().stream(cursor)).keep_alive(
+        KeepAlive::new()
+            .interval(keepalive_interval())
+            .text("keepalive"),
+    )
+}
 async fn group_middleware(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
     response
@@ -619,6 +636,7 @@ pub fn router() -> Router<AppState> {
         .route("/networks", get(public_networks))
         .route("/networks/{network_key}", get(public_network))
         .route("/nodes/{node_id}", get(public_node_detail))
+        .route("/events", get(public_events))
         .fallback(api_not_found)
         .layer(axum::middleware::from_fn(group_middleware))
 }

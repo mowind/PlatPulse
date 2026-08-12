@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react'
 import { publicNetwork, publicNetworks, publicNodeDetail, type PublicNetwork, type PublicNode } from './generated'
 
 export async function fetchNetworks(): Promise<PublicNetwork[]> {
@@ -16,4 +17,22 @@ export async function fetchNode(nodeId: string): Promise<PublicNode> {
   const { data, error } = await publicNodeDetail({ path: { node_id: nodeId } })
   if (error || !data) throw new Error(error?.error?.message ?? 'Unable to load Node')
   return data
+}
+
+export type RealtimeStatus = 'connecting' | 'connected' | 'disconnected'
+
+export function usePublicRealtime(onInvalidate: () => void): RealtimeStatus {
+  const [status, setStatus] = useState<RealtimeStatus>('connecting')
+  const callback = useRef(onInvalidate)
+  callback.current = onInvalidate
+  useEffect(() => {
+    if (typeof EventSource === 'undefined') return
+    const events = new EventSource('/api/public/v1/events')
+    const invalidate = () => callback.current()
+    events.onopen = () => setStatus('connected')
+    events.onerror = () => setStatus('disconnected')
+    events.addEventListener('invalidation', invalidate)
+    return () => { events.removeEventListener('invalidation', invalidate); events.close() }
+  }, [])
+  return status
 }

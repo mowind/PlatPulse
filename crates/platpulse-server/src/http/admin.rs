@@ -1,12 +1,15 @@
 //! Owner-only Agent/Node current observation diagnostics.
 use super::{AppState, ROUTE_GROUP_HEADER, api_not_found};
+use crate::http::realtime;
 use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
+use tokio_stream::Stream;
 use utoipa::ToSchema;
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -33,6 +36,20 @@ fn mutation_error(
         Json(crate::http::ApiErrorBody::new(code, message, request_id)),
     )
         .into_response()
+}
+
+async fn admin_events(
+    State(state): State<AppState>,
+    Extension(_session): Extension<super::AuthenticatedSession>,
+    headers: HeaderMap,
+) -> Sse<impl Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>> {
+    let cursor =
+        realtime::parse_last_event_id(headers.get("last-event-id").and_then(|v| v.to_str().ok()));
+    Sse::new(state.admin_realtime().stream(cursor)).keep_alive(
+        KeepAlive::new()
+            .interval(realtime::keepalive_interval())
+            .text("keepalive"),
+    )
 }
 
 /// Owner-only visibility mutation. All browser mutation trust-boundary
@@ -127,9 +144,10 @@ pub(crate) async fn set_visibility(
             "resource not found",
         );
     };
+    let changed_at = crate::auth::format_rfc3339(crate::auth::now_utc());
     if sqlx::query("UPDATE nodes SET visibility = ?, updated_at = ? WHERE node_id = ?")
         .bind(&body.visibility)
-        .bind(crate::auth::format_rfc3339(crate::auth::now_utc()))
+        .bind(&changed_at)
         .bind(&node_id)
         .execute(&mut *tx)
         .await
@@ -163,6 +181,21 @@ pub(crate) async fn set_visibility(
         );
     }
     let _ = previous;
+    let revision = changed_at.bytes().fold(0_u64, |acc, byte| {
+        acc.wrapping_mul(31).wrapping_add(byte as u64)
+    });
+    if body.visibility == "public" {
+        state
+            .public_realtime()
+            .publish("node", Some(node_id.clone()), revision);
+    } else {
+        state
+            .public_realtime()
+            .publish_reset("collection", revision);
+    }
+    state
+        .admin_realtime()
+        .publish("node", Some(node_id.clone()), revision);
     Json(VisibilityResponse {
         node_id,
         visibility: body.visibility,
@@ -530,6 +563,7 @@ async fn diagnostics(
 
 pub fn router() -> Router<AppState> {
     Router::<AppState>::new()
+        .route("/events", get(admin_events))
         .route("/agents", get(diagnostics))
         .route("/nodes/{node_id}/visibility", put(set_visibility))
         .fallback(api_not_found)

@@ -14,6 +14,7 @@ pub(crate) mod admin;
 pub(crate) mod agent;
 pub(crate) mod health;
 pub(crate) mod public;
+pub(crate) mod realtime;
 pub(crate) mod report_ingestion;
 
 use std::path::PathBuf;
@@ -40,6 +41,7 @@ use crate::database::ServerDatabase;
 use crate::enrollment::{
     ENROLL_MAX_ATTEMPTS, ENROLL_RATE_LIMIT_WINDOW, authenticate_agent_credential,
 };
+use crate::http::realtime::RealtimeHub;
 
 /// Response header every route group middleware sets so the group namespace
 /// is observable on the wire.
@@ -123,6 +125,8 @@ pub struct AppState {
     web_assets: Option<PathBuf>,
     web_index: Option<Bytes>,
     web_assets_ready: bool,
+    pub(crate) public_realtime: RealtimeHub,
+    pub(crate) admin_realtime: RealtimeHub,
 }
 
 impl AppState {
@@ -155,7 +159,17 @@ impl AppState {
             web_assets,
             web_index,
             web_assets_ready,
+            public_realtime: RealtimeHub::default(),
+            admin_realtime: RealtimeHub::default(),
         }
+    }
+
+    pub(crate) fn public_realtime(&self) -> RealtimeHub {
+        self.public_realtime.clone()
+    }
+
+    pub(crate) fn admin_realtime(&self) -> RealtimeHub {
+        self.admin_realtime.clone()
     }
 
     pub(crate) fn db(&self) -> &ServerDatabase {
