@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::component::ComponentObservation;
 use crate::hex::FingerprintHex;
-use crate::identity::NodeId;
+use crate::identity::{NodeId, ReportId};
 use crate::network::NetworkIdentity;
 use crate::time::Rfc3339;
 
@@ -196,6 +196,55 @@ pub struct SpoolDiagnostics {
         deserialize_with = "crate::component::strict_optional"
     )]
     pub store_error: Option<String>,
+    /// Last bounded graceful-shutdown lifecycle state.
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub shutdown_state: Option<String>,
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub shutdown_started_at: Option<Rfc3339>,
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub shutdown_deadline_at: Option<Rfc3339>,
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub shutdown_finished_at: Option<Rfc3339>,
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub shutdown_unresolved_range: Option<(u64, u64)>,
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub shutdown_last_error: Option<String>,
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub shutdown_forced: Option<bool>,
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub shutdown_report_id: Option<ReportId>,
 }
 
 /// One Node's combined current observation (process + chain).

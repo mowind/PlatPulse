@@ -22,7 +22,7 @@ use thiserror::Error;
 pub static AGENT_MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 /// The latest migration version compiled into the Agent binary.
-pub const AGENT_SCHEMA_VERSION: i64 = 10;
+pub const AGENT_SCHEMA_VERSION: i64 = 11;
 
 /// Explicit timeout used for SQLite lock contention unless a caller chooses a
 /// tighter or more generous value for a test/deployment.

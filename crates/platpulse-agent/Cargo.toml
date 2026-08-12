@@ -24,7 +24,8 @@ sysinfo = "0.30"
 sqlx = { version = "0.8.6", default-features = false, features = ["sqlite", "runtime-tokio", "macros", "migrate"] }
 thiserror = "2"
 time = { version = "=0.3.36", default-features = false, features = ["std", "parsing", "formatting", "macros"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+tokio-util = { version = "0.7" }
 toml = "0.8"
 uuid = { version = "1", features = ["v4"] }
 

@@ -202,6 +202,36 @@ impl WebSocketBlockTransport {
         }
     }
 
+    pub async fn get_block_by_hash_async(
+        &self,
+        endpoint: &RpcEndpoint,
+        hash: &Hash32,
+        identity: &NetworkIdentity,
+    ) -> Result<ResolvedBlock, TransportError> {
+        let mut socket = self.connect(endpoint).await?;
+        let block: BlockWire = self
+            .request(
+                &mut socket,
+                1,
+                "platon_getBlockByHash",
+                serde_json::json!([hash.to_string(), false]),
+            )
+            .await?;
+        Ok(ResolvedBlock {
+            block_number: quantity(&block.number)?,
+            block_hash: parse_hash(&block.hash)?,
+            parent_hash: parse_hash(&block.parent_hash)?,
+            block_timestamp_ms: quantity(&block.timestamp)?.saturating_mul(1000),
+            transaction_hashes: block
+                .transactions
+                .into_iter()
+                .take(self.max_transactions)
+                .collect(),
+            network_identity: identity.clone(),
+            coinbase: parse_address(block.miner)?,
+        })
+    }
+
     pub async fn get_block_by_number_async(
         &self,
         endpoint: &RpcEndpoint,
@@ -303,6 +333,79 @@ impl WebSocketBlockTransport {
             vec![]
         };
         BackfillOutcome { summaries, gaps }
+    }
+
+    pub async fn collect_node_summaries_into(
+        &self,
+        endpoint: &RpcEndpoint,
+        subscription: &mut HeadSubscription,
+        identity: NetworkIdentity,
+        observed_at: Rfc3339,
+    ) -> Result<Vec<BlockSummary>, TransportError> {
+        let mut socket = self.connect(endpoint).await?;
+        let _: String = self
+            .request(
+                &mut socket,
+                1,
+                "eth_subscribe",
+                serde_json::json!(["newHeads"]),
+            )
+            .await?;
+        for _ in 0..self.max_heads {
+            let message = match timeout(self.receive_timeout, socket.next()).await {
+                Ok(Some(Ok(message))) => message,
+                _ => break,
+            };
+            let Message::Text(text) = message else {
+                continue;
+            };
+            if text.len() > self.max_response_bytes {
+                return Err(TransportError::Failed(
+                    "RPC response exceeded configured size limit".to_owned(),
+                ));
+            }
+            let notification: HeadNotification = match serde_json::from_str(text.as_ref()) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            let wire = notification.params.result;
+            subscription
+                .push(HeadHeader {
+                    block_number: quantity(&wire.number)?,
+                    block_hash: parse_hash(&wire.hash)?,
+                    parent_hash: parse_hash(&wire.parent_hash)?,
+                    block_timestamp_ms: quantity(&wire.timestamp)?.saturating_mul(1000),
+                    coinbase: parse_address(wire.miner)?,
+                })
+                .map_err(|_| TransportError::Failed("head queue full".to_owned()))?;
+        }
+        let mut summaries = Vec::new();
+        while let Some(header) = subscription.front_header().cloned() {
+            let resolved = self
+                .get_block_by_hash_async(endpoint, &header.block_hash, &identity)
+                .await?;
+            if resolved.block_number != header.block_number
+                || resolved.block_hash != header.block_hash
+                || resolved.parent_hash != header.parent_hash
+            {
+                return Err(TransportError::Resolve(ResolveError::IdentityMismatch));
+            }
+            subscription.pop_front();
+            summaries.push(BlockSummary {
+                node_id: subscription.node_id(),
+                network_identity: resolved.network_identity,
+                block_number: resolved.block_number,
+                block_hash: resolved.block_hash,
+                parent_hash: resolved.parent_hash,
+                block_timestamp_ms: resolved.block_timestamp_ms,
+                observed_at,
+                transaction_count: resolved.transaction_hashes.len() as u64,
+                block_interval_ms: None,
+                source: BlockSource::Subscription,
+                attribution: BlockProductionAttribution::unknown_attribution(resolved.coinbase, "seal recovery rule is not verified for this fork; protocol proposer evidence is unavailable"),
+            });
+        }
+        Ok(summaries)
     }
 
     pub async fn collect_node_summaries(
@@ -929,6 +1032,14 @@ impl HeadSubscription {
         self.queue.front().map(|header| header.block_number)
     }
 
+    pub fn front_header(&self) -> Option<&HeadHeader> {
+        self.queue.front()
+    }
+
+    pub fn pop_front(&mut self) -> Option<HeadHeader> {
+        self.queue.pop_front()
+    }
+
     pub fn backfill_range(&self, current_head: u64) -> Option<(u64, u64)> {
         self.front_height()
             .and_then(|first| (first < current_head).then_some((first + 1, current_head)))
@@ -939,6 +1050,12 @@ impl HeadSubscription {
         let last = self.queue.back()?.block_number;
         self.queue.clear();
         Some((first, last))
+    }
+
+    /// Drop all queued headers after intake has been cancelled, preserving the
+    /// inclusive range for durable shutdown-gap reporting.
+    pub fn cancel_intake(&mut self) -> Option<(u64, u64)> {
+        self.drain_unresolved_range()
     }
 
     pub fn is_overflowing(&self) -> bool {

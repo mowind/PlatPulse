@@ -472,6 +472,8 @@
           "agent_id",
           "agent_epoch",
           "boot_status",
+          "shutdown_state",
+          "shutdown_forced",
           "sequence_gap_count",
           "security_event_count",
           "clock_status",
@@ -563,6 +565,72 @@
           "sequence_gap_count": {
             "type": "integer",
             "format": "int64"
+          },
+          "shutdown_deadline_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "shutdown_finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "shutdown_forced": {
+            "type": "boolean"
+          },
+          "shutdown_last_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "shutdown_report_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "shutdown_report_sequence": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "shutdown_started_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "shutdown_state": {
+            "type": "string"
+          },
+          "shutdown_unresolved_range": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": false,
+            "prefixItems": [
+              {
+                "type": "integer",
+                "format": "int64"
+              },
+              {
+                "type": "integer",
+                "format": "int64"
+              }
+            ]
+          },
+          "shutdown_updated_at": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },

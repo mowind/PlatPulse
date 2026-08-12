@@ -202,7 +202,7 @@ fn timestamp() -> Rfc3339 {
     value.parse().expect("UTC timestamp is valid")
 }
 
-fn ok<T>(value: T, at: Rfc3339) -> ComponentObservation<T> {
+pub(crate) fn ok<T>(value: T, at: Rfc3339) -> ComponentObservation<T> {
     ComponentObservation {
         status: ComponentStatus::Ok,
         attempted_at: Some(at),
@@ -328,6 +328,14 @@ pub fn collect_host(
                 report_too_large: Some(false),
                 store_fatal: Some(false),
                 store_error: None,
+                shutdown_state: None,
+                shutdown_started_at: None,
+                shutdown_deadline_at: None,
+                shutdown_finished_at: None,
+                shutdown_unresolved_range: None,
+                shutdown_last_error: None,
+                shutdown_forced: None,
+                shutdown_report_id: None,
             },
             at,
         ),
@@ -741,6 +749,7 @@ pub async fn collect_and_persist_with_blocks<A: RpcAdapter>(
     config: &AgentConfig,
     adapter: &A,
     transport: &crate::block::WebSocketBlockTransport,
+    subscriptions: &mut [crate::block::HeadSubscription],
 ) -> Result<String, CollectionError> {
     let mut store = AgentStore::open(AgentDatabaseConfig::new(&config.state_db)).await?;
     #[allow(clippy::type_complexity)]
@@ -804,15 +813,32 @@ pub async fn collect_and_persist_with_blocks<A: RpcAdapter>(
         .fetch_optional(store.connection())
         .await?;
         let mut reconnect_needed = false;
-        match transport
-            .collect_node_summaries(
-                &node.rpc_endpoint,
-                node.node_id,
-                identity.clone(),
-                report.generated_at,
-            )
-            .await
-        {
+        let subscription = subscriptions
+            .iter_mut()
+            .find(|subscription| subscription.node_id() == node.node_id);
+        let summaries_result = match subscription {
+            Some(subscription) => {
+                transport
+                    .collect_node_summaries_into(
+                        &node.rpc_endpoint,
+                        subscription,
+                        identity.clone(),
+                        report.generated_at,
+                    )
+                    .await
+            }
+            None => {
+                transport
+                    .collect_node_summaries(
+                        &node.rpc_endpoint,
+                        node.node_id,
+                        identity.clone(),
+                        report.generated_at,
+                    )
+                    .await
+            }
+        };
+        match summaries_result {
             Ok(summaries) => {
                 for summary in summaries {
                     crate::block::persist_block_summary(
@@ -923,7 +949,7 @@ pub async fn collect_and_persist_with_blocks<A: RpcAdapter>(
     Ok(digest)
 }
 /// Read bounded local delivery state for the next immutable report.
-async fn current_spool_diagnostics(
+pub(crate) async fn current_spool_diagnostics(
     store: &mut AgentStore,
 ) -> Result<SpoolDiagnostics, sqlx::Error> {
     let row = sqlx::query_as::<_, (i64, i64, i64, Option<String>)>(
@@ -988,6 +1014,20 @@ async fn current_spool_diagnostics(
         PREFLUSH_SPOOL_BYTES as i64,
         String::new(),
     ));
+    let shutdown = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>, Option<String>, Option<i64>, Option<String>)>(
+        "SELECT shutdown_state, shutdown_started_at, shutdown_deadline_at, shutdown_finished_at, shutdown_last_error, shutdown_forced, shutdown_report_id, shutdown_unresolved_from, shutdown_unresolved_to FROM agent_state WHERE singleton=1",
+    ).fetch_optional(store.connection()).await?;
+    let (
+        shutdown_state,
+        shutdown_started_at,
+        shutdown_deadline_at,
+        shutdown_finished_at,
+        shutdown_last_error,
+        shutdown_forced,
+        shutdown_report_id,
+        shutdown_unresolved_from,
+        shutdown_unresolved_to,
+    ) = shutdown.unwrap_or((None, None, None, None, None, None, None, None, None));
     Ok(SpoolDiagnostics {
         queued_bytes: row.1.max(0) as u64,
         queued_reports: row.0.max(0) as u64,
@@ -1014,6 +1054,16 @@ async fn current_spool_diagnostics(
         report_too_large: Some(report_too_large != 0),
         store_fatal: Some(store_fatal != 0),
         store_error,
+        shutdown_state,
+        shutdown_started_at: shutdown_started_at.and_then(|value| value.parse().ok()),
+        shutdown_deadline_at: shutdown_deadline_at.and_then(|value| value.parse().ok()),
+        shutdown_finished_at: shutdown_finished_at.and_then(|value| value.parse().ok()),
+        shutdown_unresolved_range: shutdown_unresolved_from
+            .zip(shutdown_unresolved_to)
+            .map(|(from, to)| (from.max(0) as u64, to.parse::<u64>().unwrap_or(0))),
+        shutdown_last_error,
+        shutdown_forced: Some(shutdown_forced == Some(1)),
+        shutdown_report_id: shutdown_report_id.and_then(|value| value.parse().ok()),
     })
 }
 

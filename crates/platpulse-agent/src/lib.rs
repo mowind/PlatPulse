@@ -18,6 +18,7 @@ pub mod database;
 pub mod enroll;
 pub mod process;
 pub mod reporting;
+pub mod shutdown;
 pub mod time_exchange;
 
 pub use database::{

@@ -21,6 +21,19 @@ export type AgentDiagnostic = {
     previous_boot_id?: string | null;
     security_event_count: number;
     sequence_gap_count: number;
+    shutdown_deadline_at?: string | null;
+    shutdown_finished_at?: string | null;
+    shutdown_forced: boolean;
+    shutdown_last_error?: string | null;
+    shutdown_report_id?: string | null;
+    shutdown_report_sequence?: number | null;
+    shutdown_started_at?: string | null;
+    shutdown_state: string;
+    shutdown_unresolved_range?: [
+        number,
+        number
+    ] | null;
+    shutdown_updated_at?: string | null;
 };
 
 export type ApiError = {

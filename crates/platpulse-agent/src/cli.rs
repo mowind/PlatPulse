@@ -31,6 +31,11 @@ pub enum Command {
     /// Collect one immutable report using independent per-Node WebSocket
     /// subscriptions and hash-only block resolution.
     CollectReport(CollectReportArgs),
+    /// Run the long-lived Agent runtime. Shutdown is cancellation-safe and
+    /// persists a final Closing report instead of exiting after one sample.
+    Run(RunArgs),
+    /// Gracefully shut down after persisting a final immutable Closing report.
+    Shutdown(ShutdownArgs),
     /// Validate and persist one immutable report before delivery.
     PersistReport(PersistReportArgs),
 }
@@ -51,6 +56,24 @@ pub struct ValidateConfigArgs {
 pub struct CollectReportArgs {
     #[arg(long)]
     pub config: PathBuf,
+}
+#[derive(Debug, Args)]
+pub struct RunArgs {
+    #[arg(long)]
+    pub config: PathBuf,
+    #[arg(long, default_value_t = 5000)]
+    pub drain_deadline_ms: u64,
+    #[arg(long, default_value_t = 5000)]
+    pub sender_deadline_ms: u64,
+}
+
+#[derive(Debug, Args)]
+pub struct ShutdownArgs {
+    #[arg(long)]
+    pub config: PathBuf,
+    /// Total sender deadline after the final report is stored.
+    #[arg(long, default_value_t = 5000)]
+    pub deadline_ms: u64,
 }
 #[derive(Debug, Args)]
 pub struct PersistReportArgs {
@@ -95,14 +118,84 @@ pub async fn run_collect_report(args: &CollectReportArgs) -> Result<(), AgentCli
     crate::collector::recover_previous_boot(&config, &FailClosedRpcAdapter)
         .await
         .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    let validated = config
+        .validated_inventory()
+        .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    let mut subscriptions = validated
+        .inventory
+        .nodes
+        .iter()
+        .map(|node| crate::block::HeadSubscription::new(node.node_id, 32))
+        .collect::<Vec<_>>();
     let digest = collect_and_persist_with_blocks(
         &config,
         &FailClosedRpcAdapter,
         &WebSocketBlockTransport::default(),
+        &mut subscriptions,
     )
     .await
     .map_err(|error| AgentCliError::Collection(error.to_string()))?;
     println!("Persisted immutable collected report (sha256 {digest}).");
+    Ok(())
+}
+
+pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
+    let config = AgentConfig::resolve(&args.config)?;
+    crate::collector::recover_previous_boot(&config, &FailClosedRpcAdapter)
+        .await
+        .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    let validated = config
+        .validated_inventory()
+        .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    let mut subscriptions = validated
+        .inventory
+        .nodes
+        .iter()
+        .map(|node| crate::block::HeadSubscription::new(node.node_id, 32))
+        .collect::<Vec<_>>();
+    let runtime = crate::shutdown::AgentRuntime::new();
+    let adapter = FailClosedRpcAdapter;
+    let transport = WebSocketBlockTransport::default();
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                runtime.request_shutdown();
+                break;
+            }
+            result = collect_and_persist_with_blocks(&config, &adapter, &transport, &mut subscriptions) => {
+                result.map_err(|error| AgentCliError::Collection(error.to_string()))?;
+            }
+        }
+    }
+    let outcome = crate::shutdown::graceful_shutdown_with_subscriptions(
+        &config,
+        &adapter,
+        &mut subscriptions,
+        std::time::Duration::from_millis(args.drain_deadline_ms),
+        std::time::Duration::from_millis(args.sender_deadline_ms),
+    )
+    .await
+    .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    println!(
+        "Agent stopped with shutdown state {} (report {}).",
+        outcome.shutdown_state, outcome.report_id
+    );
+    Ok(())
+}
+
+pub async fn run_shutdown(args: &ShutdownArgs) -> Result<(), AgentCliError> {
+    let config = AgentConfig::resolve(&args.config)?;
+    let outcome = crate::shutdown::graceful_shutdown(
+        &config,
+        &FailClosedRpcAdapter,
+        std::time::Duration::from_millis(args.deadline_ms),
+    )
+    .await
+    .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    println!(
+        "Stored final shutdown report {} (sequence {}, state {}).",
+        outcome.report_id, outcome.report_sequence, outcome.shutdown_state
+    );
     Ok(())
 }
 

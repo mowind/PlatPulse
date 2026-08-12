@@ -212,6 +212,16 @@ pub struct AgentDiagnostic {
     pub boot_status: String,
     pub previous_boot_id: Option<String>,
     pub close_report_id: Option<String>,
+    pub shutdown_state: String,
+    pub shutdown_started_at: Option<String>,
+    pub shutdown_deadline_at: Option<String>,
+    pub shutdown_finished_at: Option<String>,
+    pub shutdown_unresolved_range: Option<(i64, i64)>,
+    pub shutdown_last_error: Option<String>,
+    pub shutdown_forced: bool,
+    pub shutdown_report_id: Option<String>,
+    pub shutdown_report_sequence: Option<i64>,
+    pub shutdown_updated_at: Option<String>,
     pub sequence_gap_count: i64,
     pub security_event_count: i64,
     pub clock_status: String,
@@ -502,6 +512,33 @@ async fn consensus_diagnostic(state: &AppState, node_id: &str) -> Option<Consens
     })
 }
 
+#[derive(Debug, sqlx::FromRow)]
+struct AgentAdminRow {
+    agent_id: String,
+    agent_epoch: i64,
+    active_boot_id: Option<String>,
+    active_boot_status: String,
+    previous_boot_id: Option<String>,
+    close_report_id: Option<String>,
+    shutdown_state: String,
+    shutdown_started_at: Option<String>,
+    shutdown_deadline_at: Option<String>,
+    shutdown_finished_at: Option<String>,
+    shutdown_unresolved_from: Option<i64>,
+    shutdown_unresolved_to: Option<i64>,
+    shutdown_last_error: Option<String>,
+    shutdown_forced: i64,
+    shutdown_report_id: Option<String>,
+    shutdown_report_sequence: Option<i64>,
+    shutdown_updated_at: Option<String>,
+    last_report_sequence: Option<i64>,
+    agent_capabilities_json: String,
+    clock_skew_ms: Option<i64>,
+    clock_status: Option<String>,
+    last_received_at: Option<String>,
+    security_event_count: i64,
+}
+
 #[utoipa::path(
     get,
     path = "/api/admin/v1/agents",
@@ -512,28 +549,40 @@ async fn diagnostics(
     State(state): State<AppState>,
     Extension(_session): Extension<super::AuthenticatedSession>,
 ) -> impl IntoResponse {
-    let agents = sqlx::query_as::<_, (String, i64, Option<String>, String, Option<String>, Option<String>, Option<i64>, String, Option<i64>, Option<String>, Option<String>, i64)>(
-        "SELECT agent_id, agent_epoch, active_boot_id, active_boot_status, previous_boot_id, close_report_id, last_report_sequence, agent_capabilities_json, clock_skew_ms, clock_status, last_received_at, security_event_count FROM agents ORDER BY agent_id",
+    let agents = sqlx::query_as::<_, AgentAdminRow>(
+
+        "SELECT agent_id, agent_epoch, active_boot_id, active_boot_status, previous_boot_id, close_report_id, shutdown_state, shutdown_started_at, shutdown_deadline_at, shutdown_finished_at, shutdown_unresolved_from, shutdown_unresolved_to, shutdown_last_error, shutdown_forced, shutdown_report_id, shutdown_report_sequence, shutdown_updated_at, last_report_sequence, agent_capabilities_json, clock_skew_ms, clock_status, last_received_at, security_event_count FROM agents ORDER BY agent_id",
     )
     .fetch_all(state.db().pool())
     .await
     .unwrap_or_default();
     let mut result = Vec::with_capacity(agents.len());
-    for (
-        agent_id,
-        agent_epoch,
-        active_boot_id,
-        boot_status,
-        previous_boot_id,
-        close_report_id,
-        last_report_sequence,
-        capabilities_json,
-        clock_skew_ms,
-        clock_status,
-        last_received_at,
-        security_event_count,
-    ) in agents
-    {
+    for row in agents {
+        let AgentAdminRow {
+            agent_id,
+            agent_epoch,
+            active_boot_id,
+            active_boot_status: boot_status,
+            previous_boot_id,
+            close_report_id,
+            shutdown_state,
+            shutdown_started_at,
+            shutdown_deadline_at,
+            shutdown_finished_at,
+            shutdown_unresolved_from,
+            shutdown_unresolved_to,
+            shutdown_last_error,
+            shutdown_forced,
+            shutdown_report_id,
+            shutdown_report_sequence,
+            shutdown_updated_at,
+            last_report_sequence,
+            agent_capabilities_json: capabilities_json,
+            clock_skew_ms,
+            clock_status,
+            last_received_at,
+            security_event_count,
+        } = row;
         let capabilities = serde_json::from_str(&capabilities_json).unwrap_or_default();
         let liveness = last_received_at
             .as_deref()
@@ -689,6 +738,16 @@ async fn diagnostics(
             boot_status,
             previous_boot_id,
             close_report_id,
+            shutdown_state,
+            shutdown_started_at,
+            shutdown_deadline_at,
+            shutdown_finished_at,
+            shutdown_unresolved_range: shutdown_unresolved_from.zip(shutdown_unresolved_to),
+            shutdown_last_error,
+            shutdown_forced: shutdown_forced != 0,
+            shutdown_report_id,
+            shutdown_report_sequence,
+            shutdown_updated_at,
             sequence_gap_count,
             security_event_count,
             host,

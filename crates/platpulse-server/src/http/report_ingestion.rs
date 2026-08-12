@@ -1565,13 +1565,36 @@ async fn handler(
             .map(ToString::to_string)
             .as_deref()
             == agent.active_boot_id.as_deref();
-    let updated = sqlx::query("UPDATE agents SET active_boot_id=?, active_boot_status=?, previous_boot_id=?, close_report_id=CASE WHEN ?='closed' THEN ? ELSE close_report_id END, last_report_sequence=?, last_inventory_revision=?, inventory_sha256=?, last_received_at=?, clock_skew_ms=?, clock_status=?, agent_capabilities_json=?, updated_at=? WHERE agent_id=?")
+    let shutdown_diag = parsed.host.spool.latest.as_ref();
+    let shutdown_state = shutdown_diag
+        .and_then(|v| v.shutdown_state.as_deref())
+        .unwrap_or(match parsed.boot_transition {
+            platpulse_core::BootTransition::Closing => "final_stored",
+            _ => "running",
+        });
+    let updated = sqlx::query("UPDATE agents SET active_boot_id=?, active_boot_status=?, previous_boot_id=?, close_report_id=CASE WHEN ?='closed' THEN ? ELSE close_report_id END, last_report_sequence=?, last_inventory_revision=?, inventory_sha256=?, last_received_at=?, clock_skew_ms=?, clock_status=?, agent_capabilities_json=?, shutdown_state=?, shutdown_started_at=?, shutdown_deadline_at=?, shutdown_finished_at=?, shutdown_unresolved_from=?, shutdown_unresolved_to=?, shutdown_last_error=?, shutdown_forced=?, shutdown_report_id=CASE WHEN ?='closed' THEN ? ELSE shutdown_report_id END, shutdown_report_sequence=?, shutdown_updated_at=?, updated_at=? WHERE agent_id=?")
         .bind(parsed.boot_id.to_string()).bind(lifecycle_status)
         .bind(parsed.previous_boot_id.map(|v| v.to_string()))
         .bind(lifecycle_status).bind(parsed.report_id.to_string())
         .bind(parsed.report_sequence as i64).bind(parsed.inventory.revision as i64)
         .bind(&inventory_hash).bind(&now_text).bind(clock_skew_ms).bind(clock_status)
-        .bind(capabilities).bind(&now_text).bind(&auth.agent_id).execute(&mut *tx).await;
+        .bind(capabilities)
+        .bind(shutdown_state)
+        .bind(shutdown_diag.and_then(|v| v.shutdown_started_at.as_ref()).map(ToString::to_string))
+        .bind(shutdown_diag.and_then(|v| v.shutdown_deadline_at.as_ref()).map(ToString::to_string))
+        .bind(shutdown_diag.and_then(|v| v.shutdown_finished_at.as_ref()).map(ToString::to_string))
+        .bind(shutdown_diag.and_then(|v| v.shutdown_unresolved_range.map(|range| range.0 as i64)))
+        .bind(shutdown_diag.and_then(|v| v.shutdown_unresolved_range.map(|range| range.1 as i64)))
+        .bind(shutdown_diag.and_then(|v| v.shutdown_last_error.as_deref()))
+        .bind(shutdown_diag.and_then(|v| v.shutdown_forced).unwrap_or(false) as i64)
+        .bind(lifecycle_status)
+        .bind(parsed.report_id.to_string())
+        .bind(parsed.report_sequence as i64)
+        .bind(&now_text)
+        .bind(&now_text)
+        .bind(&auth.agent_id)
+        .execute(&mut *tx)
+        .await;
     if should_activate_new_boot {
         sqlx::query("UPDATE agents SET active_boot_status='active', previous_boot_id=?, close_applied_at=? WHERE agent_id=?")
             .bind(parsed.previous_boot_id.map(|v| v.to_string()))
