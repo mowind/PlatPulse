@@ -10,6 +10,72 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/agent/v1/enroll": {
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Exchange a single-use Enrollment Token for an Agent identity and\ncredential. The token arrives in the `Authorization: Bearer` header —\nnever in a URL or body — and the same token can never enroll twice.",
+        "operationId": "enroll_handler",
+        "responses": {
+          "200": {
+            "description": "Enrolled; the response carries the one-time Agent Credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnrollResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired enrollment token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The enrollment token was already consumed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many enrollment attempts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server setup is incomplete or the database is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "agent_bearer": []
+          }
+        ]
+      }
+    },
     "/api/public/v1/login": {
       "post": {
         "tags": [
@@ -237,6 +303,37 @@
           }
         }
       },
+      "EnrollResponse": {
+        "type": "object",
+        "description": "Success payload of one Agent Enrollment (Agent wire: snake_case,\ndesign §9.1). `credential` is the full `pp_agent_…` token and is\ndelivered to the enrolling Agent exactly once; the Server stores only\nits pepper-keyed digest.",
+        "required": [
+          "agent_id",
+          "agent_epoch",
+          "credential",
+          "protocol_version"
+        ],
+        "properties": {
+          "agent_epoch": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Agent Epoch advanced by this Enrollment (1 for a new Agent)."
+          },
+          "agent_id": {
+            "type": "string",
+            "description": "Stable Agent identity issued by the Server (UUID)."
+          },
+          "credential": {
+            "type": "string",
+            "description": "Full Agent Credential token; single delivery."
+          },
+          "protocol_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Agent→Server protocol major the Server speaks.",
+            "minimum": 0
+          }
+        }
+      },
       "LiveResponse": {
         "type": "object",
         "required": [
@@ -355,6 +452,14 @@
             "$ref": "#/components/schemas/SessionProjection"
           }
         }
+      }
+    },
+    "securitySchemes": {
+      "agent_bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "Agent Credential (pp_agent_…) or one-time Enrollment Token (pp_enroll_…)",
+        "description": "Agent API Bearer token. Enrollment exchanges a one-time pp_enroll_… token for an Agent identity; all other Agent routes require the issued pp_agent_… credential."
       }
     }
   },

@@ -14,6 +14,11 @@ use crate::auth::{
 };
 use crate::config::{CliOverrides, ServerConfig};
 use crate::database::{ServerDatabase, ServerDatabaseConfig, initialize};
+use crate::enrollment::{
+    ENROLLMENT_TOKEN_MAX_LIFETIME, ENROLLMENT_TOKEN_MIN_LIFETIME, EnrollmentError,
+    create_enrollment_token,
+};
+use crate::network::{NetworkError, create_network};
 use crate::secrets::load_pepper_file;
 
 #[derive(Debug, Parser)]
@@ -39,6 +44,12 @@ pub enum Command {
     /// Viewer account administration (design §12.1).
     #[command(subcommand)]
     Viewer(ViewerCommand),
+    /// Network Registry administration (design §7.1).
+    #[command(subcommand)]
+    Network(NetworkCommand),
+    /// Agent administration (design §18.2).
+    #[command(subcommand)]
+    Agent(AgentCommand),
     /// Run the HTTP Server.
     Serve(ServeArgs),
 }
@@ -82,6 +93,54 @@ pub struct ViewerCreateArgs {
     /// line: it is read from the TTY (hidden) or from stdin.
     #[arg(long)]
     pub username: String,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum NetworkCommand {
+    /// Register a Network with its complete identity tuple (design §7.1).
+    Create(NetworkCreateArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct NetworkCreateArgs {
+    /// `server.toml` (design §18.1).
+    #[arg(long)]
+    pub config: PathBuf,
+    /// Stable Registry key, e.g. `platon-mainnet`.
+    #[arg(long)]
+    pub key: String,
+    /// Human-readable display name, e.g. `PlatON Mainnet`.
+    #[arg(long)]
+    pub display_name: String,
+    /// Genesis block hash as `0x` + 64 lowercase hex nibbles.
+    #[arg(long)]
+    pub genesis_hash: String,
+    /// Chain ID (non-negative, registry-bounded).
+    #[arg(long)]
+    pub chain_id: u64,
+    /// P2P network ID (non-negative, registry-bounded).
+    #[arg(long)]
+    pub p2p_network_id: u64,
+    /// Bech32 address HRP, e.g. `lat`.
+    #[arg(long)]
+    pub address_hrp: String,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AgentCommand {
+    /// Create a short-lived single-use Enrollment Token for a new Agent.
+    CreateEnrollmentToken(EnrollmentTokenCreateArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct EnrollmentTokenCreateArgs {
+    /// `server.toml` (design §18.1).
+    #[arg(long)]
+    pub config: PathBuf,
+    /// Token lifetime in hours (1..=168; default 24). Short-lived by
+    /// design (§4.5): the token is single-use and must not sit around.
+    #[arg(long)]
+    pub expires_in: Option<u64>,
 }
 
 #[derive(Debug, Args, Default)]
@@ -195,6 +254,61 @@ async fn open_database_with_new_password(
     let password_hash = hash_password(password.as_bytes()).map_err(HumanCreateError::Hash)?;
     let database = initialize(ServerDatabaseConfig::new(&config.db_path)).await?;
     Ok((database, password_hash))
+}
+
+/// Register a Network from the local CLI (design §7.1): the command
+/// requires the complete identity tuple and writes the row plus its
+/// minimal audit event in one transaction. The Server never derives
+/// Registry entries from Agent input.
+pub async fn run_network_create(
+    config: &ServerConfig,
+    args: &NetworkCreateArgs,
+) -> Result<(), NetworkError> {
+    crate::init::restrict_umask();
+    let database = initialize(ServerDatabaseConfig::new(&config.db_path)).await?;
+    let result = create_network(
+        &database,
+        &args.key,
+        &args.display_name,
+        &args.genesis_hash,
+        args.chain_id,
+        args.p2p_network_id,
+        &args.address_hrp,
+    )
+    .await;
+    database.close().await;
+    let record = result?;
+    println!(
+        "Registered network '{}' ({}).",
+        record.network_key, record.display_name
+    );
+    Ok(())
+}
+
+/// Create a single-use Enrollment Token from the local CLI (design §4.5,
+/// §12.5). The plaintext token is printed exactly once and never stored;
+/// the CLI output is the operator's only copy.
+pub async fn run_create_enrollment_token(
+    config: &ServerConfig,
+    args: &EnrollmentTokenCreateArgs,
+) -> Result<(), EnrollmentError> {
+    crate::init::restrict_umask();
+    let lifetime_hours = args.expires_in.unwrap_or(24);
+    let lifetime = std::time::Duration::from_secs(lifetime_hours * 3600);
+    if lifetime < ENROLLMENT_TOKEN_MIN_LIFETIME || lifetime > ENROLLMENT_TOKEN_MAX_LIFETIME {
+        return Err(EnrollmentError::InvalidLifetime(
+            "enrollment token lifetime must be 1..=168 hours",
+        ));
+    }
+
+    let pepper = load_pepper_file(&config.pepper_file)?;
+    let database = initialize(ServerDatabaseConfig::new(&config.db_path)).await?;
+    let result = create_enrollment_token(&database, &pepper, lifetime).await;
+    database.close().await;
+    let (token_id, full_token) = result?;
+    println!("Enrollment token {token_id} (single use, expires in {lifetime_hours}h):");
+    println!("{full_token}");
+    Ok(())
 }
 
 /// Run the HTTP Server: validate the listen address, load the pepper and

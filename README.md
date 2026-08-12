@@ -138,6 +138,48 @@ Until an Owner exists, `/health/live` succeeds while `/health/ready` reports
 `setup_required`, and no Agent Enrollment is allowed. Home and Admin are
 private by default: unauthenticated visitors are guided to the login page.
 
+## Network registration and Agent Enrollment
+
+Networks are registered by the Owner/operator on the Server — never
+auto-created from Agent input. The command requires the complete identity
+tuple and writes the Registry row plus an audit event in one transaction:
+
+```bash
+platpulse-server network create \
+  --config /etc/platpulse/server.toml \
+  --key platon-mainnet \
+  --display-name "PlatON Mainnet" \
+  --genesis-hash 0x0000000000000000000000000000000000000000000000000000000000000001 \
+  --chain-id 210425 \
+  --p2p-network-id 1 \
+  --address-hrp lat
+```
+
+Enrollment is one-time per Agent: the operator creates a short-lived,
+single-use Enrollment Token (printed exactly once), and the new Agent
+presents it over the Agent API in exchange for its stable Agent ID, Agent
+Epoch, and a 256-bit Agent Credential. The Server stores only pepper-keyed
+digests; the Agent stores the credential in its own 0600 file, separate
+from `agent.toml`:
+
+```bash
+# On the Server host — prints a single-use pp_enroll_… token
+platpulse-server agent create-enrollment-token --config /etc/platpulse/server.toml
+
+# On the Agent host — paste the token at the hidden prompt
+cat > /var/lib/platpulse-agent/agent.toml <<'EOF'
+server_url = "https://monitor.example.com"
+credential_file = "/var/lib/platpulse-agent/credential"
+state_db = "/var/lib/platpulse-agent/agent.db"
+EOF
+platpulse-agent enroll --config /var/lib/platpulse-agent/agent.toml
+```
+
+The Enrollment Token cannot submit Agent Reports or reach human-facing
+APIs; the Agent Credential can only reach Agent routes; Human Sessions can
+neither enroll nor report. A repeated, expired, or already-consumed token
+is rejected and never creates a second Agent identity.
+
 Generated API artifacts are committed and CI verifies they are fresh:
 
 ```bash
@@ -150,7 +192,7 @@ npm run generate:api
 
 CI (`.github/workflows/ci.yml`) runs the same gates on every push to `main` and on every pull request, plus regeneration checks for both artifacts and the Playwright viewport matrix. Later phases extend it with `cargo deny`/`cargo audit`.
 
-The three Rust crates keep thin binaries (`src/main.rs`) and testable libraries. The Agent includes only the SQLx SQLite startup/migration dependencies required by its storage boundary; the Server additionally carries the Axum/Tower HTTP stack, utoipa OpenAPI generation, and Web asset serving needed by Phase 0 routes. The remaining framework stack arrives with the tickets that first need it.
+The three Rust crates keep thin binaries (`src/main.rs`) and testable libraries. The Server carries the Axum/Tower HTTP stack, utoipa OpenAPI generation, and Web asset serving; the Agent carries its SQLx SQLite storage boundary plus the enrollment HTTP client (Reqwest/Rustls). The remaining collector framework arrives with the tickets that first need it.
 
 ## Documentation
 

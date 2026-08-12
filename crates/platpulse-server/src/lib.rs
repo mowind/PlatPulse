@@ -13,8 +13,10 @@ pub mod auth;
 pub mod cli;
 pub mod config;
 pub mod database;
+pub mod enrollment;
 pub mod http;
 pub mod init;
+pub mod network;
 pub mod openapi;
 pub mod secrets;
 

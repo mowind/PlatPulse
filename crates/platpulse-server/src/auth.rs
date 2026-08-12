@@ -278,7 +278,8 @@ pub fn format_rfc3339(datetime: OffsetDateTime) -> String {
         .expect("Rfc3339 formatting is infallible for valid datetimes")
 }
 
-fn parse_rfc3339(value: &str) -> Option<OffsetDateTime> {
+/// Parse a canonical RFC 3339 UTC timestamp.
+pub(crate) fn parse_rfc3339(value: &str) -> Option<OffsetDateTime> {
     OffsetDateTime::parse(value, &Rfc3339).ok()
 }
 

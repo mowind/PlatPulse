@@ -117,6 +117,12 @@ pub enum AgentDatabaseError {
     IntegrityQuery(#[source] sqlx::Error),
     #[error("Agent SQLite integrity check failed: {0}")]
     IntegrityFailed(String),
+    #[error("failed to secure Agent Store file {path}: {source}")]
+    SecureStore {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 /// An initialized Agent Store with exactly one writer connection.
@@ -132,6 +138,11 @@ impl AgentStore {
     /// Open the Agent database, migrate it, validate required pragmas, and
     /// run integrity checks before returning a store to the collector.
     pub async fn open(config: AgentDatabaseConfig) -> Result<Self, AgentDatabaseError> {
+        // Design §8.2: the credential file AND the state DB must only allow
+        // the Agent OS user to read. Umask 077 keeps SQLite WAL/SHM
+        // siblings private; the explicit 0600 chmod below pins the file
+        // itself even when a permissive umask was inherited.
+        restrict_umask();
         let options = sqlite_options(&config);
         let mut connection = SqliteConnection::connect_with(&options)
             .await
@@ -156,6 +167,7 @@ impl AgentStore {
         }
 
         verify_integrity(&mut connection).await?;
+        secure_store_file(config.path())?;
         Ok(Self { connection })
     }
 
@@ -189,6 +201,33 @@ impl AgentStore {
 pub async fn initialize(config: AgentDatabaseConfig) -> Result<AgentStore, AgentDatabaseError> {
     AgentStore::open(config).await
 }
+
+/// Restrict the Agent Store file to the Agent OS user (0600) after open.
+#[cfg(unix)]
+pub(crate) fn secure_store_file(path: &Path) -> Result<(), AgentDatabaseError> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|source| {
+        AgentDatabaseError::SecureStore {
+            path: path.to_owned(),
+            source,
+        }
+    })
+}
+
+#[cfg(not(unix))]
+pub(crate) fn secure_store_file(_path: &Path) -> Result<(), AgentDatabaseError> {
+    Ok(())
+}
+
+/// Run with umask 077 so SQLite WAL/SHM siblings inherit
+/// agent-user-only permissions (design §8.2).
+#[cfg(unix)]
+pub(crate) fn restrict_umask() {
+    nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o077));
+}
+
+#[cfg(not(unix))]
+pub(crate) fn restrict_umask() {}
 
 fn sqlite_options(config: &AgentDatabaseConfig) -> SqliteConnectOptions {
     SqliteConnectOptions::new()
@@ -300,6 +339,26 @@ mod tests {
         assert_eq!(store.schema_version().await.unwrap(), AGENT_SCHEMA_VERSION);
         assert_eq!(store.pragmas().await.unwrap().busy_timeout_ms, 1_234);
         assert!(store.pragmas().await.unwrap().satisfy_requirements());
+    }
+
+    #[tokio::test]
+    async fn store_file_is_restricted_to_the_agent_user() {
+        // Design §8.2: the state DB must only allow the Agent OS user to
+        // read; opening the store pins the file to 0600.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let directory = tempdir().unwrap();
+            let path = directory.path().join("agent.db");
+            let store = AgentStore::open(config(&path)).await.unwrap();
+            let metadata = std::fs::metadata(&path).unwrap();
+            assert_eq!(
+                metadata.permissions().mode() & 0o777,
+                0o600,
+                "Agent Store file must be 0600"
+            );
+            store.close().await.unwrap();
+        }
     }
 
     #[tokio::test]

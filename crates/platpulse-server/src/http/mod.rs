@@ -11,7 +11,7 @@
 //! with `setup_required` until the first Owner exists (design §12.2).
 
 mod admin;
-mod agent;
+pub(crate) mod agent;
 pub(crate) mod health;
 pub(crate) mod public;
 
@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::{ConnectInfo, Extension, Request, State};
+use axum::http::HeaderMap;
 use axum::http::header::{self, HeaderValue};
 use axum::http::{HeaderName, Method, StatusCode};
 use axum::middleware::Next;
@@ -35,6 +36,9 @@ use crate::auth::{
     SessionInfo, authenticate_token, cookie_value, has_owner,
 };
 use crate::database::ServerDatabase;
+use crate::enrollment::{
+    ENROLL_MAX_ATTEMPTS, ENROLL_RATE_LIMIT_WINDOW, authenticate_agent_credential,
+};
 
 /// Response header every route group middleware sets so the group namespace
 /// is observable on the wire.
@@ -114,6 +118,7 @@ pub struct AppState {
     db: Arc<ServerDatabase>,
     auth: Arc<AuthConfig>,
     login_limiter: Arc<RateLimiter>,
+    enroll_limiter: Arc<RateLimiter>,
     web_assets: Option<PathBuf>,
     web_index: Option<Bytes>,
     web_assets_ready: bool,
@@ -142,6 +147,10 @@ impl AppState {
                 LOGIN_MAX_ATTEMPTS,
                 LOGIN_RATE_LIMIT_WINDOW,
             )),
+            enroll_limiter: Arc::new(RateLimiter::new(
+                ENROLL_MAX_ATTEMPTS,
+                ENROLL_RATE_LIMIT_WINDOW,
+            )),
             web_assets,
             web_index,
             web_assets_ready,
@@ -158,6 +167,10 @@ impl AppState {
 
     pub(crate) fn login_limiter(&self) -> &RateLimiter {
         &self.login_limiter
+    }
+
+    pub(crate) fn enroll_limiter(&self) -> &RateLimiter {
+        &self.enroll_limiter
     }
 
     fn web_assets(&self) -> Option<&PathBuf> {
@@ -323,9 +336,22 @@ pub(crate) async fn owner_role_guard(
     }
 }
 
+/// Extract a Bearer token from the `Authorization` header. The scheme is
+/// case-insensitive per RFC 7235; a missing or empty token reads as `None`.
+pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let (scheme, token) = value.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("bearer") || token.is_empty() {
+        return None;
+    }
+    Some(token)
+}
+
 /// Agent group guard: until the first Owner exists, no Agent Enrollment or
-/// reporting is allowed (design §12.2). Real Agent credential auth replaces
-/// this check with the Agent API ticket.
+/// reporting is allowed (design §12.2). `POST /enroll` authenticates an
+/// Enrollment Token in the handler; every other Agent route requires a
+/// valid Agent Credential, so an Enrollment Token can never submit reports
+/// and a Human Session can never enroll or report (design §12.6, §13.1).
 pub(crate) async fn agent_group_guard(
     State(state): State<AppState>,
     mut request: Request,
@@ -333,12 +359,47 @@ pub(crate) async fn agent_group_guard(
 ) -> Response {
     stamp_client_ip(&mut request);
     match has_owner(state.db()).await {
-        Ok(true) => next.run(request).await,
-        Ok(false) => session_error_response(
+        Ok(true) => {}
+        Ok(false) => {
+            return session_error_response(
+                &request,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "setup_required",
+                "server setup is incomplete; create the first owner",
+            );
+        }
+        Err(_) => {
+            return session_error_response(
+                &request,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    }
+
+    let is_enroll = request.method() == Method::POST && request.uri().path().ends_with("/enroll");
+    if is_enroll {
+        // The handler authenticates the Enrollment Token and rate-limits
+        // enrollment independently (design §19.4).
+        return next.run(request).await;
+    }
+
+    let Some(token) = bearer_token(request.headers()) else {
+        return session_error_response(
             &request,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "setup_required",
-            "server setup is incomplete; create the first owner",
+            StatusCode::UNAUTHORIZED,
+            "agent_auth_required",
+            "an agent credential is required",
+        );
+    };
+    match authenticate_agent_credential(state.db(), &state.auth().pepper, token).await {
+        Ok(Some(_)) => next.run(request).await,
+        Ok(None) => session_error_response(
+            &request,
+            StatusCode::UNAUTHORIZED,
+            "agent_auth_required",
+            "invalid agent credential",
         ),
         Err(_) => session_error_response(
             &request,
@@ -1076,12 +1137,297 @@ mod tests {
         assert_eq!(body["error"]["code"], "setup_required");
 
         seed_owner(&state).await;
-        let response = get(app, "/api/agent/v1/enroll").await;
-        assert_eq!(
-            response.status(),
-            StatusCode::NOT_FOUND,
-            "agent group opens after setup"
-        );
+        // After setup the group opens, but every request still needs an
+        // Enrollment Token (POST /enroll) or an Agent Credential; a
+        // bare request is refused before routing, never answered 404.
+        let (status, body) = json(get(app, "/api/agent/v1/enroll").await).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"]["code"], "agent_auth_required");
+    }
+
+    fn bearer_request(uri: &str, token: &str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    async fn issue_enrollment_token(state: &AppState) -> String {
+        crate::enrollment::create_enrollment_token(
+            state.db(),
+            &state.auth().pepper,
+            crate::enrollment::ENROLLMENT_TOKEN_DEFAULT_LIFETIME,
+        )
+        .await
+        .unwrap()
+        .1
+    }
+
+    #[tokio::test]
+    async fn enrollment_issues_one_identity_and_consumes_the_token() {
+        let (_, _, state) = test_state().await;
+        let app = build_app(state.clone());
+        seed_owner(&state).await;
+        let token = issue_enrollment_token(&state).await;
+
+        let response = app
+            .clone()
+            .oneshot(bearer_request("/api/agent/v1/enroll", &token))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[ROUTE_GROUP_HEADER], "agent");
+        let (_, body) = json(response).await;
+        let agent_id = body["agent_id"].as_str().unwrap();
+        assert_eq!(body["agent_epoch"], 1);
+        assert_eq!(body["protocol_version"], 1);
+        let credential = body["credential"].as_str().unwrap();
+        assert!(credential.starts_with("pp_agent_"));
+        assert_eq!(credential.len(), "pp_agent_".len() + 36 + 1 + 64);
+
+        // The same token cannot enroll twice and never mints a second
+        // identity.
+        let (status, body) = json(
+            app.oneshot(bearer_request("/api/agent/v1/enroll", &token))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"]["code"], "enrollment_token_consumed");
+        let agents: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap();
+        assert_eq!(agents, 1);
+        let _ = agent_id;
+    }
+
+    #[tokio::test]
+    async fn enrollment_rejects_missing_invalid_and_expired_tokens() {
+        let (_, _, state) = test_state().await;
+        let app = build_app(state.clone());
+        seed_owner(&state).await;
+
+        // No Bearer token at all.
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/agent/v1/enroll")
+            .body(Body::empty())
+            .unwrap();
+        let (status, body) = json(app.clone().oneshot(request).await.unwrap()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"]["code"], "enrollment_token_invalid");
+
+        // Unknown token.
+        let (status, body) = json(
+            app.clone()
+                .oneshot(bearer_request(
+                    "/api/agent/v1/enroll",
+                    "pp_enroll_unknown_abc",
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"]["code"], "enrollment_token_invalid");
+
+        // Expired token (inserted directly with a past expiry).
+        let (token_id, full_token) = crate::enrollment::new_enrollment_token();
+        let digest = state.auth().pepper.hmac_digest(full_token.as_bytes());
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        sqlx::query(
+            "INSERT INTO enrollment_tokens (token_id, token_digest, created_at, expires_at, consumed_at, consumed_agent_id, revoked_at) VALUES (?, ?, ?, '2020-01-01T00:00:00Z', NULL, NULL, NULL)",
+        )
+        .bind(&token_id)
+        .bind(digest.to_vec())
+        .bind(&now)
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+        let (status, body) = json(
+            app.oneshot(bearer_request("/api/agent/v1/enroll", &full_token))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"]["code"], "enrollment_token_expired");
+
+        let agents: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap();
+        assert_eq!(agents, 0, "failed enrollments must not mint identities");
+    }
+
+    #[tokio::test]
+    async fn enrollment_tokens_cannot_submit_reports_or_reach_human_apis() {
+        let (_, _, state) = test_state().await;
+        let app = build_app(state.clone());
+        seed_owner(&state).await;
+        let token = issue_enrollment_token(&state).await;
+
+        // The Enrollment Token is not an Agent Credential: it cannot reach
+        // report routes (or any other Agent route).
+        let (status, body) = json(
+            app.clone()
+                .oneshot(bearer_request("/api/agent/v1/reports", &token))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"]["code"], "agent_auth_required");
+
+        // The Enrollment Token cannot reach human-facing APIs either.
+        let (status, body) = json(
+            app.clone()
+                .oneshot(bearer_request("/api/public/v1/session", &token))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"]["code"], "auth_required");
+
+        let (status, body) = json(
+            app.oneshot(bearer_request("/api/admin/v1/missing", &token))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"]["code"], "auth_required");
+    }
+
+    #[tokio::test]
+    async fn agent_credentials_reach_agent_routes_but_not_human_apis() {
+        let (_, _, state) = test_state().await;
+        let app = build_app(state.clone());
+        seed_owner(&state).await;
+        let token = issue_enrollment_token(&state).await;
+        let response = app
+            .clone()
+            .oneshot(bearer_request("/api/agent/v1/enroll", &token))
+            .await
+            .unwrap();
+        let (_, body) = json(response).await;
+        let credential = body["credential"].as_str().unwrap().to_owned();
+
+        // The Agent Credential passes the Agent guard (404 from the
+        // currently empty route group means the guard accepted it).
+        let request = Request::builder()
+            .method("GET")
+            .uri("/api/agent/v1/missing")
+            .header(header::AUTHORIZATION, format!("Bearer {credential}"))
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.headers()[ROUTE_GROUP_HEADER], "agent");
+
+        // The Agent Credential cannot access Human/Public/Admin routes:
+        // those require a session cookie, and the credential is not one.
+        for uri in ["/api/public/v1/session", "/api/admin/v1/missing"] {
+            let request = Request::builder()
+                .method("GET")
+                .uri(uri)
+                .header(header::AUTHORIZATION, format!("Bearer {credential}"))
+                .body(Body::empty())
+                .unwrap();
+            let (status, body) = json(app.clone().oneshot(request).await.unwrap()).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}");
+            assert_eq!(body["error"]["code"], "auth_required", "{uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn human_sessions_cannot_enroll_or_report() {
+        let (_, _, state) = test_state().await;
+        let app = build_app(state.clone());
+        seed_owner(&state).await;
+        let cookie = login_cookie(app.clone()).await;
+
+        // A logged-in Owner session cannot enroll: the Agent API only
+        // accepts the one-time Enrollment Token, never a cookie.
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/agent/v1/enroll")
+            .header(header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap();
+        let (status, body) = json(app.clone().oneshot(request).await.unwrap()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"]["code"], "enrollment_token_invalid");
+
+        // A Human Session cannot submit reports either: the Agent guard
+        // demands an Agent Credential Bearer token.
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/agent/v1/reports")
+            .header(header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap();
+        let (status, body) = json(app.oneshot(request).await.unwrap()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"]["code"], "agent_auth_required");
+    }
+
+    #[tokio::test]
+    async fn enrollment_rate_limit_is_independent_and_blocks_after_failures() {
+        let (_, _, state) = test_state().await;
+        let app = build_app(state.clone());
+        seed_owner(&state).await;
+
+        for _ in 0..crate::enrollment::ENROLL_MAX_ATTEMPTS {
+            let (status, _) = json(
+                app.clone()
+                    .oneshot(bearer_request(
+                        "/api/agent/v1/enroll",
+                        "pp_enroll_unknown_abc",
+                    ))
+                    .await
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+        }
+        let (status, body) = json(
+            app.oneshot(bearer_request(
+                "/api/agent/v1/enroll",
+                "pp_enroll_unknown_abc",
+            ))
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(body["error"]["code"], "enrollment_rate_limited");
+    }
+
+    #[tokio::test]
+    async fn enrollment_error_bodies_never_echo_the_token() {
+        let (_, _, state) = test_state().await;
+        let app = build_app(state.clone());
+        seed_owner(&state).await;
+        let token = issue_enrollment_token(&state).await;
+
+        for request in [
+            bearer_request("/api/agent/v1/enroll", &token),
+            bearer_request("/api/agent/v1/reports", &token),
+        ] {
+            let response = app.clone().oneshot(request).await.unwrap();
+            let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let text = String::from_utf8(bytes.to_vec()).unwrap();
+            assert!(
+                !text.contains(&token),
+                "error body must never echo the presented token"
+            );
+        }
     }
 
     #[tokio::test]
