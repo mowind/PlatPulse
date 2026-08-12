@@ -135,7 +135,7 @@ async fn save_component<T: serde::Serialize>(
 ) -> Result<(), sqlx::Error> {
     let error_code = component.error.as_ref().map(|e| e.code.as_str());
     let error_message = component.error.as_ref().map(|e| e.message.as_str());
-    sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision, error_code, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_id, scope, scope_key, component_key) DO UPDATE SET state=excluded.state, attempted_at=excluded.attempted_at, observed_at=excluded.observed_at, received_at=excluded.received_at, state_revision=excluded.state_revision, value_revision=excluded.value_revision, error_code=excluded.error_code, error_message=excluded.error_message")
+    sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision, error_code, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_id, scope, scope_key, component_key) DO UPDATE SET state=excluded.state, attempted_at=excluded.attempted_at, observed_at=COALESCE(excluded.observed_at, component_status.observed_at), received_at=excluded.received_at, state_revision=excluded.state_revision, value_revision=CASE WHEN excluded.value_revision > 0 THEN excluded.value_revision ELSE component_status.value_revision END, error_code=excluded.error_code, error_message=excluded.error_message")
         .bind(agent_id).bind(scope).bind(scope_key).bind(node_id).bind(format!("{key:?}").to_lowercase())
         .bind(status_name(component.status)).bind(component.attempted_at.map(|v| v.to_string()))
         .bind(component.latest_observed_at.map(|v| v.to_string())).bind(received_at)
@@ -330,26 +330,34 @@ async fn save_current(
             sqlx::query("INSERT INTO current_node_process_observations (node_id, pid, started_at, cpu_percent, memory_bytes, uptime_ms, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET pid=excluded.pid, started_at=excluded.started_at, cpu_percent=excluded.cpu_percent, memory_bytes=excluded.memory_bytes, uptime_ms=excluded.uptime_ms, updated_at=excluded.updated_at")
                 .bind(&node_id).bind(process.pid as i64).bind(process.started_at.to_string()).bind(process.cpu_percent).bind(process.memory_bytes as i64).bind(process.uptime_ms as i64).bind(received_at).execute(&mut **tx).await?;
         }
-        if let Some(rpc) = node.chain.rpc.latest.as_ref() {
+        if node.chain.rpc.latest.is_some()
+            || node.chain.sync.latest.is_some()
+            || node.chain.consensus.latest.is_some()
+            || node.chain.network_identity.latest.is_some()
+            || node.chain.static_metadata.latest.is_some()
+        {
+            let rpc = node.chain.rpc.latest.as_ref();
             let sync = node.chain.sync.latest;
             let consensus = node.chain.consensus.latest;
             let identity = node.chain.network_identity.latest.as_ref();
             let metadata = node.chain.static_metadata.latest.as_ref();
-            sqlx::query("INSERT INTO current_node_chain_observations (node_id, rpc_client_version, syncing, current_block, highest_block, pulled_states, known_states, consensus_epoch, consensus_view_number, consensus_validator, consensus_highest_qc_block, consensus_highest_lock_block, consensus_highest_commit_block, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, node_key_fingerprint, enode, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET rpc_client_version=excluded.rpc_client_version, syncing=excluded.syncing, current_block=excluded.current_block, highest_block=excluded.highest_block, pulled_states=excluded.pulled_states, known_states=excluded.known_states, consensus_epoch=excluded.consensus_epoch, consensus_view_number=excluded.consensus_view_number, consensus_validator=excluded.consensus_validator, consensus_highest_qc_block=excluded.consensus_highest_qc_block, consensus_highest_lock_block=excluded.consensus_highest_lock_block, consensus_highest_commit_block=excluded.consensus_highest_commit_block, network_genesis_hash=excluded.network_genesis_hash, network_chain_id=excluded.network_chain_id, network_p2p_network_id=excluded.network_p2p_network_id, network_address_hrp=excluded.network_address_hrp, node_key_fingerprint=excluded.node_key_fingerprint, enode=excluded.enode, updated_at=excluded.updated_at")
-                .bind(&node_id).bind(&rpc.client_version).bind(sync.map(|v| v.syncing as i64)).bind(sync.map(|v| v.current_block as i64)).bind(sync.map(|v| v.highest_block as i64)).bind(sync.map(|v| v.pulled_states as i64)).bind(sync.map(|v| v.known_states as i64)).bind(consensus.map(|v| v.epoch as i64)).bind(consensus.map(|v| v.view_number as i64)).bind(consensus.map(|v| v.validator as i64)).bind(consensus.map(|v| v.highest_qc_block as i64)).bind(consensus.map(|v| v.highest_lock_block as i64)).bind(consensus.map(|v| v.highest_commit_block as i64)).bind(identity.map(|v| v.genesis_hash.to_string())).bind(identity.map(|v| v.chain_id as i64)).bind(identity.map(|v| v.p2p_network_id as i64)).bind(identity.and_then(|v| v.address_hrp.as_deref())).bind(metadata.map(|v| v.node_key_fingerprint.to_string())).bind(metadata.and_then(|v| v.enode.as_deref())).bind(received_at).execute(&mut **tx).await?;
-            sqlx::query("DELETE FROM current_node_rpc_namespaces WHERE node_id = ?")
-                .bind(&node_id)
-                .execute(&mut **tx)
-                .await?;
-            for namespace in &rpc.namespaces {
-                sqlx::query("INSERT INTO current_node_rpc_namespaces (node_id, namespace, updated_at) VALUES (?, ?, ?)").bind(&node_id).bind(namespace).bind(received_at).execute(&mut **tx).await?;
-            }
-            sqlx::query("DELETE FROM current_node_rpc_methods WHERE node_id = ?")
-                .bind(&node_id)
-                .execute(&mut **tx)
-                .await?;
-            for method in &rpc.methods {
-                sqlx::query("INSERT INTO current_node_rpc_methods (node_id, method, updated_at) VALUES (?, ?, ?)").bind(&node_id).bind(method).bind(received_at).execute(&mut **tx).await?;
+            sqlx::query("INSERT INTO current_node_chain_observations (node_id, rpc_client_version, syncing, current_block, highest_block, pulled_states, known_states, consensus_epoch, consensus_view_number, consensus_validator, consensus_highest_qc_block, consensus_highest_lock_block, consensus_highest_commit_block, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, node_key_fingerprint, enode, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET rpc_client_version=COALESCE(excluded.rpc_client_version, current_node_chain_observations.rpc_client_version), syncing=COALESCE(excluded.syncing, current_node_chain_observations.syncing), current_block=COALESCE(excluded.current_block, current_node_chain_observations.current_block), highest_block=COALESCE(excluded.highest_block, current_node_chain_observations.highest_block), pulled_states=COALESCE(excluded.pulled_states, current_node_chain_observations.pulled_states), known_states=COALESCE(excluded.known_states, current_node_chain_observations.known_states), consensus_epoch=COALESCE(excluded.consensus_epoch, current_node_chain_observations.consensus_epoch), consensus_view_number=COALESCE(excluded.consensus_view_number, current_node_chain_observations.consensus_view_number), consensus_validator=COALESCE(excluded.consensus_validator, current_node_chain_observations.consensus_validator), consensus_highest_qc_block=COALESCE(excluded.consensus_highest_qc_block, current_node_chain_observations.consensus_highest_qc_block), consensus_highest_lock_block=COALESCE(excluded.consensus_highest_lock_block, current_node_chain_observations.consensus_highest_lock_block), consensus_highest_commit_block=COALESCE(excluded.consensus_highest_commit_block, current_node_chain_observations.consensus_highest_commit_block), network_genesis_hash=COALESCE(excluded.network_genesis_hash, current_node_chain_observations.network_genesis_hash), network_chain_id=COALESCE(excluded.network_chain_id, current_node_chain_observations.network_chain_id), network_p2p_network_id=COALESCE(excluded.network_p2p_network_id, current_node_chain_observations.network_p2p_network_id), network_address_hrp=COALESCE(excluded.network_address_hrp, current_node_chain_observations.network_address_hrp), node_key_fingerprint=COALESCE(excluded.node_key_fingerprint, current_node_chain_observations.node_key_fingerprint), enode=COALESCE(excluded.enode, current_node_chain_observations.enode), updated_at=excluded.updated_at")
+                .bind(&node_id).bind(rpc.map(|v| &v.client_version)).bind(sync.map(|v| v.syncing as i64)).bind(sync.map(|v| v.current_block as i64)).bind(sync.map(|v| v.highest_block as i64)).bind(sync.map(|v| v.pulled_states as i64)).bind(sync.map(|v| v.known_states as i64)).bind(consensus.map(|v| v.epoch as i64)).bind(consensus.map(|v| v.view_number as i64)).bind(consensus.map(|v| v.validator as i64)).bind(consensus.map(|v| v.highest_qc_block as i64)).bind(consensus.map(|v| v.highest_lock_block as i64)).bind(consensus.map(|v| v.highest_commit_block as i64)).bind(identity.map(|v| v.genesis_hash.to_string())).bind(identity.map(|v| v.chain_id as i64)).bind(identity.map(|v| v.p2p_network_id as i64)).bind(identity.and_then(|v| v.address_hrp.as_deref())).bind(metadata.map(|v| v.node_key_fingerprint.to_string())).bind(metadata.and_then(|v| v.enode.as_deref())).bind(received_at).execute(&mut **tx).await?;
+            if let Some(rpc) = rpc {
+                sqlx::query("DELETE FROM current_node_rpc_namespaces WHERE node_id = ?")
+                    .bind(&node_id)
+                    .execute(&mut **tx)
+                    .await?;
+                for namespace in &rpc.namespaces {
+                    sqlx::query("INSERT INTO current_node_rpc_namespaces (node_id, namespace, updated_at) VALUES (?, ?, ?)").bind(&node_id).bind(namespace).bind(received_at).execute(&mut **tx).await?;
+                }
+                sqlx::query("DELETE FROM current_node_rpc_methods WHERE node_id = ?")
+                    .bind(&node_id)
+                    .execute(&mut **tx)
+                    .await?;
+                for method in &rpc.methods {
+                    sqlx::query("INSERT INTO current_node_rpc_methods (node_id, method, updated_at) VALUES (?, ?, ?)").bind(&node_id).bind(method).bind(received_at).execute(&mut **tx).await?;
+                }
             }
         }
     }
@@ -564,6 +572,8 @@ async fn handler(
         }
     }
     let now_text = now().to_string();
+    let capabilities =
+        serde_json::to_string(&parsed.agent_capabilities).expect("capabilities serialize");
     for node in &parsed.inventory.nodes {
         let known = match sqlx::query_scalar::<_, String>(
             "SELECT network_key FROM networks WHERE network_key = ?",
@@ -740,7 +750,7 @@ async fn handler(
             "Server database is unavailable",
         );
     }
-    let updated = sqlx::query("UPDATE agents SET active_boot_id=?, last_report_sequence=?, last_inventory_revision=?, last_received_at=?, updated_at=? WHERE agent_id=?").bind(parsed.boot_id.to_string()).bind(parsed.report_sequence as i64).bind(parsed.inventory.revision as i64).bind(&now_text).bind(&now_text).bind(&auth.agent_id).execute(&mut *tx).await;
+    let updated = sqlx::query("UPDATE agents SET active_boot_id=?, last_report_sequence=?, last_inventory_revision=?, last_received_at=?, agent_capabilities_json=?, updated_at=? WHERE agent_id=?").bind(parsed.boot_id.to_string()).bind(parsed.report_sequence as i64).bind(parsed.inventory.revision as i64).bind(&now_text).bind(capabilities).bind(&now_text).bind(&auth.agent_id).execute(&mut *tx).await;
     if updated.is_err() || tx.commit().await.is_err() {
         return error(
             &request_id.0,

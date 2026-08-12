@@ -10,6 +10,29 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/admin/v1/agents": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "diagnostics",
+        "responses": {
+          "200": {
+            "description": "Owner-only Agent and Node diagnostics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AgentDiagnostic"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/v1/nodes/{node_id}/visibility": {
       "put": {
         "tags": [
@@ -443,6 +466,53 @@
   },
   "components": {
     "schemas": {
+      "AgentDiagnostic": {
+        "type": "object",
+        "required": [
+          "agent_id",
+          "agent_epoch",
+          "capabilities",
+          "nodes"
+        ],
+        "properties": {
+          "agent_epoch": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "agent_id": {
+            "type": "string"
+          },
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "host": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/HostDiagnostic"
+              }
+            ]
+          },
+          "last_report_sequence": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NodeDiagnostic"
+            }
+          }
+        }
+      },
       "ApiError": {
         "type": "object",
         "required": [
@@ -481,6 +551,149 @@
           }
         }
       },
+      "ComponentDiagnostic": {
+        "type": "object",
+        "required": [
+          "state",
+          "state_revision",
+          "value_revision"
+        ],
+        "properties": {
+          "attempted_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "observed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "received_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string"
+          },
+          "state_revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "value_revision": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "ConsensusDiagnostic": {
+        "type": "object",
+        "required": [
+          "state",
+          "state_revision",
+          "value_revision"
+        ],
+        "properties": {
+          "attempted_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "epoch": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "highest_commit_block": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "highest_lock_block": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "highest_qc_block": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "observed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "received_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string"
+          },
+          "state_revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "validator": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "value_revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "view_number": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          }
+        }
+      },
       "EnrollResponse": {
         "type": "object",
         "description": "Success payload of one Agent Enrollment (Agent wire: snake_case,\ndesign §9.1). `credential` is the full `pp_agent_…` token and is\ndelivered to the enrolling Agent exactly once; the Server stores only\nits pepper-keyed digest.",
@@ -512,6 +725,135 @@
           }
         }
       },
+      "HostComponentDiagnostic": {
+        "type": "object",
+        "required": [
+          "component",
+          "state",
+          "state_revision",
+          "value_revision"
+        ],
+        "properties": {
+          "attempted_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "component": {
+            "type": "string"
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "observed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "received_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string"
+          },
+          "state_revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "value_revision": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "HostDiagnostic": {
+        "type": "object",
+        "required": [
+          "updated_at",
+          "components"
+        ],
+        "properties": {
+          "components": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HostComponentDiagnostic"
+            }
+          },
+          "cpu_percent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "load1": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "load15": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "load5": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "memory_total_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "memory_used_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "network_rx_bytes_per_sec": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "network_tx_bytes_per_sec": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        }
+      },
       "LiveResponse": {
         "type": "object",
         "required": [
@@ -534,6 +876,78 @@
             "type": "string"
           },
           "username": {
+            "type": "string"
+          }
+        }
+      },
+      "NodeDiagnostic": {
+        "type": "object",
+        "required": [
+          "node_id",
+          "network_key",
+          "lifecycle",
+          "inventory_revision",
+          "visibility",
+          "health",
+          "health_reason"
+        ],
+        "properties": {
+          "consensus": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ConsensusDiagnostic"
+              }
+            ]
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "health": {
+            "type": "string"
+          },
+          "health_reason": {
+            "type": "string"
+          },
+          "inventory_revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "lifecycle": {
+            "type": "string"
+          },
+          "network_key": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "rpc": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RpcDiagnostic"
+              }
+            ]
+          },
+          "sync": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SyncDiagnostic"
+              }
+            ]
+          },
+          "visibility": {
             "type": "string"
           }
         }
@@ -567,9 +981,14 @@
           "networkKey",
           "health",
           "healthReason",
-          "rpcState"
+          "rpcState",
+          "syncState",
+          "consensusState"
         ],
         "properties": {
+          "consensusState": {
+            "type": "string"
+          },
           "displayName": {
             "type": [
               "string",
@@ -602,6 +1021,9 @@
             "type": "string"
           },
           "rpcState": {
+            "type": "string"
+          },
+          "syncState": {
             "type": "string"
           }
         }
@@ -652,6 +1074,83 @@
           "not_ready"
         ]
       },
+      "RpcDiagnostic": {
+        "type": "object",
+        "required": [
+          "namespaces",
+          "methods"
+        ],
+        "properties": {
+          "attempted_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "client_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "methods": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "namespaces": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "observed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "received_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state_revision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "value_revision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          }
+        }
+      },
       "SessionProjection": {
         "type": "object",
         "required": [
@@ -696,6 +1195,91 @@
           },
           "session": {
             "$ref": "#/components/schemas/SessionProjection"
+          }
+        }
+      },
+      "SyncDiagnostic": {
+        "type": "object",
+        "required": [
+          "state",
+          "state_revision",
+          "value_revision"
+        ],
+        "properties": {
+          "attempted_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "current_block": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "highest_block": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "known_states": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "observed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pulled_states": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "received_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string"
+          },
+          "state_revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "syncing": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "value_revision": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },

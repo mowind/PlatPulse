@@ -4,6 +4,15 @@ export type ClientOptions = {
     baseUrl: `${string}://${string}` | (string & {});
 };
 
+export type AgentDiagnostic = {
+    agent_epoch: number;
+    agent_id: string;
+    capabilities: Array<string>;
+    host?: null | HostDiagnostic;
+    last_report_sequence?: number | null;
+    nodes: Array<NodeDiagnostic>;
+};
+
 export type ApiError = {
     code: string;
     fields: Array<string>;
@@ -21,6 +30,48 @@ export type ApiErrorBody = {
     error: ApiError;
 };
 
+export type ConsensusDiagnostic = {
+    attempted_at?: string | null;
+    epoch?: number | null;
+    error_code?: string | null;
+    error_message?: string | null;
+    highest_commit_block?: number | null;
+    highest_lock_block?: number | null;
+    highest_qc_block?: number | null;
+    observed_at?: string | null;
+    received_at?: string | null;
+    state: string;
+    state_revision: number;
+    validator?: boolean | null;
+    value_revision: number;
+    view_number?: number | null;
+};
+
+export type HostComponentDiagnostic = {
+    attempted_at?: string | null;
+    component: string;
+    error_code?: string | null;
+    error_message?: string | null;
+    observed_at?: string | null;
+    received_at?: string | null;
+    state: string;
+    state_revision: number;
+    value_revision: number;
+};
+
+export type HostDiagnostic = {
+    components: Array<HostComponentDiagnostic>;
+    cpu_percent?: number | null;
+    load1?: number | null;
+    load15?: number | null;
+    load5?: number | null;
+    memory_total_bytes?: number | null;
+    memory_used_bytes?: number | null;
+    network_rx_bytes_per_sec?: number | null;
+    network_tx_bytes_per_sec?: number | null;
+    updated_at: string;
+};
+
 export type LiveResponse = {
     status: string;
 };
@@ -30,6 +81,20 @@ export type LoginRequest = {
     username: string;
 };
 
+export type NodeDiagnostic = {
+    consensus?: null | ConsensusDiagnostic;
+    display_name?: string | null;
+    health: string;
+    health_reason: string;
+    inventory_revision: number;
+    lifecycle: string;
+    network_key: string;
+    node_id: string;
+    rpc?: null | RpcDiagnostic;
+    sync?: null | SyncDiagnostic;
+    visibility: string;
+};
+
 export type PublicNetwork = {
     displayName: string;
     networkKey: string;
@@ -37,6 +102,7 @@ export type PublicNetwork = {
 };
 
 export type PublicNode = {
+    consensusState: string;
     displayName?: string | null;
     freshness?: string | null;
     health: string;
@@ -45,6 +111,7 @@ export type PublicNode = {
     networkKey: string;
     nodeId: string;
     rpcState: string;
+    syncState: string;
 };
 
 export type ReadyComponent = {
@@ -59,6 +126,20 @@ export type ReadyResponse = {
 };
 
 export type ReadyState = 'ready' | 'not_ready';
+
+export type RpcDiagnostic = {
+    attempted_at?: string | null;
+    client_version?: string | null;
+    error_code?: string | null;
+    error_message?: string | null;
+    methods: Array<string>;
+    namespaces: Array<string>;
+    observed_at?: string | null;
+    received_at?: string | null;
+    state?: string | null;
+    state_revision?: number | null;
+    value_revision?: number | null;
+};
 
 export type SessionProjection = {
     createdAt: string;
@@ -79,6 +160,22 @@ export type SessionResponse = {
     session: SessionProjection;
 };
 
+export type SyncDiagnostic = {
+    attempted_at?: string | null;
+    current_block?: number | null;
+    error_code?: string | null;
+    error_message?: string | null;
+    highest_block?: number | null;
+    known_states?: number | null;
+    observed_at?: string | null;
+    pulled_states?: number | null;
+    received_at?: string | null;
+    state: string;
+    state_revision: number;
+    syncing?: boolean | null;
+    value_revision: number;
+};
+
 export type VisibilityRequest = {
     visibility: string;
 };
@@ -87,6 +184,22 @@ export type VisibilityResponse = {
     nodeId: string;
     visibility: string;
 };
+
+export type DiagnosticsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/agents';
+};
+
+export type DiagnosticsResponses = {
+    /**
+     * Owner-only Agent and Node diagnostics
+     */
+    200: Array<AgentDiagnostic>;
+};
+
+export type DiagnosticsResponse = DiagnosticsResponses[keyof DiagnosticsResponses];
 
 export type SetVisibilityData = {
     body: VisibilityRequest;

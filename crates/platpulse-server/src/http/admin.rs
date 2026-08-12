@@ -169,17 +169,18 @@ pub(crate) async fn set_visibility(
     })
     .into_response()
 }
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct AgentDiagnostic {
     pub agent_id: String,
     pub agent_epoch: i64,
     pub last_report_sequence: Option<i64>,
+    pub capabilities: Vec<String>,
     pub host: Option<HostDiagnostic>,
     pub nodes: Vec<NodeDiagnostic>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct HostDiagnostic {
     pub cpu_percent: Option<f64>,
@@ -194,7 +195,7 @@ pub struct HostDiagnostic {
     pub components: Vec<HostComponentDiagnostic>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct HostComponentDiagnostic {
     pub component: String,
@@ -208,7 +209,7 @@ pub struct HostComponentDiagnostic {
     pub value_revision: i64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct RpcDiagnostic {
     pub client_version: Option<String>,
@@ -224,7 +225,106 @@ pub struct RpcDiagnostic {
     pub value_revision: Option<i64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct SyncDiagnostic {
+    pub state: String,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+    pub attempted_at: Option<String>,
+    pub observed_at: Option<String>,
+    pub received_at: Option<String>,
+    pub state_revision: i64,
+    pub value_revision: i64,
+    pub syncing: Option<bool>,
+    pub current_block: Option<i64>,
+    pub highest_block: Option<i64>,
+    pub pulled_states: Option<i64>,
+    pub known_states: Option<i64>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct ConsensusDiagnostic {
+    pub state: String,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+    pub attempted_at: Option<String>,
+    pub observed_at: Option<String>,
+    pub received_at: Option<String>,
+    pub state_revision: i64,
+    pub value_revision: i64,
+    pub epoch: Option<i64>,
+    pub view_number: Option<i64>,
+    pub validator: Option<bool>,
+    pub highest_qc_block: Option<i64>,
+    pub highest_lock_block: Option<i64>,
+    pub highest_commit_block: Option<i64>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct ComponentDiagnostic {
+    pub state: String,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+    pub attempted_at: Option<String>,
+    pub observed_at: Option<String>,
+    pub received_at: Option<String>,
+    pub state_revision: i64,
+    pub value_revision: i64,
+}
+
+const FRESHNESS_LIMIT_SECONDS: i64 = 120;
+
+fn current_observation(timestamp: Option<&str>) -> bool {
+    timestamp
+        .and_then(crate::auth::parse_rfc3339)
+        .is_some_and(|value| {
+            (crate::auth::now_utc() - value).whole_seconds().abs() <= FRESHNESS_LIMIT_SECONDS
+        })
+}
+
+fn derive_health(
+    lifecycle: &str,
+    rpc: Option<&RpcDiagnostic>,
+    sync: Option<&SyncDiagnostic>,
+    consensus: Option<&ConsensusDiagnostic>,
+) -> (&'static str, &'static str) {
+    if lifecycle == "retired" {
+        return ("unknown", "node is retired");
+    }
+    if rpc.is_some_and(|component| component.state.as_deref() == Some("error")) {
+        return ("unhealthy", "RPC collection failed");
+    }
+    if sync.is_some_and(|component| component.state == "error") {
+        return ("unhealthy", "sync collection failed");
+    }
+    if consensus.is_some_and(|component| component.state == "error") {
+        return ("unhealthy", "consensus collection failed");
+    }
+    let fresh = rpc
+        .and_then(|component| component.received_at.as_deref())
+        .is_some_and(|value| current_observation(Some(value)))
+        && sync
+            .and_then(|component| component.received_at.as_deref())
+            .is_some_and(|value| current_observation(Some(value)))
+        && consensus
+            .and_then(|component| component.received_at.as_deref())
+            .is_some_and(|value| current_observation(Some(value)));
+    if !fresh {
+        return ("unknown", "one or more observations are stale or unknown");
+    }
+    if rpc.is_some_and(|component| component.state.as_deref() == Some("ok"))
+        && sync.is_some_and(|component| component.state == "ok")
+        && consensus.is_some_and(|component| component.state == "ok")
+    {
+        ("healthy", "RPC, sync, and consensus are current")
+    } else {
+        ("unknown", "one or more observations are unsupported")
+    }
+}
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct NodeDiagnostic {
     pub node_id: String,
@@ -233,21 +333,62 @@ pub struct NodeDiagnostic {
     pub lifecycle: String,
     pub inventory_revision: i64,
     pub visibility: String,
+    pub health: String,
+    pub health_reason: String,
     pub rpc: Option<RpcDiagnostic>,
+    pub sync: Option<SyncDiagnostic>,
+    pub consensus: Option<ConsensusDiagnostic>,
 }
 
+async fn sync_diagnostic(state: &AppState, node_id: &str) -> Option<SyncDiagnostic> {
+    sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, i64, i64, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>)>(
+        "SELECT s.state, s.error_code, s.error_message, s.attempted_at, s.observed_at, s.received_at, s.state_revision, s.value_revision, c.syncing, c.current_block, c.highest_block, c.pulled_states, c.known_states FROM component_status s LEFT JOIN current_node_chain_observations c ON c.node_id = s.node_id WHERE s.node_id = ? AND s.component_key = 'sync'"
+    )
+    .bind(node_id)
+    .fetch_optional(state.db().pool())
+    .await
+    .ok()
+    .flatten()
+    .map(|(state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision, syncing, current_block, highest_block, pulled_states, known_states)| SyncDiagnostic {
+        state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision,
+        syncing: syncing.map(|value| value != 0), current_block, highest_block, pulled_states, known_states,
+    })
+}
+
+async fn consensus_diagnostic(state: &AppState, node_id: &str) -> Option<ConsensusDiagnostic> {
+    sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, i64, i64, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>)>(
+        "SELECT s.state, s.error_code, s.error_message, s.attempted_at, s.observed_at, s.received_at, s.state_revision, s.value_revision, c.consensus_epoch, c.consensus_view_number, c.consensus_validator, c.consensus_highest_qc_block, c.consensus_highest_lock_block, c.consensus_highest_commit_block FROM component_status s LEFT JOIN current_node_chain_observations c ON c.node_id = s.node_id WHERE s.node_id = ? AND s.component_key = 'consensus'"
+    )
+    .bind(node_id)
+    .fetch_optional(state.db().pool())
+    .await
+    .ok()
+    .flatten()
+    .map(|(state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision, epoch, view_number, validator, highest_qc_block, highest_lock_block, highest_commit_block)| ConsensusDiagnostic {
+        state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision,
+        epoch, view_number, validator: validator.map(|value| value != 0), highest_qc_block, highest_lock_block, highest_commit_block,
+    })
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/admin/v1/agents",
+    tag = "admin",
+    responses((status = 200, description = "Owner-only Agent and Node diagnostics", body = [AgentDiagnostic]))
+)]
 async fn diagnostics(
     State(state): State<AppState>,
     Extension(_session): Extension<super::AuthenticatedSession>,
 ) -> impl IntoResponse {
-    let agents = sqlx::query_as::<_, (String, i64, Option<i64>)>(
-        "SELECT agent_id, agent_epoch, last_report_sequence FROM agents ORDER BY agent_id",
+    let agents = sqlx::query_as::<_, (String, i64, Option<i64>, String)>(
+        "SELECT agent_id, agent_epoch, last_report_sequence, agent_capabilities_json FROM agents ORDER BY agent_id",
     )
     .fetch_all(state.db().pool())
     .await
     .unwrap_or_default();
     let mut result = Vec::with_capacity(agents.len());
-    for (agent_id, agent_epoch, last_report_sequence) in agents {
+    for (agent_id, agent_epoch, last_report_sequence, capabilities_json) in agents {
+        let capabilities = serde_json::from_str(&capabilities_json).unwrap_or_default();
         let host_components = sqlx::query_as::<_, (String, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, i64, i64)>(
             "SELECT component_key, state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision FROM component_status WHERE agent_id = ? AND scope = 'host' ORDER BY component_key",
         )
@@ -326,6 +467,10 @@ async fn diagnostics(
             } else {
                 None
             };
+            let sync = sync_diagnostic(&state, &node_id).await;
+            let consensus = consensus_diagnostic(&state, &node_id).await;
+            let (health, health_reason) =
+                derive_health(&lifecycle, rpc.as_ref(), sync.as_ref(), consensus.as_ref());
             nodes.push(NodeDiagnostic {
                 node_id,
                 network_key,
@@ -333,13 +478,18 @@ async fn diagnostics(
                 lifecycle,
                 inventory_revision,
                 visibility,
+                health: health.to_owned(),
+                health_reason: health_reason.to_owned(),
                 rpc,
+                sync,
+                consensus,
             });
         }
         result.push(AgentDiagnostic {
             agent_id,
             agent_epoch,
             last_report_sequence,
+            capabilities,
             host,
             nodes,
         });
@@ -485,6 +635,66 @@ mod tests {
         }
     }
 
+    #[test]
+    fn stale_sync_or_consensus_keeps_admin_health_unknown() {
+        let now = crate::auth::now_utc();
+        let recent = crate::auth::format_rfc3339(now);
+        let stale = crate::auth::format_rfc3339(now - time::Duration::hours(1));
+        let rpc = RpcDiagnostic {
+            client_version: Some("platon/1".to_owned()),
+            namespaces: vec![],
+            methods: vec![],
+            state: Some("ok".to_owned()),
+            error_code: None,
+            error_message: None,
+            attempted_at: Some(recent.clone()),
+            observed_at: Some(recent.clone()),
+            received_at: Some(recent.clone()),
+            state_revision: Some(1),
+            value_revision: Some(1),
+        };
+        let sync = SyncDiagnostic {
+            state: "ok".to_owned(),
+            error_code: None,
+            error_message: None,
+            attempted_at: Some(stale.clone()),
+            observed_at: Some(stale.clone()),
+            received_at: Some(stale.clone()),
+            state_revision: 1,
+            value_revision: 1,
+            syncing: Some(false),
+            current_block: Some(10),
+            highest_block: Some(10),
+            pulled_states: Some(1),
+            known_states: Some(1),
+        };
+        let consensus = ConsensusDiagnostic {
+            state: "ok".to_owned(),
+            error_code: None,
+            error_message: None,
+            attempted_at: Some(recent.clone()),
+            observed_at: Some(recent.clone()),
+            received_at: Some(recent.clone()),
+            state_revision: 1,
+            value_revision: 1,
+            epoch: Some(1),
+            view_number: Some(1),
+            validator: Some(true),
+            highest_qc_block: Some(10),
+            highest_lock_block: Some(10),
+            highest_commit_block: Some(10),
+        };
+        assert_eq!(
+            derive_health("active", Some(&rpc), Some(&sync), Some(&consensus)),
+            ("unknown", "one or more observations are stale or unknown")
+        );
+        let mut stale_consensus = consensus;
+        stale_consensus.received_at = Some(stale);
+        assert_eq!(
+            derive_health("active", Some(&rpc), Some(&sync), Some(&stale_consensus)),
+            ("unknown", "one or more observations are stale or unknown")
+        );
+    }
     #[tokio::test]
     async fn host_diagnostics_include_failure_and_freshness_fields() {
         let dir = tempdir().unwrap();

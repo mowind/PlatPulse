@@ -41,6 +41,10 @@ pub enum BootTransition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentCapability {
+    /// Runtime RPC namespace and method capability probing.
+    RpcCapabilityProbe,
+    /// Bounded synchronization status collection.
+    SyncStatus,
     /// Per-Node Block Summaries with Block Production Attribution.
     BlockSummary,
     /// History Gap reporting.

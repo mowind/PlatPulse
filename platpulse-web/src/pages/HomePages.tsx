@@ -20,9 +20,9 @@ export function NodePage() {
   useEffect(() => { fetchNode(nodeId).then(setNode).catch((e: Error) => setError(e.message)) }, [nodeId])
   if (error) return <section className="page"><p role="alert" className="form-error">{error}</p><Link to="/">Back to Home</Link></section>
   if (!node) return <section className="page"><p role="status">Loading Node…</p></section>
-  return <section className="page"><p><Link to={`/networks/${node.networkKey}`}>← {node.networkKey}</Link></p><h1>{node.displayName ?? 'Node detail'}</h1><dl className="detail-list"><dt>Node ID</dt><dd>{node.nodeId}</dd><dt>Health</dt><dd><span className={`status status-${node.health}`}>{node.health}</span> — {node.healthReason}</dd><dt>RPC state</dt><dd>{node.rpcState}</dd><dt>Freshness</dt><dd>{node.freshness ?? 'Never observed'}</dd><dt>Host CPU</dt><dd>{node.hostCpuPercent == null ? 'Unknown' : `${node.hostCpuPercent.toFixed(1)}%`}</dd></dl></section>
+  return <section className="page"><p><Link to={`/networks/${node.networkKey}`}>← {node.networkKey}</Link></p><h1>{node.displayName ?? 'Node detail'}</h1><dl className="detail-list"><dt>Node ID</dt><dd>{node.nodeId}</dd><dt>Health</dt><dd><span className={`status status-${node.health}`}>{node.health}</span> — {node.healthReason}</dd><dt>RPC state</dt><dd>{node.rpcState}</dd><dt>Sync state</dt><dd>{node.syncState}</dd><dt>Consensus state</dt><dd>{node.consensusState}</dd><dt>Freshness</dt><dd>{node.freshness ?? 'Never observed'}</dd><dt>Host CPU</dt><dd>{node.hostCpuPercent == null ? 'Unknown' : `${node.hostCpuPercent.toFixed(1)}%`}</dd></dl></section>
 }
 
 function NodeCard({ node }: { node: PublicNode }) {
-  return <article className="node-card"><h2><Link to={`/nodes/${node.nodeId}`}>{node.displayName ?? node.nodeId}</Link></h2><p><span className={`status status-${node.health}`}>{node.health}</span> {node.healthReason}</p><p className="muted">RPC: {node.rpcState}</p></article>
+  return <article className="node-card"><h2><Link to={`/nodes/${node.nodeId}`}>{node.displayName ?? node.nodeId}</Link></h2><p><span className={`status status-${node.health}`}>{node.health}</span> {node.healthReason}</p><p className="muted">RPC: {node.rpcState} · Sync: {node.syncState} · Consensus: {node.consensusState}</p></article>
 }

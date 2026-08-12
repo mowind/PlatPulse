@@ -14,10 +14,11 @@ use platpulse_core::identity::{AgentId, BootId, ReportId};
 use platpulse_core::inventory::NodeInventory;
 use platpulse_core::network::{NetworkIdentity, RpcEndpoint};
 use platpulse_core::observation::{
-    DiskCurrent, HostObservation, LoadCurrent, MemoryCurrent, NetworkThroughput,
+    ConsensusCurrent, DiskCurrent, HostObservation, LoadCurrent, MemoryCurrent, NetworkThroughput,
     NodeChainObservation, NodeObservation, NodeStaticMetadata, RpcCurrent, SpoolDiagnostics,
+    SyncCurrent,
 };
-use platpulse_core::{AgentReport, BootTransition, FingerprintHex, Rfc3339};
+use platpulse_core::{AgentCapability, AgentReport, BootTransition, FingerprintHex, Rfc3339};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use sqlx::Connection;
@@ -30,6 +31,16 @@ use crate::config::AgentConfig;
 use crate::database::{AgentDatabaseConfig, AgentStore};
 use crate::reporting::ReportStoreError;
 
+/// Result of probing one bounded RPC component. `Unsupported` means the
+/// capability was absent on this running Node; `Error` means the call failed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "state", content = "value", rename_all = "snake_case")]
+pub enum ProbeValue<T> {
+    Supported(T),
+    Unsupported,
+    Error(String),
+}
+
 /// One bounded result from the Node RPC capability/identity probe.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -41,6 +52,8 @@ pub struct RpcSnapshot {
     pub node_key_fingerprint: FingerprintHex,
     #[serde(default)]
     pub enode: Option<String>,
+    pub sync: ProbeValue<SyncCurrent>,
+    pub consensus: ProbeValue<ConsensusCurrent>,
 }
 
 /// Injected Node RPC adapter. Implementations must perform one connection
@@ -274,44 +287,57 @@ fn error<T>(at: Rfc3339, code: &str, message: &str) -> ComponentObservation<T> {
     }
 }
 
+fn probe_component<T>(probe: ProbeValue<T>, at: Rfc3339) -> ComponentObservation<T> {
+    match probe {
+        ProbeValue::Supported(value) => ok(value, at),
+        ProbeValue::Unsupported => unsupported(),
+        ProbeValue::Error(message) => error(at, "rpc_method_failed", &message),
+    }
+}
+
 fn collect_node<A: RpcAdapter>(
     node: &platpulse_core::inventory::InventoryNode,
     attempted: Rfc3339,
     adapter: &A,
 ) -> NodeObservation {
     let process = disabled();
-    let (rpc, network_identity, static_metadata) = match adapter.collect(&node.rpc_endpoint) {
-        Ok(snapshot) => (
-            ok(
-                RpcCurrent {
-                    client_version: snapshot.client_version,
-                    namespaces: snapshot.namespaces,
-                    methods: snapshot.methods,
-                },
-                attempted,
+    let (rpc, network_identity, static_metadata, sync, consensus) =
+        match adapter.collect(&node.rpc_endpoint) {
+            Ok(snapshot) => (
+                ok(
+                    RpcCurrent {
+                        client_version: snapshot.client_version,
+                        namespaces: snapshot.namespaces,
+                        methods: snapshot.methods,
+                    },
+                    attempted,
+                ),
+                ok(snapshot.network_identity, attempted),
+                ok(
+                    NodeStaticMetadata {
+                        node_key_fingerprint: snapshot.node_key_fingerprint,
+                        enode: snapshot.enode,
+                    },
+                    attempted,
+                ),
+                probe_component(snapshot.sync, attempted),
+                probe_component(snapshot.consensus, attempted),
             ),
-            ok(snapshot.network_identity, attempted),
-            ok(
-                NodeStaticMetadata {
-                    node_key_fingerprint: snapshot.node_key_fingerprint,
-                    enode: snapshot.enode,
-                },
-                attempted,
+            Err(_) => (
+                error(attempted, "rpc_unreachable", "RPC probe failed"),
+                error(attempted, "rpc_unreachable", "RPC probe failed"),
+                error(attempted, "rpc_unreachable", "RPC probe failed"),
+                error(attempted, "rpc_unreachable", "RPC probe failed"),
+                error(attempted, "rpc_unreachable", "RPC probe failed"),
             ),
-        ),
-        Err(_) => (
-            error(attempted, "rpc_unreachable", "RPC probe failed"),
-            unsupported(),
-            unsupported(),
-        ),
-    };
+        };
     NodeObservation {
         node_id: node.node_id,
         process,
         chain: NodeChainObservation {
             rpc,
-            sync: unsupported(),
-            consensus: unsupported(),
+            sync,
+            consensus,
             network_identity,
             static_metadata,
         },
@@ -345,7 +371,7 @@ pub fn collect_report<A: RpcAdapter>(
             report_id: ReportId::from_str(&Uuid::new_v4().to_string()).expect("UUID is valid"),
             generated_at: timestamp(),
             agent_version: crate::VERSION.to_owned(),
-            agent_capabilities: vec![],
+            agent_capabilities: vec![AgentCapability::RpcCapabilityProbe],
             inventory,
             host,
             nodes: vec![],
@@ -365,7 +391,40 @@ pub fn collect_report<A: RpcAdapter>(
         .nodes
         .iter()
         .map(|node| collect_node(node, attempted, adapter))
-        .collect();
+        .collect::<Vec<_>>();
+    let mut capabilities = vec![AgentCapability::RpcCapabilityProbe];
+    if inventory.nodes.iter().any(|node| {
+        node.process.as_ref().is_some_and(|selector| {
+            matches!(
+                selector,
+                platpulse_core::inventory::ProcessSelector::SystemdUnit { .. }
+            )
+        })
+    }) {
+        capabilities.push(AgentCapability::ProcessSystemd);
+    }
+    if inventory.nodes.iter().any(|node| {
+        node.process.as_ref().is_some_and(|selector| {
+            matches!(
+                selector,
+                platpulse_core::inventory::ProcessSelector::PidFile { .. }
+            )
+        })
+    }) {
+        capabilities.push(AgentCapability::ProcessPidFile);
+    }
+    if nodes
+        .iter()
+        .any(|node| node.chain.sync.status != ComponentStatus::Unsupported)
+    {
+        capabilities.push(AgentCapability::SyncStatus);
+    }
+    if nodes
+        .iter()
+        .any(|node| node.chain.consensus.status != ComponentStatus::Unsupported)
+    {
+        capabilities.push(AgentCapability::ConsensusStatus);
+    }
     let report = AgentReport {
         protocol_version: platpulse_core::PROTOCOL_VERSION,
         agent_id,
@@ -377,7 +436,7 @@ pub fn collect_report<A: RpcAdapter>(
         report_id: ReportId::from_str(&Uuid::new_v4().to_string()).expect("UUID is valid"),
         generated_at: timestamp(),
         agent_version: crate::VERSION.to_owned(),
-        agent_capabilities: vec![],
+        agent_capabilities: capabilities,
         inventory,
         host,
         nodes,
@@ -477,6 +536,21 @@ mod tests {
             node_key_fingerprint: "0xdddddddddddddddddddddddddddddddddddddddd"
                 .parse()
                 .unwrap(),
+            sync: ProbeValue::Supported(SyncCurrent {
+                syncing: false,
+                current_block: 100,
+                highest_block: 100,
+                pulled_states: 10,
+                known_states: 10,
+            }),
+            consensus: ProbeValue::Supported(ConsensusCurrent {
+                epoch: 1,
+                view_number: 2,
+                validator: true,
+                highest_qc_block: 99,
+                highest_lock_block: 98,
+                highest_commit_block: 97,
+            }),
             enode: None,
         }
     }
@@ -567,6 +641,8 @@ mod tests {
                         .parse()
                         .unwrap(),
                     enode: None,
+                    sync: ProbeValue::Unsupported,
+                    consensus: ProbeValue::Unsupported,
                 },
             ),
         ])
@@ -615,7 +691,7 @@ mod tests {
         );
         assert_eq!(node.chain.rpc.status, ComponentStatus::Error);
         assert!(node.chain.rpc.error.is_some());
-        assert_eq!(node.chain.sync.status, ComponentStatus::Unsupported);
+        assert_eq!(node.chain.sync.status, ComponentStatus::Error);
     }
 
     #[test]

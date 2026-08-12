@@ -332,6 +332,8 @@ pub struct PublicNode {
     pub health_reason: String,
     pub freshness: Option<String>,
     pub rpc_state: String,
+    pub sync_state: String,
+    pub consensus_state: String,
     pub host_cpu_percent: Option<f64>,
 }
 
@@ -346,30 +348,97 @@ struct PublicNodeRow {
     identity_state: Option<String>,
     updated_at: Option<String>,
     host_cpu_percent: Option<f64>,
+    sync_state: Option<String>,
+    consensus_state: Option<String>,
+    sync_received_at: Option<String>,
+    consensus_received_at: Option<String>,
+}
+
+const FRESHNESS_LIMIT_SECONDS: i64 = 120;
+
+fn fresh(timestamp: Option<&str>, now: time::OffsetDateTime) -> bool {
+    timestamp
+        .and_then(crate::auth::parse_rfc3339)
+        .is_some_and(|observed| (now - observed).whole_seconds().abs() <= FRESHNESS_LIMIT_SECONDS)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn health_for(
+    lifecycle: &str,
+    rpc: Option<&str>,
+    identity: Option<&str>,
+    sync: Option<&str>,
+    consensus: Option<&str>,
+    received_at: Option<&str>,
+    sync_received_at: Option<&str>,
+    consensus_received_at: Option<&str>,
+) -> (&'static str, &'static str) {
+    if lifecycle == "retired" {
+        return ("unknown", "node is retired");
+    }
+    if matches!(rpc, Some("error")) {
+        return ("unhealthy", "RPC observation failed");
+    }
+    if matches!(identity, Some("error")) {
+        return ("unknown", "network identity mismatch");
+    }
+    if matches!(sync, Some("error")) {
+        return ("unhealthy", "sync observation failed");
+    }
+    if matches!(consensus, Some("error")) {
+        return ("unhealthy", "consensus observation failed");
+    }
+    let current = crate::auth::now_utc();
+    if !fresh(received_at, current)
+        || !fresh(sync_received_at, current)
+        || !fresh(consensus_received_at, current)
+    {
+        return ("unknown", "one or more observations are stale or unknown");
+    }
+    if matches!(rpc, Some("ok")) && matches!(sync, Some("ok")) && matches!(consensus, Some("ok")) {
+        ("healthy", "RPC, sync, and consensus are current")
+    } else {
+        (
+            "unknown",
+            "one or more observations are unknown or unsupported",
+        )
+    }
+}
+fn freshness_for(row: &PublicNodeRow) -> Option<String> {
+    let mut timestamps = [
+        row.updated_at.as_ref(),
+        row.sync_received_at.as_ref(),
+        row.consensus_received_at.as_ref(),
+    ];
+    if timestamps.iter().any(Option::is_none) {
+        return None;
+    }
+    timestamps.sort();
+    timestamps.first().and_then(|value| (*value).cloned())
 }
 
 fn public_node(row: PublicNodeRow) -> (String, PublicNode) {
-    let (health, health_reason) = match (
-        row.lifecycle.as_str(),
-        row.identity_state.as_deref(),
+    let (health, health_reason) = health_for(
+        &row.lifecycle,
         row.rpc_state.as_deref(),
-    ) {
-        ("retired", _, _) => ("unknown", "node is retired"),
-        (_, Some("error"), _) => ("unknown", "network identity mismatch"),
-        (_, _, Some("ok")) => ("healthy", "rpc reachable"),
-        (_, _, Some("starting")) => ("unknown", "rpc observation is starting"),
-        (_, _, Some("unsupported")) => ("unknown", "rpc capability is unsupported"),
-        (_, _, Some("error")) => ("unhealthy", "rpc observation failed"),
-        _ => ("unknown", "rpc has not been observed"),
-    };
+        row.identity_state.as_deref(),
+        row.sync_state.as_deref(),
+        row.consensus_state.as_deref(),
+        row.updated_at.as_deref(),
+        row.sync_received_at.as_deref(),
+        row.consensus_received_at.as_deref(),
+    );
+    let freshness = freshness_for(&row);
     let node = PublicNode {
         node_id: row.node_id.clone(),
         display_name: row.display_name,
         network_key: row.network_key,
         health: health.to_owned(),
         health_reason: health_reason.to_owned(),
-        freshness: row.updated_at,
+        freshness,
         rpc_state: row.rpc_state.unwrap_or_else(|| "unknown".to_owned()),
+        sync_state: row.sync_state.unwrap_or_else(|| "unknown".to_owned()),
+        consensus_state: row.consensus_state.unwrap_or_else(|| "unknown".to_owned()),
         host_cpu_percent: row.host_cpu_percent,
     };
     (row.network_display_name, node)
@@ -387,10 +456,12 @@ fn public_node(row: PublicNodeRow) -> (String, PublicNode) {
 pub(crate) async fn public_networks(State(state): State<AppState>) -> Response {
     let rows = sqlx::query_as::<_, PublicNodeRow>(
         "SELECT n.node_id, n.display_name, n.network_key, r.display_name AS network_display_name,
-                n.lifecycle, s.state AS rpc_state, i.state AS identity_state, s.received_at AS updated_at, h.cpu_percent AS host_cpu_percent
+                n.lifecycle, s.state AS rpc_state, sy.state AS sync_state, co.state AS consensus_state, i.state AS identity_state, s.received_at AS updated_at, sy.received_at AS sync_received_at, co.received_at AS consensus_received_at, h.cpu_percent AS host_cpu_percent
            FROM nodes n
            JOIN networks r ON r.network_key = n.network_key
            LEFT JOIN component_status s ON s.node_id = n.node_id AND s.component_key = 'rpc'
+           LEFT JOIN component_status sy ON sy.node_id = n.node_id AND sy.component_key = 'sync'
+           LEFT JOIN component_status co ON co.node_id = n.node_id AND co.component_key = 'consensus'
            LEFT JOIN component_status i ON i.node_id = n.node_id AND i.component_key = 'network_identity'
            LEFT JOIN current_host_observations h ON h.agent_id = n.agent_id
           WHERE n.visibility = 'public' AND n.lifecycle = 'active'
@@ -443,9 +514,11 @@ pub(crate) async fn public_network(
 ) -> Response {
     let rows = sqlx::query_as::<_, PublicNodeRow>(
         "SELECT n.node_id, n.display_name, n.network_key, r.display_name AS network_display_name,
-                n.lifecycle, s.state AS rpc_state, i.state AS identity_state, s.received_at AS updated_at, h.cpu_percent AS host_cpu_percent
+                n.lifecycle, s.state AS rpc_state, sy.state AS sync_state, co.state AS consensus_state, i.state AS identity_state, s.received_at AS updated_at, sy.received_at AS sync_received_at, co.received_at AS consensus_received_at, h.cpu_percent AS host_cpu_percent
            FROM nodes n JOIN networks r ON r.network_key = n.network_key
            LEFT JOIN component_status s ON s.node_id = n.node_id AND s.component_key = 'rpc'
+           LEFT JOIN component_status sy ON sy.node_id = n.node_id AND sy.component_key = 'sync'
+           LEFT JOIN component_status co ON co.node_id = n.node_id AND co.component_key = 'consensus'
            LEFT JOIN component_status i ON i.node_id = n.node_id AND i.component_key = 'network_identity'
            LEFT JOIN current_host_observations h ON h.agent_id = n.agent_id
           WHERE n.network_key = ? AND n.visibility = 'public' AND n.lifecycle = 'active'
@@ -497,9 +570,11 @@ pub(crate) async fn public_node_detail(
 ) -> Response {
     let row = sqlx::query_as::<_, PublicNodeRow>(
         "SELECT n.node_id, n.display_name, n.network_key, r.display_name AS network_display_name,
-                n.lifecycle, s.state AS rpc_state, i.state AS identity_state, s.received_at AS updated_at, h.cpu_percent AS host_cpu_percent
+                n.lifecycle, s.state AS rpc_state, sy.state AS sync_state, co.state AS consensus_state, i.state AS identity_state, s.received_at AS updated_at, sy.received_at AS sync_received_at, co.received_at AS consensus_received_at, h.cpu_percent AS host_cpu_percent
            FROM nodes n JOIN networks r ON r.network_key = n.network_key
            LEFT JOIN component_status s ON s.node_id = n.node_id AND s.component_key = 'rpc'
+           LEFT JOIN component_status sy ON sy.node_id = n.node_id AND sy.component_key = 'sync'
+           LEFT JOIN component_status co ON co.node_id = n.node_id AND co.component_key = 'consensus'
            LEFT JOIN component_status i ON i.node_id = n.node_id AND i.component_key = 'network_identity'
            LEFT JOIN current_host_observations h ON h.agent_id = n.agent_id
           WHERE n.node_id = ? AND n.visibility = 'public' AND n.lifecycle = 'active'",
@@ -636,6 +711,46 @@ mod tests {
         )
         .await;
         assert_eq!(retired.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn stale_sync_dimension_prevents_healthy_public_health() {
+        let now = crate::auth::now_utc();
+        let recent = crate::auth::format_rfc3339(now);
+        let stale = crate::auth::format_rfc3339(now - time::Duration::hours(1));
+        assert_eq!(
+            health_for(
+                "active",
+                Some("ok"),
+                Some("ok"),
+                Some("ok"),
+                Some("ok"),
+                Some(&recent),
+                Some(&stale),
+                Some(&recent)
+            ),
+            ("unknown", "one or more observations are stale or unknown")
+        );
+    }
+
+    #[test]
+    fn stale_consensus_dimension_prevents_healthy_public_health() {
+        let now = crate::auth::now_utc();
+        let recent = crate::auth::format_rfc3339(now);
+        let stale = crate::auth::format_rfc3339(now - time::Duration::hours(1));
+        assert_eq!(
+            health_for(
+                "active",
+                Some("ok"),
+                Some("ok"),
+                Some("ok"),
+                Some("ok"),
+                Some(&recent),
+                Some(&recent),
+                Some(&stale)
+            ),
+            ("unknown", "one or more observations are stale or unknown")
+        );
     }
 
     #[tokio::test]
