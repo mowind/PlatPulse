@@ -1,0 +1,516 @@
+//! Minimal one-shot collection pipeline for the first Agent vertical slice.
+//!
+//! The collector samples Host state once, queries exactly one configured Node
+//! through an injected RPC adapter, builds a complete AgentReport, and stores
+//! the immutable bytes before any sender can deliver them.  The adapter is
+//! deliberately injected so production transports and scripted RPC fakes use
+//! the same report-building path.
+
+use std::str::FromStr;
+
+use platpulse_core::component::{ComponentObservation, ComponentStatus};
+use platpulse_core::identity::{AgentId, BootId, ReportId};
+use platpulse_core::inventory::NodeInventory;
+use platpulse_core::network::{NetworkIdentity, RpcEndpoint};
+use platpulse_core::observation::{
+    DiskCurrent, HostObservation, LoadCurrent, MemoryCurrent, NetworkThroughput,
+    NodeChainObservation, NodeObservation, NodeStaticMetadata, RpcCurrent, SpoolDiagnostics,
+};
+use platpulse_core::{AgentReport, BootTransition, FingerprintHex, Rfc3339};
+use serde::{Deserialize, Serialize};
+use sha2::Digest;
+use sqlx::Connection;
+use sysinfo::{Disks, System};
+use thiserror::Error;
+use time::OffsetDateTime;
+use uuid::Uuid;
+
+use crate::config::AgentConfig;
+use crate::database::{AgentDatabaseConfig, AgentStore};
+use crate::reporting::ReportStoreError;
+
+/// One bounded result from the Node RPC capability/identity probe.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RpcSnapshot {
+    pub client_version: String,
+    pub namespaces: Vec<String>,
+    pub methods: Vec<String>,
+    pub network_identity: NetworkIdentity,
+    pub node_key_fingerprint: FingerprintHex,
+    #[serde(default)]
+    pub enode: Option<String>,
+}
+
+/// Injected Node RPC adapter. Implementations must perform one connection
+/// probe and return bounded, already-redacted values.
+pub trait RpcAdapter {
+    fn collect(&self, endpoint: &RpcEndpoint) -> Result<RpcSnapshot, RpcCollectError>;
+}
+
+/// Deterministic adapter useful for scripted local fakes and integration tests.
+#[derive(Debug, Clone)]
+pub struct ScriptedRpcAdapter {
+    snapshot: RpcSnapshot,
+}
+
+impl ScriptedRpcAdapter {
+    pub fn new(snapshot: RpcSnapshot) -> Self {
+        Self { snapshot }
+    }
+
+    pub fn from_json(body: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(body).map(Self::new)
+    }
+}
+
+impl RpcAdapter for ScriptedRpcAdapter {
+    fn collect(&self, _endpoint: &RpcEndpoint) -> Result<RpcSnapshot, RpcCollectError> {
+        Ok(self.snapshot.clone())
+    }
+}
+
+/// Adapter used by the production CLI until a real RPC transport is wired.
+/// It fails closed instead of inventing Node data or persisting a misleading
+/// Healthy report.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FailClosedRpcAdapter;
+
+impl RpcAdapter for FailClosedRpcAdapter {
+    fn collect(&self, _endpoint: &RpcEndpoint) -> Result<RpcSnapshot, RpcCollectError> {
+        Err(RpcCollectError::Failed(
+            "RPC transport is not configured; no report was persisted".to_owned(),
+        ))
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum RpcCollectError {
+    #[error("RPC probe failed: {0}")]
+    Failed(String),
+}
+
+#[derive(Debug, Error)]
+pub enum CollectionError {
+    #[error("Agent Store initialization failed: {0}")]
+    Store(#[from] crate::database::AgentDatabaseError),
+    #[error("database error: {0}")]
+    Database(#[from] sqlx::Error),
+    #[error("Agent is not enrolled")]
+    NotEnrolled,
+    #[error("invalid persisted Agent identity: {0}")]
+    Identity(String),
+    #[error("RPC collection failed: {0}")]
+    Rpc(#[from] RpcCollectError),
+    #[error("report persistence failed: {0}")]
+    Report(#[from] ReportStoreError),
+    #[error("report serialization failed: {0}")]
+    Serialization(#[from] serde_json::Error),
+}
+
+fn timestamp() -> Rfc3339 {
+    let value = OffsetDateTime::now_utc()
+        .replace_nanosecond(0)
+        .expect("zero nanoseconds is valid")
+        .format(&time::format_description::well_known::Rfc3339)
+        .expect("UTC timestamp is valid");
+    value.parse().expect("UTC timestamp is valid")
+}
+
+fn ok<T>(value: T, at: Rfc3339) -> ComponentObservation<T> {
+    ComponentObservation {
+        status: ComponentStatus::Ok,
+        attempted_at: Some(at),
+        latest_observed_at: Some(at),
+        received_at: None,
+        state_revision: 1,
+        value_revision: 1,
+        latest: Some(value),
+        error: None,
+    }
+}
+
+fn disabled<T>() -> ComponentObservation<T> {
+    ComponentObservation {
+        status: ComponentStatus::Disabled,
+        attempted_at: None,
+        latest_observed_at: None,
+        received_at: None,
+        state_revision: 1,
+        value_revision: 0,
+        latest: None,
+        error: None,
+    }
+}
+
+fn unsupported<T>() -> ComponentObservation<T> {
+    ComponentObservation {
+        status: ComponentStatus::Unsupported,
+        attempted_at: None,
+        latest_observed_at: None,
+        received_at: None,
+        state_revision: 1,
+        value_revision: 0,
+        latest: None,
+        error: None,
+    }
+}
+
+/// Collect Host metrics once for this Agent. Disk/network structures are
+/// intentionally bounded; empty disk and zero throughput are authoritative
+/// snapshots from this minimal collector, not duplicated per Node.
+pub fn collect_host(system: &mut System, disks: &mut Disks, at: Rfc3339) -> HostObservation {
+    system.refresh_cpu_usage();
+    system.refresh_memory();
+    disks.refresh();
+    let cpu = system.global_cpu_info().cpu_usage().clamp(0.0, 100.0) as f64;
+    let load = System::load_average();
+    HostObservation {
+        cpu_percent: ok(cpu, at),
+        memory: ok(
+            MemoryCurrent {
+                total_bytes: system.total_memory(),
+                used_bytes: system.used_memory(),
+            },
+            at,
+        ),
+        load: ok(
+            LoadCurrent {
+                load1: load.one,
+                load5: load.five,
+                load15: load.fifteen,
+            },
+            at,
+        ),
+        disk: ok(
+            DiskCurrent {
+                mounts: disks
+                    .list()
+                    .iter()
+                    .take(128)
+                    .map(|disk| {
+                        let total = disk.total_space();
+                        let available = disk.available_space();
+                        platpulse_core::MountUsage {
+                            mount_path: disk.mount_point().to_string_lossy().into_owned(),
+                            total_bytes: total,
+                            used_bytes: total.saturating_sub(available),
+                        }
+                    })
+                    .collect(),
+            },
+            at,
+        ),
+        network_throughput: ok(
+            NetworkThroughput {
+                rx_bytes_per_sec: 0,
+                tx_bytes_per_sec: 0,
+            },
+            at,
+        ),
+        clock_skew: ok(0, at),
+        spool: ok(
+            SpoolDiagnostics {
+                queued_bytes: 0,
+                queued_reports: 0,
+                oldest_queued_age_ms: 0,
+                dropped_reports: 0,
+                dropped_samples: 0,
+            },
+            at,
+        ),
+    }
+}
+
+/// Build a complete report for one configured Node.
+pub fn collect_report<A: RpcAdapter>(
+    config: &AgentConfig,
+    agent_id: AgentId,
+    agent_epoch: u64,
+    boot_id: BootId,
+    sequence: u64,
+    inventory: NodeInventory,
+    adapter: &A,
+) -> Result<AgentReport, CollectionError> {
+    let node = inventory
+        .nodes
+        .first()
+        .ok_or(CollectionError::NotEnrolled)?
+        .clone();
+    if inventory.nodes.len() != 1 {
+        return Err(CollectionError::Identity(
+            "P1-05 collector requires exactly one configured Node".to_owned(),
+        ));
+    }
+    let attempted = timestamp();
+    let snapshot = adapter.collect(&node.rpc_endpoint)?;
+    let mut system = System::new_all();
+    let mut disks = Disks::new_with_refreshed_list();
+    let host = collect_host(&mut system, &mut disks, attempted);
+    let process = disabled();
+    let chain = NodeChainObservation {
+        rpc: ok(
+            RpcCurrent {
+                client_version: snapshot.client_version,
+                namespaces: snapshot.namespaces,
+                methods: snapshot.methods,
+            },
+            attempted,
+        ),
+        sync: unsupported(),
+        consensus: unsupported(),
+        network_identity: ok(snapshot.network_identity, attempted),
+        static_metadata: ok(
+            NodeStaticMetadata {
+                node_key_fingerprint: snapshot.node_key_fingerprint,
+                enode: snapshot.enode,
+            },
+            attempted,
+        ),
+    };
+    let report = AgentReport {
+        protocol_version: platpulse_core::PROTOCOL_VERSION,
+        agent_id,
+        agent_epoch,
+        boot_id,
+        previous_boot_id: None,
+        boot_transition: BootTransition::Continuing,
+        report_sequence: sequence,
+        report_id: ReportId::from_str(&Uuid::new_v4().to_string()).expect("UUID is valid"),
+        generated_at: timestamp(),
+        agent_version: crate::VERSION.to_owned(),
+        agent_capabilities: vec![],
+        inventory,
+        host,
+        nodes: vec![NodeObservation {
+            node_id: node.node_id,
+            process,
+            chain,
+        }],
+        block_summaries: vec![],
+        history_gaps: vec![],
+    };
+    report
+        .validate()
+        .map_err(|error| CollectionError::Identity(error.to_string()))?;
+    let _ = config;
+    Ok(report)
+}
+
+/// Collect and persist one complete immutable report. Agent state (identity,
+/// boot and sequence) is advanced in the same transaction as the report body.
+pub async fn collect_and_persist<A: RpcAdapter>(
+    config: &AgentConfig,
+    adapter: &A,
+) -> Result<String, CollectionError> {
+    let mut store = AgentStore::open(AgentDatabaseConfig::new(&config.state_db)).await?;
+    let state: Option<(String, i64, Option<String>, i64)> = sqlx::query_as(
+        "SELECT agent_id, agent_epoch, boot_id, report_sequence FROM agent_state WHERE singleton=1",
+    )
+    .fetch_optional(store.connection())
+    .await?;
+    let (agent_text, epoch, boot_text, previous_sequence) =
+        state.ok_or(CollectionError::NotEnrolled)?;
+    let agent_id = AgentId::from_str(&agent_text)
+        .map_err(|error| CollectionError::Identity(error.to_string()))?;
+    let boot_id = match boot_text {
+        Some(value) => BootId::from_str(&value)
+            .map_err(|error| CollectionError::Identity(error.to_string()))?,
+        None => BootId::from_str(&Uuid::new_v4().to_string()).expect("UUID is valid"),
+    };
+    let validated = config
+        .validated_inventory()
+        .map_err(|error| CollectionError::Identity(error.to_string()))?;
+    let report = collect_report(
+        config,
+        agent_id,
+        epoch as u64,
+        boot_id,
+        previous_sequence as u64 + 1,
+        validated.inventory,
+        adapter,
+    )?;
+    let body = serde_json::to_vec(&report)?;
+    let digest = format!("0x{}", hex::encode(sha2::Sha256::digest(&body)));
+    let now = report.generated_at.to_string();
+    let mut tx = store.connection().begin().await?;
+    sqlx::query("INSERT INTO reports (report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes, in_flight, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)")
+        .bind(report.report_id.to_string()).bind(report.agent_epoch as i64).bind(report.boot_id.to_string()).bind(report.report_sequence as i64).bind(report.generated_at.to_string()).bind(&body).bind(&digest).bind(body.len() as i64).bind(&now).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO agent_state (singleton, agent_id, agent_epoch, boot_id, report_sequence, inventory_revision, updated_at) VALUES (1, ?, ?, ?, ?, ?, ?) ON CONFLICT(singleton) DO UPDATE SET boot_id=excluded.boot_id, report_sequence=excluded.report_sequence, inventory_revision=excluded.inventory_revision, updated_at=excluded.updated_at")
+        .bind(report.agent_id.to_string()).bind(report.agent_epoch as i64).bind(report.boot_id.to_string()).bind(report.report_sequence as i64).bind(report.inventory.revision as i64).bind(&now).execute(&mut *tx).await?;
+    tx.commit().await?;
+    store.close().await?;
+    Ok(digest)
+}
+
+/// Apply a stored receipt and delete its report only after the receipt is
+/// durably recorded, in one Agent Store transaction.
+pub async fn apply_receipt(
+    store: &mut AgentStore,
+    report_id: &str,
+    body_sha256: &str,
+    disposition: &str,
+    receipt_body: &[u8],
+    applied_at: &str,
+) -> Result<(), sqlx::Error> {
+    let mut tx = store.connection().begin().await?;
+    sqlx::query("INSERT INTO report_receipts (report_id, report_body_sha256, disposition, receipt_body, applied_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(report_id) DO NOTHING")
+        .bind(report_id).bind(body_sha256).bind(disposition).bind(receipt_body).bind(applied_at).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM reports WHERE report_id = ? AND EXISTS (SELECT 1 FROM report_receipts WHERE report_id = ?)")
+        .bind(report_id).bind(report_id).execute(&mut *tx).await?;
+    tx.commit().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::AgentDatabaseConfig;
+    use tempfile::tempdir;
+
+    fn snapshot() -> RpcSnapshot {
+        RpcSnapshot {
+            client_version: "fake-platon/1.0".into(),
+            namespaces: vec!["platon".into(), "net".into()],
+            methods: vec!["platon_blockNumber".into()],
+            network_identity: NetworkIdentity {
+                genesis_hash: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .parse()
+                    .unwrap(),
+                chain_id: 210425,
+                p2p_network_id: 210425,
+                address_hrp: Some("lat".into()),
+            },
+            node_key_fingerprint: "0xdddddddddddddddddddddddddddddddddddddddd"
+                .parse()
+                .unwrap(),
+            enode: None,
+        }
+    }
+
+    #[test]
+    fn scripted_adapter_builds_valid_one_node_report() {
+        let dir = tempdir().unwrap();
+        let config = AgentConfig {
+            config_path: dir.path().join("agent.toml"),
+            server_url: "https://example.com".into(),
+            credential_file: dir.path().join("credential"),
+            state_db: dir.path().join("agent.db"),
+        };
+        let inventory: NodeInventory = serde_json::from_str(r#"{"revision":1,"nodes":[{"node_id":"0195f2a1-0014-4014-8014-000000000014","network_key":"platon-mainnet","rpc_endpoint":"ws://127.0.0.1:6790"}]}"#).unwrap();
+        let report = collect_report(
+            &config,
+            "0195f2a1-0011-4011-8011-000000000011".parse().unwrap(),
+            1,
+            "0195f2a1-0012-4012-8012-000000000012".parse().unwrap(),
+            1,
+            inventory,
+            &ScriptedRpcAdapter::new(snapshot()),
+        )
+        .unwrap();
+        assert_eq!(report.validate(), Ok(()));
+        assert_eq!(
+            report.nodes[0]
+                .chain
+                .rpc
+                .latest
+                .as_ref()
+                .unwrap()
+                .client_version,
+            "fake-platon/1.0"
+        );
+        assert_eq!(
+            report.host.cpu_percent.attempted_at,
+            report.host.cpu_percent.latest_observed_at
+        );
+        assert_eq!(report.host.cpu_percent.state_revision, 1);
+        assert_eq!(report.host.cpu_percent.value_revision, 1);
+        assert_eq!(
+            report.nodes[0].chain.rpc.attempted_at,
+            report.nodes[0].chain.rpc.latest_observed_at
+        );
+        assert_eq!(report.nodes[0].chain.rpc.state_revision, 1);
+        assert_eq!(report.nodes[0].chain.rpc.value_revision, 1);
+        assert_eq!(
+            report.nodes[0]
+                .chain
+                .rpc
+                .latest
+                .as_ref()
+                .unwrap()
+                .namespaces,
+            ["platon", "net"]
+        );
+    }
+
+    #[test]
+    fn fail_closed_adapter_never_fabricates_rpc_data() {
+        let endpoint: RpcEndpoint = "ws://127.0.0.1:6790".parse().unwrap();
+        let error = FailClosedRpcAdapter.collect(&endpoint).unwrap_err();
+        assert!(error.to_string().contains("not configured"));
+    }
+
+    #[tokio::test]
+    async fn collect_and_persist_advances_state_with_report_atomically() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("agent.toml");
+        let db_path = dir.path().join("agent.db");
+        std::fs::write(
+            &config_path,
+            format!(
+                "server_url=\"https://example.com\"\ncredential_file=\"{}/credential\"\nstate_db=\"{}\"\ninventory_revision=1\nnodes=[{{node_id=\"0195f2a1-0014-4014-8014-000000000014\",network_key=\"platon-mainnet\",rpc_endpoint=\"ws://127.0.0.1:6790\"}}]\n",
+                dir.path().display(),
+                db_path.display()
+            ),
+        )
+        .unwrap();
+        let config = AgentConfig::resolve(&config_path).unwrap();
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(&db_path))
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO agent_state (singleton, agent_id, agent_epoch, report_sequence, inventory_revision, updated_at) VALUES (1, ?, 3, 4, 1, ?)")
+            .bind("0195f2a1-0011-4011-8011-000000000011")
+            .bind("2026-08-12T08:00:00Z")
+            .execute(store.connection())
+            .await
+            .unwrap();
+        store.close().await.unwrap();
+
+        collect_and_persist(&config, &ScriptedRpcAdapter::new(snapshot()))
+            .await
+            .unwrap();
+        let mut reopened = AgentStore::open(AgentDatabaseConfig::new(&db_path))
+            .await
+            .unwrap();
+        let state: (i64, i64) = sqlx::query_as(
+            "SELECT agent_epoch, report_sequence FROM agent_state WHERE singleton=1",
+        )
+        .fetch_one(reopened.connection())
+        .await
+        .unwrap();
+        assert_eq!(state, (3, 5));
+        let reports: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM reports")
+            .fetch_one(reopened.connection())
+            .await
+            .unwrap();
+        assert_eq!(reports, 1);
+        reopened.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn receipt_application_is_atomic_and_removes_report() {
+        let dir = tempdir().unwrap();
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(dir.path().join("agent.db")))
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO reports (report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes, created_at) VALUES ('r',1,'b',1,'now',X'01','h',1,'now')").execute(store.connection()).await.unwrap();
+        apply_receipt(&mut store, "r", "h", "accepted", b"{}", "now")
+            .await
+            .unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM reports WHERE report_id='r'")
+            .fetch_one(store.connection())
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
+        store.close().await.unwrap();
+    }
+}

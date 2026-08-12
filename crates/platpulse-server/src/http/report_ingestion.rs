@@ -228,9 +228,34 @@ async fn save_current(
     )
     .await?;
 
-    if let Some(memory) = host.memory.latest {
-        sqlx::query("INSERT INTO current_host_observations (agent_id, memory_total_bytes, memory_used_bytes, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(agent_id) DO UPDATE SET memory_total_bytes=excluded.memory_total_bytes, memory_used_bytes=excluded.memory_used_bytes, updated_at=excluded.updated_at")
-            .bind(&agent_id).bind(memory.total_bytes as i64).bind(memory.used_bytes as i64).bind(received_at).execute(&mut **tx).await?;
+    sqlx::query("INSERT OR REPLACE INTO current_host_observations (agent_id, cpu_percent, memory_total_bytes, memory_used_bytes, load1, load5, load15, network_rx_bytes_per_sec, network_tx_bytes_per_sec, clock_skew_ms, spool_queued_bytes, spool_queued_reports, spool_oldest_queued_age_ms, spool_dropped_reports, spool_dropped_samples, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind(&agent_id)
+        .bind(host.cpu_percent.latest)
+        .bind(host.memory.latest.map(|v| v.total_bytes as i64))
+        .bind(host.memory.latest.map(|v| v.used_bytes as i64))
+        .bind(host.load.latest.map(|v| v.load1))
+        .bind(host.load.latest.map(|v| v.load5))
+        .bind(host.load.latest.map(|v| v.load15))
+        .bind(host.network_throughput.latest.map(|v| v.rx_bytes_per_sec as i64))
+        .bind(host.network_throughput.latest.map(|v| v.tx_bytes_per_sec as i64))
+        .bind(host.clock_skew.latest)
+        .bind(host.spool.latest.map(|v| v.queued_bytes as i64))
+        .bind(host.spool.latest.map(|v| v.queued_reports as i64))
+        .bind(host.spool.latest.map(|v| v.oldest_queued_age_ms as i64))
+        .bind(host.spool.latest.map(|v| v.dropped_reports as i64))
+        .bind(host.spool.latest.map(|v| v.dropped_samples as i64))
+        .bind(received_at)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("DELETE FROM current_host_disk_mounts WHERE agent_id = ?")
+        .bind(&agent_id)
+        .execute(&mut **tx)
+        .await?;
+    if let Some(disk) = host.disk.latest.as_ref() {
+        for mount in &disk.mounts {
+            sqlx::query("INSERT INTO current_host_disk_mounts (agent_id, mount_path, total_bytes, used_bytes, updated_at) VALUES (?, ?, ?, ?, ?)")
+                .bind(&agent_id).bind(&mount.mount_path).bind(mount.total_bytes as i64).bind(mount.used_bytes as i64).bind(received_at).execute(&mut **tx).await?;
+        }
     }
     for node in &report.nodes {
         let node_id = node.node_id.to_string();
@@ -304,15 +329,27 @@ async fn save_current(
             sqlx::query("INSERT INTO current_node_process_observations (node_id, pid, started_at, cpu_percent, memory_bytes, uptime_ms, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET pid=excluded.pid, started_at=excluded.started_at, cpu_percent=excluded.cpu_percent, memory_bytes=excluded.memory_bytes, uptime_ms=excluded.uptime_ms, updated_at=excluded.updated_at")
                 .bind(&node_id).bind(process.pid as i64).bind(process.started_at.to_string()).bind(process.cpu_percent).bind(process.memory_bytes as i64).bind(process.uptime_ms as i64).bind(received_at).execute(&mut **tx).await?;
         }
-        if let (Some(rpc), Some(sync), Some(consensus), Some(identity), Some(metadata)) = (
-            node.chain.rpc.latest.as_ref(),
-            node.chain.sync.latest,
-            node.chain.consensus.latest,
-            node.chain.network_identity.latest.as_ref(),
-            node.chain.static_metadata.latest.as_ref(),
-        ) {
+        if let Some(rpc) = node.chain.rpc.latest.as_ref() {
+            let sync = node.chain.sync.latest;
+            let consensus = node.chain.consensus.latest;
+            let identity = node.chain.network_identity.latest.as_ref();
+            let metadata = node.chain.static_metadata.latest.as_ref();
             sqlx::query("INSERT INTO current_node_chain_observations (node_id, rpc_client_version, syncing, current_block, highest_block, pulled_states, known_states, consensus_epoch, consensus_view_number, consensus_validator, consensus_highest_qc_block, consensus_highest_lock_block, consensus_highest_commit_block, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, node_key_fingerprint, enode, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET rpc_client_version=excluded.rpc_client_version, syncing=excluded.syncing, current_block=excluded.current_block, highest_block=excluded.highest_block, pulled_states=excluded.pulled_states, known_states=excluded.known_states, consensus_epoch=excluded.consensus_epoch, consensus_view_number=excluded.consensus_view_number, consensus_validator=excluded.consensus_validator, consensus_highest_qc_block=excluded.consensus_highest_qc_block, consensus_highest_lock_block=excluded.consensus_highest_lock_block, consensus_highest_commit_block=excluded.consensus_highest_commit_block, network_genesis_hash=excluded.network_genesis_hash, network_chain_id=excluded.network_chain_id, network_p2p_network_id=excluded.network_p2p_network_id, network_address_hrp=excluded.network_address_hrp, node_key_fingerprint=excluded.node_key_fingerprint, enode=excluded.enode, updated_at=excluded.updated_at")
-                .bind(&node_id).bind(&rpc.client_version).bind(sync.syncing as i64).bind(sync.current_block as i64).bind(sync.highest_block as i64).bind(sync.pulled_states as i64).bind(sync.known_states as i64).bind(consensus.epoch as i64).bind(consensus.view_number as i64).bind(consensus.validator as i64).bind(consensus.highest_qc_block as i64).bind(consensus.highest_lock_block as i64).bind(consensus.highest_commit_block as i64).bind(identity.genesis_hash.to_string()).bind(identity.chain_id as i64).bind(identity.p2p_network_id as i64).bind(&identity.address_hrp).bind(metadata.node_key_fingerprint.to_string()).bind(&metadata.enode).bind(received_at).execute(&mut **tx).await?;
+                .bind(&node_id).bind(&rpc.client_version).bind(sync.map(|v| v.syncing as i64)).bind(sync.map(|v| v.current_block as i64)).bind(sync.map(|v| v.highest_block as i64)).bind(sync.map(|v| v.pulled_states as i64)).bind(sync.map(|v| v.known_states as i64)).bind(consensus.map(|v| v.epoch as i64)).bind(consensus.map(|v| v.view_number as i64)).bind(consensus.map(|v| v.validator as i64)).bind(consensus.map(|v| v.highest_qc_block as i64)).bind(consensus.map(|v| v.highest_lock_block as i64)).bind(consensus.map(|v| v.highest_commit_block as i64)).bind(identity.map(|v| v.genesis_hash.to_string())).bind(identity.map(|v| v.chain_id as i64)).bind(identity.map(|v| v.p2p_network_id as i64)).bind(identity.and_then(|v| v.address_hrp.as_deref())).bind(metadata.map(|v| v.node_key_fingerprint.to_string())).bind(metadata.and_then(|v| v.enode.as_deref())).bind(received_at).execute(&mut **tx).await?;
+            sqlx::query("DELETE FROM current_node_rpc_namespaces WHERE node_id = ?")
+                .bind(&node_id)
+                .execute(&mut **tx)
+                .await?;
+            for namespace in &rpc.namespaces {
+                sqlx::query("INSERT INTO current_node_rpc_namespaces (node_id, namespace, updated_at) VALUES (?, ?, ?)").bind(&node_id).bind(namespace).bind(received_at).execute(&mut **tx).await?;
+            }
+            sqlx::query("DELETE FROM current_node_rpc_methods WHERE node_id = ?")
+                .bind(&node_id)
+                .execute(&mut **tx)
+                .await?;
+            for method in &rpc.methods {
+                sqlx::query("INSERT INTO current_node_rpc_methods (node_id, method, updated_at) VALUES (?, ?, ?)").bind(&node_id).bind(method).bind(received_at).execute(&mut **tx).await?;
+            }
         }
     }
     Ok(())
@@ -768,7 +805,13 @@ mod tests {
             Bytes::from(body),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::OK);
+        if response.status() != StatusCode::OK {
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            panic!(
+                "unexpected report response: {}",
+                String::from_utf8_lossy(&body)
+            );
+        }
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         serde_json::from_slice::<ReportResponse>(&body)
             .unwrap()

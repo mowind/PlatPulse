@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 use thiserror::Error;
 
+use crate::collector::{FailClosedRpcAdapter, collect_and_persist};
 use crate::config::{AgentConfig, AgentConfigFile, generate_node_id};
 use crate::enroll::{EnrollError, enroll_agent};
 
@@ -26,6 +27,9 @@ pub enum Command {
     GenerateNodeId,
     /// Validate the complete agent.toml and all Node declarations.
     ValidateConfig(ValidateConfigArgs),
+    /// Collect one report using the configured production RPC transport.
+    /// This build fails closed because no RPC transport is configured yet.
+    CollectReport(CollectReportArgs),
     /// Validate and persist one immutable report before delivery.
     PersistReport(PersistReportArgs),
 }
@@ -43,6 +47,11 @@ pub struct ValidateConfigArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct CollectReportArgs {
+    #[arg(long)]
+    pub config: PathBuf,
+}
+#[derive(Debug, Args)]
 pub struct PersistReportArgs {
     #[arg(long)]
     pub config: PathBuf,
@@ -58,8 +67,8 @@ pub enum AgentCliError {
     Enroll(#[from] EnrollError),
     #[error("failed to read the enrollment token from the TTY or stdin: {0}")]
     TokenInput(std::io::Error),
-    #[error("report persistence failed: {0}")]
-    Report(String),
+    #[error("collection failed: {0}")]
+    Collection(String),
 }
 
 pub fn run_generate_node_id() {
@@ -80,10 +89,19 @@ pub fn run_validate_config(args: &ValidateConfigArgs) -> Result<(), Box<AgentCli
     Ok(())
 }
 
+pub async fn run_collect_report(args: &CollectReportArgs) -> Result<(), AgentCliError> {
+    let config = AgentConfig::resolve(&args.config)?;
+    let digest = collect_and_persist(&config, &FailClosedRpcAdapter)
+        .await
+        .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    println!("Persisted immutable collected report (sha256 {digest}).");
+    Ok(())
+}
+
 pub async fn run_persist_report(args: &PersistReportArgs) -> Result<(), AgentCliError> {
     let digest = crate::reporting::persist_report_from_config(&args.config, &args.report)
         .await
-        .map_err(|error| AgentCliError::Report(error.to_string()))?;
+        .map_err(|error| AgentCliError::Collection(error.to_string()))?;
     println!("Persisted immutable report (sha256 {digest}).");
     Ok(())
 }
