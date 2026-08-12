@@ -10,7 +10,7 @@
 //! additionally requires the Owner role, and the Agent group is refused
 //! with `setup_required` until the first Owner exists (design §12.2).
 
-mod admin;
+pub(crate) mod admin;
 pub(crate) mod agent;
 pub(crate) mod health;
 pub(crate) mod public;

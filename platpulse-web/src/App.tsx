@@ -4,6 +4,8 @@ import { RouterProvider } from 'react-router/dom'
 import AdminLayout from './layouts/AdminLayout'
 import HomeLayout from './layouts/HomeLayout'
 import LoginPage from './pages/LoginPage'
+import { NetworkPage, NodePage } from './pages/HomePages'
+import AdminHome from './pages/AdminHome'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 
 /**
@@ -59,7 +61,11 @@ const router = createBrowserRouter([
         <HomeLayout />
       </RequireSession>
     ),
-    children: [{ index: true, element: <HomeIndex /> }],
+    children: [
+      { index: true, element: <HomeIndex /> },
+      { path: 'networks/:networkKey', element: <NetworkPage /> },
+      { path: 'nodes/:nodeId', element: <NodePage /> },
+    ],
   },
   {
     path: '/admin',
@@ -68,7 +74,7 @@ const router = createBrowserRouter([
         <AdminLayout />
       </RequireOwner>
     ),
-    children: [{ index: true, element: <AdminIndex /> }],
+    children: [{ index: true, element: <AdminHome /> }],
   },
 ])
 
@@ -81,25 +87,5 @@ export default function App() {
 }
 
 function HomeIndex() {
-  return (
-    <section className="page">
-      <h1>Home</h1>
-      <p>
-        The PlatPulse Home shell renders and navigates on every supported
-        viewport.
-      </p>
-    </section>
-  )
-}
-
-function AdminIndex() {
-  return (
-    <section className="page">
-      <h1>Admin</h1>
-      <p>
-        The PlatPulse Admin shell renders and navigates on every supported
-        viewport.
-      </p>
-    </section>
-  )
+  return null
 }

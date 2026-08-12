@@ -1,11 +1,174 @@
 //! Owner-only Agent/Node current observation diagnostics.
 use super::{AppState, ROUTE_GROUP_HEADER, api_not_found};
-use axum::extract::{Extension, State};
-use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::extract::{Extension, Path, State};
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, put};
 use axum::{Json, Router};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use subtle::ConstantTimeEq;
+use utoipa::ToSchema;
 
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct VisibilityRequest {
+    pub visibility: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct VisibilityResponse {
+    pub node_id: String,
+    pub visibility: String,
+}
+
+fn mutation_error(
+    request_id: &str,
+    status: StatusCode,
+    code: &'static str,
+    message: &'static str,
+) -> Response {
+    (
+        status,
+        Json(crate::http::ApiErrorBody::new(code, message, request_id)),
+    )
+        .into_response()
+}
+
+/// Owner-only visibility mutation. All browser mutation trust-boundary
+/// checks are explicit here because Admin DTOs must not be writable by a
+/// Viewer or by cross-origin requests.
+#[utoipa::path(
+    put,
+    path = "/api/admin/v1/nodes/{node_id}/visibility",
+    tag = "admin",
+    params(("node_id" = String, Path, description = "Node ID")),
+    request_body = VisibilityRequest,
+    responses((status = 200, body = VisibilityResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody))
+)]
+pub(crate) async fn set_visibility(
+    State(state): State<AppState>,
+    Path(node_id): Path<String>,
+    headers: HeaderMap,
+    Extension(principal): Extension<super::AuthenticatedSession>,
+    Extension(request_id): Extension<super::RequestId>,
+    body: axum::body::Bytes,
+) -> Response {
+    // Validate the browser trust boundary before attempting to parse JSON. A
+    // malformed body must not bypass the same-origin/CSRF checks or produce a
+    // framework-generated error with a different envelope.
+    let content_type_valid = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("application/json"));
+    let origin_valid = state.auth().origin_matches(headers.get(header::ORIGIN));
+    let csrf_valid = headers
+        .get("x-csrf-token")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|token| bool::from(token.as_bytes().ct_eq(principal.0.csrf_token.as_bytes())));
+    if !content_type_valid || !origin_valid || !csrf_valid {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::FORBIDDEN,
+            "csrf_validation_failed",
+            "mutation validation failed",
+        );
+    }
+    let body: VisibilityRequest = match serde_json::from_slice(&body) {
+        Ok(body) => body,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::BAD_REQUEST,
+                "invalid_json",
+                "request body is invalid",
+            );
+        }
+    };
+    if body.visibility != "private" && body.visibility != "public" {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::BAD_REQUEST,
+            "invalid_visibility",
+            "visibility must be private or public",
+        );
+    }
+    let mut tx = match state.db().pool().begin().await {
+        Ok(tx) => tx,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    };
+    let before = sqlx::query_scalar::<_, String>("SELECT visibility FROM nodes WHERE node_id = ?")
+        .bind(&node_id)
+        .fetch_optional(&mut *tx)
+        .await;
+    let Some(previous) = (match before {
+        Ok(value) => value,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    }) else {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "resource not found",
+        );
+    };
+    if sqlx::query("UPDATE nodes SET visibility = ?, updated_at = ? WHERE node_id = ?")
+        .bind(&body.visibility)
+        .bind(crate::auth::format_rfc3339(crate::auth::now_utc()))
+        .bind(&node_id)
+        .execute(&mut *tx)
+        .await
+        .is_err()
+    {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        );
+    }
+    let audit = serde_json::json!({"visibility": body.visibility});
+    if crate::auth::insert_audit_event(
+        &mut *tx,
+        Some(&principal.0.user_id),
+        "node_visibility_changed",
+        "node",
+        &node_id,
+        Some(&audit),
+    )
+    .await
+    .is_err()
+        || tx.commit().await.is_err()
+    {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        );
+    }
+    let _ = previous;
+    Json(VisibilityResponse {
+        node_id,
+        visibility: body.visibility,
+    })
+    .into_response()
+}
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct AgentDiagnostic {
@@ -187,6 +350,7 @@ async fn diagnostics(
 pub fn router() -> Router<AppState> {
     Router::<AppState>::new()
         .route("/agents", get(diagnostics))
+        .route("/nodes/{node_id}/visibility", put(set_visibility))
         .fallback(api_not_found)
         .layer(axum::middleware::from_fn(group_middleware))
 }
@@ -211,6 +375,115 @@ mod tests {
     use serde_json::Value;
     use tempfile::tempdir;
     use time::OffsetDateTime;
+
+    #[tokio::test]
+    async fn visibility_mutation_accepts_json_parameters_and_updates_node() {
+        let dir = tempdir().unwrap();
+        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let pepper_path = dir.path().join("pepper");
+        crate::secrets::create_pepper_file(&pepper_path).unwrap();
+        let auth = crate::auth::AuthConfig::development(
+            crate::secrets::load_pepper_file(&pepper_path).unwrap(),
+            "http://127.0.0.1:8080".to_owned(),
+        );
+        let state = AppState::new(database, None, auth);
+        sqlx::query("INSERT INTO users (user_id, username, role, password_hash, created_at, updated_at) VALUES ('owner', 'owner', 'owner', 'hash', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')").execute(state.db().pool()).await.unwrap();
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('agent-visibility-test', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+            .execute(state.db().pool()).await.unwrap();
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('mainnet', 'Main', '0xgenesis', 1, 1, 'lat', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+            .execute(state.db().pool()).await.unwrap();
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ('node-visibility-test', 'agent-visibility-test', 'mainnet', 'ws://127.0.0.1:1', 'active', 'private', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+            .execute(state.db().pool()).await.unwrap();
+        let session = crate::auth::SessionInfo {
+            session_id: "session".to_owned(),
+            user_id: "owner".to_owned(),
+            username: "owner".to_owned(),
+            role: "owner".to_owned(),
+            created_at: OffsetDateTime::now_utc(),
+            last_seen_at: OffsetDateTime::now_utc(),
+            expires_at: OffsetDateTime::now_utc(),
+            csrf_token: "csrf".to_owned(),
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONTENT_TYPE,
+            "application/json; charset=utf-8".parse().unwrap(),
+        );
+        headers.insert(header::ORIGIN, "http://127.0.0.1:8080".parse().unwrap());
+        headers.insert("x-csrf-token", "csrf".parse().unwrap());
+        let response = set_visibility(
+            State(state.clone()),
+            Path("node-visibility-test".to_owned()),
+            headers,
+            Extension(AuthenticatedSession(session)),
+            Extension(crate::http::RequestId(std::sync::Arc::from("request"))),
+            axum::body::Bytes::from_static(br#"{"visibility":"public"}"#),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let visibility: String = sqlx::query_scalar(
+            "SELECT visibility FROM nodes WHERE node_id = 'node-visibility-test'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(visibility, "public");
+    }
+
+    #[tokio::test]
+    async fn visibility_mutation_rejects_security_failures_with_uniform_envelope_before_json() {
+        let dir = tempdir().unwrap();
+        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let pepper_path = dir.path().join("pepper");
+        crate::secrets::create_pepper_file(&pepper_path).unwrap();
+        let auth = crate::auth::AuthConfig::development(
+            crate::secrets::load_pepper_file(&pepper_path).unwrap(),
+            "http://127.0.0.1:8080".to_owned(),
+        );
+        let state = AppState::new(database, None, auth);
+        let session = crate::auth::SessionInfo {
+            session_id: "session".to_owned(),
+            user_id: "owner".to_owned(),
+            username: "owner".to_owned(),
+            role: "owner".to_owned(),
+            created_at: OffsetDateTime::now_utc(),
+            last_seen_at: OffsetDateTime::now_utc(),
+            expires_at: OffsetDateTime::now_utc(),
+            csrf_token: "csrf".to_owned(),
+        };
+        for (content_type, origin, csrf) in [
+            ("text/plain", "http://127.0.0.1:8080", "csrf"),
+            ("application/json", "https://evil.example", "csrf"),
+            ("application/json", "http://127.0.0.1:8080", "wrong"),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::CONTENT_TYPE, content_type.parse().unwrap());
+            headers.insert(header::ORIGIN, origin.parse().unwrap());
+            headers.insert("x-csrf-token", csrf.parse().unwrap());
+            let response = set_visibility(
+                State(state.clone()),
+                Path("missing".to_owned()),
+                headers,
+                Extension(AuthenticatedSession(session.clone())),
+                Extension(crate::http::RequestId(std::sync::Arc::from("request"))),
+                axum::body::Bytes::from_static(b"not json"),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(value["error"]["code"], "csrf_validation_failed");
+            assert_eq!(value["error"]["fields"], serde_json::json!([]));
+        }
+    }
 
     #[tokio::test]
     async fn host_diagnostics_include_failure_and_freshness_fields() {

@@ -175,6 +175,57 @@ describe('App shell with private Home', () => {
     ).toBeTruthy()
   })
 
+  it('renders published Network and Node data on Home', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/public/v1/networks': () => jsonResponse([{
+        networkKey: 'mainnet',
+        displayName: 'Mainnet',
+        nodes: [{
+          nodeId: 'node-1',
+          displayName: 'Validator A',
+          networkKey: 'mainnet',
+          health: 'healthy',
+          healthReason: 'rpc reachable',
+          freshness: '2026-08-12T00:00:00Z',
+          rpcState: 'ok',
+          hostCpuPercent: 42.5,
+        }],
+      }], 200),
+    })
+
+    render(<App />)
+    const homeLink = await screen.findByRole('link', { name: 'Home' })
+    fireEvent.click(homeLink)
+    expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeTruthy()
+    expect(await screen.findByRole('link', { name: 'Mainnet' })).toBeTruthy()
+    expect(screen.getByRole('link', { name: 'Validator A' })).toBeTruthy()
+    expect(screen.getByText('healthy')).toBeTruthy()
+  })
+
+  it('submits the Owner visibility mutation from Admin', async () => {
+    const fetchMock = mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes/node-1/visibility': () => jsonResponse({ nodeId: 'node-1', visibility: 'public' }, 200),
+    })
+    window.history.replaceState({}, '', '/admin')
+
+    render(<App />)
+    const adminLink = await screen.findByRole('link', { name: 'Admin' })
+    fireEvent.click(adminLink)
+    await screen.findByRole('heading', { level: 1, name: 'Admin diagnostics' })
+    fireEvent.change(screen.getByLabelText('Node ID'), { target: { value: 'node-1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Update visibility' }))
+
+    expect((await screen.findByRole('status')).textContent).toContain('node-1 is now public.')
+    const reportRequest = fetchMock.mock.calls
+      .map(([input]) => input)
+      .find((input): input is Request => input instanceof Request && input.url.includes('/api/admin/v1/nodes/node-1/visibility'))
+    expect(reportRequest).toBeTruthy()
+    expect(reportRequest?.method).toBe('PUT')
+    expect(reportRequest?.headers.get('X-CSRF-Token')).toBe('csrf-token')
+  })
+
   it('keeps keyboard submission working on the login form', async () => {
     mockFetch({
       '/api/public/v1/session': () => errorBody('auth_required'),

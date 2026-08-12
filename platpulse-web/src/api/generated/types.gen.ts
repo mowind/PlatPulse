@@ -30,6 +30,23 @@ export type LoginRequest = {
     username: string;
 };
 
+export type PublicNetwork = {
+    displayName: string;
+    networkKey: string;
+    nodes: Array<PublicNode>;
+};
+
+export type PublicNode = {
+    displayName?: string | null;
+    freshness?: string | null;
+    health: string;
+    healthReason: string;
+    hostCpuPercent?: number | null;
+    networkKey: string;
+    nodeId: string;
+    rpcState: string;
+};
+
 export type ReadyComponent = {
     name: string;
     reason?: string | null;
@@ -61,6 +78,41 @@ export type SessionResponse = {
     csrfToken: string;
     session: SessionProjection;
 };
+
+export type VisibilityRequest = {
+    visibility: string;
+};
+
+export type VisibilityResponse = {
+    nodeId: string;
+    visibility: string;
+};
+
+export type SetVisibilityData = {
+    body: VisibilityRequest;
+    path: {
+        /**
+         * Node ID
+         */
+        node_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/nodes/{node_id}/visibility';
+};
+
+export type SetVisibilityErrors = {
+    400: ApiErrorBody;
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+};
+
+export type SetVisibilityError = SetVisibilityErrors[keyof SetVisibilityErrors];
+
+export type SetVisibilityResponses = {
+    200: VisibilityResponse;
+};
+
+export type SetVisibilityResponse = SetVisibilityResponses[keyof SetVisibilityResponses];
 
 export type LoginHandlerData = {
     body: LoginRequest;
@@ -127,6 +179,76 @@ export type LogoutHandlerResponses = {
 };
 
 export type LogoutHandlerResponse = LogoutHandlerResponses[keyof LogoutHandlerResponses];
+
+export type PublicNetworksData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/public/v1/networks';
+};
+
+export type PublicNetworksResponses = {
+    /**
+     * Published Network and Node projection
+     */
+    200: Array<PublicNetwork>;
+};
+
+export type PublicNetworksResponse = PublicNetworksResponses[keyof PublicNetworksResponses];
+
+export type PublicNetworkData = {
+    body?: never;
+    path: {
+        /**
+         * Registered Network key
+         */
+        network_key: string;
+    };
+    query?: never;
+    url: '/api/public/v1/networks/{network_key}';
+};
+
+export type PublicNetworkErrors = {
+    404: ApiErrorBody;
+};
+
+export type PublicNetworkError = PublicNetworkErrors[keyof PublicNetworkErrors];
+
+export type PublicNetworkResponses = {
+    /**
+     * Published Network projection
+     */
+    200: PublicNetwork;
+};
+
+export type PublicNetworkResponse = PublicNetworkResponses[keyof PublicNetworkResponses];
+
+export type PublicNodeDetailData = {
+    body?: never;
+    path: {
+        /**
+         * Published Node ID
+         */
+        node_id: string;
+    };
+    query?: never;
+    url: '/api/public/v1/nodes/{node_id}';
+};
+
+export type PublicNodeDetailErrors = {
+    404: ApiErrorBody;
+};
+
+export type PublicNodeDetailError = PublicNodeDetailErrors[keyof PublicNodeDetailErrors];
+
+export type PublicNodeDetailResponses = {
+    /**
+     * Published Node projection
+     */
+    200: PublicNode;
+};
+
+export type PublicNodeDetailResponse = PublicNodeDetailResponses[keyof PublicNodeDetailResponses];
 
 export type SessionHandlerData = {
     body?: never;

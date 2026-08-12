@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { LiveData, LiveResponses, LoginHandlerData, LoginHandlerErrors, LoginHandlerResponses, LogoutHandlerData, LogoutHandlerErrors, LogoutHandlerResponses, ReadyData, ReadyErrors, ReadyResponses, SessionHandlerData, SessionHandlerErrors, SessionHandlerResponses } from './types.gen';
+import type { LiveData, LiveResponses, LoginHandlerData, LoginHandlerErrors, LoginHandlerResponses, LogoutHandlerData, LogoutHandlerErrors, LogoutHandlerResponses, PublicNetworkData, PublicNetworkErrors, PublicNetworkResponses, PublicNetworksData, PublicNetworksResponses, PublicNodeDetailData, PublicNodeDetailErrors, PublicNodeDetailResponses, ReadyData, ReadyErrors, ReadyResponses, SessionHandlerData, SessionHandlerErrors, SessionHandlerResponses, SetVisibilityData, SetVisibilityErrors, SetVisibilityResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -17,6 +17,20 @@ export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends 
      */
     meta?: keyof ClientMeta extends never ? Record<string, unknown> : ClientMeta;
 };
+
+/**
+ * Owner-only visibility mutation. All browser mutation trust-boundary
+ * checks are explicit here because Admin DTOs must not be writable by a
+ * Viewer or by cross-origin requests.
+ */
+export const setVisibility = <ThrowOnError extends boolean = false>(options: Options<SetVisibilityData, ThrowOnError>): RequestResult<SetVisibilityResponses, SetVisibilityErrors, ThrowOnError> => (options.client ?? client).put<SetVisibilityResponses, SetVisibilityErrors, ThrowOnError>({
+    url: '/api/admin/v1/nodes/{node_id}/visibility',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
 
 /**
  * Login with strict configured-Origin validation, an independent rate
@@ -38,6 +52,17 @@ export const loginHandler = <ThrowOnError extends boolean = false>(options: Opti
  * the user signed out.
  */
 export const logoutHandler = <ThrowOnError extends boolean = false>(options?: Options<LogoutHandlerData, ThrowOnError>): RequestResult<LogoutHandlerResponses, LogoutHandlerErrors, ThrowOnError> => (options?.client ?? client).post<LogoutHandlerResponses, LogoutHandlerErrors, ThrowOnError>({ url: '/api/public/v1/logout', ...options });
+
+/**
+ * Public Home projection. The query boundary only selects public, active
+ * Nodes and never returns endpoint, Agent, host identity, capacity, or raw
+ * errors from the Admin projection.
+ */
+export const publicNetworks = <ThrowOnError extends boolean = false>(options?: Options<PublicNetworksData, ThrowOnError>): RequestResult<PublicNetworksResponses, unknown, ThrowOnError> => (options?.client ?? client).get<PublicNetworksResponses, unknown, ThrowOnError>({ url: '/api/public/v1/networks', ...options });
+
+export const publicNetwork = <ThrowOnError extends boolean = false>(options: Options<PublicNetworkData, ThrowOnError>): RequestResult<PublicNetworkResponses, PublicNetworkErrors, ThrowOnError> => (options.client ?? client).get<PublicNetworkResponses, PublicNetworkErrors, ThrowOnError>({ url: '/api/public/v1/networks/{network_key}', ...options });
+
+export const publicNodeDetail = <ThrowOnError extends boolean = false>(options: Options<PublicNodeDetailData, ThrowOnError>): RequestResult<PublicNodeDetailResponses, PublicNodeDetailErrors, ThrowOnError> => (options.client ?? client).get<PublicNodeDetailResponses, PublicNodeDetailErrors, ThrowOnError>({ url: '/api/public/v1/nodes/{node_id}', ...options });
 
 /**
  * Current session projection and CSRF token for the WebUI (design §12.4).
