@@ -1,0 +1,109 @@
+{
+  "report_id": "0195f2a1-0003-4003-8003-000000000003",
+  "disposition": "partially_accepted",
+  "report_body_sha256": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "server_version": "0.1.0",
+  "supported_protocol_majors": [
+    1
+  ],
+  "server_time": "2026-08-12T10:00:01Z",
+  "rotation_hint": "rotate-credential-before-2026-09-01",
+  "inventory": "accepted",
+  "rejections": [],
+  "nodes": [
+    {
+      "node_id": "0195f2a1-0004-4004-8004-000000000004",
+      "current": "accepted",
+      "accepted_component_revisions": [
+        {
+          "component": "process",
+          "state_revision": 3,
+          "value_revision": 3
+        },
+        {
+          "component": "rpc",
+          "state_revision": 6,
+          "value_revision": 6
+        },
+        {
+          "component": "sync",
+          "state_revision": 7,
+          "value_revision": 7
+        },
+        {
+          "component": "consensus",
+          "state_revision": 5,
+          "value_revision": 5
+        },
+        {
+          "component": "network_identity",
+          "state_revision": 2,
+          "value_revision": 2
+        },
+        {
+          "component": "static_metadata",
+          "state_revision": 1,
+          "value_revision": 1
+        }
+      ],
+      "rejections": []
+    },
+    {
+      "node_id": "0195f2a1-0005-4005-8005-000000000005",
+      "current": "rejected",
+      "accepted_component_revisions": [],
+      "rejections": [
+        {
+          "code": "node_current_invalid",
+          "retryable": false,
+          "reason": "current_block below historical high-water mark without a resync state"
+        }
+      ]
+    }
+  ],
+  "samples": [
+    {
+      "node_id": "0195f2a1-0004-4004-8004-000000000004",
+      "sample": {
+        "kind": "block",
+        "height": 100040
+      },
+      "disposition": "accepted"
+    },
+    {
+      "node_id": "0195f2a1-0004-4004-8004-000000000004",
+      "sample": {
+        "kind": "block",
+        "height": 100041
+      },
+      "disposition": "retryable_rejected",
+      "rejection": {
+        "code": "gap_not_open",
+        "retryable": true,
+        "reason": "gap declaration for this range is not yet registered"
+      }
+    },
+    {
+      "node_id": "0195f2a1-0004-4004-8004-000000000004",
+      "sample": {
+        "kind": "block",
+        "height": 100042
+      },
+      "disposition": "terminal_rejected",
+      "rejection": {
+        "code": "network_identity_mismatch",
+        "retryable": false,
+        "reason": "observed genesis hash differs from the registered network"
+      }
+    },
+    {
+      "node_id": "0195f2a1-0004-4004-8004-000000000004",
+      "sample": {
+        "kind": "gap",
+        "from_height": 100038,
+        "to_height": 100040
+      },
+      "disposition": "accepted"
+    }
+  ]
+}

@@ -1,0 +1,612 @@
+//! The immutable AgentReport v1 envelope.
+//!
+//! A report contains the Agent's complete current observation view together
+//! with newly collected bounded samples. Reports are persisted before
+//! sending and retried with identical bytes/`report_id`; the Server returns
+//! one exact Report Receipt per `report_id`.
+
+use std::collections::HashSet;
+
+use serde::{Deserialize, Serialize};
+
+use crate::block::BlockSummary;
+use crate::component::validate_component;
+use crate::error::WireError;
+use crate::gap::HistoryGap;
+use crate::identity::{AgentId, BootId, NodeId, ReportId};
+use crate::inventory::NodeInventory;
+use crate::observation::{HostObservation, NodeChainObservation, NodeObservation};
+use crate::protocol::PROTOCOL_VERSION;
+use crate::time::Rfc3339;
+
+/// How this report relates to the Agent's boot lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BootTransition {
+    /// A normal report of the current boot.
+    Continuing,
+    /// The final report of the current boot (graceful shutdown); after its
+    /// receipt is applied the Server marks the boot closed.
+    Closing,
+    /// First report of a new boot after a recovery-drain finished the
+    /// previous boot; must carry `previous_boot_id`.
+    DrainedPrevious,
+    /// Reserved for a future explicit Server-approved recovery flow; not
+    /// valid in v1.
+    RecoveredAfterStale,
+}
+
+/// Agent-declared capabilities. The Server may use them for diagnostics and
+/// compatibility hints; they never grant Server-side authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentCapability {
+    /// Per-Node Block Summaries with Block Production Attribution.
+    BlockSummary,
+    /// History Gap reporting.
+    HistoryGap,
+    /// Process observation through an explicit systemd unit selector.
+    ProcessSystemd,
+    /// Process observation through an explicit PID file selector.
+    ProcessPidFile,
+    /// Bounded `debug_consensusStatus` collection.
+    ConsensusStatus,
+}
+
+/// The immutable AgentReport envelope (protocol v1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentReport {
+    /// Wire protocol major; must equal `PROTOCOL_VERSION` (1).
+    pub protocol_version: u64,
+    /// Agent identity, issued by the Server at Enrollment.
+    pub agent_id: AgentId,
+    /// Server-controlled generation of the Agent identity; Enrollment,
+    /// Recovery, or Reset advances it.
+    pub agent_epoch: u64,
+    /// Identity of the boot that produced this report.
+    pub boot_id: BootId,
+    /// Previous boot this report drains from; required exactly for
+    /// `drained_previous`/`recovered_after_stale` transitions.
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub previous_boot_id: Option<BootId>,
+    /// Boot lifecycle transition this report represents.
+    pub boot_transition: BootTransition,
+    /// Per-boot monotonic sequence, starting at 1. Gaps are allowed, but the
+    /// sequence never regresses within a boot.
+    pub report_sequence: u64,
+    /// Immutable identity of this report; retries reuse it with identical
+    /// body bytes.
+    pub report_id: ReportId,
+    /// UTC time the report was generated.
+    pub generated_at: Rfc3339,
+    /// Agent software version (contract limit: 128 chars).
+    pub agent_version: String,
+    /// Agent-declared capabilities (may be `[]`).
+    pub agent_capabilities: Vec<AgentCapability>,
+    /// The complete Node Inventory and its revision.
+    pub inventory: NodeInventory,
+    /// Host-level observation, collected once per Agent.
+    pub host: HostObservation,
+    /// Per-Node current component observations.
+    pub nodes: Vec<NodeObservation>,
+    /// Newly collected per-Node Block Summaries (may be `[]`).
+    pub block_summaries: Vec<BlockSummary>,
+    /// Newly declared History Gaps (may be `[]`).
+    pub history_gaps: Vec<HistoryGap>,
+}
+
+impl AgentReport {
+    /// Validates the structural wire invariants of this report.
+    ///
+    /// The Server revalidates every field after deserialization (it is the
+    /// trust boundary); this is the shared contract check used by both
+    /// sides.
+    pub fn validate(&self) -> Result<(), WireError> {
+        if self.protocol_version != PROTOCOL_VERSION {
+            return Err(WireError::UnsupportedProtocolVersion {
+                got: self.protocol_version,
+                supported: PROTOCOL_VERSION,
+            });
+        }
+        if self.report_sequence == 0 {
+            return Err(WireError::ReportSequenceZero);
+        }
+        match self.boot_transition {
+            BootTransition::DrainedPrevious | BootTransition::RecoveredAfterStale => {
+                if self.previous_boot_id.is_none() {
+                    return Err(WireError::MissingPreviousBootId {
+                        transition: self.boot_transition,
+                    });
+                }
+            }
+            BootTransition::Continuing | BootTransition::Closing => {
+                if self.previous_boot_id.is_some() {
+                    return Err(WireError::UnexpectedPreviousBootId {
+                        transition: self.boot_transition,
+                    });
+                }
+            }
+        }
+        if self.boot_transition == BootTransition::RecoveredAfterStale {
+            return Err(WireError::ReservedBootTransitionInV1 {
+                transition: self.boot_transition,
+            });
+        }
+        self.validate_inventory()?;
+        self.validate_observations()?;
+        self.validate_blocks()?;
+        self.validate_gaps()?;
+        Ok(())
+    }
+
+    fn validate_inventory(&self) -> Result<(), WireError> {
+        if self.inventory.revision == 0 {
+            return Err(WireError::InventoryRevisionZero);
+        }
+        let mut seen = HashSet::with_capacity(self.inventory.nodes.len());
+        for node in &self.inventory.nodes {
+            if !seen.insert(node.node_id) {
+                return Err(WireError::DuplicateInventoryNode {
+                    node_id: node.node_id,
+                });
+            }
+            if let Some(name) = &node.display_name {
+                check_len("display_name", name, 128)?;
+            }
+            if let Some(selector) = &node.process {
+                match selector {
+                    crate::inventory::ProcessSelector::SystemdUnit { unit } => {
+                        check_len("process.unit", unit, 512)?;
+                    }
+                    crate::inventory::ProcessSelector::PidFile { path } => {
+                        check_len("process.path", path, 512)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_observations(&self) -> Result<(), WireError> {
+        check_len("agent_version", &self.agent_version, 128)?;
+        let known: HashSet<NodeId> = self
+            .inventory
+            .nodes
+            .iter()
+            .map(|node| node.node_id)
+            .collect();
+
+        // The report is the complete current observation view: exactly one
+        // entry per Inventory Node, and no entry outside the Inventory.
+        let mut observed: HashSet<NodeId> = HashSet::with_capacity(self.nodes.len());
+        for obs in &self.nodes {
+            if !known.contains(&obs.node_id) {
+                return Err(WireError::ObservationForUnknownNode {
+                    node_id: obs.node_id,
+                });
+            }
+            if !observed.insert(obs.node_id) {
+                return Err(WireError::DuplicateNodeObservation {
+                    node_id: obs.node_id,
+                });
+            }
+        }
+        for node in &self.inventory.nodes {
+            if !observed.contains(&node.node_id) {
+                return Err(WireError::MissingNodeObservation {
+                    node_id: node.node_id,
+                });
+            }
+        }
+
+        validate_host_components(&self.host)?;
+
+        for obs in &self.nodes {
+            validate_component("process", &obs.process)?;
+            if let Some(process) = &obs.process.latest {
+                if !process.cpu_percent.is_finite() || process.cpu_percent < 0.0 {
+                    return Err(WireError::ValueNotFinite {
+                        field: "process.cpu_percent",
+                    });
+                }
+            }
+            validate_chain_components(&obs.chain)?;
+            if let Some(sync) = &obs.chain.sync.latest {
+                if sync.current_block > sync.highest_block {
+                    return Err(WireError::ValueOutOfRange {
+                        field: "sync.current_block",
+                    });
+                }
+            }
+            if let Some(rpc) = &obs.chain.rpc.latest {
+                check_len("rpc.client_version", &rpc.client_version, 256)?;
+                check_entries("rpc.namespaces", rpc.namespaces.len(), 64)?;
+                for namespace in &rpc.namespaces {
+                    check_len("rpc.namespaces[]", namespace, 64)?;
+                }
+                check_entries("rpc.methods", rpc.methods.len(), 512)?;
+                for method in &rpc.methods {
+                    check_len("rpc.methods[]", method, 128)?;
+                }
+            }
+            if let Some(metadata) = &obs.chain.static_metadata.latest {
+                if let Some(enode) = &metadata.enode {
+                    check_len("static_metadata.enode", enode, 512)?;
+                }
+            }
+            if let Some(identity) = &obs.chain.network_identity.latest {
+                if let Some(hrp) = &identity.address_hrp {
+                    check_len("network_identity.address_hrp", hrp, 16)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_blocks(&self) -> Result<(), WireError> {
+        let known: HashSet<NodeId> = self
+            .inventory
+            .nodes
+            .iter()
+            .map(|node| node.node_id)
+            .collect();
+        for block in &self.block_summaries {
+            if !known.contains(&block.node_id) {
+                return Err(WireError::BlockSampleForUnknownNode {
+                    node_id: block.node_id,
+                });
+            }
+            if let Some(hrp) = &block.network_identity.address_hrp {
+                check_len("block.network_identity.address_hrp", hrp, 16)?;
+            }
+            check_len(
+                "block.attribution.attribution_reason",
+                &block.attribution.attribution_reason,
+                256,
+            )?;
+            if let crate::block::ProtocolProposer::Verified { identity } =
+                &block.attribution.protocol_proposer
+            {
+                check_len(
+                    "block.attribution.protocol_proposer.identity",
+                    identity,
+                    128,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_gaps(&self) -> Result<(), WireError> {
+        let known: HashSet<NodeId> = self
+            .inventory
+            .nodes
+            .iter()
+            .map(|node| node.node_id)
+            .collect();
+        for gap in &self.history_gaps {
+            if !known.contains(&gap.node_id) {
+                return Err(WireError::HistoryGapForUnknownNode {
+                    node_id: gap.node_id,
+                });
+            }
+            if gap.from_height > gap.to_height {
+                return Err(WireError::ReversedGapRange {
+                    node_id: gap.node_id,
+                    from_height: gap.from_height,
+                    to_height: gap.to_height,
+                });
+            }
+            check_len("history_gap.reason", &gap.reason, 512)?;
+        }
+        Ok(())
+    }
+}
+
+fn validate_host_components(host: &HostObservation) -> Result<(), WireError> {
+    validate_component("cpu_percent", &host.cpu_percent)?;
+    validate_component("memory", &host.memory)?;
+    validate_component("load", &host.load)?;
+    validate_component("disk", &host.disk)?;
+    validate_component("network_throughput", &host.network_throughput)?;
+    validate_component("clock_skew", &host.clock_skew)?;
+    validate_component("spool", &host.spool)?;
+    if let Some(cpu) = host.cpu_percent.latest {
+        if !cpu.is_finite() {
+            return Err(WireError::ValueNotFinite {
+                field: "host.cpu_percent",
+            });
+        }
+        if !(0.0..=100.0).contains(&cpu) {
+            return Err(WireError::ValueOutOfRange {
+                field: "host.cpu_percent",
+            });
+        }
+    }
+    if let Some(load) = &host.load.latest {
+        for value in [load.load1, load.load5, load.load15] {
+            if !value.is_finite() {
+                return Err(WireError::ValueNotFinite { field: "host.load" });
+            }
+            if value < 0.0 {
+                return Err(WireError::ValueOutOfRange { field: "host.load" });
+            }
+        }
+    }
+    if let Some(memory) = &host.memory.latest {
+        if memory.used_bytes > memory.total_bytes {
+            return Err(WireError::UsedExceedsTotal {
+                field: "host.memory.used_bytes",
+            });
+        }
+    }
+    if let Some(disk) = &host.disk.latest {
+        check_entries("disk.mounts", disk.mounts.len(), 128)?;
+        for mount in &disk.mounts {
+            check_len("disk.mounts[].mount_path", &mount.mount_path, 4096)?;
+            if mount.used_bytes > mount.total_bytes {
+                return Err(WireError::UsedExceedsTotal {
+                    field: "disk.mounts[].used_bytes",
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_chain_components(chain: &NodeChainObservation) -> Result<(), WireError> {
+    validate_component("rpc", &chain.rpc)?;
+    validate_component("sync", &chain.sync)?;
+    validate_component("consensus", &chain.consensus)?;
+    validate_component("network_identity", &chain.network_identity)?;
+    validate_component("static_metadata", &chain.static_metadata)?;
+    Ok(())
+}
+
+fn check_len(field: &'static str, value: &str, max: usize) -> Result<(), WireError> {
+    if value.len() > max {
+        return Err(WireError::FieldTooLong {
+            field,
+            len: value.len(),
+            max,
+        });
+    }
+    Ok(())
+}
+
+fn check_entries(field: &'static str, len: usize, max: usize) -> Result<(), WireError> {
+    if len > max {
+        return Err(WireError::TooManyEntries { field, len, max });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::component::ComponentStatus;
+
+    /// A minimal structurally valid report used to exercise invariants.
+    pub(crate) fn minimal_report() -> AgentReport {
+        let fixture = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/report_v1_minimal.json"
+        ));
+        serde_json::from_str(fixture).unwrap()
+    }
+
+    #[test]
+    fn minimal_report_is_valid() {
+        let report = minimal_report();
+        assert_eq!(report.validate(), Ok(()));
+    }
+
+    #[test]
+    fn unsupported_protocol_major_is_rejected() {
+        let mut report = minimal_report();
+        report.protocol_version = 2;
+        assert_eq!(
+            report.validate(),
+            Err(WireError::UnsupportedProtocolVersion {
+                got: 2,
+                supported: 1
+            })
+        );
+        report.protocol_version = 0;
+        assert!(report.validate().is_err());
+    }
+
+    #[test]
+    fn sequence_must_start_at_one() {
+        let mut report = minimal_report();
+        report.report_sequence = 0;
+        assert_eq!(report.validate(), Err(WireError::ReportSequenceZero));
+    }
+
+    #[test]
+    fn drained_requires_previous_boot_id() {
+        let mut report = minimal_report();
+        report.boot_transition = BootTransition::DrainedPrevious;
+        assert_eq!(
+            report.validate(),
+            Err(WireError::MissingPreviousBootId {
+                transition: BootTransition::DrainedPrevious
+            })
+        );
+        report.previous_boot_id = Some(report.boot_id);
+        assert_eq!(report.validate(), Ok(()));
+    }
+
+    #[test]
+    fn continuing_rejects_previous_boot_id() {
+        let mut report = minimal_report();
+        report.previous_boot_id = Some(report.boot_id);
+        assert_eq!(
+            report.validate(),
+            Err(WireError::UnexpectedPreviousBootId {
+                transition: BootTransition::Continuing
+            })
+        );
+    }
+
+    #[test]
+    fn recovered_after_stale_is_reserved() {
+        let mut report = minimal_report();
+        report.boot_transition = BootTransition::RecoveredAfterStale;
+        report.previous_boot_id = Some(report.boot_id);
+        assert_eq!(
+            report.validate(),
+            Err(WireError::ReservedBootTransitionInV1 {
+                transition: BootTransition::RecoveredAfterStale
+            })
+        );
+    }
+
+    #[test]
+    fn inventory_revision_must_be_positive() {
+        let mut report = minimal_report();
+        report.inventory.revision = 0;
+        assert_eq!(report.validate(), Err(WireError::InventoryRevisionZero));
+    }
+
+    #[test]
+    fn duplicate_inventory_node_is_rejected() {
+        let mut report = minimal_report();
+        let node = report.inventory.nodes[0].clone();
+        report.inventory.nodes.push(node);
+        assert_eq!(
+            report.validate(),
+            Err(WireError::DuplicateInventoryNode {
+                node_id: report.inventory.nodes[0].node_id
+            })
+        );
+    }
+
+    #[test]
+    fn observations_must_reference_inventory_nodes() {
+        let mut report = minimal_report();
+        report.nodes[0].node_id = "99999999-9999-4999-8999-999999999999".parse().unwrap();
+        assert!(matches!(
+            report.validate(),
+            Err(WireError::ObservationForUnknownNode { .. })
+        ));
+    }
+
+    #[test]
+    fn observations_must_cover_every_inventory_node_exactly_once() {
+        let mut report = minimal_report();
+        report.nodes.clear();
+        assert!(matches!(
+            report.validate(),
+            Err(WireError::MissingNodeObservation { node_id }) if node_id == report.inventory.nodes[0].node_id
+        ));
+
+        let mut report = minimal_report();
+        report.nodes.push(report.nodes[0].clone());
+        assert!(matches!(
+            report.validate(),
+            Err(WireError::DuplicateNodeObservation { node_id }) if node_id == report.inventory.nodes[0].node_id
+        ));
+    }
+
+    #[test]
+    fn reversed_gap_range_is_rejected() {
+        let mut report = minimal_report();
+        let mut gap = crate::gap::HistoryGap {
+            node_id: report.inventory.nodes[0].node_id,
+            kind: crate::gap::GapKind::SpoolOverflow,
+            from_height: 20,
+            to_height: 10,
+            reason: "capacity cleanup".into(),
+            recorded_at: report.generated_at,
+        };
+        report.history_gaps.push(gap.clone());
+        assert_eq!(
+            report.validate(),
+            Err(WireError::ReversedGapRange {
+                node_id: gap.node_id,
+                from_height: 20,
+                to_height: 10
+            })
+        );
+        gap.from_height = 10;
+        gap.to_height = 20;
+        report.history_gaps.pop();
+        report.history_gaps.push(gap);
+        assert_eq!(report.validate(), Ok(()));
+    }
+
+    #[test]
+    fn component_invariant_violations_are_reported() {
+        let mut report = minimal_report();
+        let mut component = report.host.cpu_percent.clone();
+        component.status = ComponentStatus::Ok;
+        component.latest = Some(42.0);
+        component.latest_observed_at = None;
+        report.host.cpu_percent = component;
+        assert!(matches!(
+            report.validate(),
+            Err(WireError::ComponentLatestWithoutObservedAt {
+                component: "cpu_percent"
+            })
+        ));
+    }
+
+    #[test]
+    fn bounded_error_too_long_is_rejected() {
+        let mut report = minimal_report();
+        let mut component = report.host.cpu_percent.clone();
+        component.status = ComponentStatus::Error;
+        component.error = Some(crate::component::BoundedError {
+            code: "boom".into(),
+            message: "x".repeat(1025),
+        });
+        report.host.cpu_percent = component;
+        assert!(matches!(
+            report.validate(),
+            Err(WireError::FieldTooLong {
+                field: "error.message",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn agent_version_too_long_is_rejected() {
+        let mut report = minimal_report();
+        report.agent_version = "v".repeat(129);
+        assert!(matches!(
+            report.validate(),
+            Err(WireError::FieldTooLong {
+                field: "agent_version",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn empty_inventory_and_empty_samples_are_authoritative() {
+        let mut report = minimal_report();
+        report.inventory.nodes.clear();
+        report.nodes.clear();
+        assert_eq!(report.validate(), Ok(()));
+    }
+
+    #[test]
+    fn boot_transition_wire_forms() {
+        assert_eq!(
+            serde_json::to_string(&BootTransition::DrainedPrevious).unwrap(),
+            "\"drained_previous\""
+        );
+        assert_eq!(
+            serde_json::to_string(&BootTransition::RecoveredAfterStale).unwrap(),
+            "\"recovered_after_stale\""
+        );
+        assert!(serde_json::from_str::<BootTransition>("\"jumping\"").is_err());
+    }
+}

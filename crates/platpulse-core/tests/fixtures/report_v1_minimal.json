@@ -1,0 +1,170 @@
+{
+  "protocol_version": 1,
+  "agent_id": "0195f2a1-0011-4011-8011-000000000011",
+  "agent_epoch": 1,
+  "boot_id": "0195f2a1-0012-4012-8012-000000000012",
+  "boot_transition": "continuing",
+  "report_sequence": 1,
+  "report_id": "0195f2a1-0013-4013-8013-000000000013",
+  "generated_at": "2026-08-12T09:00:00Z",
+  "agent_version": "0.1.0",
+  "agent_capabilities": [],
+  "inventory": {
+    "revision": 1,
+    "nodes": [
+      {
+        "node_id": "0195f2a1-0014-4014-8014-000000000014",
+        "network_key": "platon-mainnet",
+        "rpc_endpoint": "ws://127.0.0.1:6790"
+      }
+    ]
+  },
+  "host": {
+    "cpu_percent": {
+      "status": "ok",
+      "attempted_at": "2026-08-12T08:59:55Z",
+      "latest_observed_at": "2026-08-12T08:59:55Z",
+      "state_revision": 1,
+      "value_revision": 1,
+      "latest": 11.0
+    },
+    "memory": {
+      "status": "ok",
+      "attempted_at": "2026-08-12T08:59:55Z",
+      "latest_observed_at": "2026-08-12T08:59:55Z",
+      "state_revision": 1,
+      "value_revision": 1,
+      "latest": {
+        "total_bytes": 17179869184,
+        "used_bytes": 4294967296
+      }
+    },
+    "load": {
+      "status": "ok",
+      "attempted_at": "2026-08-12T08:59:55Z",
+      "latest_observed_at": "2026-08-12T08:59:55Z",
+      "state_revision": 1,
+      "value_revision": 1,
+      "latest": {
+        "load1": 0.4,
+        "load5": 0.35,
+        "load15": 0.3
+      }
+    },
+    "disk": {
+      "status": "ok",
+      "attempted_at": "2026-08-12T08:59:55Z",
+      "latest_observed_at": "2026-08-12T08:59:55Z",
+      "state_revision": 1,
+      "value_revision": 1,
+      "latest": {
+        "mounts": []
+      }
+    },
+    "network_throughput": {
+      "status": "ok",
+      "attempted_at": "2026-08-12T08:59:55Z",
+      "latest_observed_at": "2026-08-12T08:59:55Z",
+      "state_revision": 1,
+      "value_revision": 1,
+      "latest": {
+        "rx_bytes_per_sec": 0,
+        "tx_bytes_per_sec": 0
+      }
+    },
+    "clock_skew": {
+      "status": "ok",
+      "attempted_at": "2026-08-12T08:59:55Z",
+      "latest_observed_at": "2026-08-12T08:59:55Z",
+      "state_revision": 1,
+      "value_revision": 1,
+      "latest": -4
+    },
+    "spool": {
+      "status": "ok",
+      "attempted_at": "2026-08-12T08:59:55Z",
+      "latest_observed_at": "2026-08-12T08:59:55Z",
+      "state_revision": 1,
+      "value_revision": 1,
+      "latest": {
+        "queued_bytes": 0,
+        "queued_reports": 0,
+        "oldest_queued_age_ms": 0,
+        "dropped_reports": 0,
+        "dropped_samples": 0
+      }
+    }
+  },
+  "nodes": [
+    {
+      "node_id": "0195f2a1-0014-4014-8014-000000000014",
+      "process": {
+        "status": "disabled",
+        "state_revision": 1,
+        "value_revision": 0
+      },
+      "chain": {
+        "rpc": {
+          "status": "ok",
+          "attempted_at": "2026-08-12T08:59:55Z",
+          "latest_observed_at": "2026-08-12T08:59:55Z",
+          "state_revision": 1,
+          "value_revision": 1,
+          "latest": {
+            "client_version": "PlatON/v1.4.0-unstable/linux-amd64/go1.21.1",
+            "namespaces": [
+              "platon",
+              "net"
+            ],
+            "methods": [
+              "platon_getBlockByHash"
+            ]
+          }
+        },
+        "sync": {
+          "status": "ok",
+          "attempted_at": "2026-08-12T08:59:55Z",
+          "latest_observed_at": "2026-08-12T08:59:55Z",
+          "state_revision": 1,
+          "value_revision": 1,
+          "latest": {
+            "syncing": false,
+            "current_block": 9007199254740993,
+            "highest_block": 9007199254740993,
+            "pulled_states": 0,
+            "known_states": 0
+          }
+        },
+        "consensus": {
+          "status": "unsupported",
+          "state_revision": 1,
+          "value_revision": 0
+        },
+        "network_identity": {
+          "status": "ok",
+          "attempted_at": "2026-08-12T08:59:55Z",
+          "latest_observed_at": "2026-08-12T08:59:55Z",
+          "state_revision": 1,
+          "value_revision": 1,
+          "latest": {
+            "genesis_hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "chain_id": 210425,
+            "p2p_network_id": 210425
+          }
+        },
+        "static_metadata": {
+          "status": "ok",
+          "attempted_at": "2026-08-12T08:55:00Z",
+          "latest_observed_at": "2026-08-12T08:55:00Z",
+          "state_revision": 1,
+          "value_revision": 1,
+          "latest": {
+            "node_key_fingerprint": "0xdddddddddddddddddddddddddddddddddddddddd"
+          }
+        }
+      }
+    }
+  ],
+  "block_summaries": [],
+  "history_gaps": []
+}

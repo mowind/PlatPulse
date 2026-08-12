@@ -1,0 +1,19 @@
+{
+  "report_id": "0195f2a1-0003-4003-8003-000000000003",
+  "disposition": "rejected",
+  "report_body_sha256": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "server_version": "0.1.0",
+  "supported_protocol_majors": [
+    1
+  ],
+  "server_time": "2026-08-12T10:00:01Z",
+  "rejections": [
+    {
+      "code": "unsupported_protocol_version",
+      "retryable": false,
+      "reason": "this Server supports protocol major 1 only"
+    }
+  ],
+  "nodes": [],
+  "samples": []
+}

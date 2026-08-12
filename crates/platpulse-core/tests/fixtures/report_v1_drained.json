@@ -1,0 +1,289 @@
+{
+  "protocol_version": 1,
+  "agent_id": "0195f2a1-0001-4001-8001-000000000001",
+  "agent_epoch": 3,
+  "boot_id": "0195f2a1-0022-4022-8022-000000000022",
+  "previous_boot_id": "0195f2a1-0002-4002-8002-000000000002",
+  "boot_transition": "drained_previous",
+  "report_sequence": 1,
+  "report_id": "0195f2a1-0023-4023-8023-000000000023",
+  "generated_at": "2026-08-12T10:05:00Z",
+  "agent_version": "0.1.0",
+  "agent_capabilities": [
+    "block_summary",
+    "history_gap"
+  ],
+  "inventory": {
+    "revision": 7,
+    "nodes": [
+      {
+        "node_id": "0195f2a1-0004-4004-8004-000000000004",
+        "display_name": "Validator A",
+        "network_key": "platon-mainnet",
+        "rpc_endpoint": "ipc:///var/run/platon-validator-a.ipc",
+        "process": {
+          "kind": "systemd_unit",
+          "unit": "platon-validator-a.service"
+        }
+      },
+      {
+        "node_id": "0195f2a1-0005-4005-8005-000000000005",
+        "network_key": "platon-testnet",
+        "rpc_endpoint": "ws://127.0.0.1:6790"
+      }
+    ]
+  },
+  "host": {
+    "cpu_percent": {
+      "status": "ok",
+      "attempted_at": "2026-08-12T10:04:55Z",
+      "latest_observed_at": "2026-08-12T10:04:55Z",
+      "state_revision": 5,
+      "value_revision": 5,
+      "latest": 21.0
+    },
+    "memory": {
+      "status": "ok",
+      "attempted_at": "2026-08-12T10:04:55Z",
+      "latest_observed_at": "2026-08-12T10:04:55Z",
+      "state_revision": 4,
+      "value_revision": 4,
+      "latest": {
+        "total_bytes": 17179869184,
+        "used_bytes": 10737418240
+      }
+    },
+    "load": {
+      "status": "ok",
+      "attempted_at": "2026-08-12T10:04:55Z",
+      "latest_observed_at": "2026-08-12T10:04:55Z",
+      "state_revision": 3,
+      "value_revision": 3,
+      "latest": {
+        "load1": 0.9,
+        "load5": 0.8,
+        "load15": 0.7
+      }
+    },
+    "disk": {
+      "status": "ok",
+      "attempted_at": "2026-08-12T10:04:55Z",
+      "latest_observed_at": "2026-08-12T10:04:55Z",
+      "state_revision": 2,
+      "value_revision": 2,
+      "latest": {
+        "mounts": [
+          {
+            "mount_path": "/data",
+            "total_bytes": 107374182400,
+            "used_bytes": 51539607552
+          }
+        ]
+      }
+    },
+    "network_throughput": {
+      "status": "ok",
+      "attempted_at": "2026-08-12T10:04:55Z",
+      "latest_observed_at": "2026-08-12T10:04:55Z",
+      "state_revision": 7,
+      "value_revision": 7,
+      "latest": {
+        "rx_bytes_per_sec": 2097152,
+        "tx_bytes_per_sec": 524288
+      }
+    },
+    "clock_skew": {
+      "status": "ok",
+      "attempted_at": "2026-08-12T10:04:55Z",
+      "latest_observed_at": "2026-08-12T10:04:55Z",
+      "state_revision": 3,
+      "value_revision": 3,
+      "latest": 15
+    },
+    "spool": {
+      "status": "ok",
+      "attempted_at": "2026-08-12T10:04:55Z",
+      "latest_observed_at": "2026-08-12T10:04:55Z",
+      "state_revision": 6,
+      "value_revision": 6,
+      "latest": {
+        "queued_bytes": 0,
+        "queued_reports": 0,
+        "oldest_queued_age_ms": 0,
+        "dropped_reports": 0,
+        "dropped_samples": 0
+      }
+    }
+  },
+  "nodes": [
+    {
+      "node_id": "0195f2a1-0004-4004-8004-000000000004",
+      "process": {
+        "status": "ok",
+        "attempted_at": "2026-08-12T10:04:55Z",
+        "latest_observed_at": "2026-08-12T10:04:55Z",
+        "state_revision": 4,
+        "value_revision": 4,
+        "latest": {
+          "pid": 12345,
+          "started_at": "2026-08-12T08:00:00Z",
+          "cpu_percent": 2.7,
+          "memory_bytes": 536870912,
+          "uptime_ms": 7500000
+        }
+      },
+      "chain": {
+        "rpc": {
+          "status": "ok",
+          "attempted_at": "2026-08-12T10:04:55Z",
+          "latest_observed_at": "2026-08-12T10:04:55Z",
+          "state_revision": 7,
+          "value_revision": 7,
+          "latest": {
+            "client_version": "PlatON/v1.4.0-unstable/linux-amd64/go1.21.1",
+            "namespaces": [
+              "platon",
+              "net",
+              "web3"
+            ],
+            "methods": [
+              "platon_getBlockByHash",
+              "platon_blockNumber",
+              "eth_subscribe",
+              "net_version"
+            ]
+          }
+        },
+        "sync": {
+          "status": "ok",
+          "attempted_at": "2026-08-12T10:04:55Z",
+          "latest_observed_at": "2026-08-12T10:04:55Z",
+          "state_revision": 8,
+          "value_revision": 8,
+          "latest": {
+            "syncing": false,
+            "current_block": 100060,
+            "highest_block": 100060,
+            "pulled_states": 0,
+            "known_states": 0
+          }
+        },
+        "consensus": {
+          "status": "ok",
+          "attempted_at": "2026-08-12T10:04:54Z",
+          "latest_observed_at": "2026-08-12T10:04:54Z",
+          "state_revision": 6,
+          "value_revision": 6,
+          "latest": {
+            "epoch": 42,
+            "view_number": 9,
+            "validator": true,
+            "highest_qc_block": 100058,
+            "highest_lock_block": 100056,
+            "highest_commit_block": 100054
+          }
+        },
+        "network_identity": {
+          "status": "ok",
+          "attempted_at": "2026-08-12T10:04:55Z",
+          "latest_observed_at": "2026-08-12T10:04:55Z",
+          "state_revision": 3,
+          "value_revision": 3,
+          "latest": {
+            "genesis_hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "chain_id": 210425,
+            "p2p_network_id": 210425,
+            "address_hrp": "lat"
+          }
+        },
+        "static_metadata": {
+          "status": "ok",
+          "attempted_at": "2026-08-12T10:00:00Z",
+          "latest_observed_at": "2026-08-12T10:00:00Z",
+          "state_revision": 2,
+          "value_revision": 2,
+          "latest": {
+            "node_key_fingerprint": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "enode": "enode://9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f@127.0.0.1:16789"
+          }
+        }
+      }
+    },
+    {
+      "node_id": "0195f2a1-0005-4005-8005-000000000005",
+      "process": {
+        "status": "disabled",
+        "state_revision": 1,
+        "value_revision": 0
+      },
+      "chain": {
+        "rpc": {
+          "status": "ok",
+          "attempted_at": "2026-08-12T10:04:55Z",
+          "latest_observed_at": "2026-08-12T10:04:55Z",
+          "state_revision": 5,
+          "value_revision": 5,
+          "latest": {
+            "client_version": "PlatON/v1.4.0-unstable/linux-amd64/go1.21.1",
+            "namespaces": [
+              "platon",
+              "net",
+              "web3"
+            ],
+            "methods": [
+              "platon_getBlockByHash",
+              "platon_blockNumber",
+              "eth_subscribe",
+              "net_version"
+            ]
+          }
+        },
+        "sync": {
+          "status": "ok",
+          "attempted_at": "2026-08-12T10:04:55Z",
+          "latest_observed_at": "2026-08-12T10:04:55Z",
+          "state_revision": 7,
+          "value_revision": 7,
+          "latest": {
+            "syncing": false,
+            "current_block": 100061,
+            "highest_block": 100061,
+            "pulled_states": 0,
+            "known_states": 0
+          }
+        },
+        "consensus": {
+          "status": "unsupported",
+          "state_revision": 1,
+          "value_revision": 0
+        },
+        "network_identity": {
+          "status": "ok",
+          "attempted_at": "2026-08-12T10:04:55Z",
+          "latest_observed_at": "2026-08-12T10:04:55Z",
+          "state_revision": 3,
+          "value_revision": 3,
+          "latest": {
+            "genesis_hash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "chain_id": 2206131,
+            "p2p_network_id": 2206131,
+            "address_hrp": "lat"
+          }
+        },
+        "static_metadata": {
+          "status": "ok",
+          "attempted_at": "2026-08-12T10:00:00Z",
+          "latest_observed_at": "2026-08-12T10:00:00Z",
+          "state_revision": 2,
+          "value_revision": 2,
+          "latest": {
+            "node_key_fingerprint": "0xcccccccccccccccccccccccccccccccccccccccc",
+            "enode": "enode://8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f@127.0.0.1:16790"
+          }
+        }
+      }
+    }
+  ],
+  "block_summaries": [],
+  "history_gaps": []
+}

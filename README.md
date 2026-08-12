@@ -10,7 +10,7 @@
 
 PlatPulse is an open-source monitoring suite that makes PlatON node operations observable, actionable, and easy to scale. Lightweight Agents collect node and chain observations, a central Server ingests and validates them, and a WebUI presents current health and operational insights.
 
-> **Status:** Target architecture confirmed in [`docs/design/platpulse.md`](docs/design/platpulse.md). Phase 0 workspace baseline is in place: the Rust workspace (`platpulse-core`, `platpulse-agent`, `platpulse-server`), the `platpulse-web` skeleton, and their CI quality gates all run. This baseline only proves that the project skeleton builds — no monitoring product exists yet; collection, protocol, and UI features arrive in later Phase 0 and Phase 1 tickets. Domain terminology is defined in [`CONTEXT.md`](CONTEXT.md).
+> **Status:** Target architecture confirmed in [`docs/design/platpulse.md`](docs/design/platpulse.md). Phase 0 is underway: the Rust workspace (`platpulse-core`, `platpulse-agent`, `platpulse-server`) and `platpulse-web` skeleton build with CI quality gates, and `platpulse-core` now carries the frozen AgentReport v1 wire contract (envelope, Observation Envelope, Node Inventory, Host/Node observations, Block Summary, History Gap, Report Receipt, rejection codes) with canonical/historical JSON fixtures that detect semantic drift. No monitoring product exists yet — collection, Server ingestion, and UI features arrive in the remaining Phase 0 and Phase 1 tickets. Domain terminology is defined in [`CONTEXT.md`](CONTEXT.md).
 
 ## Why PlatPulse
 

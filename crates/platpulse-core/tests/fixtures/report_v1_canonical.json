@@ -1,0 +1,386 @@
+{
+  "protocol_version": 1,
+  "agent_id": "0195f2a1-0001-4001-8001-000000000001",
+  "agent_epoch": 3,
+  "boot_id": "0195f2a1-0002-4002-8002-000000000002",
+  "boot_transition": "continuing",
+  "report_sequence": 17,
+  "report_id": "0195f2a1-0003-4003-8003-000000000003",
+  "generated_at": "2026-08-12T10:00:00Z",
+  "agent_version": "0.1.0",
+  "agent_capabilities": [
+    "block_summary",
+    "history_gap",
+    "process_systemd",
+    "process_pid_file",
+    "consensus_status"
+  ],
+  "inventory": {
+    "revision": 7,
+    "nodes": [
+      {
+        "node_id": "0195f2a1-0004-4004-8004-000000000004",
+        "display_name": "Validator A",
+        "network_key": "platon-mainnet",
+        "rpc_endpoint": "ipc:///var/run/platon-validator-a.ipc",
+        "process": {
+          "kind": "systemd_unit",
+          "unit": "platon-validator-a.service"
+        }
+      },
+      {
+        "node_id": "0195f2a1-0005-4005-8005-000000000005",
+        "network_key": "platon-testnet",
+        "rpc_endpoint": "ws://127.0.0.1:6790"
+      }
+    ]
+  },
+  "host": {
+    "cpu_percent": {
+      "status": "ok",
+      "attempted_at": "2026-08-12T09:59:55Z",
+      "latest_observed_at": "2026-08-12T09:59:55Z",
+      "state_revision": 4,
+      "value_revision": 4,
+      "latest": 23.5
+    },
+    "memory": {
+      "status": "ok",
+      "attempted_at": "2026-08-12T09:59:55Z",
+      "latest_observed_at": "2026-08-12T09:59:55Z",
+      "state_revision": 3,
+      "value_revision": 3,
+      "latest": {
+        "total_bytes": 17179869184,
+        "used_bytes": 8589934592
+      }
+    },
+    "load": {
+      "status": "ok",
+      "attempted_at": "2026-08-12T09:59:55Z",
+      "latest_observed_at": "2026-08-12T09:59:55Z",
+      "state_revision": 2,
+      "value_revision": 2,
+      "latest": {
+        "load1": 0.85,
+        "load5": 0.72,
+        "load15": 0.61
+      }
+    },
+    "disk": {
+      "status": "ok",
+      "attempted_at": "2026-08-12T09:59:55Z",
+      "latest_observed_at": "2026-08-12T09:59:55Z",
+      "state_revision": 1,
+      "value_revision": 1,
+      "latest": {
+        "mounts": [
+          {
+            "mount_path": "/data",
+            "total_bytes": 107374182400,
+            "used_bytes": 42949672960
+          }
+        ]
+      }
+    },
+    "network_throughput": {
+      "status": "error",
+      "attempted_at": "2026-08-12T09:59:55Z",
+      "latest_observed_at": "2026-08-12T09:59:50Z",
+      "state_revision": 9,
+      "value_revision": 6,
+      "latest": {
+        "rx_bytes_per_sec": 1048576,
+        "tx_bytes_per_sec": 262144
+      },
+      "error": {
+        "code": "netlink_read_failed",
+        "message": "failed to read /proc/net/dev"
+      }
+    },
+    "clock_skew": {
+      "status": "ok",
+      "attempted_at": "2026-08-12T09:59:55Z",
+      "latest_observed_at": "2026-08-12T09:59:55Z",
+      "state_revision": 2,
+      "value_revision": 2,
+      "latest": 12
+    },
+    "spool": {
+      "status": "ok",
+      "attempted_at": "2026-08-12T09:59:55Z",
+      "latest_observed_at": "2026-08-12T09:59:55Z",
+      "state_revision": 5,
+      "value_revision": 5,
+      "latest": {
+        "queued_bytes": 2048,
+        "queued_reports": 1,
+        "oldest_queued_age_ms": 300,
+        "dropped_reports": 0,
+        "dropped_samples": 0
+      }
+    }
+  },
+  "nodes": [
+    {
+      "node_id": "0195f2a1-0004-4004-8004-000000000004",
+      "process": {
+        "status": "ok",
+        "attempted_at": "2026-08-12T09:59:55Z",
+        "latest_observed_at": "2026-08-12T09:59:55Z",
+        "state_revision": 3,
+        "value_revision": 3,
+        "latest": {
+          "pid": 12345,
+          "started_at": "2026-08-12T08:00:00Z",
+          "cpu_percent": 2.5,
+          "memory_bytes": 536870912,
+          "uptime_ms": 7200000
+        }
+      },
+      "chain": {
+        "rpc": {
+          "status": "ok",
+          "attempted_at": "2026-08-12T09:59:55Z",
+          "latest_observed_at": "2026-08-12T09:59:55Z",
+          "state_revision": 6,
+          "value_revision": 6,
+          "latest": {
+            "client_version": "PlatON/v1.4.0-unstable/linux-amd64/go1.21.1",
+            "namespaces": [
+              "platon",
+              "net",
+              "web3"
+            ],
+            "methods": [
+              "platon_getBlockByHash",
+              "platon_blockNumber",
+              "eth_subscribe",
+              "net_version"
+            ]
+          }
+        },
+        "sync": {
+          "status": "ok",
+          "attempted_at": "2026-08-12T09:59:55Z",
+          "latest_observed_at": "2026-08-12T09:59:55Z",
+          "state_revision": 7,
+          "value_revision": 7,
+          "latest": {
+            "syncing": false,
+            "current_block": 100042,
+            "highest_block": 100042,
+            "pulled_states": 0,
+            "known_states": 0
+          }
+        },
+        "consensus": {
+          "status": "ok",
+          "attempted_at": "2026-08-12T09:59:54Z",
+          "latest_observed_at": "2026-08-12T09:59:54Z",
+          "state_revision": 5,
+          "value_revision": 5,
+          "latest": {
+            "epoch": 42,
+            "view_number": 7,
+            "validator": true,
+            "highest_qc_block": 100040,
+            "highest_lock_block": 100038,
+            "highest_commit_block": 100036
+          }
+        },
+        "network_identity": {
+          "status": "ok",
+          "attempted_at": "2026-08-12T09:59:55Z",
+          "latest_observed_at": "2026-08-12T09:59:55Z",
+          "state_revision": 2,
+          "value_revision": 2,
+          "latest": {
+            "genesis_hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "chain_id": 210425,
+            "p2p_network_id": 210425,
+            "address_hrp": "lat"
+          }
+        },
+        "static_metadata": {
+          "status": "ok",
+          "attempted_at": "2026-08-12T09:55:00Z",
+          "latest_observed_at": "2026-08-12T09:55:00Z",
+          "state_revision": 1,
+          "value_revision": 1,
+          "latest": {
+            "node_key_fingerprint": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "enode": "enode://9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f@127.0.0.1:16789"
+          }
+        }
+      }
+    },
+    {
+      "node_id": "0195f2a1-0005-4005-8005-000000000005",
+      "process": {
+        "status": "disabled",
+        "state_revision": 1,
+        "value_revision": 0
+      },
+      "chain": {
+        "rpc": {
+          "status": "ok",
+          "attempted_at": "2026-08-12T09:59:55Z",
+          "latest_observed_at": "2026-08-12T09:59:55Z",
+          "state_revision": 4,
+          "value_revision": 4,
+          "latest": {
+            "client_version": "PlatON/v1.4.0-unstable/linux-amd64/go1.21.1",
+            "namespaces": [
+              "platon",
+              "net",
+              "web3"
+            ],
+            "methods": [
+              "platon_getBlockByHash",
+              "platon_blockNumber",
+              "eth_subscribe",
+              "net_version"
+            ]
+          }
+        },
+        "sync": {
+          "status": "error",
+          "attempted_at": "2026-08-12T09:59:55Z",
+          "latest_observed_at": "2026-08-12T09:59:50Z",
+          "state_revision": 8,
+          "value_revision": 6,
+          "latest": {
+            "syncing": true,
+            "current_block": 5,
+            "highest_block": 100042,
+            "pulled_states": 0,
+            "known_states": 0
+          },
+          "error": {
+            "code": "sync_stalled",
+            "message": "no head advance observed for 90s"
+          }
+        },
+        "consensus": {
+          "status": "unsupported",
+          "state_revision": 1,
+          "value_revision": 0
+        },
+        "network_identity": {
+          "status": "ok",
+          "attempted_at": "2026-08-12T09:59:55Z",
+          "latest_observed_at": "2026-08-12T09:59:55Z",
+          "state_revision": 2,
+          "value_revision": 2,
+          "latest": {
+            "genesis_hash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "chain_id": 2206131,
+            "p2p_network_id": 2206131,
+            "address_hrp": "lat"
+          }
+        },
+        "static_metadata": {
+          "status": "ok",
+          "attempted_at": "2026-08-12T09:55:00Z",
+          "latest_observed_at": "2026-08-12T09:55:00Z",
+          "state_revision": 1,
+          "value_revision": 1,
+          "latest": {
+            "node_key_fingerprint": "0xcccccccccccccccccccccccccccccccccccccccc",
+            "enode": "enode://8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f@127.0.0.1:16790"
+          }
+        }
+      }
+    }
+  ],
+  "block_summaries": [
+    {
+      "node_id": "0195f2a1-0004-4004-8004-000000000004",
+      "network_identity": {
+        "genesis_hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "chain_id": 210425,
+        "p2p_network_id": 210425,
+        "address_hrp": "lat"
+      },
+      "block_number": 100040,
+      "block_hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1",
+      "parent_hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0",
+      "block_timestamp_ms": 1786528790000,
+      "observed_at": "2026-08-12T09:59:50Z",
+      "transaction_count": 4,
+      "source": "gap_backfill",
+      "attribution": {
+        "coinbase": "0x1111111111111111111111111111111111111111",
+        "seal_signer_key_fingerprint": "0x2222222222222222222222222222222222222222",
+        "seal_signer_match": "other",
+        "protocol_proposer": {
+          "kind": "verified",
+          "identity": "0x3333333333333333333333333333333333333333333333333333333333333333"
+        },
+        "attribution_reason": "seal_signer_other; protocol_proposer_verified"
+      }
+    },
+    {
+      "node_id": "0195f2a1-0004-4004-8004-000000000004",
+      "network_identity": {
+        "genesis_hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "chain_id": 210425,
+        "p2p_network_id": 210425,
+        "address_hrp": "lat"
+      },
+      "block_number": 100041,
+      "block_hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2",
+      "parent_hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1",
+      "block_timestamp_ms": 1786528792000,
+      "observed_at": "2026-08-12T09:59:52Z",
+      "transaction_count": 2,
+      "block_interval_ms": 2000,
+      "source": "subscription",
+      "attribution": {
+        "coinbase": "0x1111111111111111111111111111111111111111",
+        "seal_signer_key_fingerprint": "0x2222222222222222222222222222222222222222",
+        "seal_signer_match": "self",
+        "protocol_proposer": {
+          "kind": "unknown"
+        },
+        "attribution_reason": "seal_signer_self"
+      }
+    },
+    {
+      "node_id": "0195f2a1-0004-4004-8004-000000000004",
+      "network_identity": {
+        "genesis_hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "chain_id": 210425,
+        "p2p_network_id": 210425,
+        "address_hrp": "lat"
+      },
+      "block_number": 100042,
+      "block_hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa3",
+      "parent_hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2",
+      "block_timestamp_ms": 1786528794000,
+      "observed_at": "2026-08-12T09:59:54Z",
+      "transaction_count": 1,
+      "block_interval_ms": 2000,
+      "source": "subscription",
+      "attribution": {
+        "coinbase": "0x1111111111111111111111111111111111111111",
+        "seal_signer_match": "unknown",
+        "protocol_proposer": {
+          "kind": "unknown"
+        },
+        "attribution_reason": "seal_signer_unknown"
+      }
+    }
+  ],
+  "history_gaps": [
+    {
+      "node_id": "0195f2a1-0004-4004-8004-000000000004",
+      "kind": "unrecoverable_backfill",
+      "from_height": 100038,
+      "to_height": 100040,
+      "reason": "connection lost across restart; bounded backfill exhausted",
+      "recorded_at": "2026-08-12T09:58:10Z"
+    }
+  ]
+}
