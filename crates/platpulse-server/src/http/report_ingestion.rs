@@ -248,6 +248,41 @@ async fn close_coverage_height(
     Ok(())
 }
 
+async fn update_network_references(
+    tx: &mut Transaction<'_, Sqlite>,
+    network_keys: &[String],
+    observed_at: &str,
+) -> Result<(), sqlx::Error> {
+    for network_key in network_keys {
+        let rows = sqlx::query_as::<_, (String, i64, Option<String>)>(
+            "SELECT n.node_id, c.current_block, h.resync_state FROM nodes n JOIN agents a ON a.agent_id=n.agent_id JOIN current_node_chain_observations c ON c.node_id=n.node_id LEFT JOIN block_history_state h ON h.node_id=n.node_id WHERE n.network_key=? AND n.lifecycle='active' AND julianday(a.last_received_at) >= julianday(?) - (120.0/86400.0) ORDER BY c.current_block DESC",
+        )
+        .bind(network_key)
+        .bind(observed_at)
+        .fetch_all(&mut **tx)
+        .await?;
+        let eligible = rows
+            .iter()
+            .filter(|(_, _, state)| state.as_deref() != Some("resyncing"))
+            .collect::<Vec<_>>();
+        let candidates = if eligible.is_empty() {
+            rows.iter().collect::<Vec<_>>()
+        } else {
+            eligible
+        };
+        let Some((node_id, head, _)) = candidates.first() else {
+            sqlx::query("INSERT INTO network_reference_heads (network_key, block_number, observed_at, confidence, eligible_source_count, contributing_node_id) VALUES (?, NULL, ?, 'unknown', 0, NULL) ON CONFLICT(network_key) DO UPDATE SET block_number=NULL, observed_at=excluded.observed_at, confidence='unknown', eligible_source_count=0, contributing_node_id=NULL")
+                .bind(network_key).bind(observed_at).execute(&mut **tx).await?;
+            continue;
+        };
+        let confidence = if candidates.len() >= 2 { "high" } else { "low" };
+        sqlx::query("INSERT INTO network_reference_heads (network_key, block_number, observed_at, confidence, eligible_source_count, contributing_node_id) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(network_key) DO UPDATE SET block_number=excluded.block_number, observed_at=excluded.observed_at, confidence=excluded.confidence, eligible_source_count=excluded.eligible_source_count, contributing_node_id=excluded.contributing_node_id")
+            .bind(network_key).bind(*head).bind(observed_at).bind(confidence).bind(candidates.len() as i64).bind(node_id)
+            .execute(&mut **tx).await?;
+    }
+    Ok(())
+}
+
 async fn block_network_identity_mismatches(
     tx: &mut Transaction<'_, Sqlite>,
     report: &AgentReport,
@@ -503,6 +538,21 @@ async fn save_current(
             || node.chain.network_identity.latest.is_some()
             || node.chain.static_metadata.latest.is_some()
         {
+            let sync = node.chain.sync.latest;
+            let current = sync.map(|v| v.current_block as i64);
+            let current_timestamp = report.generated_at.to_string();
+            sqlx::query("INSERT INTO block_history_state (node_id, current_head, resync_state, resync_last_progress_at, updated_at) VALUES (?, ?, 'normal', ?, ?) ON CONFLICT(node_id) DO UPDATE SET current_head=excluded.current_head, resync_last_progress_at=excluded.resync_last_progress_at, updated_at=excluded.updated_at")
+                .bind(&node_id)
+                .bind(current)
+                .bind(&current_timestamp)
+                .bind(received_at)
+                .execute(&mut **tx)
+                .await?;
+            sqlx::query("UPDATE block_history_state SET resync_state=CASE WHEN current_head IS NOT NULL AND current_head < historical_high_watermark THEN 'resyncing' ELSE 'normal' END, resync_started_at=CASE WHEN current_head IS NOT NULL AND current_head < historical_high_watermark AND resync_state != 'resyncing' THEN updated_at ELSE resync_started_at END WHERE node_id=?")
+                .bind(&node_id)
+                .execute(&mut **tx)
+                .await?;
+
             let rpc = node.chain.rpc.latest.as_ref();
             let sync = node.chain.sync.latest;
             let consensus = node.chain.consensus.latest;
@@ -946,7 +996,22 @@ async fn handler(
     projection_report
         .nodes
         .retain(|node| !ownership_mismatches.contains(&node.node_id));
-    if save_current(&mut tx, &projection_report, &now_text)
+    if let Err(save_error) = save_current(&mut tx, &projection_report, &now_text).await {
+        eprintln!("save_current error: {save_error}");
+        return error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "Server database is unavailable",
+        );
+    }
+    let network_keys = projection_report
+        .inventory
+        .nodes
+        .iter()
+        .map(|node| node.network_key.to_string())
+        .collect::<Vec<_>>();
+    if update_network_references(&mut tx, &network_keys, &now_text)
         .await
         .is_err()
     {
@@ -1521,6 +1586,89 @@ mod tests {
         assert_eq!(lifecycle, "active");
     }
 
+    #[tokio::test]
+    async fn current_head_regresses_without_rewriting_history_and_restart_preserves_state() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let mut first: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        let node_id = first.inventory.nodes[0].node_id;
+        first.nodes[0]
+            .chain
+            .sync
+            .latest
+            .as_mut()
+            .unwrap()
+            .current_block = 100;
+        first.nodes[0]
+            .chain
+            .sync
+            .latest
+            .as_mut()
+            .unwrap()
+            .highest_block = 100;
+        first.report_id = "0195f2a1-0013-4013-8013-000000000104".parse().unwrap();
+        submit(&state, &agent_id, serde_json::to_vec(&first).unwrap()).await;
+        sqlx::query("UPDATE block_history_state SET historical_high_watermark=100, cumulative_block_count=4 WHERE node_id=?")
+            .bind(node_id.to_string()).execute(state.db().pool()).await.unwrap();
+        let mut replay = first.clone();
+        replay.report_sequence = 2;
+        replay.report_id = "0195f2a1-0013-4013-8013-000000000105".parse().unwrap();
+        replay.nodes[0]
+            .chain
+            .sync
+            .latest
+            .as_mut()
+            .unwrap()
+            .current_block = 4;
+        replay.nodes[0]
+            .chain
+            .sync
+            .latest
+            .as_mut()
+            .unwrap()
+            .highest_block = 4;
+        submit(&state, &agent_id, serde_json::to_vec(&replay).unwrap()).await;
+        let current: i64 =
+            sqlx::query_scalar("SELECT current_head FROM block_history_state WHERE node_id=?")
+                .bind(node_id.to_string())
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        let high: i64 = sqlx::query_scalar(
+            "SELECT historical_high_watermark FROM block_history_state WHERE node_id=?",
+        )
+        .bind(node_id.to_string())
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        let cumulative: i64 = sqlx::query_scalar(
+            "SELECT cumulative_block_count FROM block_history_state WHERE node_id=?",
+        )
+        .bind(node_id.to_string())
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        let state_name: String =
+            sqlx::query_scalar("SELECT resync_state FROM block_history_state WHERE node_id=?")
+                .bind(node_id.to_string())
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        assert_eq!(current, 4);
+        assert_eq!(high, 100);
+        assert_eq!(cumulative, 4);
+        assert_eq!(state_name, "resyncing");
+        let db_path = _dir.path().join("server.db");
+        // The temporary database remains valid across a fresh connection; closing
+        // the AppState-owned pool is intentionally covered by the next process.
+        let reopened = initialize(ServerDatabaseConfig::new(db_path))
+            .await
+            .unwrap();
+        let persisted: (i64, i64, String) = sqlx::query_as("SELECT current_head, historical_high_watermark, resync_state FROM block_history_state WHERE node_id=?").bind(node_id.to_string()).fetch_one(reopened.pool()).await.unwrap();
+        assert_eq!(persisted, (4, 100, "resyncing".to_owned()));
+    }
     #[tokio::test]
     async fn failed_node_keeps_host_and_other_node_projection() {
         let (_dir, state, agent_id) = state_with_agent().await;

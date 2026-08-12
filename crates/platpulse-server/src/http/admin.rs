@@ -443,6 +443,12 @@ pub struct NodeDiagnostic {
     pub rpc: Option<RpcDiagnostic>,
     pub sync: Option<SyncDiagnostic>,
     pub consensus: Option<ConsensusDiagnostic>,
+    pub current_head: Option<i64>,
+    pub historical_high_watermark: Option<i64>,
+    pub resync_state: String,
+    pub network_reference_head: Option<i64>,
+    pub network_reference_confidence: String,
+    pub resync_progress: Option<String>,
 }
 
 async fn process_diagnostic(state: &AppState, node_id: &str) -> Option<ProcessDiagnostic> {
@@ -618,6 +624,17 @@ async fn diagnostics(
             let consensus = consensus_diagnostic(&state, &node_id).await;
             let (health, health_reason) =
                 derive_health(&lifecycle, rpc.as_ref(), sync.as_ref(), consensus.as_ref());
+            let history = sqlx::query_as::<_, (Option<i64>, Option<i64>, Option<String>, Option<i64>, Option<String>)>(
+                "SELECT c.current_block, h.historical_high_watermark, h.resync_state, r.block_number, r.confidence FROM current_node_chain_observations c LEFT JOIN block_history_state h ON h.node_id=c.node_id LEFT JOIN nodes n ON n.node_id=c.node_id LEFT JOIN network_reference_heads r ON r.network_key=n.network_key WHERE c.node_id=?"
+            ).bind(&node_id).fetch_optional(state.db().pool()).await.ok().flatten();
+            let (
+                current_head,
+                historical_high_watermark,
+                resync_state,
+                network_reference_head,
+                network_reference_confidence,
+            ) = history.unwrap_or((None, None, None, None, None));
+            let resync_state = resync_state.unwrap_or_else(|| "normal".to_owned());
             nodes.push(NodeDiagnostic {
                 node_id,
                 network_key,
@@ -631,6 +648,15 @@ async fn diagnostics(
                 rpc,
                 sync,
                 consensus,
+                current_head,
+                historical_high_watermark,
+                resync_progress: historical_high_watermark
+                    .zip(current_head)
+                    .map(|(high, current)| format!("{current}/{high}")),
+                network_reference_head,
+                network_reference_confidence: network_reference_confidence
+                    .unwrap_or_else(|| "unknown".to_owned()),
+                resync_state,
             });
         }
         result.push(AgentDiagnostic {

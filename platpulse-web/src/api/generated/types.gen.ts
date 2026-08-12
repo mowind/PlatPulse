@@ -93,15 +93,21 @@ export type LoginRequest = {
 
 export type NodeDiagnostic = {
     consensus?: null | ConsensusDiagnostic;
+    current_head?: number | null;
     display_name?: string | null;
     health: string;
     health_reason: string;
+    historical_high_watermark?: number | null;
     inventory_revision: number;
     lifecycle: string;
     network_key: string;
+    network_reference_confidence: string;
+    network_reference_head?: number | null;
     node_id: string;
     process?: null | ProcessDiagnostic;
     rpc?: null | RpcDiagnostic;
+    resync_progress?: string | null;
+    resync_state: string;
     sync?: null | SyncDiagnostic;
     visibility: string;
 };
@@ -130,14 +136,20 @@ export type PublicNetwork = {
 
 export type PublicNode = {
     consensusState: string;
+    currentHead?: number | null;
     displayName?: string | null;
     freshness?: string | null;
     health: string;
     healthReason: string;
     hostCpuPercent?: number | null;
+    historicalHighWatermark?: number | null;
     networkKey: string;
+    networkReferenceConfidence: string;
+    networkReferenceHead?: number | null;
     nodeId: string;
     processState: string;
+    resyncProgress?: string | null;
+    resyncState: string;
     rpcState: string;
     syncState: string;
 };

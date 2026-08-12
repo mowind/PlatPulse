@@ -461,6 +461,12 @@ pub struct PublicNode {
     pub consensus_state: String,
     pub process_state: String,
     pub host_cpu_percent: Option<f64>,
+    pub current_head: Option<i64>,
+    pub historical_high_watermark: Option<i64>,
+    pub resync_state: String,
+    pub network_reference_head: Option<i64>,
+    pub network_reference_confidence: String,
+    pub resync_progress: Option<String>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -479,6 +485,12 @@ struct PublicNodeRow {
     process_state: Option<String>,
     sync_received_at: Option<String>,
     consensus_received_at: Option<String>,
+    current_head: Option<i64>,
+    historical_high_watermark: Option<i64>,
+    resync_state: Option<String>,
+    resync_last_progress_at: Option<String>,
+    network_reference_head: Option<i64>,
+    network_reference_confidence: Option<String>,
 }
 
 const FRESHNESS_LIMIT_SECONDS: i64 = 120;
@@ -583,6 +595,19 @@ fn public_node(row: PublicNodeRow) -> (String, PublicNode) {
         consensus_state: row.consensus_state.unwrap_or_else(|| "unknown".to_owned()),
         process_state: row.process_state.unwrap_or_else(|| "unknown".to_owned()),
         host_cpu_percent: row.host_cpu_percent,
+        current_head: row.current_head,
+        historical_high_watermark: row.historical_high_watermark,
+        resync_state: row.resync_state.unwrap_or_else(|| "normal".to_owned()),
+        network_reference_head: row.network_reference_head,
+        network_reference_confidence: row
+            .network_reference_confidence
+            .unwrap_or_else(|| "unknown".to_owned()),
+        resync_progress: row.historical_high_watermark.zip(row.current_head).map(
+            |(high, current)| match row.resync_last_progress_at.as_deref() {
+                Some(at) => format!("{current}/{high} (last progress {at})"),
+                None => format!("{current}/{high}"),
+            },
+        ),
     };
     (row.network_display_name, node)
 }
@@ -599,7 +624,10 @@ fn public_node(row: PublicNodeRow) -> (String, PublicNode) {
 pub(crate) async fn public_networks(State(state): State<AppState>) -> Response {
     let rows = sqlx::query_as::<_, PublicNodeRow>(
         "SELECT n.node_id, n.display_name, n.network_key, r.display_name AS network_display_name,
-                n.lifecycle, s.state AS rpc_state, sy.state AS sync_state, co.state AS consensus_state, p.state AS process_state, i.state AS identity_state, s.received_at AS updated_at, sy.received_at AS sync_received_at, co.received_at AS consensus_received_at, h.cpu_percent AS host_cpu_percent
+                n.lifecycle, s.state AS rpc_state, sy.state AS sync_state, co.state AS consensus_state, p.state AS process_state, i.state AS identity_state, s.received_at AS updated_at, sy.received_at AS sync_received_at, co.received_at AS consensus_received_at, h.cpu_percent AS host_cpu_percent,
+                c.current_block AS current_head, hs.historical_high_watermark,
+                hs.resync_state, hs.resync_last_progress_at,
+                nr.block_number AS network_reference_head, nr.confidence AS network_reference_confidence
            FROM nodes n
            JOIN networks r ON r.network_key = n.network_key
            LEFT JOIN component_status s ON s.node_id = n.node_id AND s.component_key = 'rpc'
@@ -608,6 +636,9 @@ pub(crate) async fn public_networks(State(state): State<AppState>) -> Response {
            LEFT JOIN component_status p ON p.node_id = n.node_id AND p.component_key = 'process'
            LEFT JOIN component_status i ON i.node_id = n.node_id AND i.component_key = 'network_identity'
            LEFT JOIN current_host_observations h ON h.agent_id = n.agent_id
+           LEFT JOIN current_node_chain_observations c ON c.node_id = n.node_id
+           LEFT JOIN block_history_state hs ON hs.node_id = n.node_id
+           LEFT JOIN network_reference_heads nr ON nr.network_key = n.network_key
           WHERE n.visibility = 'public' AND n.lifecycle = 'active'
           ORDER BY r.network_key, n.node_id",
     )
@@ -658,7 +689,10 @@ pub(crate) async fn public_network(
 ) -> Response {
     let rows = sqlx::query_as::<_, PublicNodeRow>(
         "SELECT n.node_id, n.display_name, n.network_key, r.display_name AS network_display_name,
-                n.lifecycle, s.state AS rpc_state, sy.state AS sync_state, co.state AS consensus_state, p.state AS process_state, i.state AS identity_state, s.received_at AS updated_at, sy.received_at AS sync_received_at, co.received_at AS consensus_received_at, h.cpu_percent AS host_cpu_percent
+                n.lifecycle, s.state AS rpc_state, sy.state AS sync_state, co.state AS consensus_state, p.state AS process_state, i.state AS identity_state, s.received_at AS updated_at, sy.received_at AS sync_received_at, co.received_at AS consensus_received_at, h.cpu_percent AS host_cpu_percent,
+                c.current_block AS current_head, hs.historical_high_watermark,
+                hs.resync_state, hs.resync_last_progress_at,
+                nr.block_number AS network_reference_head, nr.confidence AS network_reference_confidence
            FROM nodes n JOIN networks r ON r.network_key = n.network_key
            LEFT JOIN component_status s ON s.node_id = n.node_id AND s.component_key = 'rpc'
            LEFT JOIN component_status sy ON sy.node_id = n.node_id AND sy.component_key = 'sync'
@@ -666,6 +700,9 @@ pub(crate) async fn public_network(
            LEFT JOIN component_status p ON p.node_id = n.node_id AND p.component_key = 'process'
            LEFT JOIN component_status i ON i.node_id = n.node_id AND i.component_key = 'network_identity'
            LEFT JOIN current_host_observations h ON h.agent_id = n.agent_id
+           LEFT JOIN current_node_chain_observations c ON c.node_id = n.node_id
+           LEFT JOIN block_history_state hs ON hs.node_id = n.node_id
+           LEFT JOIN network_reference_heads nr ON nr.network_key = n.network_key
           WHERE n.network_key = ? AND n.visibility = 'public' AND n.lifecycle = 'active'
           ORDER BY n.node_id",
     )
@@ -715,7 +752,10 @@ pub(crate) async fn public_node_detail(
 ) -> Response {
     let row = sqlx::query_as::<_, PublicNodeRow>(
         "SELECT n.node_id, n.display_name, n.network_key, r.display_name AS network_display_name,
-                n.lifecycle, s.state AS rpc_state, sy.state AS sync_state, co.state AS consensus_state, p.state AS process_state, i.state AS identity_state, s.received_at AS updated_at, sy.received_at AS sync_received_at, co.received_at AS consensus_received_at, h.cpu_percent AS host_cpu_percent
+                n.lifecycle, s.state AS rpc_state, sy.state AS sync_state, co.state AS consensus_state, p.state AS process_state, i.state AS identity_state, s.received_at AS updated_at, sy.received_at AS sync_received_at, co.received_at AS consensus_received_at, h.cpu_percent AS host_cpu_percent,
+                c.current_block AS current_head, hs.historical_high_watermark,
+                hs.resync_state, hs.resync_last_progress_at,
+                nr.block_number AS network_reference_head, nr.confidence AS network_reference_confidence
            FROM nodes n JOIN networks r ON r.network_key = n.network_key
            LEFT JOIN component_status s ON s.node_id = n.node_id AND s.component_key = 'rpc'
            LEFT JOIN component_status sy ON sy.node_id = n.node_id AND sy.component_key = 'sync'
@@ -723,6 +763,9 @@ pub(crate) async fn public_node_detail(
            LEFT JOIN component_status p ON p.node_id = n.node_id AND p.component_key = 'process'
            LEFT JOIN component_status i ON i.node_id = n.node_id AND i.component_key = 'network_identity'
            LEFT JOIN current_host_observations h ON h.agent_id = n.agent_id
+           LEFT JOIN current_node_chain_observations c ON c.node_id = n.node_id
+           LEFT JOIN block_history_state hs ON hs.node_id = n.node_id
+           LEFT JOIN network_reference_heads nr ON nr.network_key = n.network_key
           WHERE n.node_id = ? AND n.visibility = 'public' AND n.lifecycle = 'active'",
     )
     .bind(&node_id)
