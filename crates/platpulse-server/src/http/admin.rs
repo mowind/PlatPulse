@@ -248,6 +248,24 @@ pub struct HostComponentDiagnostic {
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
+pub struct ProcessDiagnostic {
+    pub state: String,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+    pub attempted_at: Option<String>,
+    pub observed_at: Option<String>,
+    pub received_at: Option<String>,
+    pub state_revision: i64,
+    pub value_revision: i64,
+    pub pid: Option<i64>,
+    pub started_at: Option<String>,
+    pub cpu_percent: Option<f64>,
+    pub memory_bytes: Option<i64>,
+    pub uptime_ms: Option<i64>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
 pub struct RpcDiagnostic {
     pub client_version: Option<String>,
     pub namespaces: Vec<String>,
@@ -372,9 +390,25 @@ pub struct NodeDiagnostic {
     pub visibility: String,
     pub health: String,
     pub health_reason: String,
+    pub process: Option<ProcessDiagnostic>,
     pub rpc: Option<RpcDiagnostic>,
     pub sync: Option<SyncDiagnostic>,
     pub consensus: Option<ConsensusDiagnostic>,
+}
+
+async fn process_diagnostic(state: &AppState, node_id: &str) -> Option<ProcessDiagnostic> {
+    sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, i64, i64, Option<i64>, Option<String>, Option<f64>, Option<i64>, Option<i64>)>(
+        "SELECT s.state, s.error_code, s.error_message, s.attempted_at, s.observed_at, s.received_at, s.state_revision, s.value_revision, p.pid, p.started_at, p.cpu_percent, p.memory_bytes, p.uptime_ms FROM component_status s LEFT JOIN current_node_process_observations p ON p.node_id = s.node_id WHERE s.node_id = ? AND s.component_key = 'process'"
+    )
+    .bind(node_id)
+    .fetch_optional(state.db().pool())
+    .await
+    .ok()
+    .flatten()
+    .map(|(state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision, pid, started_at, cpu_percent, memory_bytes, uptime_ms)| ProcessDiagnostic {
+        state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision,
+        pid, started_at, cpu_percent, memory_bytes, uptime_ms,
+    })
 }
 
 async fn sync_diagnostic(state: &AppState, node_id: &str) -> Option<SyncDiagnostic> {
@@ -482,6 +516,7 @@ async fn diagnostics(
         let mut nodes = Vec::with_capacity(rows.len());
         for (node_id, network_key, display_name, lifecycle, inventory_revision, visibility) in rows
         {
+            let process = process_diagnostic(&state, &node_id).await;
             let rpc = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>, Option<i64>)>(
                 "SELECT c.rpc_client_version, s.state, s.error_code, s.error_message, s.attempted_at, s.observed_at, s.received_at, s.state_revision, s.value_revision FROM component_status s LEFT JOIN current_node_chain_observations c ON c.node_id = s.node_id WHERE s.node_id = ? AND s.component_key = 'rpc'",
             )
@@ -540,6 +575,7 @@ async fn diagnostics(
                 visibility,
                 health: health.to_owned(),
                 health_reason: health_reason.to_owned(),
+                process,
                 rpc,
                 sync,
                 consensus,

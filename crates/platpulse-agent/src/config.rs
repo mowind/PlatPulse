@@ -112,6 +112,27 @@ impl AgentConfigFile {
                     ));
                 }
             }
+            if let Some(selector) = &node.process {
+                let valid = match selector {
+                    ProcessSelector::SystemdUnit { unit } => {
+                        !unit.is_empty()
+                            && unit.len() <= 512
+                            && !unit.chars().any(char::is_control)
+                            && !unit.contains('/')
+                    }
+                    ProcessSelector::PidFile { path } => {
+                        !path.is_empty()
+                            && path.len() <= 512
+                            && !path.chars().any(char::is_control)
+                            && Path::new(path).is_absolute()
+                    }
+                };
+                if !valid {
+                    return Err(AgentConfigError::InvalidNode(
+                        "process selector has an invalid or missing required value".to_owned(),
+                    ));
+                }
+            }
             nodes.push(InventoryNode {
                 node_id: node.node_id,
                 display_name: node.display_name.clone(),

@@ -179,6 +179,8 @@ fn ok<T>(value: T, at: Rfc3339) -> ComponentObservation<T> {
     }
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn disabled<T>() -> ComponentObservation<T> {
     ComponentObservation {
         status: ComponentStatus::Disabled,
@@ -309,12 +311,13 @@ fn probe_component<T>(probe: ProbeValue<T>, at: Rfc3339) -> ComponentObservation
 }
 
 fn collect_node<A: RpcAdapter>(
+    system: &mut System,
     node: &platpulse_core::inventory::InventoryNode,
     attempted: Rfc3339,
     adapter: &A,
 ) -> NodeObservation {
     let started = std::time::Instant::now();
-    let process = disabled();
+    let process = crate::process::collect(system, node.process.as_ref(), attempted);
     let (rpc, network_identity, static_metadata, sync, consensus) =
         match adapter.collect(&node.rpc_endpoint) {
             Ok(snapshot) => (
@@ -406,7 +409,7 @@ pub fn collect_report_with_clock_skew<A: RpcAdapter>(
     let nodes = inventory
         .nodes
         .iter()
-        .map(|node| collect_node(node, attempted, adapter))
+        .map(|node| collect_node(&mut system, node, attempted, adapter))
         .collect::<Vec<_>>();
     let mut capabilities = vec![AgentCapability::RpcCapabilityProbe];
     if inventory.nodes.iter().any(|node| {
@@ -724,7 +727,9 @@ mod tests {
 
     #[test]
     fn node_error_does_not_overwrite_other_nodes() {
+        let mut system = System::new_all();
         let node = collect_node(
+            &mut system,
             &platpulse_core::inventory::InventoryNode {
                 node_id: "0195f2a1-0014-4014-8014-000000000014".parse().unwrap(),
                 display_name: None,

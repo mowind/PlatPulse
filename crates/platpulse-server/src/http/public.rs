@@ -351,6 +351,7 @@ pub struct PublicNode {
     pub rpc_state: String,
     pub sync_state: String,
     pub consensus_state: String,
+    pub process_state: String,
     pub host_cpu_percent: Option<f64>,
 }
 
@@ -367,6 +368,7 @@ struct PublicNodeRow {
     host_cpu_percent: Option<f64>,
     sync_state: Option<String>,
     consensus_state: Option<String>,
+    process_state: Option<String>,
     sync_received_at: Option<String>,
     consensus_received_at: Option<String>,
 }
@@ -386,12 +388,26 @@ fn health_for(
     identity: Option<&str>,
     sync: Option<&str>,
     consensus: Option<&str>,
+    process: Option<&str>,
     received_at: Option<&str>,
     sync_received_at: Option<&str>,
     consensus_received_at: Option<&str>,
 ) -> (&'static str, &'static str) {
     if lifecycle == "retired" {
         return ("unknown", "node is retired");
+    }
+    if matches!(process, Some("error")) {
+        return ("unhealthy", "process observation failed");
+    }
+    if matches!(process, Some("stopped")) {
+        return ("unhealthy", "selected process is stopped");
+    }
+    if matches!(process, Some("unknown")) {
+        return ("unknown", "process observation is unknown");
+    }
+    if matches!(process, Some("disabled")) {
+        // Process monitoring is optional and does not by itself make chain
+        // health unknown.
     }
     if matches!(rpc, Some("error")) {
         return ("unhealthy", "RPC observation failed");
@@ -441,6 +457,7 @@ fn public_node(row: PublicNodeRow) -> (String, PublicNode) {
         row.identity_state.as_deref(),
         row.sync_state.as_deref(),
         row.consensus_state.as_deref(),
+        row.process_state.as_deref(),
         row.updated_at.as_deref(),
         row.sync_received_at.as_deref(),
         row.consensus_received_at.as_deref(),
@@ -456,6 +473,7 @@ fn public_node(row: PublicNodeRow) -> (String, PublicNode) {
         rpc_state: row.rpc_state.unwrap_or_else(|| "unknown".to_owned()),
         sync_state: row.sync_state.unwrap_or_else(|| "unknown".to_owned()),
         consensus_state: row.consensus_state.unwrap_or_else(|| "unknown".to_owned()),
+        process_state: row.process_state.unwrap_or_else(|| "unknown".to_owned()),
         host_cpu_percent: row.host_cpu_percent,
     };
     (row.network_display_name, node)
@@ -473,12 +491,13 @@ fn public_node(row: PublicNodeRow) -> (String, PublicNode) {
 pub(crate) async fn public_networks(State(state): State<AppState>) -> Response {
     let rows = sqlx::query_as::<_, PublicNodeRow>(
         "SELECT n.node_id, n.display_name, n.network_key, r.display_name AS network_display_name,
-                n.lifecycle, s.state AS rpc_state, sy.state AS sync_state, co.state AS consensus_state, i.state AS identity_state, s.received_at AS updated_at, sy.received_at AS sync_received_at, co.received_at AS consensus_received_at, h.cpu_percent AS host_cpu_percent
+                n.lifecycle, s.state AS rpc_state, sy.state AS sync_state, co.state AS consensus_state, p.state AS process_state, i.state AS identity_state, s.received_at AS updated_at, sy.received_at AS sync_received_at, co.received_at AS consensus_received_at, h.cpu_percent AS host_cpu_percent
            FROM nodes n
            JOIN networks r ON r.network_key = n.network_key
            LEFT JOIN component_status s ON s.node_id = n.node_id AND s.component_key = 'rpc'
            LEFT JOIN component_status sy ON sy.node_id = n.node_id AND sy.component_key = 'sync'
            LEFT JOIN component_status co ON co.node_id = n.node_id AND co.component_key = 'consensus'
+           LEFT JOIN component_status p ON p.node_id = n.node_id AND p.component_key = 'process'
            LEFT JOIN component_status i ON i.node_id = n.node_id AND i.component_key = 'network_identity'
            LEFT JOIN current_host_observations h ON h.agent_id = n.agent_id
           WHERE n.visibility = 'public' AND n.lifecycle = 'active'
@@ -531,11 +550,12 @@ pub(crate) async fn public_network(
 ) -> Response {
     let rows = sqlx::query_as::<_, PublicNodeRow>(
         "SELECT n.node_id, n.display_name, n.network_key, r.display_name AS network_display_name,
-                n.lifecycle, s.state AS rpc_state, sy.state AS sync_state, co.state AS consensus_state, i.state AS identity_state, s.received_at AS updated_at, sy.received_at AS sync_received_at, co.received_at AS consensus_received_at, h.cpu_percent AS host_cpu_percent
+                n.lifecycle, s.state AS rpc_state, sy.state AS sync_state, co.state AS consensus_state, p.state AS process_state, i.state AS identity_state, s.received_at AS updated_at, sy.received_at AS sync_received_at, co.received_at AS consensus_received_at, h.cpu_percent AS host_cpu_percent
            FROM nodes n JOIN networks r ON r.network_key = n.network_key
            LEFT JOIN component_status s ON s.node_id = n.node_id AND s.component_key = 'rpc'
            LEFT JOIN component_status sy ON sy.node_id = n.node_id AND sy.component_key = 'sync'
            LEFT JOIN component_status co ON co.node_id = n.node_id AND co.component_key = 'consensus'
+           LEFT JOIN component_status p ON p.node_id = n.node_id AND p.component_key = 'process'
            LEFT JOIN component_status i ON i.node_id = n.node_id AND i.component_key = 'network_identity'
            LEFT JOIN current_host_observations h ON h.agent_id = n.agent_id
           WHERE n.network_key = ? AND n.visibility = 'public' AND n.lifecycle = 'active'
@@ -587,11 +607,12 @@ pub(crate) async fn public_node_detail(
 ) -> Response {
     let row = sqlx::query_as::<_, PublicNodeRow>(
         "SELECT n.node_id, n.display_name, n.network_key, r.display_name AS network_display_name,
-                n.lifecycle, s.state AS rpc_state, sy.state AS sync_state, co.state AS consensus_state, i.state AS identity_state, s.received_at AS updated_at, sy.received_at AS sync_received_at, co.received_at AS consensus_received_at, h.cpu_percent AS host_cpu_percent
+                n.lifecycle, s.state AS rpc_state, sy.state AS sync_state, co.state AS consensus_state, p.state AS process_state, i.state AS identity_state, s.received_at AS updated_at, sy.received_at AS sync_received_at, co.received_at AS consensus_received_at, h.cpu_percent AS host_cpu_percent
            FROM nodes n JOIN networks r ON r.network_key = n.network_key
            LEFT JOIN component_status s ON s.node_id = n.node_id AND s.component_key = 'rpc'
            LEFT JOIN component_status sy ON sy.node_id = n.node_id AND sy.component_key = 'sync'
            LEFT JOIN component_status co ON co.node_id = n.node_id AND co.component_key = 'consensus'
+           LEFT JOIN component_status p ON p.node_id = n.node_id AND p.component_key = 'process'
            LEFT JOIN component_status i ON i.node_id = n.node_id AND i.component_key = 'network_identity'
            LEFT JOIN current_host_observations h ON h.agent_id = n.agent_id
           WHERE n.node_id = ? AND n.visibility = 'public' AND n.lifecycle = 'active'",
@@ -745,7 +766,8 @@ mod tests {
                 Some("ok"),
                 Some(&recent),
                 Some(&stale),
-                Some(&recent)
+                Some(&recent),
+                Some("disabled"),
             ),
             ("unknown", "one or more observations are stale or unknown")
         );
@@ -765,7 +787,8 @@ mod tests {
                 Some("ok"),
                 Some(&recent),
                 Some(&recent),
-                Some(&stale)
+                Some(&stale),
+                Some("disabled"),
             ),
             ("unknown", "one or more observations are stale or unknown")
         );

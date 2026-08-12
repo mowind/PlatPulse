@@ -15,6 +15,7 @@ pub mod config;
 pub mod credential;
 pub mod database;
 pub mod enroll;
+pub mod process;
 pub mod reporting;
 pub mod time_exchange;
 

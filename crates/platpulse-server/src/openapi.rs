@@ -76,6 +76,7 @@ impl Modify for AgentBearerScheme {
         crate::http::admin::AgentDiagnostic,
         crate::http::admin::HostDiagnostic,
         crate::http::admin::HostComponentDiagnostic,
+        crate::http::admin::ProcessDiagnostic,
         crate::http::admin::RpcDiagnostic,
         crate::http::admin::SyncDiagnostic,
         crate::http::admin::ConsensusDiagnostic,
