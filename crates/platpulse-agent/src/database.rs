@@ -22,7 +22,7 @@ use thiserror::Error;
 pub static AGENT_MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 /// The latest migration version compiled into the Agent binary.
-pub const AGENT_SCHEMA_VERSION: i64 = 7;
+pub const AGENT_SCHEMA_VERSION: i64 = 9;
 
 /// Explicit timeout used for SQLite lock contention unless a caller chooses a
 /// tighter or more generous value for a test/deployment.
@@ -38,8 +38,8 @@ const REQUIRED_TABLES: &[&str] = &[
     "rejection_ledger",
     "delivery_diagnostics",
     "spool_state",
+    "node_recovery_state",
 ];
-
 /// Connection settings for the Agent Store.
 #[derive(Debug, Clone)]
 pub struct AgentDatabaseConfig {

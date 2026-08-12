@@ -346,7 +346,7 @@ pub async fn enforce_spool_policy(
             (generated_at.clone(), generated_at.clone()),
             |(from, to)| (from.min(generated_at.clone()), to.max(generated_at.clone())),
         ));
-        sqlx::query("INSERT OR IGNORE INTO history_gaps (node_id, from_height, to_height, kind, created_at) VALUES ('00000000-0000-0000-0000-000000000000', 0, 0, 'spool_overflow', ?)").bind(now).execute(&mut *tx).await?;
+        sqlx::query("INSERT OR IGNORE INTO history_gaps (node_id, from_height, to_height, kind, reason, created_at) VALUES ('00000000-0000-0000-0000-000000000000', 0, 0, 'spool_overflow', 'spool overflow dropped durable reports', ?)").bind(now).execute(&mut *tx).await?;
         summary.pending_history_gaps += 1;
     }
     sqlx::query("UPDATE spool_state SET dropped_reports=dropped_reports+?, dropped_samples=dropped_samples+?, dropped_sequence_from=COALESCE(MIN(dropped_sequence_from, ?), ?), dropped_sequence_to=MAX(COALESCE(dropped_sequence_to, ?), ?), dropped_time_from=COALESCE(MIN(dropped_time_from, ?), ?), dropped_time_to=MAX(COALESCE(dropped_time_to, ?), ?), pending_history_gaps=pending_history_gaps+?, updated_at=? WHERE singleton=1")

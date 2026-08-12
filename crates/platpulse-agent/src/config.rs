@@ -16,12 +16,79 @@ pub struct AgentConfigFile {
     pub state_db: PathBuf,
     #[serde(default = "default_inventory_revision")]
     pub inventory_revision: u64,
+    /// Conservative bounded recovery point-query policy. These defaults are
+    /// intentionally finite: realtime collection never falls back to polling.
+    #[serde(default)]
+    pub backfill: BackfillConfig,
     #[serde(default)]
     pub nodes: Vec<AgentNodeConfig>,
 }
 
 fn default_inventory_revision() -> u64 {
     1
+}
+
+/// Deterministic limits for one bounded Gap Backfill operation.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct BackfillConfig {
+    /// Maximum inclusive height span examined by one recovery operation.
+    #[serde(default = "default_backfill_height_span")]
+    pub max_height_span: u64,
+    /// Maximum point queries issued by one recovery operation.
+    #[serde(default = "default_backfill_block_count")]
+    pub max_block_count: u64,
+    /// Maximum wall time budget in milliseconds for one recovery operation.
+    #[serde(default = "default_backfill_time_ms")]
+    pub max_time_ms: u64,
+}
+
+pub const MIN_BACKFILL_HEIGHT_SPAN: u64 = 1;
+pub const MAX_BACKFILL_HEIGHT_SPAN: u64 = 1_000_000;
+pub const MIN_BACKFILL_BLOCK_COUNT: u64 = 1;
+pub const MAX_BACKFILL_BLOCK_COUNT: u64 = 100_000;
+pub const MIN_BACKFILL_TIME_MS: u64 = 1;
+pub const MAX_BACKFILL_TIME_MS: u64 = 60_000;
+
+fn default_backfill_height_span() -> u64 {
+    256
+}
+fn default_backfill_block_count() -> u64 {
+    128
+}
+fn default_backfill_time_ms() -> u64 {
+    5_000
+}
+
+impl Default for BackfillConfig {
+    fn default() -> Self {
+        Self {
+            max_height_span: default_backfill_height_span(),
+            max_block_count: default_backfill_block_count(),
+            max_time_ms: default_backfill_time_ms(),
+        }
+    }
+}
+
+impl BackfillConfig {
+    pub fn validate(&self) -> Result<(), AgentConfigError> {
+        if !(MIN_BACKFILL_HEIGHT_SPAN..=MAX_BACKFILL_HEIGHT_SPAN).contains(&self.max_height_span) {
+            return Err(AgentConfigError::InvalidBackfill(
+                "max_height_span is outside its documented bounds".to_owned(),
+            ));
+        }
+        if !(MIN_BACKFILL_BLOCK_COUNT..=MAX_BACKFILL_BLOCK_COUNT).contains(&self.max_block_count) {
+            return Err(AgentConfigError::InvalidBackfill(
+                "max_block_count is outside its documented bounds".to_owned(),
+            ));
+        }
+        if !(MIN_BACKFILL_TIME_MS..=MAX_BACKFILL_TIME_MS).contains(&self.max_time_ms) {
+            return Err(AgentConfigError::InvalidBackfill(
+                "max_time_ms is outside its documented bounds".to_owned(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// One Node declaration in the Agent's authoritative local configuration.
@@ -48,6 +115,7 @@ pub struct AgentConfig {
     pub server_url: String,
     pub credential_file: PathBuf,
     pub state_db: PathBuf,
+    pub backfill: BackfillConfig,
 }
 
 #[derive(Debug, Error)]
@@ -68,6 +136,8 @@ pub enum AgentConfigError {
     InvalidServerUrl { path: PathBuf, reason: String },
     #[error("invalid node configuration: {0}")]
     InvalidNode(String),
+    #[error("invalid backfill configuration: {0}")]
+    InvalidBackfill(String),
     #[error("inventory_revision must be greater than zero")]
     InvalidInventoryRevision,
 }
@@ -89,6 +159,7 @@ impl AgentConfigFile {
         if self.inventory_revision == 0 {
             return Err(AgentConfigError::InvalidInventoryRevision);
         }
+        self.backfill.validate()?;
         let mut seen_ids = std::collections::HashSet::new();
         let mut seen_endpoints = std::collections::HashSet::new();
         let mut nodes = Vec::with_capacity(self.nodes.len());
@@ -210,6 +281,7 @@ impl AgentConfig {
             server_url,
             credential_file: file.credential_file,
             state_db: file.state_db,
+            backfill: file.backfill,
         })
     }
 

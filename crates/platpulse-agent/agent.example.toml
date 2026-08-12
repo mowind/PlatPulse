@@ -1,0 +1,15 @@
+# PlatPulse Agent example configuration
+server_url = "https://monitor.example.com"
+credential_file = "/var/lib/platpulse-agent/credential"
+state_db = "/var/lib/platpulse-agent/agent.db"
+# Recovery point-query bounds (defaults: 256 heights, 128 blocks, 5000 ms)
+# Allowed ranges: height span 1..=1000000, block count 1..=100000, time 1..=60000 ms.
+[backfill]
+max_height_span = 256
+max_block_count = 128
+max_time_ms = 5000
+
+# [[nodes]]
+# node_id = "0195f2a1-0014-4014-8014-000000000014"
+# network_key = "platon-mainnet"
+# rpc_endpoint = "wss://node.example.com/ws"

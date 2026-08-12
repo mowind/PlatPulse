@@ -152,6 +152,102 @@ async fn save_component<T: serde::Serialize>(
     Ok(())
 }
 
+async fn open_coverage_gap(
+    tx: &mut Transaction<'_, Sqlite>,
+    node_id: &str,
+    from_height: u64,
+    to_height: u64,
+    created_at: &str,
+) -> Result<(), sqlx::Error> {
+    let overlap = sqlx::query_as::<_, (i64, i64, i64)>(
+        "SELECT coverage_id, first_height, last_height FROM block_coverage_intervals WHERE node_id=? AND status='open_recoverable_gap' AND first_height <= ? AND last_height >= ? ORDER BY first_height LIMIT 1",
+    )
+    .bind(node_id).bind(to_height as i64).bind(from_height as i64)
+    .fetch_optional(&mut **tx).await?;
+    if let Some((coverage_id, _first, _last)) = overlap {
+        sqlx::query("UPDATE block_coverage_intervals SET first_height=MIN(first_height,?), last_height=MAX(last_height,?), updated_at=? WHERE coverage_id=?")
+            .bind(from_height as i64).bind(to_height as i64).bind(created_at).bind(coverage_id)
+            .execute(&mut **tx).await?;
+    } else {
+        sqlx::query("INSERT INTO block_coverage_intervals (node_id, first_height, last_height, status, created_at, updated_at) VALUES (?, ?, ?, 'open_recoverable_gap', ?, ?)")
+            .bind(node_id).bind(from_height as i64).bind(to_height as i64).bind(created_at).bind(created_at)
+            .execute(&mut **tx).await?;
+    }
+    Ok(())
+}
+
+async fn append_coverage_height(
+    tx: &mut Transaction<'_, Sqlite>,
+    node_id: &str,
+    height: u64,
+    created_at: &str,
+) -> Result<(), sqlx::Error> {
+    let previous = sqlx::query_as::<_, (i64, i64, i64)>(
+        "SELECT coverage_id, first_height, last_height FROM block_coverage_intervals WHERE node_id=? AND status='covered' AND last_height < ? ORDER BY last_height DESC LIMIT 1",
+    )
+    .bind(node_id).bind(height as i64).fetch_optional(&mut **tx).await?;
+    if let Some((coverage_id, first, last)) = previous {
+        if last + 1 == height as i64 {
+            sqlx::query("UPDATE block_coverage_intervals SET last_height=?,updated_at=? WHERE coverage_id=?")
+                .bind(height as i64).bind(created_at).bind(coverage_id).execute(&mut **tx).await?;
+            return Ok(());
+        }
+        let _ = (first, last);
+    }
+    sqlx::query("INSERT OR IGNORE INTO block_coverage_intervals (node_id,first_height,last_height,status,created_at,updated_at) VALUES (?, ?, ?, 'covered', ?, ?)")
+        .bind(node_id).bind(height as i64).bind(height as i64).bind(created_at).bind(created_at).execute(&mut **tx).await?;
+    Ok(())
+}
+
+async fn coverage_allows_backfill(
+    tx: &mut Transaction<'_, Sqlite>,
+    node_id: &str,
+    height: u64,
+) -> Result<Option<i64>, sqlx::Error> {
+    sqlx::query_scalar("SELECT coverage_id FROM block_coverage_intervals WHERE node_id=? AND status='open_recoverable_gap' AND first_height <= ? AND last_height >= ? LIMIT 1")
+        .bind(node_id).bind(height as i64).bind(height as i64).fetch_optional(&mut **tx).await
+}
+
+async fn close_coverage_height(
+    tx: &mut Transaction<'_, Sqlite>,
+    coverage_id: i64,
+    height: u64,
+    now_text: &str,
+) -> Result<(), sqlx::Error> {
+    let row = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT first_height,last_height FROM block_coverage_intervals WHERE coverage_id=?",
+    )
+    .bind(coverage_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((first, last)) = row else {
+        return Ok(());
+    };
+    let first = first as u64;
+    let last = last as u64;
+    if first == last {
+        sqlx::query("DELETE FROM block_coverage_intervals WHERE coverage_id=?")
+            .bind(coverage_id)
+            .execute(&mut **tx)
+            .await?;
+    } else if height == first {
+        sqlx::query("UPDATE block_coverage_intervals SET first_height=first_height+1,updated_at=? WHERE coverage_id=?").bind(now_text).bind(coverage_id).execute(&mut **tx).await?;
+    } else if height == last {
+        sqlx::query("UPDATE block_coverage_intervals SET last_height=last_height-1,updated_at=? WHERE coverage_id=?").bind(now_text).bind(coverage_id).execute(&mut **tx).await?;
+    } else if height > first && height < last {
+        sqlx::query(
+            "UPDATE block_coverage_intervals SET last_height=? ,updated_at=? WHERE coverage_id=?",
+        )
+        .bind((height - 1) as i64)
+        .bind(now_text)
+        .bind(coverage_id)
+        .execute(&mut **tx)
+        .await?;
+        sqlx::query("INSERT INTO block_coverage_intervals (node_id,first_height,last_height,status,created_at,updated_at) SELECT node_id,?,?,status,created_at,? FROM block_coverage_intervals WHERE coverage_id=?").bind(last as i64).bind(now_text).execute(&mut **tx).await?;
+    }
+    Ok(())
+}
+
 async fn block_network_identity_mismatches(
     tx: &mut Transaction<'_, Sqlite>,
     report: &AgentReport,
@@ -459,6 +555,30 @@ async fn save_current(
             platpulse_core::block::SealSignerMatch::Other => "other",
             platpulse_core::block::SealSignerMatch::Unknown => "unknown",
         };
+        if sample.source == platpulse_core::block::BlockSource::GapBackfill
+            && coverage_allows_backfill(&mut *tx, &node_id, sample.block_number)
+                .await?
+                .is_none()
+        {
+            continue;
+        }
+        if sample.source == platpulse_core::block::BlockSource::Subscription {
+            let historical_high_watermark: Option<i64> = sqlx::query_scalar(
+                "SELECT historical_high_watermark FROM block_history_state WHERE node_id=?",
+            )
+            .bind(&node_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+            if historical_high_watermark.is_some_and(|height| sample.block_number as i64 <= height)
+            {
+                continue;
+            }
+        }
+        let coverage_id = if sample.source == platpulse_core::block::BlockSource::GapBackfill {
+            coverage_allows_backfill(&mut *tx, &node_id, sample.block_number).await?
+        } else {
+            None
+        };
         let inserted = sqlx::query("INSERT OR IGNORE INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, block_interval_ms, source, coinbase, seal_signer_key_fingerprint, seal_signer_match, protocol_proposer_kind, protocol_proposer_identity, attribution_reason, accepted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(&node_id).bind(sample.block_number as i64).bind(sample.block_hash.to_string()).bind(sample.parent_hash.to_string())
             .bind(sample.network_identity.genesis_hash.to_string()).bind(sample.network_identity.chain_id as i64).bind(sample.network_identity.p2p_network_id as i64).bind(sample.network_identity.address_hrp.as_deref().unwrap_or(""))
@@ -468,6 +588,12 @@ async fn save_current(
         if inserted.rows_affected() == 0 {
             continue;
         }
+        if let Some(coverage_id) = coverage_id {
+            close_coverage_height(&mut *tx, coverage_id, sample.block_number, received_at).await?;
+        } else {
+            append_coverage_height(&mut *tx, &node_id, sample.block_number, received_at).await?;
+        }
+
         sqlx::query("INSERT INTO observed_network_heads (node_id, block_number, block_hash, observed_at, confidence, eligible_sources) VALUES (?, ?, ?, ?, 'unknown', '[\\\"subscription\\\"]') ON CONFLICT(node_id) DO UPDATE SET block_number=excluded.block_number, block_hash=excluded.block_hash, observed_at=excluded.observed_at, confidence=excluded.confidence, eligible_sources=excluded.eligible_sources")
             .bind(&node_id).bind(sample.block_number as i64).bind(sample.block_hash.to_string()).bind(sample.observed_at.to_string()).execute(&mut **tx).await?;
         sqlx::query("INSERT INTO block_history_state (node_id, historical_high_watermark, cumulative_block_count, cumulative_transaction_count, cumulative_self_seal_count, updated_at) VALUES (?, ?, 1, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET historical_high_watermark=MAX(block_history_state.historical_high_watermark, excluded.historical_high_watermark), cumulative_block_count=block_history_state.cumulative_block_count + 1, cumulative_transaction_count=block_history_state.cumulative_transaction_count + excluded.cumulative_transaction_count, cumulative_self_seal_count=block_history_state.cumulative_self_seal_count + excluded.cumulative_self_seal_count, updated_at=excluded.updated_at)")
@@ -842,9 +968,23 @@ async fn handler(
             );
         }
     };
+    let mut outside_open_gap: std::collections::HashSet<(platpulse_core::identity::NodeId, u64)> =
+        std::collections::HashSet::new();
+    for sample in &parsed.block_summaries {
+        if sample.source == platpulse_core::block::BlockSource::GapBackfill
+            && coverage_allows_backfill(&mut tx, &sample.node_id.to_string(), sample.block_number)
+                .await
+                .map_err(|_| ())
+                .ok()
+                .flatten()
+                .is_none()
+        {
+            outside_open_gap.insert((sample.node_id, sample.block_number));
+        }
+    }
     for sample in &parsed.block_summaries {
         if ownership_mismatches.contains(&sample.node_id) {
-            sqlx::query("INSERT OR IGNORE INTO block_history_gaps (node_id, from_height, to_height, kind, created_at) VALUES (?, ?, ?, 'server_rejected', ?)")
+            sqlx::query("INSERT OR IGNORE INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at) VALUES (?, ?, ?, 'server_rejected', 'Node ownership mismatch', ?)")
                 .bind(sample.node_id.to_string())
                 .bind(sample.block_number as i64)
                 .bind(sample.block_number as i64)
@@ -859,10 +999,32 @@ async fn handler(
         if ownership_mismatches.contains(&gap.node_id) {
             continue;
         }
-        sqlx::query("INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, created_at) VALUES (?, ?, ?, ?, ?)")
+        let kind = match gap.kind {
+            platpulse_core::gap::GapKind::UnrecoverableBackfill => "unrecoverable_backfill",
+            platpulse_core::gap::GapKind::SpoolOverflow => "spool_overflow",
+            platpulse_core::gap::GapKind::ServerRejected => "server_rejected",
+        };
+        sqlx::query("INSERT OR IGNORE INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)")
             .bind(gap.node_id.to_string()).bind(gap.from_height as i64).bind(gap.to_height as i64)
-            .bind(format!("{:?}", gap.kind).to_lowercase()).bind(gap.recorded_at.to_string())
+            .bind(kind)
+            .bind(&gap.reason)
+            .bind(gap.recorded_at.to_string())
             .execute(&mut *tx).await.map_err(|_| ()).ok();
+        if matches!(
+            gap.kind,
+            platpulse_core::gap::GapKind::UnrecoverableBackfill
+        ) {
+            open_coverage_gap(
+                &mut tx,
+                &gap.node_id.to_string(),
+                gap.from_height,
+                gap.to_height,
+                &now_text,
+            )
+            .await
+            .map_err(|_| ())
+            .ok();
+        }
     }
     let nodes: Vec<NodeReceipt> = parsed
         .inventory
@@ -935,7 +1097,8 @@ async fn handler(
         .iter()
         .map(|sample| {
             let rejected = ownership_mismatches.contains(&sample.node_id)
-                || mismatches.contains(&sample.node_id);
+                || mismatches.contains(&sample.node_id)
+                || outside_open_gap.contains(&(sample.node_id, sample.block_number));
             SampleDisposition {
                 node_id: sample.node_id,
                 sample: SampleRef::Block {
@@ -949,13 +1112,18 @@ async fn handler(
                 rejection: rejected.then(|| {
                     let code = if ownership_mismatches.contains(&sample.node_id) {
                         platpulse_core::RejectionCode::NodeOwnershipMismatch
+                    } else if outside_open_gap.contains(&(sample.node_id, sample.block_number)) {
+                        platpulse_core::RejectionCode::GapBackfillOutsideOpenGap
                     } else {
                         platpulse_core::RejectionCode::NetworkIdentityMismatch
                     };
-                    rejection(
-                        code,
-                        "Block network identity does not match the registered Network",
-                    )
+                    let reason =
+                        if outside_open_gap.contains(&(sample.node_id, sample.block_number)) {
+                            "GapBackfill sample is outside an explicit open recoverable gap"
+                        } else {
+                            "Block network identity does not match the registered Network"
+                        };
+                    rejection(code, reason)
                 }),
             }
         })

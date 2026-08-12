@@ -670,6 +670,8 @@ pub struct AdminBlockHistoryItem {
     pub freshness: Option<String>,
     pub gap_from_height: Option<i64>,
     pub gap_to_height: Option<i64>,
+    pub gap_kind: Option<String>,
+    pub gap_reason: Option<String>,
 }
 
 async fn admin_node_history(
@@ -677,49 +679,32 @@ async fn admin_node_history(
     Extension(_session): Extension<super::AuthenticatedSession>,
     Path(node_id): Path<String>,
 ) -> impl IntoResponse {
-    let rows = sqlx::query_as::<_, super::public::HistoryRow>("SELECT block_number, block_timestamp_ms, transaction_count, coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, CASE WHEN protocol_proposer_kind = 'verified' THEN protocol_proposer_identity ELSE NULL END, attribution_reason, observed_at, from_height, to_height FROM (SELECT block_number, block_timestamp_ms, transaction_count, coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, protocol_proposer_kind, protocol_proposer_identity, attribution_reason, observed_at, NULL AS from_height, NULL AS to_height, node_id FROM block_summaries WHERE node_id = ? UNION ALL SELECT NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, created_at, from_height, to_height, node_id FROM block_history_gaps WHERE node_id = ?) ORDER BY COALESCE(block_number, from_height) DESC LIMIT 200")
+    let rows = sqlx::query_as::<_, super::public::HistoryRow>("SELECT block_number, block_timestamp_ms, transaction_count, coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, CASE WHEN protocol_proposer_kind = 'verified' THEN protocol_proposer_identity ELSE NULL END, attribution_reason, observed_at, from_height, to_height, NULL AS gap_kind, NULL AS gap_reason FROM block_summaries WHERE node_id = ? UNION ALL SELECT NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, created_at, from_height, to_height, kind, reason FROM block_history_gaps WHERE node_id = ? ORDER BY COALESCE(block_number, from_height) DESC LIMIT 200")
         .bind(&node_id).bind(&node_id).fetch_all(state.db().pool()).await.unwrap_or_default();
     Json(
         rows.into_iter()
-            .map(
-                |(
-                    height,
-                    block_time_ms,
-                    transaction_count,
-                    coinbase,
-                    seal_signer_match,
-                    seal_signer_key_fingerprint,
-                    node_key_fingerprint,
-                    node_key_valid_from,
-                    node_key_valid_until,
-                    seal_recovery_rule,
-                    seal_evidence,
-                    protocol_proposer,
-                    attribution_reason,
-                    observed_at,
-                    from_height,
-                    to_height,
-                )| AdminBlockHistoryItem {
-                    node_id: node_id.clone(),
-                    height,
-                    block_time_ms,
-                    transaction_count,
-                    coinbase,
-                    seal_signer_match,
-                    seal_signer_key_fingerprint,
-                    node_key_fingerprint,
-                    node_key_valid_from,
-                    node_key_valid_until,
-                    seal_recovery_rule,
-                    seal_evidence,
-                    protocol_proposer,
-                    attribution_reason,
-                    freshness: observed_at.clone(),
-                    observed_at,
-                    gap_from_height: from_height,
-                    gap_to_height: to_height,
-                },
-            )
+            .map(|row| AdminBlockHistoryItem {
+                node_id: node_id.clone(),
+                height: row.block_number,
+                block_time_ms: row.block_timestamp_ms,
+                transaction_count: row.transaction_count,
+                coinbase: row.coinbase,
+                seal_signer_match: row.seal_signer_match,
+                seal_signer_key_fingerprint: row.seal_signer_key_fingerprint,
+                node_key_fingerprint: row.node_key_fingerprint,
+                node_key_valid_from: row.node_key_valid_from,
+                node_key_valid_until: row.node_key_valid_until,
+                seal_recovery_rule: row.seal_recovery_rule,
+                seal_evidence: row.seal_evidence,
+                protocol_proposer: row.protocol_proposer,
+                attribution_reason: row.attribution_reason,
+                freshness: row.observed_at.clone(),
+                observed_at: row.observed_at,
+                gap_from_height: row.from_height,
+                gap_to_height: row.to_height,
+                gap_kind: row.gap_kind,
+                gap_reason: row.gap_reason,
+            })
             .collect::<Vec<_>>(),
     )
 }

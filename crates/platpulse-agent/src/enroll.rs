@@ -268,6 +268,7 @@ mod tests {
             server_url: format!("http://{}", server.addr),
             credential_file: dir.join("credential"),
             state_db: dir.join("agent.db"),
+            backfill: crate::config::BackfillConfig::default(),
         }
     }
 

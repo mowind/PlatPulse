@@ -6,7 +6,7 @@
 //! producing a `BlockSummary`.
 
 use std::collections::{HashMap, VecDeque};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use platpulse_core::block::{
@@ -35,6 +35,13 @@ pub trait BlockTransport {
         endpoint: &RpcEndpoint,
         hash: &Hash32,
     ) -> Result<ResolvedBlock, TransportError>;
+    fn get_block_by_number(
+        &self,
+        _endpoint: &RpcEndpoint,
+        _height: u64,
+    ) -> Result<ResolvedBlock, TransportError> {
+        Err(TransportError::Unavailable)
+    }
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -55,14 +62,16 @@ pub struct WebSocketBlockTransport {
     pub receive_timeout: Duration,
     pub max_heads: usize,
     pub max_transactions: usize,
+    /// Maximum accepted UTF-8 RPC response bytes.
+    pub max_response_bytes: usize,
 }
-
 impl Default for WebSocketBlockTransport {
     fn default() -> Self {
         Self {
             receive_timeout: Duration::from_millis(250),
             max_heads: 32,
             max_transactions: 100_000,
+            max_response_bytes: 2 * 1024 * 1024,
         }
     }
 }
@@ -107,6 +116,8 @@ struct BlockWire {
     #[serde(rename = "parentHash")]
     parent_hash: String,
     timestamp: String,
+    #[serde(default, alias = "author")]
+    miner: Option<String>,
     transactions: Vec<Hash32>,
 }
 
@@ -168,6 +179,11 @@ impl WebSocketBlockTransport {
             let Message::Text(text) = message else {
                 continue;
             };
+            if text.len() > self.max_response_bytes {
+                return Err(TransportError::Failed(
+                    "RPC response exceeded configured size limit".to_owned(),
+                ));
+            }
             let response: RpcEnvelope<T> = serde_json::from_str(text.as_ref())
                 .map_err(|_| TransportError::Failed("malformed RPC response".to_owned()))?;
             if response.id != id {
@@ -186,9 +202,109 @@ impl WebSocketBlockTransport {
         }
     }
 
-    /// Subscribe to one Node, resolve bounded headers by hash, and close the
-    /// socket. Resolve failures do not discard the queued header; callers can
-    /// retry that Node without rebuilding the subscription abstraction.
+    pub async fn get_block_by_number_async(
+        &self,
+        endpoint: &RpcEndpoint,
+        identity: &NetworkIdentity,
+        height: u64,
+    ) -> Result<ResolvedBlock, TransportError> {
+        let mut socket = self.connect(endpoint).await?;
+        let block: BlockWire = self
+            .request(
+                &mut socket,
+                1,
+                "platon_getBlockByNumber",
+                serde_json::json!([format!("0x{height:x}"), false]),
+            )
+            .await?;
+        Ok(ResolvedBlock {
+            block_number: quantity(&block.number)?,
+            block_hash: parse_hash(&block.hash)?,
+            parent_hash: parse_hash(&block.parent_hash)?,
+            block_timestamp_ms: quantity(&block.timestamp)?.saturating_mul(1000),
+            transaction_hashes: block
+                .transactions
+                .into_iter()
+                .take(self.max_transactions)
+                .collect(),
+            network_identity: identity.clone(),
+            coinbase: parse_address(block.miner)?,
+        })
+    }
+
+    pub async fn current_head_async(&self, endpoint: &RpcEndpoint) -> Result<u64, TransportError> {
+        let mut socket = self.connect(endpoint).await?;
+        let value: String = self
+            .request(&mut socket, 1, "platon_blockNumber", serde_json::json!([]))
+            .await?;
+        quantity(&value)
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub async fn gap_backfill(
+        &self,
+        endpoint: &RpcEndpoint,
+        node_id: NodeId,
+        identity: NetworkIdentity,
+        observed_at: Rfc3339,
+        from_height: u64,
+        to_height: u64,
+        bounds: BackfillBounds,
+        trigger: BackfillTrigger,
+    ) -> BackfillOutcome {
+        let mut summaries = Vec::new();
+        let mut height = from_height;
+        let started = Instant::now();
+        let end = to_height
+            .min(from_height.saturating_add(bounds.max_height_span.saturating_sub(1)))
+            .min(from_height.saturating_add(bounds.max_block_count.saturating_sub(1)));
+        while height <= end && started.elapsed() <= bounds.max_time {
+            let block = match self
+                .get_block_by_number_async(endpoint, &identity, height)
+                .await
+            {
+                Ok(block) => block,
+                Err(error) => {
+                    return BackfillOutcome {
+                        summaries,
+                        gaps: vec![make_gap(
+                            node_id,
+                            height,
+                            to_height,
+                            observed_at,
+                            format!("{} point query failed: {error}", trigger.label()),
+                        )],
+                    };
+                }
+            };
+            if block.block_number != height || block.network_identity != identity {
+                return BackfillOutcome {
+                    summaries,
+                    gaps: vec![make_gap(
+                        node_id,
+                        height,
+                        to_height,
+                        observed_at,
+                        format!("{} point query identity mismatch", trigger.label()),
+                    )],
+                };
+            }
+            summaries.push(BlockSummary { node_id, network_identity: identity.clone(), block_number: block.block_number, block_hash: block.block_hash, parent_hash: block.parent_hash, block_timestamp_ms: block.block_timestamp_ms, observed_at, transaction_count: block.transaction_hashes.len() as u64, block_interval_ms: None, source: BlockSource::GapBackfill, attribution: BlockProductionAttribution::unknown_attribution(block.coinbase, "seal recovery rule is not verified for this fork; protocol proposer evidence is unavailable") });
+            height = height.saturating_add(1);
+        }
+        let gaps = if height <= to_height {
+            vec![make_gap(
+                node_id,
+                height,
+                to_height,
+                observed_at,
+                format!("{} exceeded configured backfill bounds", trigger.label()),
+            )]
+        } else {
+            vec![]
+        };
+        BackfillOutcome { summaries, gaps }
+    }
+
     pub async fn collect_node_summaries(
         &self,
         endpoint: &RpcEndpoint,
@@ -214,6 +330,11 @@ impl WebSocketBlockTransport {
             let Message::Text(text) = message else {
                 continue;
             };
+            if text.len() > self.max_response_bytes {
+                return Err(TransportError::Failed(
+                    "RPC response exceeded configured size limit".to_owned(),
+                ));
+            }
             let notification: HeadNotification = match serde_json::from_str(text.as_ref()) {
                 Ok(value) => value,
                 Err(_) => continue,
@@ -248,6 +369,11 @@ impl WebSocketBlockTransport {
                 Err(error) => return Err(error),
             };
             next_id = next_id.saturating_add(1);
+            if block.transactions.len() > self.max_transactions {
+                return Err(TransportError::Failed(
+                    "RPC block transaction list exceeded configured size limit".to_owned(),
+                ));
+            }
             let resolved = ResolvedBlock {
                 block_number: quantity(&block.number)?,
                 block_hash: parse_hash(&block.hash)?,
@@ -259,7 +385,7 @@ impl WebSocketBlockTransport {
                     .take(self.max_transactions)
                     .collect(),
                 network_identity: identity.clone(),
-                coinbase: header.coinbase,
+                coinbase: parse_address(block.miner.clone().or(Some(header.coinbase.to_string())))?,
             };
             if resolved.block_number != header.block_number
                 || resolved.block_hash != header.block_hash
@@ -301,6 +427,14 @@ impl BlockTransport for FailClosedBlockTransport {
         &self,
         _endpoint: &RpcEndpoint,
         _hash: &Hash32,
+    ) -> Result<ResolvedBlock, TransportError> {
+        Err(TransportError::Unavailable)
+    }
+
+    fn get_block_by_number(
+        &self,
+        _endpoint: &RpcEndpoint,
+        _height: u64,
     ) -> Result<ResolvedBlock, TransportError> {
         Err(TransportError::Unavailable)
     }
@@ -346,7 +480,204 @@ pub fn collect_transport_summaries<T: BlockTransport>(
     }
     Ok(summaries)
 }
-/// Header delivered by one Node's `newHeads` subscription.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackfillTrigger {
+    StartupRace,
+    Restart,
+    Reconnect,
+    HeightJump,
+    QueueOverflow,
+    Shutdown,
+}
+
+impl BackfillTrigger {
+    fn label(self) -> &'static str {
+        match self {
+            Self::StartupRace => "startup race",
+            Self::Restart => "restart",
+            Self::Reconnect => "subscription reconnect",
+            Self::HeightJump => "head height jump",
+            Self::QueueOverflow => "header queue overflow",
+            Self::Shutdown => "unresolved shutdown range",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecoveryPlan {
+    pub trigger: BackfillTrigger,
+    pub from_height: u64,
+    pub to_height: u64,
+}
+
+/// Decide whether a finite recovery is required. A normal adjacent head never
+/// schedules a point query; only the declared recovery triggers do.
+pub fn plan_recovery(
+    previous_head: Option<u64>,
+    current_head: u64,
+    boot_changed: bool,
+    reconnect: bool,
+    queue_overflow: bool,
+    shutdown_range: Option<(u64, u64)>,
+) -> Option<RecoveryPlan> {
+    if let Some((from, to)) = shutdown_range {
+        return (from <= to).then_some(RecoveryPlan {
+            trigger: BackfillTrigger::Shutdown,
+            from_height: from,
+            to_height: to,
+        });
+    }
+    let from = previous_head
+        .map(|head| head.saturating_add(1))
+        .unwrap_or_else(|| current_head.saturating_sub(1));
+    if from > current_head {
+        return None;
+    }
+    let trigger = if queue_overflow {
+        BackfillTrigger::QueueOverflow
+    } else if reconnect {
+        BackfillTrigger::Reconnect
+    } else if boot_changed && previous_head.is_some() {
+        BackfillTrigger::Restart
+    } else if previous_head.is_none() {
+        BackfillTrigger::StartupRace
+    } else if current_head > previous_head.expect("checked above").saturating_add(1) {
+        BackfillTrigger::HeightJump
+    } else {
+        return None;
+    };
+    Some(RecoveryPlan {
+        trigger,
+        from_height: from,
+        to_height: current_head,
+    })
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BackfillBounds {
+    pub max_height_span: u64,
+    pub max_block_count: u64,
+    pub max_time: Duration,
+}
+
+impl Default for BackfillBounds {
+    fn default() -> Self {
+        Self {
+            max_height_span: 256,
+            max_block_count: 128,
+            max_time: Duration::from_secs(5),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BackfillOutcome {
+    pub summaries: Vec<BlockSummary>,
+    pub gaps: Vec<platpulse_core::gap::HistoryGap>,
+}
+
+/// Perform one finite height point-query recovery for an explicit trigger.
+/// This is never called by the normal realtime subscription path.
+#[allow(clippy::too_many_arguments)]
+pub fn backfill_missing<T: BlockTransport>(
+    transport: &T,
+    endpoint: &RpcEndpoint,
+    node_id: NodeId,
+    identity: NetworkIdentity,
+    observed_at: Rfc3339,
+    from_height: u64,
+    to_height: u64,
+    bounds: BackfillBounds,
+    trigger: BackfillTrigger,
+) -> BackfillOutcome {
+    let mut outcome = BackfillOutcome::default();
+    if from_height > to_height || bounds.max_height_span == 0 || bounds.max_block_count == 0 {
+        return outcome;
+    }
+    let started = Instant::now();
+    let end = to_height
+        .min(from_height.saturating_add(bounds.max_height_span.saturating_sub(1)))
+        .min(from_height.saturating_add(bounds.max_block_count.saturating_sub(1)));
+    let mut height = from_height;
+    while height <= end && started.elapsed() <= bounds.max_time {
+        let block = match transport.get_block_by_number(endpoint, height) {
+            Ok(block) => block,
+            Err(error) => {
+                outcome.gaps.push(make_gap(
+                    node_id,
+                    height,
+                    to_height,
+                    observed_at,
+                    format!("{} point query failed: {error}", trigger.label()),
+                ));
+                return outcome;
+            }
+        };
+        if block.block_number != height || block.network_identity != identity {
+            outcome.gaps.push(make_gap(
+                node_id,
+                height,
+                to_height,
+                observed_at,
+                format!("{} point query identity mismatch", trigger.label()),
+            ));
+            return outcome;
+        }
+        outcome.summaries.push(BlockSummary { node_id, network_identity: identity.clone(), block_number: block.block_number, block_hash: block.block_hash, parent_hash: block.parent_hash, block_timestamp_ms: block.block_timestamp_ms, observed_at, transaction_count: block.transaction_hashes.len() as u64, block_interval_ms: None, source: BlockSource::GapBackfill, attribution: BlockProductionAttribution::unknown_attribution(block.coinbase, "seal recovery rule is not verified for this fork; protocol proposer evidence is unavailable") });
+        height = height.saturating_add(1);
+    }
+    if height <= to_height {
+        outcome.gaps.push(make_gap(
+            node_id,
+            height,
+            to_height,
+            observed_at,
+            format!("{} exceeded configured backfill bounds", trigger.label()),
+        ));
+    }
+    outcome
+}
+
+fn make_gap(
+    node_id: NodeId,
+    from_height: u64,
+    to_height: u64,
+    recorded_at: Rfc3339,
+    reason: String,
+) -> platpulse_core::gap::HistoryGap {
+    platpulse_core::gap::HistoryGap {
+        node_id,
+        kind: platpulse_core::gap::GapKind::UnrecoverableBackfill,
+        from_height,
+        to_height,
+        reason,
+        recorded_at,
+    }
+}
+
+fn gap_kind_name(kind: platpulse_core::gap::GapKind) -> &'static str {
+    match kind {
+        platpulse_core::gap::GapKind::UnrecoverableBackfill => "unrecoverable_backfill",
+        platpulse_core::gap::GapKind::SpoolOverflow => "spool_overflow",
+        platpulse_core::gap::GapKind::ServerRejected => "server_rejected",
+    }
+}
+
+pub async fn persist_history_gap(
+    store: &mut AgentStore,
+    gap: &platpulse_core::gap::HistoryGap,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT OR IGNORE INTO history_gaps (node_id, from_height, to_height, kind, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+        .bind(gap.node_id.to_string())
+        .bind(gap.from_height as i64)
+        .bind(gap.to_height as i64)
+        .bind(gap_kind_name(gap.kind))
+        .bind(&gap.reason)
+        .bind(gap.recorded_at.to_string())
+        .execute(store.connection())
+        .await?;
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeadHeader {
     pub block_number: u64,
@@ -594,6 +925,26 @@ impl HeadSubscription {
     pub fn len(&self) -> usize {
         self.queue.len()
     }
+    pub fn front_height(&self) -> Option<u64> {
+        self.queue.front().map(|header| header.block_number)
+    }
+
+    pub fn backfill_range(&self, current_head: u64) -> Option<(u64, u64)> {
+        self.front_height()
+            .and_then(|first| (first < current_head).then_some((first + 1, current_head)))
+    }
+
+    pub fn drain_unresolved_range(&mut self) -> Option<(u64, u64)> {
+        let first = self.queue.front()?.block_number;
+        let last = self.queue.back()?.block_number;
+        self.queue.clear();
+        Some((first, last))
+    }
+
+    pub fn is_overflowing(&self) -> bool {
+        self.queue.len() >= self.capacity
+    }
+
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
@@ -752,6 +1103,79 @@ mod tests {
             TransportError::Failed("invalid RPC quantity".to_owned())
         );
         assert_eq!(quantity("0x1").unwrap().saturating_mul(1000), 1000);
+    }
+
+    #[test]
+    fn backfill_bounds_produce_gap_backfill_and_exact_gap() {
+        struct FakeTransport {
+            identity: NetworkIdentity,
+        }
+        impl BlockTransport for FakeTransport {
+            fn subscribe_heads(&self, _: &RpcEndpoint) -> Result<Vec<HeadHeader>, TransportError> {
+                Ok(vec![])
+            }
+            fn get_block_by_hash(
+                &self,
+                _: &RpcEndpoint,
+                _: &Hash32,
+            ) -> Result<ResolvedBlock, TransportError> {
+                Err(TransportError::Unavailable)
+            }
+            fn get_block_by_number(
+                &self,
+                _: &RpcEndpoint,
+                height: u64,
+            ) -> Result<ResolvedBlock, TransportError> {
+                Ok(ResolvedBlock {
+                    block_number: height,
+                    block_hash: hash('c'),
+                    parent_hash: hash('d'),
+                    block_timestamp_ms: height * 1000,
+                    transaction_hashes: vec![],
+                    network_identity: self.identity.clone(),
+                    coinbase: address(),
+                })
+            }
+        }
+        let transport = FakeTransport {
+            identity: identity(),
+        };
+        let endpoint: RpcEndpoint = "ws://127.0.0.1:6790".parse().unwrap();
+        let at: Rfc3339 = "2026-01-01T00:00:00Z".parse().unwrap();
+        let result = backfill_missing(
+            &transport,
+            &endpoint,
+            "0195f2a1-0014-4014-8014-000000000014".parse().unwrap(),
+            identity(),
+            at,
+            9,
+            12,
+            BackfillBounds {
+                max_height_span: 2,
+                max_block_count: 2,
+                max_time: Duration::from_secs(1),
+            },
+            BackfillTrigger::HeightJump,
+        );
+        assert_eq!(result.summaries.len(), 2);
+        assert!(
+            result
+                .summaries
+                .iter()
+                .all(|sample| sample.source == BlockSource::GapBackfill)
+        );
+        assert_eq!(result.gaps[0].from_height, 11);
+        assert_eq!(result.gaps[0].to_height, 12);
+    }
+
+    #[test]
+    fn queue_overflow_and_shutdown_are_explicit_recovery_ranges() {
+        let node: NodeId = "0195f2a1-0014-4014-8014-000000000014".parse().unwrap();
+        let mut sub = HeadSubscription::new(node, 1);
+        sub.push(header()).unwrap();
+        assert!(sub.is_overflowing());
+        assert_eq!(sub.drain_unresolved_range(), Some((9, 9)));
+        assert!(sub.is_empty());
     }
 
     #[test]

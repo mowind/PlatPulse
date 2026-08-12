@@ -672,11 +672,18 @@ pub async fn collect_and_persist_with_blocks<A: RpcAdapter>(
         else {
             continue;
         };
+        let prior_recovery = sqlx::query_as::<_, (Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<String>)>(
+            "SELECT boot_id, last_head, pending_from, pending_to, pending_trigger FROM node_recovery_state WHERE node_id=?",
+        )
+        .bind(node.node_id.to_string())
+        .fetch_optional(store.connection())
+        .await?;
+        let mut reconnect_needed = false;
         match transport
             .collect_node_summaries(
                 &node.rpc_endpoint,
                 node.node_id,
-                identity,
+                identity.clone(),
                 report.generated_at,
             )
             .await
@@ -691,7 +698,68 @@ pub async fn collect_and_persist_with_blocks<A: RpcAdapter>(
                     .await?;
                 }
             }
-            Err(_) => { /* block resolution is Node-local; current report remains valid */ }
+            Err(_) => {
+                reconnect_needed = true;
+            }
+        }
+        if let Ok(head) = transport.current_head_async(&node.rpc_endpoint).await {
+            let boot_changed = prior_recovery.as_ref().and_then(|row| row.0.as_deref())
+                != Some(report.boot_id.to_string().as_str());
+            let plan = crate::block::plan_recovery(
+                prior_recovery
+                    .as_ref()
+                    .and_then(|row| row.1)
+                    .map(|v| v as u64),
+                head,
+                boot_changed,
+                reconnect_needed,
+                false,
+                None,
+            );
+            let bounds = crate::block::BackfillBounds {
+                max_height_span: config.backfill.max_height_span,
+                max_block_count: config.backfill.max_block_count,
+                max_time: std::time::Duration::from_millis(config.backfill.max_time_ms),
+            };
+            if let Some(plan) = plan {
+                let outcome = transport
+                    .gap_backfill(
+                        &node.rpc_endpoint,
+                        node.node_id,
+                        identity,
+                        report.generated_at,
+                        plan.from_height,
+                        plan.to_height,
+                        bounds,
+                        plan.trigger,
+                    )
+                    .await;
+                for summary in outcome.summaries {
+                    crate::block::persist_block_summary(
+                        &mut store,
+                        &summary,
+                        &report.generated_at.to_string(),
+                    )
+                    .await?;
+                }
+                for gap in &outcome.gaps {
+                    crate::block::persist_history_gap(&mut store, gap).await?;
+                }
+                let pending = outcome
+                    .gaps
+                    .first()
+                    .map(|gap| (gap.from_height, gap.to_height));
+                sqlx::query("INSERT INTO node_recovery_state (node_id, boot_id, last_head, pending_from, pending_to, pending_trigger, pending_reason, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET boot_id=excluded.boot_id,last_head=excluded.last_head,pending_from=excluded.pending_from,pending_to=excluded.pending_to,pending_trigger=excluded.pending_trigger,pending_reason=excluded.pending_reason,updated_at=excluded.updated_at")
+                    .bind(node.node_id.to_string()).bind(report.boot_id.to_string()).bind(head as i64)
+                    .bind(pending.map(|v| v.0 as i64)).bind(pending.map(|v| v.1 as i64))
+                    .bind(pending.as_ref().map(|_| format!("{:?}", plan.trigger).to_lowercase()))
+                    .bind(outcome.gaps.first().map(|gap| gap.reason.as_str())).bind(report.generated_at.to_string())
+                    .execute(store.connection()).await?;
+            } else {
+                sqlx::query("INSERT INTO node_recovery_state (node_id, boot_id, last_head, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET boot_id=excluded.boot_id,last_head=excluded.last_head,updated_at=excluded.updated_at")
+                    .bind(node.node_id.to_string()).bind(report.boot_id.to_string()).bind(head as i64).bind(report.generated_at.to_string())
+                    .execute(store.connection()).await?;
+            }
         }
     }
     report.block_summaries = load_block_summaries(&mut store).await?;
@@ -1041,6 +1109,7 @@ mod tests {
             server_url: "https://example.com".into(),
             credential_file: dir.path().join("credential"),
             state_db: dir.path().join("agent.db"),
+            backfill: crate::config::BackfillConfig::default(),
         };
         let inventory: NodeInventory = serde_json::from_str(r#"{"revision":1,"nodes":[{"node_id":"0195f2a1-0014-4014-8014-000000000014","network_key":"platon-mainnet","rpc_endpoint":"ws://127.0.0.1:6790"}]}"#).unwrap();
         let report = collect_report(
@@ -1096,6 +1165,7 @@ mod tests {
             server_url: "https://example.com".into(),
             credential_file: dir.path().join("credential"),
             state_db: dir.path().join("agent.db"),
+            backfill: crate::config::BackfillConfig::default(),
         };
         let first_endpoint: RpcEndpoint = "ws://127.0.0.1:6790".parse().unwrap();
         let second_endpoint: RpcEndpoint = "ws://127.0.0.1:6791".parse().unwrap();
