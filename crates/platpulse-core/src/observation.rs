@@ -98,7 +98,7 @@ pub struct NetworkThroughput {
 }
 
 /// AgentStore/spool diagnostics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SpoolDiagnostics {
     /// Bytes currently queued for delivery.
@@ -111,6 +111,27 @@ pub struct SpoolDiagnostics {
     pub dropped_reports: u64,
     /// Cumulative block samples dropped by capacity cleanup.
     pub dropped_samples: u64,
+    /// Whether one report is currently claimed by the delivery sender.
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub in_flight: Option<bool>,
+    /// Last bounded delivery failure, if one was recorded locally.
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub last_delivery_error: Option<String>,
+    /// Server/transport time at which the last delivery failure was recorded.
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub last_delivery_at: Option<Rfc3339>,
 }
 
 /// One Node's combined current observation (process + chain).

@@ -228,6 +228,12 @@ pub struct HostDiagnostic {
     pub load15: Option<f64>,
     pub network_rx_bytes_per_sec: Option<i64>,
     pub network_tx_bytes_per_sec: Option<i64>,
+    pub spool_queued_bytes: Option<i64>,
+    pub spool_queued_reports: Option<i64>,
+    pub spool_oldest_queued_age_ms: Option<i64>,
+    pub spool_in_flight: Option<bool>,
+    pub spool_last_delivery_error: Option<String>,
+    pub spool_last_delivery_at: Option<String>,
     pub updated_at: String,
     pub components: Vec<HostComponentDiagnostic>,
 }
@@ -495,16 +501,17 @@ async fn diagnostics(
             component, state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision,
         })
         .collect::<Vec<_>>();
-        let host = sqlx::query_as::<_, (Option<f64>, Option<i64>, Option<i64>, Option<f64>, Option<f64>, Option<f64>, Option<i64>, Option<i64>, String)>(
-            "SELECT cpu_percent, memory_total_bytes, memory_used_bytes, load1, load5, load15, network_rx_bytes_per_sec, network_tx_bytes_per_sec, updated_at FROM current_host_observations WHERE agent_id = ?",
+        let host = sqlx::query_as::<_, (Option<f64>, Option<i64>, Option<i64>, Option<f64>, Option<f64>, Option<f64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<String>, Option<String>, String)>(
+            "SELECT cpu_percent, memory_total_bytes, memory_used_bytes, load1, load5, load15, network_rx_bytes_per_sec, network_tx_bytes_per_sec, spool_queued_bytes, spool_queued_reports, spool_oldest_queued_age_ms, spool_in_flight, spool_last_delivery_error, spool_last_delivery_at, updated_at FROM current_host_observations WHERE agent_id = ?",
         )
         .bind(&agent_id)
         .fetch_optional(state.db().pool())
         .await
         .ok()
         .flatten()
-        .map(|(cpu_percent, memory_total_bytes, memory_used_bytes, load1, load5, load15, network_rx_bytes_per_sec, network_tx_bytes_per_sec, updated_at)| HostDiagnostic {
-            cpu_percent, memory_total_bytes, memory_used_bytes, load1, load5, load15, network_rx_bytes_per_sec, network_tx_bytes_per_sec, updated_at, components: host_components,
+        .map(|(cpu_percent, memory_total_bytes, memory_used_bytes, load1, load5, load15, network_rx_bytes_per_sec, network_tx_bytes_per_sec, spool_queued_bytes, spool_queued_reports, spool_oldest_queued_age_ms, spool_in_flight, spool_last_delivery_error, spool_last_delivery_at, updated_at)| HostDiagnostic {
+            cpu_percent, memory_total_bytes, memory_used_bytes, load1, load5, load15, network_rx_bytes_per_sec, network_tx_bytes_per_sec,
+            spool_queued_bytes, spool_queued_reports, spool_oldest_queued_age_ms, spool_in_flight: spool_in_flight.map(|v| v != 0), spool_last_delivery_error, spool_last_delivery_at, updated_at, components: host_components,
         });
         let rows = sqlx::query_as::<_, (String, String, Option<String>, String, i64, String)>(
             "SELECT node_id, network_key, display_name, lifecycle, inventory_revision, visibility FROM nodes WHERE agent_id = ? ORDER BY node_id",

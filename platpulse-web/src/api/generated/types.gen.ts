@@ -73,6 +73,12 @@ export type HostDiagnostic = {
     memory_used_bytes?: number | null;
     network_rx_bytes_per_sec?: number | null;
     network_tx_bytes_per_sec?: number | null;
+    spool_in_flight?: boolean | null;
+    spool_last_delivery_at?: string | null;
+    spool_last_delivery_error?: string | null;
+    spool_oldest_queued_age_ms?: number | null;
+    spool_queued_bytes?: number | null;
+    spool_queued_reports?: number | null;
     updated_at: string;
 };
 

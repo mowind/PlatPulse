@@ -870,6 +870,45 @@
             ],
             "format": "int64"
           },
+          "spool_in_flight": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "spool_last_delivery_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "spool_last_delivery_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "spool_oldest_queued_age_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "spool_queued_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "spool_queued_reports": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
           "updated_at": {
             "type": "string"
           }

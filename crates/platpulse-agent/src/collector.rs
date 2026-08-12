@@ -281,6 +281,9 @@ pub fn collect_host(
                 oldest_queued_age_ms: 0,
                 dropped_reports: 0,
                 dropped_samples: 0,
+                in_flight: None,
+                last_delivery_error: None,
+                last_delivery_at: None,
             },
             at,
         ),
@@ -555,6 +558,10 @@ pub async fn collect_and_persist<A: RpcAdapter>(
         clock_skew,
     )?;
     report.block_summaries = load_block_summaries(&mut store).await?;
+    report.host.spool = ok(
+        current_spool_diagnostics(&mut store).await?,
+        report.generated_at,
+    );
     report
         .validate()
         .map_err(|error| CollectionError::Identity(error.to_string()))?;
@@ -645,6 +652,10 @@ pub async fn collect_and_persist_with_blocks<A: RpcAdapter>(
         }
     }
     report.block_summaries = load_block_summaries(&mut store).await?;
+    report.host.spool = ok(
+        current_spool_diagnostics(&mut store).await?,
+        report.generated_at,
+    );
     report
         .validate()
         .map_err(|error| CollectionError::Identity(error.to_string()))?;
@@ -660,6 +671,48 @@ pub async fn collect_and_persist_with_blocks<A: RpcAdapter>(
     store.close().await?;
     Ok(digest)
 }
+/// Read bounded local delivery state for the next immutable report.
+async fn current_spool_diagnostics(
+    store: &mut AgentStore,
+) -> Result<SpoolDiagnostics, sqlx::Error> {
+    let row = sqlx::query_as::<_, (i64, i64, i64, Option<String>)>(
+        "SELECT COUNT(*), COALESCE(SUM(body_bytes), 0), COALESCE(MAX(in_flight), 0), MIN(created_at) FROM reports",
+    )
+    .fetch_one(store.connection())
+    .await?;
+    let failure = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+        "SELECT last_error, last_error_at FROM delivery_diagnostics WHERE singleton = 1",
+    )
+    .fetch_optional(store.connection())
+    .await?;
+    let oldest_queued_age_ms = row
+        .3
+        .as_deref()
+        .and_then(|value| {
+            time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+                .ok()
+                .and_then(|created| {
+                    (OffsetDateTime::now_utc() - created)
+                        .whole_milliseconds()
+                        .try_into()
+                        .ok()
+                })
+        })
+        .unwrap_or(0);
+    Ok(SpoolDiagnostics {
+        queued_bytes: row.1.max(0) as u64,
+        queued_reports: row.0.max(0) as u64,
+        oldest_queued_age_ms,
+        dropped_reports: 0,
+        dropped_samples: 0,
+        in_flight: Some(row.2 != 0),
+        last_delivery_error: failure.as_ref().and_then(|value| value.0.clone()),
+        last_delivery_at: failure
+            .and_then(|value| value.1)
+            .and_then(|value| value.parse().ok()),
+    })
+}
+
 /// Apply a stored receipt and delete its report only after the receipt is
 /// durably recorded, in one Agent Store transaction.
 pub async fn apply_receipt(
