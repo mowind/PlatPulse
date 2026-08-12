@@ -1,7 +1,8 @@
 use clap::{CommandFactory, Parser};
 
 use platpulse_server::cli::{
-    Cli, Command, OwnerCommand, resolve_serve_config, run_owner_create, run_serve,
+    Cli, Command, OwnerCommand, ViewerCommand, resolve_serve_config, run_owner_create, run_serve,
+    run_viewer_create,
 };
 use platpulse_server::config::ServerConfig;
 use platpulse_server::init::run_init;
@@ -51,6 +52,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Owner(OwnerCommand::Create(args)) => {
             let config = ServerConfig::resolve(Some(args.config.as_path()), &Default::default())?;
             run_owner_create(&config, &args.username).await?;
+        }
+        Command::Viewer(ViewerCommand::Create(args)) => {
+            let config = ServerConfig::resolve(Some(args.config.as_path()), &Default::default())?;
+            run_viewer_create(&config, &args.username).await?;
         }
         Command::Serve(args) => {
             let config = resolve_serve_config(&args)?;

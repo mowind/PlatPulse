@@ -160,12 +160,16 @@ describe('App shell with private Home', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'Home' })).toBeTruthy()
   })
 
-  it('allows a Viewer into Home but refuses the Admin shell', async () => {
+  it('allows a Viewer into Home, hides Admin, and refuses the Admin shell', async () => {
     mockFetch({ '/api/public/v1/session': () => jsonResponse(VIEWER_SESSION, 200) })
 
     render(<App />)
     await screen.findByRole('heading', { level: 1, name: 'Home' })
-    fireEvent.click(screen.getByRole('link', { name: 'Admin' }))
+    // Viewers are not offered an Admin entry point; the Server remains the
+    // enforcement boundary for anyone who navigates there anyway.
+    expect(screen.queryByRole('link', { name: 'Admin' })).toBeNull()
+    window.history.pushState({}, '', '/admin')
+    window.dispatchEvent(new PopStateEvent('popstate'))
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Owner access required' }),
     ).toBeTruthy()

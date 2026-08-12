@@ -9,9 +9,11 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 use thiserror::Error;
 
-use crate::auth::{AuthConfig, create_owner, hash_password, validate_password, validate_username};
+use crate::auth::{
+    AuthConfig, create_owner, create_viewer, hash_password, validate_password, validate_username,
+};
 use crate::config::{CliOverrides, ServerConfig};
-use crate::database::{ServerDatabaseConfig, initialize};
+use crate::database::{ServerDatabase, ServerDatabaseConfig, initialize};
 use crate::secrets::load_pepper_file;
 
 #[derive(Debug, Parser)]
@@ -34,6 +36,9 @@ pub enum Command {
     /// Owner account administration.
     #[command(subcommand)]
     Owner(OwnerCommand),
+    /// Viewer account administration (design §12.1).
+    #[command(subcommand)]
+    Viewer(ViewerCommand),
     /// Run the HTTP Server.
     Serve(ServeArgs),
 }
@@ -57,6 +62,23 @@ pub struct OwnerCreateArgs {
     #[arg(long)]
     pub config: PathBuf,
     /// Username of the new Owner. Never pass a password on the command
+    /// line: it is read from the TTY (hidden) or from stdin.
+    #[arg(long)]
+    pub username: String,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ViewerCommand {
+    /// Create a Viewer; the password is read from the TTY or stdin only.
+    Create(ViewerCreateArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ViewerCreateArgs {
+    /// `server.toml` (design §18.1).
+    #[arg(long)]
+    pub config: PathBuf,
+    /// Username of the new Viewer. Never pass a password on the command
     /// line: it is read from the TTY (hidden) or from stdin.
     #[arg(long)]
     pub username: String,
@@ -92,7 +114,7 @@ pub struct ServeArgs {
 }
 
 #[derive(Debug, Error)]
-pub enum OwnerCreateError {
+pub enum HumanCreateError {
     #[error("{0}")]
     InvalidUsername(&'static str),
     #[error("{0}")]
@@ -131,19 +153,48 @@ pub fn resolve_serve_config(args: &ServeArgs) -> Result<ServerConfig, crate::con
 pub async fn run_owner_create(
     config: &ServerConfig,
     username: &str,
-) -> Result<(), OwnerCreateError> {
-    crate::init::restrict_umask();
-    validate_username(username).map_err(OwnerCreateError::InvalidUsername)?;
-    let password = read_password()?;
-    validate_password(&password).map_err(OwnerCreateError::InvalidPassword)?;
-
-    let password_hash = hash_password(password.as_bytes()).map_err(OwnerCreateError::Hash)?;
-    let database = initialize(ServerDatabaseConfig::new(&config.db_path)).await?;
+) -> Result<(), HumanCreateError> {
+    let (database, password_hash) = open_database_with_new_password(config, username).await?;
     let result = create_owner(&database, username, &password_hash).await;
     database.close().await;
-    result.map_err(OwnerCreateError::Identity)?;
+    result.map_err(HumanCreateError::Identity)?;
     println!("Created owner '{username}'.");
     Ok(())
+}
+
+/// Create a Viewer with the same local provisioning baseline as an Owner:
+/// the password is read exclusively from the TTY (hidden, with
+/// confirmation) or from a secure stdin/fd, never from argv or a default,
+/// and the creation writes its audit event (design §12.1). There is no
+/// public or HTTP registration path.
+pub async fn run_viewer_create(
+    config: &ServerConfig,
+    username: &str,
+) -> Result<(), HumanCreateError> {
+    let (database, password_hash) = open_database_with_new_password(config, username).await?;
+    let result = create_viewer(&database, username, &password_hash).await;
+    database.close().await;
+    result.map_err(HumanCreateError::Identity)?;
+    println!("Created viewer '{username}'.");
+    Ok(())
+}
+
+/// Shared local provisioning steps for Owner/Viewer creation: strict
+/// umask, username validation, password input from the TTY or stdin,
+/// password validation, Argon2id hashing, and an initialized Server
+/// database. The caller owns the database and must close it.
+async fn open_database_with_new_password(
+    config: &ServerConfig,
+    username: &str,
+) -> Result<(ServerDatabase, String), HumanCreateError> {
+    crate::init::restrict_umask();
+    validate_username(username).map_err(HumanCreateError::InvalidUsername)?;
+    let password = read_password()?;
+    validate_password(&password).map_err(HumanCreateError::InvalidPassword)?;
+
+    let password_hash = hash_password(password.as_bytes()).map_err(HumanCreateError::Hash)?;
+    let database = initialize(ServerDatabaseConfig::new(&config.db_path)).await?;
+    Ok((database, password_hash))
 }
 
 /// Run the HTTP Server: validate the listen address, load the pepper and
@@ -176,14 +227,14 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
-fn read_password() -> Result<String, OwnerCreateError> {
+fn read_password() -> Result<String, HumanCreateError> {
     if std::io::stdin().is_terminal() {
         let first =
-            rpassword::prompt_password("Password: ").map_err(OwnerCreateError::PasswordInput)?;
+            rpassword::prompt_password("Password: ").map_err(HumanCreateError::PasswordInput)?;
         let second = rpassword::prompt_password("Confirm password: ")
-            .map_err(OwnerCreateError::PasswordInput)?;
+            .map_err(HumanCreateError::PasswordInput)?;
         if first != second {
-            return Err(OwnerCreateError::PasswordMismatch);
+            return Err(HumanCreateError::PasswordMismatch);
         }
         Ok(first)
     } else {
@@ -192,7 +243,7 @@ fn read_password() -> Result<String, OwnerCreateError> {
         let mut line = String::new();
         std::io::stdin()
             .read_line(&mut line)
-            .map_err(OwnerCreateError::PasswordInput)?;
+            .map_err(HumanCreateError::PasswordInput)?;
         Ok(line.trim_end_matches(['\r', '\n']).to_owned())
     }
 }

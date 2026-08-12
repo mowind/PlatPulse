@@ -1019,13 +1019,11 @@ mod tests {
         assert_eq!(body["error"]["code"], "auth_required");
 
         // Viewer session: 403 owner_required.
-        let viewer_hash = hash_password(b"correct horse battery").unwrap();
-        sqlx::query(
-            "INSERT INTO users (user_id, username, role, password_hash, disabled_at, created_at, updated_at) VALUES (?, 'viewer1', 'viewer', ?, NULL, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        crate::auth::create_viewer(
+            state.db(),
+            "viewer1",
+            &hash_password(b"correct horse battery").unwrap(),
         )
-        .bind(uuid::Uuid::new_v4().to_string())
-        .bind(viewer_hash)
-        .execute(state.db().pool())
         .await
         .unwrap();
         let viewer_login = Request::builder()
@@ -1083,6 +1081,157 @@ mod tests {
             response.status(),
             StatusCode::NOT_FOUND,
             "agent group opens after setup"
+        );
+    }
+
+    #[tokio::test]
+    async fn viewer_session_reaches_public_home_but_never_admin() {
+        let (_, _, state) = test_state().await;
+        let app = build_app(state.clone());
+        seed_owner(&state).await;
+        crate::auth::create_viewer(
+            state.db(),
+            "viewer1",
+            &hash_password(b"correct horse battery").unwrap(),
+        )
+        .await
+        .unwrap();
+
+        // Viewer login through the real HTTP flow.
+        let login = Request::builder()
+            .method("POST")
+            .uri("/api/public/v1/login")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ORIGIN, "http://127.0.0.1:8080")
+            .body(Body::from(
+                r#"{"username":"viewer1","password":"correct horse battery"}"#,
+            ))
+            .unwrap();
+        let response = app.clone().oneshot(login).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let cookie = response.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .to_owned();
+
+        // The Viewer session may use the private Home/Public group.
+        let request = Request::builder()
+            .uri("/api/public/v1/session")
+            .header(header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap();
+        let (status, body) = json(app.clone().oneshot(request).await.unwrap()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["session"]["role"], "viewer");
+
+        // The Admin group answers every Viewer request with the same
+        // stable forbidden envelope, including unknown routes (the role
+        // guard runs before routing).
+        for uri in [
+            "/api/admin/v1/missing",
+            "/api/admin/v1/session",
+            "/api/admin/v1/sessions",
+        ] {
+            let request = Request::builder()
+                .uri(uri)
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap();
+            let (status, body) = json(app.clone().oneshot(request).await.unwrap()).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{uri}");
+            assert_eq!(body["error"]["code"], "owner_required", "{uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn session_tokens_never_leave_the_cookie() {
+        let (_, _, state) = test_state().await;
+        let app = build_app(state.clone());
+        seed_owner(&state).await;
+        crate::auth::create_viewer(
+            state.db(),
+            "viewer1",
+            &hash_password(b"correct horse battery").unwrap(),
+        )
+        .await
+        .unwrap();
+
+        // The session token lives only in the cookie (design §12.3); the
+        // Server has no logging layer, and no code path ever places a
+        // token in a URL. The assertions below pin the remaining surface:
+        // JSON bodies — login, 401/404 envelopes, and the Viewer 403.
+        let login = app.clone().oneshot(login_request()).await.unwrap();
+        assert_eq!(login.status(), StatusCode::OK);
+        let cookie = login.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let token = cookie.split('=').nth(1).unwrap().split(';').next().unwrap();
+        assert!(!token.is_empty());
+
+        // The login response body carries the session projection and CSRF
+        // token, never the session token itself.
+        let (_, body) = json(login).await;
+        let body_text = serde_json::to_string(&body).unwrap();
+        assert!(!body_text.contains(token), "login body leaked the token");
+
+        // Error envelopes (401 without a cookie, 404 with an Owner
+        // session) must not echo the presented token either.
+        for (uri, cookie_opt) in [
+            ("/api/public/v1/missing", Some(&cookie)),
+            ("/api/admin/v1/missing", Some(&cookie)),
+            ("/api/public/v1/session", None),
+        ] {
+            let mut builder = Request::builder().uri(uri);
+            if let Some(value) = cookie_opt {
+                builder = builder.header(header::COOKIE, value);
+            }
+            let response = app
+                .clone()
+                .oneshot(builder.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let text = String::from_utf8(bytes.to_vec()).unwrap();
+            assert!(!text.contains(token), "{uri} error body leaked the token");
+        }
+
+        // The Viewer `owner_required` 403 body must not echo the Viewer
+        // session token either.
+        let viewer_login = Request::builder()
+            .method("POST")
+            .uri("/api/public/v1/login")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ORIGIN, "http://127.0.0.1:8080")
+            .body(Body::from(
+                r#"{"username":"viewer1","password":"correct horse battery"}"#,
+            ))
+            .unwrap();
+        let response = app.clone().oneshot(viewer_login).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let viewer_cookie = response.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let viewer_token = viewer_cookie
+            .split('=')
+            .nth(1)
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap();
+        let request = Request::builder()
+            .uri("/api/admin/v1/missing")
+            .header(header::COOKIE, &viewer_cookie)
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(
+            !text.contains(viewer_token),
+            "owner_required body leaked the token"
         );
     }
 

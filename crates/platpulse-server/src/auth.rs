@@ -388,12 +388,13 @@ pub async fn write_audit_event(
     .await
 }
 
-/// Create the first Owner (or an additional Owner) from the CLI. The
-/// password is hashed by the caller; this function owns the transaction so
-/// the user row and its audit event cannot diverge.
-pub async fn create_owner(
+/// Insert a human user with the given role from the CLI. The password is
+/// hashed by the caller; this function owns the transaction so the user
+/// row and its audit event cannot diverge.
+async fn insert_human_user(
     db: &ServerDatabase,
     username: &str,
+    role: HumanRole,
     password_hash: &str,
 ) -> Result<(), IdentityError> {
     let user_id = uuid::Uuid::new_v4().to_string();
@@ -401,10 +402,11 @@ pub async fn create_owner(
     let mut transaction = db.pool().begin().await?;
 
     let insert = sqlx::query(
-        "INSERT INTO users (user_id, username, role, password_hash, disabled_at, created_at, updated_at) VALUES (?, ?, 'owner', ?, NULL, ?, ?)",
+        "INSERT INTO users (user_id, username, role, password_hash, disabled_at, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, ?, ?)",
     )
     .bind(&user_id)
     .bind(username)
+    .bind(role.role())
     .bind(password_hash)
     .bind(&now)
     .bind(&now)
@@ -420,11 +422,11 @@ pub async fn create_owner(
         return Err(IdentityError::Database(error));
     }
 
-    let after = json!({ "username": username, "role": "owner" });
+    let after = json!({ "username": username, "role": role.role() });
     insert_audit_event(
         &mut *transaction,
         None,
-        "owner_created",
+        role.event_kind(),
         "user",
         username,
         Some(&after),
@@ -433,6 +435,54 @@ pub async fn create_owner(
 
     transaction.commit().await?;
     Ok(())
+}
+
+/// A human principal role provisioned from the CLI (design §12.1). Bundles
+/// the database role value with its audit event kind so the pairing can
+/// never diverge; the `users` CHECK constraint remains the backstop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HumanRole {
+    Owner,
+    Viewer,
+}
+
+impl HumanRole {
+    fn role(self) -> &'static str {
+        match self {
+            HumanRole::Owner => "owner",
+            HumanRole::Viewer => "viewer",
+        }
+    }
+
+    fn event_kind(self) -> &'static str {
+        match self {
+            HumanRole::Owner => "owner_created",
+            HumanRole::Viewer => "viewer_created",
+        }
+    }
+}
+
+/// Create the first Owner (or an additional Owner) from the CLI
+/// (design §12.2). Same provisioning seam as Viewer creation; only the
+/// role and audit event differ.
+pub async fn create_owner(
+    db: &ServerDatabase,
+    username: &str,
+    password_hash: &str,
+) -> Result<(), IdentityError> {
+    insert_human_user(db, username, HumanRole::Owner, password_hash).await
+}
+
+/// Create a Viewer from the CLI (design §12.1/§13.1): a human principal
+/// that may use Home but has no administrative authority. The password is
+/// hashed by the caller; the user row and its `viewer_created` audit event
+/// commit atomically, matching the Owner baseline.
+pub async fn create_viewer(
+    db: &ServerDatabase,
+    username: &str,
+    password_hash: &str,
+) -> Result<(), IdentityError> {
+    insert_human_user(db, username, HumanRole::Viewer, password_hash).await
 }
 
 /// Validate a human username: non-empty, bounded length, no whitespace or
@@ -849,6 +899,66 @@ mod tests {
 
         let error = create_owner(&db, "admin", "hash").await.unwrap_err();
         assert!(matches!(error, IdentityError::UsernameTaken(_)));
+    }
+
+    #[tokio::test]
+    async fn create_viewer_keeps_owner_setup_gate_and_logs_in_with_viewer_role() {
+        let dir = tempdir().unwrap();
+        let db = test_db(dir.path()).await;
+        let config = test_config(dir.path());
+
+        // A Viewer alone must not satisfy the setup gate: the first human
+        // principal is the Owner (design §12.2).
+        let hash = hash_password(b"correct horse battery").unwrap();
+        create_viewer(&db, "viewer1", &hash).await.unwrap();
+        assert!(!has_owner(&db).await.unwrap());
+
+        // The same provisioning seam rejects duplicate usernames.
+        let error = create_viewer(&db, "viewer1", &hash).await.unwrap_err();
+        assert!(matches!(error, IdentityError::UsernameTaken(_)));
+
+        // The Viewer logs in with role `viewer` and its session
+        // authenticates like any other human session.
+        let (session, full_token) = login(&db, &config, "viewer1", "correct horse battery", None)
+            .await
+            .unwrap();
+        assert_eq!(session.role, "viewer");
+        assert_eq!(
+            authenticate_token(&db, &config, &full_token)
+                .await
+                .unwrap()
+                .role,
+            "viewer"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_survives_database_reopen_like_a_server_restart() {
+        // Sessions are DB-backed opaque tokens (design §12.3): a normal
+        // Server restart (close the database, reopen the same file, reload
+        // the pepper from disk) must keep a valid Session valid without
+        // any re-login.
+        let dir = tempdir().unwrap();
+        let db = test_db(dir.path()).await;
+        create_test_owner(&db).await;
+        let config = test_config(dir.path());
+        let (_, full_token) = login(&db, &config, "admin", "correct horse battery", None)
+            .await
+            .unwrap();
+        db.close().await;
+
+        // A restart reloads the pepper from disk rather than re-creating
+        // it (create_pepper_file refuses to overwrite, like `init`).
+        let reopened = test_db(dir.path()).await;
+        let restarted_config = AuthConfig::development(
+            load_pepper_file(&dir.path().join("server-pepper")).unwrap(),
+            "http://127.0.0.1:8080".into(),
+        );
+        let session = authenticate_token(&reopened, &restarted_config, &full_token)
+            .await
+            .expect("a valid session must survive a restart");
+        assert_eq!(session.username, "admin");
+        assert_eq!(session.role, "owner");
     }
 
     #[tokio::test]

@@ -3,6 +3,10 @@ import { expect, type Page } from '@playwright/test'
 /** Password provisioned by e2e/start-server.sh via stdin (never argv). */
 export const E2E_PASSWORD = 'platpulse-e2e-admin-2026'
 
+/** Viewer credentials provisioned by e2e/start-server.sh via stdin. */
+export const E2E_VIEWER_USERNAME = 'viewer'
+export const E2E_VIEWER_PASSWORD = 'platpulse-e2e-viewer-2026'
+
 /** Sign in through the real login flow and land on the Home shell. */
 export async function loginAs(
   page: Page,

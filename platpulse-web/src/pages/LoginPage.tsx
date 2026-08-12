@@ -47,7 +47,7 @@ export default function LoginPage() {
         <h1 id="login-heading">Sign in to PlatPulse</h1>
         <p className="login-hint">
           The Home dashboard is private by default. Sign in with your Owner
-          account.
+          or Viewer account.
         </p>
         {error && (
           <p className="form-error" role="alert">
