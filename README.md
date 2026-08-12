@@ -2,76 +2,107 @@
   <img src="assets/platpulse-logo.svg" alt="PlatPulse logo" width="760">
   <p><strong>A Server–Agent–WebUI monitoring suite for PlatON nodes.</strong></p>
   <p>
-    Real-time health metrics · Consensus status · Peer insights · Validator analytics · Alerts
+    Real-time health metrics · Block &amp; transaction insight · Consensus status · Peer insights · Validator analytics · Alerts
   </p>
 </div>
 
 # PlatPulse
 
-PlatPulse is an open-source monitoring suite designed to make PlatON node operations observable, actionable, and easy to scale.
+PlatPulse is an open-source monitoring suite that makes PlatON node operations observable, actionable, and easy to scale. Lightweight Agents collect node and chain observations, a central Server ingests and validates them, and a WebUI presents current health and operational insights.
 
-It collects node and chain observations through lightweight Agents, centralizes them in a Server, and presents current health and operational insights through a WebUI.
-
-> **Status:** Early architecture and workspace setup.
+> **Status:** Target architecture confirmed in [`docs/design/platpulse.md`](docs/design/platpulse.md); implementation has not started. Domain terminology is defined in [`CONTEXT.md`](CONTEXT.md).
 
 ## Why PlatPulse
 
-Operating blockchain infrastructure requires more than a single process health check. PlatPulse is designed to bring the operational picture together in one place:
+Operating blockchain infrastructure requires more than a single process health check. PlatPulse brings the operational picture together in one place:
 
-- **Node health** — process, system, synchronization, and observation freshness
-- **Consensus visibility** — consensus state and chain progress
-- **Peer insights** — per-node peer connectivity and peer state
-- **Validator analytics** — validator-oriented metrics and operational signals
-- **Alerts** — actionable conditions with durable notification delivery
+- **Node health** — per-Node process, RPC, synchronization, and observation freshness
+- **Block & transaction insight** — per-Node Head Subscription, Block Summaries, and transaction counts
+- **Consensus visibility** — consensus current state and chain progress
+- **Peer insights** — per-Node peer connectivity and peer state *(Phase 3)*
+- **Validator analytics** — validator-oriented metrics and operational signals *(Phase 4)*
+- **Alerts** — actionable conditions with durable notification delivery *(Phase 2)*
 
 ## Architecture
 
-PlatPulse is a new, independent project with a greenfield Server–Agent–WebUI architecture.
+PlatPulse is a greenfield Server–Agent–WebUI architecture. One Agent runs on each Host and monitors the PlatON Nodes on that Host; the Server is the single collection point and trust boundary; the WebUI is served same-origin by the Server.
+
+<p align="center">
+  <img src="assets/arch.png" alt="PlatPulse system architecture: PlatON Host → platpulse-agent → platpulse-server → platpulse-web" width="860">
+</p>
+
+### Core invariants
+
+- **One Agent per Host; observations scoped per Node** — an Agent may monitor several Nodes, but block, transaction, consensus, peer, and error state are never merged into an Agent-level chain view. One Node has exactly one RPC Endpoint (`ipc://`, `ws://`, `wss://`); endpoint failover is not supported.
+- **Host observation collected once per Agent** — shared CPU/memory/disk metrics are stored once and referenced by Node views, never duplicated per Node.
+- **Last-good semantics** — a collection failure updates status and error but never overwrites the last successful value; unknown, stale, or never-observed state is never shown as `0`, `false`, or Healthy.
+- **Immutable AgentReport + transactional receipt** — reports are persisted before sending and deleted only after the Server applies the receipt in one transaction; retries reuse identical bytes and `report_id`.
+- **Append-only block history** — a plain resync replay never rewrites Block Summaries or re-accumulates counts below the historical high-water mark; only an explicit open gap permits backfill.
+- **Server is the trust boundary** — every Agent-reported field is revalidated server-side; Agents connect outbound only, and the Server never pushes RPC endpoints, commands, or upgrades.
+- **Separate Home and Admin contracts** — Public Projection is not a runtime-filtered Admin DTO; visibility filtering happens in the Server query layer.
+
+### Workspace layout
 
 ```text
-┌──────────────────┐      AgentReport v1      ┌──────────────────┐
-│  PlatON node(s)  │ ◄─── platpulse-agent ─── │ platpulse-server │
-└──────────────────┘                          └────────┬─────────┘
-                                                       │
-                                      SQLite projections│ REST API
-                                                       ▼
-                                               ┌────────────────┐
-                                               │  platpulse-web │
-                                               └────────────────┘
-                                                       │
-                                                       ▼
-                                             Alerts / notifications
+Cargo.toml
+crates/
+├── platpulse-core/     # AgentReport v1, wire types, Observation Envelope, Block Summary, History Gap
+├── platpulse-agent/    # config/CLI, collectors, Node Supervisor, AgentStore, report sender
+└── platpulse-server/   # HTTP/SSE, auth, Report Ingestion, SQLite projections, alerts, web assets
+platpulse-web/          # React SPA; generated API client lives in src/api/generated/
 ```
 
 ### Workspace components
 
 | Component | Responsibility |
 | --- | --- |
-| `platpulse-core` | Shared domain types, protocol definitions, and versioned contracts |
-| `platpulse-agent` | Runs near PlatON nodes and publishes health and chain observations |
-| `platpulse-server` | Ingests reports, maintains current-state projections, exposes the API, and evaluates alerts |
-| `platpulse-web` | Provides dashboards for node health, consensus, peers, validators, and alerts |
-| `platpulse-tui` *(future)* | Optional terminal interface for operators who prefer a CLI workflow |
+| `platpulse-core` | I/O-free shared crate: AgentReport v1, wire identity, Observation Envelope, Block Summary, History Gap, receipt/error codes, and wire validation |
+| `platpulse-agent` | Runs on a Host near its PlatON Nodes: config/CLI, Enrollment/Recovery, Host/Process/RPC collectors, per-Node Supervisor, Report assembler, AgentStore (durable spool), and sender |
+| `platpulse-server` | Ingests reports, maintains SQLite current projections and history, validates Network identity, evaluates alerts, and exposes REST/SSE plus static Web assets |
+| `platpulse-web` | TypeScript/React SPA: read-only Home Dashboard (Network → Node) and authenticated Admin Dashboard; responsive on desktop, tablet, and mobile |
 
-The Agent–Server protocol is centered on versioned `AgentReport` messages. The Server turns incoming observations into current-state projections while preserving revision and freshness semantics. Durable spooling on the Agent side and a notification outbox on the Server side are intended to keep temporary outages from becoming lost data or lost alerts.
+## Tech stack
+
+- **Rust workspace (Agent + Server):** Tokio, Axum + Tower, Reqwest (Rustls), Serde, SQLx SQLite, Alloy (Agent only), sysinfo, Clap + TOML, tracing, utoipa, Argon2id, time
+- **Node.js (WebUI):** React, TypeScript strict, Vite, React Router, TanStack Query, native EventSource and fetch
+- No ORM, gRPC, Kafka, NATS, Redis, workflow engine, or global DI container; dependencies are injected through explicit constructors.
+
+## Deployment at a glance
+
+- Linux-first (x86_64 / aarch64), single-tenant, single `platpulse-server`, SQLite (WAL).
+- Agents and Server communicate over outbound HTTPS only; the Server never connects back to Agents.
+- The WebUI is served same-origin by the Server in production — no Node.js runtime required.
+- The Agent's Node Inventory (declared in local TOML) is authoritative for connection configuration; the Server never pushes endpoints.
 
 ## Roadmap
 
-- [ ] Define the workspace and protocol versioning
-- [ ] Implement `AgentReport` v1
-- [ ] Build the first Agent → Server ingestion path
-- [ ] Persist current node state in SQLite
-- [ ] Expose a minimal REST API
-- [ ] Ship the first WebUI dashboard
-- [ ] Add peer, validator, and alerting workflows
-- [ ] Port mature collectors incrementally
+Each phase is independently deployable; no empty abstractions or schemas are added for future phases.
+
+- [ ] **Phase 0 — Workspace & protocol foundation:** workspace, AgentReport v1, Observation Envelope, wire fixtures, migrations, OpenAPI/Web skeleton, CI
+- [ ] **Phase 1 — First vertical slice:** one Agent monitoring multiple Nodes, Enrollment, per-Node Head Subscription + Block Resolution, AgentStore/spool, Report Ingestion/Receipt, minimal Network Registry, SQLite projections, Owner/Viewer login, private-by-default Home, Admin diagnostics, responsive WebUI
+- [ ] **Phase 2 — Operations loop:** Recovery/rotation, Node lifecycle/Transfer, multi-user sessions, Audit, Alerts + Telegram outbox, Silence/Maintenance, retention aggregates, backup/restore/doctor
+- [ ] **Phase 3 — Peer & Geo:** typed Peer Snapshots, presence intervals, operator-provided GeoLite2 country lookups, raw-IP privacy controls
+- [ ] **Phase 4 — Validator analytics:** Validator Provider seam, Explorer adapter, Node Validator Links, ranking/reward metrics and aggregates
+- [ ] **Phase 5 — Hardening:** native TLS, internal metrics, packaging, load/fault/soak testing, security review
+
+## Non-goals
+
+PlatPulse explicitly does **not** include: a TUI, Agent endpoint failover, remote control (no Server-pushed endpoints, commands, restarts, or upgrades), full transaction body/receipt/trace indexing, a block explorer or archive database, multi-tenant/HA/PostgreSQL clustering, SSO/OIDC/TOTP, or Windows/macOS Agent support.
 
 ## Project principles
 
-- **Greenfield boundaries:** PlatPulse does not inherit the legacy Chaindash architecture.
-- **Operational correctness:** freshness, revisions, durable delivery, and alert reliability are first-class concerns.
+- **Greenfield boundaries:** PlatPulse does not inherit the ChainDash architecture, TUI, or endpoint failover.
+- **Operational correctness:** freshness, last-good values, durable delivery, and alert reliability are first-class concerns.
+- **Per-Node ownership:** a failure on one Node never stops its siblings' collection, reporting, or projection updates.
+- **Server-side enforcement:** all security and sanitization boundaries are enforced by the Server, not the frontend.
+- **Mobile-first WebUI:** Home and Admin must work on desktop, tablet, and mobile from Phase 1.
 - **Incremental delivery:** the first milestone is a small end-to-end vertical slice, followed by deeper collectors and richer views.
 - **Clear contracts:** shared behavior belongs in explicit, versioned protocol and domain types.
+
+## Documentation
+
+- [`docs/design/platpulse.md`](docs/design/platpulse.md) — design authority: architecture, invariants, protocol, phases, and acceptance criteria
+- [`CONTEXT.md`](CONTEXT.md) — domain terminology and banned synonyms
 
 ## Contributing
 
