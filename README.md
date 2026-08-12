@@ -10,7 +10,7 @@
 
 PlatPulse is an open-source monitoring suite that makes PlatON node operations observable, actionable, and easy to scale. Lightweight Agents collect node and chain observations, a central Server ingests and validates them, and a WebUI presents current health and operational insights.
 
-> **Status:** Target architecture confirmed in [`docs/design/platpulse.md`](docs/design/platpulse.md). Phase 0 is underway: the Rust workspace (`platpulse-core`, `platpulse-agent`, `platpulse-server`) and `platpulse-web` skeleton build with CI quality gates, and `platpulse-core` now carries the frozen AgentReport v1 wire contract (envelope, Observation Envelope, Node Inventory, Host/Node observations, Block Summary, History Gap, Report Receipt, rejection codes) with canonical/historical JSON fixtures that detect semantic drift. No monitoring product exists yet — collection, Server ingestion, and UI features arrive in the remaining Phase 0 and Phase 1 tickets. Domain terminology is defined in [`CONTEXT.md`](CONTEXT.md).
+> **Status:** Target architecture confirmed in [`docs/design/platpulse.md`](docs/design/platpulse.md). Phase 0 is underway: the Rust workspace (`platpulse-core`, `platpulse-agent`, `platpulse-server`) and `platpulse-web` skeleton build with CI quality gates; `platpulse-core` carries the frozen AgentReport v1 wire contract (envelope, Observation Envelope, Node Inventory, Host/Node observations, Block Summary, History Gap, Report Receipt, rejection codes) with canonical/historical JSON fixtures; and Agent/Server each have an independent SQLx SQLite migration and startup-integrity harness. No monitoring product exists yet — collection, Server ingestion, and UI features arrive in the remaining Phase 0 and Phase 1 tickets. Domain terminology is defined in [`CONTEXT.md`](CONTEXT.md).
 
 ## Why PlatPulse
 
@@ -119,7 +119,7 @@ npm run build
 
 CI (`.github/workflows/ci.yml`) runs the same gates on every push to `main` and on every pull request. Later phases extend it with `cargo deny`/`cargo audit`, OpenAPI regeneration checks, and Playwright projects once the corresponding tickets land.
 
-The three Rust crates are intentionally dependency-free at this stage: their thin binaries (`src/main.rs`) delegate to a testable `lib.rs`, and the framework stack (Tokio, Axum, SQLx, …) arrives with the tickets that first need it.
+The three Rust crates keep thin binaries (`src/main.rs`) and testable libraries. The Agent and Server now include only the SQLx SQLite startup/migration dependencies required by their storage boundary; the remaining framework stack arrives with the tickets that first need it.
 
 ## Documentation
 

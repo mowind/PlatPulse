@@ -10,3 +10,9 @@ description = "PlatPulse central ingestion, projection, and Web asset server"
 workspace = true
 
 [dependencies]
+sqlx = { version = "0.8.6", default-features = false, features = ["sqlite", "runtime-tokio", "macros", "migrate"] }
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[dev-dependencies]
+tempfile = "3"
