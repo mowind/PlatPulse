@@ -11,7 +11,20 @@ use crate::http::health;
 
 #[derive(OpenApi)]
 #[openapi(
-    paths(health::live, health::ready),
+    paths(
+        health::live,
+        health::ready,
+        crate::http::public::login_handler,
+        crate::http::public::logout_handler,
+        crate::http::public::session_handler,
+    ),
+    components(schemas(
+        crate::http::ApiErrorBody,
+        crate::http::ApiError,
+        crate::http::public::LoginRequest,
+        crate::http::public::SessionResponse,
+        crate::http::public::SessionProjection,
+    )),
     tags(
         (name = "system", description = "Operational health endpoints"),
         (name = "public", description = "Home Public Projection routes and DTOs"),

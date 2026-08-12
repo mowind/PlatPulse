@@ -1,8 +1,10 @@
 import { defineConfig } from '@playwright/test'
 
 /**
- * Fixed viewport matrix required by the project (see AGENTS.md): the Home and
- * Admin shells must work on phone, tablet, and desktop from Phase 0 onward.
+ * Fixed viewport matrix required by the project (see AGENTS.md): the Home
+ * and Admin shells must work on phone, tablet, and desktop from Phase 0
+ * onward. The suite runs against a real dev-mode platpulse-server serving
+ * the production WebUI build (e2e/start-server.sh).
  */
 export default defineConfig({
   testDir: './e2e',
@@ -30,12 +32,12 @@ export default defineConfig({
     },
   ],
   webServer: {
-    // Serve the production build, not the dev server, so the shell is
-    // verified against the same artifact platpulse-server hosts.
-    command:
-      'npm run build && npm run preview -- --host 127.0.0.1 --port 4173 --strictPort',
+    // Serve the production build through the real platpulse-server (init +
+    // owner create + serve in dev mode) so the auth flow is verified
+    // against the same artifact production hosts.
+    command: 'bash e2e/start-server.sh',
     url: 'http://127.0.0.1:4173',
     reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
+    timeout: 300_000,
   },
 })

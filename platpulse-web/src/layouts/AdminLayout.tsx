@@ -1,4 +1,5 @@
 import { Link, NavLink, Outlet } from 'react-router'
+import SignOutButton from '../components/SignOutButton'
 
 /**
  * Admin shell: Owner-only management layout, independent from the Home
@@ -18,6 +19,7 @@ export default function AdminLayout() {
             Admin
           </NavLink>
         </nav>
+        <SignOutButton />
       </header>
       <main className="app-main">
         <Outlet />

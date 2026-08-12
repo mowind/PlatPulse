@@ -4,8 +4,30 @@ export type ClientOptions = {
     baseUrl: `${string}://${string}` | (string & {});
 };
 
+export type ApiError = {
+    code: string;
+    fields: Array<string>;
+    message: string;
+    requestId: string;
+};
+
+/**
+ * Unified API error envelope (design §13.3): clients depend only on `code`;
+ * `message` never leaks SQL, RPC URLs, credentials, or stacks; `requestId`
+ * correlates a response with its request log; `fields` carries per-field
+ * validation details when a later ticket adds them.
+ */
+export type ApiErrorBody = {
+    error: ApiError;
+};
+
 export type LiveResponse = {
     status: string;
+};
+
+export type LoginRequest = {
+    password: string;
+    username: string;
 };
 
 export type ReadyComponent = {
@@ -20,6 +42,116 @@ export type ReadyResponse = {
 };
 
 export type ReadyState = 'ready' | 'not_ready';
+
+export type SessionProjection = {
+    createdAt: string;
+    expiresAt: string;
+    lastSeenAt: string;
+    role: string;
+    userId: string;
+    username: string;
+};
+
+/**
+ * Non-sensitive session projection plus the synchronizer CSRF token
+ * (design §12.3/§12.4). Fields are camelCase per the browser wire rule
+ * (§13.3); timestamps are RFC 3339 UTC.
+ */
+export type SessionResponse = {
+    csrfToken: string;
+    session: SessionProjection;
+};
+
+export type LoginHandlerData = {
+    body: LoginRequest;
+    path?: never;
+    query?: never;
+    url: '/api/public/v1/login';
+};
+
+export type LoginHandlerErrors = {
+    /**
+     * Invalid credentials
+     */
+    401: ApiErrorBody;
+    /**
+     * Origin validation failed or the user is disabled
+     */
+    403: ApiErrorBody;
+    /**
+     * Too many login attempts
+     */
+    429: ApiErrorBody;
+    /**
+     * Server setup is incomplete
+     */
+    503: ApiErrorBody;
+};
+
+export type LoginHandlerError = LoginHandlerErrors[keyof LoginHandlerErrors];
+
+export type LoginHandlerResponses = {
+    /**
+     * Logged in; a session cookie is set
+     */
+    200: SessionResponse;
+};
+
+export type LoginHandlerResponse = LoginHandlerResponses[keyof LoginHandlerResponses];
+
+export type LogoutHandlerData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/public/v1/logout';
+};
+
+export type LogoutHandlerErrors = {
+    /**
+     * No valid session
+     */
+    401: ApiErrorBody;
+    /**
+     * The session could not be revoked
+     */
+    500: ApiErrorBody;
+};
+
+export type LogoutHandlerError = LogoutHandlerErrors[keyof LogoutHandlerErrors];
+
+export type LogoutHandlerResponses = {
+    /**
+     * The current session is revoked and its cookie cleared
+     */
+    204: void;
+};
+
+export type LogoutHandlerResponse = LogoutHandlerResponses[keyof LogoutHandlerResponses];
+
+export type SessionHandlerData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/public/v1/session';
+};
+
+export type SessionHandlerErrors = {
+    /**
+     * No valid session
+     */
+    401: ApiErrorBody;
+};
+
+export type SessionHandlerError = SessionHandlerErrors[keyof SessionHandlerErrors];
+
+export type SessionHandlerResponses = {
+    /**
+     * The current session and CSRF token
+     */
+    200: SessionResponse;
+};
+
+export type SessionHandlerResponse = SessionHandlerResponses[keyof SessionHandlerResponses];
 
 export type LiveData = {
     body?: never;

@@ -10,16 +10,27 @@ description = "PlatPulse central ingestion, projection, and Web asset server"
 workspace = true
 
 [dependencies]
+argon2 = "0.5"
 axum = "0.8"
 clap = { version = "4", features = ["derive"] }
+hmac = "0.12"
+rand_core = { version = "0.6", features = ["getrandom"] }
+rpassword = "7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 sqlx = { version = "0.8.6", default-features = false, features = ["sqlite", "runtime-tokio", "macros", "migrate"] }
+subtle = "2"
 thiserror = "2"
+time = { version = "=0.3.36", default-features = false, features = ["std", "parsing", "formatting", "macros"] }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
+toml = "0.8"
 tower-http = { version = "0.7", features = ["fs", "set-header"] }
 utoipa = { version = "5.5", features = ["axum_extras"] }
 uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", features = ["user", "fs"] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -10,6 +10,142 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/public/v1/login": {
+      "post": {
+        "tags": [
+          "public"
+        ],
+        "summary": "Login with strict configured-Origin validation, an independent rate\nlimit, and Session ID rotation (design §12.2–§12.4).",
+        "operationId": "login_handler",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Logged in; a session cookie is set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin validation failed or the user is disabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many login attempts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server setup is incomplete",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/public/v1/logout": {
+      "post": {
+        "tags": [
+          "public"
+        ],
+        "summary": "Logout: revoke the current Session and clear the cookie (design §12.3).\nRevocation and its audit row commit in one transaction; a database\nfailure keeps the session valid and returns 500 instead of pretending\nthe user signed out.",
+        "operationId": "logout_handler",
+        "responses": {
+          "204": {
+            "description": "The current session is revoked and its cookie cleared"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The session could not be revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/public/v1/session": {
+      "get": {
+        "tags": [
+          "public"
+        ],
+        "summary": "Current session projection and CSRF token for the WebUI (design §12.4).\n`last_seen_at` is refreshed at most once per throttle window.",
+        "operationId": "session_handler",
+        "responses": {
+          "200": {
+            "description": "The current session and CSRF token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health/live": {
       "get": {
         "tags": [
@@ -63,6 +199,44 @@
   },
   "components": {
     "schemas": {
+      "ApiError": {
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "requestId",
+          "fields"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "message": {
+            "type": "string"
+          },
+          "requestId": {
+            "type": "string"
+          }
+        }
+      },
+      "ApiErrorBody": {
+        "type": "object",
+        "description": "Unified API error envelope (design §13.3): clients depend only on `code`;\n`message` never leaks SQL, RPC URLs, credentials, or stacks; `requestId`\ncorrelates a response with its request log; `fields` carries per-field\nvalidation details when a later ticket adds them.",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ApiError"
+          }
+        }
+      },
       "LiveResponse": {
         "type": "object",
         "required": [
@@ -70,6 +244,21 @@
         ],
         "properties": {
           "status": {
+            "type": "string"
+          }
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string"
+          },
+          "username": {
             "type": "string"
           }
         }
@@ -119,6 +308,53 @@
           "ready",
           "not_ready"
         ]
+      },
+      "SessionProjection": {
+        "type": "object",
+        "required": [
+          "userId",
+          "username",
+          "role",
+          "createdAt",
+          "lastSeenAt",
+          "expiresAt"
+        ],
+        "properties": {
+          "createdAt": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": "string"
+          },
+          "lastSeenAt": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "userId": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          }
+        }
+      },
+      "SessionResponse": {
+        "type": "object",
+        "description": "Non-sensitive session projection plus the synchronizer CSRF token\n(design §12.3/§12.4). Fields are camelCase per the browser wire rule\n(§13.3); timestamps are RFC 3339 UTC.",
+        "required": [
+          "session",
+          "csrfToken"
+        ],
+        "properties": {
+          "csrfToken": {
+            "type": "string"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionProjection"
+          }
+        }
       }
     }
   },

@@ -1,9 +1,9 @@
 //! Minimal operational health routes (design §20.3).
 //!
-//! `/health/live` only proves the event loop responds; `/health/ready` checks
-//! the components Phase 0 actually owns (SQLite migrations, Web assets).
-//! Neither response leaks versions, DB paths, or internal counts; readiness
-//! conditions are extended by later tickets (Owner, workers, shutdown).
+//! `/health/live` only proves the event loop responds; `/health/ready`
+//! checks the components the Server owns (SQLite migrations, the first
+//! Owner, Web assets). Neither response leaks versions, DB paths, or
+//! internal counts.
 
 use axum::Json;
 use axum::extract::State;
@@ -85,13 +85,18 @@ pub async fn ready(State(state): State<AppState>) -> impl IntoResponse {
         Ok(_) => ReadyComponent::not_ready("sqlite", "migration_pending"),
         Err(_) => ReadyComponent::not_ready("sqlite", "unavailable"),
     };
+    let owner = match crate::auth::has_owner(state.db()).await {
+        Ok(true) => ReadyComponent::ready("owner"),
+        Ok(false) => ReadyComponent::not_ready("owner", "setup_required"),
+        Err(_) => ReadyComponent::not_ready("owner", "unavailable"),
+    };
     let web_assets = if state.web_assets_ready() {
         ReadyComponent::ready("web_assets")
     } else {
         ReadyComponent::not_ready("web_assets", "web_assets_missing")
     };
 
-    let components = vec![sqlite, web_assets];
+    let components = vec![sqlite, owner, web_assets];
     let ready = components
         .iter()
         .all(|component| component.status == ReadyState::Ready);

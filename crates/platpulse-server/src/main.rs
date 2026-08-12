@@ -1,33 +1,10 @@
-use std::net::SocketAddr;
-use std::path::PathBuf;
+use clap::{CommandFactory, Parser};
 
-use clap::Parser;
-
-use platpulse_server::database::{ServerDatabaseConfig, initialize};
-use platpulse_server::http::{AppState, build_app};
-use platpulse_server::startup_version_line;
-
-#[derive(Debug, Parser)]
-#[command(
-    version,
-    about = "PlatPulse central ingestion, projection, and Web asset server"
-)]
-struct Cli {
-    /// SQLite database file for the Server.
-    #[arg(long, default_value = "platpulse.db")]
-    db_path: PathBuf,
-    /// Directory containing the built WebUI (`index.html` plus hashed
-    /// assets). Optional: the Server starts without Web assets and reports
-    /// `web_assets_missing` from `/health/ready` instead.
-    #[arg(long)]
-    web_assets: Option<PathBuf>,
-    /// Address the HTTP listener binds to.
-    #[arg(long, default_value = "127.0.0.1:8080")]
-    listen: SocketAddr,
-    /// Print the OpenAPI 3 document as JSON and exit.
-    #[arg(long)]
-    print_openapi: bool,
-}
+use platpulse_server::cli::{
+    Cli, Command, OwnerCommand, resolve_serve_config, run_owner_create, run_serve,
+};
+use platpulse_server::config::ServerConfig;
+use platpulse_server::init::run_init;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -38,12 +15,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    println!("{}", startup_version_line());
-    platpulse_server::validate_listen_address(cli.listen)?;
-    let database = initialize(ServerDatabaseConfig::new(&cli.db_path)).await?;
-    let app = build_app(AppState::new(database, cli.web_assets));
-    let listener = tokio::net::TcpListener::bind(cli.listen).await?;
-    println!("listening on {}", cli.listen);
-    axum::serve(listener, app).await?;
+    let Some(command) = cli.command else {
+        let mut cmd = Cli::command();
+        cmd.print_help()?;
+        println!();
+        return Err("no command given; see the commands above".into());
+    };
+
+    match command {
+        Command::Init(args) => {
+            let config = ServerConfig::resolve_init(&args.config)?;
+            let report = run_init(&config).await?;
+            println!("PlatPulse Server state initialized.");
+            for warning in &report.warnings {
+                println!("warning: {warning}");
+            }
+            println!("Next steps:");
+            println!(
+                "  1. platpulse-server owner create --config {} --username <name>",
+                config
+                    .config_path
+                    .as_deref()
+                    .unwrap_or(&args.config)
+                    .display()
+            );
+            println!(
+                "  2. platpulse-server serve --config {}",
+                config
+                    .config_path
+                    .as_deref()
+                    .unwrap_or(&args.config)
+                    .display()
+            );
+        }
+        Command::Owner(OwnerCommand::Create(args)) => {
+            let config = ServerConfig::resolve(Some(args.config.as_path()), &Default::default())?;
+            run_owner_create(&config, &args.username).await?;
+        }
+        Command::Serve(args) => {
+            let config = resolve_serve_config(&args)?;
+            run_serve(&config).await?;
+        }
+    }
     Ok(())
 }

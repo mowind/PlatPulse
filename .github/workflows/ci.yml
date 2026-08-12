@@ -86,6 +86,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust toolchain
+        # The e2e suite boots a real dev-mode platpulse-server
+        # (e2e/start-server.sh), so the Server binary must build here.
+        run: rustup toolchain install stable --profile minimal
+
       - uses: actions/setup-node@v4
         with:
           node-version: 24

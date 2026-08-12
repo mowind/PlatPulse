@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { LiveData, LiveResponses, ReadyData, ReadyErrors, ReadyResponses } from './types.gen';
+import type { LiveData, LiveResponses, LoginHandlerData, LoginHandlerErrors, LoginHandlerResponses, LogoutHandlerData, LogoutHandlerErrors, LogoutHandlerResponses, ReadyData, ReadyErrors, ReadyResponses, SessionHandlerData, SessionHandlerErrors, SessionHandlerResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -17,6 +17,33 @@ export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends 
      */
     meta?: keyof ClientMeta extends never ? Record<string, unknown> : ClientMeta;
 };
+
+/**
+ * Login with strict configured-Origin validation, an independent rate
+ * limit, and Session ID rotation (design §12.2–§12.4).
+ */
+export const loginHandler = <ThrowOnError extends boolean = false>(options: Options<LoginHandlerData, ThrowOnError>): RequestResult<LoginHandlerResponses, LoginHandlerErrors, ThrowOnError> => (options.client ?? client).post<LoginHandlerResponses, LoginHandlerErrors, ThrowOnError>({
+    url: '/api/public/v1/login',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Logout: revoke the current Session and clear the cookie (design §12.3).
+ * Revocation and its audit row commit in one transaction; a database
+ * failure keeps the session valid and returns 500 instead of pretending
+ * the user signed out.
+ */
+export const logoutHandler = <ThrowOnError extends boolean = false>(options?: Options<LogoutHandlerData, ThrowOnError>): RequestResult<LogoutHandlerResponses, LogoutHandlerErrors, ThrowOnError> => (options?.client ?? client).post<LogoutHandlerResponses, LogoutHandlerErrors, ThrowOnError>({ url: '/api/public/v1/logout', ...options });
+
+/**
+ * Current session projection and CSRF token for the WebUI (design §12.4).
+ * `last_seen_at` is refreshed at most once per throttle window.
+ */
+export const sessionHandler = <ThrowOnError extends boolean = false>(options?: Options<SessionHandlerData, ThrowOnError>): RequestResult<SessionHandlerResponses, SessionHandlerErrors, ThrowOnError> => (options?.client ?? client).get<SessionHandlerResponses, SessionHandlerErrors, ThrowOnError>({ url: '/api/public/v1/session', ...options });
 
 export const live = <ThrowOnError extends boolean = false>(options?: Options<LiveData, ThrowOnError>): RequestResult<LiveResponses, unknown, ThrowOnError> => (options?.client ?? client).get<LiveResponses, unknown, ThrowOnError>({ url: '/health/live', ...options });
 

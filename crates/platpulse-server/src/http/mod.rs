@@ -1,23 +1,27 @@
 //! HTTP surface: route groups, health, and Web asset hosting.
 //!
-//! Phase 0 establishes the three route groups (`/api/public/v1`,
+//! Phase 0 established the three route groups (`/api/public/v1`,
 //! `/api/admin/v1`, `/api/agent/v1`) with independent middleware and DTO
 //! namespaces, minimal `/health/*` routes, and the SPA asset pipeline with
-//! `/api/*` kept out of the SPA fallback. Real Public/Admin/Agent routes
-//! arrive with Phase 1 tickets.
+//! `/api/*` kept out of the SPA fallback.
+//!
+//! P1-01 adds human authentication: public routes (except login) require a
+//! valid human Session because Guest access is disabled by default, Admin
+//! additionally requires the Owner role, and the Agent group is refused
+//! with `setup_required` until the first Owner exists (design §12.2).
 
 mod admin;
 mod agent;
 pub(crate) mod health;
-mod public;
+pub(crate) mod public;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::{Extension, Request, State};
+use axum::extract::{ConnectInfo, Extension, Request, State};
 use axum::http::header::{self, HeaderValue};
-use axum::http::{HeaderName, StatusCode};
+use axum::http::{HeaderName, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -26,6 +30,10 @@ use serde::Serialize;
 use tower_http::services::fs::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
 
+use crate::auth::{
+    AuthConfig, LOGIN_MAX_ATTEMPTS, LOGIN_RATE_LIMIT_WINDOW, RateLimiter, SessionError,
+    SessionInfo, authenticate_token, cookie_value, has_owner,
+};
 use crate::database::ServerDatabase;
 
 /// Response header every route group middleware sets so the group namespace
@@ -39,12 +47,12 @@ const X_REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 /// `message` never leaks SQL, RPC URLs, credentials, or stacks; `requestId`
 /// correlates a response with its request log; `fields` carries per-field
 /// validation details when a later ticket adds them.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ApiErrorBody {
     error: ApiError,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ApiError {
     code: &'static str,
     message: &'static str,
@@ -55,10 +63,14 @@ pub struct ApiError {
 
 impl ApiErrorBody {
     fn not_found(request_id: &str) -> Self {
+        Self::new("not_found", "route not found", request_id)
+    }
+
+    pub(crate) fn new(code: &'static str, message: &'static str, request_id: &str) -> Self {
         Self {
             error: ApiError {
-                code: "not_found",
-                message: "route not found",
+                code,
+                message,
                 request_id: request_id.to_owned(),
                 fields: Vec::new(),
             },
@@ -69,7 +81,7 @@ impl ApiErrorBody {
 /// Request correlation id inserted by `request_id_middleware` and echoed in
 /// API error envelopes and the `x-request-id` response header.
 #[derive(Clone)]
-struct RequestId(Arc<str>);
+pub(crate) struct RequestId(Arc<str>);
 
 async fn request_id_middleware(mut request: Request, next: Next) -> Response {
     let id = uuid::Uuid::new_v4().to_string();
@@ -89,24 +101,32 @@ async fn request_id_middleware(mut request: Request, next: Next) -> Response {
     response
 }
 
+/// The authenticated human session carried by a request that passed the
+/// session guard.
+#[derive(Clone)]
+pub(crate) struct AuthenticatedSession(pub SessionInfo);
+
 /// Server state injected into handlers. `web_index` is read once at startup:
 /// the SPA entry is immutable for the process lifetime and is served with
 /// `Cache-Control: no-cache` so clients revalidate.
 #[derive(Clone)]
 pub struct AppState {
     db: Arc<ServerDatabase>,
+    auth: Arc<AuthConfig>,
+    login_limiter: Arc<RateLimiter>,
     web_assets: Option<PathBuf>,
     web_index: Option<Bytes>,
     web_assets_ready: bool,
 }
 
 impl AppState {
-    /// Build application state. The Web assets directory is optional: the
-    /// Server must start without Web assets (design §14.1) and report
-    /// `web_assets_missing` from `/health/ready` instead. Readiness requires
-    /// both `index.html` and the hashed `assets/` directory: an incomplete
-    /// build must not report ready.
-    pub fn new(db: ServerDatabase, web_assets: Option<PathBuf>) -> Self {
+    /// Build application state with the given authentication policy. The
+    /// Web assets directory is optional: the Server must start without Web
+    /// assets (design §14.1) and report `web_assets_missing` from
+    /// `/health/ready` instead. Readiness requires both `index.html` and
+    /// the hashed `assets/` directory: an incomplete build must not report
+    /// ready.
+    pub fn new(db: ServerDatabase, web_assets: Option<PathBuf>, auth: AuthConfig) -> Self {
         let web_index = web_assets
             .as_deref()
             .and_then(|dir| std::fs::read(dir.join("index.html")).ok())
@@ -117,14 +137,27 @@ impl AppState {
                 .is_some_and(|dir| dir.join("assets").is_dir());
         Self {
             db: Arc::new(db),
+            auth: Arc::new(auth),
+            login_limiter: Arc::new(RateLimiter::new(
+                LOGIN_MAX_ATTEMPTS,
+                LOGIN_RATE_LIMIT_WINDOW,
+            )),
             web_assets,
             web_index,
             web_assets_ready,
         }
     }
 
-    fn db(&self) -> &ServerDatabase {
+    pub(crate) fn db(&self) -> &ServerDatabase {
         &self.db
+    }
+
+    pub(crate) fn auth(&self) -> &AuthConfig {
+        &self.auth
+    }
+
+    pub(crate) fn login_limiter(&self) -> &RateLimiter {
+        &self.login_limiter
     }
 
     fn web_assets(&self) -> Option<&PathBuf> {
@@ -140,6 +173,12 @@ impl AppState {
     }
 }
 
+/// Content-Security-Policy enforced on every response (design §19.4: no
+/// inline or third-party script). The Vite production bundle only loads
+/// hashed same-origin assets, so `script-src 'self'` holds; style
+/// attributes set through the CSSOM are not blocked by `style-src`.
+const CSP_HEADER_VALUE: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+
 /// Assemble the complete HTTP application.
 pub fn build_app(state: AppState) -> Router {
     let assets_dir = state
@@ -147,10 +186,29 @@ pub fn build_app(state: AppState) -> Router {
         .map(|dir| dir.join("assets"))
         .unwrap_or_else(|| PathBuf::from("/nonexistent/platpulse-web-assets"));
 
+    // Public routes (except login) require a human Session; Admin requires
+    // an Owner session; Agent is refused with `setup_required` until the
+    // first Owner exists. Guards run outside the group middleware so their
+    // responses never carry route-group headers or DTOs.
+    let public_group = public::router().layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        human_session_guard,
+    ));
+    let admin_group = admin::router()
+        .layer(axum::middleware::from_fn(owner_role_guard))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            human_session_guard,
+        ));
+    let agent_group = agent::router().layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        agent_group_guard,
+    ));
+
     let api = Router::<AppState>::new()
-        .nest("/public/v1", public::router())
-        .nest("/admin/v1", admin::router())
-        .nest("/agent/v1", agent::router())
+        .nest("/public/v1", public_group)
+        .nest("/admin/v1", admin_group)
+        .nest("/agent/v1", agent_group)
         .fallback(api_not_found);
 
     // Vite emits hashed assets under `assets/`; they are immutable by name
@@ -171,8 +229,138 @@ pub fn build_app(state: AppState) -> Router {
         .route("/health/ready", get(health::ready))
         .merge(assets)
         .fallback(spa_index)
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(CSP_HEADER_VALUE),
+        ))
         .layer(axum::middleware::from_fn(request_id_middleware))
         .with_state(state)
+}
+
+/// Client address for rate limiting: the real socket address when the
+/// Server runs with connection info, `unknown` in tests. Stamped by the
+/// guards so handlers can read it as a plain extension.
+#[derive(Clone)]
+pub(crate) struct ClientIp(pub String);
+
+fn stamp_client_ip(request: &mut Request) {
+    if request.extensions().get::<ClientIp>().is_none() {
+        let ip = request
+            .extensions()
+            .get::<ConnectInfo<std::net::SocketAddr>>()
+            .map(|info| info.0.ip().to_string())
+            .unwrap_or_else(|| "unknown".to_owned());
+        request.extensions_mut().insert(ClientIp(ip));
+    }
+}
+
+/// Human session guard for the Public and Admin groups: every request
+/// except `POST /api/public/v1/login` must present a valid session cookie
+/// (design §12.2: Guest disabled by default; §13.1: Public API requires a
+/// Viewer/Owner Session).
+pub(crate) async fn human_session_guard(
+    State(state): State<AppState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    stamp_client_ip(&mut request);
+    if request.method() == Method::POST && request.uri().path().ends_with("/login") {
+        return next.run(request).await;
+    }
+    let Some(token) = cookie_value(request.headers(), &state.auth().cookie_name) else {
+        return session_error_response(
+            &request,
+            StatusCode::UNAUTHORIZED,
+            "auth_required",
+            "authentication required",
+        );
+    };
+    match authenticate_token(state.db(), state.auth(), token).await {
+        Ok(session) => {
+            request
+                .extensions_mut()
+                .insert(AuthenticatedSession(session));
+            next.run(request).await
+        }
+        Err(SessionError::Invalid) => session_error_response(
+            &request,
+            StatusCode::UNAUTHORIZED,
+            "auth_required",
+            "authentication required",
+        ),
+        Err(SessionError::Expired) => session_error_response(
+            &request,
+            StatusCode::UNAUTHORIZED,
+            "auth_required",
+            "session expired",
+        ),
+        Err(SessionError::UserDisabled) => session_error_response(
+            &request,
+            StatusCode::UNAUTHORIZED,
+            "auth_required",
+            "user disabled",
+        ),
+    }
+}
+
+/// Owner role guard for the Admin group (design §13.1: Admin only accepts
+/// Owner Sessions). Runs after the session guard, which is registered
+/// outside it.
+pub(crate) async fn owner_role_guard(
+    Extension(principal): Extension<AuthenticatedSession>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if principal.0.role == "owner" {
+        next.run(request).await
+    } else {
+        session_error_response(
+            &request,
+            StatusCode::FORBIDDEN,
+            "owner_required",
+            "the Admin API requires an Owner session",
+        )
+    }
+}
+
+/// Agent group guard: until the first Owner exists, no Agent Enrollment or
+/// reporting is allowed (design §12.2). Real Agent credential auth replaces
+/// this check with the Agent API ticket.
+pub(crate) async fn agent_group_guard(
+    State(state): State<AppState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    stamp_client_ip(&mut request);
+    match has_owner(state.db()).await {
+        Ok(true) => next.run(request).await,
+        Ok(false) => session_error_response(
+            &request,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "setup_required",
+            "server setup is incomplete; create the first owner",
+        ),
+        Err(_) => session_error_response(
+            &request,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        ),
+    }
+}
+
+fn session_error_response(
+    request: &Request,
+    status: StatusCode,
+    code: &'static str,
+    message: &'static str,
+) -> Response {
+    let request_id = request
+        .extensions()
+        .get::<RequestId>()
+        .map(|id| &*id.0)
+        .unwrap_or("unknown");
+    (status, Json(ApiErrorBody::new(code, message, request_id))).into_response()
 }
 
 fn api_not_found_body(request_id: &str) -> (StatusCode, Json<ApiErrorBody>) {
@@ -206,24 +394,26 @@ async fn spa_index(
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
 
     use axum::Router;
     use axum::body::{Body, to_bytes};
     use axum::http::header;
     use axum::http::{Request, StatusCode};
-    use serde_json::Value;
+    use serde_json::{Value, json};
     use tempfile::TempDir;
     use tower::ServiceExt;
 
+    use crate::auth::{create_owner, hash_password};
     use crate::database::{ServerDatabaseConfig, initialize};
+    use crate::secrets::{create_pepper_file, load_pepper_file};
 
     use super::*;
 
     const INDEX_HTML: &str = "<!doctype html><title>PlatPulse</title>";
 
-    /// Build a state whose Web assets directory already contains the given
-    /// files. `AppState` caches `index.html` at construction, so tests must
-    /// write files before building the state.
+    /// Test state with a development-mode auth policy (no Secure cookie) so
+    /// plain HTTP test requests behave like the e2e server.
     async fn test_state_with_files(web_files: &[(&str, &[u8])]) -> (TempDir, TempDir, AppState) {
         let db_dir = TempDir::new().unwrap();
         let database = initialize(ServerDatabaseConfig::new(db_dir.path().join("server.db")))
@@ -235,8 +425,27 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, contents).unwrap();
         }
-        let state = AppState::new(database, Some(web_dir.path().to_path_buf()));
+        let state = AppState::new(
+            database,
+            Some(web_dir.path().to_path_buf()),
+            test_auth(db_dir.path()),
+        );
         (db_dir, web_dir, state)
+    }
+
+    fn test_auth(dir: &Path) -> AuthConfig {
+        let pepper_path = dir.join("server-pepper");
+        create_pepper_file(&pepper_path).unwrap();
+        AuthConfig::development(
+            load_pepper_file(&pepper_path).unwrap(),
+            "http://127.0.0.1:8080".to_owned(),
+        )
+    }
+
+    /// Create the first owner directly through the identity seam.
+    async fn seed_owner(state: &AppState) {
+        let hash = hash_password(b"correct horse battery").unwrap();
+        create_owner(state.db(), "admin", &hash).await.unwrap();
     }
 
     async fn test_state() -> (TempDir, TempDir, AppState) {
@@ -265,6 +474,47 @@ mod tests {
             .unwrap()
     }
 
+    const LOGIN_BODY: &str = r#"{"username":"admin","password":"correct horse battery"}"#;
+
+    fn login_request() -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("/api/public/v1/login")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ORIGIN, "http://127.0.0.1:8080")
+            .body(Body::from(LOGIN_BODY))
+            .unwrap()
+    }
+
+    async fn login_cookie(app: Router) -> String {
+        let response = app.oneshot(login_request()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        response.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    #[tokio::test]
+    async fn every_response_carries_the_content_security_policy() {
+        let (_, _, state) = test_state().await;
+        for uri in ["/health/live", "/api/public/v1/login", "/"] {
+            let response = get(build_app(state.clone()), uri).await;
+            let policy = response
+                .headers()
+                .get(header::CONTENT_SECURITY_POLICY)
+                .expect("CSP header must be present")
+                .to_str()
+                .unwrap();
+            assert!(policy.contains("script-src 'self'"), "{uri}: {policy}");
+            assert!(
+                !policy.contains("unsafe-inline")
+                    || policy.contains("style-src 'self' 'unsafe-inline'"),
+                "{uri}: inline script must never be allowed"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn live_reports_ok_without_internal_information() {
         let (_, _, state) = test_state().await;
@@ -281,24 +531,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ready_reports_ready_with_migrated_database_and_web_assets() {
+    async fn ready_reports_setup_required_without_owner() {
+        let (_, _, state) = test_state_with_files(&[
+            ("index.html", INDEX_HTML.as_bytes()),
+            ("assets/index-abc123.js", b"// app"),
+        ])
+        .await;
+
+        let (status, value) = json(get(build_app(state), "/health/ready").await).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(value["status"], "not_ready");
+        assert_eq!(component(&value, "owner")["status"], "not_ready");
+        assert_eq!(component(&value, "owner")["reason"], "setup_required");
+    }
+
+    #[tokio::test]
+    async fn ready_reports_ready_with_owner_and_web_assets() {
         let (_, web_dir, state) = test_state_with_files(&[
             ("index.html", INDEX_HTML.as_bytes()),
             ("assets/index-abc123.js", b"// app"),
         ])
         .await;
         let _ = web_dir;
+        seed_owner(&state).await;
 
         let (status, value) = json(get(build_app(state), "/health/ready").await).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(value["status"], "ready");
         assert_eq!(component(&value, "sqlite")["status"], "ready");
+        assert_eq!(component(&value, "owner")["status"], "ready");
         assert_eq!(component(&value, "web_assets")["status"], "ready");
     }
 
     #[tokio::test]
     async fn ready_reports_web_assets_missing_for_an_incomplete_build() {
         let (_, _, state) = test_state_with_files(&[("index.html", INDEX_HTML.as_bytes())]).await;
+        seed_owner(&state).await;
 
         let (status, value) = json(get(build_app(state), "/health/ready").await).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
@@ -315,7 +583,8 @@ mod tests {
         let database = initialize(ServerDatabaseConfig::new(db_dir.path().join("server.db")))
             .await
             .unwrap();
-        let state = AppState::new(database, None);
+        let state = AppState::new(database, None, test_auth(db_dir.path()));
+        seed_owner(&state).await;
 
         let (status, value) = json(get(build_app(state), "/health/ready").await).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
@@ -333,6 +602,7 @@ mod tests {
     #[tokio::test]
     async fn ready_reports_web_assets_missing_when_index_html_is_absent() {
         let (_, _, state) = test_state_with_files(&[("assets/app-123.js", b"// asset")]).await;
+        seed_owner(&state).await;
 
         let (status, value) = json(get(build_app(state), "/health/ready").await).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
@@ -351,7 +621,36 @@ mod tests {
             ("agent", "/api/agent/v1/missing"),
         ] {
             let (_, _, state) = test_state().await;
-            let response = get(build_app(state), uri).await;
+            let app = build_app(state.clone());
+
+            if group == "agent" {
+                // Without an owner the agent group refuses everything.
+                let (status, body) = json(get(app, uri).await).await;
+                assert_eq!(
+                    status,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "{uri} without owner"
+                );
+                assert_eq!(body["error"]["code"], "setup_required");
+                continue;
+            }
+
+            // Public/Admin 404s require a session (Guest disabled).
+            let response = get(app.clone(), uri).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "{uri} without session"
+            );
+
+            seed_owner(&state).await;
+            let cookie = login_cookie(app.clone()).await;
+            let request = Request::builder()
+                .uri(uri)
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap();
+            let response = app.oneshot(request).await.unwrap();
 
             assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
             assert_eq!(
@@ -452,7 +751,7 @@ mod tests {
         let database = initialize(ServerDatabaseConfig::new(db_dir.path().join("x.db")))
             .await
             .unwrap();
-        let state = AppState::new(database, None);
+        let state = AppState::new(database, None, test_auth(db_dir.path()));
         let response = get(build_app(state), "/").await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
@@ -483,5 +782,319 @@ mod tests {
             assert!(tags.contains(&expected), "tag {expected} missing");
         }
         assert_eq!(tags.len(), 4, "route group tags must stay distinct");
+    }
+
+    #[tokio::test]
+    async fn login_requires_the_configured_origin() {
+        let (_, _, state) = test_state().await;
+        seed_owner(&state).await;
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/public/v1/login")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ORIGIN, "https://evil.example.com")
+            .body(Body::from(LOGIN_BODY))
+            .unwrap();
+
+        let (status, body) = json(build_app(state).oneshot(request).await.unwrap()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["error"]["code"], "origin_validation_failed");
+    }
+
+    #[tokio::test]
+    async fn login_is_refused_until_an_owner_exists() {
+        let (_, _, state) = test_state().await;
+        let (status, body) = json(build_app(state).oneshot(login_request()).await.unwrap()).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"]["code"], "setup_required");
+    }
+
+    #[tokio::test]
+    async fn login_sets_the_production_cookie_and_returns_a_session() {
+        let (_, _, state) = test_state().await;
+        let app = build_app(state.clone());
+        seed_owner(&state).await;
+
+        let response = app.oneshot(login_request()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let set_cookie = response.headers()[header::SET_COOKIE].to_str().unwrap();
+        // Development test policy: separate cookie name, no Secure.
+        assert!(
+            set_cookie.starts_with("platpulse_dev_session="),
+            "dev cookie: {set_cookie}"
+        );
+        assert!(!set_cookie.contains("Secure"));
+        assert!(set_cookie.contains("HttpOnly"));
+        assert!(set_cookie.contains("SameSite=Lax"));
+        assert!(set_cookie.contains("Path=/"));
+
+        let (_, body) = json(response).await;
+        assert_eq!(body["session"]["username"], "admin");
+        assert_eq!(body["session"]["role"], "owner");
+        assert!(!body["csrfToken"].as_str().unwrap().is_empty());
+        assert!(
+            body["session"]["createdAt"]
+                .as_str()
+                .unwrap()
+                .ends_with('Z')
+        );
+    }
+
+    #[tokio::test]
+    async fn production_policy_emits_host_secure_cookie() {
+        let (db_dir, _, _) = test_state().await;
+        let database = initialize(ServerDatabaseConfig::new(db_dir.path().join("server.db")))
+            .await
+            .unwrap();
+        let state = AppState::new(
+            database,
+            None,
+            AuthConfig::production(
+                load_pepper_file(&db_dir.path().join("server-pepper")).unwrap(),
+                "http://127.0.0.1:8080".to_owned(),
+            ),
+        );
+        let app = build_app(state.clone());
+        seed_owner(&state).await;
+
+        let response = app.oneshot(login_request()).await.unwrap();
+        let set_cookie = response.headers()[header::SET_COOKIE].to_str().unwrap();
+        assert!(
+            set_cookie.starts_with("__Host-platpulse_session="),
+            "production cookie: {set_cookie}"
+        );
+        assert!(set_cookie.contains("Secure"));
+        assert!(!set_cookie.contains("Domain="));
+    }
+
+    #[tokio::test]
+    async fn login_rate_limit_is_independent_and_blocks_after_failures() {
+        let (_, _, state) = test_state().await;
+        let app = build_app(state.clone());
+        seed_owner(&state).await;
+
+        for _ in 0..LOGIN_MAX_ATTEMPTS {
+            let request = Request::builder()
+                .method("POST")
+                .uri("/api/public/v1/login")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ORIGIN, "http://127.0.0.1:8080")
+                .body(Body::from(
+                    r#"{"username":"admin","password":"wrong password"}"#,
+                ))
+                .unwrap();
+            let status = app.clone().oneshot(request).await.unwrap().status();
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+        }
+        // The sixth attempt is blocked even with the correct password.
+        let response = app.oneshot(login_request()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let (_, body) = json(response).await;
+        assert_eq!(body["error"]["code"], "login_rate_limited");
+    }
+
+    #[tokio::test]
+    async fn session_endpoint_requires_a_valid_cookie() {
+        let (_, _, state) = test_state().await;
+        let app = build_app(state.clone());
+        seed_owner(&state).await;
+
+        // No cookie.
+        let (status, body) = json(get(app.clone(), "/api/public/v1/session").await).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"]["code"], "auth_required");
+
+        // Login, then use the cookie.
+        let response = app.clone().oneshot(login_request()).await.unwrap();
+        let cookie = response.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let request = Request::builder()
+            .uri("/api/public/v1/session")
+            .header(header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap();
+        let (status, body) = json(app.oneshot(request).await.unwrap()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["session"]["username"], "admin");
+        assert!(!body["csrfToken"].as_str().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn login_rotates_the_session_id() {
+        let (_, _, state) = test_state().await;
+        let app = build_app(state.clone());
+        seed_owner(&state).await;
+
+        let first = app.clone().oneshot(login_request()).await.unwrap();
+        let first_cookie = first.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .to_owned();
+
+        // Log in again presenting the old cookie: the old session is
+        // revoked and a new cookie is issued.
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/public/v1/login")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ORIGIN, "http://127.0.0.1:8080")
+            .header(header::COOKIE, &first_cookie)
+            .body(Body::from(LOGIN_BODY))
+            .unwrap();
+        let second = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(second.status(), StatusCode::OK);
+        let second_cookie = second.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert_ne!(first_cookie, second_cookie);
+
+        let stale = Request::builder()
+            .uri("/api/public/v1/session")
+            .header(header::COOKIE, &first_cookie)
+            .body(Body::empty())
+            .unwrap();
+        let (status, _) = json(app.clone().oneshot(stale).await.unwrap()).await;
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "rotated session must be revoked"
+        );
+
+        let fresh = Request::builder()
+            .uri("/api/public/v1/session")
+            .header(header::COOKIE, &second_cookie)
+            .body(Body::empty())
+            .unwrap();
+        let (status, _) = json(app.oneshot(fresh).await.unwrap()).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn logout_revokes_the_current_session() {
+        let (_, _, state) = test_state().await;
+        let app = build_app(state.clone());
+        seed_owner(&state).await;
+
+        let login = app.clone().oneshot(login_request()).await.unwrap();
+        let cookie = login.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .to_owned();
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/public/v1/logout")
+            .header(header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let cleared = response.headers()[header::SET_COOKIE].to_str().unwrap();
+        assert!(
+            cleared.contains("Max-Age=0"),
+            "logout must clear the cookie"
+        );
+
+        let stale = Request::builder()
+            .uri("/api/public/v1/session")
+            .header(header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap();
+        let (status, _) = json(app.oneshot(stale).await.unwrap()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn admin_group_requires_an_owner_session() {
+        let (_, _, state) = test_state().await;
+        let app = build_app(state.clone());
+        seed_owner(&state).await;
+
+        // Anonymous: 401, not 404.
+        let (status, body) = json(get(app.clone(), "/api/admin/v1/missing").await).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"]["code"], "auth_required");
+
+        // Viewer session: 403 owner_required.
+        let viewer_hash = hash_password(b"correct horse battery").unwrap();
+        sqlx::query(
+            "INSERT INTO users (user_id, username, role, password_hash, disabled_at, created_at, updated_at) VALUES (?, 'viewer1', 'viewer', ?, NULL, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(viewer_hash)
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+        let viewer_login = Request::builder()
+            .method("POST")
+            .uri("/api/public/v1/login")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ORIGIN, "http://127.0.0.1:8080")
+            .body(Body::from(
+                r#"{"username":"viewer1","password":"correct horse battery"}"#,
+            ))
+            .unwrap();
+        let response = app.clone().oneshot(viewer_login).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let viewer_cookie = response.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let request = Request::builder()
+            .uri("/api/admin/v1/missing")
+            .header(header::COOKIE, &viewer_cookie)
+            .body(Body::empty())
+            .unwrap();
+        let (status, body) = json(app.clone().oneshot(request).await.unwrap()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["error"]["code"], "owner_required");
+
+        // Owner session passes the guard (404 from the empty route group).
+        let login = app.clone().oneshot(login_request()).await.unwrap();
+        let owner_cookie = login.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let request = Request::builder()
+            .uri("/api/admin/v1/missing")
+            .header(header::COOKIE, owner_cookie)
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.headers()[ROUTE_GROUP_HEADER], "admin");
+    }
+
+    #[tokio::test]
+    async fn agent_group_is_blocked_until_an_owner_exists() {
+        let (_, _, state) = test_state().await;
+        let app = build_app(state.clone());
+
+        let (status, body) = json(get(app.clone(), "/api/agent/v1/enroll").await).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"]["code"], "setup_required");
+
+        seed_owner(&state).await;
+        let response = get(app, "/api/agent/v1/enroll").await;
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "agent group opens after setup"
+        );
+    }
+
+    #[tokio::test]
+    async fn public_reads_require_a_session_when_guest_is_disabled() {
+        let (_, _, state) = test_state().await;
+        let app = build_app(state.clone());
+        seed_owner(&state).await;
+
+        let (status, body) = json(get(app, "/api/public/v1/events").await).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"]["code"], "auth_required");
+        assert_eq!(body["error"]["message"], json!("authentication required"));
     }
 }

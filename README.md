@@ -119,6 +119,25 @@ npm run build
 npm run e2e  # Playwright: phone-360-touch, phone-390-touch, tablet-768-touch, desktop-1280
 ```
 
+## Server setup and login
+
+```bash
+# 1. Create the state directory, SQLite schema, and pepper file
+platpulse-server init --config /etc/platpulse/server.toml
+
+# 2. Create the first Owner; the password is read from the TTY (hidden) or
+#    from stdin — never from argv, and there is no default password
+platpulse-server owner create --config /etc/platpulse/server.toml --username admin
+
+# 3. Serve the API and WebUI (loopback-only until TLS/trusted-proxy config
+#    exists; explicit `--dev` uses a separate development cookie)
+platpulse-server serve --config /etc/platpulse/server.toml
+```
+
+Until an Owner exists, `/health/live` succeeds while `/health/ready` reports
+`setup_required`, and no Agent Enrollment is allowed. Home and Admin are
+private by default: unauthenticated visitors are guided to the login page.
+
 Generated API artifacts are committed and CI verifies they are fresh:
 
 ```bash

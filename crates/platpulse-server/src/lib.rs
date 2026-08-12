@@ -2,16 +2,21 @@
 //! PlatPulse: report ingestion, SQLite projections, auth, alerts, and Web
 //! asset hosting.
 //!
-//! Phase 0 provides the thin-binary/library split, the Server-local SQLite
+//! Phase 0 provided the thin-binary/library split, the Server-local SQLite
 //! startup/migration harness, the HTTP route group skeleton with health
-//! routes and Web asset hosting, and the OpenAPI 3 document. Auth, Report
-//! Ingestion, and real Public/Admin/Agent routes arrive with Phase 1 tickets.
-//! Keep startup logic in this library so it can be exercised from tests;
-//! `main.rs` stays a thin entry point.
+//! routes and Web asset hosting, and the OpenAPI 3 document. P1-01 adds
+//! local initialization (`init`), first-Owner creation, human sessions and
+//! the private Home/Admin gates. Keep startup logic in this library so it
+//! can be exercised from tests; `main.rs` stays a thin entry point.
 
+pub mod auth;
+pub mod cli;
+pub mod config;
 pub mod database;
 pub mod http;
+pub mod init;
 pub mod openapi;
+pub mod secrets;
 
 pub use database::{
     DEFAULT_BUSY_TIMEOUT, JournalMode, SERVER_MIGRATOR, SERVER_SCHEMA_VERSION,
