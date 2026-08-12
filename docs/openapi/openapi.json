@@ -471,17 +471,29 @@
         "required": [
           "agent_id",
           "agent_epoch",
+          "boot_status",
+          "sequence_gap_count",
+          "security_event_count",
           "clock_status",
           "liveness",
           "capabilities",
           "nodes"
         ],
         "properties": {
+          "active_boot_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "agent_epoch": {
             "type": "integer",
             "format": "int64"
           },
           "agent_id": {
+            "type": "string"
+          },
+          "boot_status": {
             "type": "string"
           },
           "capabilities": {
@@ -499,6 +511,12 @@
           },
           "clock_status": {
             "type": "string"
+          },
+          "close_report_id": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "host": {
             "oneOf": [
@@ -531,6 +549,20 @@
             "items": {
               "$ref": "#/components/schemas/NodeDiagnostic"
             }
+          },
+          "previous_boot_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "security_event_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "sequence_gap_count": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
@@ -870,6 +902,53 @@
             ],
             "format": "int64"
           },
+          "spool_capacity_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "spool_dropped_height_from": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "spool_dropped_height_to": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "spool_dropped_sequence_from": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "spool_dropped_sequence_to": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "spool_dropped_time_from": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "spool_dropped_time_to": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "spool_in_flight": {
             "type": [
               "boolean",
@@ -888,7 +967,21 @@
               "null"
             ]
           },
+          "spool_max_age_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
           "spool_oldest_queued_age_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "spool_pending_history_gaps": {
             "type": [
               "integer",
               "null"
@@ -908,6 +1001,24 @@
               "null"
             ],
             "format": "int64"
+          },
+          "spool_report_too_large": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "spool_store_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "spool_store_fatal": {
+            "type": [
+              "boolean",
+              "null"
+            ]
           },
           "updated_at": {
             "type": "string"
@@ -949,7 +1060,9 @@
           "inventory_revision",
           "visibility",
           "health",
-          "health_reason"
+          "health_reason",
+          "resync_state",
+          "network_reference_confidence"
         ],
         "properties": {
           "consensus": {
@@ -961,6 +1074,13 @@
                 "$ref": "#/components/schemas/ConsensusDiagnostic"
               }
             ]
+          },
+          "current_head": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
           },
           "display_name": {
             "type": [
@@ -974,6 +1094,13 @@
           "health_reason": {
             "type": "string"
           },
+          "historical_high_watermark": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
           "inventory_revision": {
             "type": "integer",
             "format": "int64"
@@ -983,6 +1110,16 @@
           },
           "network_key": {
             "type": "string"
+          },
+          "network_reference_confidence": {
+            "type": "string"
+          },
+          "network_reference_head": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
           },
           "node_id": {
             "type": "string"
@@ -996,6 +1133,15 @@
                 "$ref": "#/components/schemas/ProcessDiagnostic"
               }
             ]
+          },
+          "resync_progress": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resync_state": {
+            "type": "string"
           },
           "rpc": {
             "oneOf": [
@@ -1139,11 +1285,20 @@
           "rpcState",
           "syncState",
           "consensusState",
-          "processState"
+          "processState",
+          "resyncState",
+          "networkReferenceConfidence"
         ],
         "properties": {
           "consensusState": {
             "type": "string"
+          },
+          "currentHead": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
           },
           "displayName": {
             "type": [
@@ -1163,6 +1318,13 @@
           "healthReason": {
             "type": "string"
           },
+          "historicalHighWatermark": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
           "hostCpuPercent": {
             "type": [
               "number",
@@ -1173,10 +1335,29 @@
           "networkKey": {
             "type": "string"
           },
+          "networkReferenceConfidence": {
+            "type": "string"
+          },
+          "networkReferenceHead": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
           "nodeId": {
             "type": "string"
           },
           "processState": {
+            "type": "string"
+          },
+          "resyncProgress": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resyncState": {
             "type": "string"
           },
           "rpcState": {

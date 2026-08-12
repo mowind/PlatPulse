@@ -208,6 +208,12 @@ pub struct AgentDiagnostic {
     pub agent_id: String,
     pub agent_epoch: i64,
     pub last_report_sequence: Option<i64>,
+    pub active_boot_id: Option<String>,
+    pub boot_status: String,
+    pub previous_boot_id: Option<String>,
+    pub close_report_id: Option<String>,
+    pub sequence_gap_count: i64,
+    pub security_event_count: i64,
     pub clock_status: String,
     pub clock_skew_ms: Option<i64>,
     pub liveness: String,
@@ -506,8 +512,8 @@ async fn diagnostics(
     State(state): State<AppState>,
     Extension(_session): Extension<super::AuthenticatedSession>,
 ) -> impl IntoResponse {
-    let agents = sqlx::query_as::<_, (String, i64, Option<i64>, String, String, Option<i64>, Option<String>)>(
-        "SELECT agent_id, agent_epoch, last_report_sequence, agent_capabilities_json, clock_status, clock_skew_ms, last_received_at FROM agents ORDER BY agent_id",
+    let agents = sqlx::query_as::<_, (String, i64, Option<String>, String, Option<String>, Option<String>, Option<i64>, String, Option<i64>, Option<String>, Option<String>, i64)>(
+        "SELECT agent_id, agent_epoch, active_boot_id, active_boot_status, previous_boot_id, close_report_id, last_report_sequence, agent_capabilities_json, clock_skew_ms, clock_status, last_received_at, security_event_count FROM agents ORDER BY agent_id",
     )
     .fetch_all(state.db().pool())
     .await
@@ -516,11 +522,16 @@ async fn diagnostics(
     for (
         agent_id,
         agent_epoch,
+        active_boot_id,
+        boot_status,
+        previous_boot_id,
+        close_report_id,
         last_report_sequence,
         capabilities_json,
-        clock_status,
         clock_skew_ms,
+        clock_status,
         last_received_at,
+        security_event_count,
     ) in agents
     {
         let capabilities = serde_json::from_str(&capabilities_json).unwrap_or_default();
@@ -538,6 +549,12 @@ async fn diagnostics(
             })
             .unwrap_or("unknown")
             .to_owned();
+        let sequence_gap_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM report_sequence_gaps WHERE agent_id=?")
+                .bind(&agent_id)
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap_or(0);
         let host_components = sqlx::query_as::<_, (String, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, i64, i64)>(
             "SELECT component_key, state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision FROM component_status WHERE agent_id = ? AND scope = 'host' ORDER BY component_key",
         )
@@ -663,11 +680,17 @@ async fn diagnostics(
             agent_id,
             agent_epoch,
             last_report_sequence,
-            clock_status,
+            clock_status: clock_status.unwrap_or_else(|| "unknown".to_owned()),
             clock_skew_ms,
             liveness,
             last_received_at,
             capabilities,
+            active_boot_id,
+            boot_status,
+            previous_boot_id,
+            close_report_id,
+            sequence_gap_count,
+            security_event_count,
             host,
             nodes,
         });

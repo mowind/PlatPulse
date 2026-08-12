@@ -36,6 +36,9 @@ struct ReceiptRow {
 struct AgentRow {
     agent_epoch: i64,
     active_boot_id: Option<String>,
+    active_boot_status: String,
+    previous_boot_id: Option<String>,
+    close_report_id: Option<String>,
     last_report_sequence: Option<i64>,
     last_inventory_revision: i64,
 }
@@ -118,6 +121,17 @@ async fn store_rejected(
         );
     }
     (StatusCode::OK, Json(ReportResponse { receipt })).into_response()
+}
+
+async fn record_security_event(
+    tx: &mut Transaction<'_, Sqlite>,
+    agent_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE agents SET security_event_count=security_event_count+1 WHERE agent_id=?")
+        .bind(agent_id)
+        .execute(&mut **tx)
+        .await
+        .map(|_| ())
 }
 
 fn status_name(status: ComponentStatus) -> &'static str {
@@ -812,7 +826,7 @@ async fn handler(
         return (StatusCode::OK, Json(ReportResponse { receipt })).into_response();
     }
     let agent = match sqlx::query_as::<_, AgentRow>(
-        "SELECT agent_epoch, active_boot_id, last_report_sequence, last_inventory_revision FROM agents WHERE agent_id = ?",
+        "SELECT agent_epoch, active_boot_id, active_boot_status, previous_boot_id, close_report_id, last_report_sequence, last_inventory_revision FROM agents WHERE agent_id = ?",
     )
     .bind(&auth.agent_id)
     .fetch_optional(&mut *tx)
@@ -852,6 +866,18 @@ async fn handler(
         .await;
     }
 
+    let old_boot_status: Option<String> = sqlx::query_scalar(
+        "SELECT status FROM agent_boots WHERE agent_id=? AND agent_epoch=? AND boot_id=?",
+    )
+    .bind(&auth.agent_id)
+    .bind(parsed.agent_epoch as i64)
+    .bind(parsed.boot_id.to_string())
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|_| ())
+    .ok()
+    .flatten();
+    let _boot_markers = (&agent.previous_boot_id, &agent.close_report_id);
     if parsed.inventory.revision < agent.last_inventory_revision as u64 {
         return store_rejected(
             tx,
@@ -874,6 +900,7 @@ async fn handler(
             Ok(v) => v, Err(_) => return error(&request_id.0, StatusCode::SERVICE_UNAVAILABLE, "unavailable", "Server database is unavailable")
         };
     if sequence_conflict.is_some() {
+        let _ = record_security_event(&mut tx, &auth.agent_id).await;
         return error(
             &request_id.0,
             StatusCode::CONFLICT,
@@ -883,6 +910,23 @@ async fn handler(
     }
     if let Some(active) = &agent.active_boot_id {
         if active != &parsed.boot_id.to_string() {
+            if old_boot_status.as_deref() == Some("closed")
+                && parsed.boot_transition != platpulse_core::BootTransition::DrainedPrevious
+            {
+                return store_rejected(
+                    tx,
+                    &parsed,
+                    hash.clone(),
+                    rejected(
+                        parsed.report_id,
+                        hash,
+                        platpulse_core::RejectionCode::StaleBoot,
+                        "Report belongs to a closed boot; only exact replay is accepted",
+                    ),
+                    &request_id.0,
+                )
+                .await;
+            }
             if parsed.boot_transition != platpulse_core::BootTransition::DrainedPrevious
                 || parsed
                     .previous_boot_id
@@ -891,6 +935,7 @@ async fn handler(
                     .as_deref()
                     != Some(active.as_str())
             {
+                let _ = record_security_event(&mut tx, &auth.agent_id).await;
                 return store_rejected(
                     tx,
                     &parsed,
@@ -905,9 +950,27 @@ async fn handler(
                 )
                 .await;
             }
-        } else if agent
-            .last_report_sequence
-            .is_some_and(|last| parsed.report_sequence <= last as u64)
+            if agent.active_boot_status != "closed" {
+                let _ = record_security_event(&mut tx, &auth.agent_id).await;
+                return store_rejected(
+                    tx,
+                    &parsed,
+                    hash.clone(),
+                    rejected(
+                        parsed.report_id,
+                        hash,
+                        platpulse_core::RejectionCode::ConflictingBoot,
+                        "Previous boot has not completed its closing receipt",
+                    ),
+                    &request_id.0,
+                )
+                .await;
+            }
+        } else if agent.active_boot_status == "closing"
+            || agent.active_boot_status == "closed"
+            || agent
+                .last_report_sequence
+                .is_some_and(|last| parsed.report_sequence <= last as u64)
         {
             return store_rejected(
                 tx,
@@ -923,6 +986,19 @@ async fn handler(
             )
             .await;
         }
+    }
+    if let Some(last) = agent.last_report_sequence
+        && parsed.boot_id.to_string() == agent.active_boot_id.as_deref().unwrap_or_default()
+        && parsed.report_sequence > (last as u64).saturating_add(1)
+    {
+        let _ = sqlx::query("INSERT OR IGNORE INTO report_sequence_gaps (agent_id, boot_id, from_sequence, to_sequence, created_at) VALUES (?, ?, ?, ?, ?)")
+            .bind(&auth.agent_id)
+            .bind(parsed.boot_id.to_string())
+            .bind(last.saturating_add(1))
+            .bind(parsed.report_sequence.saturating_sub(1) as i64)
+            .bind(now().to_string())
+            .execute(&mut *tx)
+            .await;
     }
     let now_text = now().to_string();
     let capabilities =
@@ -1446,6 +1522,33 @@ async fn handler(
             "Server database is unavailable",
         );
     }
+    let lifecycle_status = match parsed.boot_transition {
+        platpulse_core::BootTransition::Closing => "closed",
+        _ => "active",
+    };
+    let boot_upsert = sqlx::query("INSERT INTO agent_boots (agent_id, agent_epoch, boot_id, status, previous_boot_id, last_sequence, close_report_id, closed_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, CASE WHEN ?='closed' THEN ? ELSE NULL END, CASE WHEN ?='closed' THEN ? ELSE NULL END, ?, ?) ON CONFLICT(agent_id, agent_epoch, boot_id) DO UPDATE SET status=excluded.status, previous_boot_id=COALESCE(excluded.previous_boot_id, agent_boots.previous_boot_id), last_sequence=MAX(agent_boots.last_sequence, excluded.last_sequence), close_report_id=COALESCE(excluded.close_report_id, agent_boots.close_report_id), closed_at=COALESCE(excluded.closed_at, agent_boots.closed_at), updated_at=excluded.updated_at")
+        .bind(&auth.agent_id)
+        .bind(parsed.agent_epoch as i64)
+        .bind(parsed.boot_id.to_string())
+        .bind(lifecycle_status)
+        .bind(parsed.previous_boot_id.map(|v| v.to_string()))
+        .bind(parsed.report_sequence as i64)
+        .bind(lifecycle_status)
+        .bind(parsed.report_id.to_string())
+        .bind(lifecycle_status)
+        .bind(&now_text)
+        .bind(&now_text)
+        .bind(&now_text)
+        .execute(&mut *tx)
+        .await;
+    if boot_upsert.is_err() {
+        return error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "Server database is unavailable",
+        );
+    }
     let clock_skew_ms = parsed.host.clock_skew.latest;
     let clock_status = match clock_skew_ms {
         Some(value) if value.abs() > crate::http::agent::CLOCK_UNRELIABLE_THRESHOLD_MS => {
@@ -1454,7 +1557,39 @@ async fn handler(
         Some(_) => "known",
         None => "unknown",
     };
-    let updated = sqlx::query("UPDATE agents SET active_boot_id=?, last_report_sequence=?, last_inventory_revision=?, inventory_sha256=?, last_received_at=?, clock_skew_ms=?, clock_status=?, agent_capabilities_json=?, updated_at=? WHERE agent_id=?").bind(parsed.boot_id.to_string()).bind(parsed.report_sequence as i64).bind(parsed.inventory.revision as i64).bind(&inventory_hash).bind(&now_text).bind(clock_skew_ms).bind(clock_status).bind(capabilities).bind(&now_text).bind(&auth.agent_id).execute(&mut *tx).await;
+    let should_activate_new_boot = parsed.boot_transition
+        == platpulse_core::BootTransition::DrainedPrevious
+        && parsed
+            .previous_boot_id
+            .as_ref()
+            .map(ToString::to_string)
+            .as_deref()
+            == agent.active_boot_id.as_deref();
+    let updated = sqlx::query("UPDATE agents SET active_boot_id=?, active_boot_status=?, previous_boot_id=?, close_report_id=CASE WHEN ?='closed' THEN ? ELSE close_report_id END, last_report_sequence=?, last_inventory_revision=?, inventory_sha256=?, last_received_at=?, clock_skew_ms=?, clock_status=?, agent_capabilities_json=?, updated_at=? WHERE agent_id=?")
+        .bind(parsed.boot_id.to_string()).bind(lifecycle_status)
+        .bind(parsed.previous_boot_id.map(|v| v.to_string()))
+        .bind(lifecycle_status).bind(parsed.report_id.to_string())
+        .bind(parsed.report_sequence as i64).bind(parsed.inventory.revision as i64)
+        .bind(&inventory_hash).bind(&now_text).bind(clock_skew_ms).bind(clock_status)
+        .bind(capabilities).bind(&now_text).bind(&auth.agent_id).execute(&mut *tx).await;
+    if should_activate_new_boot {
+        sqlx::query("UPDATE agents SET active_boot_status='active', previous_boot_id=?, close_applied_at=? WHERE agent_id=?")
+            .bind(parsed.previous_boot_id.map(|v| v.to_string()))
+            .bind(&now_text)
+            .bind(&auth.agent_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| ())
+            .ok();
+        sqlx::query("UPDATE agent_boots SET status='closed', closed_at=?, updated_at=? WHERE agent_id=? AND agent_epoch=? AND boot_id=?")
+            .bind(&now_text).bind(&now_text).bind(&auth.agent_id)
+            .bind(parsed.agent_epoch as i64)
+            .bind(parsed.previous_boot_id.map(|v| v.to_string()))
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| ())
+            .ok();
+    }
     if updated.is_err() || tx.commit().await.is_err() {
         return error(
             &request_id.0,
@@ -1561,6 +1696,108 @@ mod tests {
             .receipt
     }
 
+    #[tokio::test]
+    async fn boot_sequence_gaps_and_competing_boots_are_recorded_and_rejected() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let mut report: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+        report.report_sequence = 3;
+        report.report_id = "0195f2a1-0026-4026-8026-000000000026".parse().unwrap();
+        submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+        let gaps: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM report_sequence_gaps WHERE agent_id=?")
+                .bind(&agent_id)
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        assert_eq!(gaps, 1);
+
+        let old_boot = report.boot_id;
+        report.boot_id = "0195f2a1-0027-4027-8027-000000000027".parse().unwrap();
+        report.report_sequence = 1;
+        report.report_id = "0195f2a1-0028-4028-8028-000000000028".parse().unwrap();
+        let response = handler(
+            State(state.clone()),
+            Extension(AgentAuthInfo {
+                agent_id: agent_id.clone(),
+                credential_id: "test".into(),
+            }),
+            Extension(RequestId(Arc::from("test-request"))),
+            Bytes::from(serde_json::to_vec(&report).unwrap()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let receipt: ReportResponse =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(receipt.receipt.disposition, ReceiptDisposition::Rejected);
+        assert_eq!(
+            receipt.receipt.rejections[0].code,
+            platpulse_core::RejectionCode::ConflictingBoot
+        );
+        assert_ne!(old_boot, report.boot_id);
+    }
+    #[tokio::test]
+    async fn closing_then_drained_previous_atomically_rotates_boot_and_rejects_old_reports() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let mut closing: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        let old_boot = closing.boot_id;
+        closing.report_sequence = 2;
+        closing.report_id = "0195f2a1-0030-4030-8030-000000000030".parse().unwrap();
+        closing.boot_transition = platpulse_core::BootTransition::Closing;
+        submit(&state, &agent_id, serde_json::to_vec(&closing).unwrap()).await;
+
+        let mut stale = closing.clone();
+        stale.report_id = "0195f2a1-0031-4031-8031-000000000031".parse().unwrap();
+        stale.report_sequence = 3;
+        stale.boot_transition = platpulse_core::BootTransition::Continuing;
+        let stale_receipt = submit(&state, &agent_id, serde_json::to_vec(&stale).unwrap()).await;
+        assert_eq!(
+            stale_receipt.rejections[0].code,
+            platpulse_core::RejectionCode::StaleReport
+        );
+
+        let mut next = closing;
+        next.boot_id = "0195f2a1-0032-4032-8032-000000000032".parse().unwrap();
+        next.previous_boot_id = Some(old_boot);
+        next.boot_transition = platpulse_core::BootTransition::DrainedPrevious;
+        next.report_sequence = 1;
+        next.report_id = "0195f2a1-0033-4033-8033-000000000033".parse().unwrap();
+        let next_receipt = submit(&state, &agent_id, serde_json::to_vec(&next).unwrap()).await;
+        assert_eq!(next_receipt.disposition, ReceiptDisposition::Accepted);
+
+        let statuses = sqlx::query_as::<_, (String, String)>(
+            "SELECT boot_id, status FROM agent_boots WHERE agent_id=? ORDER BY boot_id",
+        )
+        .bind(&agent_id)
+        .fetch_all(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(statuses.len(), 2);
+        assert!(
+            statuses
+                .iter()
+                .any(|(boot, status)| boot == &old_boot.to_string() && status == "closed")
+        );
+        assert!(
+            statuses
+                .iter()
+                .any(|(boot, status)| boot == &next.boot_id.to_string() && status == "active")
+        );
+        let security_events: i64 =
+            sqlx::query_scalar("SELECT security_event_count FROM agents WHERE agent_id=?")
+                .bind(&agent_id)
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        assert_eq!(security_events, 0);
+    }
     #[tokio::test]
     async fn accepted_inventory_persists_observations_and_replay_is_exact() {
         let (_dir, state, agent_id) = state_with_agent().await;

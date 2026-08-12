@@ -5,16 +5,22 @@ export type ClientOptions = {
 };
 
 export type AgentDiagnostic = {
+    active_boot_id?: string | null;
     agent_epoch: number;
     agent_id: string;
+    boot_status: string;
     capabilities: Array<string>;
     clock_skew_ms?: number | null;
     clock_status: string;
+    close_report_id?: string | null;
     host?: null | HostDiagnostic;
     last_received_at?: string | null;
     last_report_sequence?: number | null;
     liveness: string;
     nodes: Array<NodeDiagnostic>;
+    previous_boot_id?: string | null;
+    security_event_count: number;
+    sequence_gap_count: number;
 };
 
 export type ApiError = {
@@ -73,12 +79,24 @@ export type HostDiagnostic = {
     memory_used_bytes?: number | null;
     network_rx_bytes_per_sec?: number | null;
     network_tx_bytes_per_sec?: number | null;
+    spool_capacity_bytes?: number | null;
+    spool_dropped_height_from?: number | null;
+    spool_dropped_height_to?: number | null;
+    spool_dropped_sequence_from?: number | null;
+    spool_dropped_sequence_to?: number | null;
+    spool_dropped_time_from?: string | null;
+    spool_dropped_time_to?: string | null;
     spool_in_flight?: boolean | null;
     spool_last_delivery_at?: string | null;
     spool_last_delivery_error?: string | null;
+    spool_max_age_seconds?: number | null;
     spool_oldest_queued_age_ms?: number | null;
+    spool_pending_history_gaps?: number | null;
     spool_queued_bytes?: number | null;
     spool_queued_reports?: number | null;
+    spool_report_too_large?: boolean | null;
+    spool_store_error?: string | null;
+    spool_store_fatal?: boolean | null;
     updated_at: string;
 };
 
@@ -105,9 +123,9 @@ export type NodeDiagnostic = {
     network_reference_head?: number | null;
     node_id: string;
     process?: null | ProcessDiagnostic;
-    rpc?: null | RpcDiagnostic;
     resync_progress?: string | null;
     resync_state: string;
+    rpc?: null | RpcDiagnostic;
     sync?: null | SyncDiagnostic;
     visibility: string;
 };
@@ -141,8 +159,8 @@ export type PublicNode = {
     freshness?: string | null;
     health: string;
     healthReason: string;
-    hostCpuPercent?: number | null;
     historicalHighWatermark?: number | null;
+    hostCpuPercent?: number | null;
     networkKey: string;
     networkReferenceConfidence: string;
     networkReferenceHead?: number | null;

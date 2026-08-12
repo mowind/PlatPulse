@@ -92,6 +92,9 @@ pub fn run_validate_config(args: &ValidateConfigArgs) -> Result<(), Box<AgentCli
 
 pub async fn run_collect_report(args: &CollectReportArgs) -> Result<(), AgentCliError> {
     let config = AgentConfig::resolve(&args.config)?;
+    crate::collector::recover_previous_boot(&config, &FailClosedRpcAdapter)
+        .await
+        .map_err(|error| AgentCliError::Collection(error.to_string()))?;
     let digest = collect_and_persist_with_blocks(
         &config,
         &FailClosedRpcAdapter,
