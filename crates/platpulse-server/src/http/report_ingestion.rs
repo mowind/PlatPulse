@@ -37,6 +37,7 @@ struct AgentRow {
     agent_epoch: i64,
     active_boot_id: Option<String>,
     last_report_sequence: Option<i64>,
+    last_inventory_revision: i64,
 }
 
 fn now() -> Rfc3339 {
@@ -228,7 +229,7 @@ async fn save_current(
     )
     .await?;
 
-    sqlx::query("INSERT OR REPLACE INTO current_host_observations (agent_id, cpu_percent, memory_total_bytes, memory_used_bytes, load1, load5, load15, network_rx_bytes_per_sec, network_tx_bytes_per_sec, clock_skew_ms, spool_queued_bytes, spool_queued_reports, spool_oldest_queued_age_ms, spool_dropped_reports, spool_dropped_samples, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    sqlx::query("INSERT INTO current_host_observations (agent_id, cpu_percent, memory_total_bytes, memory_used_bytes, load1, load5, load15, network_rx_bytes_per_sec, network_tx_bytes_per_sec, clock_skew_ms, spool_queued_bytes, spool_queued_reports, spool_oldest_queued_age_ms, spool_dropped_reports, spool_dropped_samples, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_id) DO UPDATE SET cpu_percent=COALESCE(excluded.cpu_percent, current_host_observations.cpu_percent), memory_total_bytes=COALESCE(excluded.memory_total_bytes, current_host_observations.memory_total_bytes), memory_used_bytes=COALESCE(excluded.memory_used_bytes, current_host_observations.memory_used_bytes), load1=COALESCE(excluded.load1, current_host_observations.load1), load5=COALESCE(excluded.load5, current_host_observations.load5), load15=COALESCE(excluded.load15, current_host_observations.load15), network_rx_bytes_per_sec=COALESCE(excluded.network_rx_bytes_per_sec, current_host_observations.network_rx_bytes_per_sec), network_tx_bytes_per_sec=COALESCE(excluded.network_tx_bytes_per_sec, current_host_observations.network_tx_bytes_per_sec), clock_skew_ms=COALESCE(excluded.clock_skew_ms, current_host_observations.clock_skew_ms), spool_queued_bytes=COALESCE(excluded.spool_queued_bytes, current_host_observations.spool_queued_bytes), spool_queued_reports=COALESCE(excluded.spool_queued_reports, current_host_observations.spool_queued_reports), spool_oldest_queued_age_ms=COALESCE(excluded.spool_oldest_queued_age_ms, current_host_observations.spool_oldest_queued_age_ms), spool_dropped_reports=COALESCE(excluded.spool_dropped_reports, current_host_observations.spool_dropped_reports), spool_dropped_samples=COALESCE(excluded.spool_dropped_samples, current_host_observations.spool_dropped_samples), updated_at=excluded.updated_at")
         .bind(&agent_id)
         .bind(host.cpu_percent.latest)
         .bind(host.memory.latest.map(|v| v.total_bytes as i64))
@@ -247,11 +248,11 @@ async fn save_current(
         .bind(received_at)
         .execute(&mut **tx)
         .await?;
-    sqlx::query("DELETE FROM current_host_disk_mounts WHERE agent_id = ?")
-        .bind(&agent_id)
-        .execute(&mut **tx)
-        .await?;
     if let Some(disk) = host.disk.latest.as_ref() {
+        sqlx::query("DELETE FROM current_host_disk_mounts WHERE agent_id = ?")
+            .bind(&agent_id)
+            .execute(&mut **tx)
+            .await?;
         for mount in &disk.mounts {
             sqlx::query("INSERT INTO current_host_disk_mounts (agent_id, mount_path, total_bytes, used_bytes, updated_at) VALUES (?, ?, ?, ?, ?)")
                 .bind(&agent_id).bind(&mount.mount_path).bind(mount.total_bytes as i64).bind(mount.used_bytes as i64).bind(received_at).execute(&mut **tx).await?;
@@ -450,7 +451,7 @@ async fn handler(
         return (StatusCode::OK, Json(ReportResponse { receipt })).into_response();
     }
     let agent = match sqlx::query_as::<_, AgentRow>(
-        "SELECT agent_epoch, active_boot_id, last_report_sequence FROM agents WHERE agent_id = ?",
+        "SELECT agent_epoch, active_boot_id, last_report_sequence, last_inventory_revision FROM agents WHERE agent_id = ?",
     )
     .bind(&auth.agent_id)
     .fetch_optional(&mut *tx)
@@ -484,6 +485,22 @@ async fn handler(
                 hash,
                 platpulse_core::RejectionCode::StaleBoot,
                 "Agent epoch is stale",
+            ),
+            &request_id.0,
+        )
+        .await;
+    }
+
+    if parsed.inventory.revision < agent.last_inventory_revision as u64 {
+        return store_rejected(
+            tx,
+            &parsed,
+            hash.clone(),
+            rejected(
+                parsed.report_id,
+                hash,
+                platpulse_core::RejectionCode::InventoryRevisionConflict,
+                "Inventory revision is older than the accepted revision",
             ),
             &request_id.0,
         )
@@ -723,7 +740,7 @@ async fn handler(
             "Server database is unavailable",
         );
     }
-    let updated = sqlx::query("UPDATE agents SET active_boot_id=?, last_report_sequence=?, last_received_at=?, updated_at=? WHERE agent_id=?").bind(parsed.boot_id.to_string()).bind(parsed.report_sequence as i64).bind(&now_text).bind(&now_text).bind(&auth.agent_id).execute(&mut *tx).await;
+    let updated = sqlx::query("UPDATE agents SET active_boot_id=?, last_report_sequence=?, last_inventory_revision=?, last_received_at=?, updated_at=? WHERE agent_id=?").bind(parsed.boot_id.to_string()).bind(parsed.report_sequence as i64).bind(parsed.inventory.revision as i64).bind(&now_text).bind(&now_text).bind(&auth.agent_id).execute(&mut *tx).await;
     if updated.is_err() || tx.commit().await.is_err() {
         return error(
             &request_id.0,
@@ -849,6 +866,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn two_node_inventory_keeps_host_scoped_once_and_nodes_separate() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        create_network(
+            state.db(),
+            "platon-testnet",
+            "PlatON Testnet",
+            "0x0000000000000000000000000000000000000000000000000000000000000002",
+            210426,
+            210426,
+            "lat",
+        )
+        .await
+        .unwrap();
+        let mut report: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        let first_node = report.inventory.nodes[0].clone();
+        let first_observation = report.nodes[0].clone();
+        let second_id = "0195f2a1-0015-4015-8015-000000000015".parse().unwrap();
+        let mut second_node = first_node;
+        second_node.node_id = second_id;
+        second_node.network_key = "platon-testnet".parse().unwrap();
+        second_node.rpc_endpoint = "ws://127.0.0.1:6791".parse().unwrap();
+        let mut second_observation = first_observation;
+        second_observation.node_id = second_id;
+        second_observation
+            .chain
+            .rpc
+            .latest
+            .as_mut()
+            .unwrap()
+            .client_version = "fake-platon/testnet".to_owned();
+        report.inventory.nodes.push(second_node);
+        report.nodes.push(second_observation);
+        report.report_id = "0195f2a1-0013-4013-8013-000000000015".parse().unwrap();
+        report.validate().unwrap();
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+        assert_eq!(receipt.disposition, ReceiptDisposition::Accepted);
+        assert_eq!(receipt.nodes.len(), 2);
+        let node_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE agent_id = ?")
+            .bind(&agent_id)
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap();
+        assert_eq!(node_count, 2);
+        let host_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM current_host_observations WHERE agent_id = ?")
+                .bind(&agent_id)
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        assert_eq!(host_count, 1);
+        let node_rpc_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM component_status WHERE agent_id = ? AND scope = 'node' AND component_key = 'rpc'",
+        )
+        .bind(&agent_id)
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(node_rpc_count, 2);
+        let clients: Vec<String> = sqlx::query_scalar(
+            "SELECT rpc_client_version FROM current_node_chain_observations ORDER BY node_id",
+        )
+        .fetch_all(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            clients,
+            vec![
+                "PlatON/v1.4.0-unstable/linux-amd64/go1.21.1",
+                "fake-platon/testnet"
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn accepted_empty_inventory_retires_omitted_node() {
         let (_dir, state, agent_id) = state_with_agent().await;
         let original: AgentReport = serde_json::from_slice(include_bytes!(
@@ -869,5 +963,129 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(lifecycle, "retired");
+
+        let mut stale = empty.clone();
+        stale.report_sequence = 3;
+        stale.report_id = "0195f2a1-0013-4013-8013-000000000098".parse().unwrap();
+        stale.inventory.revision = 1;
+        let stale_receipt = submit(&state, &agent_id, serde_json::to_vec(&stale).unwrap()).await;
+        assert_eq!(stale_receipt.disposition, ReceiptDisposition::Rejected);
+        assert_eq!(
+            stale_receipt.rejections[0].code,
+            platpulse_core::RejectionCode::InventoryRevisionConflict
+        );
+
+        let mut restored: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        restored.report_sequence = 4;
+        restored.report_id = "0195f2a1-0013-4013-8013-000000000100".parse().unwrap();
+        restored.inventory.revision = 3;
+        submit(&state, &agent_id, serde_json::to_vec(&restored).unwrap()).await;
+        let lifecycle: String = sqlx::query_scalar("SELECT lifecycle FROM nodes WHERE node_id = ?")
+            .bind("0195f2a1-0014-4014-8014-000000000014")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap();
+        assert_eq!(lifecycle, "active");
+    }
+
+    #[tokio::test]
+    async fn stale_inventory_revision_is_rejected_without_lifecycle_mutation() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let mut original: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        original.inventory.revision = 2;
+        submit(&state, &agent_id, serde_json::to_vec(&original).unwrap()).await;
+        let mut stale = original.clone();
+        stale.report_sequence = 2;
+        stale.report_id = "0195f2a1-0013-4013-8013-000000000101".parse().unwrap();
+        stale.inventory.revision = 1;
+        let response = handler(
+            State(state.clone()),
+            Extension(AgentAuthInfo {
+                agent_id: agent_id.clone(),
+                credential_id: "test".into(),
+            }),
+            Extension(RequestId(Arc::from("stale"))),
+            Bytes::from(serde_json::to_vec(&stale).unwrap()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let receipt: ReportResponse =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(receipt.receipt.disposition, ReceiptDisposition::Rejected);
+        assert_eq!(
+            receipt.receipt.rejections[0].code,
+            platpulse_core::RejectionCode::InventoryRevisionConflict
+        );
+        let lifecycle: String = sqlx::query_scalar("SELECT lifecycle FROM nodes WHERE node_id = ?")
+            .bind("0195f2a1-0014-4014-8014-000000000014")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap();
+        assert_eq!(lifecycle, "active");
+    }
+
+    #[tokio::test]
+    async fn failed_node_keeps_host_and_other_node_projection() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let mut report: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        let second_id = "0195f2a1-0015-4015-8015-000000000015".parse().unwrap();
+        let mut second = report.inventory.nodes[0].clone();
+        second.node_id = second_id;
+        second.rpc_endpoint = "ws://127.0.0.1:6791".parse().unwrap();
+        report.inventory.nodes.push(second);
+        let mut second_obs = report.nodes[0].clone();
+        second_obs.node_id = second_id;
+        second_obs.chain.rpc.latest.as_mut().unwrap().client_version = "other".into();
+        report.nodes.push(second_obs);
+        report.report_id = "0195f2a1-0013-4013-8013-000000000102".parse().unwrap();
+        report.validate().unwrap();
+        submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+        let mut failed = report.clone();
+        failed.report_sequence = 2;
+        failed.report_id = "0195f2a1-0013-4013-8013-000000000103".parse().unwrap();
+        failed.nodes[0].chain.rpc.status = ComponentStatus::Error;
+        failed.nodes[0].chain.rpc.latest = None;
+        failed.nodes[0].chain.rpc.latest_observed_at = None;
+        failed.nodes[0].chain.rpc.value_revision = 0;
+        failed.nodes[0].chain.rpc.error = Some(platpulse_core::component::BoundedError {
+            code: "rpc_unreachable".into(),
+            message: "RPC probe failed".into(),
+        });
+        failed.validate().unwrap();
+        submit(&state, &agent_id, serde_json::to_vec(&failed).unwrap()).await;
+        let client: String = sqlx::query_scalar(
+            "SELECT rpc_client_version FROM current_node_chain_observations WHERE node_id = ?",
+        )
+        .bind(second_id.to_string())
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(client, "other");
+        let memory: i64 = sqlx::query_scalar(
+            "SELECT memory_used_bytes FROM current_host_observations WHERE agent_id = ?",
+        )
+        .bind(&agent_id)
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(memory, 4_294_967_296);
+        let state: String = sqlx::query_scalar(
+            "SELECT state FROM component_status WHERE node_id = ? AND component_key = 'rpc'",
+        )
+        .bind("0195f2a1-0014-4014-8014-000000000014")
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(state, "error");
     }
 }

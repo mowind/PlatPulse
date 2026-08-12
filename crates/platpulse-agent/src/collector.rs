@@ -1,14 +1,15 @@
 //! Minimal one-shot collection pipeline for the first Agent vertical slice.
 //!
-//! The collector samples Host state once, queries exactly one configured Node
-//! through an injected RPC adapter, builds a complete AgentReport, and stores
-//! the immutable bytes before any sender can deliver them.  The adapter is
-//! deliberately injected so production transports and scripted RPC fakes use
-//! the same report-building path.
+//! The collector samples Host state once, queries each configured Node through
+//! its own injected RPC adapter call, builds a complete AgentReport, and
+//! stores the immutable bytes before any sender can deliver them. The adapter
+//! is deliberately injected so production transports and scripted RPC fakes
+//! use the same report-building path.
 
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
-use platpulse_core::component::{ComponentObservation, ComponentStatus};
+use platpulse_core::component::{BoundedError, ComponentObservation, ComponentStatus};
 use platpulse_core::identity::{AgentId, BootId, ReportId};
 use platpulse_core::inventory::NodeInventory;
 use platpulse_core::network::{NetworkIdentity, RpcEndpoint};
@@ -51,25 +52,60 @@ pub trait RpcAdapter {
 /// Deterministic adapter useful for scripted local fakes and integration tests.
 #[derive(Debug, Clone)]
 pub struct ScriptedRpcAdapter {
-    snapshot: RpcSnapshot,
+    snapshots: HashMap<String, RpcSnapshot>,
+    failures: HashSet<String>,
 }
 
 impl ScriptedRpcAdapter {
     pub fn new(snapshot: RpcSnapshot) -> Self {
-        Self { snapshot }
+        Self {
+            snapshots: HashMap::new(),
+            failures: HashSet::new(),
+        }
+        .with_default(snapshot)
     }
 
+    fn with_default(mut self, snapshot: RpcSnapshot) -> Self {
+        self.snapshots.insert("*".to_owned(), snapshot);
+        self
+    }
+
+    /// Build a deterministic multi-Node fake keyed by each Node's endpoint.
+    pub fn for_nodes(nodes: impl IntoIterator<Item = (RpcEndpoint, RpcSnapshot)>) -> Self {
+        Self {
+            snapshots: nodes
+                .into_iter()
+                .map(|(endpoint, snapshot)| (endpoint.as_str().to_owned(), snapshot))
+                .collect(),
+            failures: HashSet::new(),
+        }
+    }
+
+    /// Make one endpoint fail without affecting other endpoints.
+    pub fn fail_endpoint(mut self, endpoint: &RpcEndpoint) -> Self {
+        self.failures.insert(endpoint.as_str().to_owned());
+        self
+    }
+    /// Parse one scripted snapshot from JSON.
     pub fn from_json(body: &str) -> Result<Self, serde_json::Error> {
         serde_json::from_str(body).map(Self::new)
     }
 }
-
 impl RpcAdapter for ScriptedRpcAdapter {
-    fn collect(&self, _endpoint: &RpcEndpoint) -> Result<RpcSnapshot, RpcCollectError> {
-        Ok(self.snapshot.clone())
+    fn collect(&self, endpoint: &RpcEndpoint) -> Result<RpcSnapshot, RpcCollectError> {
+        let key = endpoint.as_str();
+        if self.failures.contains(key) {
+            return Err(RpcCollectError::Failed(
+                "scripted transport failure".to_owned(),
+            ));
+        }
+        self.snapshots
+            .get(key)
+            .or_else(|| self.snapshots.get("*"))
+            .cloned()
+            .ok_or_else(|| RpcCollectError::Failed("no scripted snapshot for endpoint".to_owned()))
     }
 }
-
 /// Adapter used by the production CLI until a real RPC transport is wired.
 /// It fails closed instead of inventing Node data or persisting a misleading
 /// Healthy report.
@@ -222,7 +258,68 @@ pub fn collect_host(system: &mut System, disks: &mut Disks, at: Rfc3339) -> Host
     }
 }
 
-/// Build a complete report for one configured Node.
+fn error<T>(at: Rfc3339, code: &str, message: &str) -> ComponentObservation<T> {
+    ComponentObservation {
+        status: ComponentStatus::Error,
+        attempted_at: Some(at),
+        latest_observed_at: None,
+        received_at: None,
+        state_revision: 1,
+        value_revision: 0,
+        latest: None,
+        error: Some(BoundedError {
+            code: code.to_owned(),
+            message: message.to_owned(),
+        }),
+    }
+}
+
+fn collect_node<A: RpcAdapter>(
+    node: &platpulse_core::inventory::InventoryNode,
+    attempted: Rfc3339,
+    adapter: &A,
+) -> NodeObservation {
+    let process = disabled();
+    let (rpc, network_identity, static_metadata) = match adapter.collect(&node.rpc_endpoint) {
+        Ok(snapshot) => (
+            ok(
+                RpcCurrent {
+                    client_version: snapshot.client_version,
+                    namespaces: snapshot.namespaces,
+                    methods: snapshot.methods,
+                },
+                attempted,
+            ),
+            ok(snapshot.network_identity, attempted),
+            ok(
+                NodeStaticMetadata {
+                    node_key_fingerprint: snapshot.node_key_fingerprint,
+                    enode: snapshot.enode,
+                },
+                attempted,
+            ),
+        ),
+        Err(_) => (
+            error(attempted, "rpc_unreachable", "RPC probe failed"),
+            unsupported(),
+            unsupported(),
+        ),
+    };
+    NodeObservation {
+        node_id: node.node_id,
+        process,
+        chain: NodeChainObservation {
+            rpc,
+            sync: unsupported(),
+            consensus: unsupported(),
+            network_identity,
+            static_metadata,
+        },
+    }
+}
+
+/// Build a complete report for every configured Node. Host metrics are sampled
+/// once, while each Node gets an independent RPC attempt and error envelope.
 pub fn collect_report<A: RpcAdapter>(
     config: &AgentConfig,
     agent_id: AgentId,
@@ -232,42 +329,43 @@ pub fn collect_report<A: RpcAdapter>(
     inventory: NodeInventory,
     adapter: &A,
 ) -> Result<AgentReport, CollectionError> {
-    let node = inventory
-        .nodes
-        .first()
-        .ok_or(CollectionError::NotEnrolled)?
-        .clone();
-    if inventory.nodes.len() != 1 {
-        return Err(CollectionError::Identity(
-            "P1-05 collector requires exactly one configured Node".to_owned(),
-        ));
+    if inventory.nodes.is_empty() {
+        let at = timestamp();
+        let mut system = System::new_all();
+        let mut disks = Disks::new_with_refreshed_list();
+        let host = collect_host(&mut system, &mut disks, at);
+        let report = AgentReport {
+            protocol_version: platpulse_core::PROTOCOL_VERSION,
+            agent_id,
+            agent_epoch,
+            boot_id,
+            previous_boot_id: None,
+            boot_transition: BootTransition::Continuing,
+            report_sequence: sequence,
+            report_id: ReportId::from_str(&Uuid::new_v4().to_string()).expect("UUID is valid"),
+            generated_at: timestamp(),
+            agent_version: crate::VERSION.to_owned(),
+            agent_capabilities: vec![],
+            inventory,
+            host,
+            nodes: vec![],
+            block_summaries: vec![],
+            history_gaps: vec![],
+        };
+        report
+            .validate()
+            .map_err(|error| CollectionError::Identity(error.to_string()))?;
+        return Ok(report);
     }
     let attempted = timestamp();
-    let snapshot = adapter.collect(&node.rpc_endpoint)?;
     let mut system = System::new_all();
     let mut disks = Disks::new_with_refreshed_list();
     let host = collect_host(&mut system, &mut disks, attempted);
-    let process = disabled();
-    let chain = NodeChainObservation {
-        rpc: ok(
-            RpcCurrent {
-                client_version: snapshot.client_version,
-                namespaces: snapshot.namespaces,
-                methods: snapshot.methods,
-            },
-            attempted,
-        ),
-        sync: unsupported(),
-        consensus: unsupported(),
-        network_identity: ok(snapshot.network_identity, attempted),
-        static_metadata: ok(
-            NodeStaticMetadata {
-                node_key_fingerprint: snapshot.node_key_fingerprint,
-                enode: snapshot.enode,
-            },
-            attempted,
-        ),
-    };
+    let nodes = inventory
+        .nodes
+        .iter()
+        .map(|node| collect_node(node, attempted, adapter))
+        .collect();
     let report = AgentReport {
         protocol_version: platpulse_core::PROTOCOL_VERSION,
         agent_id,
@@ -282,11 +380,7 @@ pub fn collect_report<A: RpcAdapter>(
         agent_capabilities: vec![],
         inventory,
         host,
-        nodes: vec![NodeObservation {
-            node_id: node.node_id,
-            process,
-            chain,
-        }],
+        nodes,
         block_summaries: vec![],
         history_gaps: vec![],
     };
@@ -440,6 +534,88 @@ mod tests {
                 .namespaces,
             ["platon", "net"]
         );
+    }
+
+    #[test]
+    fn two_nodes_are_collected_independently_and_host_is_shared() {
+        let dir = tempdir().unwrap();
+        let config = AgentConfig {
+            config_path: dir.path().join("agent.toml"),
+            server_url: "https://example.com".into(),
+            credential_file: dir.path().join("credential"),
+            state_db: dir.path().join("agent.db"),
+        };
+        let first_endpoint: RpcEndpoint = "ws://127.0.0.1:6790".parse().unwrap();
+        let second_endpoint: RpcEndpoint = "ws://127.0.0.1:6791".parse().unwrap();
+        let first_id = "0195f2a1-0014-4014-8014-000000000014";
+        let second_id = "0195f2a1-0015-4015-8015-000000000015";
+        let inventory: NodeInventory = serde_json::from_str(&format!(
+            r#"{{"revision":1,"nodes":[{{"node_id":"{first_id}","network_key":"platon-mainnet","rpc_endpoint":"{}"}},{{"node_id":"{second_id}","network_key":"platon-testnet","rpc_endpoint":"{}"}}]}}"#,
+            first_endpoint.as_str(), second_endpoint.as_str()
+        ))
+        .unwrap();
+        let adapter = ScriptedRpcAdapter::for_nodes([
+            (first_endpoint.clone(), snapshot()),
+            (
+                second_endpoint.clone(),
+                RpcSnapshot {
+                    client_version: "fake-platon/testnet".into(),
+                    namespaces: vec!["platon".into()],
+                    methods: vec!["platon_blockNumber".into()],
+                    network_identity: snapshot().network_identity,
+                    node_key_fingerprint: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                        .parse()
+                        .unwrap(),
+                    enode: None,
+                },
+            ),
+        ])
+        .fail_endpoint(&first_endpoint);
+        let report = collect_report(
+            &config,
+            "0195f2a1-0011-4011-8011-000000000011".parse().unwrap(),
+            1,
+            "0195f2a1-0012-4012-8012-000000000012".parse().unwrap(),
+            1,
+            inventory,
+            &adapter,
+        )
+        .unwrap();
+        assert_eq!(report.nodes.len(), 2);
+        assert!(report.host.memory.latest.unwrap().total_bytes > 0);
+        assert_eq!(report.nodes[0].node_id.to_string(), first_id);
+        assert_eq!(report.nodes[0].chain.rpc.status, ComponentStatus::Error);
+        assert_eq!(report.nodes[0].chain.rpc.latest, None);
+        assert_eq!(report.nodes[1].node_id.to_string(), second_id);
+        assert_eq!(report.nodes[1].chain.rpc.status, ComponentStatus::Ok);
+        assert_eq!(
+            report.nodes[1]
+                .chain
+                .rpc
+                .latest
+                .as_ref()
+                .unwrap()
+                .client_version,
+            "fake-platon/testnet"
+        );
+    }
+
+    #[test]
+    fn node_error_does_not_overwrite_other_nodes() {
+        let node = collect_node(
+            &platpulse_core::inventory::InventoryNode {
+                node_id: "0195f2a1-0014-4014-8014-000000000014".parse().unwrap(),
+                display_name: None,
+                network_key: "platon-mainnet".parse().unwrap(),
+                rpc_endpoint: "ws://127.0.0.1:6790".parse().unwrap(),
+                process: None,
+            },
+            timestamp(),
+            &FailClosedRpcAdapter,
+        );
+        assert_eq!(node.chain.rpc.status, ComponentStatus::Error);
+        assert!(node.chain.rpc.error.is_some());
+        assert_eq!(node.chain.sync.status, ComponentStatus::Unsupported);
     }
 
     #[test]
