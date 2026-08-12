@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { diagnostics, setVisibility, type VisibilityRequest, type VisibilityResponse, type AgentDiagnostic } from './generated'
 
-export type AdminHistoryItem = { nodeId: string; height: number | null; blockTimeMs: number | null; transactionCount: number | null; coinbase: string | null; sealSignerMatch: string | null; sealSignerKeyFingerprint: string | null; nodeKeyFingerprint: string | null; nodeKeyValidFrom: string | null; nodeKeyValidUntil: string | null; sealRecoveryRule: string | null; sealEvidence: string | null; protocolProposer: string | null; attributionReason: string | null; observedAt: string | null; freshness: string | null; gapFromHeight: number | null; gapToHeight: number | null; gapKind: string | null; gapReason: string | null; divergenceKind: string | null; divergenceReason: string | null; divergenceRetainedHash: string | null; divergenceObservedHash: string | null; divergenceObservedAt: string | null }
-export async function fetchAdminNodeHistory(nodeId: string): Promise<AdminHistoryItem[]> {
+export type AdminHistoryItem = { nodeId: string; height: number | null; blockTimeMs: number | null; transactionCount: number | null; coinbase: string | null; sealSignerMatch: string | null; sealSignerKeyFingerprint: string | null; nodeKeyFingerprint: string | null; nodeKeyValidFrom: string | null; nodeKeyValidUntil: string | null; sealRecoveryRule: string | null; sealEvidence: string | null; protocolProposer: string | null; attributionReason: string | null; observedAt: string | null; freshness: string | null; gapFromHeight: number | null; gapToHeight: number | null; gapKind: string | null; gapReason: string | null; divergenceKind: string | null; divergenceReason: string | null; divergenceRetainedHash: string | null; divergenceObservedHash: string | null; divergenceObservedAt: string | null; availability: string | null; aggregateSupported: boolean | null }
+export type AdminHistoryResponse = { items: AdminHistoryItem[]; availability: string | null; aggregateSupported: boolean; rawRetentionDays: number }
+export async function fetchAdminNodeHistory(nodeId: string): Promise<AdminHistoryResponse> {
   const response = await fetch(`/api/admin/v1/nodes/${encodeURIComponent(nodeId)}/history`)
   if (!response.ok) throw new Error('Unable to load Admin block history')
-  return response.json() as Promise<AdminHistoryItem[]>
+  return response.json() as Promise<AdminHistoryResponse>
 }
 
 

@@ -328,6 +328,14 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
 
     let database = initialize(ServerDatabaseConfig::new(&config.db_path)).await?;
     crate::init::secure_database_file(&config.db_path)?;
+    // Retention is a fixed, bounded startup task. Re-running after a crash is
+    // safe: each invocation deletes at most one batch and never touches the
+    // history state/coverage/evidence tables.
+    if let Err(error) =
+        crate::retention::cleanup_raw_block_summaries(database.pool(), crate::auth::now_utc()).await
+    {
+        eprintln!("raw block retention cleanup deferred: {error}");
+    }
     let state = crate::AppState::new(database, config.web_root.clone(), auth);
     let app = crate::http::build_app(state);
 

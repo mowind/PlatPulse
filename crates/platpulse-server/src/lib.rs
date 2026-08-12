@@ -18,6 +18,7 @@ pub mod http;
 pub mod init;
 pub mod network;
 pub mod openapi;
+pub mod retention;
 pub mod secrets;
 
 pub use database::{

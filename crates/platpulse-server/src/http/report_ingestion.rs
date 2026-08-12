@@ -1463,6 +1463,12 @@ async fn handler(
             "Server database is unavailable",
         );
     }
+    if let Err(error) =
+        crate::retention::cleanup_raw_block_summaries(state.db().pool(), crate::auth::now_utc())
+            .await
+    {
+        eprintln!("raw block retention cleanup deferred after ingestion: {error}");
+    }
     state
         .admin_realtime()
         .publish("node", None::<String>, parsed.report_sequence);
@@ -1630,10 +1636,22 @@ mod tests {
                 ),
             });
         report.validate().unwrap();
-        let mut first = report.clone();
-        first.block_summaries.clear();
+        let first = report.clone();
         submit(&state, &agent_id, serde_json::to_vec(&first).unwrap()).await;
+        sqlx::query("UPDATE block_summaries SET accepted_at=? WHERE node_id=?")
+            .bind("2026-01-01T00:00:00Z")
+            .bind(node_id.to_string())
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        crate::retention::cleanup_raw_block_summaries(
+            state.db().pool(),
+            crate::auth::parse_rfc3339("2026-08-12T08:00:00Z").unwrap(),
+        )
+        .await
+        .unwrap();
         sqlx::query("UPDATE block_history_state SET historical_high_watermark=100, cumulative_block_count=1, cumulative_transaction_count=3 WHERE node_id=?").bind(node_id.to_string()).execute(state.db().pool()).await.unwrap();
+
         let mut replay = report;
         replay.report_sequence = 2;
         replay.report_id = "0195f2a1-0013-4013-8013-000000000202".parse().unwrap();

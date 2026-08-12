@@ -705,15 +705,49 @@ pub struct AdminBlockHistoryItem {
     pub divergence_observed_at: Option<String>,
 }
 
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminBlockHistoryResponse {
+    pub items: Vec<AdminBlockHistoryItem>,
+    /// `unavailable` when the requested range extends beyond raw retention.
+    pub availability: Option<String>,
+    pub aggregate_supported: bool,
+    pub raw_retention_days: i64,
+}
+
 async fn admin_node_history(
     State(state): State<AppState>,
     Extension(_session): Extension<super::AuthenticatedSession>,
+    axum::extract::Query(params): axum::extract::Query<super::public::HistoryQuery>,
     Path(node_id): Path<String>,
 ) -> impl IntoResponse {
-    let rows = sqlx::query_as::<_, super::public::HistoryRow>("SELECT block_number, block_timestamp_ms, transaction_count, source, coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, CASE WHEN protocol_proposer_kind = 'verified' THEN protocol_proposer_identity ELSE NULL END, attribution_reason, observed_at, from_height, to_height, gap_kind, gap_reason, divergence_kind, divergence_reason, divergence_retained_hash, divergence_observed_hash, divergence_observed_at FROM (SELECT block_number, block_timestamp_ms, transaction_count, 'summary', coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, protocol_proposer_kind, protocol_proposer_identity, attribution_reason, observed_at, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL FROM block_summaries WHERE node_id = ? UNION ALL SELECT NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, created_at, from_height, to_height, kind, reason, NULL, NULL, NULL, NULL, NULL FROM block_history_gaps WHERE node_id = ? UNION ALL SELECT NULL, NULL, NULL, 'divergence', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, retained_observed_at, height, height, NULL, NULL, 'chain_divergence', reason, retained_block_hash, observed_block_hash, observed_at FROM chain_divergence_observations WHERE node_id = ?) ORDER BY COALESCE(block_number, from_height) DESC LIMIT 200")
-        .bind(&node_id).bind(&node_id).bind(&node_id).fetch_all(state.db().pool()).await.unwrap_or_default();
-    Json(
-        rows.into_iter()
+    let limit = params.limit.unwrap_or(50).clamp(1, 200);
+    let cutoff = crate::auth::format_rfc3339(crate::retention::raw_block_summary_cutoff(
+        crate::auth::now_utc(),
+    ));
+    let oldest_raw = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT MIN(accepted_at) FROM block_summaries WHERE node_id=?",
+    )
+    .bind(&node_id)
+    .fetch_one(state.db().pool())
+    .await
+    .unwrap_or(None);
+    let has_history = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT historical_high_watermark FROM block_history_state WHERE node_id=?",
+    )
+    .bind(&node_id)
+    .fetch_one(state.db().pool())
+    .await
+    .unwrap_or(None)
+    .is_some_and(|height| height > 0);
+    let has_expired_raw = oldest_raw.as_ref().is_some_and(|value| value < &cutoff);
+    let availability = (has_expired_raw || (oldest_raw.is_none() && has_history))
+        .then(|| "unavailable".to_owned());
+    let rows = sqlx::query_as::<_, super::public::HistoryRow>("SELECT block_number, block_timestamp_ms, transaction_count, source, coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, CASE WHEN protocol_proposer_kind = 'verified' THEN protocol_proposer_identity ELSE NULL END, attribution_reason, observed_at, from_height, to_height, gap_kind, gap_reason, divergence_kind, divergence_reason, divergence_retained_hash, divergence_observed_hash, divergence_observed_at FROM (SELECT block_number, block_timestamp_ms, transaction_count, 'summary', coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, protocol_proposer_kind, protocol_proposer_identity, attribution_reason, observed_at, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL FROM block_summaries WHERE node_id = ? UNION ALL SELECT NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, created_at, from_height, to_height, kind, reason, NULL, NULL, NULL, NULL, NULL FROM block_history_gaps WHERE node_id = ? UNION ALL SELECT NULL, NULL, NULL, 'divergence', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, retained_observed_at, height, height, NULL, NULL, 'chain_divergence', reason, retained_block_hash, observed_block_hash, observed_at FROM chain_divergence_observations WHERE node_id = ?) ORDER BY COALESCE(block_number, from_height) DESC LIMIT ?")
+        .bind(&node_id).bind(&node_id).bind(&node_id).bind(limit).fetch_all(state.db().pool()).await.unwrap_or_default();
+    Json(AdminBlockHistoryResponse {
+        items: rows
+            .into_iter()
             .map(|row| AdminBlockHistoryItem {
                 node_id: node_id.clone(),
                 height: row.block_number,
@@ -742,7 +776,10 @@ async fn admin_node_history(
                 divergence_observed_at: row.divergence_observed_at,
             })
             .collect::<Vec<_>>(),
-    )
+        availability,
+        aggregate_supported: crate::retention::RAW_BLOCK_HISTORY_AGGREGATES_SUPPORTED,
+        raw_retention_days: crate::retention::RAW_BLOCK_SUMMARY_RETENTION_DAYS,
+    })
 }
 pub fn router() -> Router<AppState> {
     Router::<AppState>::new()
