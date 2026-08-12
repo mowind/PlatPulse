@@ -1,0 +1,12 @@
+[package]
+name = "platpulse-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "I/O-free shared wire protocol types for PlatPulse"
+
+[lints]
+workspace = true
+
+[dependencies]

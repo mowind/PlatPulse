@@ -10,7 +10,7 @@
 
 PlatPulse is an open-source monitoring suite that makes PlatON node operations observable, actionable, and easy to scale. Lightweight Agents collect node and chain observations, a central Server ingests and validates them, and a WebUI presents current health and operational insights.
 
-> **Status:** Target architecture confirmed in [`docs/design/platpulse.md`](docs/design/platpulse.md); implementation has not started. Domain terminology is defined in [`CONTEXT.md`](CONTEXT.md).
+> **Status:** Target architecture confirmed in [`docs/design/platpulse.md`](docs/design/platpulse.md). Phase 0 workspace baseline is in place: the Rust workspace (`platpulse-core`, `platpulse-agent`, `platpulse-server`), the `platpulse-web` skeleton, and their CI quality gates all run. This baseline only proves that the project skeleton builds — no monitoring product exists yet; collection, protocol, and UI features arrive in later Phase 0 and Phase 1 tickets. Domain terminology is defined in [`CONTEXT.md`](CONTEXT.md).
 
 ## Why PlatPulse
 
@@ -98,6 +98,28 @@ PlatPulse explicitly does **not** include: a TUI, Agent endpoint failover, remot
 - **Mobile-first WebUI:** Home and Admin must work on desktop, tablet, and mobile from Phase 1.
 - **Incremental delivery:** the first milestone is a small end-to-end vertical slice, followed by deeper collectors and richer views.
 - **Clear contracts:** shared behavior belongs in explicit, versioned protocol and domain types.
+
+## Development
+
+The Phase 0 baseline ships with quality gates for both halves of the workspace:
+
+```bash
+# Rust (Agent/Server)
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --workspace
+
+# Web (platpulse-web)
+npm install
+npm run lint
+npm run typecheck
+npm test
+npm run build
+```
+
+CI (`.github/workflows/ci.yml`) runs the same gates on every push to `main` and on every pull request. Later phases extend it with `cargo deny`/`cargo audit`, OpenAPI regeneration checks, and Playwright projects once the corresponding tickets land.
+
+The three Rust crates are intentionally dependency-free at this stage: their thin binaries (`src/main.rs`) delegate to a testable `lib.rs`, and the framework stack (Tokio, Axum, SQLx, …) arrives with the tickets that first need it.
 
 ## Documentation
 

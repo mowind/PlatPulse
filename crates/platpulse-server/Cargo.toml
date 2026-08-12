@@ -1,0 +1,12 @@
+[package]
+name = "platpulse-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "PlatPulse central ingestion, projection, and Web asset server"
+
+[lints]
+workspace = true
+
+[dependencies]

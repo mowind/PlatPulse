@@ -1,0 +1,12 @@
+[package]
+name = "platpulse-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "PlatPulse collector process that monitors PlatON nodes on one Host"
+
+[lints]
+workspace = true
+
+[dependencies]
