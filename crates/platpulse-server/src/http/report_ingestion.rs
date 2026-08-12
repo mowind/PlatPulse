@@ -314,6 +314,70 @@ async fn block_network_identity_mismatches(
     Ok(mismatches)
 }
 
+async fn observe_block_identity(
+    tx: &mut Transaction<'_, Sqlite>,
+    sample: &platpulse_core::block::BlockSummary,
+    received_at: &str,
+) -> Result<bool, sqlx::Error> {
+    const MAX_WINDOW_HEIGHTS: i64 = 2_048;
+    let node_id = sample.node_id.to_string();
+    // Identity evidence has its own retention and bounded height count. It is
+    // deliberately independent from raw Block Summary retention.
+    sqlx::query("DELETE FROM block_identity_window WHERE node_id=? AND retained_until IS NOT NULL AND retained_until < ?")
+        .bind(&node_id)
+        .bind(received_at)
+        .execute(&mut **tx)
+        .await?;
+    let existing = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT block_hash, retained_until FROM block_identity_window WHERE node_id=? AND height=?",
+    )
+    .bind(&node_id)
+    .bind(sample.block_number as i64)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let retention_until = crate::auth::parse_rfc3339(received_at)
+        .and_then(|value| value.checked_add(time::Duration::days(180)))
+        .map(crate::auth::format_rfc3339);
+    let observed_hash = sample.block_hash.to_string();
+    if let Some((retained_hash, _)) = existing {
+        if retained_hash != observed_hash {
+            sqlx::query("INSERT OR IGNORE INTO chain_divergence_observations (node_id, height, retained_block_hash, observed_block_hash, observed_at, reason, retained_observed_at) SELECT ?, ?, block_hash, ?, ?, 'chain_divergence', observed_at FROM block_identity_window WHERE node_id=? AND height=?")
+                .bind(&node_id)
+                .bind(sample.block_number as i64)
+                .bind(&observed_hash)
+                .bind(sample.observed_at.to_string())
+                .bind(&node_id)
+                .bind(sample.block_number as i64)
+                .execute(&mut **tx)
+                .await?;
+            return Ok(true);
+        }
+        sqlx::query("UPDATE block_identity_window SET observed_at=?, retained_until=? WHERE node_id=? AND height=?")
+            .bind(sample.observed_at.to_string())
+            .bind(retention_until)
+            .bind(&node_id)
+            .bind(sample.block_number as i64)
+            .execute(&mut **tx)
+            .await?;
+        return Ok(false);
+    }
+    sqlx::query("INSERT INTO block_identity_window (node_id, height, block_hash, retained_until, observed_at) VALUES (?, ?, ?, ?, ?)")
+        .bind(&node_id)
+        .bind(sample.block_number as i64)
+        .bind(&observed_hash)
+        .bind(retention_until)
+        .bind(sample.observed_at.to_string())
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("DELETE FROM block_identity_window WHERE node_id=? AND height NOT IN (SELECT height FROM block_identity_window WHERE node_id=? ORDER BY height DESC LIMIT ?)")
+        .bind(&node_id)
+        .bind(&node_id)
+        .bind(MAX_WINDOW_HEIGHTS)
+        .execute(&mut **tx)
+        .await?;
+    Ok(false)
+}
+
 async fn save_current(
     tx: &mut Transaction<'_, Sqlite>,
     report: &AgentReport,
@@ -992,6 +1056,121 @@ async fn handler(
             );
         }
     }
+    let mismatches = match block_network_identity_mismatches(&mut tx, &parsed).await {
+        Ok(value) => value,
+        Err(_) => {
+            return error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Server database is unavailable",
+            );
+        }
+    };
+    let mut outside_open_gap: std::collections::HashSet<(platpulse_core::identity::NodeId, u64)> =
+        std::collections::HashSet::new();
+    for sample in &parsed.block_summaries {
+        if sample.source == platpulse_core::block::BlockSource::GapBackfill
+            && coverage_allows_backfill(&mut tx, &sample.node_id.to_string(), sample.block_number)
+                .await
+                .map_err(|_| ())
+                .ok()
+                .flatten()
+                .is_none()
+        {
+            outside_open_gap.insert((sample.node_id, sample.block_number));
+        }
+    }
+    let mut replay_samples: std::collections::HashSet<(platpulse_core::identity::NodeId, u64)> =
+        std::collections::HashSet::new();
+    let mut divergence_samples: std::collections::HashSet<(platpulse_core::identity::NodeId, u64)> =
+        std::collections::HashSet::new();
+    for sample in &parsed.block_summaries {
+        let node_id = sample.node_id.to_string();
+        let registered_identity = match sqlx::query_as::<_, (String, i64, i64, String)>("SELECT genesis_hash, chain_id, p2p_network_id, address_hrp FROM networks n JOIN nodes nd ON nd.network_key = n.network_key WHERE nd.node_id = ?")
+            .bind(&node_id)
+            .fetch_optional(&mut *tx)
+            .await {
+                Ok(value) => value,
+                Err(_) => return error(&request_id.0, StatusCode::SERVICE_UNAVAILABLE, "unavailable", "Server database is unavailable"),
+            };
+        let identity_matches = registered_identity.is_some_and(|(genesis, chain_id, p2p, hrp)| {
+            sample.network_identity.genesis_hash.to_string() == genesis
+                && sample.network_identity.chain_id == chain_id as u64
+                && sample.network_identity.p2p_network_id == p2p as u64
+                && sample.network_identity.address_hrp.as_deref().unwrap_or("") == hrp
+        });
+        if !identity_matches {
+            continue;
+        }
+        if sample.source == platpulse_core::block::BlockSource::GapBackfill
+            && outside_open_gap.contains(&(sample.node_id, sample.block_number))
+        {
+            continue;
+        }
+        let high: Option<i64> = match sqlx::query_scalar(
+            "SELECT historical_high_watermark FROM block_history_state WHERE node_id=?",
+        )
+        .bind(&node_id)
+        .fetch_optional(&mut *tx)
+        .await
+        {
+            Ok(v) => v,
+            Err(_) => {
+                return error(
+                    &request_id.0,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "Server database is unavailable",
+                );
+            }
+        };
+        if sample.source == platpulse_core::block::BlockSource::Subscription
+            && high.is_some_and(|value| sample.block_number as i64 <= value)
+        {
+            replay_samples.insert((sample.node_id, sample.block_number));
+            continue;
+        }
+        let retained: Option<String> = match sqlx::query_scalar(
+            "SELECT block_hash FROM block_identity_window WHERE node_id=? AND height=?",
+        )
+        .bind(&node_id)
+        .bind(sample.block_number as i64)
+        .fetch_optional(&mut *tx)
+        .await
+        {
+            Ok(v) => v,
+            Err(_) => {
+                return error(
+                    &request_id.0,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "Server database is unavailable",
+                );
+            }
+        };
+        let candidate = sample.source == platpulse_core::block::BlockSource::GapBackfill
+            || high.is_none_or(|value| sample.block_number as i64 > value)
+            || retained.is_some();
+        if !candidate {
+            continue;
+        }
+        match observe_block_identity(&mut tx, sample, &now_text).await {
+            Ok(true) => {
+                divergence_samples.insert((sample.node_id, sample.block_number));
+            }
+            Ok(false) => {}
+            Err(_) => {
+                return error(
+                    &request_id.0,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "Server database is unavailable",
+                );
+            }
+        }
+    }
+
     let mut projection_report = parsed.clone();
     projection_report
         .nodes
@@ -1021,31 +1200,6 @@ async fn handler(
             "unavailable",
             "Server database is unavailable",
         );
-    }
-    let mismatches = match block_network_identity_mismatches(&mut tx, &parsed).await {
-        Ok(value) => value,
-        Err(_) => {
-            return error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
-    };
-    let mut outside_open_gap: std::collections::HashSet<(platpulse_core::identity::NodeId, u64)> =
-        std::collections::HashSet::new();
-    for sample in &parsed.block_summaries {
-        if sample.source == platpulse_core::block::BlockSource::GapBackfill
-            && coverage_allows_backfill(&mut tx, &sample.node_id.to_string(), sample.block_number)
-                .await
-                .map_err(|_| ())
-                .ok()
-                .flatten()
-                .is_none()
-        {
-            outside_open_gap.insert((sample.node_id, sample.block_number));
-        }
     }
     for sample in &parsed.block_summaries {
         if ownership_mismatches.contains(&sample.node_id) {
@@ -1163,7 +1317,9 @@ async fn handler(
         .map(|sample| {
             let rejected = ownership_mismatches.contains(&sample.node_id)
                 || mismatches.contains(&sample.node_id)
-                || outside_open_gap.contains(&(sample.node_id, sample.block_number));
+                || outside_open_gap.contains(&(sample.node_id, sample.block_number))
+                || divergence_samples.contains(&(sample.node_id, sample.block_number))
+                || replay_samples.contains(&(sample.node_id, sample.block_number));
             SampleDisposition {
                 node_id: sample.node_id,
                 sample: SampleRef::Block {
@@ -1179,15 +1335,24 @@ async fn handler(
                         platpulse_core::RejectionCode::NodeOwnershipMismatch
                     } else if outside_open_gap.contains(&(sample.node_id, sample.block_number)) {
                         platpulse_core::RejectionCode::GapBackfillOutsideOpenGap
+                    } else if divergence_samples.contains(&(sample.node_id, sample.block_number)) {
+                        platpulse_core::RejectionCode::ChainDivergence
+                    } else if replay_samples.contains(&(sample.node_id, sample.block_number)) {
+                        platpulse_core::RejectionCode::ResyncReplay
                     } else {
                         platpulse_core::RejectionCode::NetworkIdentityMismatch
                     };
-                    let reason =
-                        if outside_open_gap.contains(&(sample.node_id, sample.block_number)) {
-                            "GapBackfill sample is outside an explicit open recoverable gap"
-                        } else {
-                            "Block network identity does not match the registered Network"
-                        };
+                    let reason = if outside_open_gap
+                        .contains(&(sample.node_id, sample.block_number))
+                    {
+                        "GapBackfill sample is outside an explicit open recoverable gap"
+                    } else if divergence_samples.contains(&(sample.node_id, sample.block_number)) {
+                        "Block hash diverges from retained Node identity evidence"
+                    } else if replay_samples.contains(&(sample.node_id, sample.block_number)) {
+                        "Normal resync replay at or below the historical high-water mark"
+                    } else {
+                        "Block network identity does not match the registered Network"
+                    };
                     rejection(code, reason)
                 }),
             }
@@ -1421,6 +1586,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn replay_sample_is_terminal_and_does_not_rewrite_history() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let mut report: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        report.report_id = "0195f2a1-0013-4013-8013-000000000201".parse().unwrap();
+        let node_id = report.inventory.nodes[0].node_id;
+        let mut identity = report.nodes[0]
+            .chain
+            .network_identity
+            .latest
+            .clone()
+            .unwrap();
+        identity.genesis_hash =
+            "0x0000000000000000000000000000000000000000000000000000000000000001"
+                .parse()
+                .unwrap();
+        identity.address_hrp = Some("lat".to_owned());
+        report
+            .block_summaries
+            .push(platpulse_core::block::BlockSummary {
+                node_id,
+                network_identity: identity,
+                block_number: 10,
+                block_hash: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .parse()
+                    .unwrap(),
+                parent_hash: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    .parse()
+                    .unwrap(),
+                block_timestamp_ms: 1_000,
+                observed_at: report.generated_at,
+                transaction_count: 3,
+                block_interval_ms: None,
+                source: platpulse_core::block::BlockSource::Subscription,
+                attribution: platpulse_core::block::BlockProductionAttribution::unknown_attribution(
+                    "0x1111111111111111111111111111111111111111"
+                        .parse()
+                        .unwrap(),
+                    "test",
+                ),
+            });
+        report.validate().unwrap();
+        let mut first = report.clone();
+        first.block_summaries.clear();
+        submit(&state, &agent_id, serde_json::to_vec(&first).unwrap()).await;
+        sqlx::query("UPDATE block_history_state SET historical_high_watermark=100, cumulative_block_count=1, cumulative_transaction_count=3 WHERE node_id=?").bind(node_id.to_string()).execute(state.db().pool()).await.unwrap();
+        let mut replay = report;
+        replay.report_sequence = 2;
+        replay.report_id = "0195f2a1-0013-4013-8013-000000000202".parse().unwrap();
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&replay).unwrap()).await;
+        assert_eq!(receipt.disposition, ReceiptDisposition::PartiallyAccepted);
+        assert_eq!(
+            receipt.samples[0].disposition,
+            SampleDispositionKind::TerminalRejected
+        );
+        assert_eq!(
+            receipt.samples[0].rejection.as_ref().unwrap().code,
+            platpulse_core::RejectionCode::ResyncReplay
+        );
+        let summaries: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM block_summaries WHERE node_id=?")
+                .bind(node_id.to_string())
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        let counters: (i64, i64) = sqlx::query_as("SELECT cumulative_block_count, cumulative_transaction_count FROM block_history_state WHERE node_id=?").bind(node_id.to_string()).fetch_one(state.db().pool()).await.unwrap();
+        assert_eq!(summaries, 0);
+        assert_eq!(counters, (1, 3));
+    }
+
+    #[tokio::test]
     async fn two_node_inventory_keeps_host_scoped_once_and_nodes_separate() {
         let (_dir, state, agent_id) = state_with_agent().await;
         create_network(
@@ -1584,6 +1822,92 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(lifecycle, "active");
+    }
+
+    #[tokio::test]
+    async fn divergent_hash_is_append_only_idempotent_and_preserves_summary_and_counters() {
+        let (_dir, state, _agent_id) = state_with_agent().await;
+        let node_id: platpulse_core::identity::NodeId =
+            "0195f2a1-0014-4014-8014-000000000014".parse().unwrap();
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES (?, ?, 'platon-mainnet', 'ws://127.0.0.1:6790', 'active', 'public', 1, ?, ?)")
+            .bind(node_id.to_string()).bind("0195f2a1-0011-4011-8011-000000000011").bind("2026-08-12T08:00:00Z").bind("2026-08-12T08:00:00Z").execute(state.db().pool()).await.unwrap();
+        let identity = platpulse_core::network::NetworkIdentity {
+            genesis_hash: "0x0000000000000000000000000000000000000000000000000000000000000001"
+                .parse()
+                .unwrap(),
+            chain_id: 210425,
+            p2p_network_id: 210425,
+            address_hrp: Some("lat".into()),
+        };
+        let make_sample =
+            |block_hash: platpulse_core::hex::Hash32| platpulse_core::block::BlockSummary {
+                node_id,
+                network_identity: identity.clone(),
+                block_number: 42,
+                block_hash,
+                parent_hash: "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                    .parse()
+                    .unwrap(),
+                block_timestamp_ms: 1_000,
+                observed_at: "2026-08-12T09:00:00Z".parse().unwrap(),
+                transaction_count: 3,
+                block_interval_ms: None,
+                source: platpulse_core::block::BlockSource::Subscription,
+                attribution: platpulse_core::block::BlockProductionAttribution::unknown_attribution(
+                    "0x1111111111111111111111111111111111111111"
+                        .parse()
+                        .unwrap(),
+                    "test",
+                ),
+            };
+        let hash_a: platpulse_core::hex::Hash32 =
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .parse()
+                .unwrap();
+        let hash_b: platpulse_core::hex::Hash32 =
+            "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                .parse()
+                .unwrap();
+        let first = make_sample(hash_a.clone());
+        let second = make_sample(hash_b);
+        let mut tx = state.db().pool().begin().await.unwrap();
+        assert!(
+            !observe_block_identity(&mut tx, &first, "2026-08-12T09:00:00Z")
+                .await
+                .unwrap()
+        );
+        sqlx::query("INSERT INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, source, coinbase, seal_signer_match, protocol_proposer_kind, attribution_reason, accepted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'subscription', ?, 'unknown', 'unknown', 'test', ?)")
+            .bind(node_id.to_string()).bind(42_i64).bind(hash_a.to_string()).bind(first.parent_hash.to_string()).bind(identity.genesis_hash.to_string()).bind(210425_i64).bind(210425_i64).bind("lat").bind(1000_i64).bind(first.observed_at.to_string()).bind(3_i64).bind(first.attribution.coinbase.to_string()).bind("2026-08-12T09:00:00Z").execute(&mut *tx).await.unwrap();
+        sqlx::query("INSERT INTO block_history_state (node_id, historical_high_watermark, cumulative_block_count, cumulative_transaction_count, cumulative_self_seal_count, updated_at) VALUES (?, 42, 1, 3, 0, ?)").bind(node_id.to_string()).bind("2026-08-12T09:00:00Z").execute(&mut *tx).await.unwrap();
+        assert!(
+            observe_block_identity(&mut tx, &second, "2026-08-12T09:01:00Z")
+                .await
+                .unwrap()
+        );
+        assert!(
+            observe_block_identity(&mut tx, &second, "2026-08-12T09:01:00Z")
+                .await
+                .unwrap()
+        );
+        tx.commit().await.unwrap();
+        let summary_hash: String = sqlx::query_scalar(
+            "SELECT block_hash FROM block_summaries WHERE node_id=? AND block_number=42",
+        )
+        .bind(node_id.to_string())
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        let counters: (i64, i64) = sqlx::query_as("SELECT cumulative_block_count, cumulative_transaction_count FROM block_history_state WHERE node_id=?").bind(node_id.to_string()).fetch_one(state.db().pool()).await.unwrap();
+        let divergence_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM chain_divergence_observations WHERE node_id=? AND height=42",
+        )
+        .bind(node_id.to_string())
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(summary_hash, hash_a.to_string());
+        assert_eq!(counters, (1, 3));
+        assert_eq!(divergence_count, 1);
     }
 
     #[tokio::test]

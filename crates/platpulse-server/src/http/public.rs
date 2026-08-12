@@ -347,24 +347,16 @@ pub struct PublicBlockHistoryItem {
     pub block_time_ms: Option<i64>,
     pub transaction_count: Option<i64>,
     pub source: Option<String>,
-    pub coinbase: Option<String>,
-    pub seal_signer_match: Option<String>,
-    pub seal_signer_key_fingerprint: Option<String>,
-    pub node_key_fingerprint: Option<String>,
-    pub node_key_valid_from: Option<String>,
-    pub node_key_valid_until: Option<String>,
-    pub seal_recovery_rule: Option<String>,
-    pub seal_evidence: Option<String>,
-    pub protocol_proposer: Option<String>,
-    pub attribution_reason: Option<String>,
     pub observed_at: Option<String>,
     pub freshness: Option<String>,
     pub gap_from_height: Option<i64>,
     pub gap_to_height: Option<i64>,
     pub gap_kind: Option<String>,
     pub gap_reason: Option<String>,
+    /// Sanitized health signal only; raw divergence hashes remain Admin-only.
+    pub divergence_kind: Option<String>,
+    pub divergence_reason: Option<String>,
 }
-
 #[derive(Debug, sqlx::FromRow)]
 pub(crate) struct HistoryRow {
     pub block_number: Option<i64>,
@@ -386,6 +378,11 @@ pub(crate) struct HistoryRow {
     pub to_height: Option<i64>,
     pub gap_kind: Option<String>,
     pub gap_reason: Option<String>,
+    pub divergence_kind: Option<String>,
+    pub divergence_reason: Option<String>,
+    pub divergence_retained_hash: Option<String>,
+    pub divergence_observed_hash: Option<String>,
+    pub divergence_observed_at: Option<String>,
 }
 
 #[utoipa::path(
@@ -402,8 +399,8 @@ pub(crate) async fn public_node_history(
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
     let limit = params.limit.unwrap_or(50).clamp(1, 200);
-    let rows = sqlx::query_as::<_, HistoryRow>("SELECT block_number, block_timestamp_ms, transaction_count, source, coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, CASE WHEN protocol_proposer_kind = 'verified' THEN protocol_proposer_identity ELSE NULL END, attribution_reason, observed_at, from_height, to_height, gap_kind, gap_reason FROM (SELECT block_number, block_timestamp_ms, transaction_count, source, coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, protocol_proposer_kind, protocol_proposer_identity, attribution_reason, observed_at, NULL AS from_height, NULL AS to_height, NULL AS gap_kind, NULL AS gap_reason, node_id FROM block_summaries WHERE node_id = ? AND EXISTS (SELECT 1 FROM nodes WHERE node_id = block_summaries.node_id AND visibility = 'public' AND lifecycle = 'active') UNION ALL SELECT NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, created_at, from_height, to_height, kind, reason, node_id FROM block_history_gaps WHERE node_id = ? AND EXISTS (SELECT 1 FROM nodes WHERE node_id = block_history_gaps.node_id AND visibility = 'public' AND lifecycle = 'active')) ORDER BY COALESCE(block_number, from_height) DESC LIMIT ?")
-        .bind(&node_id).bind(&node_id).bind(limit).fetch_all(state.db().pool()).await;
+    let rows = sqlx::query_as::<_, HistoryRow>("SELECT block_number, block_timestamp_ms, transaction_count, source, coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, CASE WHEN protocol_proposer_kind = 'verified' THEN protocol_proposer_identity ELSE NULL END, attribution_reason, observed_at, from_height, to_height, gap_kind, gap_reason, divergence_kind, divergence_reason, divergence_retained_hash, divergence_observed_hash, divergence_observed_at FROM (SELECT block_number, block_timestamp_ms, transaction_count, source, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, observed_at, NULL AS from_height, NULL AS to_height, NULL AS gap_kind, NULL AS gap_reason, NULL AS divergence_kind, NULL AS divergence_reason, NULL AS divergence_retained_hash, NULL AS divergence_observed_hash, NULL AS divergence_observed_at, node_id FROM block_summaries WHERE node_id = ? AND EXISTS (SELECT 1 FROM nodes WHERE node_id = block_summaries.node_id AND visibility = 'public' AND lifecycle = 'active') UNION ALL SELECT NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, created_at, from_height, to_height, kind, reason, NULL, NULL, NULL, NULL, NULL, node_id FROM block_history_gaps WHERE node_id = ? AND EXISTS (SELECT 1 FROM nodes WHERE node_id = block_history_gaps.node_id AND visibility = 'public' AND lifecycle = 'active') UNION ALL SELECT NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, retained_observed_at, height, height, NULL, NULL, 'chain_divergence', 'A recent block identity divergence was observed', NULL, NULL, NULL, node_id FROM chain_divergence_observations WHERE node_id = ? AND EXISTS (SELECT 1 FROM nodes WHERE node_id = chain_divergence_observations.node_id AND visibility = 'public' AND lifecycle = 'active')) ORDER BY COALESCE(block_number, from_height) DESC LIMIT ?")
+        .bind(&node_id).bind(&node_id).bind(&node_id).bind(limit).fetch_all(state.db().pool()).await;
     match rows {
         Ok(rows) => Json(
             rows.into_iter()
@@ -413,22 +410,14 @@ pub(crate) async fn public_node_history(
                     block_time_ms: row.block_timestamp_ms,
                     transaction_count: row.transaction_count,
                     source: row.source,
-                    coinbase: row.coinbase,
-                    seal_signer_match: row.seal_signer_match,
-                    seal_signer_key_fingerprint: row.seal_signer_key_fingerprint,
-                    node_key_fingerprint: row.node_key_fingerprint,
-                    node_key_valid_from: row.node_key_valid_from,
-                    node_key_valid_until: row.node_key_valid_until,
-                    seal_recovery_rule: row.seal_recovery_rule,
-                    seal_evidence: row.seal_evidence,
-                    protocol_proposer: row.protocol_proposer,
-                    attribution_reason: row.attribution_reason,
-                    freshness: row.observed_at.clone(),
-                    observed_at: row.observed_at,
+                    observed_at: row.observed_at.clone(),
+                    freshness: row.observed_at,
                     gap_from_height: row.from_height,
                     gap_to_height: row.to_height,
                     gap_kind: row.gap_kind,
                     gap_reason: row.gap_reason,
+                    divergence_kind: row.divergence_kind,
+                    divergence_reason: row.divergence_reason,
                 })
                 .collect::<Vec<_>>(),
         )

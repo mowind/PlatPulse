@@ -19,7 +19,7 @@ export async function fetchNode(nodeId: string): Promise<PublicNode> {
   return data
 }
 
-export type PublicHistoryItem = { nodeId: string; height: number | null; blockTimeMs: number | null; transactionCount: number | null; coinbase: string | null; sealSignerMatch: string | null; sealSignerKeyFingerprint: string | null; nodeKeyFingerprint: string | null; nodeKeyValidFrom: string | null; nodeKeyValidUntil: string | null; sealRecoveryRule: string | null; sealEvidence: string | null; protocolProposer: string | null; attributionReason: string | null; observedAt: string | null; freshness: string | null; gapFromHeight: number | null; gapToHeight: number | null; gapKind: string | null; gapReason: string | null }
+export type PublicHistoryItem = { nodeId: string; height: number | null; blockTimeMs: number | null; transactionCount: number | null; coinbase: string | null; sealSignerMatch: string | null; sealSignerKeyFingerprint: string | null; nodeKeyFingerprint: string | null; nodeKeyValidFrom: string | null; nodeKeyValidUntil: string | null; sealRecoveryRule: string | null; sealEvidence: string | null; protocolProposer: string | null; attributionReason: string | null; observedAt: string | null; freshness: string | null; gapFromHeight: number | null; gapToHeight: number | null; gapKind: string | null; gapReason: string | null; divergenceKind: string | null; divergenceReason: string | null }
 
 export async function fetchNodeHistory(nodeId: string): Promise<PublicHistoryItem[]> {
   const response = await fetch(`/api/public/v1/nodes/${encodeURIComponent(nodeId)}/history`)

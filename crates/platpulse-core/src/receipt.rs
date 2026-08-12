@@ -245,6 +245,9 @@ pub enum RejectionCode {
     /// Block history refused: observed Network Identity mismatches the
     /// registered Network. Current diagnostics may continue. Terminal.
     NetworkIdentityMismatch,
+    /// A sample conflicts with retained recent identity evidence at the same
+    /// Node and height. The original summary is preserved; terminal.
+    ChainDivergence,
     /// `height <= historical_high_watermark` outside an open gap: plain
     /// resync replay, not written and not counted again. Terminal.
     ResyncReplay,
