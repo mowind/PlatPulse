@@ -1,0 +1,63 @@
+{
+  "layout": "panorama",
+  "style": "default",
+  "animation": "flow",
+  "canvas": {"width": 1210, "height": 1138, "fps": 20, "frames": 41},
+  "signature": "PlatPulse",
+  "title": {"prefix": "PlatPulse", "highlight": "Architecture", "subtitle": "Agent → Server → WebUI monitoring for PlatON nodes"},
+  "input_title": "PlatON Host",
+  "inputs": [
+    {"label": "Node A · Mainnet", "icon": "server", "color": "#7ee3d6"},
+    {"label": "Node B · Mainnet", "icon": "server", "color": "#f4b64e"},
+    {"label": "Node C · Testnet", "icon": "server", "color": "#ff7ab6"},
+    {"label": "Host Metrics", "icon": "analytics", "color": "#7ee3d6"}
+  ],
+  "core": {
+    "title": "Pipeline",
+    "subtitle": "(one Agent per Host · outbound HTTPS only)",
+    "cards": [
+      {"title": "platpulse-agent", "body": "per-Node collectors · spool\noldest-first report sender", "icon": "agent", "color": "#7ee3d6"},
+      {"title": "platpulse-server", "body": "ingestion · SQLite · auth · alerts\nreceipt in one transaction", "icon": "server", "color": "#b18cff"}
+    ]
+  },
+  "decision": {
+    "title": "Receipt?",
+    "body": "Partial / Rejected",
+    "yes_label": "Accepted"
+  },
+  "output": {"label": "WebUI", "icon": "eye"},
+  "loop_label": "immutable report retried until receipt",
+  "retry_label": "retryable → requeue · same bytes",
+  "left_panel": {
+    "title": "Agent Runtime",
+    "badge": "outbound only",
+    "down_label": "Collect",
+    "up_label": "Spool",
+    "cards": [
+      {"title": "Host Collector", "body": "once per Agent\nCPU · mem · disk", "icon": "analytics"},
+      {"title": "Node Supervisor", "body": "per-Node RPC\nfault isolation", "icon": "orchestrator"},
+      {"title": "AgentStore", "body": "immutable reports\nreceipt ack · requeue", "icon": "db"}
+    ]
+  },
+  "center_panel": {
+    "title": "Server Data · SQLite",
+    "subtitle": "(current + history + coverage ledger)",
+    "footer": "Retention + Dedup",
+    "cards": [
+      {"title": "Current", "body": "projections\nlast-good", "icon": "eye"},
+      {"title": "History", "body": "block summaries\nhigh-water", "icon": "clock"},
+      {"title": "Coverage", "body": "ledger · gaps\nresync dedup", "icon": "shield"},
+      {"title": "Alerts", "body": "incidents\noutbox · Phase 2", "icon": "notification"}
+    ]
+  },
+  "right_panel": {
+    "title": "platpulse-web",
+    "incoming_label": "REST + SSE",
+    "return_label": "refetch",
+    "cards": [
+      {"title": "Home Dashboard", "body": "Network → Node\nhealth · head · sync", "icon": "eye"},
+      {"title": "Admin Dashboard", "body": "ops · diagnostics\nsettings · audit", "icon": "gear"},
+      {"title": "REST Client", "body": "REST + SSE\ninvalidation → refetch", "icon": "api"}
+    ]
+  }
+}
