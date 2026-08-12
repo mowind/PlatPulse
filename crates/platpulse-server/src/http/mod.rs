@@ -14,6 +14,7 @@ mod admin;
 pub(crate) mod agent;
 pub(crate) mod health;
 pub(crate) mod public;
+pub(crate) mod report_ingestion;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -213,10 +214,13 @@ pub fn build_app(state: AppState) -> Router {
             state.clone(),
             human_session_guard,
         ));
-    let agent_group = agent::router().layer(axum::middleware::from_fn_with_state(
-        state.clone(),
-        agent_group_guard,
-    ));
+    let agent_group = {
+        let routes = agent::router().merge(crate::http::report_ingestion::router());
+        routes.layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            agent_group_guard,
+        ))
+    };
 
     let api = Router::<AppState>::new()
         .nest("/public/v1", public_group)
@@ -394,7 +398,15 @@ pub(crate) async fn agent_group_guard(
         );
     };
     match authenticate_agent_credential(state.db(), &state.auth().pepper, token).await {
-        Ok(Some(_)) => next.run(request).await,
+        Ok(Some(auth)) => {
+            request
+                .extensions_mut()
+                .insert(crate::enrollment::AgentAuthInfo {
+                    agent_id: auth.agent_id,
+                    credential_id: auth.credential_id,
+                });
+            next.run(request).await
+        }
         Ok(None) => session_error_response(
             &request,
             StatusCode::UNAUTHORIZED,

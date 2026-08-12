@@ -1,0 +1,830 @@
+//! Transactional AgentReport ingestion for the first Inventory vertical slice.
+use std::str::FromStr;
+
+use axum::body::Bytes;
+use axum::extract::{Extension, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::{Json, Router};
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+use sqlx::{FromRow, Sqlite, Transaction};
+
+use crate::enrollment::AgentAuthInfo;
+use crate::http::{AppState, ROUTE_GROUP_HEADER, RequestId};
+use platpulse_core::component::{ComponentKey, ComponentObservation, ComponentStatus};
+use platpulse_core::protocol::SUPPORTED_PROTOCOL_MAJORS;
+use platpulse_core::{
+    AgentReport, InventoryDisposition, NodeCurrentDisposition, NodeReceipt, ReceiptDisposition,
+    ReportId, ReportReceipt, Rfc3339, SampleDisposition, SampleDispositionKind, SampleRef,
+    Sha256Hex,
+};
+
+#[derive(Debug, Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ReportResponse {
+    pub receipt: ReportReceipt,
+}
+
+#[derive(Debug, FromRow)]
+struct ReceiptRow {
+    report_body_sha256: String,
+    receipt_body: Vec<u8>,
+}
+
+#[derive(Debug, FromRow)]
+struct AgentRow {
+    agent_epoch: i64,
+    active_boot_id: Option<String>,
+    last_report_sequence: Option<i64>,
+}
+
+fn now() -> Rfc3339 {
+    crate::auth::format_rfc3339(crate::auth::now_utc())
+        .parse()
+        .expect("formatted timestamp is valid")
+}
+
+fn rejection(code: platpulse_core::RejectionCode, reason: &str) -> platpulse_core::Rejection {
+    platpulse_core::Rejection {
+        code,
+        retryable: code.is_retryable(),
+        reason: reason.to_owned(),
+    }
+}
+
+fn rejected(
+    report_id: ReportId,
+    hash: Sha256Hex,
+    code: platpulse_core::RejectionCode,
+    reason: &str,
+) -> ReportReceipt {
+    ReportReceipt {
+        report_id,
+        disposition: ReceiptDisposition::Rejected,
+        report_body_sha256: hash,
+        server_version: crate::VERSION.to_owned(),
+        supported_protocol_majors: SUPPORTED_PROTOCOL_MAJORS.to_vec(),
+        server_time: now(),
+        rotation_hint: None,
+        inventory: Some(InventoryDisposition::Rejected),
+        rejections: vec![rejection(code, reason)],
+        nodes: vec![],
+        samples: vec![],
+    }
+}
+
+fn error(
+    request_id: &str,
+    status: StatusCode,
+    code: &'static str,
+    message: &'static str,
+) -> Response {
+    (
+        status,
+        Json(crate::http::ApiErrorBody::new(code, message, request_id)),
+    )
+        .into_response()
+}
+
+async fn store_rejected(
+    mut tx: Transaction<'_, Sqlite>,
+    report: &AgentReport,
+    hash: Sha256Hex,
+    receipt: ReportReceipt,
+    request_id: &str,
+) -> Response {
+    let stored = serde_json::to_vec(&receipt).expect("receipt serializes");
+    let result = sqlx::query("INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at) VALUES (?, ?, ?, ?, ?, ?, 'rejected', ?, ?)")
+        .bind(report.report_id.to_string()).bind(report.agent_id.to_string())
+        .bind(report.agent_epoch as i64).bind(report.boot_id.to_string())
+        .bind(report.report_sequence as i64).bind(hash.to_string()).bind(&stored)
+        .bind(now().to_string()).execute(&mut *tx).await;
+    if result.is_err() || tx.commit().await.is_err() {
+        return error(
+            request_id,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "Server database is unavailable",
+        );
+    }
+    (StatusCode::OK, Json(ReportResponse { receipt })).into_response()
+}
+
+fn status_name(status: ComponentStatus) -> &'static str {
+    match status {
+        ComponentStatus::Starting => "starting",
+        ComponentStatus::Ok => "ok",
+        ComponentStatus::Error => "error",
+        ComponentStatus::Disabled => "disabled",
+        ComponentStatus::Unsupported => "unsupported",
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn save_component<T: serde::Serialize>(
+    tx: &mut Transaction<'_, Sqlite>,
+    agent_id: &str,
+    scope: &str,
+    scope_key: &str,
+    node_id: Option<&str>,
+    key: ComponentKey,
+    component: &ComponentObservation<T>,
+    received_at: &str,
+) -> Result<(), sqlx::Error> {
+    let error_code = component.error.as_ref().map(|e| e.code.as_str());
+    let error_message = component.error.as_ref().map(|e| e.message.as_str());
+    sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision, error_code, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_id, scope, scope_key, component_key) DO UPDATE SET state=excluded.state, attempted_at=excluded.attempted_at, observed_at=excluded.observed_at, received_at=excluded.received_at, state_revision=excluded.state_revision, value_revision=excluded.value_revision, error_code=excluded.error_code, error_message=excluded.error_message")
+        .bind(agent_id).bind(scope).bind(scope_key).bind(node_id).bind(format!("{key:?}").to_lowercase())
+        .bind(status_name(component.status)).bind(component.attempted_at.map(|v| v.to_string()))
+        .bind(component.latest_observed_at.map(|v| v.to_string())).bind(received_at)
+        .bind(component.state_revision as i64).bind(component.value_revision as i64)
+        .bind(error_code).bind(error_message).execute(&mut **tx).await?;
+    Ok(())
+}
+
+async fn save_current(
+    tx: &mut Transaction<'_, Sqlite>,
+    report: &AgentReport,
+    received_at: &str,
+) -> Result<(), sqlx::Error> {
+    let agent_id = report.agent_id.to_string();
+    let host = &report.host;
+    save_component(
+        tx,
+        &agent_id,
+        "host",
+        "host",
+        None,
+        ComponentKey::CpuPercent,
+        &host.cpu_percent,
+        received_at,
+    )
+    .await?;
+    save_component(
+        tx,
+        &agent_id,
+        "host",
+        "host",
+        None,
+        ComponentKey::Memory,
+        &host.memory,
+        received_at,
+    )
+    .await?;
+    save_component(
+        tx,
+        &agent_id,
+        "host",
+        "host",
+        None,
+        ComponentKey::Load,
+        &host.load,
+        received_at,
+    )
+    .await?;
+    save_component(
+        tx,
+        &agent_id,
+        "host",
+        "host",
+        None,
+        ComponentKey::Disk,
+        &host.disk,
+        received_at,
+    )
+    .await?;
+    save_component(
+        tx,
+        &agent_id,
+        "host",
+        "host",
+        None,
+        ComponentKey::NetworkThroughput,
+        &host.network_throughput,
+        received_at,
+    )
+    .await?;
+    save_component(
+        tx,
+        &agent_id,
+        "host",
+        "host",
+        None,
+        ComponentKey::ClockSkew,
+        &host.clock_skew,
+        received_at,
+    )
+    .await?;
+    save_component(
+        tx,
+        &agent_id,
+        "host",
+        "host",
+        None,
+        ComponentKey::Spool,
+        &host.spool,
+        received_at,
+    )
+    .await?;
+
+    if let Some(memory) = host.memory.latest {
+        sqlx::query("INSERT INTO current_host_observations (agent_id, memory_total_bytes, memory_used_bytes, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(agent_id) DO UPDATE SET memory_total_bytes=excluded.memory_total_bytes, memory_used_bytes=excluded.memory_used_bytes, updated_at=excluded.updated_at")
+            .bind(&agent_id).bind(memory.total_bytes as i64).bind(memory.used_bytes as i64).bind(received_at).execute(&mut **tx).await?;
+    }
+    for node in &report.nodes {
+        let node_id = node.node_id.to_string();
+        save_component(
+            tx,
+            &agent_id,
+            "node",
+            &node_id,
+            Some(&node_id),
+            ComponentKey::Process,
+            &node.process,
+            received_at,
+        )
+        .await?;
+        save_component(
+            tx,
+            &agent_id,
+            "node",
+            &node_id,
+            Some(&node_id),
+            ComponentKey::Rpc,
+            &node.chain.rpc,
+            received_at,
+        )
+        .await?;
+        save_component(
+            tx,
+            &agent_id,
+            "node",
+            &node_id,
+            Some(&node_id),
+            ComponentKey::Sync,
+            &node.chain.sync,
+            received_at,
+        )
+        .await?;
+        save_component(
+            tx,
+            &agent_id,
+            "node",
+            &node_id,
+            Some(&node_id),
+            ComponentKey::Consensus,
+            &node.chain.consensus,
+            received_at,
+        )
+        .await?;
+        save_component(
+            tx,
+            &agent_id,
+            "node",
+            &node_id,
+            Some(&node_id),
+            ComponentKey::NetworkIdentity,
+            &node.chain.network_identity,
+            received_at,
+        )
+        .await?;
+        save_component(
+            tx,
+            &agent_id,
+            "node",
+            &node_id,
+            Some(&node_id),
+            ComponentKey::StaticMetadata,
+            &node.chain.static_metadata,
+            received_at,
+        )
+        .await?;
+        if let Some(process) = node.process.latest {
+            sqlx::query("INSERT INTO current_node_process_observations (node_id, pid, started_at, cpu_percent, memory_bytes, uptime_ms, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET pid=excluded.pid, started_at=excluded.started_at, cpu_percent=excluded.cpu_percent, memory_bytes=excluded.memory_bytes, uptime_ms=excluded.uptime_ms, updated_at=excluded.updated_at")
+                .bind(&node_id).bind(process.pid as i64).bind(process.started_at.to_string()).bind(process.cpu_percent).bind(process.memory_bytes as i64).bind(process.uptime_ms as i64).bind(received_at).execute(&mut **tx).await?;
+        }
+        if let (Some(rpc), Some(sync), Some(consensus), Some(identity), Some(metadata)) = (
+            node.chain.rpc.latest.as_ref(),
+            node.chain.sync.latest,
+            node.chain.consensus.latest,
+            node.chain.network_identity.latest.as_ref(),
+            node.chain.static_metadata.latest.as_ref(),
+        ) {
+            sqlx::query("INSERT INTO current_node_chain_observations (node_id, rpc_client_version, syncing, current_block, highest_block, pulled_states, known_states, consensus_epoch, consensus_view_number, consensus_validator, consensus_highest_qc_block, consensus_highest_lock_block, consensus_highest_commit_block, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, node_key_fingerprint, enode, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET rpc_client_version=excluded.rpc_client_version, syncing=excluded.syncing, current_block=excluded.current_block, highest_block=excluded.highest_block, pulled_states=excluded.pulled_states, known_states=excluded.known_states, consensus_epoch=excluded.consensus_epoch, consensus_view_number=excluded.consensus_view_number, consensus_validator=excluded.consensus_validator, consensus_highest_qc_block=excluded.consensus_highest_qc_block, consensus_highest_lock_block=excluded.consensus_highest_lock_block, consensus_highest_commit_block=excluded.consensus_highest_commit_block, network_genesis_hash=excluded.network_genesis_hash, network_chain_id=excluded.network_chain_id, network_p2p_network_id=excluded.network_p2p_network_id, network_address_hrp=excluded.network_address_hrp, node_key_fingerprint=excluded.node_key_fingerprint, enode=excluded.enode, updated_at=excluded.updated_at")
+                .bind(&node_id).bind(&rpc.client_version).bind(sync.syncing as i64).bind(sync.current_block as i64).bind(sync.highest_block as i64).bind(sync.pulled_states as i64).bind(sync.known_states as i64).bind(consensus.epoch as i64).bind(consensus.view_number as i64).bind(consensus.validator as i64).bind(consensus.highest_qc_block as i64).bind(consensus.highest_lock_block as i64).bind(consensus.highest_commit_block as i64).bind(identity.genesis_hash.to_string()).bind(identity.chain_id as i64).bind(identity.p2p_network_id as i64).bind(&identity.address_hrp).bind(metadata.node_key_fingerprint.to_string()).bind(&metadata.enode).bind(received_at).execute(&mut **tx).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn handler(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AgentAuthInfo>,
+    Extension(request_id): Extension<RequestId>,
+    body: Bytes,
+) -> Response {
+    if body.len() > platpulse_core::protocol::MAX_REPORT_BODY_BYTES {
+        return error(
+            &request_id.0,
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "report_too_large",
+            "Agent report exceeds the protocol size limit",
+        );
+    }
+    let digest = Sha256::digest(&body);
+    let hash = Sha256Hex::from_str(&format!("0x{digest:x}")).expect("SHA-256 output is valid");
+    let parsed: AgentReport = match serde_json::from_slice(&body) {
+        Ok(report) => report,
+        Err(_) => {
+            return error(
+                &request_id.0,
+                StatusCode::BAD_REQUEST,
+                "invalid_report",
+                "Agent report is invalid",
+            );
+        }
+    };
+    if parsed.validate().is_err() {
+        return error(
+            &request_id.0,
+            StatusCode::BAD_REQUEST,
+            "invalid_report",
+            "Agent report is invalid",
+        );
+    }
+    if parsed.agent_id.to_string() != auth.agent_id {
+        return error(
+            &request_id.0,
+            StatusCode::FORBIDDEN,
+            "agent_identity_mismatch",
+            "Agent identity is not authorized",
+        );
+    }
+    let mut tx = match state.db().pool().begin().await {
+        Ok(tx) => tx,
+        Err(_) => {
+            return error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Server database is unavailable",
+            );
+        }
+    };
+
+    let existing = match sqlx::query_as::<_, ReceiptRow>(
+        "SELECT report_body_sha256, receipt_body FROM agent_report_receipts WHERE report_id = ?",
+    )
+    .bind(parsed.report_id.to_string())
+    .fetch_optional(&mut *tx)
+    .await
+    {
+        Ok(row) => row,
+        Err(_) => {
+            return error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Server database is unavailable",
+            );
+        }
+    };
+    if let Some(existing) = existing {
+        if existing.report_body_sha256 != hash.to_string() {
+            return error(
+                &request_id.0,
+                StatusCode::CONFLICT,
+                "report_identity_conflict",
+                "Report identity conflicts with a stored report",
+            );
+        }
+        let receipt: ReportReceipt = match serde_json::from_slice(&existing.receipt_body) {
+            Ok(v) => v,
+            Err(_) => {
+                return error(
+                    &request_id.0,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "Stored receipt is unavailable",
+                );
+            }
+        };
+        return (StatusCode::OK, Json(ReportResponse { receipt })).into_response();
+    }
+    let agent = match sqlx::query_as::<_, AgentRow>(
+        "SELECT agent_epoch, active_boot_id, last_report_sequence FROM agents WHERE agent_id = ?",
+    )
+    .bind(&auth.agent_id)
+    .fetch_optional(&mut *tx)
+    .await
+    {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            return error(
+                &request_id.0,
+                StatusCode::UNAUTHORIZED,
+                "agent_auth_required",
+                "Agent credential is invalid",
+            );
+        }
+        Err(_) => {
+            return error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Server database is unavailable",
+            );
+        }
+    };
+    if parsed.agent_epoch != agent.agent_epoch as u64 {
+        return store_rejected(
+            tx,
+            &parsed,
+            hash.clone(),
+            rejected(
+                parsed.report_id,
+                hash,
+                platpulse_core::RejectionCode::StaleBoot,
+                "Agent epoch is stale",
+            ),
+            &request_id.0,
+        )
+        .await;
+    }
+
+    // A sequence is unique within one boot. Never silently accept a competing body.
+    let sequence_conflict = match sqlx::query_scalar::<_, String>("SELECT report_id FROM agent_report_receipts WHERE agent_id = ? AND agent_epoch = ? AND boot_id = ? AND report_sequence = ?")
+        .bind(&auth.agent_id).bind(parsed.agent_epoch as i64).bind(parsed.boot_id.to_string()).bind(parsed.report_sequence as i64).fetch_optional(&mut *tx).await {
+            Ok(v) => v, Err(_) => return error(&request_id.0, StatusCode::SERVICE_UNAVAILABLE, "unavailable", "Server database is unavailable")
+        };
+    if sequence_conflict.is_some() {
+        return error(
+            &request_id.0,
+            StatusCode::CONFLICT,
+            "conflicting_boot",
+            "Boot sequence conflicts with a stored report",
+        );
+    }
+    if let Some(active) = &agent.active_boot_id {
+        if active != &parsed.boot_id.to_string() {
+            if parsed.boot_transition != platpulse_core::BootTransition::DrainedPrevious
+                || parsed
+                    .previous_boot_id
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .as_deref()
+                    != Some(active.as_str())
+            {
+                return store_rejected(
+                    tx,
+                    &parsed,
+                    hash.clone(),
+                    rejected(
+                        parsed.report_id,
+                        hash,
+                        platpulse_core::RejectionCode::ConflictingBoot,
+                        "Report belongs to a competing boot",
+                    ),
+                    &request_id.0,
+                )
+                .await;
+            }
+        } else if agent
+            .last_report_sequence
+            .is_some_and(|last| parsed.report_sequence <= last as u64)
+        {
+            return store_rejected(
+                tx,
+                &parsed,
+                hash.clone(),
+                rejected(
+                    parsed.report_id,
+                    hash,
+                    platpulse_core::RejectionCode::StaleReport,
+                    "Report sequence is not newer than the accepted report",
+                ),
+                &request_id.0,
+            )
+            .await;
+        }
+    }
+    let now_text = now().to_string();
+    for node in &parsed.inventory.nodes {
+        let known = match sqlx::query_scalar::<_, String>(
+            "SELECT network_key FROM networks WHERE network_key = ?",
+        )
+        .bind(node.network_key.as_str())
+        .fetch_optional(&mut *tx)
+        .await
+        {
+            Ok(v) => v,
+            Err(_) => {
+                return error(
+                    &request_id.0,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "Server database is unavailable",
+                );
+            }
+        };
+        if known.is_none() {
+            return store_rejected(
+                tx,
+                &parsed,
+                hash.clone(),
+                rejected(
+                    parsed.report_id,
+                    hash,
+                    platpulse_core::RejectionCode::NetworkKeyUnknown,
+                    "Network key is not registered",
+                ),
+                &request_id.0,
+            )
+            .await;
+        }
+        let owner =
+            match sqlx::query_scalar::<_, String>("SELECT agent_id FROM nodes WHERE node_id = ?")
+                .bind(node.node_id.to_string())
+                .fetch_optional(&mut *tx)
+                .await
+            {
+                Ok(v) => v,
+                Err(_) => {
+                    return error(
+                        &request_id.0,
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "unavailable",
+                        "Server database is unavailable",
+                    );
+                }
+            };
+        if owner.is_some_and(|owner| owner != auth.agent_id) {
+            return store_rejected(
+                tx,
+                &parsed,
+                hash.clone(),
+                rejected(
+                    parsed.report_id,
+                    hash,
+                    platpulse_core::RejectionCode::NodeOwnershipMismatch,
+                    "Node belongs to another Agent",
+                ),
+                &request_id.0,
+            )
+            .await;
+        }
+    }
+    // A complete, accepted Inventory is authoritative: omitted Nodes are retired.
+    if parsed.inventory.nodes.is_empty() {
+        if sqlx::query("UPDATE nodes SET lifecycle='retired', updated_at=? WHERE agent_id=?")
+            .bind(&now_text)
+            .bind(&auth.agent_id)
+            .execute(&mut *tx)
+            .await
+            .is_err()
+        {
+            return error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Server database is unavailable",
+            );
+        }
+    } else {
+        let placeholders = std::iter::repeat_n("?", parsed.inventory.nodes.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "UPDATE nodes SET lifecycle='retired', updated_at=? WHERE agent_id=? AND node_id NOT IN ({placeholders})"
+        );
+        let mut query = sqlx::query(&sql).bind(&now_text).bind(&auth.agent_id);
+        for node in &parsed.inventory.nodes {
+            query = query.bind(node.node_id.to_string());
+        }
+        if query.execute(&mut *tx).await.is_err() {
+            return error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Server database is unavailable",
+            );
+        }
+    }
+    for node in &parsed.inventory.nodes {
+        let result = sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', 'private', ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET network_key=excluded.network_key, display_name=COALESCE(nodes.display_name, excluded.display_name), rpc_endpoint=excluded.rpc_endpoint, lifecycle='active', inventory_revision=excluded.inventory_revision, updated_at=excluded.updated_at")
+            .bind(node.node_id.to_string()).bind(&auth.agent_id).bind(node.network_key.as_str()).bind(&node.display_name).bind(node.rpc_endpoint.as_str()).bind(parsed.inventory.revision as i64).bind(&now_text).bind(&now_text).execute(&mut *tx).await;
+        if result.is_err() {
+            return error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Server database is unavailable",
+            );
+        }
+    }
+    if save_current(&mut tx, &parsed, &now_text).await.is_err() {
+        return error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "Server database is unavailable",
+        );
+    }
+    let nodes = parsed
+        .inventory
+        .nodes
+        .iter()
+        .map(|node| NodeReceipt {
+            node_id: node.node_id,
+            current: NodeCurrentDisposition::Accepted,
+            accepted_component_revisions: vec![],
+            rejections: vec![],
+        })
+        .collect();
+    let samples = parsed
+        .block_summaries
+        .iter()
+        .map(|sample| SampleDisposition {
+            node_id: sample.node_id,
+            sample: SampleRef::Block {
+                height: sample.block_number,
+            },
+            disposition: SampleDispositionKind::Accepted,
+            rejection: None,
+        })
+        .chain(parsed.history_gaps.iter().map(|gap| SampleDisposition {
+            node_id: gap.node_id,
+            sample: SampleRef::Gap {
+                from_height: gap.from_height,
+                to_height: gap.to_height,
+            },
+            disposition: SampleDispositionKind::Accepted,
+            rejection: None,
+        }))
+        .collect();
+    let receipt = ReportReceipt {
+        report_id: parsed.report_id,
+        disposition: ReceiptDisposition::Accepted,
+        report_body_sha256: hash.clone(),
+        server_version: crate::VERSION.to_owned(),
+        supported_protocol_majors: SUPPORTED_PROTOCOL_MAJORS.to_vec(),
+        server_time: now(),
+        rotation_hint: None,
+        inventory: Some(InventoryDisposition::Accepted),
+        rejections: vec![],
+        nodes,
+        samples,
+    };
+    let stored = serde_json::to_vec(&receipt).expect("receipt serializes");
+    let inserted = sqlx::query("INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at) VALUES (?, ?, ?, ?, ?, ?, 'accepted', ?, ?)").bind(parsed.report_id.to_string()).bind(&auth.agent_id).bind(parsed.agent_epoch as i64).bind(parsed.boot_id.to_string()).bind(parsed.report_sequence as i64).bind(hash.to_string()).bind(&stored).bind(&now_text).execute(&mut *tx).await;
+    if inserted.is_err() {
+        return error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "Server database is unavailable",
+        );
+    }
+    let updated = sqlx::query("UPDATE agents SET active_boot_id=?, last_report_sequence=?, last_received_at=?, updated_at=? WHERE agent_id=?").bind(parsed.boot_id.to_string()).bind(parsed.report_sequence as i64).bind(&now_text).bind(&now_text).bind(&auth.agent_id).execute(&mut *tx).await;
+    if updated.is_err() || tx.commit().await.is_err() {
+        return error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "Server database is unavailable",
+        );
+    }
+    (StatusCode::OK, Json(ReportResponse { receipt })).into_response()
+}
+
+pub(crate) fn router() -> Router<AppState> {
+    Router::<AppState>::new()
+        .route("/reports", axum::routing::post(handler))
+        .layer(axum::extract::DefaultBodyLimit::max(
+            platpulse_core::protocol::MAX_REPORT_BODY_BYTES,
+        ))
+        .layer(axum::middleware::from_fn(
+            |request: axum::extract::Request, next: axum::middleware::Next| async move {
+                let mut response = next.run(request).await;
+                response.headers_mut().insert(
+                    ROUTE_GROUP_HEADER,
+                    axum::http::HeaderValue::from_static("agent"),
+                );
+                response
+            },
+        ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::AuthConfig;
+    use crate::database::{ServerDatabaseConfig, initialize};
+    use crate::enrollment::AgentAuthInfo;
+    use crate::network::create_network;
+    use crate::secrets::{create_pepper_file, load_pepper_file};
+    use axum::body::{Bytes, to_bytes};
+    use axum::extract::{Extension, State};
+    use axum::http::StatusCode;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    async fn state_with_agent() -> (TempDir, AppState, String) {
+        let dir = TempDir::new().unwrap();
+        let database = initialize(ServerDatabaseConfig::new(dir.path().join("server.db")))
+            .await
+            .unwrap();
+        let pepper_path = dir.path().join("pepper");
+        create_pepper_file(&pepper_path).unwrap();
+        let auth = AuthConfig::development(
+            load_pepper_file(&pepper_path).unwrap(),
+            "http://127.0.0.1:8080".to_owned(),
+        );
+        create_network(
+            &database,
+            "platon-mainnet",
+            "PlatON Mainnet",
+            "0x0000000000000000000000000000000000000000000000000000000000000001",
+            210425,
+            210425,
+            "lat",
+        )
+        .await
+        .unwrap();
+        let agent_id = "0195f2a1-0011-4011-8011-000000000011".to_owned();
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, active_boot_id, last_report_sequence, last_received_at, created_at, updated_at) VALUES (?, 1, NULL, NULL, NULL, ?, ?)").bind(&agent_id).bind("2026-08-12T08:00:00Z").bind("2026-08-12T08:00:00Z").execute(database.pool()).await.unwrap();
+        (dir, AppState::new(database, None, auth), agent_id)
+    }
+
+    async fn submit(state: &AppState, agent_id: &str, body: Vec<u8>) -> ReportReceipt {
+        let response = handler(
+            State(state.clone()),
+            Extension(AgentAuthInfo {
+                agent_id: agent_id.to_owned(),
+                credential_id: "test-credential".to_owned(),
+            }),
+            Extension(RequestId(Arc::from("test-request"))),
+            Bytes::from(body),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice::<ReportResponse>(&body)
+            .unwrap()
+            .receipt
+    }
+
+    #[tokio::test]
+    async fn accepted_inventory_persists_observations_and_replay_is_exact() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let body = include_bytes!("../../../platpulse-core/tests/fixtures/report_v1_minimal.json");
+        let first = submit(&state, &agent_id, body.to_vec()).await;
+        assert_eq!(first.disposition, ReceiptDisposition::Accepted);
+        assert_eq!(first.inventory, Some(InventoryDisposition::Accepted));
+        assert_eq!(first.nodes.len(), 1);
+        let statuses: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM component_status")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap();
+        assert!(statuses >= 13);
+        let memory: i64 = sqlx::query_scalar(
+            "SELECT memory_used_bytes FROM current_host_observations WHERE agent_id = ?",
+        )
+        .bind(&agent_id)
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(memory, 4_294_967_296);
+        let replay = submit(&state, &agent_id, body.to_vec()).await;
+        assert_eq!(replay, first);
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_report_receipts")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn accepted_empty_inventory_retires_omitted_node() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let original: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        submit(&state, &agent_id, serde_json::to_vec(&original).unwrap()).await;
+        let mut empty = original;
+        empty.report_sequence = 2;
+        empty.report_id = "0195f2a1-0013-4013-8013-000000000099".parse().unwrap();
+        empty.inventory.revision = 2;
+        empty.inventory.nodes.clear();
+        empty.nodes.clear();
+        submit(&state, &agent_id, serde_json::to_vec(&empty).unwrap()).await;
+        let lifecycle: String = sqlx::query_scalar("SELECT lifecycle FROM nodes WHERE node_id = ?")
+            .bind("0195f2a1-0014-4014-8014-000000000014")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap();
+        assert_eq!(lifecycle, "retired");
+    }
+}

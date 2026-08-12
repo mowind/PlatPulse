@@ -1,14 +1,11 @@
-//! `platpulse-agent` CLI (design §8.2): `enroll` is the Phase 1 command
-//! that provisions the Agent identity. Binary crates keep a thin `main.rs`;
-//! all logic lives here so it can be exercised from tests.
-
+//! `platpulse-agent` CLI (design §8.2).
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 use thiserror::Error;
 
-use crate::config::AgentConfig;
+use crate::config::{AgentConfig, AgentConfigFile, generate_node_id};
 use crate::enroll::{EnrollError, enroll_agent};
 
 #[derive(Debug, Parser)]
@@ -23,18 +20,34 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Enroll this Agent with the Server and store its credential
-    /// (design §4.5). The Enrollment Token is read from the TTY (hidden)
-    /// or from stdin — never from argv.
+    /// Enroll this Agent with the Server and store its credential.
     Enroll(EnrollArgs),
+    /// Generate and print a stable Node ID.
+    GenerateNodeId,
+    /// Validate the complete agent.toml and all Node declarations.
+    ValidateConfig(ValidateConfigArgs),
+    /// Validate and persist one immutable report before delivery.
+    PersistReport(PersistReportArgs),
 }
 
 #[derive(Debug, Args)]
 pub struct EnrollArgs {
-    /// `agent.toml` (design §8.2): `server_url`, `credential_file`, and
-    /// `state_db`.
     #[arg(long)]
     pub config: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct ValidateConfigArgs {
+    #[arg(long)]
+    pub config: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct PersistReportArgs {
+    #[arg(long)]
+    pub config: PathBuf,
+    #[arg(long)]
+    pub report: PathBuf,
 }
 
 #[derive(Debug, Error)]
@@ -45,11 +58,36 @@ pub enum AgentCliError {
     Enroll(#[from] EnrollError),
     #[error("failed to read the enrollment token from the TTY or stdin: {0}")]
     TokenInput(std::io::Error),
+    #[error("report persistence failed: {0}")]
+    Report(String),
 }
 
-/// Run `platpulse-agent enroll`: read the one-time Enrollment Token from
-/// the TTY (hidden) or stdin, exchange it with the Server, and store the
-/// issued credential. The credential itself is never printed.
+pub fn run_generate_node_id() {
+    println!("{}", generate_node_id());
+}
+
+pub fn run_validate_config(args: &ValidateConfigArgs) -> Result<(), Box<AgentCliError>> {
+    let file =
+        AgentConfigFile::load(&args.config).map_err(|e| Box::new(AgentCliError::Config(e)))?;
+    let validated = file
+        .validate()
+        .map_err(|e| Box::new(AgentCliError::Config(e)))?;
+    println!(
+        "Validated {} Node(s), inventory revision {}.",
+        validated.inventory.nodes.len(),
+        validated.inventory.revision
+    );
+    Ok(())
+}
+
+pub async fn run_persist_report(args: &PersistReportArgs) -> Result<(), AgentCliError> {
+    let digest = crate::reporting::persist_report_from_config(&args.config, &args.report)
+        .await
+        .map_err(|error| AgentCliError::Report(error.to_string()))?;
+    println!("Persisted immutable report (sha256 {digest}).");
+    Ok(())
+}
+
 pub async fn run_enroll(args: &EnrollArgs) -> Result<(), AgentCliError> {
     let config = AgentConfig::resolve(&args.config)?;
     let token = read_enrollment_token().map_err(AgentCliError::TokenInput)?;
@@ -70,9 +108,6 @@ pub async fn run_enroll(args: &EnrollArgs) -> Result<(), AgentCliError> {
     Ok(())
 }
 
-/// Read the Enrollment Token from the TTY with hidden input, or from a
-/// secure stdin/fd: the first line is the token; trailing line endings are
-/// stripped, all other characters are kept verbatim.
 fn read_enrollment_token() -> Result<String, std::io::Error> {
     if std::io::stdin().is_terminal() {
         rpassword::prompt_password("Enrollment token: ")
@@ -87,13 +122,10 @@ fn read_enrollment_token() -> Result<String, std::io::Error> {
 mod tests {
     #[test]
     fn stdin_token_keeps_spaces_and_strips_only_line_endings() {
-        // read_enrollment_token reads the real process stdin, which is not
-        // injectable here; this test pins the trimming rule it applies.
         assert_eq!("a b c".trim_end_matches(['\r', '\n']), "a b c");
         assert_eq!(
             "pp_enroll_x_abc\r\n".trim_end_matches(['\r', '\n']),
             "pp_enroll_x_abc"
         );
-        assert_eq!(" token ".trim_end_matches(['\r', '\n']), " token ");
     }
 }

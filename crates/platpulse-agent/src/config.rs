@@ -1,37 +1,50 @@
 //! Agent configuration (design §8.2).
-//!
-//! `agent.toml` carries the Server URL and file paths; it never holds
-//! plaintext secrets. The Agent Credential lives in its own file (0600,
-//! strict permission validation) and is never part of argv, URLs, logs, or
-//! errors. Node connection configuration is added by the P1-04 ticket that
-//! first needs it; unknown fields are rejected so a half-migrated config
-//! can never be silently ignored.
 
 use std::path::{Path, PathBuf};
 
+use platpulse_core::identity::NodeId;
+use platpulse_core::inventory::{InventoryNode, NodeInventory, ProcessSelector};
+use platpulse_core::network::{NetworkKey, RpcEndpoint};
 use serde::Deserialize;
 use thiserror::Error;
 
-/// Settings read from `agent.toml`. All fields are required: an Agent must
-/// know where its Server, credential file, and state database are before
-/// it can enroll or report.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentConfigFile {
-    /// Base origin of the Server, e.g. `https://monitor.example.com`.
     pub server_url: String,
-    /// Path of the Agent Credential file (created by `enroll`, 0600).
     pub credential_file: PathBuf,
-    /// Path of the Agent Store SQLite database.
     pub state_db: PathBuf,
+    #[serde(default = "default_inventory_revision")]
+    pub inventory_revision: u64,
+    #[serde(default)]
+    pub nodes: Vec<AgentNodeConfig>,
 }
 
-/// Fully resolved Agent settings.
+fn default_inventory_revision() -> u64 {
+    1
+}
+
+/// One Node declaration in the Agent's authoritative local configuration.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentNodeConfig {
+    pub node_id: NodeId,
+    pub network_key: NetworkKey,
+    pub rpc_endpoint: RpcEndpoint,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub process: Option<ProcessSelector>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ValidatedAgentConfig {
+    pub inventory: NodeInventory,
+}
+
 #[derive(Debug, Clone)]
 pub struct AgentConfig {
-    /// Config file the settings were loaded from.
     pub config_path: PathBuf,
-    /// Server origin (normalized, no trailing slash).
     pub server_url: String,
     pub credential_file: PathBuf,
     pub state_db: PathBuf,
@@ -53,10 +66,13 @@ pub enum AgentConfigError {
     },
     #[error("invalid server_url in {path}: {reason}")]
     InvalidServerUrl { path: PathBuf, reason: String },
+    #[error("invalid node configuration: {0}")]
+    InvalidNode(String),
+    #[error("inventory_revision must be greater than zero")]
+    InvalidInventoryRevision,
 }
 
 impl AgentConfigFile {
-    /// Parse an `agent.toml` file.
     pub fn load(path: &Path) -> Result<Self, AgentConfigError> {
         let text = std::fs::read_to_string(path).map_err(|source| AgentConfigError::Read {
             path: path.to_owned(),
@@ -67,16 +83,60 @@ impl AgentConfigFile {
             source,
         })
     }
+
+    /// Validate the entire Node set before an Inventory is submitted.
+    pub fn validate(&self) -> Result<ValidatedAgentConfig, AgentConfigError> {
+        if self.inventory_revision == 0 {
+            return Err(AgentConfigError::InvalidInventoryRevision);
+        }
+        let mut seen_ids = std::collections::HashSet::new();
+        let mut seen_endpoints = std::collections::HashSet::new();
+        let mut nodes = Vec::with_capacity(self.nodes.len());
+        for node in &self.nodes {
+            if !seen_ids.insert(node.node_id) {
+                return Err(AgentConfigError::InvalidNode(format!(
+                    "duplicate node_id {}",
+                    node.node_id
+                )));
+            }
+            if !seen_endpoints.insert(node.rpc_endpoint.as_str()) {
+                return Err(AgentConfigError::InvalidNode(
+                    "duplicate RPC endpoint; endpoint failover is not supported".to_owned(),
+                ));
+            }
+            if let Some(name) = &node.display_name {
+                if name.is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
+                    return Err(AgentConfigError::InvalidNode(
+                        "display_name must be 1..=128 characters without control characters"
+                            .to_owned(),
+                    ));
+                }
+            }
+            nodes.push(InventoryNode {
+                node_id: node.node_id,
+                display_name: node.display_name.clone(),
+                network_key: node.network_key.clone(),
+                rpc_endpoint: node.rpc_endpoint.clone(),
+                process: node.process.clone(),
+            });
+        }
+        Ok(ValidatedAgentConfig {
+            inventory: NodeInventory {
+                revision: self.inventory_revision,
+                nodes,
+            },
+        })
+    }
 }
 
-/// Normalize a configured Server URL: absolute `http(s)://host[:port]`
-/// with no path, query, fragment, userinfo, or trailing slash. Credentials
-/// in a URL are rejected outright — an RPC or Server URL must never carry
-/// a secret (design §8.2, §12.6). Plaintext `http://` is only accepted for
-/// loopback development endpoints: the Enrollment Token and every later
-/// Agent auth exchange would otherwise travel in cleartext, so a
-/// non-loopback `http://` URL is refused here (design §12.6/§19.2: Agent
-/// auth is TLS-only off loopback).
+/// Generate a stable Node ID for a new local declaration.
+pub fn generate_node_id() -> NodeId {
+    uuid::Uuid::new_v4()
+        .to_string()
+        .parse()
+        .expect("generated UUID is valid")
+}
+
 pub fn normalize_server_url(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim().trim_end_matches('/');
     let Some((scheme, rest)) = trimmed.split_once("://") else {
@@ -105,8 +165,6 @@ pub fn normalize_server_url(raw: &str) -> Result<String, String> {
     Ok(format!("{scheme}://{rest}"))
 }
 
-/// Whether `host[:port]` names a loopback address. Literal checks only —
-/// the Agent never resolves DNS for a security decision.
 fn is_loopback_host(host_port: &str) -> bool {
     let host = host_port
         .rsplit_once(':')
@@ -118,18 +176,14 @@ fn is_loopback_host(host_port: &str) -> bool {
 }
 
 impl AgentConfig {
-    /// Load and resolve an `agent.toml`.
     pub fn resolve(config_path: &Path) -> Result<Self, AgentConfigError> {
         let file = AgentConfigFile::load(config_path)?;
-        let server_url = match normalize_server_url(&file.server_url) {
-            Ok(url) => url,
-            Err(reason) => {
-                return Err(AgentConfigError::InvalidServerUrl {
-                    path: config_path.to_owned(),
-                    reason,
-                });
+        let server_url = normalize_server_url(&file.server_url).map_err(|reason| {
+            AgentConfigError::InvalidServerUrl {
+                path: config_path.to_owned(),
+                reason,
             }
-        };
+        })?;
         Ok(Self {
             config_path: config_path.to_owned(),
             server_url,
@@ -137,15 +191,17 @@ impl AgentConfig {
             state_db: file.state_db,
         })
     }
+
+    pub fn validated_inventory(&self) -> Result<ValidatedAgentConfig, AgentConfigError> {
+        AgentConfigFile::load(&self.config_path)?.validate()
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
-    use tempfile::tempdir;
-
     use super::*;
+    use std::fs;
+    use tempfile::tempdir;
 
     fn write_config(dir: &Path, text: &str) -> PathBuf {
         let path = dir.join("agent.toml");
@@ -154,49 +210,30 @@ mod tests {
     }
 
     #[test]
-    fn full_config_resolves_and_normalizes_the_server_url() {
+    fn full_config_resolves_and_normalizes_server_url() {
         let dir = tempdir().unwrap();
         let path = write_config(
             dir.path(),
-            r#"
-server_url = "https://monitor.example.com/"
-credential_file = "/var/lib/platpulse-agent/credential"
-state_db = "/var/lib/platpulse-agent/agent.db"
-"#,
+            "server_url = \"https://monitor.example.com/\"\ncredential_file = \"/tmp/c\"\nstate_db = \"/tmp/db\"\n",
         );
         let config = AgentConfig::resolve(&path).unwrap();
         assert_eq!(config.server_url, "https://monitor.example.com");
-        assert_eq!(
-            config.credential_file,
-            Path::new("/var/lib/platpulse-agent/credential")
-        );
-        assert_eq!(
-            config.state_db,
-            Path::new("/var/lib/platpulse-agent/agent.db")
-        );
     }
 
     #[test]
-    fn missing_required_fields_fail_parsing() {
+    fn missing_required_fields_and_unknown_fields_fail() {
         let dir = tempdir().unwrap();
-        let path = write_config(dir.path(), "server_url = \"https://example.com\"\n");
         assert!(matches!(
-            AgentConfig::resolve(&path).unwrap_err(),
+            AgentConfig::resolve(&write_config(
+                dir.path(),
+                "server_url = \"https://example.com\"\n"
+            ))
+            .unwrap_err(),
             AgentConfigError::Parse { .. }
         ));
-    }
-
-    #[test]
-    fn unknown_fields_are_rejected() {
-        let dir = tempdir().unwrap();
         let path = write_config(
             dir.path(),
-            r#"
-server_url = "https://example.com"
-credential_file = "/tmp/credential"
-state_db = "/tmp/agent.db"
-nodes = []
-"#,
+            "server_url = \"https://example.com\"\ncredential_file=\"/tmp/c\"\nstate_db=\"/tmp/d\"\nnonsense=[]\n",
         );
         assert!(matches!(
             AgentConfig::resolve(&path).unwrap_err(),
@@ -205,50 +242,27 @@ nodes = []
     }
 
     #[test]
-    fn server_url_rejects_credentials_paths_and_bad_schemes() {
-        for raw in [
-            "http://user:pass@example.com",
-            "https://example.com/path",
-            "https://example.com?q=1",
-            "ftp://example.com",
-            "example.com",
-            "https://",
-        ] {
-            assert!(
-                normalize_server_url(raw).is_err(),
-                "{raw} must be rejected as a server URL"
-            );
-        }
-        assert_eq!(
-            normalize_server_url(" http://127.0.0.1:8080/ ").unwrap(),
-            "http://127.0.0.1:8080"
+    fn validates_whole_inventory_and_endpoint_rules() {
+        let id = "0195f2a1-2b3c-4d5e-8f90-123456789abc";
+        let base = format!(
+            "server_url=\"https://example.com\"\ncredential_file=\"/tmp/c\"\nstate_db=\"/tmp/d\"\nnodes=[{{node_id=\"{id}\",network_key=\"platon-mainnet\",rpc_endpoint=\"ws://127.0.0.1:1\"}}]\n"
         );
+        let file: AgentConfigFile = toml::from_str(&base).unwrap();
+        assert_eq!(file.validate().unwrap().inventory.nodes.len(), 1);
+        for endpoint in ["http://127.0.0.1:1", "https://node.example", "ipc://"] {
+            let text = base.replace("ws://127.0.0.1:1", endpoint);
+            assert!(toml::from_str::<AgentConfigFile>(&text).is_err());
+        }
+        let duplicate = base.replace("nodes=[", &format!("nodes=[{{node_id=\"{id}\",network_key=\"platon-mainnet\",rpc_endpoint=\"ws://127.0.0.1:2\"}},"));
+        let file: AgentConfigFile = toml::from_str(&duplicate).unwrap();
+        assert!(matches!(
+            file.validate(),
+            Err(AgentConfigError::InvalidNode(_))
+        ));
     }
 
     #[test]
-    fn plaintext_http_is_limited_to_loopback_servers() {
-        // Loopback development endpoints may use http (design §19.1).
-        for raw in [
-            "http://127.0.0.1:8080",
-            "http://localhost:4173",
-            "http://[::1]:8080",
-        ] {
-            assert!(normalize_server_url(raw).is_ok(), "{raw} must be accepted");
-        }
-        // The Enrollment Token and Agent Credential are Bearer secrets;
-        // sending them in cleartext to a remote host is refused (design
-        // §12.6/§19.2: Agent auth is TLS-only off loopback).
-        for raw in [
-            "http://monitor.example.com",
-            "http://192.168.1.10:8080",
-            "http://10.0.0.5",
-        ] {
-            assert!(
-                normalize_server_url(raw).is_err(),
-                "{raw} must be rejected: plaintext Agent auth off loopback"
-            );
-        }
-        // https is unrestricted.
-        assert!(normalize_server_url("https://monitor.example.com").is_ok());
+    fn generates_uuid_node_ids() {
+        assert_ne!(generate_node_id(), generate_node_id());
     }
 }

@@ -14,6 +14,7 @@ pub mod config;
 pub mod credential;
 pub mod database;
 pub mod enroll;
+pub mod reporting;
 
 pub use database::{
     AGENT_MIGRATOR, AGENT_SCHEMA_VERSION, AgentDatabaseConfig, AgentDatabaseError, AgentStore,
