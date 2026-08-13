@@ -3,12 +3,18 @@
 //! A subscription is owned by one Node and has its own bounded queue.  The
 //! resolver only requests a block by the header hash and receives transaction
 //! hashes (never transaction bodies), then verifies all identity fields before
-//! producing a `BlockSummary`.
+//! producing a `BlockSummary`. The production transport is backed by the
+//! pinned Alloy fork; the synchronous `BlockTransport` seam remains available
+//! for scripted fakes and tests.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
-use futures_util::{SinkExt, StreamExt};
+use alloy::network::Ethereum;
+use alloy::providers::{
+    DynProvider, GetSubscription, IpcConnect, Provider, ProviderBuilder, WsConnect,
+};
 use platpulse_core::block::{
     BlockProductionAttribution, BlockSource, BlockSummary, ProtocolProposer, SealSignerMatch,
 };
@@ -19,9 +25,8 @@ use platpulse_core::time::Rfc3339;
 use serde::Deserialize;
 use sqlx::{Connection, FromRow};
 use thiserror::Error;
+use tokio::sync::broadcast::error::RecvError as BroadcastRecvError;
 use tokio::time::timeout;
-use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 use crate::database::AgentStore;
 /// Production-oriented transport seam for per-Node PubSub/RPC. Implementations
@@ -54,15 +59,18 @@ pub enum TransportError {
     Failed(String),
 }
 
-/// A bounded production WebSocket transport. Each invocation opens its own
-/// connection and subscription for exactly one Node; no Agent-level socket is
-/// shared between Nodes.
+/// A bounded production transport backed by the pinned Alloy fork. Each
+/// invocation opens its own connection and subscription for exactly one
+/// Node; no Agent-level socket is shared between Nodes.
 #[derive(Debug, Clone, Copy)]
 pub struct WebSocketBlockTransport {
     pub receive_timeout: Duration,
+    /// Bound for establishing one WS/IPC connection. A node that accepts TCP
+    /// but stalls the HTTP upgrade must not block the collector forever.
+    pub connect_timeout: Duration,
     pub max_heads: usize,
     pub max_transactions: usize,
-    /// Maximum accepted UTF-8 RPC response bytes.
+    /// Maximum accepted JSON-RPC response size (serialized value length).
     pub max_response_bytes: usize,
     /// Methods allowed by this Node's configured capability probe. Unknown or
     /// admin/debug methods fail closed before a request is sent.
@@ -73,62 +81,46 @@ impl Default for WebSocketBlockTransport {
     fn default() -> Self {
         Self {
             receive_timeout: Duration::from_millis(250),
+            connect_timeout: Duration::from_secs(10),
             max_heads: 32,
             max_transactions: 100_000,
             max_response_bytes: 2 * 1024 * 1024,
             allowed_methods: &[
                 "eth_subscribe",
-                "platon_getBlockByHash",
-                "platon_getBlockByNumber",
-                "platon_blockNumber",
+                "eth_getBlockByHash",
+                "eth_getBlockByNumber",
+                "eth_blockNumber",
             ],
         }
     }
 }
 
+/// PlatON `newHeads` notification payload. Fields stay as wire strings so
+/// quantity/timestamp parsing and bounds apply exactly once. The `eth_*`
+/// alias reports seconds timestamps; [`timestamp_ms`] converts to ms.
 #[derive(Debug, Deserialize)]
-struct RpcEnvelope<T> {
-    id: u64,
-    result: Option<T>,
-    error: Option<RpcErrorBody>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RpcErrorBody {
-    message: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct HeadNotification {
-    params: HeadParams,
-}
-
-#[derive(Debug, Deserialize)]
-struct HeadParams {
-    result: HeadWire,
-}
-
-#[derive(Debug, Deserialize)]
-struct HeadWire {
-    number: String,
-    hash: String,
-    #[serde(rename = "parentHash")]
-    parent_hash: String,
-    timestamp: String,
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PlatonHead {
+    pub number: String,
+    pub hash: String,
+    pub parent_hash: String,
+    pub timestamp: String,
     #[serde(default, alias = "author")]
-    miner: Option<String>,
+    pub miner: Option<String>,
 }
 
+/// PlatON `eth_getBlockBy{Hash,Number}(…, false)` response. Only
+/// transaction hashes are ever retained; full bodies are never requested.
 #[derive(Debug, Deserialize)]
-struct BlockWire {
-    number: String,
-    hash: String,
-    #[serde(rename = "parentHash")]
-    parent_hash: String,
-    timestamp: String,
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PlatonBlock {
+    pub number: String,
+    pub hash: String,
+    pub parent_hash: String,
+    pub timestamp: String,
     #[serde(default, alias = "author")]
-    miner: Option<String>,
-    transactions: Vec<Hash32>,
+    pub miner: Option<String>,
+    pub transactions: Vec<Hash32>,
 }
 
 fn quantity(value: &str) -> Result<u64, TransportError> {
@@ -145,10 +137,13 @@ fn parse_hash(value: &str) -> Result<Hash32, TransportError> {
 
 fn parse_address(value: Option<String>) -> Result<Address, TransportError> {
     value
-        .unwrap_or_else(|| "0x0000000000000000000000000000000000000000".to_owned())
+        .unwrap_or_else(|| ZERO_COINBASE.to_owned())
         .parse()
         .map_err(|_| TransportError::Failed("invalid RPC coinbase".to_owned()))
 }
+
+/// Sentinel used when a block/header omits `miner`; never a real coinbase.
+const ZERO_COINBASE: &str = "0x0000000000000000000000000000000000000000";
 fn timestamp_ms(value: &str) -> Result<u64, TransportError> {
     quantity(value)?
         .checked_mul(1000)
@@ -159,74 +154,108 @@ fn method_allowed(method: &str, allowed: &[&str]) -> bool {
     allowed.contains(&method)
 }
 
-fn decode_rpc<T: for<'de> Deserialize<'de>>(
-    text: &str,
+/// Alloy decodes the raw frame before we see it, so the size bound applies to
+/// the decoded value's serialized length instead of the wire bytes.
+fn check_response_size(
+    value: &serde_json::Value,
     max_response_bytes: usize,
-) -> Result<RpcEnvelope<T>, TransportError> {
-    if text.len() > max_response_bytes {
+) -> Result<(), TransportError> {
+    if value.to_string().len() > max_response_bytes {
         return Err(TransportError::Failed(
             "RPC response exceeded configured size limit".to_owned(),
         ));
     }
-    serde_json::from_str(text)
-        .map_err(|_| TransportError::Failed("malformed RPC response".to_owned()))
+    Ok(())
+}
+
+/// Parse and bound one `eth_getBlockBy…` response value.
+fn parse_block_value(
+    value: serde_json::Value,
+    max_response_bytes: usize,
+    max_transactions: usize,
+) -> Result<PlatonBlock, TransportError> {
+    check_response_size(&value, max_response_bytes)?;
+    let block: PlatonBlock = serde_json::from_value(value)
+        .map_err(|_| TransportError::Failed("malformed RPC block response".to_owned()))?;
+    if block.transactions.len() > max_transactions {
+        return Err(TransportError::Failed(
+            "RPC block transaction list exceeded configured size limit".to_owned(),
+        ));
+    }
+    Ok(block)
 }
 
 impl WebSocketBlockTransport {
     async fn connect(
         &self,
         endpoint: &RpcEndpoint,
-    ) -> Result<WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>, TransportError> {
-        if !matches!(endpoint.scheme(), RpcScheme::Ws | RpcScheme::Wss) {
-            return Err(TransportError::Unavailable);
-        }
-        connect_async(endpoint.as_str())
+    ) -> Result<DynProvider<Ethereum>, TransportError> {
+        let connect = async {
+            match endpoint.scheme() {
+                RpcScheme::Ws | RpcScheme::Wss => ProviderBuilder::new()
+                    .connect_ws(WsConnect::new(endpoint.as_str()))
+                    .await
+                    .map(DynProvider::new)
+                    .map_err(|error| {
+                        TransportError::Failed(format!("RPC connection failed: {error}"))
+                    }),
+                RpcScheme::Ipc => {
+                    let path = endpoint
+                        .as_str()
+                        .strip_prefix("ipc://")
+                        .ok_or(TransportError::Unavailable)?;
+                    ProviderBuilder::new()
+                        .connect_ipc(IpcConnect::new(path.to_owned()))
+                        .await
+                        .map(DynProvider::new)
+                        .map_err(|error| {
+                            TransportError::Failed(format!("RPC connection failed: {error}"))
+                        })
+                }
+            }
+        };
+        timeout(self.connect_timeout, connect)
             .await
-            .map(|(socket, _)| socket)
-            .map_err(|_| TransportError::Failed("RPC connection failed".to_owned()))
+            .map_err(|_| TransportError::Failed("RPC connection timed out".to_owned()))?
     }
 
-    async fn request<T: for<'de> Deserialize<'de>>(
+    /// One bounded raw JSON-RPC call through Alloy. The method allowlist is
+    /// enforced before the request is sent; the decoded value is size-bounded
+    /// before it is parsed into a DTO.
+    async fn request_value(
         &self,
-        socket: &mut WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
-        id: u64,
-        method: &str,
+        provider: &DynProvider<Ethereum>,
+        method: &'static str,
         params: serde_json::Value,
-    ) -> Result<T, TransportError> {
+    ) -> Result<serde_json::Value, TransportError> {
         if !method_allowed(method, self.allowed_methods) {
             return Err(TransportError::Failed("RPC method unavailable".to_owned()));
         }
-        let request = serde_json::json!({"jsonrpc":"2.0","id":id,"method":method,"params":params});
-        socket
-            .send(Message::Text(request.to_string().into()))
-            .await
-            .map_err(|_| TransportError::Failed("RPC request failed".to_owned()))?;
-        loop {
-            let message = timeout(self.receive_timeout, socket.next())
-                .await
-                .map_err(|_| TransportError::Failed("RPC response timed out".to_owned()))?
-                .ok_or_else(|| TransportError::Failed("RPC connection closed".to_owned()))
-                .and_then(|result| {
-                    result.map_err(|error| TransportError::Failed(error.to_string()))
-                })?;
-            let Message::Text(text) = message else {
-                continue;
-            };
-            let response: RpcEnvelope<T> = decode_rpc(text.as_ref(), self.max_response_bytes)?;
-            if response.id != id {
-                continue;
-            }
-            if let Some(error) = response.error {
-                return Err(TransportError::Failed(
-                    error
-                        .message
-                        .unwrap_or_else(|| "RPC method failed".to_owned()),
-                ));
-            }
-            return response
-                .result
-                .ok_or_else(|| TransportError::Failed("RPC response omitted result".to_owned()));
-        }
+        let value: serde_json::Value = timeout(
+            self.receive_timeout,
+            provider.raw_request::<_, serde_json::Value>(Cow::Borrowed(method), params),
+        )
+        .await
+        .map_err(|_| TransportError::Failed("RPC request timed out".to_owned()))?
+        .map_err(|error| TransportError::Failed(format!("RPC request failed: {error}")))?;
+        check_response_size(&value, self.max_response_bytes)?;
+        Ok(value)
+    }
+
+    fn resolved_from_block(
+        &self,
+        block: PlatonBlock,
+        identity: &NetworkIdentity,
+    ) -> Result<ResolvedBlock, TransportError> {
+        Ok(ResolvedBlock {
+            block_number: quantity(&block.number)?,
+            block_hash: parse_hash(&block.hash)?,
+            parent_hash: parse_hash(&block.parent_hash)?,
+            block_timestamp_ms: timestamp_ms(&block.timestamp)?,
+            transaction_hashes: block.transactions,
+            network_identity: identity.clone(),
+            coinbase: parse_address(block.miner)?,
+        })
     }
 
     pub async fn get_block_by_hash_async(
@@ -235,28 +264,16 @@ impl WebSocketBlockTransport {
         hash: &Hash32,
         identity: &NetworkIdentity,
     ) -> Result<ResolvedBlock, TransportError> {
-        let mut socket = self.connect(endpoint).await?;
-        let block: BlockWire = self
-            .request(
-                &mut socket,
-                1,
-                "platon_getBlockByHash",
+        let provider = self.connect(endpoint).await?;
+        let value = self
+            .request_value(
+                &provider,
+                "eth_getBlockByHash",
                 serde_json::json!([hash.to_string(), false]),
             )
             .await?;
-        Ok(ResolvedBlock {
-            block_number: quantity(&block.number)?,
-            block_hash: parse_hash(&block.hash)?,
-            parent_hash: parse_hash(&block.parent_hash)?,
-            block_timestamp_ms: timestamp_ms(&block.timestamp)?,
-            transaction_hashes: block
-                .transactions
-                .into_iter()
-                .take(self.max_transactions)
-                .collect(),
-            network_identity: identity.clone(),
-            coinbase: parse_address(block.miner)?,
-        })
+        let block = parse_block_value(value, self.max_response_bytes, self.max_transactions)?;
+        self.resolved_from_block(block, identity)
     }
 
     pub async fn get_block_by_number_async(
@@ -265,36 +282,27 @@ impl WebSocketBlockTransport {
         identity: &NetworkIdentity,
         height: u64,
     ) -> Result<ResolvedBlock, TransportError> {
-        let mut socket = self.connect(endpoint).await?;
-        let block: BlockWire = self
-            .request(
-                &mut socket,
-                1,
-                "platon_getBlockByNumber",
+        let provider = self.connect(endpoint).await?;
+        let value = self
+            .request_value(
+                &provider,
+                "eth_getBlockByNumber",
                 serde_json::json!([format!("0x{height:x}"), false]),
             )
             .await?;
-        Ok(ResolvedBlock {
-            block_number: quantity(&block.number)?,
-            block_hash: parse_hash(&block.hash)?,
-            parent_hash: parse_hash(&block.parent_hash)?,
-            block_timestamp_ms: timestamp_ms(&block.timestamp)?,
-            transaction_hashes: block
-                .transactions
-                .into_iter()
-                .take(self.max_transactions)
-                .collect(),
-            network_identity: identity.clone(),
-            coinbase: parse_address(block.miner)?,
-        })
+        let block = parse_block_value(value, self.max_response_bytes, self.max_transactions)?;
+        self.resolved_from_block(block, identity)
     }
 
     pub async fn current_head_async(&self, endpoint: &RpcEndpoint) -> Result<u64, TransportError> {
-        let mut socket = self.connect(endpoint).await?;
-        let value: String = self
-            .request(&mut socket, 1, "platon_blockNumber", serde_json::json!([]))
+        let provider = self.connect(endpoint).await?;
+        let value = self
+            .request_value(&provider, "eth_blockNumber", serde_json::json!([]))
             .await?;
-        quantity(&value)
+        let text = value
+            .as_str()
+            .ok_or_else(|| TransportError::Failed("invalid block number response".to_owned()))?;
+        quantity(text)
     }
     #[allow(clippy::too_many_arguments)]
     pub async fn gap_backfill(
@@ -369,42 +377,33 @@ impl WebSocketBlockTransport {
         identity: NetworkIdentity,
         observed_at: Rfc3339,
     ) -> Result<Vec<BlockSummary>, TransportError> {
-        let mut socket = self.connect(endpoint).await?;
-        let _: String = self
-            .request(
-                &mut socket,
-                1,
-                "eth_subscribe",
-                serde_json::json!(["newHeads"]),
-            )
-            .await?;
+        let provider = self.connect(endpoint).await?;
+        let mut heads = self.subscribe_heads(&provider).await?;
         for _ in 0..self.max_heads {
-            let message = match timeout(self.receive_timeout, socket.next()).await {
-                Ok(Some(Ok(message))) => message,
-                _ => break,
-            };
-            let Message::Text(text) = message else {
-                continue;
-            };
-            if text.len() > self.max_response_bytes {
-                return Err(TransportError::Failed(
-                    "RPC response exceeded configured size limit".to_owned(),
-                ));
+            match timeout(self.receive_timeout, heads.recv_result()).await {
+                Ok(Ok(Ok(head))) => {
+                    subscription
+                        .push(HeadHeader {
+                            block_number: quantity(&head.number)?,
+                            block_hash: parse_hash(&head.hash)?,
+                            parent_hash: parse_hash(&head.parent_hash)?,
+                            block_timestamp_ms: timestamp_ms(&head.timestamp)?,
+                            coinbase: parse_address(head.miner)?,
+                        })
+                        .map_err(|_| TransportError::Failed("head queue full".to_owned()))?;
+                }
+                Ok(Ok(Err(error))) => {
+                    return Err(TransportError::Failed(format!(
+                        "malformed head notification: {error}"
+                    )));
+                }
+                Ok(Err(BroadcastRecvError::Lagged(_))) => {
+                    return Err(TransportError::Failed(
+                        "head notification queue lagged; reconnect required".to_owned(),
+                    ));
+                }
+                Ok(Err(BroadcastRecvError::Closed)) | Err(_) => break,
             }
-            let notification: HeadNotification = match serde_json::from_str(text.as_ref()) {
-                Ok(value) => value,
-                Err(_) => continue,
-            };
-            let wire = notification.params.result;
-            subscription
-                .push(HeadHeader {
-                    block_number: quantity(&wire.number)?,
-                    block_hash: parse_hash(&wire.hash)?,
-                    parent_hash: parse_hash(&wire.parent_hash)?,
-                    block_timestamp_ms: timestamp_ms(&wire.timestamp)?,
-                    coinbase: parse_address(wire.miner)?,
-                })
-                .map_err(|_| TransportError::Failed("head queue full".to_owned()))?;
         }
         let mut summaries = Vec::new();
         while let Some(header) = subscription.front_header().cloned() {
@@ -429,10 +428,38 @@ impl WebSocketBlockTransport {
                 transaction_count: resolved.transaction_hashes.len() as u64,
                 block_interval_ms: None,
                 source: BlockSource::Subscription,
-                attribution: BlockProductionAttribution::unknown_attribution(resolved.coinbase, "seal recovery rule is not verified for this fork; protocol proposer evidence is unavailable"),
+                attribution: BlockProductionAttribution::unknown_attribution(
+                    // Prefer the resolved block's coinbase; fall back to the
+                    // subscribed header's coinbase exactly as the transport
+                    // did before the Alloy migration (a missing `miner` is
+                    // not a zero coinbase).
+                    if resolved.coinbase.as_str() != ZERO_COINBASE {
+                        resolved.coinbase
+                    } else {
+                        header.coinbase
+                    },
+                    "seal recovery rule is not verified for this fork; protocol proposer evidence is unavailable",
+                ),
             });
         }
         Ok(summaries)
+    }
+
+    /// Subscribe to `newHeads` through Alloy. The local `PlatonHead` DTO keeps
+    /// PlatON's reduced header payload decodable; `channel_size` bounds the
+    /// in-flight notification buffer.
+    async fn subscribe_heads(
+        &self,
+        provider: &DynProvider<Ethereum>,
+    ) -> Result<alloy::pubsub::Subscription<PlatonHead>, TransportError> {
+        let mut call = provider.client().request("eth_subscribe", ("newHeads",));
+        call.set_is_subscription();
+        let subscription = GetSubscription::<_, PlatonHead>::new(provider.weak_client(), call)
+            .channel_size(self.max_heads.max(1));
+        timeout(self.receive_timeout, subscription)
+            .await
+            .map_err(|_| TransportError::Failed("block subscription timed out".to_owned()))?
+            .map_err(|error| TransportError::Failed(format!("block subscription failed: {error}")))
     }
 
     pub async fn collect_node_summaries(
@@ -442,106 +469,9 @@ impl WebSocketBlockTransport {
         identity: NetworkIdentity,
         observed_at: Rfc3339,
     ) -> Result<Vec<BlockSummary>, TransportError> {
-        let mut socket = self.connect(endpoint).await?;
-        let _subscription: String = self
-            .request(
-                &mut socket,
-                1,
-                "eth_subscribe",
-                serde_json::json!(["newHeads"]),
-            )
-            .await?;
-        let mut headers = VecDeque::with_capacity(self.max_heads);
-        for _ in 0..self.max_heads {
-            let message = match timeout(self.receive_timeout, socket.next()).await {
-                Ok(Some(Ok(message))) => message,
-                _ => break,
-            };
-            let Message::Text(text) = message else {
-                continue;
-            };
-            if text.len() > self.max_response_bytes {
-                return Err(TransportError::Failed(
-                    "RPC response exceeded configured size limit".to_owned(),
-                ));
-            }
-            let notification: HeadNotification = match serde_json::from_str(text.as_ref()) {
-                Ok(value) => value,
-                Err(_) => continue,
-            };
-            let wire = notification.params.result;
-            let header = HeadHeader {
-                block_number: quantity(&wire.number)?,
-                block_hash: parse_hash(&wire.hash)?,
-                parent_hash: parse_hash(&wire.parent_hash)?,
-                block_timestamp_ms: timestamp_ms(&wire.timestamp)?,
-                coinbase: parse_address(wire.miner)?,
-            };
-            headers.push_back(header);
-            if headers.len() >= self.max_heads {
-                break;
-            }
-        }
-        let mut summaries = Vec::new();
-        let mut next_id = 2;
-        while let Some(header) = headers.front().cloned() {
-            let hash = format!("{}", header.block_hash);
-            let block: BlockWire = match self
-                .request(
-                    &mut socket,
-                    next_id,
-                    "platon_getBlockByHash",
-                    serde_json::json!([hash, false]),
-                )
-                .await
-            {
-                Ok(block) => block,
-                Err(error) => return Err(error),
-            };
-            next_id = next_id.saturating_add(1);
-            if block.transactions.len() > self.max_transactions {
-                return Err(TransportError::Failed(
-                    "RPC block transaction list exceeded configured size limit".to_owned(),
-                ));
-            }
-            let resolved = ResolvedBlock {
-                block_number: quantity(&block.number)?,
-                block_hash: parse_hash(&block.hash)?,
-                parent_hash: parse_hash(&block.parent_hash)?,
-                block_timestamp_ms: timestamp_ms(&block.timestamp)?,
-                transaction_hashes: block
-                    .transactions
-                    .into_iter()
-                    .take(self.max_transactions)
-                    .collect(),
-                network_identity: identity.clone(),
-                coinbase: parse_address(block.miner.clone().or(Some(header.coinbase.to_string())))?,
-            };
-            if resolved.block_number != header.block_number
-                || resolved.block_hash != header.block_hash
-                || resolved.parent_hash != header.parent_hash
-            {
-                return Err(TransportError::Resolve(ResolveError::IdentityMismatch));
-            }
-            headers.pop_front();
-            summaries.push(BlockSummary {
-                node_id,
-                network_identity: resolved.network_identity,
-                block_number: resolved.block_number,
-                block_hash: resolved.block_hash,
-                parent_hash: resolved.parent_hash,
-                block_timestamp_ms: resolved.block_timestamp_ms,
-                observed_at,
-                transaction_count: resolved.transaction_hashes.len() as u64,
-                block_interval_ms: None,
-                source: BlockSource::Subscription,
-                attribution: BlockProductionAttribution::unknown_attribution(
-                    resolved.coinbase,
-                    "seal recovery rule is not verified for this fork; protocol proposer evidence is unavailable",
-                ),
-            });
-        }
-        Ok(summaries)
+        let mut subscription = HeadSubscription::new(node_id, self.max_heads);
+        self.collect_node_summaries_into(endpoint, &mut subscription, identity, observed_at)
+            .await
     }
 }
 /// Explicitly fail closed: no fabricated heads or block values are emitted.
@@ -817,7 +747,7 @@ pub struct HeadHeader {
     pub coinbase: Address,
 }
 
-/// Bounded result of `platon_getBlockByHash(hash, false)`. The adapter only
+/// Bounded result of `eth_getBlockByHash(hash, false)`. The adapter only
 /// exposes transaction hashes, making it impossible to fetch or retain bodies.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedBlock {
@@ -1242,12 +1172,12 @@ mod tests {
     #[test]
     fn rpc_boundary_rejects_unsafe_methods_and_overflow_timestamps() {
         assert!(method_allowed(
-            "platon_getBlockByHash",
-            &["platon_getBlockByHash"]
+            "eth_getBlockByHash",
+            &["eth_getBlockByHash"]
         ));
         assert!(!method_allowed(
             "debug_traceTransaction",
-            &["platon_getBlockByHash"]
+            &["eth_getBlockByHash"]
         ));
         assert_eq!(timestamp_ms("0x1").unwrap(), 1_000);
         assert_eq!(
@@ -1337,16 +1267,28 @@ mod tests {
     #[test]
     fn deterministic_rpc_fake_rejects_oversized_malformed_and_mismatched_blocks() {
         assert!(matches!(
-            decode_rpc::<serde_json::Value>("{}", 1),
+            check_response_size(&serde_json::json!({ "a": "b" }), 1),
             Err(TransportError::Failed(message)) if message.contains("size limit")
         ));
-        assert_eq!(
-            decode_rpc::<serde_json::Value>("not-json", 1024).unwrap_err(),
-            TransportError::Failed("malformed RPC response".to_owned())
-        );
+        assert!(check_response_size(&serde_json::json!({ "a": "b" }), 1024).is_ok());
+        assert!(matches!(
+            parse_block_value(serde_json::json!({ "number": "0x1" }), 1024, 10),
+            Err(TransportError::Failed(message)) if message.contains("malformed")
+        ));
+        let oversized = serde_json::json!({
+            "number": "0x1",
+            "hash": format!("0x{}", "a".repeat(64)),
+            "parentHash": format!("0x{}", "b".repeat(64)),
+            "timestamp": "0x1",
+            "transactions": vec![format!("0x{}", "c".repeat(64)); 11]
+        });
+        assert!(matches!(
+            parse_block_value(oversized, 1024, 10),
+            Err(TransportError::Failed(message)) if message.contains("transaction list")
+        ));
         assert!(!method_allowed(
             "debug_traceTransaction",
-            &["platon_getBlockByHash"]
+            &["eth_getBlockByHash"]
         ));
 
         let wrong = ResolvedBlock {

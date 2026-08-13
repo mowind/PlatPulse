@@ -19,6 +19,7 @@ pub mod enroll;
 pub mod process;
 pub mod redaction;
 pub mod reporting;
+pub mod rpc;
 pub mod shutdown;
 pub mod time_exchange;
 

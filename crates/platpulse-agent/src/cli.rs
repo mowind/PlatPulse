@@ -10,6 +10,7 @@ use crate::block::WebSocketBlockTransport;
 use crate::collector::{FailClosedRpcAdapter, collect_and_persist_with_blocks};
 use crate::config::{AgentConfig, AgentConfigFile, generate_node_id};
 use crate::enroll::{EnrollError, enroll_agent};
+use crate::rpc::AlloyRpcAdapter;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -116,7 +117,8 @@ pub fn run_validate_config(args: &ValidateConfigArgs) -> Result<(), Box<AgentCli
 
 pub async fn run_collect_report(args: &CollectReportArgs) -> Result<(), AgentCliError> {
     let config = AgentConfig::resolve(&args.config)?;
-    crate::collector::recover_previous_boot(&config, &FailClosedRpcAdapter)
+    let adapter = AlloyRpcAdapter;
+    crate::collector::recover_previous_boot(&config, &adapter)
         .await
         .map_err(|error| AgentCliError::Collection(error.to_string()))?;
     let validated = config
@@ -130,7 +132,7 @@ pub async fn run_collect_report(args: &CollectReportArgs) -> Result<(), AgentCli
         .collect::<Vec<_>>();
     let digest = collect_and_persist_with_blocks(
         &config,
-        &FailClosedRpcAdapter,
+        &adapter,
         &WebSocketBlockTransport::default(),
         &mut subscriptions,
     )
@@ -142,7 +144,8 @@ pub async fn run_collect_report(args: &CollectReportArgs) -> Result<(), AgentCli
 
 pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
     let config = AgentConfig::resolve(&args.config)?;
-    crate::collector::recover_previous_boot(&config, &FailClosedRpcAdapter)
+    let adapter = AlloyRpcAdapter;
+    crate::collector::recover_previous_boot(&config, &adapter)
         .await
         .map_err(|error| AgentCliError::Collection(error.to_string()))?;
     let validated = config
@@ -155,7 +158,6 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
         .map(|node| crate::block::HeadSubscription::new(node.node_id, 32))
         .collect::<Vec<_>>();
     let runtime = crate::shutdown::AgentRuntime::new();
-    let adapter = FailClosedRpcAdapter;
     let transport = WebSocketBlockTransport::default();
     let mut delivery_tick = tokio::time::interval(Duration::from_secs(1));
     let signal = wait_for_shutdown_signal();
