@@ -112,11 +112,16 @@ cargo deny check && cargo audit
 
 # Web (platpulse-web)
 npm install
-npm run lint
-npm run typecheck
-npm test
-npm run build
-npm run e2e  # Playwright: phone-360-touch, phone-390-touch, tablet-768-touch, desktop-1280
+npm run lint && npm run typecheck && npm test && npm run build
+npm run test:e2e  # fixed Playwright projects against a fresh temporary SQLite Server
+- `npm run lint`
+- `npm run typecheck`
+- `npm test`
+- `npm run build`
+- `CI=1 npm run test:e2e` — boots a fresh temporary SQLite Server, provisions an Owner and Viewer through the password-from-stdin CLI, seeds two independent Nodes with one private projection, and runs the fixed Playwright projects (`phone-360-touch`, `phone-390-touch`, `tablet-768-touch`, `desktop-1280`).
+- `cargo run -p platpulse-server --quiet -- --print-openapi` and `npm run generate:api` — regenerate the committed OpenAPI and browser client artifacts and verify no diff.
+
+The release-candidate browser run validates the public/private projection boundary, Owner diagnostics, form stability across SSE-triggered refetches, keyboard login, reduced motion, and no horizontal overflow at 360×800, 390×844, 768×1024 touch, and 1280×800 desktop. Its state directory is temporary and its seed data is only for the local test process; it is not a production bootstrap path.
 ```
 
 ## Server setup and login

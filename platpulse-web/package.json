@@ -11,7 +11,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "generate:api": "node scripts/generate-api.mjs",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "react": "^19.2.8",
