@@ -8,6 +8,8 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
+use ipnet::IpNet;
+
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -46,6 +48,11 @@ pub struct ServerConfigFile {
     /// without `Secure` (design §19.1). Production cookies always use
     /// `__Host-platpulse_session` with `Secure`.
     pub development: Option<bool>,
+    /// Explicitly trusted reverse-proxy source CIDRs. Empty means no proxy
+    /// headers are trusted and non-loopback plaintext remains refused.
+    pub trusted_proxy_cidrs: Option<Vec<String>>,
+    /// Scheme asserted by a configured trusted proxy (`http` or `https`).
+    pub trusted_proxy_scheme: Option<String>,
 }
 
 /// Per-setting overrides from the `serve` CLI flags.
@@ -72,6 +79,8 @@ pub struct ServerConfig {
     /// Exact origin used for strict login validation and cookie policy.
     pub public_base_url: String,
     pub development: bool,
+    pub trusted_proxy_cidrs: Vec<IpNet>,
+    pub trusted_proxy_scheme: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -92,6 +101,10 @@ pub enum ConfigError {
     MissingStateDir { path: PathBuf },
     #[error("invalid public_base_url in {path}: {reason}")]
     InvalidBaseUrl { path: PathBuf, reason: String },
+    #[error("invalid trusted proxy CIDR: {0}")]
+    InvalidTrustedProxyCidr(String),
+    #[error("invalid trusted proxy scheme: {0}")]
+    InvalidTrustedProxyScheme(String),
 }
 
 impl ServerConfigFile {
@@ -204,6 +217,24 @@ impl ServerConfig {
 
         let development =
             cli.development || file.and_then(|file| file.development).unwrap_or(false);
+        let trusted_proxy_cidrs = file
+            .and_then(|value| value.trusted_proxy_cidrs.clone())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|value| {
+                value
+                    .parse()
+                    .map_err(|_| ConfigError::InvalidTrustedProxyCidr(value))
+            })
+            .collect::<Result<Vec<IpNet>, _>>()?;
+        let trusted_proxy_scheme = file
+            .and_then(|value| value.trusted_proxy_scheme.clone())
+            .map(|value| value.to_ascii_lowercase());
+        if let Some(scheme) = &trusted_proxy_scheme {
+            if !matches!(scheme.as_str(), "http" | "https") {
+                return Err(ConfigError::InvalidTrustedProxyScheme(scheme.clone()));
+            }
+        }
 
         Ok(Self {
             config_path: config_path.map(Path::to_owned),
@@ -214,6 +245,8 @@ impl ServerConfig {
             listen,
             public_base_url,
             development,
+            trusted_proxy_cidrs,
+            trusted_proxy_scheme,
         })
     }
 }
@@ -285,6 +318,25 @@ development = false
         assert!(!config.development);
     }
 
+    #[test]
+    fn trusted_proxy_requires_explicit_cidr_and_scheme() {
+        let dir = tempdir().unwrap();
+        let path = write_config(
+            dir.path(),
+            "state_dir = \"/srv/platpulse\"\nlisten = \"0.0.0.0:8080\"\ntrusted_proxy_cidrs = [\"10.0.0.0/8\"]\ntrusted_proxy_scheme = \"https\"\n",
+        );
+        let config = ServerConfig::resolve(Some(&path), &CliOverrides::default()).unwrap();
+        assert_eq!(config.trusted_proxy_cidrs.len(), 1);
+        assert_eq!(config.trusted_proxy_scheme.as_deref(), Some("https"));
+        assert!(
+            crate::validate_listen_address_with_proxy(
+                config.listen,
+                &config.trusted_proxy_cidrs,
+                config.trusted_proxy_scheme.as_deref()
+            )
+            .is_ok()
+        );
+    }
     #[test]
     fn cli_base_url_and_dev_flag_override_config() {
         let dir = tempdir().unwrap();

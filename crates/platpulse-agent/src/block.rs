@@ -64,7 +64,11 @@ pub struct WebSocketBlockTransport {
     pub max_transactions: usize,
     /// Maximum accepted UTF-8 RPC response bytes.
     pub max_response_bytes: usize,
+    /// Methods allowed by this Node's configured capability probe. Unknown or
+    /// admin/debug methods fail closed before a request is sent.
+    pub allowed_methods: &'static [&'static str],
 }
+
 impl Default for WebSocketBlockTransport {
     fn default() -> Self {
         Self {
@@ -72,6 +76,12 @@ impl Default for WebSocketBlockTransport {
             max_heads: 32,
             max_transactions: 100_000,
             max_response_bytes: 2 * 1024 * 1024,
+            allowed_methods: &[
+                "eth_subscribe",
+                "platon_getBlockByHash",
+                "platon_getBlockByNumber",
+                "platon_blockNumber",
+            ],
         }
     }
 }
@@ -139,6 +149,28 @@ fn parse_address(value: Option<String>) -> Result<Address, TransportError> {
         .parse()
         .map_err(|_| TransportError::Failed("invalid RPC coinbase".to_owned()))
 }
+fn timestamp_ms(value: &str) -> Result<u64, TransportError> {
+    quantity(value)?
+        .checked_mul(1000)
+        .ok_or_else(|| TransportError::Failed("RPC timestamp out of range".to_owned()))
+}
+
+fn method_allowed(method: &str, allowed: &[&str]) -> bool {
+    allowed.contains(&method)
+}
+
+fn decode_rpc<T: for<'de> Deserialize<'de>>(
+    text: &str,
+    max_response_bytes: usize,
+) -> Result<RpcEnvelope<T>, TransportError> {
+    if text.len() > max_response_bytes {
+        return Err(TransportError::Failed(
+            "RPC response exceeded configured size limit".to_owned(),
+        ));
+    }
+    serde_json::from_str(text)
+        .map_err(|_| TransportError::Failed("malformed RPC response".to_owned()))
+}
 
 impl WebSocketBlockTransport {
     async fn connect(
@@ -151,9 +183,7 @@ impl WebSocketBlockTransport {
         connect_async(endpoint.as_str())
             .await
             .map(|(socket, _)| socket)
-            .map_err(|error| {
-                TransportError::Failed(format!("subscription connection failed: {error}"))
-            })
+            .map_err(|_| TransportError::Failed("RPC connection failed".to_owned()))
     }
 
     async fn request<T: for<'de> Deserialize<'de>>(
@@ -163,11 +193,14 @@ impl WebSocketBlockTransport {
         method: &str,
         params: serde_json::Value,
     ) -> Result<T, TransportError> {
+        if !method_allowed(method, self.allowed_methods) {
+            return Err(TransportError::Failed("RPC method unavailable".to_owned()));
+        }
         let request = serde_json::json!({"jsonrpc":"2.0","id":id,"method":method,"params":params});
         socket
             .send(Message::Text(request.to_string().into()))
             .await
-            .map_err(|error| TransportError::Failed(format!("RPC request failed: {error}")))?;
+            .map_err(|_| TransportError::Failed("RPC request failed".to_owned()))?;
         loop {
             let message = timeout(self.receive_timeout, socket.next())
                 .await
@@ -179,13 +212,7 @@ impl WebSocketBlockTransport {
             let Message::Text(text) = message else {
                 continue;
             };
-            if text.len() > self.max_response_bytes {
-                return Err(TransportError::Failed(
-                    "RPC response exceeded configured size limit".to_owned(),
-                ));
-            }
-            let response: RpcEnvelope<T> = serde_json::from_str(text.as_ref())
-                .map_err(|_| TransportError::Failed("malformed RPC response".to_owned()))?;
+            let response: RpcEnvelope<T> = decode_rpc(text.as_ref(), self.max_response_bytes)?;
             if response.id != id {
                 continue;
             }
@@ -221,7 +248,7 @@ impl WebSocketBlockTransport {
             block_number: quantity(&block.number)?,
             block_hash: parse_hash(&block.hash)?,
             parent_hash: parse_hash(&block.parent_hash)?,
-            block_timestamp_ms: quantity(&block.timestamp)?.saturating_mul(1000),
+            block_timestamp_ms: timestamp_ms(&block.timestamp)?,
             transaction_hashes: block
                 .transactions
                 .into_iter()
@@ -251,7 +278,7 @@ impl WebSocketBlockTransport {
             block_number: quantity(&block.number)?,
             block_hash: parse_hash(&block.hash)?,
             parent_hash: parse_hash(&block.parent_hash)?,
-            block_timestamp_ms: quantity(&block.timestamp)?.saturating_mul(1000),
+            block_timestamp_ms: timestamp_ms(&block.timestamp)?,
             transaction_hashes: block
                 .transactions
                 .into_iter()
@@ -374,7 +401,7 @@ impl WebSocketBlockTransport {
                     block_number: quantity(&wire.number)?,
                     block_hash: parse_hash(&wire.hash)?,
                     parent_hash: parse_hash(&wire.parent_hash)?,
-                    block_timestamp_ms: quantity(&wire.timestamp)?.saturating_mul(1000),
+                    block_timestamp_ms: timestamp_ms(&wire.timestamp)?,
                     coinbase: parse_address(wire.miner)?,
                 })
                 .map_err(|_| TransportError::Failed("head queue full".to_owned()))?;
@@ -447,7 +474,7 @@ impl WebSocketBlockTransport {
                 block_number: quantity(&wire.number)?,
                 block_hash: parse_hash(&wire.hash)?,
                 parent_hash: parse_hash(&wire.parent_hash)?,
-                block_timestamp_ms: quantity(&wire.timestamp)?.saturating_mul(1000),
+                block_timestamp_ms: timestamp_ms(&wire.timestamp)?,
                 coinbase: parse_address(wire.miner)?,
             };
             headers.push_back(header);
@@ -481,7 +508,7 @@ impl WebSocketBlockTransport {
                 block_number: quantity(&block.number)?,
                 block_hash: parse_hash(&block.hash)?,
                 parent_hash: parse_hash(&block.parent_hash)?,
-                block_timestamp_ms: quantity(&block.timestamp)?.saturating_mul(1000),
+                block_timestamp_ms: timestamp_ms(&block.timestamp)?,
                 transaction_hashes: block
                     .transactions
                     .into_iter()
@@ -1213,6 +1240,28 @@ mod tests {
     }
 
     #[test]
+    fn rpc_boundary_rejects_unsafe_methods_and_overflow_timestamps() {
+        assert!(method_allowed(
+            "platon_getBlockByHash",
+            &["platon_getBlockByHash"]
+        ));
+        assert!(!method_allowed(
+            "debug_traceTransaction",
+            &["platon_getBlockByHash"]
+        ));
+        assert_eq!(timestamp_ms("0x1").unwrap(), 1_000);
+        assert_eq!(
+            timestamp_ms("0xffffffffffffffff"),
+            Err(TransportError::Failed(
+                "RPC timestamp out of range".to_owned()
+            ))
+        );
+        assert_eq!(
+            parse_hash("not-a-hash").unwrap_err(),
+            TransportError::Failed("invalid RPC block hash".to_owned())
+        );
+    }
+    #[test]
     fn rpc_request_quantity_and_timestamp_are_bounded() {
         assert_eq!(quantity("0x10").unwrap(), 16);
         assert_eq!(
@@ -1283,6 +1332,50 @@ mod tests {
         );
         assert_eq!(result.gaps[0].from_height, 11);
         assert_eq!(result.gaps[0].to_height, 12);
+    }
+
+    #[test]
+    fn deterministic_rpc_fake_rejects_oversized_malformed_and_mismatched_blocks() {
+        assert!(matches!(
+            decode_rpc::<serde_json::Value>("{}", 1),
+            Err(TransportError::Failed(message)) if message.contains("size limit")
+        ));
+        assert_eq!(
+            decode_rpc::<serde_json::Value>("not-json", 1024).unwrap_err(),
+            TransportError::Failed("malformed RPC response".to_owned())
+        );
+        assert!(!method_allowed(
+            "debug_traceTransaction",
+            &["platon_getBlockByHash"]
+        ));
+
+        let wrong = ResolvedBlock {
+            block_number: 10,
+            block_hash: hash('e'),
+            parent_hash: hash('d'),
+            block_timestamp_ms: 1_000,
+            transaction_hashes: vec![],
+            network_identity: identity(),
+            coinbase: address(),
+        };
+        let mut sub =
+            HeadSubscription::new("0195f2a1-0014-4014-8014-000000000014".parse().unwrap(), 1);
+        sub.push(header()).unwrap();
+        let fake = MismatchResolver { block: wrong };
+        assert_eq!(
+            sub.resolve_next(&fake, identity(), "2026-01-01T00:00:00Z".parse().unwrap()),
+            Err(ResolveError::IdentityMismatch)
+        );
+    }
+
+    struct MismatchResolver {
+        block: ResolvedBlock,
+    }
+
+    impl BlockResolver for MismatchResolver {
+        fn get_block_by_hash(&self, _hash: &Hash32) -> Result<ResolvedBlock, ResolveError> {
+            Ok(self.block.clone())
+        }
     }
 
     #[test]

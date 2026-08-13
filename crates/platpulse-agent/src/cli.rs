@@ -178,7 +178,10 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
                 ).await;
                 store.close().await.map_err(|error| AgentCliError::Collection(error.to_string()))?;
                 if let Err(error) = result {
-                    eprintln!("Agent report delivery deferred: {error}");
+                    eprintln!(
+                        "Agent report delivery deferred: {}",
+                        crate::redaction::redact_sensitive(&error.to_string())
+                    );
                 }
             }
             result = collect_and_persist_with_blocks(&config, &adapter, &transport, &mut subscriptions) => {

@@ -17,6 +17,7 @@ pub mod credential;
 pub mod database;
 pub mod enroll;
 pub mod process;
+pub mod redaction;
 pub mod reporting;
 pub mod shutdown;
 pub mod time_exchange;

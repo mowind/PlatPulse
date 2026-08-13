@@ -226,18 +226,27 @@ pub(crate) fn validate_component<T>(
         return Err(WireError::ComponentCarriesReceivedAt { component });
     }
     if let Some(error) = &obs.error {
-        if error.code.len() > error_limits::CODE_MAX {
+        if !error.code.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+        }) {
             return Err(WireError::FieldTooLong {
                 field: "error.code",
                 len: error.code.len(),
-                max: error_limits::CODE_MAX,
+                max: crate::protocol::MAX_ERROR_CODE_BYTES,
             });
         }
-        if error.message.len() > error_limits::MESSAGE_MAX {
+        if error.code.len() > crate::protocol::MAX_ERROR_CODE_BYTES {
+            return Err(WireError::FieldTooLong {
+                field: "error.code",
+                len: error.code.len(),
+                max: crate::protocol::MAX_ERROR_CODE_BYTES,
+            });
+        }
+        if error.message.len() > crate::protocol::MAX_ERROR_MESSAGE_BYTES {
             return Err(WireError::FieldTooLong {
                 field: "error.message",
                 len: error.message.len(),
-                max: error_limits::MESSAGE_MAX,
+                max: crate::protocol::MAX_ERROR_MESSAGE_BYTES,
             });
         }
     }

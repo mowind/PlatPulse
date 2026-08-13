@@ -18,6 +18,7 @@ pub mod http;
 pub mod init;
 pub mod network;
 pub mod openapi;
+pub mod redaction;
 pub mod retention;
 pub mod secrets;
 
@@ -59,6 +60,19 @@ pub fn validate_listen_address(addr: std::net::SocketAddr) -> Result<(), ListenA
     }
 }
 
+pub fn validate_listen_address_with_proxy(
+    addr: std::net::SocketAddr,
+    trusted_proxy_cidrs: &[ipnet::IpNet],
+    trusted_proxy_scheme: Option<&str>,
+) -> Result<(), ListenAddressError> {
+    if addr.ip().is_loopback()
+        || (!trusted_proxy_cidrs.is_empty() && trusted_proxy_scheme.is_some())
+    {
+        Ok(())
+    } else {
+        Err(ListenAddressError::NonLoopback(addr))
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,6 +92,22 @@ mod tests {
         }
     }
 
+    #[test]
+    fn configured_proxy_does_not_change_legacy_guard() {
+        let cidr: ipnet::IpNet = "10.0.0.0/8".parse().unwrap();
+        assert!(
+            validate_listen_address_with_proxy(
+                "0.0.0.0:8080".parse().unwrap(),
+                &[cidr],
+                Some("https")
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_listen_address_with_proxy("0.0.0.0:8080".parse().unwrap(), &[], Some("https"))
+                .is_err()
+        );
+    }
     #[test]
     fn non_loopback_listen_addresses_are_refused() {
         for addr in [

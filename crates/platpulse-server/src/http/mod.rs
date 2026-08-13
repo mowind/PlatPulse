@@ -17,6 +17,7 @@ pub(crate) mod public;
 pub(crate) mod realtime;
 pub(crate) mod report_ingestion;
 
+use ipnet::IpNet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -234,6 +235,7 @@ pub struct AppState {
     web_index: Option<Bytes>,
     web_assets_ready: bool,
     runtime: Arc<ServerRuntime>,
+    proxy_policy: ProxyTrustPolicy,
     pub(crate) public_realtime: RealtimeHub,
     pub(crate) admin_realtime: RealtimeHub,
 }
@@ -246,6 +248,19 @@ impl AppState {
     /// the hashed `assets/` directory: an incomplete build must not report
     /// ready.
     pub fn new(db: ServerDatabase, web_assets: Option<PathBuf>, auth: AuthConfig) -> Self {
+        Self::new_with_proxy_policy(db, web_assets, auth, Vec::new(), None)
+    }
+
+    /// Build state with the listener's explicit trusted-proxy policy. Proxy
+    /// headers are accepted only from a matching peer and only when the
+    /// configured asserted scheme is HTTPS.
+    pub fn new_with_proxy_policy(
+        db: ServerDatabase,
+        web_assets: Option<PathBuf>,
+        auth: AuthConfig,
+        trusted_proxy_cidrs: Vec<IpNet>,
+        trusted_proxy_scheme: Option<String>,
+    ) -> Self {
         let web_index = web_assets
             .as_deref()
             .and_then(|dir| std::fs::read(dir.join("index.html")).ok())
@@ -286,6 +301,10 @@ impl AppState {
             web_index,
             web_assets_ready,
             runtime,
+            proxy_policy: ProxyTrustPolicy {
+                trusted_proxy_cidrs,
+                trusted_proxy_scheme,
+            },
             public_realtime: RealtimeHub::default(),
             admin_realtime: RealtimeHub::default(),
         }
@@ -424,8 +443,147 @@ pub fn build_app(state: AppState) -> Router {
             header::CONTENT_SECURITY_POLICY,
             HeaderValue::from_static(CSP_HEADER_VALUE),
         ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            proxy_header_guard,
+        ))
         .layer(axum::middleware::from_fn(request_id_middleware))
         .with_state(state)
+}
+
+#[derive(Clone)]
+struct ProxyTrustPolicy {
+    trusted_proxy_cidrs: Vec<IpNet>,
+    trusted_proxy_scheme: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+struct TrustedHttpsProxy;
+
+fn request_peer_ip(request: &Request) -> Option<std::net::IpAddr> {
+    request
+        .extensions()
+        .get::<ConnectInfo<std::net::SocketAddr>>()
+        .map(|info| info.0.ip())
+}
+
+fn peer_is_trusted(policy: &ProxyTrustPolicy, peer: Option<std::net::IpAddr>) -> bool {
+    peer.is_some_and(|peer| {
+        policy
+            .trusted_proxy_cidrs
+            .iter()
+            .any(|cidr| cidr.contains(&peer))
+    }) && policy.trusted_proxy_scheme.as_deref() == Some("https")
+}
+
+fn forwarded_proto(headers: &HeaderMap) -> Option<Result<&str, ()>> {
+    if headers.contains_key("forwarded") && headers.contains_key("x-forwarded-proto") {
+        return Some(Err(()));
+    }
+    if let Some(value) = headers.get("forwarded") {
+        let text = match value.to_str() {
+            Ok(text) => text,
+            Err(_) => return Some(Err(())),
+        };
+        let mut proto = None;
+        for element in text.split(',') {
+            let Some(element_proto) = element.split(';').find_map(|part| {
+                let (key, value) = part.trim().split_once('=')?;
+                key.eq_ignore_ascii_case("proto")
+                    .then_some(value.trim_matches('"'))
+            }) else {
+                return Some(Err(()));
+            };
+            if proto.is_some_and(|previous| previous != element_proto) {
+                return Some(Err(()));
+            }
+            proto = Some(element_proto);
+        }
+        return Some(proto.ok_or(()));
+    }
+    headers.get("x-forwarded-proto").map(|value| {
+        let text = value.to_str().map_err(|_| ())?;
+        let mut values = text.split(',').map(str::trim);
+        let first = values.next().filter(|value| !value.is_empty()).ok_or(())?;
+        if values.any(|value| value != first) {
+            return Err(());
+        }
+        Ok(first)
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProxyTrustError {
+    UntrustedHeaders,
+    HttpsRequired,
+}
+
+fn evaluate_proxy_request(
+    policy: &ProxyTrustPolicy,
+    peer: Option<std::net::IpAddr>,
+    headers: &HeaderMap,
+) -> Result<bool, ProxyTrustError> {
+    let has_forwarded =
+        headers.contains_key("forwarded") || headers.contains_key("x-forwarded-proto");
+    let trusted = peer_is_trusted(policy, peer);
+    if has_forwarded && !trusted {
+        return Err(ProxyTrustError::UntrustedHeaders);
+    }
+    if has_forwarded {
+        if forwarded_proto(headers) != Some(Ok("https")) {
+            return Err(ProxyTrustError::HttpsRequired);
+        }
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+async fn proxy_header_guard(
+    State(state): State<AppState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    match evaluate_proxy_request(
+        &state.proxy_policy,
+        request_peer_ip(&request),
+        request.headers(),
+    ) {
+        Ok(true) => {
+            request.extensions_mut().insert(TrustedHttpsProxy);
+        }
+        Ok(false) => {}
+        Err(ProxyTrustError::UntrustedHeaders) => {
+            return error_from_proxy_request(
+                &request,
+                StatusCode::FORBIDDEN,
+                "untrusted_proxy_headers",
+                "forwarded headers are not accepted from this peer",
+            );
+        }
+        Err(ProxyTrustError::HttpsRequired) => {
+            return error_from_proxy_request(
+                &request,
+                StatusCode::FORBIDDEN,
+                "proxy_scheme_required",
+                "trusted proxy requests must assert https",
+            );
+        }
+    }
+    next.run(request).await
+}
+
+fn error_from_proxy_request(
+    request: &Request,
+    status: StatusCode,
+    code: &'static str,
+    message: &'static str,
+) -> Response {
+    let request_id = request
+        .extensions()
+        .get::<RequestId>()
+        .map(|id| &*id.0)
+        .unwrap_or("unknown");
+    (status, Json(ApiErrorBody::new(code, message, request_id))).into_response()
 }
 
 /// Client address for rate limiting: the real socket address when the
@@ -536,6 +694,17 @@ pub(crate) async fn agent_group_guard(
     next: Next,
 ) -> Response {
     stamp_client_ip(&mut request);
+    let peer = request_peer_ip(&request);
+    if peer.is_some_and(|ip| !ip.is_loopback())
+        && request.extensions().get::<TrustedHttpsProxy>().is_none()
+    {
+        return session_error_response(
+            &request,
+            StatusCode::FORBIDDEN,
+            "agent_transport_insecure",
+            "agent authentication requires TLS or a trusted HTTPS proxy",
+        );
+    }
     match has_owner(state.db()).await {
         Ok(true) => {}
         Ok(false) => {
@@ -887,6 +1056,61 @@ mod tests {
         assert!(!body.contains("tmp"), "filesystem path leaked");
     }
 
+    #[test]
+    fn proxy_forwarding_requires_matching_peer_and_https_scheme() {
+        let policy = ProxyTrustPolicy {
+            trusted_proxy_cidrs: vec!["10.0.0.0/8".parse().unwrap()],
+            trusted_proxy_scheme: Some("https".to_owned()),
+        };
+        assert!(peer_is_trusted(&policy, Some("10.1.2.3".parse().unwrap())));
+        assert!(!peer_is_trusted(
+            &policy,
+            Some("192.0.2.1".parse().unwrap())
+        ));
+        assert!(!peer_is_trusted(
+            &ProxyTrustPolicy {
+                trusted_proxy_cidrs: policy.trusted_proxy_cidrs.clone(),
+                trusted_proxy_scheme: Some("http".to_owned()),
+            },
+            Some("10.1.2.3".parse().unwrap())
+        ));
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "forwarded",
+            HeaderValue::from_static("for=10.1.2.3;proto=https"),
+        );
+        assert_eq!(forwarded_proto(&headers), Some(Ok("https")));
+        headers.insert("forwarded", HeaderValue::from_static("proto=http"));
+        assert_eq!(forwarded_proto(&headers), Some(Ok("http")));
+        assert!(matches!(
+            evaluate_proxy_request(&policy, Some("192.0.2.1".parse().unwrap()), &headers,),
+            Err(ProxyTrustError::UntrustedHeaders)
+        ));
+        headers.insert("forwarded", HeaderValue::from_static("proto=https"));
+        assert!(matches!(
+            evaluate_proxy_request(&policy, Some("10.1.2.3".parse().unwrap()), &headers),
+            Ok(true)
+        ));
+        headers.insert("forwarded", HeaderValue::from_static("proto=http"));
+        assert!(matches!(
+            evaluate_proxy_request(&policy, Some("10.1.2.3".parse().unwrap()), &headers),
+            Err(ProxyTrustError::HttpsRequired)
+        ));
+    }
+
+    #[test]
+    fn forwarded_proto_rejects_conflicting_chain_values() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "forwarded",
+            HeaderValue::from_static("proto=https, proto=http"),
+        );
+        assert_eq!(forwarded_proto(&headers), Some(Err(())));
+        headers.clear();
+        headers.insert("x-forwarded-proto", HeaderValue::from_static("https,http"));
+        assert_eq!(forwarded_proto(&headers), Some(Err(())));
+    }
     #[tokio::test]
     async fn ready_reports_web_assets_missing_when_index_html_is_absent() {
         let (_, _, state) = test_state_with_files(&[("assets/app-123.js", b"// asset")]).await;

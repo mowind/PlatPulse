@@ -141,6 +141,7 @@ impl AgentReport {
                 transition: self.boot_transition,
             });
         }
+        check_timestamp("generated_at", self.generated_at)?;
         self.validate_inventory()?;
         self.validate_observations()?;
         self.validate_blocks()?;
@@ -151,6 +152,20 @@ impl AgentReport {
     fn validate_inventory(&self) -> Result<(), WireError> {
         if self.inventory.revision == 0 {
             return Err(WireError::InventoryRevisionZero);
+        }
+        if self.inventory.nodes.len() > crate::protocol::MAX_INVENTORY_NODES {
+            return Err(WireError::TooManyEntries {
+                field: "inventory.nodes",
+                len: self.inventory.nodes.len(),
+                max: crate::protocol::MAX_INVENTORY_NODES,
+            });
+        }
+        if self.agent_capabilities.len() > crate::protocol::MAX_AGENT_CAPABILITIES {
+            return Err(WireError::TooManyEntries {
+                field: "agent_capabilities",
+                len: self.agent_capabilities.len(),
+                max: crate::protocol::MAX_AGENT_CAPABILITIES,
+            });
         }
         let mut seen = HashSet::with_capacity(self.inventory.nodes.len());
         for node in &self.inventory.nodes {
@@ -178,6 +193,18 @@ impl AgentReport {
 
     fn validate_observations(&self) -> Result<(), WireError> {
         check_len("agent_version", &self.agent_version, 128)?;
+        for capability in &self.agent_capabilities {
+            let capability = match capability {
+                AgentCapability::RpcCapabilityProbe => "rpc_capability_probe",
+                AgentCapability::SyncStatus => "sync_status",
+                AgentCapability::BlockSummary => "block_summary",
+                AgentCapability::HistoryGap => "history_gap",
+                AgentCapability::ProcessSystemd => "process_systemd",
+                AgentCapability::ProcessPidFile => "process_pid_file",
+                AgentCapability::ConsensusStatus => "consensus_status",
+            };
+            check_len("agent_capabilities[]", capability, 128)?;
+        }
         let known: HashSet<NodeId> = self
             .inventory
             .nodes
@@ -185,6 +212,27 @@ impl AgentReport {
             .map(|node| node.node_id)
             .collect();
 
+        if self.nodes.len() > crate::protocol::MAX_NODE_OBSERVATIONS {
+            return Err(WireError::TooManyEntries {
+                field: "nodes",
+                len: self.nodes.len(),
+                max: crate::protocol::MAX_NODE_OBSERVATIONS,
+            });
+        }
+        if self.block_summaries.len() > crate::protocol::MAX_BLOCK_SUMMARIES {
+            return Err(WireError::TooManyEntries {
+                field: "block_summaries",
+                len: self.block_summaries.len(),
+                max: crate::protocol::MAX_BLOCK_SUMMARIES,
+            });
+        }
+        if self.history_gaps.len() > crate::protocol::MAX_HISTORY_GAPS {
+            return Err(WireError::TooManyEntries {
+                field: "history_gaps",
+                len: self.history_gaps.len(),
+                max: crate::protocol::MAX_HISTORY_GAPS,
+            });
+        }
         // The report is the complete current observation view: exactly one
         // entry per Inventory Node, and no entry outside the Inventory.
         let mut observed: HashSet<NodeId> = HashSet::with_capacity(self.nodes.len());
@@ -259,10 +307,25 @@ impl AgentReport {
             .iter()
             .map(|node| node.node_id)
             .collect();
+        let mut seen_samples = HashSet::with_capacity(self.block_summaries.len());
         for block in &self.block_summaries {
+            if !seen_samples.insert((block.node_id, block.block_number)) {
+                return Err(WireError::DuplicateBlockSample {
+                    node_id: block.node_id,
+                    height: block.block_number,
+                });
+            }
             if !known.contains(&block.node_id) {
                 return Err(WireError::BlockSampleForUnknownNode {
                     node_id: block.node_id,
+                });
+            }
+            check_timestamp("block.observed_at", block.observed_at)?;
+            if block.block_timestamp_ms
+                > (crate::protocol::MAX_TIMESTAMP_UNIX_SECONDS as u64) * 1000
+            {
+                return Err(WireError::ValueOutOfRange {
+                    field: "block.block_timestamp_ms",
                 });
             }
             if let Some(hrp) = &block.network_identity.address_hrp {
@@ -293,7 +356,15 @@ impl AgentReport {
             .iter()
             .map(|node| node.node_id)
             .collect();
+        let mut seen_gaps = HashSet::with_capacity(self.history_gaps.len());
         for gap in &self.history_gaps {
+            if !seen_gaps.insert((gap.node_id, gap.from_height, gap.to_height)) {
+                return Err(WireError::DuplicateHistoryGap {
+                    node_id: gap.node_id,
+                    from_height: gap.from_height,
+                    to_height: gap.to_height,
+                });
+            }
             if !known.contains(&gap.node_id) {
                 return Err(WireError::HistoryGapForUnknownNode {
                     node_id: gap.node_id,
@@ -372,6 +443,15 @@ fn validate_chain_components(chain: &NodeChainObservation) -> Result<(), WireErr
     Ok(())
 }
 
+fn check_timestamp(field: &'static str, value: Rfc3339) -> Result<(), WireError> {
+    let seconds = value.as_datetime().unix_timestamp();
+    if !(crate::protocol::MIN_TIMESTAMP_UNIX_SECONDS..=crate::protocol::MAX_TIMESTAMP_UNIX_SECONDS)
+        .contains(&seconds)
+    {
+        return Err(WireError::ValueOutOfRange { field });
+    }
+    Ok(())
+}
 fn check_len(field: &'static str, value: &str, max: usize) -> Result<(), WireError> {
     if value.len() > max {
         return Err(WireError::FieldTooLong {
@@ -545,6 +625,58 @@ mod tests {
         assert_eq!(report.validate(), Ok(()));
     }
 
+    #[test]
+    fn duplicate_block_sample_is_rejected() {
+        let mut report: AgentReport = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/report_v1_canonical.json"
+        )))
+        .unwrap();
+        let sample = report.block_summaries[0].clone();
+        report.block_summaries.push(sample.clone());
+        assert_eq!(
+            report.validate(),
+            Err(WireError::DuplicateBlockSample {
+                node_id: sample.node_id,
+                height: sample.block_number,
+            })
+        );
+    }
+
+    #[test]
+    fn duplicate_history_gap_is_rejected() {
+        let mut report = minimal_report();
+        let gap = crate::gap::HistoryGap {
+            node_id: report.inventory.nodes[0].node_id,
+            kind: crate::gap::GapKind::SpoolOverflow,
+            from_height: 10,
+            to_height: 20,
+            reason: "capacity cleanup".into(),
+            recorded_at: report.generated_at,
+        };
+        report.history_gaps.push(gap.clone());
+        report.history_gaps.push(gap.clone());
+        assert_eq!(
+            report.validate(),
+            Err(WireError::DuplicateHistoryGap {
+                node_id: gap.node_id,
+                from_height: gap.from_height,
+                to_height: gap.to_height,
+            })
+        );
+    }
+
+    #[test]
+    fn generated_timestamp_outside_contract_is_rejected() {
+        let mut report = minimal_report();
+        report.generated_at = "2200-01-01T00:00:00Z".parse().unwrap();
+        assert_eq!(
+            report.validate(),
+            Err(WireError::ValueOutOfRange {
+                field: "generated_at"
+            })
+        );
+    }
     #[test]
     fn component_invariant_violations_are_reported() {
         let mut report = minimal_report();

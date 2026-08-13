@@ -44,7 +44,14 @@ pub enum WireError {
     BlockSampleForUnknownNode { node_id: NodeId },
     /// A History Gap references a Node that is not in the Inventory.
     HistoryGapForUnknownNode { node_id: NodeId },
-    /// `from_height > to_height`; a History Gap interval is inclusive and
+    /// A block sample repeats the same Node/height identity in one report.
+    DuplicateBlockSample { node_id: NodeId, height: u64 },
+    /// A gap repeats the same Node/range identity in one report.
+    DuplicateHistoryGap {
+        node_id: NodeId,
+        from_height: u64,
+        to_height: u64,
+    },
     /// must not be reversed.
     ReversedGapRange {
         node_id: NodeId,
@@ -189,6 +196,17 @@ impl fmt::Display for WireError {
                     "block summary references {node_id}, which is not in the inventory"
                 )
             }
+            Self::DuplicateBlockSample { node_id, height } => {
+                write!(f, "block summary for {node_id} repeats height {height}")
+            }
+            Self::DuplicateHistoryGap {
+                node_id,
+                from_height,
+                to_height,
+            } => write!(
+                f,
+                "history gap for {node_id} repeats range {from_height}..{to_height}"
+            ),
             Self::HistoryGapForUnknownNode { node_id } => {
                 write!(
                     f,
