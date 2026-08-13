@@ -4,6 +4,44 @@ export type ClientOptions = {
     baseUrl: `${string}://${string}` | (string & {});
 };
 
+export type AdminBlockHistoryItem = {
+    attributionReason?: string | null;
+    blockTimeMs?: number | null;
+    coinbase?: string | null;
+    divergenceKind?: string | null;
+    divergenceObservedAt?: string | null;
+    divergenceObservedHash?: string | null;
+    divergenceReason?: string | null;
+    divergenceRetainedHash?: string | null;
+    freshness?: string | null;
+    gapFromHeight?: number | null;
+    gapKind?: string | null;
+    gapReason?: string | null;
+    gapToHeight?: number | null;
+    height?: number | null;
+    nodeId: string;
+    nodeKeyFingerprint?: string | null;
+    nodeKeyValidFrom?: string | null;
+    nodeKeyValidUntil?: string | null;
+    observedAt?: string | null;
+    protocolProposer?: string | null;
+    sealEvidence?: string | null;
+    sealRecoveryRule?: string | null;
+    sealSignerKeyFingerprint?: string | null;
+    sealSignerMatch?: string | null;
+    transactionCount?: number | null;
+};
+
+export type AdminBlockHistoryResponse = {
+    aggregateSupported: boolean;
+    /**
+     * `unavailable` when the requested range extends beyond raw retention.
+     */
+    availability?: string | null;
+    items: Array<AdminBlockHistoryItem>;
+    rawRetentionDays: number;
+};
+
 export type AgentDiagnostic = {
     active_boot_id?: string | null;
     agent_epoch: number;
@@ -159,6 +197,25 @@ export type ProcessDiagnostic = {
     value_revision: number;
 };
 
+export type PublicBlockHistoryItem = {
+    blockTimeMs?: number | null;
+    coinbase?: string | null;
+    divergenceKind?: string | null;
+    divergenceReason?: string | null;
+    freshness?: string | null;
+    gapFromHeight?: number | null;
+    gapKind?: string | null;
+    gapReason?: string | null;
+    gapToHeight?: number | null;
+    height?: number | null;
+    nodeId: string;
+    observedAt?: string | null;
+    protocolProposer?: string | null;
+    sealSignerMatch?: string | null;
+    source?: string | null;
+    transactionCount?: number | null;
+};
+
 export type PublicNetwork = {
     displayName: string;
     networkKey: string;
@@ -285,6 +342,44 @@ export type AdminEventsResponses = {
      */
     200: unknown;
 };
+
+export type AdminNodeHistoryData = {
+    body?: never;
+    path: {
+        /**
+         * Node ID
+         */
+        node_id: string;
+    };
+    query?: {
+        /**
+         * First block height
+         */
+        from?: number;
+        /**
+         * Last block height
+         */
+        to?: number;
+        /**
+         * Maximum rows
+         */
+        limit?: number;
+    };
+    url: '/api/admin/v1/nodes/{node_id}/history';
+};
+
+export type AdminNodeHistoryErrors = {
+    401: ApiErrorBody;
+    403: ApiErrorBody;
+};
+
+export type AdminNodeHistoryError = AdminNodeHistoryErrors[keyof AdminNodeHistoryErrors];
+
+export type AdminNodeHistoryResponses = {
+    200: AdminBlockHistoryResponse;
+};
+
+export type AdminNodeHistoryResponse = AdminNodeHistoryResponses[keyof AdminNodeHistoryResponses];
 
 export type SetVisibilityData = {
     body: VisibilityRequest;
@@ -461,6 +556,52 @@ export type PublicNodeDetailResponses = {
 };
 
 export type PublicNodeDetailResponse = PublicNodeDetailResponses[keyof PublicNodeDetailResponses];
+
+export type PublicNodeHistoryData = {
+    body?: never;
+    path: {
+        node_id: string;
+    };
+    query?: {
+        limit?: number;
+    };
+    url: '/api/public/v1/nodes/{node_id}/history';
+};
+
+export type PublicNodeHistoryErrors = {
+    404: ApiErrorBody;
+};
+
+export type PublicNodeHistoryError = PublicNodeHistoryErrors[keyof PublicNodeHistoryErrors];
+
+export type PublicNodeHistoryResponses = {
+    200: Array<PublicBlockHistoryItem>;
+};
+
+export type PublicNodeHistoryResponse = PublicNodeHistoryResponses[keyof PublicNodeHistoryResponses];
+
+export type PublicNodeHistoryExportData = {
+    body?: never;
+    path: {
+        node_id: string;
+    };
+    query?: {
+        limit?: number;
+    };
+    url: '/api/public/v1/nodes/{node_id}/history/export';
+};
+
+export type PublicNodeHistoryExportErrors = {
+    404: ApiErrorBody;
+};
+
+export type PublicNodeHistoryExportError = PublicNodeHistoryExportErrors[keyof PublicNodeHistoryExportErrors];
+
+export type PublicNodeHistoryExportResponses = {
+    200: Array<PublicBlockHistoryItem>;
+};
+
+export type PublicNodeHistoryExportResponse = PublicNodeHistoryExportResponses[keyof PublicNodeHistoryExportResponses];
 
 export type SessionHandlerData = {
     body?: never;

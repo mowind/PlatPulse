@@ -46,6 +46,90 @@
         }
       }
     },
+    "/api/admin/v1/nodes/{node_id}/history": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "admin_node_history",
+        "parameters": [
+          {
+            "name": "node_id",
+            "in": "path",
+            "description": "Node ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "First block height",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Last block height",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum rows",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminBlockHistoryResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/v1/nodes/{node_id}/visibility": {
       "put": {
         "tags": [
@@ -408,6 +492,111 @@
         }
       }
     },
+    "/api/public/v1/nodes/{node_id}/history": {
+      "get": {
+        "tags": [
+          "public"
+        ],
+        "operationId": "public_node_history",
+        "parameters": [
+          {
+            "name": "node_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PublicBlockHistoryItem"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/public/v1/nodes/{node_id}/history/export": {
+      "get": {
+        "tags": [
+          "public"
+        ],
+        "summary": "Export exactly the same allowlisted Public history projection as JSON.\nVisibility is checked by `public_node_history`, so this route cannot be\nused to bypass list/detail/history privacy filtering.",
+        "operationId": "public_node_history_export",
+        "parameters": [
+          {
+            "name": "node_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PublicBlockHistoryItem"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/public/v1/session": {
       "get": {
         "tags": [
@@ -492,6 +681,196 @@
   },
   "components": {
     "schemas": {
+      "AdminBlockHistoryItem": {
+        "type": "object",
+        "required": [
+          "nodeId"
+        ],
+        "properties": {
+          "attributionReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "blockTimeMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "coinbase": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "divergenceKind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "divergenceObservedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "divergenceObservedHash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "divergenceReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "divergenceRetainedHash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "freshness": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "gapFromHeight": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "gapKind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "gapReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "gapToHeight": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "height": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "nodeId": {
+            "type": "string"
+          },
+          "nodeKeyFingerprint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nodeKeyValidFrom": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nodeKeyValidUntil": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "observedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "protocolProposer": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sealEvidence": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sealRecoveryRule": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sealSignerKeyFingerprint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sealSignerMatch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "transactionCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          }
+        }
+      },
+      "AdminBlockHistoryResponse": {
+        "type": "object",
+        "required": [
+          "items",
+          "aggregateSupported",
+          "rawRetentionDays"
+        ],
+        "properties": {
+          "aggregateSupported": {
+            "type": "boolean"
+          },
+          "availability": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`unavailable` when the requested range extends beyond raw retention."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminBlockHistoryItem"
+            }
+          },
+          "rawRetentionDays": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "AgentDiagnostic": {
         "type": "object",
         "required": [
@@ -1343,6 +1722,112 @@
           },
           "value_revision": {
             "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "PublicBlockHistoryItem": {
+        "type": "object",
+        "required": [
+          "nodeId"
+        ],
+        "properties": {
+          "blockTimeMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "coinbase": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "divergenceKind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "divergenceReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "freshness": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "gapFromHeight": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "gapKind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "gapReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "gapToHeight": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "height": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "nodeId": {
+            "type": "string"
+          },
+          "observedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "protocolProposer": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sealSignerMatch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "transactionCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int64"
           }
         }

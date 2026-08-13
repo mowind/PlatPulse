@@ -188,6 +188,7 @@ impl RealtimeHub {
         event
     }
 
+    #[cfg(test)]
     pub(crate) fn stream(
         &self,
         last_event_id: Option<u64>,
@@ -199,17 +200,17 @@ impl RealtimeHub {
             loop {
                 if let Some(invalidation) = hub.next_after(&mut cursor) {
                     let closing = invalidation.resource == "server_shutdown";
-                    let id = invalidation.event_id.to_string();
-                    let data = serde_json::to_string(&invalidation)
-                        .expect("invalidation has only serializable fields");
+                    let data =
+                        serde_json::to_string(&invalidation).expect("invalidation serializes");
                     if sender
-                        .send(Ok(Event::default().id(id).event("invalidation").data(data)))
+                        .send(Ok(Event::default()
+                            .id(invalidation.event_id.to_string())
+                            .event("invalidation")
+                            .data(data)))
                         .await
                         .is_err()
+                        || closing
                     {
-                        break;
-                    }
-                    if closing {
                         break;
                     }
                     continue;
@@ -224,6 +225,51 @@ impl RealtimeHub {
                     break;
                 }
                 hub.inner.notify.notified().await;
+            }
+        });
+        tokio_stream::wrappers::ReceiverStream::new(receiver)
+    }
+    pub(crate) fn stream_with_session(
+        &self,
+        last_event_id: Option<u64>,
+        db: std::sync::Arc<crate::database::ServerDatabase>,
+        auth: crate::auth::AuthConfig,
+        session_id: String,
+        expected_role: Option<String>,
+    ) -> impl Stream<Item = Result<Event, Infallible>> + Send + 'static + use<> {
+        let (sender, receiver) = tokio::sync::mpsc::channel(16);
+        let hub = self.clone();
+        let mut cursor = last_event_id.unwrap_or(0);
+        tokio::spawn(async move {
+            let mut check = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                tokio::select! {
+                    _ = check.tick() => {
+                        if !crate::auth::session_is_current(&db, &session_id, expected_role.as_deref(), &auth).await {
+                            let event = Invalidation { version: EVENT_VERSION, event_id: 0, resource: "collection".to_owned(), resource_id: None, revision: 0, reset: Some(true) };
+                            let data = serde_json::to_string(&event).expect("invalidation serializes");
+                            let _ = sender.send(Ok(Event::default().event("reset").data(data))).await;
+                            break;
+                        }
+                    }
+                    result = async {
+                        if !crate::auth::session_is_current(&db, &session_id, expected_role.as_deref(), &auth).await {
+                            let event = Invalidation { version: EVENT_VERSION, event_id: 0, resource: "collection".to_owned(), resource_id: None, revision: 0, reset: Some(true) };
+                            let data = serde_json::to_string(&event).expect("invalidation serializes");
+                            let _ = sender.send(Ok(Event::default().event("reset").data(data))).await;
+                            return true;
+                        }
+                        if let Some(invalidation) = hub.next_after(&mut cursor) {
+                            let closing = invalidation.resource == "server_shutdown";
+                            let id = invalidation.event_id.to_string();
+                            let data = serde_json::to_string(&invalidation).expect("invalidation serializes");
+                            if sender.send(Ok(Event::default().id(id).event("invalidation").data(data))).await.is_err() { return true; }
+                            closing
+                        } else if hub.inner.state.lock().expect("SSE hub mutex poisoned").closed { true } else { hub.inner.notify.notified().await; false }
+                    } => {
+                        if result { break; }
+                    }
+                }
             }
         });
         tokio_stream::wrappers::ReceiverStream::new(receiver)

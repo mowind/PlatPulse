@@ -120,7 +120,39 @@ pub struct SessionInfo {
     pub csrf_token: String,
 }
 
-/// Why a presented session token was not accepted.
+/// Return whether the session remains valid for a long-lived stream.
+/// This deliberately rechecks revocation, expiry, idle timeout, user
+/// disablement, and role changes instead of trusting connect-time auth.
+pub async fn session_is_current(
+    db: &ServerDatabase,
+    session_id: &str,
+    expected_role: Option<&str>,
+    config: &AuthConfig,
+) -> bool {
+    let row = sqlx::query_as::<_, (String, String, Option<String>, String, String)>(
+            "SELECT s.last_seen_at, s.expires_at, s.revoked_at, u.role, COALESCE(u.disabled_at, '') FROM sessions s JOIN users u ON u.user_id=s.user_id WHERE s.session_id=?",
+        )
+        .bind(session_id)
+        .fetch_optional(db.pool())
+        .await
+        .ok()
+        .flatten();
+    let Some((last_seen, expires, revoked, role, disabled)) = row else {
+        return false;
+    };
+    if revoked.is_some() || !disabled.is_empty() || expected_role.is_some_and(|value| role != value)
+    {
+        return false;
+    }
+    let now = now_utc();
+    let expires_at = parse_rfc3339(&expires).unwrap_or(now);
+    let last_seen_at = parse_rfc3339(&last_seen).unwrap_or(now);
+    now <= expires_at
+        && now
+            <= last_seen_at
+                + time::Duration::try_from(config.idle_timeout).expect("idle timeout fits")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionError {
     /// No cookie or a token that cannot be validated (unknown, malformed,

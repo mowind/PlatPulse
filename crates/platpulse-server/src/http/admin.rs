@@ -51,7 +51,14 @@ async fn admin_events(
 ) -> Sse<impl Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>> {
     let cursor =
         realtime::parse_last_event_id(headers.get("last-event-id").and_then(|v| v.to_str().ok()));
-    Sse::new(state.admin_realtime().stream(cursor)).keep_alive(
+    Sse::new(state.admin_realtime().stream_with_session(
+        cursor,
+        state.database(),
+        state.auth().clone(),
+        _session.0.session_id.clone(),
+        Some("owner".to_owned()),
+    ))
+    .keep_alive(
         KeepAlive::new()
             .interval(realtime::keepalive_interval())
             .text("keepalive"),
@@ -803,6 +810,18 @@ pub struct AdminBlockHistoryResponse {
     pub raw_retention_days: i64,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/admin/v1/nodes/{node_id}/history",
+    tag = "admin",
+    params(
+        ("node_id" = String, Path, description = "Node ID"),
+        ("from" = Option<u64>, Query, description = "First block height"),
+        ("to" = Option<u64>, Query, description = "Last block height"),
+        ("limit" = Option<u16>, Query, description = "Maximum rows")
+    ),
+    responses((status = 200, body = AdminBlockHistoryResponse), (status = 401, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody))
+)]
 async fn admin_node_history(
     State(state): State<AppState>,
     Extension(_session): Extension<super::AuthenticatedSession>,

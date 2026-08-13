@@ -42,7 +42,14 @@ pub(crate) async fn public_events(
     headers: HeaderMap,
 ) -> Sse<impl Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>> {
     let cursor = parse_last_event_id(headers.get("last-event-id").and_then(|v| v.to_str().ok()));
-    Sse::new(state.public_realtime().stream(cursor)).keep_alive(
+    Sse::new(state.public_realtime().stream_with_session(
+        cursor,
+        state.database(),
+        state.auth().clone(),
+        _session.0.session_id.clone(),
+        None,
+    ))
+    .keep_alive(
         KeepAlive::new()
             .interval(keepalive_interval())
             .text("keepalive"),
@@ -347,7 +354,7 @@ pub struct PublicNetwork {
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct PublicBlockHistoryItem {
+pub(crate) struct PublicBlockHistoryItem {
     pub node_id: String,
     pub height: Option<i64>,
     pub block_time_ms: Option<i64>,
@@ -359,9 +366,11 @@ pub struct PublicBlockHistoryItem {
     pub gap_to_height: Option<i64>,
     pub gap_kind: Option<String>,
     pub gap_reason: Option<String>,
-    /// Sanitized health signal only; raw divergence hashes remain Admin-only.
     pub divergence_kind: Option<String>,
     pub divergence_reason: Option<String>,
+    pub coinbase: Option<String>,
+    pub seal_signer_match: Option<String>,
+    pub protocol_proposer: Option<String>,
 }
 #[derive(Debug, sqlx::FromRow)]
 pub(crate) struct HistoryRow {
@@ -396,7 +405,7 @@ pub(crate) struct HistoryRow {
     path = "/api/public/v1/nodes/{node_id}/history",
     tag = "public",
     params(("node_id" = String, Path), ("limit" = Option<i64>, Query)),
-    responses((status = 200, body = [PublicBlockHistoryItem]))
+    responses((status = 200, body = [PublicBlockHistoryItem]), (status = 404, body = crate::http::ApiErrorBody))
 )]
 pub(crate) async fn public_node_history(
     State(state): State<AppState>,
@@ -405,6 +414,33 @@ pub(crate) async fn public_node_history(
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
     let limit = params.limit.unwrap_or(50).clamp(1, 200);
+    // Check visibility before reading history so a guessed private/retired
+    // Node ID is indistinguishable from a missing representation.
+    let visible = sqlx::query_scalar::<_, i64>(
+        "SELECT 1 FROM nodes WHERE node_id = ? AND visibility = 'public' AND lifecycle = 'active'",
+    )
+    .bind(&node_id)
+    .fetch_optional(state.db().pool())
+    .await;
+    match visible {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return error_response(
+                &request_id.0,
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "resource not found",
+            );
+        }
+        Err(_) => {
+            return error_response(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    }
     let rows = sqlx::query_as::<_, HistoryRow>("SELECT block_number, block_timestamp_ms, transaction_count, source, coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, CASE WHEN protocol_proposer_kind = 'verified' THEN protocol_proposer_identity ELSE NULL END, attribution_reason, observed_at, from_height, to_height, gap_kind, gap_reason, divergence_kind, divergence_reason, divergence_retained_hash, divergence_observed_hash, divergence_observed_at FROM (SELECT block_number, block_timestamp_ms, transaction_count, source, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, observed_at, NULL AS from_height, NULL AS to_height, NULL AS gap_kind, NULL AS gap_reason, NULL AS divergence_kind, NULL AS divergence_reason, NULL AS divergence_retained_hash, NULL AS divergence_observed_hash, NULL AS divergence_observed_at, node_id FROM block_summaries WHERE node_id = ? AND EXISTS (SELECT 1 FROM nodes WHERE node_id = block_summaries.node_id AND visibility = 'public' AND lifecycle = 'active') UNION ALL SELECT NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, created_at, from_height, to_height, kind, reason, NULL, NULL, NULL, NULL, NULL, node_id FROM block_history_gaps WHERE node_id = ? AND EXISTS (SELECT 1 FROM nodes WHERE node_id = block_history_gaps.node_id AND visibility = 'public' AND lifecycle = 'active') UNION ALL SELECT NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, retained_observed_at, height, height, NULL, NULL, 'chain_divergence', 'A recent block identity divergence was observed', NULL, NULL, NULL, node_id FROM chain_divergence_observations WHERE node_id = ? AND EXISTS (SELECT 1 FROM nodes WHERE node_id = chain_divergence_observations.node_id AND visibility = 'public' AND lifecycle = 'active')) ORDER BY COALESCE(block_number, from_height) DESC LIMIT ?")
         .bind(&node_id).bind(&node_id).bind(&node_id).bind(limit).fetch_all(state.db().pool()).await;
     match rows {
@@ -420,10 +456,25 @@ pub(crate) async fn public_node_history(
                     freshness: row.observed_at,
                     gap_from_height: row.from_height,
                     gap_to_height: row.to_height,
-                    gap_kind: row.gap_kind,
-                    gap_reason: row.gap_reason,
-                    divergence_kind: row.divergence_kind,
-                    divergence_reason: row.divergence_reason,
+                    gap_kind: row.gap_kind.clone(),
+                    gap_reason: row.gap_kind.as_deref().map(|kind| match kind {
+                        "spool_overflow" => "Some samples could not be retained".to_owned(),
+                        "unrecoverable_backfill" => {
+                            "A history interval could not be recovered".to_owned()
+                        }
+                        "server_rejected" => "A sample was rejected by the Server".to_owned(),
+                        "chain_divergence" => {
+                            "A recent chain identity divergence was observed".to_owned()
+                        }
+                        _ => "A history interval is unavailable".to_owned(),
+                    }),
+                    divergence_kind: row.divergence_kind.clone(),
+                    divergence_reason: row
+                        .divergence_kind
+                        .map(|_| "A recent chain identity divergence was observed".to_owned()),
+                    coinbase: row.coinbase,
+                    seal_signer_match: row.seal_signer_match,
+                    protocol_proposer: row.protocol_proposer,
                 })
                 .collect::<Vec<_>>(),
         )
@@ -435,6 +486,38 @@ pub(crate) async fn public_node_history(
             "server database is unavailable",
         ),
     }
+}
+
+/// Export exactly the same allowlisted Public history projection as JSON.
+/// Visibility is checked by `public_node_history`, so this route cannot be
+/// used to bypass list/detail/history privacy filtering.
+#[utoipa::path(
+    get,
+    path = "/api/public/v1/nodes/{node_id}/history/export",
+    tag = "public",
+    params(("node_id" = String, Path), ("limit" = Option<i64>, Query)),
+    responses((status = 200, body = [PublicBlockHistoryItem]), (status = 404, body = crate::http::ApiErrorBody))
+)]
+pub(crate) async fn public_node_history_export(
+    State(state): State<AppState>,
+    Path(node_id): Path<String>,
+    Query(params): Query<HistoryQuery>,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    let mut response = public_node_history(
+        State(state),
+        Path(node_id),
+        Query(params),
+        Extension(request_id),
+    )
+    .await;
+    if response.status() == StatusCode::OK {
+        response.headers_mut().insert(
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_static("attachment; filename=public-history.json"),
+        );
+    }
+    response
 }
 
 #[derive(Debug, Deserialize)]
@@ -804,6 +887,10 @@ pub fn router() -> Router<AppState> {
         .route("/networks/{network_key}", get(public_network))
         .route("/nodes/{node_id}", get(public_node_detail))
         .route("/nodes/{node_id}/history", get(public_node_history))
+        .route(
+            "/nodes/{node_id}/history/export",
+            get(public_node_history_export),
+        )
         .route("/events", get(public_events))
         .fallback(api_not_found)
         .layer(axum::middleware::from_fn(group_middleware))

@@ -318,7 +318,11 @@ pub async fn run_create_enrollment_token(
 pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::Error>> {
     crate::init::restrict_umask();
     println!("{}", crate::startup_version_line());
-    crate::validate_listen_address(config.listen)?;
+    crate::validate_listen_address_with_proxy(
+        config.listen,
+        &config.trusted_proxy_cidrs,
+        config.trusted_proxy_scheme.as_deref(),
+    )?;
 
     let pepper = load_pepper_file(&config.pepper_file)?;
     let auth = if config.development {
@@ -336,9 +340,18 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
     if let Err(error) =
         crate::retention::cleanup_raw_block_summaries(database.pool(), crate::auth::now_utc()).await
     {
-        eprintln!("raw block retention cleanup deferred: {error}");
+        eprintln!(
+            "raw block retention cleanup deferred: {}",
+            crate::redaction::redact_sensitive(&error.to_string())
+        );
     }
-    let state = crate::AppState::new(database, config.web_root.clone(), auth);
+    let state = crate::AppState::new_with_proxy_policy(
+        database,
+        config.web_root.clone(),
+        auth,
+        config.trusted_proxy_cidrs.clone(),
+        config.trusted_proxy_scheme.clone(),
+    );
     let app = crate::http::build_app(state.clone());
 
     let listener = tokio::net::TcpListener::bind(config.listen).await?;

@@ -355,6 +355,10 @@ impl AppState {
         &self.db
     }
 
+    pub(crate) fn database(&self) -> Arc<ServerDatabase> {
+        Arc::clone(&self.db)
+    }
+
     pub(crate) fn auth(&self) -> &AuthConfig {
         &self.auth
     }

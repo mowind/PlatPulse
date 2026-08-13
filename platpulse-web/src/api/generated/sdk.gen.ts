@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { AdminEventsData, AdminEventsResponses, DiagnosticsData, DiagnosticsResponses, LiveData, LiveResponses, LoginHandlerData, LoginHandlerErrors, LoginHandlerResponses, LogoutHandlerData, LogoutHandlerErrors, LogoutHandlerResponses, PublicEventsData, PublicEventsResponses, PublicNetworkData, PublicNetworkErrors, PublicNetworkResponses, PublicNetworksData, PublicNetworksResponses, PublicNodeDetailData, PublicNodeDetailErrors, PublicNodeDetailResponses, ReadyData, ReadyErrors, ReadyResponses, SessionHandlerData, SessionHandlerErrors, SessionHandlerResponses, SetVisibilityData, SetVisibilityErrors, SetVisibilityResponses } from './types.gen';
+import type { AdminEventsData, AdminEventsResponses, AdminNodeHistoryData, AdminNodeHistoryErrors, AdminNodeHistoryResponses, DiagnosticsData, DiagnosticsResponses, LiveData, LiveResponses, LoginHandlerData, LoginHandlerErrors, LoginHandlerResponses, LogoutHandlerData, LogoutHandlerErrors, LogoutHandlerResponses, PublicEventsData, PublicEventsResponses, PublicNetworkData, PublicNetworkErrors, PublicNetworkResponses, PublicNetworksData, PublicNetworksResponses, PublicNodeDetailData, PublicNodeDetailErrors, PublicNodeDetailResponses, PublicNodeHistoryData, PublicNodeHistoryErrors, PublicNodeHistoryExportData, PublicNodeHistoryExportErrors, PublicNodeHistoryExportResponses, PublicNodeHistoryResponses, ReadyData, ReadyErrors, ReadyResponses, SessionHandlerData, SessionHandlerErrors, SessionHandlerResponses, SetVisibilityData, SetVisibilityErrors, SetVisibilityResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -21,6 +21,8 @@ export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends 
 export const diagnostics = <ThrowOnError extends boolean = false>(options?: Options<DiagnosticsData, ThrowOnError>): RequestResult<DiagnosticsResponses, unknown, ThrowOnError> => (options?.client ?? client).get<DiagnosticsResponses, unknown, ThrowOnError>({ url: '/api/admin/v1/agents', ...options });
 
 export const adminEvents = <ThrowOnError extends boolean = false>(options?: Options<AdminEventsData, ThrowOnError>): RequestResult<AdminEventsResponses, unknown, ThrowOnError> => (options?.client ?? client).get<AdminEventsResponses, unknown, ThrowOnError>({ url: '/api/admin/v1/events', ...options });
+
+export const adminNodeHistory = <ThrowOnError extends boolean = false>(options: Options<AdminNodeHistoryData, ThrowOnError>): RequestResult<AdminNodeHistoryResponses, AdminNodeHistoryErrors, ThrowOnError> => (options.client ?? client).get<AdminNodeHistoryResponses, AdminNodeHistoryErrors, ThrowOnError>({ url: '/api/admin/v1/nodes/{node_id}/history', ...options });
 
 /**
  * Owner-only visibility mutation. All browser mutation trust-boundary
@@ -69,6 +71,15 @@ export const publicNetworks = <ThrowOnError extends boolean = false>(options?: O
 export const publicNetwork = <ThrowOnError extends boolean = false>(options: Options<PublicNetworkData, ThrowOnError>): RequestResult<PublicNetworkResponses, PublicNetworkErrors, ThrowOnError> => (options.client ?? client).get<PublicNetworkResponses, PublicNetworkErrors, ThrowOnError>({ url: '/api/public/v1/networks/{network_key}', ...options });
 
 export const publicNodeDetail = <ThrowOnError extends boolean = false>(options: Options<PublicNodeDetailData, ThrowOnError>): RequestResult<PublicNodeDetailResponses, PublicNodeDetailErrors, ThrowOnError> => (options.client ?? client).get<PublicNodeDetailResponses, PublicNodeDetailErrors, ThrowOnError>({ url: '/api/public/v1/nodes/{node_id}', ...options });
+
+export const publicNodeHistory = <ThrowOnError extends boolean = false>(options: Options<PublicNodeHistoryData, ThrowOnError>): RequestResult<PublicNodeHistoryResponses, PublicNodeHistoryErrors, ThrowOnError> => (options.client ?? client).get<PublicNodeHistoryResponses, PublicNodeHistoryErrors, ThrowOnError>({ url: '/api/public/v1/nodes/{node_id}/history', ...options });
+
+/**
+ * Export exactly the same allowlisted Public history projection as JSON.
+ * Visibility is checked by `public_node_history`, so this route cannot be
+ * used to bypass list/detail/history privacy filtering.
+ */
+export const publicNodeHistoryExport = <ThrowOnError extends boolean = false>(options: Options<PublicNodeHistoryExportData, ThrowOnError>): RequestResult<PublicNodeHistoryExportResponses, PublicNodeHistoryExportErrors, ThrowOnError> => (options.client ?? client).get<PublicNodeHistoryExportResponses, PublicNodeHistoryExportErrors, ThrowOnError>({ url: '/api/public/v1/nodes/{node_id}/history/export', ...options });
 
 /**
  * Current session projection and CSRF token for the WebUI (design §12.4).
