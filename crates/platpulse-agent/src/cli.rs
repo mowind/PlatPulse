@@ -163,6 +163,12 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
     let signal = wait_for_shutdown_signal();
     tokio::pin!(signal);
     loop {
+        // Delivery runs in its own 1s tick slot. The collection cycle must
+        // never share the select with the tick: cancelling a collect at the
+        // next tick can leave the spool and `agent_state` racing (a report
+        // INSERTed under a stale sequence read while its state update is
+        // still uncommitted), which surfaces as `UNIQUE constraint failed:
+        // reports.boot_id, reports.report_sequence` and kills the Agent.
         tokio::select! {
             _ = &mut signal => {
                 runtime.request_shutdown();
@@ -185,6 +191,14 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
                         crate::redaction::redact_sensitive(&error.to_string())
                     );
                 }
+            }
+        }
+        // One full collection cycle, run to completion before the next
+        // delivery slot. Only shutdown cancels it.
+        tokio::select! {
+            _ = &mut signal => {
+                runtime.request_shutdown();
+                break;
             }
             result = collect_and_persist_with_blocks(&config, &adapter, &transport, &mut subscriptions) => {
                 result.map_err(|error| AgentCliError::Collection(error.to_string()))?;
