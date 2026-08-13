@@ -193,7 +193,7 @@ pub enum CollectionError {
     Serialization(#[from] serde_json::Error),
 }
 
-fn timestamp() -> Rfc3339 {
+pub(crate) fn timestamp() -> Rfc3339 {
     let value = OffsetDateTime::now_utc()
         .replace_nanosecond(0)
         .expect("zero nanoseconds is valid")
@@ -245,7 +245,7 @@ fn unsupported<T>() -> ComponentObservation<T> {
 
 /// Build a component error without fabricating a value when the exchange is
 /// unavailable. The Server can still accept the rest of the report.
-fn clock_skew_error(at: Rfc3339, message: &str) -> ComponentObservation<i64> {
+pub(crate) fn clock_skew_error(at: Rfc3339, message: &str) -> ComponentObservation<i64> {
     error(at, "clock_exchange_unavailable", message)
 }
 
@@ -579,6 +579,7 @@ pub async fn recover_previous_boot<A: RpcAdapter>(
     adapter: &A,
 ) -> Result<(), CollectionError> {
     let mut store = AgentStore::open(AgentDatabaseConfig::new(&config.state_db)).await?;
+    crate::reporting::ensure_spool_healthy(&mut store).await?;
     let state: Option<(String, i64, Option<String>, i64, String)> = sqlx::query_as(
         "SELECT agent_id, agent_epoch, boot_id, report_sequence, boot_state FROM agent_state WHERE singleton=1",
     )
@@ -662,6 +663,7 @@ pub async fn collect_and_persist<A: RpcAdapter>(
     adapter: &A,
 ) -> Result<String, CollectionError> {
     let mut store = AgentStore::open(AgentDatabaseConfig::new(&config.state_db)).await?;
+    crate::reporting::ensure_spool_healthy(&mut store).await?;
     #[allow(clippy::type_complexity)]
     let state: Option<(String, i64, Option<String>, i64, String, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
         "SELECT agent_id, agent_epoch, boot_id, report_sequence, boot_state, previous_boot_id, pending_transition, pending_previous_boot_id FROM agent_state WHERE singleton=1",
@@ -752,6 +754,7 @@ pub async fn collect_and_persist_with_blocks<A: RpcAdapter>(
     subscriptions: &mut [crate::block::HeadSubscription],
 ) -> Result<String, CollectionError> {
     let mut store = AgentStore::open(AgentDatabaseConfig::new(&config.state_db)).await?;
+    crate::reporting::ensure_spool_healthy(&mut store).await?;
     #[allow(clippy::type_complexity)]
     let state: Option<(String, i64, Option<String>, i64, String, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
         "SELECT agent_id, agent_epoch, boot_id, report_sequence, boot_state, previous_boot_id, pending_transition, pending_previous_boot_id FROM agent_state WHERE singleton=1",
@@ -945,6 +948,9 @@ pub async fn collect_and_persist_with_blocks<A: RpcAdapter>(
     sqlx::query("UPDATE agent_state SET agent_id=?, agent_epoch=?, boot_id=?, report_sequence=?, inventory_revision=?, boot_state=CASE WHEN ?='drained_previous' THEN 'active' ELSE boot_state END, pending_transition=CASE WHEN ?='drained_previous' THEN NULL ELSE pending_transition END, pending_previous_boot_id=CASE WHEN ?='drained_previous' THEN NULL ELSE pending_previous_boot_id END, updated_at=? WHERE singleton=1")
         .bind(report.agent_id.to_string()).bind(report.agent_epoch as i64).bind(report.boot_id.to_string()).bind(report.report_sequence as i64).bind(report.inventory.revision as i64).bind(transition).bind(transition).bind(transition).bind(&now).execute(&mut *tx).await?;
     tx.commit().await?;
+    crate::reporting::enforce_spool_policy(&mut store, &SpoolPolicy::default(), &now)
+        .await
+        .map_err(CollectionError::Report)?;
     store.close().await?;
     Ok(digest)
 }

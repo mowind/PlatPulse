@@ -12,9 +12,10 @@ use std::time::{Duration, Instant};
 
 use platpulse_core::block::BlockSummary;
 use platpulse_core::hex::Hash32;
-use platpulse_core::identity::NodeId;
+use platpulse_core::identity::{AgentId, BootId, NodeId};
 use platpulse_core::network::NetworkIdentity;
 use platpulse_core::time::Rfc3339;
+use platpulse_core::{AgentReport, BootTransition};
 
 use tokio::time::timeout_at;
 use tokio_util::sync::CancellationToken;
@@ -210,7 +211,15 @@ pub fn shutdown_gap(
 mod tests {
     use super::*;
     use crate::block::HeadHeader;
+    use crate::config::AgentConfig;
+    use crate::credential::write_credential_file;
+    use crate::database::{AgentDatabaseConfig, AgentStore};
+    use serde_json::json;
+    use sha2::{Digest, Sha256};
     use std::sync::Arc;
+    use tempfile::tempdir;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
     use tokio::sync::Notify;
 
     fn hash(byte: char) -> Hash32 {
@@ -278,6 +287,114 @@ mod tests {
             })
         }
     }
+    #[tokio::test]
+    async fn closing_report_uses_fail_closed_adapter_and_stages_next_boot() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("agent.db");
+        let credential = dir.path().join("credential");
+        let token = format!(
+            "pp_agent_{}_{}",
+            "0195f2a1-0011-4011-8011-000000000011",
+            "a".repeat(64)
+        );
+        write_credential_file(&credential, &token).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 4096];
+            let header_end = loop {
+                let count = socket.read(&mut chunk).await.unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&chunk[..count]);
+                if let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                    break end + 4;
+                }
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let length: usize = headers
+                .lines()
+                .find_map(|line| {
+                    line.strip_prefix("content-length:")
+                        .or_else(|| line.strip_prefix("Content-Length:"))
+                })
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            while request.len() < header_end + length {
+                let count = socket.read(&mut chunk).await.unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&chunk[..count]);
+            }
+            let body = &request[header_end..header_end + length];
+            let report: AgentReport = serde_json::from_slice(body).unwrap();
+            let hash = format!("0x{}", hex::encode(Sha256::digest(body)));
+            let response = json!({"receipt": {
+                "report_id": report.report_id,
+                "disposition": "rejected",
+                "report_body_sha256": hash,
+                "server_version": "test",
+                "supported_protocol_majors": [1],
+                "server_time": "2026-01-01T00:00:00Z",
+                "inventory": "rejected",
+                "rejections": [{"code": "invalid_envelope", "retryable": false, "reason": "test"}],
+                "nodes": [], "samples": []
+            }});
+            let bytes = serde_json::to_vec(&response).unwrap();
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                bytes.len()
+            );
+            socket.write_all(head.as_bytes()).await.unwrap();
+            socket.write_all(&bytes).await.unwrap();
+        });
+        let config_path = dir.path().join("agent.toml");
+        std::fs::write(&config_path, format!(
+            "server_url=\"http://127.0.0.1:{port}\"\ncredential_file=\"{}\"\nstate_db=\"{}\"\ninventory_revision=1\nnodes=[{{node_id=\"0195f2a1-0014-4014-8014-000000000014\",network_key=\"platon-mainnet\",rpc_endpoint=\"ws://127.0.0.1:6790\"}}]\n",
+            credential.display(), db_path.display())).unwrap();
+        let config = AgentConfig::resolve(&config_path).unwrap();
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(&db_path))
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO agent_state (singleton, agent_id, agent_epoch, boot_id, report_sequence, inventory_revision, updated_at) VALUES (1, ?, 1, ?, 0, 1, ?)")
+            .bind("0195f2a1-0011-4011-8011-000000000011")
+            .bind("0195f2a1-0012-4012-8012-000000000012")
+            .bind("2026-01-01T00:00:00Z")
+            .execute(store.connection()).await.unwrap();
+        store.close().await.unwrap();
+        let outcome = graceful_shutdown_with_subscriptions(
+            &config,
+            &FailClosedRpcAdapter,
+            &mut [],
+            Duration::ZERO,
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        assert!(outcome.stored);
+        assert!(outcome.receipt_applied);
+        let mut reopened = AgentStore::open(AgentDatabaseConfig::new(&db_path))
+            .await
+            .unwrap();
+        let state: (String, i64, String, Option<String>) = sqlx::query_as(
+            "SELECT boot_state, report_sequence, shutdown_state, pending_transition FROM agent_state WHERE singleton=1",
+        ).fetch_one(reopened.connection()).await.unwrap();
+        assert_eq!(state.0, "drained_pending");
+        assert_eq!(state.1, 0);
+        assert_eq!(state.2, "final_stored");
+        assert_eq!(state.3.as_deref(), Some("drained_previous"));
+        let closing: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM report_receipts WHERE disposition='rejected'")
+                .fetch_one(reopened.connection())
+                .await
+                .unwrap();
+        assert_eq!(closing, 1);
+        reopened.close().await.unwrap();
+        server.await.unwrap();
+    }
+
     #[test]
     fn cancellation_request_stops_intake_signal() {
         let runtime = AgentRuntime::new();
@@ -412,6 +529,51 @@ struct TransportResolver<'a> {
     identity: NetworkIdentity,
 }
 
+/// Build shutdown's final report without probing the Node. A shutdown must be
+/// able to complete when the RPC adapter is unavailable; the most recent
+/// durable report supplies the last-good Node observations, while the
+/// fail-closed skeleton supplies complete entries for newly configured Nodes.
+fn build_shutdown_report(
+    config: &crate::config::AgentConfig,
+    agent_id: AgentId,
+    agent_epoch: u64,
+    boot_id: BootId,
+    sequence: u64,
+    inventory: platpulse_core::inventory::NodeInventory,
+    last_good: Option<&AgentReport>,
+) -> Result<AgentReport, crate::collector::CollectionError> {
+    let at = crate::collector::timestamp();
+    let mut report = crate::collector::collect_report_with_clock_skew(
+        config,
+        agent_id,
+        agent_epoch,
+        boot_id,
+        sequence,
+        inventory,
+        &FailClosedRpcAdapter,
+        crate::collector::clock_skew_error(
+            at,
+            "RPC collection is disabled during shutdown; persisted last-good values retained",
+        ),
+    )?;
+    if let Some(last_good) = last_good {
+        for node in &mut report.nodes {
+            if let Some(previous) = last_good
+                .nodes
+                .iter()
+                .find(|previous| previous.node_id == node.node_id)
+            {
+                *node = previous.clone();
+            }
+        }
+    }
+    report.boot_transition = BootTransition::Closing;
+    report
+        .validate()
+        .map_err(|error| crate::collector::CollectionError::Identity(error.to_string()))?;
+    Ok(report)
+}
+
 impl AsyncBlockResolver for TransportResolver<'_> {
     fn resolve<'a>(
         &'a self,
@@ -430,7 +592,7 @@ impl AsyncBlockResolver for TransportResolver<'_> {
 /// unresolved range, then persist a canonical immutable Closing report.
 pub async fn graceful_shutdown_with_subscriptions<A: crate::collector::RpcAdapter>(
     config: &crate::config::AgentConfig,
-    adapter: &A,
+    _adapter: &A,
     subscriptions: &mut [HeadSubscription],
     drain_deadline: Duration,
     sender_deadline: Duration,
@@ -469,6 +631,15 @@ pub async fn graceful_shutdown_with_subscriptions<A: crate::collector::RpcAdapte
         .validated_inventory()
         .map_err(|error| crate::collector::CollectionError::Identity(error.to_string()))?
         .inventory;
+    let last_good_body: Option<Vec<u8>> = sqlx::query_scalar(
+        "SELECT body FROM reports WHERE boot_id=? ORDER BY report_sequence DESC LIMIT 1",
+    )
+    .bind(boot_id.to_string())
+    .fetch_optional(store.connection())
+    .await?;
+    let last_good = last_good_body
+        .as_deref()
+        .and_then(|body| serde_json::from_slice::<AgentReport>(body).ok());
     let drain_until = Instant::now() + drain_deadline;
     let transport = WebSocketBlockTransport::default();
     for subscription in subscriptions.iter_mut() {
@@ -479,19 +650,16 @@ pub async fn graceful_shutdown_with_subscriptions<A: crate::collector::RpcAdapte
         else {
             continue;
         };
-        let Some(identity) = crate::collector::collect_report(
-            config,
-            agent_id,
-            epoch as u64,
-            boot_id,
-            sequence.max(1) as u64,
-            inventory.clone(),
-            adapter,
-        )?
-        .nodes
-        .into_iter()
-        .find(|node| node.node_id == subscription.node_id())
-        .and_then(|node| node.chain.network_identity.latest) else {
+        let Some(identity) = last_good
+            .as_ref()
+            .and_then(|report| {
+                report
+                    .nodes
+                    .iter()
+                    .find(|node| node.node_id == subscription.node_id())
+            })
+            .and_then(|node| node.chain.network_identity.latest.clone())
+        else {
             continue;
         };
         let resolver = TransportResolver {
@@ -522,16 +690,15 @@ pub async fn graceful_shutdown_with_subscriptions<A: crate::collector::RpcAdapte
     }
 
     let send_deadline = started_at_plus(started, sender_deadline);
-    let mut report = crate::collector::collect_report(
+    let mut report = build_shutdown_report(
         config,
         agent_id,
         epoch as u64,
         boot_id,
         sequence as u64 + 1,
         inventory,
-        adapter,
+        last_good.as_ref(),
     )?;
-    report.boot_transition = platpulse_core::BootTransition::Closing;
     report.block_summaries = crate::block::load_block_summaries(&mut store).await?;
     report.history_gaps = crate::block::load_history_gaps(&mut store).await?;
     report.host.spool = crate::collector::current_spool_diagnostics(&mut store)
@@ -600,6 +767,26 @@ pub async fn graceful_shutdown_with_subscriptions<A: crate::collector::RpcAdapte
     if exhausted {
         let at = shutdown_timestamp();
         sqlx::query("UPDATE agent_state SET shutdown_state='forced_kill_recovery', shutdown_forced=1, shutdown_finished_at=?, shutdown_updated_at=? WHERE singleton=1").bind(at.to_string()).bind(at.to_string()).execute(store.connection()).await?;
+    }
+    if receipt_applied {
+        // The Closing receipt is the lifecycle boundary. Keep the closed boot
+        // immutable and stage a fresh boot so the next process restart emits
+        // DrainedPrevious instead of continuing with a Server-closed boot.
+        let new_boot_id =
+            platpulse_core::identity::BootId::from_str(&uuid::Uuid::new_v4().to_string())
+                .expect("UUID is valid");
+        let previous_boot_id = report.boot_id.to_string();
+        let at = shutdown_timestamp().to_string();
+        sqlx::query("UPDATE agent_state SET boot_id=?, report_sequence=0, boot_state='drained_pending', pending_transition='drained_previous', pending_previous_boot_id=?, previous_boot_id=?, close_report_id=?, close_applied_at=?, shutdown_updated_at=?, updated_at=? WHERE singleton=1")
+            .bind(new_boot_id.to_string())
+            .bind(&previous_boot_id)
+            .bind(&previous_boot_id)
+            .bind(report.report_id.to_string())
+            .bind(&at)
+            .bind(&at)
+            .bind(&at)
+            .execute(store.connection())
+            .await?;
     }
     store.close().await?;
     Ok(ShutdownOutcome {

@@ -19,6 +19,9 @@ pub(crate) mod report_ingestion;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::Notify;
 
 use axum::body::Bytes;
 use axum::extract::{ConnectInfo, Extension, Request, State};
@@ -113,7 +116,112 @@ async fn request_id_middleware(mut request: Request, next: Next) -> Response {
 #[derive(Clone)]
 pub(crate) struct AuthenticatedSession(pub SessionInfo);
 
-/// Server state injected into handlers. `web_index` is read once at startup:
+#[derive(Debug)]
+pub(crate) struct ServerRuntime {
+    accepting: AtomicBool,
+    shutting_down: AtomicBool,
+    corrupt: AtomicBool,
+    critical_workers: AtomicBool,
+    critical_worker_heartbeat_ms: AtomicU64,
+    critical_worker_enabled: AtomicBool,
+    in_flight_ingestion: AtomicUsize,
+    drained: Notify,
+}
+
+impl ServerRuntime {
+    fn new() -> Self {
+        Self {
+            accepting: AtomicBool::new(true),
+            shutting_down: AtomicBool::new(false),
+            corrupt: AtomicBool::new(false),
+            critical_workers: AtomicBool::new(true),
+            critical_worker_heartbeat_ms: AtomicU64::new(0),
+            critical_worker_enabled: AtomicBool::new(true),
+            in_flight_ingestion: AtomicUsize::new(0),
+            drained: Notify::new(),
+        }
+    }
+
+    fn begin_ingestion(&self) -> bool {
+        if !self.accepting.load(Ordering::Acquire) {
+            return false;
+        }
+        self.in_flight_ingestion.fetch_add(1, Ordering::AcqRel);
+        if !self.accepting.load(Ordering::Acquire) {
+            self.finish_ingestion();
+            return false;
+        }
+        true
+    }
+
+    fn finish_ingestion(&self) {
+        if self.in_flight_ingestion.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.drained.notify_waiters();
+        }
+    }
+
+    fn mark_worker_heartbeat(&self) {
+        self.critical_worker_heartbeat_ms
+            .store(now_millis(), Ordering::Release);
+        self.critical_workers.store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    fn fail_critical_worker(&self) {
+        self.critical_worker_enabled.store(false, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    fn recover_critical_worker(&self) {
+        self.critical_worker_enabled.store(true, Ordering::Release);
+        self.mark_worker_heartbeat();
+    }
+
+    fn critical_workers_healthy(&self) -> bool {
+        if self.shutting_down.load(Ordering::Acquire) {
+            return false;
+        }
+        let heartbeat = self.critical_worker_heartbeat_ms.load(Ordering::Acquire);
+        self.critical_workers.load(Ordering::Acquire)
+            && self.critical_worker_enabled.load(Ordering::Acquire)
+            && heartbeat != 0
+            && now_millis().saturating_sub(heartbeat) <= 2_000
+    }
+
+    fn begin_shutdown(&self) {
+        self.accepting.store(false, Ordering::Release);
+        self.shutting_down.store(true, Ordering::Release);
+        self.critical_workers.store(false, Ordering::Release);
+    }
+
+    async fn wait_for_ingestion(&self, deadline: tokio::time::Instant) -> bool {
+        while self.in_flight_ingestion.load(Ordering::Acquire) != 0 {
+            if tokio::time::timeout_at(deadline, self.drained.notified())
+                .await
+                .is_err()
+            {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+pub(crate) struct IngestionGuard<'a> {
+    runtime: &'a ServerRuntime,
+}
+impl Drop for IngestionGuard<'_> {
+    fn drop(&mut self) {
+        self.runtime.finish_ingestion();
+    }
+}
+
 /// the SPA entry is immutable for the process lifetime and is served with
 /// `Cache-Control: no-cache` so clients revalidate.
 #[derive(Clone)]
@@ -125,6 +233,7 @@ pub struct AppState {
     web_assets: Option<PathBuf>,
     web_index: Option<Bytes>,
     web_assets_ready: bool,
+    runtime: Arc<ServerRuntime>,
     pub(crate) public_realtime: RealtimeHub,
     pub(crate) admin_realtime: RealtimeHub,
 }
@@ -145,6 +254,23 @@ impl AppState {
             && web_assets
                 .as_deref()
                 .is_some_and(|dir| dir.join("assets").is_dir());
+        let runtime = Arc::new(ServerRuntime::new());
+        let worker_runtime = Arc::clone(&runtime);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));
+            loop {
+                tick.tick().await;
+                if worker_runtime.shutting_down.load(Ordering::Acquire) {
+                    break;
+                }
+                if worker_runtime
+                    .critical_worker_enabled
+                    .load(Ordering::Acquire)
+                {
+                    worker_runtime.mark_worker_heartbeat();
+                }
+            }
+        });
         Self {
             db: Arc::new(db),
             auth: Arc::new(auth),
@@ -159,9 +285,43 @@ impl AppState {
             web_assets,
             web_index,
             web_assets_ready,
+            runtime,
             public_realtime: RealtimeHub::default(),
             admin_realtime: RealtimeHub::default(),
         }
+    }
+
+    pub(crate) fn begin_shutdown(&self) {
+        self.runtime.begin_shutdown();
+        self.public_realtime.shutdown("server_shutdown");
+        self.admin_realtime.shutdown("server_shutdown");
+    }
+
+    pub async fn wait_for_ingestion(&self, deadline: tokio::time::Instant) -> bool {
+        self.runtime.wait_for_ingestion(deadline).await
+    }
+
+    pub async fn checkpoint_wal(&self) -> Result<(), sqlx::Error> {
+        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+            .execute(self.db.pool())
+            .await
+            .map(|_| ())
+    }
+
+    pub(crate) fn ingestion_guard(&self) -> Option<IngestionGuard<'_>> {
+        self.runtime.begin_ingestion().then_some(IngestionGuard {
+            runtime: &self.runtime,
+        })
+    }
+
+    pub(crate) fn is_shutting_down(&self) -> bool {
+        self.runtime.shutting_down.load(Ordering::Acquire)
+    }
+    pub(crate) fn is_corrupt(&self) -> bool {
+        self.runtime.corrupt.load(Ordering::Acquire)
+    }
+    pub(crate) fn critical_workers_healthy(&self) -> bool {
+        self.runtime.critical_workers_healthy()
     }
 
     pub(crate) fn public_realtime(&self) -> RealtimeHub {
@@ -618,6 +778,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shutdown_marks_readiness_false_and_rejects_new_ingestion() {
+        let (_, _, state) = test_state_with_files(&[
+            ("index.html", INDEX_HTML.as_bytes()),
+            ("assets/index-abc123.js", b"// app"),
+        ])
+        .await;
+        seed_owner(&state).await;
+        state.begin_shutdown();
+        let (status, value) = json(get(build_app(state.clone()), "/health/ready").await).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(component(&value, "shutdown")["reason"], "shutting_down");
+        assert!(state.ingestion_guard().is_none());
+    }
+    #[tokio::test]
     async fn ready_reports_setup_required_without_owner() {
         let (_, _, state) = test_state_with_files(&[
             ("index.html", INDEX_HTML.as_bytes()),
@@ -648,6 +822,33 @@ mod tests {
         assert_eq!(component(&value, "sqlite")["status"], "ready");
         assert_eq!(component(&value, "owner")["status"], "ready");
         assert_eq!(component(&value, "web_assets")["status"], "ready");
+    }
+
+    #[tokio::test]
+    async fn ready_reports_critical_worker_stale_and_recovers() {
+        let (_, web_dir, state) = test_state_with_files(&[
+            ("index.html", INDEX_HTML.as_bytes()),
+            ("assets/index-abc123.js", b"// app"),
+        ])
+        .await;
+        let _ = web_dir;
+        seed_owner(&state).await;
+        state
+            .runtime
+            .critical_worker_heartbeat_ms
+            .store(1, Ordering::Release);
+        state.runtime.fail_critical_worker();
+        let (status, value) = json(get(build_app(state.clone()), "/health/ready").await).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            component(&value, "critical_workers")["reason"],
+            "worker_unhealthy"
+        );
+
+        state.runtime.recover_critical_worker();
+        let (status, value) = json(get(build_app(state), "/health/ready").await).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(component(&value, "critical_workers")["status"], "ready");
     }
 
     #[tokio::test]

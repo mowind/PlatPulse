@@ -40,6 +40,7 @@ struct StoredEvent {
 struct HubState {
     next_id: u64,
     events: VecDeque<StoredEvent>,
+    closed: bool,
 }
 
 #[derive(Debug)]
@@ -70,6 +71,7 @@ impl RealtimeHub {
                 state: Mutex::new(HubState {
                     next_id: 0,
                     events: VecDeque::new(),
+                    closed: false,
                 }),
                 notify: Notify::new(),
             }),
@@ -106,10 +108,14 @@ impl RealtimeHub {
         reset: bool,
     ) -> u64 {
         let mut state = self.inner.state.lock().expect("SSE hub mutex poisoned");
+        if state.closed {
+            return state.next_id;
+        }
         state.next_id = state.next_id.saturating_add(1).max(1);
+        let event_id = state.next_id;
         let event = Invalidation {
             version: EVENT_VERSION,
-            event_id: state.next_id,
+            event_id,
             resource,
             resource_id,
             revision,
@@ -132,6 +138,28 @@ impl RealtimeHub {
         id
     }
 
+    pub(crate) fn shutdown(&self, resource: &str) {
+        let mut state = self.inner.state.lock().expect("SSE hub mutex poisoned");
+        if state.closed {
+            return;
+        }
+        state.next_id = state.next_id.saturating_add(1).max(1);
+        let event_id = state.next_id;
+        state.events.clear();
+        state.events.push_back(StoredEvent {
+            event: Invalidation {
+                version: EVENT_VERSION,
+                event_id,
+                resource: resource.to_owned(),
+                resource_id: None,
+                revision: event_id,
+                reset: Some(true),
+            },
+        });
+        state.closed = true;
+        drop(state);
+        self.inner.notify.notify_waiters();
+    }
     fn next_after(&self, cursor: &mut u64) -> Option<Invalidation> {
         let state = self.inner.state.lock().expect("SSE hub mutex poisoned");
         let first = state.events.front()?.event.event_id;
@@ -170,6 +198,7 @@ impl RealtimeHub {
         tokio::spawn(async move {
             loop {
                 if let Some(invalidation) = hub.next_after(&mut cursor) {
+                    let closing = invalidation.resource == "server_shutdown";
                     let id = invalidation.event_id.to_string();
                     let data = serde_json::to_string(&invalidation)
                         .expect("invalidation has only serializable fields");
@@ -180,7 +209,19 @@ impl RealtimeHub {
                     {
                         break;
                     }
+                    if closing {
+                        break;
+                    }
                     continue;
+                }
+                if hub
+                    .inner
+                    .state
+                    .lock()
+                    .expect("SSE hub mutex poisoned")
+                    .closed
+                {
+                    break;
                 }
                 hub.inner.notify.notified().await;
             }
@@ -203,6 +244,7 @@ pub(crate) fn keepalive_interval() -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio_stream::StreamExt;
 
     #[tokio::test]
     async fn coalesces_and_replays_bounded_events() {
@@ -222,6 +264,23 @@ mod tests {
         assert_eq!(reset.resource_id, None);
     }
 
+    #[tokio::test]
+    async fn shutdown_emits_reset_and_closes_stream() {
+        let hub = RealtimeHub::new(4);
+        hub.shutdown("server_shutdown");
+        let mut stream = Box::pin(hub.stream(None));
+        let item = tokio::time::timeout(Duration::from_secs(1), stream.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(item.is_ok());
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), stream.next())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
     #[test]
     fn reset_never_contains_a_resource_id() {
         let hub = RealtimeHub::new(4);

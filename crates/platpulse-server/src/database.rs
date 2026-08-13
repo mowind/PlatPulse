@@ -140,6 +140,8 @@ pub enum ServerDatabaseError {
     IntegrityQuery(#[source] sqlx::Error),
     #[error("Server SQLite integrity check failed: {0}")]
     IntegrityFailed(String),
+    #[error("Server SQLite database file is empty")]
+    EmptyDatabase,
 }
 
 /// An initialized Server database whose writes are serialized by one pool
@@ -153,7 +155,27 @@ impl ServerDatabase {
     /// run integrity checks before returning a database to the HTTP startup
     /// path.
     pub async fn open(config: ServerDatabaseConfig) -> Result<Self, ServerDatabaseError> {
-        let options = sqlite_options(&config);
+        Self::open_with(config, true).await
+    }
+
+    /// Open an already initialized database without creating a new file. The
+    /// serve path uses this guard so a missing or renamed state file can never
+    /// silently become an empty writable database.
+    pub async fn open_existing(config: ServerDatabaseConfig) -> Result<Self, ServerDatabaseError> {
+        if std::fs::metadata(config.path())
+            .map(|metadata| metadata.len() == 0)
+            .unwrap_or(true)
+        {
+            return Err(ServerDatabaseError::EmptyDatabase);
+        }
+        Self::open_with(config, false).await
+    }
+
+    async fn open_with(
+        config: ServerDatabaseConfig,
+        create_if_missing: bool,
+    ) -> Result<Self, ServerDatabaseError> {
+        let options = sqlite_options(&config, create_if_missing);
         let pool = SqlitePoolOptions::new()
             .max_connections(SERVER_WRITE_CONNECTIONS)
             .min_connections(SERVER_WRITE_CONNECTIONS)
@@ -207,8 +229,9 @@ impl ServerDatabase {
             .map_err(ServerDatabaseError::IntegrityQuery)
     }
 
-    /// Close the serialized pool.
-    pub async fn close(self) {
+    /// Close the serialized pool. The operation is idempotent and can be
+    /// called while the HTTP state still owns the database.
+    pub async fn close(&self) {
         self.pool.close().await;
     }
 }
@@ -220,10 +243,10 @@ pub async fn initialize(
     ServerDatabase::open(config).await
 }
 
-fn sqlite_options(config: &ServerDatabaseConfig) -> SqliteConnectOptions {
+fn sqlite_options(config: &ServerDatabaseConfig, create_if_missing: bool) -> SqliteConnectOptions {
     SqliteConnectOptions::new()
         .filename(config.path())
-        .create_if_missing(true)
+        .create_if_missing(create_if_missing)
         .foreign_keys(true)
         .journal_mode(SqliteJournalMode::Wal)
         .synchronous(SqliteSynchronous::Full)
@@ -323,6 +346,14 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn existing_open_rejects_missing_database_without_creating_one() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("missing.db");
+        let result = ServerDatabase::open_existing(config(&path)).await;
+        assert!(result.is_err());
+        assert!(!path.exists());
+    }
+    #[tokio::test]
     async fn fresh_database_runs_all_server_migrations_and_required_pragmas() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("server.db");
@@ -372,7 +403,7 @@ mod tests {
         let path = directory.path().join("server.db");
         let pool = SqlitePoolOptions::new()
             .max_connections(SERVER_WRITE_CONNECTIONS)
-            .connect_with(sqlite_options(&config(&path)))
+            .connect_with(sqlite_options(&config(&path), true))
             .await
             .unwrap();
         migrations_through(1).run(&pool).await.unwrap();

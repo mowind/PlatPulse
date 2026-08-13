@@ -185,6 +185,18 @@ pub async fn deliver_one<T: ReportTransport>(
     let Some(report) = claim_oldest_report(store).await? else {
         return Ok(None);
     };
+    let actual_hash = format!("0x{}", hex::encode(Sha256::digest(&report.body)));
+    if actual_hash != report.body_sha256 {
+        mark_spool_fatal_store(
+            store,
+            &now_rfc3339(),
+            "immutable spool report failed integrity validation",
+        )
+        .await?;
+        return Err(ReportStoreError::StoreFatal(
+            "immutable spool report failed integrity validation".to_owned(),
+        ));
+    }
     let response = match transport.send(&report.body).await {
         Ok(response) => response,
         Err(error) => {
@@ -284,6 +296,46 @@ pub async fn persist_immutable_report(
     Ok(digest)
 }
 
+/// Deliver a bounded amount of oldest-first work. Once the durable spool
+/// reaches the preflush threshold, drain a small batch; otherwise keep the
+/// periodic worker to one report per tick so collection remains responsive.
+pub async fn deliver_periodic<T: ReportTransport>(
+    store: &mut AgentStore,
+    transport: &T,
+    policy: &SpoolPolicy,
+) -> Result<usize, ReportStoreError> {
+    let queued_bytes: i64 =
+        sqlx::query_scalar("SELECT COALESCE(SUM(body_bytes), 0) FROM reports WHERE in_flight = 0")
+            .fetch_one(store.connection())
+            .await?;
+    let max_reports = if queued_bytes.max(0) as u64 >= policy.preflush_bytes {
+        8
+    } else {
+        1
+    };
+    let mut delivered = 0;
+    for _ in 0..max_reports {
+        match deliver_one(store, transport).await? {
+            Some(_) => delivered += 1,
+            None => break,
+        }
+    }
+    Ok(delivered)
+}
+
+/// Refuse new collection/delivery when durable spool corruption was observed.
+pub async fn ensure_spool_healthy(store: &mut AgentStore) -> Result<(), ReportStoreError> {
+    let fatal: i64 = sqlx::query_scalar("SELECT store_fatal FROM spool_state WHERE singleton=1")
+        .fetch_one(store.connection())
+        .await?;
+    if fatal != 0 {
+        return Err(ReportStoreError::StoreFatal(
+            "Agent Store is marked fatal; manual recovery is required".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 /// Apply a bounded, transactional spool policy. In-flight and newest complete
 /// current report are never deleted; each dropped report contributes one
 /// explicit SpoolOverflow gap based on its bounded block metadata.
@@ -293,11 +345,26 @@ pub async fn enforce_spool_policy(
     now: &str,
 ) -> Result<SpoolCleanupSummary, ReportStoreError> {
     let mut tx = store.connection().begin().await?;
-    let rows = sqlx::query_as::<_, (String, i64, String, i64)>(
-        "SELECT report_id, report_sequence, generated_at, body_bytes FROM reports ORDER BY created_at, report_id",
+    let rows = sqlx::query_as::<_, (String, i64, String, i64, Vec<u8>, String)>(
+        "SELECT report_id, report_sequence, generated_at, body_bytes, body, body_sha256 FROM reports ORDER BY created_at, report_id",
     )
     .fetch_all(&mut *tx)
     .await?;
+    for (_, _, _, _, body, body_sha256) in &rows {
+        let actual_hash = format!("0x{}", hex::encode(Sha256::digest(body)));
+        if actual_hash != *body_sha256 || serde_json::from_slice::<AgentReport>(body).is_err() {
+            tx.rollback().await?;
+            mark_spool_fatal_store(
+                store,
+                now,
+                "immutable spool report failed integrity validation",
+            )
+            .await?;
+            return Err(ReportStoreError::StoreFatal(
+                "immutable spool report failed integrity validation".to_owned(),
+            ));
+        }
+    }
     let total: i64 = rows.iter().map(|row| row.3.max(0)).sum();
     let cutoff = time::OffsetDateTime::parse(now, &time::format_description::well_known::Rfc3339)
         .ok()
@@ -305,7 +372,7 @@ pub async fn enforce_spool_policy(
     let mut summary = SpoolCleanupSummary::default();
     let newest = rows.last().map(|row| row.0.clone());
     let mut bytes = total;
-    for (report_id, sequence, generated_at, body_bytes) in rows {
+    for (report_id, sequence, generated_at, body_bytes, body, body_sha256) in rows {
         if bytes <= policy.max_bytes as i64
             && cutoff.as_ref().is_none_or(|cutoff| {
                 time::OffsetDateTime::parse(
@@ -318,6 +385,22 @@ pub async fn enforce_spool_policy(
         {
             continue;
         }
+        let actual_hash = format!("0x{}", hex::encode(Sha256::digest(&body)));
+        let report: AgentReport = match serde_json::from_slice(&body) {
+            Ok(report) if actual_hash == body_sha256 => report,
+            _ => {
+                tx.rollback().await?;
+                mark_spool_fatal_store(
+                    store,
+                    now,
+                    "immutable spool report failed integrity validation",
+                )
+                .await?;
+                return Err(ReportStoreError::StoreFatal(
+                    "immutable spool report failed integrity validation".to_owned(),
+                ));
+            }
+        };
         let protected: Option<i64> =
             sqlx::query_scalar("SELECT in_flight FROM reports WHERE report_id = ?")
                 .bind(&report_id)
@@ -346,18 +429,107 @@ pub async fn enforce_spool_policy(
             (generated_at.clone(), generated_at.clone()),
             |(from, to)| (from.min(generated_at.clone()), to.max(generated_at.clone())),
         ));
-        sqlx::query("INSERT OR IGNORE INTO history_gaps (node_id, from_height, to_height, kind, reason, created_at) VALUES ('00000000-0000-0000-0000-000000000000', 0, 0, 'spool_overflow', 'spool overflow dropped durable reports', ?)").bind(now).execute(&mut *tx).await?;
-        summary.pending_history_gaps += 1;
+
+        let mut sample_count = 0u64;
+        let mut height_range: Option<(u64, u64)> = None;
+        for sample in &report.block_summaries {
+            sample_count += 1;
+            height_range = Some(
+                height_range.map_or((sample.block_number, sample.block_number), |(from, to)| {
+                    (from.min(sample.block_number), to.max(sample.block_number))
+                }),
+            );
+            insert_spool_overflow_gap(
+                &mut tx,
+                sample.node_id.to_string(),
+                sample.block_number,
+                sample.block_number,
+                now,
+            )
+            .await?;
+        }
+        for gap in &report.history_gaps {
+            sample_count += 1;
+            height_range = Some(
+                height_range.map_or((gap.from_height, gap.to_height), |(from, to)| {
+                    (from.min(gap.from_height), to.max(gap.to_height))
+                }),
+            );
+            insert_spool_overflow_gap(
+                &mut tx,
+                gap.node_id.to_string(),
+                gap.from_height,
+                gap.to_height,
+                now,
+            )
+            .await?;
+        }
+        if sample_count == 0 {
+            // A report with no block samples still represents discarded durable
+            // state. Keep an explicit bounded sentinel rather than silently
+            // losing the fact of the discard.
+            insert_spool_overflow_gap(
+                &mut tx,
+                "00000000-0000-0000-0000-000000000000".to_owned(),
+                0,
+                0,
+                now,
+            )
+            .await?;
+        }
+        summary.dropped_samples += sample_count;
+        summary.height_range = Some(summary.height_range.take().map_or(
+            height_range.unwrap_or((0, 0)),
+            |(from, to)| {
+                let range = height_range.unwrap_or((0, 0));
+                (from.min(range.0), to.max(range.1))
+            },
+        ));
+        summary.pending_history_gaps += sample_count.max(1);
     }
-    sqlx::query("UPDATE spool_state SET dropped_reports=dropped_reports+?, dropped_samples=dropped_samples+?, dropped_sequence_from=COALESCE(MIN(dropped_sequence_from, ?), ?), dropped_sequence_to=MAX(COALESCE(dropped_sequence_to, ?), ?), dropped_time_from=COALESCE(MIN(dropped_time_from, ?), ?), dropped_time_to=MAX(COALESCE(dropped_time_to, ?), ?), pending_history_gaps=pending_history_gaps+?, updated_at=? WHERE singleton=1")
+    sqlx::query("UPDATE spool_state SET dropped_reports=dropped_reports+?, dropped_samples=dropped_samples+?, dropped_sequence_from=COALESCE(MIN(dropped_sequence_from, ?), ?), dropped_sequence_to=MAX(COALESCE(dropped_sequence_to, ?), ?), dropped_time_from=COALESCE(MIN(dropped_time_from, ?), ?), dropped_time_to=MAX(COALESCE(dropped_time_to, ?), ?), dropped_height_from=COALESCE(MIN(dropped_height_from, ?), ?), dropped_height_to=MAX(COALESCE(dropped_height_to, ?), ?), pending_history_gaps=pending_history_gaps+?, updated_at=? WHERE singleton=1")
         .bind(summary.dropped_reports as i64).bind(summary.dropped_samples as i64)
         .bind(summary.sequence_range.map(|v| v.0 as i64)).bind(summary.sequence_range.map(|v| v.0 as i64))
         .bind(summary.sequence_range.map(|v| v.1 as i64)).bind(summary.sequence_range.map(|v| v.1 as i64))
         .bind(summary.time_range.as_ref().map(|v| v.0.as_str())).bind(summary.time_range.as_ref().map(|v| v.0.as_str()))
         .bind(summary.time_range.as_ref().map(|v| v.1.as_str())).bind(summary.time_range.as_ref().map(|v| v.1.as_str()))
+        .bind(summary.height_range.map(|v| v.0 as i64)).bind(summary.height_range.map(|v| v.0 as i64))
+        .bind(summary.height_range.map(|v| v.1 as i64)).bind(summary.height_range.map(|v| v.1 as i64))
         .bind(summary.pending_history_gaps as i64).bind(now).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(summary)
+}
+
+async fn insert_spool_overflow_gap(
+    tx: &mut sqlx::SqliteConnection,
+    node_id: String,
+    from_height: u64,
+    to_height: u64,
+    now: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT OR IGNORE INTO history_gaps (node_id, from_height, to_height, kind, reason, created_at) VALUES (?, ?, ?, 'spool_overflow', 'spool overflow dropped durable report sample', ?)")
+        .bind(node_id)
+        .bind(from_height as i64)
+        .bind(to_height as i64)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+    Ok(())
+}
+
+async fn mark_spool_fatal_store(
+    store: &mut AgentStore,
+    now: &str,
+    message: &str,
+) -> Result<(), ReportStoreError> {
+    sqlx::query(
+        "UPDATE spool_state SET store_fatal=1, store_error=?, updated_at=? WHERE singleton=1",
+    )
+    .bind(message.chars().take(256).collect::<String>())
+    .bind(now)
+    .execute(store.connection())
+    .await?;
+    Ok(())
 }
 
 async fn mark_report_too_large(store: &mut AgentStore, now: &str) -> Result<(), ReportStoreError> {

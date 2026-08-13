@@ -1,5 +1,6 @@
 import { Link, NavLink, Outlet } from 'react-router'
 import SignOutButton from '../components/SignOutButton'
+import { ServerStatusNotice } from '../components/ServerStatusNotice'
 
 /**
  * Admin shell: Owner-only management layout, independent from the Home
@@ -22,6 +23,7 @@ export default function AdminLayout() {
         <SignOutButton />
       </header>
       <main className="app-main">
+        <ServerStatusNotice />
         <Outlet />
       </main>
     </div>

@@ -272,6 +272,20 @@ export type DiagnosticsResponses = {
 
 export type DiagnosticsResponse = DiagnosticsResponses[keyof DiagnosticsResponses];
 
+export type AdminEventsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/events';
+};
+
+export type AdminEventsResponses = {
+    /**
+     * Owner-authenticated Admin invalidation stream
+     */
+    200: unknown;
+};
+
 export type SetVisibilityData = {
     body: VisibilityRequest;
     path: {
@@ -297,6 +311,20 @@ export type SetVisibilityResponses = {
 };
 
 export type SetVisibilityResponse = SetVisibilityResponses[keyof SetVisibilityResponses];
+
+export type PublicEventsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/public/v1/events';
+};
+
+export type PublicEventsResponses = {
+    /**
+     * Authenticated Public invalidation stream
+     */
+    200: unknown;
+};
 
 export type LoginHandlerData = {
     body: LoginRequest;

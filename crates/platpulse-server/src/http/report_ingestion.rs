@@ -737,6 +737,25 @@ async fn handler(
     Extension(request_id): Extension<RequestId>,
     body: Bytes,
 ) -> Response {
+    if state.is_shutting_down() {
+        return error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "shutting_down",
+            "Server is shutting down",
+        );
+    }
+    let _ingestion = match state.ingestion_guard() {
+        Some(guard) => guard,
+        None => {
+            return error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "shutting_down",
+                "Server is shutting down",
+            );
+        }
+    };
     if body.len() > platpulse_core::protocol::MAX_REPORT_BODY_BYTES {
         return error(
             &request_id.0,

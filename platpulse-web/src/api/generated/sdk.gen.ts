@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { DiagnosticsData, DiagnosticsResponses, LiveData, LiveResponses, LoginHandlerData, LoginHandlerErrors, LoginHandlerResponses, LogoutHandlerData, LogoutHandlerErrors, LogoutHandlerResponses, PublicNetworkData, PublicNetworkErrors, PublicNetworkResponses, PublicNetworksData, PublicNetworksResponses, PublicNodeDetailData, PublicNodeDetailErrors, PublicNodeDetailResponses, ReadyData, ReadyErrors, ReadyResponses, SessionHandlerData, SessionHandlerErrors, SessionHandlerResponses, SetVisibilityData, SetVisibilityErrors, SetVisibilityResponses } from './types.gen';
+import type { AdminEventsData, AdminEventsResponses, DiagnosticsData, DiagnosticsResponses, LiveData, LiveResponses, LoginHandlerData, LoginHandlerErrors, LoginHandlerResponses, LogoutHandlerData, LogoutHandlerErrors, LogoutHandlerResponses, PublicEventsData, PublicEventsResponses, PublicNetworkData, PublicNetworkErrors, PublicNetworkResponses, PublicNetworksData, PublicNetworksResponses, PublicNodeDetailData, PublicNodeDetailErrors, PublicNodeDetailResponses, ReadyData, ReadyErrors, ReadyResponses, SessionHandlerData, SessionHandlerErrors, SessionHandlerResponses, SetVisibilityData, SetVisibilityErrors, SetVisibilityResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -20,6 +20,8 @@ export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends 
 
 export const diagnostics = <ThrowOnError extends boolean = false>(options?: Options<DiagnosticsData, ThrowOnError>): RequestResult<DiagnosticsResponses, unknown, ThrowOnError> => (options?.client ?? client).get<DiagnosticsResponses, unknown, ThrowOnError>({ url: '/api/admin/v1/agents', ...options });
 
+export const adminEvents = <ThrowOnError extends boolean = false>(options?: Options<AdminEventsData, ThrowOnError>): RequestResult<AdminEventsResponses, unknown, ThrowOnError> => (options?.client ?? client).get<AdminEventsResponses, unknown, ThrowOnError>({ url: '/api/admin/v1/events', ...options });
+
 /**
  * Owner-only visibility mutation. All browser mutation trust-boundary
  * checks are explicit here because Admin DTOs must not be writable by a
@@ -33,6 +35,8 @@ export const setVisibility = <ThrowOnError extends boolean = false>(options: Opt
         ...options.headers
     }
 });
+
+export const publicEvents = <ThrowOnError extends boolean = false>(options?: Options<PublicEventsData, ThrowOnError>): RequestResult<PublicEventsResponses, unknown, ThrowOnError> => (options?.client ?? client).get<PublicEventsResponses, unknown, ThrowOnError>({ url: '/api/public/v1/events', ...options });
 
 /**
  * Login with strict configured-Origin validation, an independent rate

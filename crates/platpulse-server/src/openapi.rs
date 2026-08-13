@@ -59,6 +59,8 @@ impl Modify for AgentBearerScheme {
         crate::http::public::public_networks,
         crate::http::public::public_network,
         crate::http::public::public_node_detail,
+        crate::http::public::public_events,
+        crate::http::admin::admin_events,
         crate::http::admin::set_visibility,
         crate::http::admin::diagnostics,
         crate::http::agent::enroll_handler,

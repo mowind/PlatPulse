@@ -33,6 +33,19 @@
         }
       }
     },
+    "/api/admin/v1/events": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "admin_events",
+        "responses": {
+          "200": {
+            "description": "Owner-authenticated Admin invalidation stream"
+          }
+        }
+      }
+    },
     "/api/admin/v1/nodes/{node_id}/visibility": {
       "put": {
         "tags": [
@@ -169,6 +182,19 @@
             "agent_bearer": []
           }
         ]
+      }
+    },
+    "/api/public/v1/events": {
+      "get": {
+        "tags": [
+          "public"
+        ],
+        "operationId": "public_events",
+        "responses": {
+          "200": {
+            "description": "Authenticated Public invalidation stream"
+          }
+        }
       }
     },
     "/api/public/v1/login": {

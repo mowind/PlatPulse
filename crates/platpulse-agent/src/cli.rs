@@ -1,6 +1,7 @@
 //! `platpulse-agent` CLI (design §8.2).
 use std::io::IsTerminal;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
 use thiserror::Error;
@@ -156,11 +157,29 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
     let runtime = crate::shutdown::AgentRuntime::new();
     let adapter = FailClosedRpcAdapter;
     let transport = WebSocketBlockTransport::default();
+    let mut delivery_tick = tokio::time::interval(Duration::from_secs(1));
+    let signal = wait_for_shutdown_signal();
+    tokio::pin!(signal);
     loop {
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
+            _ = &mut signal => {
                 runtime.request_shutdown();
                 break;
+            }
+            _ = delivery_tick.tick() => {
+                let mut store = crate::database::AgentStore::open(
+                    crate::database::AgentDatabaseConfig::new(&config.state_db),
+                ).await.map_err(|error| AgentCliError::Collection(error.to_string()))?;
+                let result = crate::reporting::deliver_periodic(
+                    &mut store,
+                    &crate::reporting::HttpReportTransport::from_config(&config)
+                        .map_err(|error| AgentCliError::Collection(error.to_string()))?,
+                    &crate::collector::SpoolPolicy::default(),
+                ).await;
+                store.close().await.map_err(|error| AgentCliError::Collection(error.to_string()))?;
+                if let Err(error) = result {
+                    eprintln!("Agent report delivery deferred: {error}");
+                }
             }
             result = collect_and_persist_with_blocks(&config, &adapter, &transport, &mut subscriptions) => {
                 result.map_err(|error| AgentCliError::Collection(error.to_string()))?;
@@ -181,6 +200,22 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
         outcome.shutdown_state, outcome.report_id
     );
     Ok(())
+}
+
+async fn wait_for_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut terminate = signal(SignalKind::terminate()).expect("SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = terminate.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 pub async fn run_shutdown(args: &ShutdownArgs) -> Result<(), AgentCliError> {

@@ -5,6 +5,7 @@
 use std::io::IsTerminal;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
 use thiserror::Error;
@@ -326,8 +327,9 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         AuthConfig::production(pepper, config.public_base_url.clone())
     };
 
-    let database = initialize(ServerDatabaseConfig::new(&config.db_path)).await?;
-    crate::init::secure_database_file(&config.db_path)?;
+    let database =
+        crate::database::ServerDatabase::open_existing(ServerDatabaseConfig::new(&config.db_path))
+            .await?;
     // Retention is a fixed, bounded startup task. Re-running after a crash is
     // safe: each invocation deletes at most one batch and never touches the
     // history state/coverage/evidence tables.
@@ -337,16 +339,46 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         eprintln!("raw block retention cleanup deferred: {error}");
     }
     let state = crate::AppState::new(database, config.web_root.clone(), auth);
-    let app = crate::http::build_app(state);
+    let app = crate::http::build_app(state.clone());
 
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
     println!("listening on {}", config.listen);
-    axum::serve(
+    let server = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .await?;
+    .into_future();
+    tokio::pin!(server);
+    tokio::select! {
+        result = &mut server => result?,
+        _ = wait_for_shutdown_signal() => {
+            state.begin_shutdown();
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            let drained = state.wait_for_ingestion(deadline).await;
+            let checkpointed = state.checkpoint_wal().await.is_ok();
+            state.db().close().await;
+            if !drained || !checkpointed {
+                return Err(format!("graceful shutdown incomplete (drained={drained}, checkpointed={checkpointed})").into());
+            }
+        }
+    }
     Ok(())
+}
+
+async fn wait_for_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut terminate = signal(SignalKind::terminate()).expect("SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = terminate.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 fn read_password() -> Result<String, HumanCreateError> {

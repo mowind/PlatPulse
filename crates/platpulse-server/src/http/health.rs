@@ -78,12 +78,16 @@ pub struct ReadyResponse {
     )
 )]
 pub async fn ready(State(state): State<AppState>) -> impl IntoResponse {
-    let sqlite = match state.db().schema_version().await {
-        Ok(version) if version >= crate::database::SERVER_SCHEMA_VERSION => {
-            ReadyComponent::ready("sqlite")
+    let sqlite = if state.is_corrupt() {
+        ReadyComponent::not_ready("sqlite", "integrity_check_failed")
+    } else {
+        match state.db().schema_version().await {
+            Ok(version) if version >= crate::database::SERVER_SCHEMA_VERSION => {
+                ReadyComponent::ready("sqlite")
+            }
+            Ok(_) => ReadyComponent::not_ready("sqlite", "migration_pending"),
+            Err(_) => ReadyComponent::not_ready("sqlite", "unavailable"),
         }
-        Ok(_) => ReadyComponent::not_ready("sqlite", "migration_pending"),
-        Err(_) => ReadyComponent::not_ready("sqlite", "unavailable"),
     };
     let owner = match crate::auth::has_owner(state.db()).await {
         Ok(true) => ReadyComponent::ready("owner"),
@@ -96,7 +100,23 @@ pub async fn ready(State(state): State<AppState>) -> impl IntoResponse {
         ReadyComponent::not_ready("web_assets", "web_assets_missing")
     };
 
-    let components = vec![sqlite, owner, web_assets];
+    let shutdown = if state.is_shutting_down() {
+        ReadyComponent::not_ready("shutdown", "shutting_down")
+    } else {
+        ReadyComponent::ready("shutdown")
+    };
+    let workers = if state.critical_workers_healthy() {
+        ReadyComponent::ready("critical_workers")
+    } else {
+        ReadyComponent::not_ready("critical_workers", "worker_unhealthy")
+    };
+    let corruption = if state.is_corrupt() {
+        ReadyComponent::not_ready("corruption", "integrity_check_failed")
+    } else {
+        ReadyComponent::ready("corruption")
+    };
+
+    let components = vec![sqlite, owner, web_assets, shutdown, workers, corruption];
     let ready = components
         .iter()
         .all(|component| component.status == ReadyState::Ready);

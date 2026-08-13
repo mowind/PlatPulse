@@ -30,7 +30,13 @@ use crate::http::{
     AppState, AuthenticatedSession, ClientIp, ROUTE_GROUP_HEADER, RequestId, api_not_found,
 };
 
-async fn public_events(
+#[utoipa::path(
+    get,
+    path = "/api/public/v1/events",
+    tag = "public",
+    responses((status = 200, description = "Authenticated Public invalidation stream"))
+)]
+pub(crate) async fn public_events(
     State(state): State<AppState>,
     Extension(_session): Extension<AuthenticatedSession>,
     headers: HeaderMap,

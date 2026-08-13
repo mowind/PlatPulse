@@ -38,6 +38,12 @@ fn mutation_error(
         .into_response()
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/admin/v1/events",
+    tag = "admin",
+    responses((status = 200, description = "Owner-authenticated Admin invalidation stream"))
+)]
 async fn admin_events(
     State(state): State<AppState>,
     Extension(_session): Extension<super::AuthenticatedSession>,

@@ -4,6 +4,7 @@ import SignOutButton from '../components/SignOutButton'
 import { useAuth } from '../auth/AuthContext'
 import { fetchNetworks } from '../api/public'
 import type { PublicNetwork } from '../api/generated'
+import { ServerStatusNotice } from '../components/ServerStatusNotice'
 
 export default function HomeLayout() {
   const { status } = useAuth()
@@ -23,6 +24,7 @@ export default function HomeLayout() {
       </header>
       <main className="app-main">
         <section className="page home-page">
+          <ServerStatusNotice />
           <h1>Home</h1>
           <h2>Network overview</h2>
           <p>Published Nodes grouped by Network. Private and retired Nodes are not listed.</p>
