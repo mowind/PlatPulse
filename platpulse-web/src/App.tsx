@@ -6,6 +6,7 @@ import HomeLayout from './layouts/HomeLayout'
 import LoginPage from './pages/LoginPage'
 import { NetworkPage, NodePage } from './pages/HomePages'
 import AdminHome from './pages/AdminHome'
+import Phase2Prototype from './pages/Phase2Prototype'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 
 /**
@@ -49,6 +50,18 @@ function RequireOwner({ children }: { children: ReactNode }) {
   return children
 }
 
+function AdminEntry() {
+  const location = useLocation()
+  if (new URLSearchParams(location.search).get('prototype') === 'phase2') {
+    return <Phase2Prototype />
+  }
+  return (
+    <RequireOwner>
+      <AdminLayout />
+    </RequireOwner>
+  )
+}
+
 const router = createBrowserRouter([
   {
     path: '/login',
@@ -69,11 +82,7 @@ const router = createBrowserRouter([
   },
   {
     path: '/admin',
-    element: (
-      <RequireOwner>
-        <AdminLayout />
-      </RequireOwner>
-    ),
+    element: <AdminEntry />,
     children: [{ index: true, element: <AdminHome /> }],
   },
 ])
