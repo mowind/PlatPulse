@@ -104,7 +104,11 @@ jobs:
           test -x target/release-package/root/usr/bin/platpulse-server
           test -f target/release-package/root/usr/share/platpulse/web/index.html
           test -d target/release-package/root/usr/share/platpulse/web/assets
-          test -s target/platpulse-server-*.tar.gz
+          test -n "$(find target/release-package/root/usr/share/platpulse/web/assets -type f -print -quit)"
+          tar -tzf target/platpulse-server-*.tar.gz > /tmp/platpulse-release-members.txt
+          grep -Fxq 'usr/bin/platpulse-server' /tmp/platpulse-release-members.txt
+          grep -Fxq 'usr/share/platpulse/web/index.html' /tmp/platpulse-release-members.txt
+          grep -Eq '^usr/share/platpulse/web/assets/[^/]+$' /tmp/platpulse-release-members.txt
 
   web-e2e:
     name: WebUI e2e (fixed viewports)

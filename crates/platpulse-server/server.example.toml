@@ -9,8 +9,8 @@ pepper_file = "/etc/platpulse/secrets/server-pepper"
 # web_root = "/usr/share/platpulse/web"
 
 listen = "127.0.0.1:8080"
-public_base_url = "http://127.0.0.1:8080"
-development = true
+public_base_url = "https://monitor.example.com"
+development = false
 
 # Production deployments should use HTTPS directly or an explicitly trusted
 # HTTPS reverse proxy. Example reverse-proxy settings:
