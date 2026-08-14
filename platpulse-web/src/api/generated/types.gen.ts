@@ -42,6 +42,136 @@ export type AdminBlockHistoryResponse = {
     rawRetentionDays: number;
 };
 
+/**
+ * Owner-only Network Registry projection (design §7.1). The complete
+ * validated identity tuple is presented as Server-owned expected identity;
+ * observed Agent text never creates or rewrites Registry entries.
+ */
+export type AdminNetwork = {
+    active_node_count: number;
+    address_hrp: string;
+    chain_id: number;
+    created_at: string;
+    display_name: string;
+    genesis_hash: string;
+    /**
+     * Active Nodes whose observed identity contradicts this Registry tuple.
+     */
+    mismatched_node_count: number;
+    network_key: string;
+    p2p_network_id: number;
+    retired_node_count: number;
+    updated_at: string;
+};
+
+export type AdminNetworkDetail = {
+    active_node_count: number;
+    address_hrp: string;
+    chain_id: number;
+    created_at: string;
+    display_name: string;
+    genesis_hash: string;
+    mismatched_node_count: number;
+    network_key: string;
+    nodes: Array<AdminNetworkNode>;
+    p2p_network_id: number;
+    retired_node_count: number;
+    updated_at: string;
+};
+
+/**
+ * One Node inside a Network detail: per-Node identity disposition against
+ * the Registry tuple, plus the Server-owned health and lifecycle state.
+ */
+export type AdminNetworkNode = {
+    agent_id: string;
+    current_head?: number | null;
+    display_name?: string | null;
+    freshness: string;
+    health: string;
+    health_reason: string;
+    identity: NodeIdentityStatus;
+    lifecycle: string;
+    node_id: string;
+    resync_state: string;
+    visibility: string;
+};
+
+/**
+ * Owner-only Node detail: the full per-Node view with Server-owned
+ * metadata, lifecycle guidance, identity disposition, and the independent
+ * process/RPC/sync/consensus observation dimensions (design §4.1–§4.3).
+ */
+export type AdminNodeDetail = {
+    agent_id: string;
+    consensus?: null | ConsensusDiagnostic;
+    current_head?: number | null;
+    display_name?: string | null;
+    first_seen_at: string;
+    freshness: string;
+    health: string;
+    health_reason: string;
+    historical_high_watermark?: number | null;
+    identity: NodeIdentityStatus;
+    inventory_revision: number;
+    lifecycle: string;
+    lifecycle_guidance: string;
+    network_display_name: string;
+    network_key: string;
+    network_reference_confidence: string;
+    network_reference_head?: number | null;
+    node_id: string;
+    node_key_fingerprint?: string | null;
+    process?: null | ProcessDiagnostic;
+    resync_progress?: string | null;
+    resync_state: string;
+    rpc?: null | RpcDiagnostic;
+    rpc_endpoint: string;
+    sync?: null | SyncDiagnostic;
+    updated_at: string;
+    visibility: string;
+};
+
+/**
+ * Owner-only Node inventory row: Server-owned metadata (display name,
+ * visibility, lifecycle guidance) stays distinct from Agent-observed
+ * identity and endpoint configuration, and each Node is its own row so
+ * block, transaction, consensus, peer, and error state never merge across
+ * Nodes.
+ */
+export type AdminNodeListItem = {
+    agent_id: string;
+    current_head?: number | null;
+    display_name?: string | null;
+    first_seen_at: string;
+    /**
+     * Server-owned freshness dimension: `current`, `stale`, or `unknown`.
+     */
+    freshness: string;
+    /**
+     * Server-owned Node Health Summary severity and primary reason.
+     */
+    health: string;
+    health_reason: string;
+    identity: NodeIdentityStatus;
+    inventory_revision: number;
+    lifecycle: string;
+    lifecycle_guidance: string;
+    network_display_name: string;
+    network_key: string;
+    node_id: string;
+    resync_state: string;
+    /**
+     * Redacted Agent-declared endpoint (scheme + host only).
+     */
+    rpc_endpoint: string;
+    /**
+     * Last Server-side metadata change (display name / visibility).
+     */
+    updated_at: string;
+    visibility: string;
+};
+
 export type AdminOverview = {
     /**
      * Server-owned attention queue. The WebUI presents these items and
@@ -251,6 +381,40 @@ export type LoginRequest = {
     username: string;
 };
 
+/**
+ * Owner-only Registry creation with the complete validated identity tuple
+ * (design §7.1). The Registry is never created from observed Agent text:
+ * this explicit Owner mutation is the only Admin insert path.
+ */
+export type NetworkCreateRequest = {
+    addressHrp: string;
+    chainId: number;
+    displayName: string;
+    genesisHash: string;
+    networkKey: string;
+    p2pNetworkId: number;
+};
+
+export type NetworkResponse = {
+    displayName: string;
+    networkKey: string;
+};
+
+/**
+ * Owner-only Registry update: display name and/or identity tuple fields.
+ * Every field is optional, but at least one must change; the merged tuple
+ * is validated and the before/after state is audited. Existing Nodes whose
+ * observed identity now contradicts the tuple surface as typed mismatches;
+ * no Node state is rewritten.
+ */
+export type NetworkUpdateRequest = {
+    addressHrp?: string | null;
+    chainId?: number | null;
+    displayName?: string | null;
+    genesisHash?: string | null;
+    p2pNetworkId?: number | null;
+};
+
 export type NodeDiagnostic = {
     consensus?: null | ConsensusDiagnostic;
     current_head?: number | null;
@@ -277,6 +441,35 @@ export type NodeDiagnostic = {
     visibility: string;
 };
 
+/**
+ * Server-computed identity disposition for one Node: `matched` when every
+ * observed identity field equals the Registry tuple, `mismatched` when any
+ * observed field differs (a blocking diagnostic distinct from RPC Error or
+ * Node Offline), and `unknown` when the Node was never observed.
+ */
+export type NodeIdentityStatus = {
+    /**
+     * Registry fields that the observation contradicts (empty when state
+     * is `matched` or `unknown`).
+     */
+    mismatched_fields: Array<string>;
+    observed?: null | ObservedNetworkIdentity;
+    state: string;
+};
+
+export type NodeMetadataRequest = {
+    /**
+     * Server-owned display name (design §4.2). Required: 1..=128 visible
+     * characters; clearing is a future explicit operation.
+     */
+    displayName: string;
+};
+
+export type NodeMetadataResponse = {
+    displayName: string;
+    nodeId: string;
+};
+
 export type NodeSummary = {
     healthy: number;
     /**
@@ -291,6 +484,17 @@ export type NodeSummary = {
     total: number;
     unhealthy: number;
     unknown: number;
+};
+
+/**
+ * Agent-observed Network identity tuple (design §7.1). Never overwrites the
+ * Registry: it is presented as a typed observation with a match state.
+ */
+export type ObservedNetworkIdentity = {
+    address_hrp?: string | null;
+    chain_id?: number | null;
+    genesis_hash?: string | null;
+    p2p_network_id?: number | null;
 };
 
 export type ProcessDiagnostic = {
@@ -654,6 +858,139 @@ export type AdminEventsResponses = {
     200: unknown;
 };
 
+export type AdminNetworksData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/networks';
+};
+
+export type AdminNetworksResponses = {
+    /**
+     * Owner-only Network Registry with identity tuple and Node counts
+     */
+    200: Array<AdminNetwork>;
+};
+
+export type AdminNetworksResponse = AdminNetworksResponses[keyof AdminNetworksResponses];
+
+export type CreateNetworkData = {
+    body: NetworkCreateRequest;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/networks';
+};
+
+export type CreateNetworkErrors = {
+    400: ApiErrorBody;
+    403: ApiErrorBody;
+    409: ApiErrorBody;
+};
+
+export type CreateNetworkError = CreateNetworkErrors[keyof CreateNetworkErrors];
+
+export type CreateNetworkResponses = {
+    200: NetworkResponse;
+};
+
+export type CreateNetworkResponse = CreateNetworkResponses[keyof CreateNetworkResponses];
+
+export type AdminNetworkDetailData = {
+    body?: never;
+    path: {
+        /**
+         * Registered Network key
+         */
+        network_key: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/networks/{network_key}';
+};
+
+export type AdminNetworkDetailErrors = {
+    404: ApiErrorBody;
+};
+
+export type AdminNetworkDetailError = AdminNetworkDetailErrors[keyof AdminNetworkDetailErrors];
+
+export type AdminNetworkDetailResponses = {
+    /**
+     * Owner-only Network detail with per-Node identity dispositions
+     */
+    200: AdminNetworkDetail;
+};
+
+export type AdminNetworkDetailResponse = AdminNetworkDetailResponses[keyof AdminNetworkDetailResponses];
+
+export type UpdateNetworkData = {
+    body: NetworkUpdateRequest;
+    path: {
+        /**
+         * Registered Network key
+         */
+        network_key: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/networks/{network_key}';
+};
+
+export type UpdateNetworkErrors = {
+    400: ApiErrorBody;
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+};
+
+export type UpdateNetworkError = UpdateNetworkErrors[keyof UpdateNetworkErrors];
+
+export type UpdateNetworkResponses = {
+    200: NetworkResponse;
+};
+
+export type UpdateNetworkResponse = UpdateNetworkResponses[keyof UpdateNetworkResponses];
+
+export type AdminNodesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/nodes';
+};
+
+export type AdminNodesResponses = {
+    /**
+     * Owner-only Node inventory with Server-owned metadata and per-Node identity disposition
+     */
+    200: Array<AdminNodeListItem>;
+};
+
+export type AdminNodesResponse = AdminNodesResponses[keyof AdminNodesResponses];
+
+export type AdminNodeDetailData = {
+    body?: never;
+    path: {
+        /**
+         * Node ID
+         */
+        node_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/nodes/{node_id}';
+};
+
+export type AdminNodeDetailErrors = {
+    404: ApiErrorBody;
+};
+
+export type AdminNodeDetailError = AdminNodeDetailErrors[keyof AdminNodeDetailErrors];
+
+export type AdminNodeDetailResponses = {
+    /**
+     * Owner-only Node detail with Server-owned metadata and per-Node diagnostics
+     */
+    200: AdminNodeDetail;
+};
+
+export type AdminNodeDetailResponse = AdminNodeDetailResponses[keyof AdminNodeDetailResponses];
+
 export type AdminNodeHistoryData = {
     body?: never;
     path: {
@@ -691,6 +1028,32 @@ export type AdminNodeHistoryResponses = {
 };
 
 export type AdminNodeHistoryResponse = AdminNodeHistoryResponses[keyof AdminNodeHistoryResponses];
+
+export type SetNodeMetadataData = {
+    body: NodeMetadataRequest;
+    path: {
+        /**
+         * Node ID
+         */
+        node_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/nodes/{node_id}/metadata';
+};
+
+export type SetNodeMetadataErrors = {
+    400: ApiErrorBody;
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+};
+
+export type SetNodeMetadataError = SetNodeMetadataErrors[keyof SetNodeMetadataErrors];
+
+export type SetNodeMetadataResponses = {
+    200: NodeMetadataResponse;
+};
+
+export type SetNodeMetadataResponse = SetNodeMetadataResponses[keyof SetNodeMetadataResponses];
 
 export type SetVisibilityData = {
     body: VisibilityRequest;

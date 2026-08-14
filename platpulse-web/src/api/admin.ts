@@ -13,17 +13,33 @@ import {
   adminAgentAudit,
   adminAgentDetail,
   adminEnrollmentToken,
+  adminNetworkDetail,
+  adminNetworks,
+  adminNodeDetail,
+  adminNodes,
   adminRecoveryToken,
   adminRevokeCredential,
   adminRotateCredential,
+  createNetwork,
   diagnostics,
   overview,
+  setNodeMetadata,
   setVisibility,
+  updateNetwork,
+  type AdminNetwork,
+  type AdminNetworkDetail,
+  type AdminNodeDetail,
+  type AdminNodeListItem,
   type AdminOverview,
   type AgentAuditResponse,
   type AgentDiagnostic,
   type ApiErrorBody,
   type EnrollmentTokenResponse,
+  type NetworkCreateRequest,
+  type NetworkResponse,
+  type NetworkUpdateRequest,
+  type NodeMetadataRequest,
+  type NodeMetadataResponse,
   type RecoveryTokenResponse,
   type RevokeResponse,
   type RotationResponse,
@@ -53,6 +69,10 @@ const adminKeys = {
   agents: ['admin', 'agents'] as const,
   agentDetail: (agentId: string) => ['admin', 'agents', agentId] as const,
   agentAudit: (agentId: string) => ['admin', 'agents', agentId, 'audit'] as const,
+  nodes: ['admin', 'nodes'] as const,
+  nodeDetail: (nodeId: string) => ['admin', 'nodes', nodeId] as const,
+  networks: ['admin', 'networks'] as const,
+  networkDetail: (networkKey: string) => ['admin', 'networks', networkKey] as const,
 }
 
 /**
@@ -184,6 +204,81 @@ export function useAdminAgentAudit(generation: number, agentId: string) {
   })
 }
 
+/** Owner-only Node inventory (issue #45): per-Node rows with Server-owned
+ * metadata, lifecycle guidance, freshness, health summary, and identity
+ * disposition. */
+export async function fetchAdminNodes(signal?: AbortSignal): Promise<AdminNodeListItem[]> {
+  return requestAdmin(
+    () => adminNodes({ signal }),
+    'Unable to load the Node inventory',
+  )
+}
+
+export function useAdminNodes(generation: number) {
+  return useQuery({
+    queryKey: [...adminKeys.nodes, generation],
+    queryFn: ({ signal }) => fetchAdminNodes(signal),
+    placeholderData: keepPreviousData,
+  })
+}
+
+/** Server-owned Node detail with per-Node observation dimensions. */
+export async function fetchAdminNode(
+  nodeId: string,
+  signal?: AbortSignal,
+): Promise<AdminNodeDetail> {
+  return requestAdmin(
+    () => adminNodeDetail({ path: { node_id: nodeId }, signal }),
+    'Unable to load the Node',
+  )
+}
+
+export function useAdminNodeDetail(generation: number, nodeId: string) {
+  return useQuery({
+    queryKey: [...adminKeys.nodeDetail(nodeId), generation],
+    queryFn: ({ signal }) => fetchAdminNode(nodeId, signal),
+    // No placeholder: another Node's DTO must never render under this
+    // Node's URL (per-Node scoping and non-leaking unknown/private state).
+    enabled: nodeId.length > 0,
+  })
+}
+
+/** Owner-only Network Registry projection (design §7.1). */
+export async function fetchAdminNetworks(signal?: AbortSignal): Promise<AdminNetwork[]> {
+  return requestAdmin(
+    () => adminNetworks({ signal }),
+    'Unable to load the Network Registry',
+  )
+}
+
+export function useAdminNetworks(generation: number) {
+  return useQuery({
+    queryKey: [...adminKeys.networks, generation],
+    queryFn: ({ signal }) => fetchAdminNetworks(signal),
+    placeholderData: keepPreviousData,
+  })
+}
+
+export async function fetchAdminNetwork(
+  networkKey: string,
+  signal?: AbortSignal,
+): Promise<AdminNetworkDetail> {
+  return requestAdmin(
+    () => adminNetworkDetail({ path: { network_key: networkKey }, signal }),
+    'Unable to load the Network',
+  )
+}
+
+export function useAdminNetworkDetail(generation: number, networkKey: string) {
+  return useQuery({
+    queryKey: [...adminKeys.networkDetail(networkKey), generation],
+    queryFn: ({ signal }) => fetchAdminNetwork(networkKey, signal),
+    // No placeholder: another Network's DTO must never render under this
+    // Network's URL.
+    enabled: networkKey.length > 0,
+  })
+}
+
 /**
  * Mutation seam: no optimistic state, no automatic retry. Success invalidates
  * the Admin namespace immediately so the panels refetch authoritative REST.
@@ -201,6 +296,64 @@ export async function updateNodeVisibility(
         headers: { 'X-CSRF-Token': csrfToken },
       }),
     'Unable to update Node visibility',
+  )
+  void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+  return response
+}
+
+/** Update the Server-owned display name of a Node (issue #45). The Agent
+ * Inventory remains authoritative for endpoint, Network key, and Node ID. */
+export async function updateNodeMetadata(
+  nodeId: string,
+  displayName: NodeMetadataRequest['displayName'],
+  csrfToken: string,
+): Promise<NodeMetadataResponse> {
+  const response = await requestAdmin(
+    () =>
+      setNodeMetadata({
+        path: { node_id: nodeId },
+        body: { displayName },
+        headers: { 'X-CSRF-Token': csrfToken },
+      }),
+    'Unable to update the Node display name',
+  )
+  void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+  return response
+}
+
+/** Register a Network with the complete validated identity tuple. The
+ * Registry is never created from observed Agent text (design §7.1). */
+export async function createNetworkEntry(
+  request: NetworkCreateRequest,
+  csrfToken: string,
+): Promise<NetworkResponse> {
+  const response = await requestAdmin(
+    () =>
+      createNetwork({
+        body: request,
+        headers: { 'X-CSRF-Token': csrfToken },
+      }),
+    'Unable to register the Network',
+  )
+  void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+  return response
+}
+
+/** Update the Registry tuple (display name and/or identity fields) with an
+ * audited before/after state. */
+export async function updateNetworkEntry(
+  networkKey: string,
+  request: NetworkUpdateRequest,
+  csrfToken: string,
+): Promise<NetworkResponse> {
+  const response = await requestAdmin(
+    () =>
+      updateNetwork({
+        path: { network_key: networkKey },
+        body: request,
+        headers: { 'X-CSRF-Token': csrfToken },
+      }),
+    'Unable to update the Network',
   )
   void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
   return response

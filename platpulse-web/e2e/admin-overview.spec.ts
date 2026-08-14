@@ -7,11 +7,23 @@ import {
 
 const NODE_C = '0195f2a1-0016-4016-8016-000000000016'
 
+/** Published count from the Server-owned summary strip ("N of 5 Nodes…"). */
+async function publishedCount(page: Parameters<typeof loginAs>[0]): Promise<number> {
+  const text = await page.locator('.summary-strip').textContent()
+  const match = text?.match(/(\d+) of 5 Nodes are visible/)
+  if (!match) throw new Error(`unexpected summary strip: ${text}`)
+  return Number(match[1])
+}
+
 async function openOverview(page: Parameters<typeof loginAs>[0]) {
   await loginAs(page)
   await page.getByRole('link', { name: 'Admin', exact: true }).click()
   await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
 }
+
+// This file owns the shared Node C visibility mutation; serial mode keeps
+// its tests from overlapping each other on the same Server state.
+test.describe.configure({ mode: 'serial' })
 
 test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
   test('shows the Server-owned attention queue and Node Health Summary', async ({ page }) => {
@@ -52,8 +64,12 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
     await expect(page.getByText('Collapse details')).toBeVisible()
     await expect(page.getByText('platon/1.5.1 · 3 namespaces')).toBeVisible()
 
-    // The overview starts with 1 of 3 Nodes published.
-    await expect(page.locator('.summary-strip')).toContainText('1 of 3 Nodes are visible')
+    // The published count is baseline-relative: the PAGE-ADMIN-NODE-VISIBILITY
+    // workflow test publishes/retracts its own scratch Node concurrently, so
+    // the exact total is only asserted to move by one around this mutation.
+    const strip = page.locator('.summary-strip')
+    await expect(strip).toContainText(/of 5 Nodes are visible/, { timeout: 15_000 })
+    const publishedBefore = await publishedCount(page)
 
     try {
       // Publish Node C through the operations form. The Server publishes an
@@ -64,9 +80,9 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
       await page.getByRole('button', { name: 'Update visibility' }).click()
       await expect(page.getByText(`${NODE_C} is now public.`)).toBeVisible()
 
-      await expect(page.locator('.summary-strip')).toContainText('2 of 3 Nodes are visible', {
-        timeout: 15_000,
-      })
+      await expect
+        .poll(async () => publishedCount(page), { timeout: 15_000 })
+        .toBe(publishedBefore + 1)
 
       // Expansion and URL state survive the authorized refetch.
       await expect(page.getByText('Collapse details')).toBeVisible()
@@ -85,6 +101,7 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
       await page.getByLabel('Visibility').selectOption('private')
       await page.getByRole('button', { name: 'Update visibility' }).click()
       await expect(page.getByText(`${NODE_C} is now private.`)).toBeVisible({ timeout: 15_000 })
+      await expect.poll(async () => publishedCount(page), { timeout: 15_000 }).toBe(publishedBefore)
     }
   })
 
@@ -128,6 +145,10 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
     // Tab stays inside the drawer and wraps at the last item.
     await page.keyboard.press('Tab')
     await expect(page.getByRole('link', { name: 'Agents' })).toBeFocused()
+    await page.keyboard.press('Tab')
+    await expect(page.getByRole('link', { name: 'Nodes' })).toBeFocused()
+    await page.keyboard.press('Tab')
+    await expect(page.getByRole('link', { name: 'Networks' })).toBeFocused()
     await page.keyboard.press('Tab')
     await expect(page.getByRole('link', { name: 'Overview' })).toBeFocused()
     // Escape closes the drawer and restores focus to the opener.

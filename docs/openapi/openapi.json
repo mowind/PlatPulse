@@ -416,6 +416,261 @@
         }
       }
     },
+    "/api/admin/v1/networks": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "admin_networks",
+        "responses": {
+          "200": {
+            "description": "Owner-only Network Registry with identity tuple and Node counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AdminNetwork"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "create_network",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NetworkCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NetworkResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/networks/{network_key}": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "admin_network_detail",
+        "parameters": [
+          {
+            "name": "network_key",
+            "in": "path",
+            "description": "Registered Network key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Owner-only Network detail with per-Node identity dispositions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminNetworkDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "update_network",
+        "parameters": [
+          {
+            "name": "network_key",
+            "in": "path",
+            "description": "Registered Network key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NetworkUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NetworkResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/nodes": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "admin_nodes",
+        "responses": {
+          "200": {
+            "description": "Owner-only Node inventory with Server-owned metadata and per-Node identity disposition",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AdminNodeListItem"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/nodes/{node_id}": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "admin_node_detail",
+        "parameters": [
+          {
+            "name": "node_id",
+            "in": "path",
+            "description": "Node ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Owner-only Node detail with Server-owned metadata and per-Node diagnostics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminNodeDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/v1/nodes/{node_id}/history": {
       "get": {
         "tags": [
@@ -488,6 +743,78 @@
             }
           },
           "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/nodes/{node_id}/metadata": {
+      "put": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Owner-only Server-owned metadata mutation (display name). This never\ntouches the Agent-declared endpoint, Network key, or Node ID; the Agent\nInventory remains authoritative for those.",
+        "operationId": "set_node_metadata",
+        "parameters": [
+          {
+            "name": "node_id",
+            "in": "path",
+            "description": "Node ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NodeMetadataRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NodeMetadataResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
             "description": "",
             "content": {
               "application/json": {
@@ -1319,6 +1646,430 @@
           "rawRetentionDays": {
             "type": "integer",
             "format": "int64"
+          }
+        }
+      },
+      "AdminNetwork": {
+        "type": "object",
+        "description": "Owner-only Network Registry projection (design §7.1). The complete\nvalidated identity tuple is presented as Server-owned expected identity;\nobserved Agent text never creates or rewrites Registry entries.",
+        "required": [
+          "network_key",
+          "display_name",
+          "genesis_hash",
+          "chain_id",
+          "p2p_network_id",
+          "address_hrp",
+          "created_at",
+          "updated_at",
+          "active_node_count",
+          "retired_node_count",
+          "mismatched_node_count"
+        ],
+        "properties": {
+          "active_node_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "address_hrp": {
+            "type": "string"
+          },
+          "chain_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "genesis_hash": {
+            "type": "string"
+          },
+          "mismatched_node_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Active Nodes whose observed identity contradicts this Registry tuple."
+          },
+          "network_key": {
+            "type": "string"
+          },
+          "p2p_network_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "retired_node_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminNetworkDetail": {
+        "type": "object",
+        "required": [
+          "network_key",
+          "display_name",
+          "genesis_hash",
+          "chain_id",
+          "p2p_network_id",
+          "address_hrp",
+          "created_at",
+          "updated_at",
+          "active_node_count",
+          "retired_node_count",
+          "mismatched_node_count",
+          "nodes"
+        ],
+        "properties": {
+          "active_node_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "address_hrp": {
+            "type": "string"
+          },
+          "chain_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "genesis_hash": {
+            "type": "string"
+          },
+          "mismatched_node_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "network_key": {
+            "type": "string"
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminNetworkNode"
+            }
+          },
+          "p2p_network_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "retired_node_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminNetworkNode": {
+        "type": "object",
+        "description": "One Node inside a Network detail: per-Node identity disposition against\nthe Registry tuple, plus the Server-owned health and lifecycle state.",
+        "required": [
+          "node_id",
+          "agent_id",
+          "lifecycle",
+          "visibility",
+          "health",
+          "health_reason",
+          "freshness",
+          "resync_state",
+          "identity"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "current_head": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "freshness": {
+            "type": "string"
+          },
+          "health": {
+            "type": "string"
+          },
+          "health_reason": {
+            "type": "string"
+          },
+          "identity": {
+            "$ref": "#/components/schemas/NodeIdentityStatus"
+          },
+          "lifecycle": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "resync_state": {
+            "type": "string"
+          },
+          "visibility": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminNodeDetail": {
+        "type": "object",
+        "description": "Owner-only Node detail: the full per-Node view with Server-owned\nmetadata, lifecycle guidance, identity disposition, and the independent\nprocess/RPC/sync/consensus observation dimensions (design §4.1–§4.3).",
+        "required": [
+          "node_id",
+          "agent_id",
+          "network_key",
+          "network_display_name",
+          "lifecycle",
+          "lifecycle_guidance",
+          "visibility",
+          "inventory_revision",
+          "first_seen_at",
+          "updated_at",
+          "rpc_endpoint",
+          "health",
+          "health_reason",
+          "freshness",
+          "identity",
+          "resync_state",
+          "network_reference_confidence"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "consensus": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ConsensusDiagnostic"
+              }
+            ]
+          },
+          "current_head": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "first_seen_at": {
+            "type": "string"
+          },
+          "freshness": {
+            "type": "string"
+          },
+          "health": {
+            "type": "string"
+          },
+          "health_reason": {
+            "type": "string"
+          },
+          "historical_high_watermark": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "identity": {
+            "$ref": "#/components/schemas/NodeIdentityStatus"
+          },
+          "inventory_revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "lifecycle": {
+            "type": "string"
+          },
+          "lifecycle_guidance": {
+            "type": "string"
+          },
+          "network_display_name": {
+            "type": "string"
+          },
+          "network_key": {
+            "type": "string"
+          },
+          "network_reference_confidence": {
+            "type": "string"
+          },
+          "network_reference_head": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "node_key_fingerprint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "process": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ProcessDiagnostic"
+              }
+            ]
+          },
+          "resync_progress": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resync_state": {
+            "type": "string"
+          },
+          "rpc": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RpcDiagnostic"
+              }
+            ]
+          },
+          "rpc_endpoint": {
+            "type": "string"
+          },
+          "sync": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SyncDiagnostic"
+              }
+            ]
+          },
+          "updated_at": {
+            "type": "string"
+          },
+          "visibility": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminNodeListItem": {
+        "type": "object",
+        "description": "Owner-only Node inventory row: Server-owned metadata (display name,\nvisibility, lifecycle guidance) stays distinct from Agent-observed\nidentity and endpoint configuration, and each Node is its own row so\nblock, transaction, consensus, peer, and error state never merge across\nNodes.",
+        "required": [
+          "node_id",
+          "agent_id",
+          "network_key",
+          "network_display_name",
+          "lifecycle",
+          "lifecycle_guidance",
+          "visibility",
+          "inventory_revision",
+          "first_seen_at",
+          "updated_at",
+          "rpc_endpoint",
+          "health",
+          "health_reason",
+          "freshness",
+          "resync_state",
+          "identity"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "current_head": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "first_seen_at": {
+            "type": "string"
+          },
+          "freshness": {
+            "type": "string",
+            "description": "Server-owned freshness dimension: `current`, `stale`, or `unknown`."
+          },
+          "health": {
+            "type": "string",
+            "description": "Server-owned Node Health Summary severity and primary reason."
+          },
+          "health_reason": {
+            "type": "string"
+          },
+          "identity": {
+            "$ref": "#/components/schemas/NodeIdentityStatus"
+          },
+          "inventory_revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "lifecycle": {
+            "type": "string"
+          },
+          "lifecycle_guidance": {
+            "type": "string"
+          },
+          "network_display_name": {
+            "type": "string"
+          },
+          "network_key": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "resync_state": {
+            "type": "string"
+          },
+          "rpc_endpoint": {
+            "type": "string",
+            "description": "Redacted Agent-declared endpoint (scheme + host only)."
+          },
+          "updated_at": {
+            "type": "string",
+            "description": "Last Server-side metadata change (display name / visibility)."
+          },
+          "visibility": {
+            "type": "string"
           }
         }
       },
@@ -2197,6 +2948,97 @@
           }
         }
       },
+      "NetworkCreateRequest": {
+        "type": "object",
+        "description": "Owner-only Registry creation with the complete validated identity tuple\n(design §7.1). The Registry is never created from observed Agent text:\nthis explicit Owner mutation is the only Admin insert path.",
+        "required": [
+          "networkKey",
+          "displayName",
+          "genesisHash",
+          "chainId",
+          "p2pNetworkId",
+          "addressHrp"
+        ],
+        "properties": {
+          "addressHrp": {
+            "type": "string"
+          },
+          "chainId": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "genesisHash": {
+            "type": "string"
+          },
+          "networkKey": {
+            "type": "string"
+          },
+          "p2pNetworkId": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "NetworkResponse": {
+        "type": "object",
+        "required": [
+          "networkKey",
+          "displayName"
+        ],
+        "properties": {
+          "displayName": {
+            "type": "string"
+          },
+          "networkKey": {
+            "type": "string"
+          }
+        }
+      },
+      "NetworkUpdateRequest": {
+        "type": "object",
+        "description": "Owner-only Registry update: display name and/or identity tuple fields.\nEvery field is optional, but at least one must change; the merged tuple\nis validated and the before/after state is audited. Existing Nodes whose\nobserved identity now contradicts the tuple surface as typed mismatches;\nno Node state is rewritten.",
+        "properties": {
+          "addressHrp": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "chainId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "displayName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "genesisHash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "p2pNetworkId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "NodeDiagnostic": {
         "type": "object",
         "required": [
@@ -2319,6 +3161,63 @@
           }
         }
       },
+      "NodeIdentityStatus": {
+        "type": "object",
+        "description": "Server-computed identity disposition for one Node: `matched` when every\nobserved identity field equals the Registry tuple, `mismatched` when any\nobserved field differs (a blocking diagnostic distinct from RPC Error or\nNode Offline), and `unknown` when the Node was never observed.",
+        "required": [
+          "state",
+          "mismatched_fields"
+        ],
+        "properties": {
+          "mismatched_fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Registry fields that the observation contradicts (empty when state\nis `matched` or `unknown`)."
+          },
+          "observed": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ObservedNetworkIdentity"
+              }
+            ]
+          },
+          "state": {
+            "type": "string"
+          }
+        }
+      },
+      "NodeMetadataRequest": {
+        "type": "object",
+        "required": [
+          "displayName"
+        ],
+        "properties": {
+          "displayName": {
+            "type": "string",
+            "description": "Server-owned display name (design §4.2). Required: 1..=128 visible\ncharacters; clearing is a future explicit operation."
+          }
+        }
+      },
+      "NodeMetadataResponse": {
+        "type": "object",
+        "required": [
+          "nodeId",
+          "displayName"
+        ],
+        "properties": {
+          "displayName": {
+            "type": "string"
+          },
+          "nodeId": {
+            "type": "string"
+          }
+        }
+      },
       "NodeSummary": {
         "type": "object",
         "required": [
@@ -2354,6 +3253,38 @@
           },
           "unknown": {
             "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "ObservedNetworkIdentity": {
+        "type": "object",
+        "description": "Agent-observed Network identity tuple (design §7.1). Never overwrites the\nRegistry: it is presented as a typed observation with a match state.",
+        "properties": {
+          "address_hrp": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "chain_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "genesis_hash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "p2p_network_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int64"
           }
         }

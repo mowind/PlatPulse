@@ -137,8 +137,14 @@ export default function AdminLayout() {
           <NavLink to="/admin/agents" end onClick={closeNav}>
             Agents
           </NavLink>
-          {/* Later Phase 2 groups arrive here: Nodes, Networks,
-              Alerts and Operations, Access, Data and Maintenance. */}
+          <NavLink to="/admin/nodes" end onClick={closeNav}>
+            Nodes
+          </NavLink>
+          <NavLink to="/admin/networks" end onClick={closeNav}>
+            Networks
+          </NavLink>
+          {/* Later Phase 2 groups arrive here: Alerts and Operations,
+              Access, Data and Maintenance. */}
         </nav>
         <div
           className={navOpen ? 'admin-nav-scrim admin-nav-scrim-open' : 'admin-nav-scrim'}

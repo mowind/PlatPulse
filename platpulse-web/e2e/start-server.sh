@@ -46,6 +46,9 @@ now = "2026-08-12T08:00:00Z"
 # Observation timestamps are relative to the real clock so the Server's
 # freshness window (120s) and liveness window behave deterministically.
 fresh = (datetime.now(timezone.utc) - timedelta(seconds=20)).strftime("%Y-%m-%dT%H:%M:%SZ")
+# Node B's observations are older than the 120s freshness window so its
+# Server-owned freshness dimension is deterministically `stale`.
+stale = (datetime.now(timezone.utc) - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
 agent_id = "0195f2a1-0011-4011-8011-000000000011"
 network_key = "platon-e2e"
 network_name = "PlatON E2E Network"
@@ -55,6 +58,14 @@ node_b = "0195f2a1-0015-4015-8015-000000000015"
 # Node C is used only by the Owner Overview mutation test, which publishes
 # and then retracts it, so parallel projects never observe a mutated Node.
 node_c = "0195f2a1-0016-4016-8016-000000000016"
+# Node D is retired: present in an earlier Inventory, absent from the
+# latest one. It keeps its identity and history but produces no live
+# alerts; the Admin surface shows the reactivation guidance.
+node_d = "0195f2a1-0017-4017-8017-000000000017"
+# Node E is used only by the PAGE-ADMIN-NODE-VISIBILITY mutation test, so
+# it never shares mutation state with the Overview test (Node C) or the
+# metadata test (Node C); parallel projects never observe a mutated Node.
+node_e = "0195f2a1-0018-4018-8018-000000000018"
 
 with sqlite3.connect(path) as db:
     db.execute(
@@ -77,16 +88,20 @@ with sqlite3.connect(path) as db:
         (node_a, "Node A", "ws://127.0.0.1:6790", "public"),
         (node_b, "Node B (private)", "ws://127.0.0.1:6791", "private"),
         (node_c, "Node C", "ws://127.0.0.1:6792", "private"),
+        (node_d, "Node D (retired)", "ws://127.0.0.1:6793", "private"),
+        (node_e, "Node E (private)", "ws://127.0.0.1:6794", "private"),
     ):
+        lifecycle = "retired" if node_id == node_d else "active"
         db.execute(
-            "INSERT OR IGNORE INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', ?, 1, ?, ?)",
-            (node_id, agent_id, network_key, name, endpoint, visibility, now, now),
+            "INSERT OR IGNORE INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+            (node_id, agent_id, network_key, name, endpoint, lifecycle, visibility, now, now),
         )
 
     # Node A: healthy and current (RPC, sync, and consensus all ok and fresh).
+    # The observed Network identity matches the Registry tuple exactly.
     db.execute(
-        "INSERT INTO current_node_chain_observations (node_id, rpc_client_version, syncing, current_block, highest_block, consensus_epoch, consensus_validator, consensus_highest_commit_block, updated_at) VALUES (?, 'platon/1.5.1', 0, 12842019, 12842019, 42, 1, 12842019, ?)",
-        (node_a, fresh),
+        "INSERT INTO current_node_chain_observations (node_id, rpc_client_version, syncing, current_block, highest_block, consensus_epoch, consensus_validator, consensus_highest_commit_block, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, updated_at) VALUES (?, 'platon/1.5.1', 0, 12842019, 12842019, 42, 1, 12842019, ?, 210425, 210425, 'lat', ?)",
+        (node_a, network_genesis, fresh),
     )
     for component in ("rpc", "sync", "consensus"):
         db.execute(
@@ -103,19 +118,19 @@ with sqlite3.connect(path) as db:
     # (the Server preserves last-good semantics; the WebUI must keep showing
     # them with the Error context).
     db.execute(
-        "INSERT INTO current_node_chain_observations (node_id, rpc_client_version, syncing, current_block, highest_block, consensus_epoch, consensus_validator, consensus_highest_commit_block, updated_at) VALUES (?, 'platon/1.5.1', 0, 12842018, 12842018, 41, 1, 12842018, ?)",
-        (node_b, fresh),
+        "INSERT INTO current_node_chain_observations (node_id, rpc_client_version, syncing, current_block, highest_block, consensus_epoch, consensus_validator, consensus_highest_commit_block, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, updated_at) VALUES (?, 'platon/1.5.1', 0, 12842018, 12842018, 41, 1, 12842018, ?, 999999, 210425, 'lat', ?)",
+        (node_b, network_genesis, stale),
     )
     for component in ("rpc", "sync", "consensus"):
         if component == "rpc":
             db.execute(
                 "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision, error_code, error_message) VALUES (?, 'node', ?, ?, 'rpc', 'error', ?, ?, ?, 2, 1, 'rpc_unreachable', 'RPC probe failed')",
-                (agent_id, node_b, node_b, fresh, fresh, fresh),
+                (agent_id, node_b, node_b, stale, stale, stale),
             )
         else:
             db.execute(
                 "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES (?, 'node', ?, ?, ?, 'ok', ?, ?, ?, 1, 1)",
-                (agent_id, node_b, node_b, component, fresh, fresh, fresh),
+                (agent_id, node_b, node_b, component, stale, stale, stale),
             )
 PY
 

@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { AdminAgentAuditData, AdminAgentAuditErrors, AdminAgentAuditResponses, AdminAgentDetailData, AdminAgentDetailErrors, AdminAgentDetailResponses, AdminEnrollmentTokenData, AdminEnrollmentTokenErrors, AdminEnrollmentTokenResponses, AdminEventsData, AdminEventsResponses, AdminNodeHistoryData, AdminNodeHistoryErrors, AdminNodeHistoryResponses, AdminRecoveryTokenData, AdminRecoveryTokenErrors, AdminRecoveryTokenResponses, AdminRevokeCredentialData, AdminRevokeCredentialErrors, AdminRevokeCredentialResponses, AdminRotateCredentialData, AdminRotateCredentialErrors, AdminRotateCredentialResponses, DiagnosticsData, DiagnosticsResponses, LiveData, LiveResponses, LoginHandlerData, LoginHandlerErrors, LoginHandlerResponses, LogoutHandlerData, LogoutHandlerErrors, LogoutHandlerResponses, OverviewData, OverviewResponses, PublicEventsData, PublicEventsResponses, PublicNetworkData, PublicNetworkErrors, PublicNetworkResponses, PublicNetworksData, PublicNetworksResponses, PublicNodeDetailData, PublicNodeDetailErrors, PublicNodeDetailResponses, PublicNodeHistoryData, PublicNodeHistoryErrors, PublicNodeHistoryExportData, PublicNodeHistoryExportErrors, PublicNodeHistoryExportResponses, PublicNodeHistoryResponses, ReadyData, ReadyErrors, ReadyResponses, SessionHandlerData, SessionHandlerErrors, SessionHandlerResponses, SetVisibilityData, SetVisibilityErrors, SetVisibilityResponses } from './types.gen';
+import type { AdminAgentAuditData, AdminAgentAuditErrors, AdminAgentAuditResponses, AdminAgentDetailData, AdminAgentDetailErrors, AdminAgentDetailResponses, AdminEnrollmentTokenData, AdminEnrollmentTokenErrors, AdminEnrollmentTokenResponses, AdminEventsData, AdminEventsResponses, AdminNetworkDetailData, AdminNetworkDetailErrors, AdminNetworkDetailResponses, AdminNetworksData, AdminNetworksResponses, AdminNodeDetailData, AdminNodeDetailErrors, AdminNodeDetailResponses, AdminNodeHistoryData, AdminNodeHistoryErrors, AdminNodeHistoryResponses, AdminNodesData, AdminNodesResponses, AdminRecoveryTokenData, AdminRecoveryTokenErrors, AdminRecoveryTokenResponses, AdminRevokeCredentialData, AdminRevokeCredentialErrors, AdminRevokeCredentialResponses, AdminRotateCredentialData, AdminRotateCredentialErrors, AdminRotateCredentialResponses, CreateNetworkData, CreateNetworkErrors, CreateNetworkResponses, DiagnosticsData, DiagnosticsResponses, LiveData, LiveResponses, LoginHandlerData, LoginHandlerErrors, LoginHandlerResponses, LogoutHandlerData, LogoutHandlerErrors, LogoutHandlerResponses, OverviewData, OverviewResponses, PublicEventsData, PublicEventsResponses, PublicNetworkData, PublicNetworkErrors, PublicNetworkResponses, PublicNetworksData, PublicNetworksResponses, PublicNodeDetailData, PublicNodeDetailErrors, PublicNodeDetailResponses, PublicNodeHistoryData, PublicNodeHistoryErrors, PublicNodeHistoryExportData, PublicNodeHistoryExportErrors, PublicNodeHistoryExportResponses, PublicNodeHistoryResponses, ReadyData, ReadyErrors, ReadyResponses, SessionHandlerData, SessionHandlerErrors, SessionHandlerResponses, SetNodeMetadataData, SetNodeMetadataErrors, SetNodeMetadataResponses, SetVisibilityData, SetVisibilityErrors, SetVisibilityResponses, UpdateNetworkData, UpdateNetworkErrors, UpdateNetworkResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -83,7 +83,47 @@ export const adminRecoveryToken = <ThrowOnError extends boolean = false>(options
 
 export const adminEvents = <ThrowOnError extends boolean = false>(options?: Options<AdminEventsData, ThrowOnError>): RequestResult<AdminEventsResponses, unknown, ThrowOnError> => (options?.client ?? client).get<AdminEventsResponses, unknown, ThrowOnError>({ url: '/api/admin/v1/events', ...options });
 
+export const adminNetworks = <ThrowOnError extends boolean = false>(options?: Options<AdminNetworksData, ThrowOnError>): RequestResult<AdminNetworksResponses, unknown, ThrowOnError> => (options?.client ?? client).get<AdminNetworksResponses, unknown, ThrowOnError>({ url: '/api/admin/v1/networks', ...options });
+
+export const createNetwork = <ThrowOnError extends boolean = false>(options: Options<CreateNetworkData, ThrowOnError>): RequestResult<CreateNetworkResponses, CreateNetworkErrors, ThrowOnError> => (options.client ?? client).post<CreateNetworkResponses, CreateNetworkErrors, ThrowOnError>({
+    url: '/api/admin/v1/networks',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+export const adminNetworkDetail = <ThrowOnError extends boolean = false>(options: Options<AdminNetworkDetailData, ThrowOnError>): RequestResult<AdminNetworkDetailResponses, AdminNetworkDetailErrors, ThrowOnError> => (options.client ?? client).get<AdminNetworkDetailResponses, AdminNetworkDetailErrors, ThrowOnError>({ url: '/api/admin/v1/networks/{network_key}', ...options });
+
+export const updateNetwork = <ThrowOnError extends boolean = false>(options: Options<UpdateNetworkData, ThrowOnError>): RequestResult<UpdateNetworkResponses, UpdateNetworkErrors, ThrowOnError> => (options.client ?? client).put<UpdateNetworkResponses, UpdateNetworkErrors, ThrowOnError>({
+    url: '/api/admin/v1/networks/{network_key}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+export const adminNodes = <ThrowOnError extends boolean = false>(options?: Options<AdminNodesData, ThrowOnError>): RequestResult<AdminNodesResponses, unknown, ThrowOnError> => (options?.client ?? client).get<AdminNodesResponses, unknown, ThrowOnError>({ url: '/api/admin/v1/nodes', ...options });
+
+export const adminNodeDetail = <ThrowOnError extends boolean = false>(options: Options<AdminNodeDetailData, ThrowOnError>): RequestResult<AdminNodeDetailResponses, AdminNodeDetailErrors, ThrowOnError> => (options.client ?? client).get<AdminNodeDetailResponses, AdminNodeDetailErrors, ThrowOnError>({ url: '/api/admin/v1/nodes/{node_id}', ...options });
+
 export const adminNodeHistory = <ThrowOnError extends boolean = false>(options: Options<AdminNodeHistoryData, ThrowOnError>): RequestResult<AdminNodeHistoryResponses, AdminNodeHistoryErrors, ThrowOnError> => (options.client ?? client).get<AdminNodeHistoryResponses, AdminNodeHistoryErrors, ThrowOnError>({ url: '/api/admin/v1/nodes/{node_id}/history', ...options });
+
+/**
+ * Owner-only Server-owned metadata mutation (display name). This never
+ * touches the Agent-declared endpoint, Network key, or Node ID; the Agent
+ * Inventory remains authoritative for those.
+ */
+export const setNodeMetadata = <ThrowOnError extends boolean = false>(options: Options<SetNodeMetadataData, ThrowOnError>): RequestResult<SetNodeMetadataResponses, SetNodeMetadataErrors, ThrowOnError> => (options.client ?? client).put<SetNodeMetadataResponses, SetNodeMetadataErrors, ThrowOnError>({
+    url: '/api/admin/v1/nodes/{node_id}/metadata',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
 
 /**
  * Owner-only visibility mutation. All browser mutation trust-boundary

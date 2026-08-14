@@ -36,7 +36,7 @@ test.describe('Agent inventory and detail (PAGE-ADMIN-AGENTS)', () => {
     const row = page.getByRole('row', { name: /0195f2a1/ })
     await expect(row).toContainText('Current', { timeout: 15_000 })
     await expect(row).toContainText('#42')
-    await expect(row).toContainText('3 Nodes')
+    await expect(row).toContainText('5 Nodes')
     await expect(row).toContainText(/active/)
     await expect(row).toContainText('0 gaps · 0 security events')
     await expect(page.getByRole('link', { name: 'Enroll a new Agent' })).toBeVisible()

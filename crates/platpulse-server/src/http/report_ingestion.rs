@@ -1171,6 +1171,12 @@ async fn handler(
             );
         }
     };
+    if !mismatches.is_empty() {
+        // Identity mismatch is a typed, audited outcome (design §7.1): the
+        // samples are never merged and the Agent's security counter records
+        // the contradiction so the Admin surface can surface it.
+        let _ = record_security_event(&mut tx, &auth.agent_id).await;
+    }
     let mut outside_open_gap: std::collections::HashSet<(platpulse_core::identity::NodeId, u64)> =
         std::collections::HashSet::new();
     for sample in &parsed.block_summaries {

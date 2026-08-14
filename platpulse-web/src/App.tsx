@@ -12,6 +12,13 @@ import AdminAgentsList, {
   AdminAgentRecover,
   AdminAgentRotate,
 } from './pages/AdminAgents'
+import AdminNodesList, {
+  AdminNodeDetail,
+  AdminNodeVisibility,
+} from './pages/AdminNodes'
+import AdminNetworksList, {
+  AdminNetworkDetailPage,
+} from './pages/AdminNetworks'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 
 /**
@@ -104,6 +111,11 @@ const router = createBrowserRouter([
       { path: 'agents/:agentId', element: <AdminAgentDetail /> },
       { path: 'agents/:agentId/recover', element: <AdminAgentRecover /> },
       { path: 'agents/:agentId/rotate', element: <AdminAgentRotate /> },
+      { path: 'nodes', element: <AdminNodesList /> },
+      { path: 'nodes/:nodeId', element: <AdminNodeDetail /> },
+      { path: 'nodes/:nodeId/visibility', element: <AdminNodeVisibility /> },
+      { path: 'networks', element: <AdminNetworksList /> },
+      { path: 'networks/:networkKey', element: <AdminNetworkDetailPage /> },
       // Placeholder for later Phase 2 sections (e.g. PAGE-ACCESS-AUDIT):
       // links from security mutations must never land on a blank page.
       { path: '*', element: <AdminComingSoon /> },

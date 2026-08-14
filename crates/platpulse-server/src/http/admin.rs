@@ -1,5 +1,6 @@
 //! Owner-only Agent/Node current observation diagnostics.
 use super::{AppState, ROUTE_GROUP_HEADER, api_not_found};
+use crate::http::AuthenticatedSession;
 use crate::http::realtime;
 use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
@@ -36,6 +37,29 @@ fn mutation_error(
         Json(crate::http::ApiErrorBody::new(code, message, request_id)),
     )
         .into_response()
+}
+
+/// Shared browser mutation trust boundary (design §12.4, webui.md §6.4): a
+/// JSON content type, a same-origin request, and the session CSRF header are
+/// all required before any Admin mutation parses its body. A malformed body
+/// must never bypass these checks or produce a framework-generated error
+/// with a different envelope.
+fn mutation_guard_ok(
+    headers: &HeaderMap,
+    state: &AppState,
+    session: &AuthenticatedSession,
+) -> bool {
+    let content_type_valid = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("application/json"));
+    let origin_valid = state.auth().origin_matches(headers.get(header::ORIGIN));
+    let csrf_valid = headers
+        .get("x-csrf-token")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|token| bool::from(token.as_bytes().ct_eq(session.0.csrf_token.as_bytes())));
+    content_type_valid && origin_valid && csrf_valid
 }
 
 #[utoipa::path(
@@ -87,17 +111,7 @@ pub(crate) async fn set_visibility(
     // Validate the browser trust boundary before attempting to parse JSON. A
     // malformed body must not bypass the same-origin/CSRF checks or produce a
     // framework-generated error with a different envelope.
-    let content_type_valid = headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(';').next())
-        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("application/json"));
-    let origin_valid = state.auth().origin_matches(headers.get(header::ORIGIN));
-    let csrf_valid = headers
-        .get("x-csrf-token")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|token| bool::from(token.as_bytes().ct_eq(principal.0.csrf_token.as_bytes())));
-    if !content_type_valid || !origin_valid || !csrf_valid {
+    if !mutation_guard_ok(&headers, &state, &principal) {
         return mutation_error(
             &request_id.0,
             StatusCode::FORBIDDEN,
@@ -212,6 +226,165 @@ pub(crate) async fn set_visibility(
     Json(VisibilityResponse {
         node_id,
         visibility: body.visibility,
+    })
+    .into_response()
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeMetadataRequest {
+    /// Server-owned display name (design §4.2). Required: 1..=128 visible
+    /// characters; clearing is a future explicit operation.
+    pub display_name: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeMetadataResponse {
+    pub node_id: String,
+    pub display_name: String,
+}
+
+/// Owner-only Server-owned metadata mutation (display name). This never
+/// touches the Agent-declared endpoint, Network key, or Node ID; the Agent
+/// Inventory remains authoritative for those.
+#[utoipa::path(
+    put,
+    path = "/api/admin/v1/nodes/{node_id}/metadata",
+    tag = "admin",
+    params(("node_id" = String, Path, description = "Node ID")),
+    request_body = NodeMetadataRequest,
+    responses((status = 200, body = NodeMetadataResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody))
+)]
+pub(crate) async fn set_node_metadata(
+    State(state): State<AppState>,
+    Path(node_id): Path<String>,
+    headers: HeaderMap,
+    Extension(principal): Extension<super::AuthenticatedSession>,
+    Extension(request_id): Extension<super::RequestId>,
+    body: axum::body::Bytes,
+) -> Response {
+    if !mutation_guard_ok(&headers, &state, &principal) {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::FORBIDDEN,
+            "csrf_validation_failed",
+            "mutation validation failed",
+        );
+    }
+    let body: NodeMetadataRequest = match serde_json::from_slice(&body) {
+        Ok(body) => body,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::BAD_REQUEST,
+                "invalid_json",
+                "request body is invalid",
+            );
+        }
+    };
+    if body.display_name.is_empty()
+        || body.display_name.len() > crate::network::MAX_DISPLAY_NAME_LEN
+        || body.display_name.chars().any(|c| c.is_control())
+    {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::BAD_REQUEST,
+            "invalid_display_name",
+            "display name must be 1..=128 characters without control characters",
+        );
+    }
+    let mut tx = match state.db().pool().begin().await {
+        Ok(tx) => tx,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    };
+    // `display_name` is nullable: a Node without a Server-owned name must
+    // still be renameable, so the previous value is decoded as Option.
+    let before =
+        sqlx::query_scalar::<_, Option<String>>("SELECT display_name FROM nodes WHERE node_id = ?")
+            .bind(&node_id)
+            .fetch_optional(&mut *tx)
+            .await;
+    let Some(previous) = (match before {
+        Ok(value) => value,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    }) else {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "resource not found",
+        );
+    };
+    if previous.as_deref() == Some(body.display_name.as_str()) {
+        return Json(NodeMetadataResponse {
+            node_id: node_id.clone(),
+            display_name: body.display_name,
+        })
+        .into_response();
+    }
+    let changed_at = crate::auth::format_rfc3339(crate::auth::now_utc());
+    if sqlx::query("UPDATE nodes SET display_name = ?, updated_at = ? WHERE node_id = ?")
+        .bind(&body.display_name)
+        .bind(&changed_at)
+        .bind(&node_id)
+        .execute(&mut *tx)
+        .await
+        .is_err()
+    {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        );
+    }
+    let audit = serde_json::json!({
+        "display_name": body.display_name,
+        "previous_display_name": previous,
+    });
+    if crate::auth::insert_audit_event(
+        &mut *tx,
+        Some(&principal.0.user_id),
+        "node_metadata_changed",
+        "node",
+        &node_id,
+        Some(&audit),
+    )
+    .await
+    .is_err()
+        || tx.commit().await.is_err()
+    {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        );
+    }
+    let revision = changed_at.bytes().fold(0_u64, |acc, byte| {
+        acc.wrapping_mul(31).wrapping_add(byte as u64)
+    });
+    state
+        .admin_realtime()
+        .publish("node", Some(node_id.clone()), revision);
+    Json(NodeMetadataResponse {
+        node_id,
+        display_name: body.display_name,
     })
     .into_response()
 }
@@ -668,6 +841,406 @@ async fn node_diagnostic(
             .unwrap_or_else(|| "unknown".to_owned()),
         resync_state,
     }
+}
+
+/// Agent-observed Network identity tuple (design §7.1). Never overwrites the
+/// Registry: it is presented as a typed observation with a match state.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct ObservedNetworkIdentity {
+    pub genesis_hash: Option<String>,
+    pub chain_id: Option<i64>,
+    pub p2p_network_id: Option<i64>,
+    pub address_hrp: Option<String>,
+}
+
+/// Server-computed identity disposition for one Node: `matched` when every
+/// observed identity field equals the Registry tuple, `mismatched` when any
+/// observed field differs (a blocking diagnostic distinct from RPC Error or
+/// Node Offline), and `unknown` when the Node was never observed.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct NodeIdentityStatus {
+    pub state: String,
+    pub observed: Option<ObservedNetworkIdentity>,
+    /// Registry fields that the observation contradicts (empty when state
+    /// is `matched` or `unknown`).
+    pub mismatched_fields: Vec<String>,
+}
+
+/// Compare the observed identity of one Node against its Registry tuple.
+/// The Registry is the only authority: an observation never rewrites it,
+/// and a Node whose identity contradicts the Registry is blocked from
+/// merging history (design §7.1).
+async fn node_identity_status(
+    state: &AppState,
+    node_id: &str,
+    network_key: &str,
+) -> NodeIdentityStatus {
+    let observed = sqlx::query_as::<_, (Option<String>, Option<i64>, Option<i64>, Option<String>)>(
+        "SELECT network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp FROM current_node_chain_observations WHERE node_id = ?",
+    )
+    .bind(node_id)
+    .fetch_optional(state.db().pool())
+    .await
+    .ok()
+    .flatten();
+    let Some((genesis_hash, chain_id, p2p_network_id, address_hrp)) = observed else {
+        return NodeIdentityStatus {
+            state: "unknown".to_owned(),
+            observed: None,
+            mismatched_fields: Vec::new(),
+        };
+    };
+    let observed_fields = [
+        genesis_hash.as_deref().is_some(),
+        chain_id.is_some(),
+        p2p_network_id.is_some(),
+        address_hrp.as_deref().is_some(),
+    ];
+    if !observed_fields.contains(&true) {
+        return NodeIdentityStatus {
+            state: "unknown".to_owned(),
+            observed: None,
+            mismatched_fields: Vec::new(),
+        };
+    }
+    let expected = sqlx::query_as::<_, (String, i64, i64, String)>(
+        "SELECT genesis_hash, chain_id, p2p_network_id, address_hrp FROM networks WHERE network_key = ?",
+    )
+    .bind(network_key)
+    .fetch_optional(state.db().pool())
+    .await
+    .ok()
+    .flatten();
+    let Some((expected_genesis, expected_chain, expected_p2p, expected_hrp)) = expected else {
+        return NodeIdentityStatus {
+            state: "unknown".to_owned(),
+            observed: Some(ObservedNetworkIdentity {
+                genesis_hash,
+                chain_id,
+                p2p_network_id,
+                address_hrp,
+            }),
+            mismatched_fields: Vec::new(),
+        };
+    };
+    let mut mismatched_fields = Vec::new();
+    if genesis_hash
+        .as_deref()
+        .is_some_and(|value| value != expected_genesis)
+    {
+        mismatched_fields.push("genesis_hash".to_owned());
+    }
+    if chain_id.is_some_and(|value| value != expected_chain) {
+        mismatched_fields.push("chain_id".to_owned());
+    }
+    if p2p_network_id.is_some_and(|value| value != expected_p2p) {
+        mismatched_fields.push("p2p_network_id".to_owned());
+    }
+    if address_hrp
+        .as_deref()
+        .is_some_and(|value| value != expected_hrp)
+    {
+        mismatched_fields.push("address_hrp".to_owned());
+    }
+    // `matched` requires every identity field to have been observed and to
+    // equal the Registry tuple; a partial observation stays `unknown` and
+    // never fabricates Registry values.
+    let state = if !mismatched_fields.is_empty() {
+        "mismatched"
+    } else if observed_fields.contains(&false) {
+        "unknown"
+    } else {
+        "matched"
+    };
+    NodeIdentityStatus {
+        state: state.to_owned(),
+        observed: Some(ObservedNetworkIdentity {
+            genesis_hash,
+            chain_id,
+            p2p_network_id,
+            address_hrp,
+        }),
+        mismatched_fields,
+    }
+}
+
+/// Redacted destination summary (design §9, `PATTERN-REDACTED-DETAIL`):
+/// scheme and host with the port masked; path, query, and credentials are
+/// never exposed.
+fn redact_endpoint(endpoint: &str) -> String {
+    let Some(scheme_end) = endpoint.find("://") else {
+        return "redacted".to_owned();
+    };
+    let mut result = endpoint[..scheme_end + 3].to_owned();
+    let authority = endpoint[scheme_end + 3..]
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("");
+    // Drop any userinfo (`user:secret@`) before the host: credentials in an
+    // endpoint must never reach a DTO.
+    let authority = authority
+        .rsplit_once('@')
+        .map(|(_, host)| host)
+        .unwrap_or(authority);
+    let host = authority
+        .rsplit_once(':')
+        .map(|(host, _)| host)
+        .unwrap_or(authority);
+    result.push_str(host);
+    if authority.contains(':') {
+        result.push_str(":****");
+    }
+    result
+}
+
+/// Server-owned lifecycle guidance (design §4.3): the Server never changes
+/// Node lifecycle remotely; the latest valid Agent Inventory is the only
+/// authority for Active/Retired.
+fn lifecycle_guidance(lifecycle: &str) -> &'static str {
+    if lifecycle == "retired" {
+        "Retired: the latest Agent Inventory no longer declares this Node. Reactivation requires declaring the same Node ID again in the Agent-local TOML configuration and submitting a new Inventory; the Server never changes Node lifecycle remotely."
+    } else {
+        "Active: present in the latest valid Agent Inventory. The Agent-local configuration stays authoritative for this Node; the Server never pushes Endpoint or lifecycle changes."
+    }
+}
+
+/// Owner-only Node inventory row: Server-owned metadata (display name,
+/// visibility, lifecycle guidance) stays distinct from Agent-observed
+/// identity and endpoint configuration, and each Node is its own row so
+/// block, transaction, consensus, peer, and error state never merge across
+/// Nodes.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct AdminNodeListItem {
+    pub node_id: String,
+    pub agent_id: String,
+    pub display_name: Option<String>,
+    pub network_key: String,
+    pub network_display_name: String,
+    pub lifecycle: String,
+    pub lifecycle_guidance: String,
+    pub visibility: String,
+    pub inventory_revision: i64,
+    pub first_seen_at: String,
+    /// Last Server-side metadata change (display name / visibility).
+    pub updated_at: String,
+    /// Redacted Agent-declared endpoint (scheme + host only).
+    pub rpc_endpoint: String,
+    /// Server-owned Node Health Summary severity and primary reason.
+    pub health: String,
+    pub health_reason: String,
+    /// Server-owned freshness dimension: `current`, `stale`, or `unknown`.
+    pub freshness: String,
+    pub current_head: Option<i64>,
+    pub resync_state: String,
+    pub identity: NodeIdentityStatus,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct AdminNodeRow {
+    node_id: String,
+    agent_id: String,
+    display_name: Option<String>,
+    network_key: String,
+    network_display_name: String,
+    lifecycle: String,
+    visibility: String,
+    inventory_revision: i64,
+    first_seen_at: String,
+    updated_at: String,
+    rpc_endpoint: String,
+}
+
+async fn admin_node_list_item(state: &AppState, row: AdminNodeRow) -> AdminNodeListItem {
+    let diagnostic = node_diagnostic(
+        state,
+        row.node_id.clone(),
+        row.network_key.clone(),
+        row.display_name.clone(),
+        row.lifecycle.clone(),
+        row.inventory_revision,
+        row.visibility.clone(),
+    )
+    .await;
+    AdminNodeListItem {
+        node_id: row.node_id.clone(),
+        agent_id: row.agent_id,
+        display_name: row.display_name,
+        network_key: row.network_key.clone(),
+        network_display_name: row.network_display_name,
+        lifecycle: row.lifecycle.clone(),
+        lifecycle_guidance: lifecycle_guidance(&row.lifecycle).to_owned(),
+        visibility: row.visibility,
+        inventory_revision: row.inventory_revision,
+        first_seen_at: row.first_seen_at,
+        updated_at: row.updated_at,
+        rpc_endpoint: redact_endpoint(&row.rpc_endpoint),
+        health: diagnostic.health,
+        health_reason: diagnostic.health_reason,
+        freshness: diagnostic.freshness,
+        current_head: diagnostic.current_head,
+        resync_state: diagnostic.resync_state,
+        identity: node_identity_status(state, &row.node_id, &row.network_key).await,
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/admin/v1/nodes",
+    tag = "admin",
+    responses((status = 200, description = "Owner-only Node inventory with Server-owned metadata and per-Node identity disposition", body = [AdminNodeListItem]))
+)]
+async fn admin_nodes(
+    State(state): State<AppState>,
+    Extension(_session): Extension<super::AuthenticatedSession>,
+    Extension(request_id): Extension<super::RequestId>,
+) -> Response {
+    let rows = sqlx::query_as::<_, AdminNodeRow>(
+        "SELECT n.node_id, n.agent_id, n.display_name, n.network_key, r.display_name AS network_display_name, n.lifecycle, n.visibility, n.inventory_revision, n.first_seen_at, n.updated_at, n.rpc_endpoint FROM nodes n JOIN networks r ON r.network_key = n.network_key ORDER BY n.network_key, COALESCE(n.display_name, n.node_id)",
+    )
+    .fetch_all(state.db().pool())
+    .await;
+    let rows = match rows {
+        Ok(rows) => rows,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    };
+    let mut items = Vec::with_capacity(rows.len());
+    for row in rows {
+        items.push(admin_node_list_item(&state, row).await);
+    }
+    Json(items).into_response()
+}
+
+/// Owner-only Node detail: the full per-Node view with Server-owned
+/// metadata, lifecycle guidance, identity disposition, and the independent
+/// process/RPC/sync/consensus observation dimensions (design §4.1–§4.3).
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct AdminNodeDetail {
+    pub node_id: String,
+    pub agent_id: String,
+    pub display_name: Option<String>,
+    pub network_key: String,
+    pub network_display_name: String,
+    pub lifecycle: String,
+    pub lifecycle_guidance: String,
+    pub visibility: String,
+    pub inventory_revision: i64,
+    pub first_seen_at: String,
+    pub updated_at: String,
+    pub rpc_endpoint: String,
+    pub node_key_fingerprint: Option<String>,
+    pub health: String,
+    pub health_reason: String,
+    pub freshness: String,
+    pub identity: NodeIdentityStatus,
+    pub process: Option<ProcessDiagnostic>,
+    pub rpc: Option<RpcDiagnostic>,
+    pub sync: Option<SyncDiagnostic>,
+    pub consensus: Option<ConsensusDiagnostic>,
+    pub current_head: Option<i64>,
+    pub historical_high_watermark: Option<i64>,
+    pub resync_state: String,
+    pub resync_progress: Option<String>,
+    pub network_reference_head: Option<i64>,
+    pub network_reference_confidence: String,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/admin/v1/nodes/{node_id}",
+    tag = "admin",
+    params(("node_id" = String, Path, description = "Node ID")),
+    responses((status = 200, description = "Owner-only Node detail with Server-owned metadata and per-Node diagnostics", body = AdminNodeDetail), (status = 404, body = crate::http::ApiErrorBody))
+)]
+async fn admin_node_detail(
+    State(state): State<AppState>,
+    Path(node_id): Path<String>,
+    Extension(_session): Extension<super::AuthenticatedSession>,
+    Extension(request_id): Extension<super::RequestId>,
+) -> Response {
+    let row = sqlx::query_as::<_, AdminNodeRow>(
+        "SELECT n.node_id, n.agent_id, n.display_name, n.network_key, r.display_name AS network_display_name, n.lifecycle, n.visibility, n.inventory_revision, n.first_seen_at, n.updated_at, n.rpc_endpoint FROM nodes n JOIN networks r ON r.network_key = n.network_key WHERE n.node_id = ?",
+    )
+    .bind(&node_id)
+    .fetch_optional(state.db().pool())
+    .await;
+    let Some(row) = (match row {
+        Ok(row) => row,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    }) else {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "resource not found",
+        );
+    };
+    let diagnostic = node_diagnostic(
+        &state,
+        row.node_id.clone(),
+        row.network_key.clone(),
+        row.display_name.clone(),
+        row.lifecycle.clone(),
+        row.inventory_revision,
+        row.visibility.clone(),
+    )
+    .await;
+    let fingerprint = sqlx::query_scalar::<_, String>(
+        "SELECT node_key_fingerprint FROM current_node_chain_observations WHERE node_id = ?",
+    )
+    .bind(&row.node_id)
+    .fetch_optional(state.db().pool())
+    .await
+    .ok()
+    .flatten();
+    let identity = node_identity_status(&state, &row.node_id, &row.network_key).await;
+    Json(AdminNodeDetail {
+        node_id: row.node_id,
+        agent_id: row.agent_id,
+        display_name: row.display_name,
+        network_key: row.network_key,
+        network_display_name: row.network_display_name,
+        lifecycle: row.lifecycle.clone(),
+        lifecycle_guidance: lifecycle_guidance(&row.lifecycle).to_owned(),
+        visibility: row.visibility,
+        inventory_revision: row.inventory_revision,
+        first_seen_at: row.first_seen_at,
+        updated_at: row.updated_at,
+        rpc_endpoint: redact_endpoint(&row.rpc_endpoint),
+        node_key_fingerprint: fingerprint,
+        health: diagnostic.health.clone(),
+        health_reason: diagnostic.health_reason.clone(),
+        freshness: diagnostic.freshness.clone(),
+        identity,
+        process: diagnostic.process,
+        rpc: diagnostic.rpc,
+        sync: diagnostic.sync,
+        consensus: diagnostic.consensus,
+        current_head: diagnostic.current_head,
+        historical_high_watermark: diagnostic.historical_high_watermark,
+        resync_state: diagnostic.resync_state,
+        resync_progress: diagnostic.resync_progress,
+        network_reference_head: diagnostic.network_reference_head,
+        network_reference_confidence: diagnostic.network_reference_confidence,
+    })
+    .into_response()
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -1852,11 +2425,608 @@ async fn admin_node_history(
         raw_retention_days: crate::retention::RAW_BLOCK_SUMMARY_RETENTION_DAYS,
     })
 }
+/// Owner-only Network Registry projection (design §7.1). The complete
+/// validated identity tuple is presented as Server-owned expected identity;
+/// observed Agent text never creates or rewrites Registry entries.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct AdminNetwork {
+    pub network_key: String,
+    pub display_name: String,
+    pub genesis_hash: String,
+    pub chain_id: i64,
+    pub p2p_network_id: i64,
+    pub address_hrp: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub active_node_count: i64,
+    pub retired_node_count: i64,
+    /// Active Nodes whose observed identity contradicts this Registry tuple.
+    pub mismatched_node_count: i64,
+}
+
+const NETWORK_NODE_COUNTS: &str = "(SELECT COUNT(*) FROM nodes nd WHERE nd.network_key = n.network_key AND nd.lifecycle = 'active'), (SELECT COUNT(*) FROM nodes nd WHERE nd.network_key = n.network_key AND nd.lifecycle = 'retired'), (SELECT COUNT(*) FROM nodes nd WHERE nd.network_key = n.network_key AND nd.lifecycle = 'active' AND EXISTS (SELECT 1 FROM current_node_chain_observations c WHERE c.node_id = nd.node_id AND ((c.network_genesis_hash IS NOT NULL AND c.network_genesis_hash != n.genesis_hash) OR (c.network_chain_id IS NOT NULL AND c.network_chain_id != n.chain_id) OR (c.network_p2p_network_id IS NOT NULL AND c.network_p2p_network_id != n.p2p_network_id) OR (c.network_address_hrp IS NOT NULL AND c.network_address_hrp != n.address_hrp))))";
+
+#[utoipa::path(
+    get,
+    path = "/api/admin/v1/networks",
+    tag = "admin",
+    responses((status = 200, description = "Owner-only Network Registry with identity tuple and Node counts", body = [AdminNetwork]))
+)]
+async fn admin_networks(
+    State(state): State<AppState>,
+    Extension(_session): Extension<super::AuthenticatedSession>,
+    Extension(request_id): Extension<super::RequestId>,
+) -> Response {
+    let rows = sqlx::query_as::<_, (String, String, String, i64, i64, String, String, String, i64, i64, i64)>(
+        &format!("SELECT n.network_key, n.display_name, n.genesis_hash, n.chain_id, n.p2p_network_id, n.address_hrp, n.created_at, n.updated_at, {NETWORK_NODE_COUNTS} FROM networks n ORDER BY n.network_key"),
+    )
+    .fetch_all(state.db().pool())
+    .await;
+    let rows = match rows {
+        Ok(rows) => rows,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    };
+    Json(
+        rows.into_iter()
+            .map(
+                |(
+                    network_key,
+                    display_name,
+                    genesis_hash,
+                    chain_id,
+                    p2p_network_id,
+                    address_hrp,
+                    created_at,
+                    updated_at,
+                    active_node_count,
+                    retired_node_count,
+                    mismatched_node_count,
+                )| {
+                    AdminNetwork {
+                        network_key,
+                        display_name,
+                        genesis_hash,
+                        chain_id,
+                        p2p_network_id,
+                        address_hrp,
+                        created_at,
+                        updated_at,
+                        active_node_count,
+                        retired_node_count,
+                        mismatched_node_count,
+                    }
+                },
+            )
+            .collect::<Vec<_>>(),
+    )
+    .into_response()
+}
+
+/// One Node inside a Network detail: per-Node identity disposition against
+/// the Registry tuple, plus the Server-owned health and lifecycle state.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct AdminNetworkNode {
+    pub node_id: String,
+    pub agent_id: String,
+    pub display_name: Option<String>,
+    pub lifecycle: String,
+    pub visibility: String,
+    pub health: String,
+    pub health_reason: String,
+    pub freshness: String,
+    pub current_head: Option<i64>,
+    pub resync_state: String,
+    pub identity: NodeIdentityStatus,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct AdminNetworkDetail {
+    pub network_key: String,
+    pub display_name: String,
+    pub genesis_hash: String,
+    pub chain_id: i64,
+    pub p2p_network_id: i64,
+    pub address_hrp: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub active_node_count: i64,
+    pub retired_node_count: i64,
+    pub mismatched_node_count: i64,
+    pub nodes: Vec<AdminNetworkNode>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/admin/v1/networks/{network_key}",
+    tag = "admin",
+    params(("network_key" = String, Path, description = "Registered Network key")),
+    responses((status = 200, description = "Owner-only Network detail with per-Node identity dispositions", body = AdminNetworkDetail), (status = 404, body = crate::http::ApiErrorBody))
+)]
+async fn admin_network_detail(
+    State(state): State<AppState>,
+    Path(network_key): Path<String>,
+    Extension(_session): Extension<super::AuthenticatedSession>,
+    Extension(request_id): Extension<super::RequestId>,
+) -> Response {
+    let row = sqlx::query_as::<_, (String, String, String, i64, i64, String, String, String, i64, i64, i64)>(
+        &format!("SELECT n.network_key, n.display_name, n.genesis_hash, n.chain_id, n.p2p_network_id, n.address_hrp, n.created_at, n.updated_at, {NETWORK_NODE_COUNTS} FROM networks n WHERE n.network_key = ?"),
+    )
+    .bind(&network_key)
+    .fetch_optional(state.db().pool())
+    .await;
+    let Some((
+        network_key,
+        display_name,
+        genesis_hash,
+        chain_id,
+        p2p_network_id,
+        address_hrp,
+        created_at,
+        updated_at,
+        active_node_count,
+        retired_node_count,
+        mismatched_node_count,
+    )) = (match row {
+        Ok(row) => row,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    })
+    else {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "resource not found",
+        );
+    };
+    let nodes = sqlx::query_as::<_, (String, String, Option<String>, String, String)>(
+        "SELECT node_id, agent_id, display_name, lifecycle, visibility FROM nodes WHERE network_key = ? ORDER BY COALESCE(display_name, node_id)",
+    )
+    .bind(&network_key)
+    .fetch_all(state.db().pool())
+    .await;
+    let nodes = match nodes {
+        Ok(nodes) => nodes,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    };
+    let mut projected = Vec::with_capacity(nodes.len());
+    for (node_id, agent_id, node_display_name, lifecycle, visibility) in nodes {
+        let diagnostic = node_diagnostic(
+            &state,
+            node_id.clone(),
+            network_key.clone(),
+            node_display_name.clone(),
+            lifecycle.clone(),
+            0,
+            visibility.clone(),
+        )
+        .await;
+        projected.push(AdminNetworkNode {
+            node_id: node_id.clone(),
+            agent_id,
+            display_name: node_display_name,
+            lifecycle: lifecycle.clone(),
+            visibility,
+            health: diagnostic.health,
+            health_reason: diagnostic.health_reason,
+            freshness: diagnostic.freshness,
+            current_head: diagnostic.current_head,
+            resync_state: diagnostic.resync_state,
+            identity: node_identity_status(&state, &node_id, &network_key).await,
+        });
+    }
+    Json(AdminNetworkDetail {
+        network_key,
+        display_name,
+        genesis_hash,
+        chain_id,
+        p2p_network_id,
+        address_hrp,
+        created_at,
+        updated_at,
+        active_node_count,
+        retired_node_count,
+        mismatched_node_count,
+        nodes: projected,
+    })
+    .into_response()
+}
+
+/// Owner-only Registry creation with the complete validated identity tuple
+/// (design §7.1). The Registry is never created from observed Agent text:
+/// this explicit Owner mutation is the only Admin insert path.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkCreateRequest {
+    pub network_key: String,
+    pub display_name: String,
+    pub genesis_hash: String,
+    pub chain_id: u64,
+    pub p2p_network_id: u64,
+    pub address_hrp: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkResponse {
+    pub network_key: String,
+    pub display_name: String,
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/admin/v1/networks",
+    tag = "admin",
+    request_body = NetworkCreateRequest,
+    responses((status = 200, body = NetworkResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 409, body = crate::http::ApiErrorBody))
+)]
+pub(crate) async fn create_network(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Extension(principal): Extension<super::AuthenticatedSession>,
+    Extension(request_id): Extension<super::RequestId>,
+    body: axum::body::Bytes,
+) -> Response {
+    if !mutation_guard_ok(&headers, &state, &principal) {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::FORBIDDEN,
+            "csrf_validation_failed",
+            "mutation validation failed",
+        );
+    }
+    let body: NetworkCreateRequest = match serde_json::from_slice(&body) {
+        Ok(body) => body,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::BAD_REQUEST,
+                "invalid_json",
+                "request body is invalid",
+            );
+        }
+    };
+    let key = match crate::network::validate_network_tuple(
+        &body.network_key,
+        &body.display_name,
+        &body.genesis_hash,
+        body.chain_id,
+        body.p2p_network_id,
+        &body.address_hrp,
+    ) {
+        Ok(key) => key,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::BAD_REQUEST,
+                "invalid_network_tuple",
+                "the Network identity tuple is invalid",
+            );
+        }
+    };
+    let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+    let mut tx = match state.db().pool().begin().await {
+        Ok(tx) => tx,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    };
+    let insert = sqlx::query(
+        "INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&key)
+    .bind(&body.display_name)
+    .bind(&body.genesis_hash)
+    .bind(body.chain_id as i64)
+    .bind(body.p2p_network_id as i64)
+    .bind(&body.address_hrp)
+    .bind(&now)
+    .bind(&now)
+    .execute(&mut *tx)
+    .await;
+    if let Err(error) = insert {
+        if error
+            .as_database_error()
+            .is_some_and(|db_error| db_error.is_unique_violation())
+        {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::CONFLICT,
+                "network_key_exists",
+                "the Network key is already registered",
+            );
+        }
+        return mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        );
+    }
+    let audit = serde_json::json!({
+        "network_key": key,
+        "display_name": body.display_name,
+        "genesis_hash": body.genesis_hash,
+        "chain_id": body.chain_id,
+        "p2p_network_id": body.p2p_network_id,
+        "address_hrp": body.address_hrp,
+    });
+    if crate::auth::insert_audit_event(
+        &mut *tx,
+        Some(&principal.0.user_id),
+        "network_created",
+        "network",
+        &key,
+        Some(&audit),
+    )
+    .await
+    .is_err()
+        || tx.commit().await.is_err()
+    {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        );
+    }
+    let revision = now.bytes().fold(0_u64, |acc, byte| {
+        acc.wrapping_mul(31).wrapping_add(byte as u64)
+    });
+    state
+        .admin_realtime()
+        .publish("network", Some(key.clone()), revision);
+    Json(NetworkResponse {
+        network_key: key,
+        display_name: body.display_name,
+    })
+    .into_response()
+}
+
+/// Owner-only Registry update: display name and/or identity tuple fields.
+/// Every field is optional, but at least one must change; the merged tuple
+/// is validated and the before/after state is audited. Existing Nodes whose
+/// observed identity now contradicts the tuple surface as typed mismatches;
+/// no Node state is rewritten.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkUpdateRequest {
+    pub display_name: Option<String>,
+    pub genesis_hash: Option<String>,
+    pub chain_id: Option<u64>,
+    pub p2p_network_id: Option<u64>,
+    pub address_hrp: Option<String>,
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/admin/v1/networks/{network_key}",
+    tag = "admin",
+    params(("network_key" = String, Path, description = "Registered Network key")),
+    request_body = NetworkUpdateRequest,
+    responses((status = 200, body = NetworkResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody))
+)]
+pub(crate) async fn update_network(
+    State(state): State<AppState>,
+    Path(network_key): Path<String>,
+    headers: HeaderMap,
+    Extension(principal): Extension<super::AuthenticatedSession>,
+    Extension(request_id): Extension<super::RequestId>,
+    body: axum::body::Bytes,
+) -> Response {
+    if !mutation_guard_ok(&headers, &state, &principal) {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::FORBIDDEN,
+            "csrf_validation_failed",
+            "mutation validation failed",
+        );
+    }
+    let body: NetworkUpdateRequest = match serde_json::from_slice(&body) {
+        Ok(body) => body,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::BAD_REQUEST,
+                "invalid_json",
+                "request body is invalid",
+            );
+        }
+    };
+    let existing = sqlx::query_as::<_, (String, String, i64, i64, String)>(
+        "SELECT display_name, genesis_hash, chain_id, p2p_network_id, address_hrp FROM networks WHERE network_key = ?",
+    )
+    .bind(&network_key)
+    .fetch_optional(state.db().pool())
+    .await;
+    let Some((current_name, current_genesis, current_chain, current_p2p, current_hrp)) =
+        (match existing {
+            Ok(row) => row,
+            Err(_) => {
+                return mutation_error(
+                    &request_id.0,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "server database is unavailable",
+                );
+            }
+        })
+    else {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "resource not found",
+        );
+    };
+    if body.display_name.is_none()
+        && body.genesis_hash.is_none()
+        && body.chain_id.is_none()
+        && body.p2p_network_id.is_none()
+        && body.address_hrp.is_none()
+    {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::BAD_REQUEST,
+            "empty_update",
+            "at least one Network field must change",
+        );
+    }
+    let next_name = body.display_name.clone().unwrap_or(current_name.clone());
+    let next_genesis = body.genesis_hash.clone().unwrap_or(current_genesis.clone());
+    let next_chain = body.chain_id.unwrap_or(current_chain as u64);
+    let next_p2p = body.p2p_network_id.unwrap_or(current_p2p as u64);
+    let next_hrp = body.address_hrp.clone().unwrap_or(current_hrp.clone());
+    if crate::network::validate_network_tuple(
+        &network_key,
+        &next_name,
+        &next_genesis,
+        next_chain,
+        next_p2p,
+        &next_hrp,
+    )
+    .is_err()
+    {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::BAD_REQUEST,
+            "invalid_network_tuple",
+            "the Network identity tuple is invalid",
+        );
+    }
+    if next_name == current_name
+        && next_genesis == current_genesis
+        && next_chain as i64 == current_chain
+        && next_p2p as i64 == current_p2p
+        && next_hrp == current_hrp
+    {
+        return Json(NetworkResponse {
+            network_key: network_key.clone(),
+            display_name: next_name,
+        })
+        .into_response();
+    }
+    let changed_at = crate::auth::format_rfc3339(crate::auth::now_utc());
+    let mut tx = match state.db().pool().begin().await {
+        Ok(tx) => tx,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    };
+    if sqlx::query(
+        "UPDATE networks SET display_name = ?, genesis_hash = ?, chain_id = ?, p2p_network_id = ?, address_hrp = ?, updated_at = ? WHERE network_key = ?",
+    )
+    .bind(&next_name)
+    .bind(&next_genesis)
+    .bind(next_chain as i64)
+    .bind(next_p2p as i64)
+    .bind(&next_hrp)
+    .bind(&changed_at)
+    .bind(&network_key)
+    .execute(&mut *tx)
+    .await
+    .is_err()
+    {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        );
+    }
+    let audit = serde_json::json!({
+        "before": {
+            "display_name": current_name,
+            "genesis_hash": current_genesis,
+            "chain_id": current_chain,
+            "p2p_network_id": current_p2p,
+            "address_hrp": current_hrp,
+        },
+        "after": {
+            "display_name": next_name,
+            "genesis_hash": next_genesis,
+            "chain_id": next_chain,
+            "p2p_network_id": next_p2p,
+            "address_hrp": next_hrp,
+        },
+    });
+    if crate::auth::insert_audit_event(
+        &mut *tx,
+        Some(&principal.0.user_id),
+        "network_updated",
+        "network",
+        &network_key,
+        Some(&audit),
+    )
+    .await
+    .is_err()
+        || tx.commit().await.is_err()
+    {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        );
+    }
+    let revision = changed_at.bytes().fold(0_u64, |acc, byte| {
+        acc.wrapping_mul(31).wrapping_add(byte as u64)
+    });
+    state
+        .admin_realtime()
+        .publish("network", Some(network_key.clone()), revision);
+    Json(NetworkResponse {
+        network_key,
+        display_name: next_name,
+    })
+    .into_response()
+}
+
 pub fn router() -> Router<AppState> {
     Router::<AppState>::new()
         .route("/events", get(admin_events))
         .route("/overview", get(overview))
+        .route("/nodes", get(admin_nodes))
+        .route("/nodes/{node_id}", get(admin_node_detail))
+        .route("/nodes/{node_id}/metadata", put(set_node_metadata))
         .route("/nodes/{node_id}/history", get(admin_node_history))
+        .route("/networks", get(admin_networks))
+        .route("/networks/{network_key}", get(admin_network_detail))
+        .route("/networks", post(create_network))
+        .route("/networks/{network_key}", put(update_network))
         .route("/agents", get(diagnostics))
         .route("/agents/{agent_id}", get(admin_agent_detail))
         .route("/agents/{agent_id}/audit", get(admin_agent_audit))
@@ -2683,5 +3853,545 @@ mod tests {
             }),
             "every lifecycle audit row names the Owner actor with redacted details"
         );
+    }
+    // ---- Node inventory, metadata, and Network Registry (issue #45) ----
+
+    /// Seed helper: one registered Network plus two Nodes on one Agent.
+    /// `node_healthy` observes the registered identity; `node_mismatched`
+    /// observes a contradicting chain id (typed mismatch, history blocked).
+    async fn node_inventory_state() -> (tempfile::TempDir, AppState) {
+        let (dir, state) = lifecycle_state().await;
+        let now = crate::auth::now_utc();
+        let fixed = "2026-01-01T00:00:00Z".to_owned();
+        let fresh = crate::auth::format_rfc3339(now);
+        sqlx::query(
+            "INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('mainnet', 'PlatON Mainnet', '0x' || '01' || '00000000000000000000000000000000000000000000000000000000000000', 210425, 1, 'lat', ?, ?)",
+        )
+        .bind(&fixed)
+        .bind(&fixed)
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+        for (node_id, lifecycle) in [
+            ("node-healthy", "active"),
+            ("node-mismatched", "active"),
+            ("node-retired", "retired"),
+        ] {
+            sqlx::query(
+                "INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES (?, 'agent-lifecycle-test', 'mainnet', ?, 'ws://127.0.0.1:6790', ?, 'private', 1, ?, ?)",
+            )
+            .bind(node_id)
+            .bind(node_id)
+            .bind(lifecycle)
+            .bind(&fixed)
+            .bind(&fixed)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        }
+        // Healthy Node: matching observed identity + fresh ok components.
+        sqlx::query(
+            "INSERT INTO current_node_chain_observations (node_id, rpc_client_version, syncing, current_block, highest_block, consensus_epoch, consensus_validator, consensus_highest_commit_block, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, node_key_fingerprint, updated_at) VALUES ('node-healthy', 'platon/1.5.1', 0, 100, 100, 1, 1, 100, '0x' || '01' || '00000000000000000000000000000000000000000000000000000000000000', 210425, 1, 'lat', 'fp-healthy', ?)",
+        )
+        .bind(&fresh)
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+        for component in ["rpc", "sync", "consensus"] {
+            sqlx::query(
+                "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES ('agent-lifecycle-test', 'node', 'node-healthy', 'node-healthy', ?, 'ok', ?, ?, ?, 1, 1)",
+            )
+            .bind(component)
+            .bind(&fresh)
+            .bind(&fresh)
+            .bind(&fresh)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        }
+        // Mismatched Node: RPC error with a last-good sync value retained
+        // (last-good semantics) and a contradicting observed chain id.
+        sqlx::query(
+            "INSERT INTO current_node_chain_observations (node_id, rpc_client_version, syncing, current_block, highest_block, consensus_epoch, consensus_validator, consensus_highest_commit_block, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, updated_at) VALUES ('node-mismatched', 'platon/1.5.1', 0, 99, 99, 1, 0, 99, '0x' || '01' || '00000000000000000000000000000000000000000000000000000000000000', 999999, 1, 'lat', ?)",
+        )
+        .bind(&fresh)
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+        for component in ["rpc", "sync", "consensus"] {
+            let (component_state, error_code, error_message) = if component == "rpc" {
+                ("error", "rpc_unreachable", "RPC probe failed")
+            } else {
+                ("ok", "", "")
+            };
+            sqlx::query(
+                "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision, error_code, error_message) VALUES ('agent-lifecycle-test', 'node', 'node-mismatched', 'node-mismatched', ?, ?, ?, ?, ?, 2, 1, ?, ?)",
+            )
+            .bind(component)
+            .bind(component_state)
+            .bind(&fresh)
+            .bind(&fresh)
+            .bind(&fresh)
+            .bind(error_code)
+            .bind(error_message)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        }
+        (dir, state)
+    }
+
+    #[tokio::test]
+    async fn admin_node_inventory_is_per_node_with_server_owned_dimensions() {
+        let (_dir, state) = node_inventory_state().await;
+        let response = admin_nodes(
+            State(state.clone()),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        let items = value.as_array().unwrap();
+        assert_eq!(items.len(), 3, "every Node is its own inventory row");
+        let by_id = |id: &str| {
+            items
+                .iter()
+                .find(|item| item["node_id"] == id)
+                .unwrap_or_else(|| panic!("missing Node {id}"))
+                .clone()
+        };
+        // Server-owned metadata is present and distinct from the
+        // Agent-observed identity disposition.
+        let healthy = by_id("node-healthy");
+        assert_eq!(healthy["display_name"], "node-healthy");
+        assert_eq!(healthy["network_display_name"], "PlatON Mainnet");
+        assert_eq!(healthy["lifecycle"], "active");
+        assert_eq!(healthy["visibility"], "private");
+        assert_eq!(healthy["health"], "healthy");
+        assert_eq!(healthy["freshness"], "current");
+        assert_eq!(healthy["identity"]["state"], "matched");
+        assert_eq!(
+            healthy["identity"]["observed"]["chain_id"], 210425,
+            "the observed identity tuple is reported without rewriting the Registry"
+        );
+        assert!(
+            healthy["identity"]["mismatched_fields"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        // Endpoints are redacted destination summaries.
+        assert_eq!(healthy["rpc_endpoint"], "ws://127.0.0.1:****");
+        assert!(
+            healthy["lifecycle_guidance"]
+                .as_str()
+                .unwrap()
+                .contains("Agent-local")
+        );
+        // Mismatch is a typed, distinct diagnostic; last-good values remain.
+        let mismatched = by_id("node-mismatched");
+        assert_eq!(mismatched["identity"]["state"], "mismatched");
+        assert_eq!(
+            mismatched["identity"]["mismatched_fields"],
+            serde_json::json!(["chain_id"])
+        );
+        assert_eq!(mismatched["health"], "unhealthy");
+        assert_eq!(mismatched["health_reason"], "RPC collection failed");
+        // Retired guidance is explicit and never implies remote control.
+        let retired = by_id("node-retired");
+        assert_eq!(retired["lifecycle"], "retired");
+        assert!(
+            retired["lifecycle_guidance"]
+                .as_str()
+                .unwrap()
+                .contains("Reactivation requires declaring the same Node ID")
+        );
+        assert!(
+            retired["lifecycle_guidance"]
+                .as_str()
+                .unwrap()
+                .contains("never changes Node lifecycle")
+        );
+    }
+
+    #[tokio::test]
+    async fn admin_node_detail_includes_identity_and_per_component_diagnostics() {
+        let (_dir, state) = node_inventory_state().await;
+        let response = admin_node_detail(
+            State(state.clone()),
+            Path("node-mismatched".to_owned()),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(value["node_id"], "node-mismatched");
+        assert_eq!(value["identity"]["state"], "mismatched");
+        assert_eq!(value["rpc"]["state"], "error");
+        assert_eq!(value["rpc"]["error_message"], "RPC probe failed");
+        assert_eq!(
+            value["sync"]["state"], "ok",
+            "last-good sync stays visible beside the RPC error"
+        );
+        assert_eq!(value["sync"]["current_block"], 99);
+        assert_eq!(value["current_head"], 99);
+        assert_eq!(value["consensus"]["validator"], false);
+        let response = admin_node_detail(
+            State(state.clone()),
+            Path("node-healthy".to_owned()),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        let value: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(value["node_key_fingerprint"], "fp-healthy");
+        assert_eq!(value["health"], "healthy");
+        // Unknown Node is a non-leaking 404 for Admin too.
+        let response = admin_node_detail(
+            State(state.clone()),
+            Path("node-missing".to_owned()),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn partial_identity_observation_stays_unknown_and_never_fabricates_values() {
+        let (_dir, state) = node_inventory_state().await;
+        // The retired Node observes only a chain id; genesis and HRP are
+        // never observed. A partial observation must not claim `matched`
+        // or invent Registry values for the missing fields.
+        sqlx::query(
+            "INSERT INTO current_node_chain_observations (node_id, network_chain_id, updated_at) VALUES ('node-retired', 210425, '2026-01-01T00:00:00Z')",
+        )
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+        let response = admin_node_detail(
+            State(state.clone()),
+            Path("node-retired".to_owned()),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(value["identity"]["state"], "unknown");
+        assert_eq!(value["identity"]["observed"]["chain_id"], 210425);
+        assert_eq!(value["identity"]["observed"]["genesis_hash"], Value::Null);
+        assert_eq!(value["identity"]["observed"]["address_hrp"], Value::Null);
+        assert!(
+            value["identity"]["mismatched_fields"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn redact_endpoint_strips_userinfo_and_masks_the_port() {
+        assert_eq!(
+            redact_endpoint("ws://127.0.0.1:6790"),
+            "ws://127.0.0.1:****"
+        );
+        assert_eq!(
+            redact_endpoint("wss://user:sekret@example.org:6790/path?token=x"),
+            "wss://example.org:****"
+        );
+        assert_eq!(redact_endpoint("no-scheme"), "redacted");
+    }
+
+    #[tokio::test]
+    async fn node_metadata_mutation_updates_display_name_and_audits() {
+        let (_dir, state) = node_inventory_state().await;
+        let session = lifecycle_session();
+        // CSRF / origin / content-type guard runs before parsing.
+        let response = set_node_metadata(
+            State(state.clone()),
+            Path("node-healthy".to_owned()),
+            mutation_headers("wrong-csrf"),
+            Extension(session.clone()),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(br#"{"displayName":"Atlas"}"#),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        // Invalid display names are rejected without touching the row.
+        let response = set_node_metadata(
+            State(state.clone()),
+            Path("node-healthy".to_owned()),
+            mutation_headers("csrf"),
+            Extension(session.clone()),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(br#"{"displayName":""}"#),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        // A Node with no Server-owned name (NULL display_name) is still
+        // renameable instead of failing on the nullable decode.
+        sqlx::query("UPDATE nodes SET display_name = NULL WHERE node_id = 'node-retired'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let response = set_node_metadata(
+            State(state.clone()),
+            Path("node-retired".to_owned()),
+            mutation_headers("csrf"),
+            Extension(session.clone()),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(br#"{"displayName":"Retired Atlas"}"#),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let display_name: Option<String> =
+            sqlx::query_scalar("SELECT display_name FROM nodes WHERE node_id = 'node-retired'")
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        assert_eq!(display_name.as_deref(), Some("Retired Atlas"));
+        // Success updates only the Server-owned display name and audits.
+        let response = set_node_metadata(
+            State(state.clone()),
+            Path("node-healthy".to_owned()),
+            mutation_headers("csrf"),
+            Extension(session.clone()),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(br#"{"displayName":"Atlas-01"}"#),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let display_name: String =
+            sqlx::query_scalar("SELECT display_name FROM nodes WHERE node_id = 'node-healthy'")
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        assert_eq!(display_name, "Atlas-01");
+        let audits: Vec<(String, String)> = sqlx::query_as(
+            "SELECT event_kind, target_id FROM audit_events WHERE event_kind = 'node_metadata_changed' ORDER BY target_id",
+        )
+        .fetch_all(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            audits,
+            vec![
+                (
+                    "node_metadata_changed".to_owned(),
+                    "node-healthy".to_owned()
+                ),
+                (
+                    "node_metadata_changed".to_owned(),
+                    "node-retired".to_owned()
+                ),
+            ]
+        );
+        // Unknown Node is a non-leaking 404.
+        let response = set_node_metadata(
+            State(state.clone()),
+            Path("node-missing".to_owned()),
+            mutation_headers("csrf"),
+            Extension(session),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(br#"{"displayName":"X"}"#),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn network_registry_admin_views_report_tuple_and_typed_mismatches() {
+        let (_dir, state) = node_inventory_state().await;
+        let response = admin_networks(
+            State(state.clone()),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        let networks = value.as_array().unwrap();
+        assert_eq!(networks.len(), 1);
+        let network = &networks[0];
+        assert_eq!(network["network_key"], "mainnet");
+        assert_eq!(network["display_name"], "PlatON Mainnet");
+        assert_eq!(
+            network["genesis_hash"],
+            "0x0100000000000000000000000000000000000000000000000000000000000000"
+        );
+        assert_eq!(network["chain_id"], 210425);
+        assert_eq!(network["p2p_network_id"], 1);
+        assert_eq!(network["address_hrp"], "lat");
+        assert_eq!(network["active_node_count"], 2);
+        assert_eq!(network["retired_node_count"], 1);
+        assert_eq!(network["mismatched_node_count"], 1);
+        let response = admin_network_detail(
+            State(state.clone()),
+            Path("mainnet".to_owned()),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        let value: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        let nodes = value["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 3);
+        let mismatched = nodes
+            .iter()
+            .find(|node| node["node_id"] == "node-mismatched")
+            .unwrap();
+        assert_eq!(mismatched["identity"]["state"], "mismatched");
+        assert_eq!(
+            mismatched["identity"]["mismatched_fields"],
+            serde_json::json!(["chain_id"])
+        );
+        assert_eq!(mismatched["health"], "unhealthy");
+        assert!(
+            mismatched["health_reason"]
+                .as_str()
+                .unwrap()
+                .contains("RPC")
+        );
+        let response = admin_network_detail(
+            State(state.clone()),
+            Path("missing".to_owned()),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn network_create_requires_an_explicit_validated_tuple() {
+        let (_dir, state) = lifecycle_state().await;
+        let session = lifecycle_session();
+        // An invalid tuple is rejected with a typed 400.
+        let response = create_network(
+            State(state.clone()),
+            mutation_headers("csrf"),
+            Extension(session.clone()),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(br#"{"networkKey":"bad key!","displayName":"X","genesisHash":"nope","chainId":1,"p2pNetworkId":1,"addressHrp":"lat"}"#),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM networks")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "invalid tuples never create Registry rows");
+        // A complete explicit tuple registers with an Owner audit.
+        let response = create_network(
+            State(state.clone()),
+            mutation_headers("csrf"),
+            Extension(session.clone()),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(br#"{"networkKey":"testnet","displayName":"PlatON Testnet","genesisHash":"0x0200000000000000000000000000000000000000000000000000000000000000","chainId":210426,"p2pNetworkId":2,"addressHrp":"lat"}"#),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let audit: (String, String) = sqlx::query_as(
+            "SELECT event_kind, actor_user_id FROM audit_events WHERE event_kind = 'network_created'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(audit, ("network_created".to_owned(), "owner".to_owned()));
+        // Duplicate keys conflict instead of overwriting.
+        let response = create_network(
+            State(state.clone()),
+            mutation_headers("csrf"),
+            Extension(session),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(br#"{"networkKey":"testnet","displayName":"Again","genesisHash":"0x0200000000000000000000000000000000000000000000000000000000000000","chainId":210426,"p2pNetworkId":2,"addressHrp":"lat"}"#),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn network_update_rewrites_only_the_registry_tuple_and_audits_before_after() {
+        let (_dir, state) = node_inventory_state().await;
+        let session = lifecycle_session();
+        // Empty updates are rejected.
+        let response = update_network(
+            State(state.clone()),
+            Path("mainnet".to_owned()),
+            mutation_headers("csrf"),
+            Extension(session.clone()),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(br#"{}"#),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        // An Owner may correct the expected identity; Nodes are untouched
+        // and their typed mismatch dispositions follow.
+        let response = update_network(
+            State(state.clone()),
+            Path("mainnet".to_owned()),
+            mutation_headers("csrf"),
+            Extension(session.clone()),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(
+                br#"{"displayName":"PlatON Mainnet v2","chainId":210425}"#,
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let tuple: (String, i64) = sqlx::query_as(
+            "SELECT display_name, chain_id FROM networks WHERE network_key = 'mainnet'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(tuple, ("PlatON Mainnet v2".to_owned(), 210_425));
+        let audit: (String, String, String) = sqlx::query_as(
+            "SELECT event_kind, before_json, after_json FROM audit_events WHERE event_kind = 'network_updated'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(audit.0, "network_updated");
+        assert!(
+            audit.1.is_empty(),
+            "before_json stays unused by the audit helper"
+        );
+        assert!(audit.2.contains("PlatON Mainnet"));
+        assert!(audit.2.contains("PlatON Mainnet v2"));
+        assert!(audit.2.contains("\"before\""));
+        assert!(audit.2.contains("\"after\""));
+        // The registered Node list is unchanged by a Registry edit.
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE network_key = 'mainnet'")
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        assert_eq!(count, 3);
+        // Unknown Network is a non-leaking 404.
+        let response = update_network(
+            State(state.clone()),
+            Path("missing".to_owned()),
+            mutation_headers("csrf"),
+            Extension(session),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(br#"{"displayName":"X"}"#),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }
