@@ -231,6 +231,7 @@ pub struct AppState {
     auth: Arc<AuthConfig>,
     login_limiter: Arc<RateLimiter>,
     enroll_limiter: Arc<RateLimiter>,
+    recover_limiter: Arc<RateLimiter>,
     web_assets: Option<PathBuf>,
     web_index: Option<Bytes>,
     web_assets_ready: bool,
@@ -296,6 +297,10 @@ impl AppState {
             enroll_limiter: Arc::new(RateLimiter::new(
                 ENROLL_MAX_ATTEMPTS,
                 ENROLL_RATE_LIMIT_WINDOW,
+            )),
+            recover_limiter: Arc::new(RateLimiter::new(
+                crate::enrollment::RECOVER_MAX_ATTEMPTS,
+                crate::enrollment::RECOVER_RATE_LIMIT_WINDOW,
             )),
             web_assets,
             web_index,
@@ -369,6 +374,10 @@ impl AppState {
 
     pub(crate) fn enroll_limiter(&self) -> &RateLimiter {
         &self.enroll_limiter
+    }
+
+    pub(crate) fn recover_limiter(&self) -> &RateLimiter {
+        &self.recover_limiter
     }
 
     fn web_assets(&self) -> Option<&PathBuf> {
@@ -687,11 +696,12 @@ pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     Some(token)
 }
 
-/// Agent group guard: until the first Owner exists, no Agent Enrollment or
-/// reporting is allowed (design §12.2). `POST /enroll` authenticates an
-/// Enrollment Token in the handler; every other Agent route requires a
-/// valid Agent Credential, so an Enrollment Token can never submit reports
-/// and a Human Session can never enroll or report (design §12.6, §13.1).
+/// Agent group guard: until the first Owner exists, no Agent Enrollment,
+/// Recovery, or reporting is allowed (design §12.2). `POST /enroll`
+/// authenticates an Enrollment Token and `POST /recover` a Recovery Token
+/// in their handlers; every other Agent route requires a valid Agent
+/// Credential, so a one-time token can never submit reports and a Human
+/// Session can never enroll, recover, or report (design §12.6, §13.1).
 pub(crate) async fn agent_group_guard(
     State(state): State<AppState>,
     mut request: Request,
@@ -729,10 +739,12 @@ pub(crate) async fn agent_group_guard(
         }
     }
 
-    let is_enroll = request.method() == Method::POST && request.uri().path().ends_with("/enroll");
-    if is_enroll {
-        // The handler authenticates the Enrollment Token and rate-limits
-        // enrollment independently (design §19.4).
+    let is_token_exchange = request.method() == Method::POST
+        && (request.uri().path().ends_with("/enroll")
+            || request.uri().path().ends_with("/recover"));
+    if is_token_exchange {
+        // The handler authenticates the one-time token and rate-limits
+        // enrollment/recovery independently (design §19.4).
         return next.run(request).await;
     }
 
@@ -1613,11 +1625,12 @@ mod tests {
         crate::enrollment::create_enrollment_token(
             state.db(),
             &state.auth().pepper,
+            None,
             crate::enrollment::ENROLLMENT_TOKEN_DEFAULT_LIFETIME,
         )
         .await
         .unwrap()
-        .1
+        .token
     }
 
     #[tokio::test]
@@ -1865,6 +1878,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recovery_rate_limit_is_independent_and_blocks_after_failures() {
+        let (_, _, state) = test_state().await;
+        let app = build_app(state.clone());
+        seed_owner(&state).await;
+
+        for _ in 0..crate::enrollment::RECOVER_MAX_ATTEMPTS {
+            let (status, _) = json(
+                app.clone()
+                    .oneshot(bearer_request(
+                        "/api/agent/v1/recover",
+                        "pp_recover_unknown_abc",
+                    ))
+                    .await
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+        }
+        let (status, body) = json(
+            app.oneshot(bearer_request(
+                "/api/agent/v1/recover",
+                "pp_recover_unknown_abc",
+            ))
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(body["error"]["code"], "recovery_rate_limited");
+    }
+
+    #[tokio::test]
     async fn enrollment_error_bodies_never_echo_the_token() {
         let (_, _, state) = test_state().await;
         let app = build_app(state.clone());
@@ -1932,6 +1977,10 @@ mod tests {
             "/api/admin/v1/missing",
             "/api/admin/v1/session",
             "/api/admin/v1/sessions",
+            "/api/admin/v1/agents/enroll-token",
+            "/api/admin/v1/agents/any/recover",
+            "/api/admin/v1/agents/any/credentials/rotate",
+            "/api/admin/v1/agents/any/credentials/any/revoke",
         ] {
             let request = Request::builder()
                 .uri(uri)
@@ -1942,6 +1991,168 @@ mod tests {
             assert_eq!(status, StatusCode::FORBIDDEN, "{uri}");
             assert_eq!(body["error"]["code"], "owner_required", "{uri}");
         }
+    }
+
+    #[tokio::test]
+    async fn agent_lifecycle_round_trip_keeps_one_identity_and_redacts_secrets() {
+        let (_, _, state) = test_state().await;
+        let app = build_app(state.clone());
+        seed_owner(&state).await;
+
+        // Owner login; the session response carries the CSRF token.
+        let login = app.clone().oneshot(login_request()).await.unwrap();
+        assert_eq!(login.status(), StatusCode::OK);
+        let cookie = login.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let (_, login_body) = json(login).await;
+        let csrf = login_body["csrfToken"].as_str().unwrap().to_owned();
+
+        let admin_post = |uri: &str, body: &'static str| {
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ORIGIN, "http://127.0.0.1:8080")
+                .header("x-csrf-token", csrf.clone())
+                .header(header::COOKIE, cookie.clone())
+                .body(Body::from(body))
+                .unwrap()
+        };
+        let admin_get = |uri: String| {
+            Request::builder()
+                .uri(uri)
+                .header(header::COOKIE, cookie.clone())
+                .body(Body::empty())
+                .unwrap()
+        };
+
+        // Owner creates an Enrollment Token; the Agent exchanges it for a
+        // fresh identity and credential.
+        let response = app
+            .clone()
+            .oneshot(admin_post(
+                "/api/admin/v1/agents/enroll-token",
+                r#"{"expiresInHours": 24}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let (_, body) = json(response).await;
+        let enroll_token = body["token"].as_str().unwrap().to_owned();
+        let (status, body) = json(
+            app.clone()
+                .oneshot(bearer_request("/api/agent/v1/enroll", &enroll_token))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let agent_id = body["agent_id"].as_str().unwrap().to_owned();
+        let old_credential = body["credential"].as_str().unwrap().to_owned();
+
+        // Owner issues a Recovery Token; the Agent exchange advances the
+        // Epoch on the SAME identity (no duplicate Agent row).
+        let response = app
+            .clone()
+            .oneshot(admin_post(
+                &format!("/api/admin/v1/agents/{agent_id}/recover"),
+                r#"{"expiresInHours": 24}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let (_, body) = json(response).await;
+        let recover_token = body["token"].as_str().unwrap().to_owned();
+        let response = app
+            .clone()
+            .oneshot(bearer_request("/api/agent/v1/recover", &recover_token))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let (_, body) = json(response).await;
+        assert_eq!(body["agent_id"], agent_id);
+        assert_eq!(body["agent_epoch"], 2);
+        let new_credential = body["credential"].as_str().unwrap().to_owned();
+
+        let agents: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap();
+        assert_eq!(agents, 1, "recovery must not create a duplicate Agent");
+        let auth = crate::enrollment::authenticate_agent_credential(
+            state.db(),
+            &state.auth().pepper,
+            &new_credential,
+        )
+        .await
+        .unwrap();
+        assert_eq!(auth.unwrap().agent_id, agent_id);
+        assert!(
+            crate::enrollment::authenticate_agent_credential(
+                state.db(),
+                &state.auth().pepper,
+                &old_credential,
+            )
+            .await
+            .unwrap()
+            .is_none(),
+            "recovery revokes the prior credential"
+        );
+
+        // The redacted Audit trail is readable by the Owner and carries
+        // neither the enrollment nor the recovery token.
+        let response = app
+            .clone()
+            .oneshot(admin_get(format!("/api/admin/v1/agents/{agent_id}/audit")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let (_, audit) = json(response).await;
+        let audit_text = serde_json::to_string(&audit).unwrap();
+        assert!(
+            !audit_text.contains(&enroll_token) && !audit_text.contains(&recover_token),
+            "audit trail must never contain one-time secrets"
+        );
+        let kinds: Vec<&str> = audit["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["event_kind"].as_str().unwrap())
+            .collect();
+        assert!(kinds.contains(&"agent_enrolled"));
+        assert!(kinds.contains(&"agent_recovered"));
+        assert!(kinds.contains(&"recovery_token_created"));
+
+        // The detail view carries the credential dimension (active count).
+        let response = app
+            .clone()
+            .oneshot(admin_get(format!("/api/admin/v1/agents/{agent_id}")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let (_, detail) = json(response).await;
+        assert_eq!(detail["agent_epoch"], 2);
+        assert_eq!(
+            detail["credentials"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|c| c["active"] == true)
+                .count(),
+            1
+        );
+        assert_eq!(
+            detail["credentials"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|c| c["active"] == false)
+                .count(),
+            1,
+            "the pre-recovery credential is listed as revoked"
+        );
     }
 
     #[tokio::test]

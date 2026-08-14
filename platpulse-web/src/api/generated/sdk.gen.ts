@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { AdminEventsData, AdminEventsResponses, AdminNodeHistoryData, AdminNodeHistoryErrors, AdminNodeHistoryResponses, DiagnosticsData, DiagnosticsResponses, LiveData, LiveResponses, LoginHandlerData, LoginHandlerErrors, LoginHandlerResponses, LogoutHandlerData, LogoutHandlerErrors, LogoutHandlerResponses, OverviewData, OverviewResponses, PublicEventsData, PublicEventsResponses, PublicNetworkData, PublicNetworkErrors, PublicNetworkResponses, PublicNetworksData, PublicNetworksResponses, PublicNodeDetailData, PublicNodeDetailErrors, PublicNodeDetailResponses, PublicNodeHistoryData, PublicNodeHistoryErrors, PublicNodeHistoryExportData, PublicNodeHistoryExportErrors, PublicNodeHistoryExportResponses, PublicNodeHistoryResponses, ReadyData, ReadyErrors, ReadyResponses, SessionHandlerData, SessionHandlerErrors, SessionHandlerResponses, SetVisibilityData, SetVisibilityErrors, SetVisibilityResponses } from './types.gen';
+import type { AdminAgentAuditData, AdminAgentAuditErrors, AdminAgentAuditResponses, AdminAgentDetailData, AdminAgentDetailErrors, AdminAgentDetailResponses, AdminEnrollmentTokenData, AdminEnrollmentTokenErrors, AdminEnrollmentTokenResponses, AdminEventsData, AdminEventsResponses, AdminNodeHistoryData, AdminNodeHistoryErrors, AdminNodeHistoryResponses, AdminRecoveryTokenData, AdminRecoveryTokenErrors, AdminRecoveryTokenResponses, AdminRevokeCredentialData, AdminRevokeCredentialErrors, AdminRevokeCredentialResponses, AdminRotateCredentialData, AdminRotateCredentialErrors, AdminRotateCredentialResponses, DiagnosticsData, DiagnosticsResponses, LiveData, LiveResponses, LoginHandlerData, LoginHandlerErrors, LoginHandlerResponses, LogoutHandlerData, LogoutHandlerErrors, LogoutHandlerResponses, OverviewData, OverviewResponses, PublicEventsData, PublicEventsResponses, PublicNetworkData, PublicNetworkErrors, PublicNetworkResponses, PublicNetworksData, PublicNetworksResponses, PublicNodeDetailData, PublicNodeDetailErrors, PublicNodeDetailResponses, PublicNodeHistoryData, PublicNodeHistoryErrors, PublicNodeHistoryExportData, PublicNodeHistoryExportErrors, PublicNodeHistoryExportResponses, PublicNodeHistoryResponses, ReadyData, ReadyErrors, ReadyResponses, SessionHandlerData, SessionHandlerErrors, SessionHandlerResponses, SetVisibilityData, SetVisibilityErrors, SetVisibilityResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -19,6 +19,67 @@ export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends 
 };
 
 export const diagnostics = <ThrowOnError extends boolean = false>(options?: Options<DiagnosticsData, ThrowOnError>): RequestResult<DiagnosticsResponses, unknown, ThrowOnError> => (options?.client ?? client).get<DiagnosticsResponses, unknown, ThrowOnError>({ url: '/api/admin/v1/agents', ...options });
+
+/**
+ * Create a single-use Enrollment Token for a new Agent. The response is
+ * the Owner's only plaintext copy; the Server stores only the digest and
+ * the Audit row records the token id and expiry — never the token.
+ */
+export const adminEnrollmentToken = <ThrowOnError extends boolean = false>(options: Options<AdminEnrollmentTokenData, ThrowOnError>): RequestResult<AdminEnrollmentTokenResponses, AdminEnrollmentTokenErrors, ThrowOnError> => (options.client ?? client).post<AdminEnrollmentTokenResponses, AdminEnrollmentTokenErrors, ThrowOnError>({
+    url: '/api/admin/v1/agents/enroll-token',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Owner-only Agent detail: one full AgentDiagnostic (identity, liveness,
+ * boot/report state, credential state, Inventory, diagnostics).
+ */
+export const adminAgentDetail = <ThrowOnError extends boolean = false>(options: Options<AdminAgentDetailData, ThrowOnError>): RequestResult<AdminAgentDetailResponses, AdminAgentDetailErrors, ThrowOnError> => (options.client ?? client).get<AdminAgentDetailResponses, AdminAgentDetailErrors, ThrowOnError>({ url: '/api/admin/v1/agents/{agent_id}', ...options });
+
+/**
+ * Redacted Audit trail scoped to one Agent (design §9, §14.3: security
+ * mutations carry a redacted Audit link; immutable event listing).
+ */
+export const adminAgentAudit = <ThrowOnError extends boolean = false>(options: Options<AdminAgentAuditData, ThrowOnError>): RequestResult<AdminAgentAuditResponses, AdminAgentAuditErrors, ThrowOnError> => (options.client ?? client).get<AdminAgentAuditResponses, AdminAgentAuditErrors, ThrowOnError>({ url: '/api/admin/v1/agents/{agent_id}/audit', ...options });
+
+/**
+ * Rotate an Agent credential: issue a fresh credential, keep the previous
+ * one valid through an explicit overlap window, and optionally revoke it
+ * immediately. Distinct from recovery: the Agent Epoch is untouched and
+ * no duplicate Agent is created.
+ */
+export const adminRotateCredential = <ThrowOnError extends boolean = false>(options: Options<AdminRotateCredentialData, ThrowOnError>): RequestResult<AdminRotateCredentialResponses, AdminRotateCredentialErrors, ThrowOnError> => (options.client ?? client).post<AdminRotateCredentialResponses, AdminRotateCredentialErrors, ThrowOnError>({
+    url: '/api/admin/v1/agents/{agent_id}/credentials/rotate',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Revoke one Agent credential immediately (design §12.6: revoke takes
+ * effect immediately). The Audit row records the credential id and
+ * instant only.
+ */
+export const adminRevokeCredential = <ThrowOnError extends boolean = false>(options: Options<AdminRevokeCredentialData, ThrowOnError>): RequestResult<AdminRevokeCredentialResponses, AdminRevokeCredentialErrors, ThrowOnError> => (options.client ?? client).post<AdminRevokeCredentialResponses, AdminRevokeCredentialErrors, ThrowOnError>({ url: '/api/admin/v1/agents/{agent_id}/credentials/{credential_id}/revoke', ...options });
+
+/**
+ * Create a single-use Recovery Token for an existing Agent (credential
+ * loss, design §4.5). The response is the Owner's only plaintext copy.
+ */
+export const adminRecoveryToken = <ThrowOnError extends boolean = false>(options: Options<AdminRecoveryTokenData, ThrowOnError>): RequestResult<AdminRecoveryTokenResponses, AdminRecoveryTokenErrors, ThrowOnError> => (options.client ?? client).post<AdminRecoveryTokenResponses, AdminRecoveryTokenErrors, ThrowOnError>({
+    url: '/api/admin/v1/agents/{agent_id}/recover',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
 
 export const adminEvents = <ThrowOnError extends boolean = false>(options?: Options<AdminEventsData, ThrowOnError>): RequestResult<AdminEventsResponses, unknown, ThrowOnError> => (options?.client ?? client).get<AdminEventsResponses, unknown, ThrowOnError>({ url: '/api/admin/v1/events', ...options });
 

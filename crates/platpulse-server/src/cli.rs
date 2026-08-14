@@ -304,11 +304,14 @@ pub async fn run_create_enrollment_token(
 
     let pepper = load_pepper_file(&config.pepper_file)?;
     let database = initialize(ServerDatabaseConfig::new(&config.db_path)).await?;
-    let result = create_enrollment_token(&database, &pepper, lifetime).await;
+    let result = create_enrollment_token(&database, &pepper, None, lifetime).await;
     database.close().await;
-    let (token_id, full_token) = result?;
-    println!("Enrollment token {token_id} (single use, expires in {lifetime_hours}h):");
-    println!("{full_token}");
+    let record = result?;
+    println!(
+        "Enrollment token {} (single use, expires in {}h):",
+        record.token_id, lifetime_hours
+    );
+    println!("{}", record.token);
     Ok(())
 }
 

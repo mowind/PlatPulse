@@ -73,6 +73,23 @@ pub struct EnrollResponse {
     protocol_version: u64,
 }
 
+/// Success payload of one Recovery exchange (Agent wire: snake_case,
+/// design §4.5). The Agent identity is preserved, the Agent Epoch
+/// advances, and `credential` is a fresh `pp_agent_…` token delivered
+/// exactly once.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct RecoverResponse {
+    /// The existing Agent identity the Recovery Token was bound to.
+    agent_id: String,
+    /// Agent Epoch advanced by this Recovery exchange.
+    agent_epoch: i64,
+    /// Full Agent Credential token; single delivery.
+    credential: String,
+    /// Agent→Server protocol major the Server speaks.
+    protocol_version: u64,
+}
+
 /// Exchange a single-use Enrollment Token for an Agent identity and
 /// credential. The token arrives in the `Authorization: Bearer` header —
 /// never in a URL or body — and the same token can never enroll twice.
@@ -178,6 +195,106 @@ pub(crate) async fn enroll_handler(
     }
 }
 
+/// Exchange a single-use Recovery Token for an Epoch advance and a fresh
+/// credential on the SAME Agent identity (design §4.5: Recovery rotates the
+/// credential and advances the Agent Epoch without creating a duplicate
+/// Agent). The token arrives in the `Authorization: Bearer` header — never
+/// in a URL or body — and the same token can never recover twice.
+#[utoipa::path(
+    post,
+    path = "/api/agent/v1/recover",
+    tag = "agent",
+    responses(
+        (status = 200, description = "Recovered; the response carries the one-time Agent Credential", body = RecoverResponse),
+        (status = 401, description = "Missing, invalid, or expired recovery token", body = crate::http::ApiErrorBody),
+        (status = 409, description = "The recovery token was already consumed", body = crate::http::ApiErrorBody),
+        (status = 429, description = "Too many recovery attempts", body = crate::http::ApiErrorBody),
+        (status = 503, description = "Server setup is incomplete or the database is unavailable", body = crate::http::ApiErrorBody),
+    )
+)]
+pub(crate) async fn recover_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+    Extension(client): Extension<ClientIp>,
+) -> Response {
+    let Some(token) = super::bearer_token(&headers) else {
+        return error_response(
+            &request_id.0,
+            StatusCode::UNAUTHORIZED,
+            "recovery_token_invalid",
+            "a recovery token is required",
+        );
+    };
+
+    // Independent recovery rate limit (design §19.4).
+    let limiter_key = (client.0.as_str(), "recover");
+    if state.recover_limiter().is_blocked(limiter_key) {
+        return error_response(
+            &request_id.0,
+            StatusCode::TOO_MANY_REQUESTS,
+            "recovery_rate_limited",
+            "too many recovery attempts; try again later",
+        );
+    }
+
+    match crate::enrollment::recover(state.db(), &state.auth().pepper, token).await {
+        Ok(recovered) => {
+            state.recover_limiter().record_success(limiter_key);
+            (
+                StatusCode::OK,
+                Json(RecoverResponse {
+                    agent_id: recovered.agent_id,
+                    agent_epoch: recovered.agent_epoch,
+                    credential: recovered.credential,
+                    protocol_version: platpulse_core::PROTOCOL_VERSION,
+                }),
+            )
+                .into_response()
+        }
+        Err(crate::enrollment::RecoveryError::Invalid)
+        | Err(crate::enrollment::RecoveryError::AgentNotFound) => {
+            state.recover_limiter().record_failure(limiter_key);
+            error_response(
+                &request_id.0,
+                StatusCode::UNAUTHORIZED,
+                "recovery_token_invalid",
+                "invalid recovery token",
+            )
+        }
+        Err(crate::enrollment::RecoveryError::Expired) => {
+            state.recover_limiter().record_failure(limiter_key);
+            error_response(
+                &request_id.0,
+                StatusCode::UNAUTHORIZED,
+                "recovery_token_expired",
+                "recovery token has expired",
+            )
+        }
+        Err(crate::enrollment::RecoveryError::Consumed) => {
+            state.recover_limiter().record_failure(limiter_key);
+            error_response(
+                &request_id.0,
+                StatusCode::CONFLICT,
+                "recovery_token_consumed",
+                "recovery token has already been used",
+            )
+        }
+        Err(crate::enrollment::RecoveryError::InvalidLifetime(_)) => error_response(
+            &request_id.0,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "unavailable",
+            "recovery configuration error",
+        ),
+        Err(crate::enrollment::RecoveryError::Database(_)) => error_response(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        ),
+    }
+}
+
 fn error_response(
     request_id: &str,
     status: StatusCode,
@@ -195,6 +312,7 @@ pub fn router() -> Router<AppState> {
     Router::<AppState>::new()
         .route("/time", get(server_time))
         .route("/enroll", post(enroll_handler))
+        .route("/recover", post(recover_handler))
         .fallback(api_not_found)
         .layer(axum::middleware::from_fn(group_middleware))
 }

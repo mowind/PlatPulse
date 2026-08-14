@@ -125,7 +125,9 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
     await expect(adminNav).toBeVisible()
     // Opening moves focus inside the drawer.
     await expect(page.getByRole('link', { name: 'Overview' })).toBeFocused()
-    // Tab stays inside the drawer (it is its only focusable item).
+    // Tab stays inside the drawer and wraps at the last item.
+    await page.keyboard.press('Tab')
+    await expect(page.getByRole('link', { name: 'Agents' })).toBeFocused()
     await page.keyboard.press('Tab')
     await expect(page.getByRole('link', { name: 'Overview' })).toBeFocused()
     // Escape closes the drawer and restores focus to the opener.

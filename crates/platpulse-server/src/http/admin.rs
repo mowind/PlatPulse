@@ -5,7 +5,7 @@ use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, put};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
@@ -215,6 +215,22 @@ pub(crate) async fn set_visibility(
     })
     .into_response()
 }
+/// Redacted Agent credential summary. Only the non-sensitive credential
+/// id and lifecycle instants are exposed; the credential secret itself is
+/// never stored by the Server and never appears in any Admin DTO.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct AgentCredentialSummary {
+    pub credential_id: String,
+    pub created_at: String,
+    pub revoked_at: Option<String>,
+    /// Rotation overlap deadline; the credential stops authenticating at
+    /// this instant even without an explicit revoke.
+    pub revoke_after: Option<String>,
+    /// Server-computed validity: not revoked and not past `revoke_after`.
+    pub active: bool,
+}
+
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct AgentDiagnostic {
@@ -242,6 +258,9 @@ pub struct AgentDiagnostic {
     pub liveness: String,
     pub last_received_at: Option<String>,
     pub capabilities: Vec<String>,
+    /// Credential state as a separate dimension (design: identity,
+    /// liveness, boot/report, inventory, credentials, diagnostics).
+    pub credentials: Vec<AgentCredentialSummary>,
     pub host: Option<HostDiagnostic>,
     pub nodes: Vec<NodeDiagnostic>,
 }
@@ -697,118 +716,152 @@ async fn diagnostics(
     .unwrap_or_default();
     let mut result = Vec::with_capacity(agents.len());
     for row in agents {
-        let AgentAdminRow {
-            agent_id,
-            agent_epoch,
-            active_boot_id,
-            active_boot_status: boot_status,
-            previous_boot_id,
-            close_report_id,
-            shutdown_state,
-            shutdown_started_at,
-            shutdown_deadline_at,
-            shutdown_finished_at,
-            shutdown_unresolved_from,
-            shutdown_unresolved_to,
-            shutdown_last_error,
-            shutdown_forced,
-            shutdown_report_id,
-            shutdown_report_sequence,
-            shutdown_updated_at,
-            last_report_sequence,
-            agent_capabilities_json: capabilities_json,
-            clock_skew_ms,
-            clock_status,
-            last_received_at,
-            security_event_count,
-        } = row;
-        let capabilities = serde_json::from_str(&capabilities_json).unwrap_or_default();
-        let liveness = agent_liveness(last_received_at.as_deref()).to_owned();
-        let sequence_gap_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM report_sequence_gaps WHERE agent_id=?")
-                .bind(&agent_id)
-                .fetch_one(state.db().pool())
-                .await
-                .unwrap_or(0);
-        let host_components = sqlx::query_as::<_, (String, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, i64, i64)>(
-            "SELECT component_key, state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision FROM component_status WHERE agent_id = ? AND scope = 'host' ORDER BY component_key",
-        )
-        .bind(&agent_id)
-        .fetch_all(state.db().pool())
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(component, state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision)| HostComponentDiagnostic {
-            component, state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision,
-        })
-        .collect::<Vec<_>>();
-        let host = sqlx::query_as::<_, HostProjectionRow>(
-            "SELECT h.cpu_percent, h.memory_total_bytes, h.memory_used_bytes, h.load1, h.load5, h.load15, h.network_rx_bytes_per_sec, h.network_tx_bytes_per_sec, h.spool_queued_bytes, h.spool_queued_reports, h.spool_oldest_queued_age_ms, h.spool_in_flight, h.spool_last_delivery_error, h.spool_last_delivery_at, h.spool_capacity_bytes AS spool_capacity_bytes, h.spool_max_age_seconds AS spool_max_age_seconds, h.spool_dropped_sequence_from AS spool_dropped_sequence_from, h.spool_dropped_sequence_to AS spool_dropped_sequence_to, h.spool_dropped_time_from AS spool_dropped_time_from, h.spool_dropped_time_to AS spool_dropped_time_to, h.spool_dropped_height_from AS spool_dropped_height_from, h.spool_dropped_height_to AS spool_dropped_height_to, h.spool_pending_history_gaps AS spool_pending_history_gaps, h.spool_report_too_large AS spool_report_too_large, h.spool_store_fatal AS spool_store_fatal, h.spool_store_error AS spool_store_error, h.updated_at FROM current_host_observations h WHERE h.agent_id = ?",
-        )
-        .bind(&agent_id)
-        .fetch_optional(state.db().pool())
-        .await
-        .ok()
-        .flatten()
-        .map(|row| HostDiagnostic {
-            cpu_percent: row.cpu_percent, memory_total_bytes: row.memory_total_bytes, memory_used_bytes: row.memory_used_bytes, load1: row.load1, load5: row.load5, load15: row.load15, network_rx_bytes_per_sec: row.network_rx_bytes_per_sec, network_tx_bytes_per_sec: row.network_tx_bytes_per_sec,
-            spool_queued_bytes: row.spool_queued_bytes, spool_queued_reports: row.spool_queued_reports, spool_oldest_queued_age_ms: row.spool_oldest_queued_age_ms, spool_in_flight: row.spool_in_flight.map(|v| v != 0), spool_last_delivery_error: row.spool_last_delivery_error, spool_last_delivery_at: row.spool_last_delivery_at,
-            spool_capacity_bytes: row.spool_capacity_bytes, spool_max_age_seconds: row.spool_max_age_seconds, spool_dropped_sequence_from: row.spool_dropped_sequence_from, spool_dropped_sequence_to: row.spool_dropped_sequence_to, spool_dropped_time_from: row.spool_dropped_time_from, spool_dropped_time_to: row.spool_dropped_time_to, spool_dropped_height_from: row.spool_dropped_height_from, spool_dropped_height_to: row.spool_dropped_height_to, spool_pending_history_gaps: row.spool_pending_history_gaps, spool_report_too_large: row.spool_report_too_large.map(|v| v != 0), spool_store_fatal: row.spool_store_fatal.map(|v| v != 0), spool_store_error: row.spool_store_error,
-            updated_at: row.updated_at, components: host_components,
-        });
-        let rows = sqlx::query_as::<_, (String, String, Option<String>, String, i64, String)>(
-            "SELECT node_id, network_key, display_name, lifecycle, inventory_revision, visibility FROM nodes WHERE agent_id = ? ORDER BY node_id",
-        )
-        .bind(&agent_id)
-        .fetch_all(state.db().pool())
-        .await
-        .unwrap_or_default();
-        let mut nodes = Vec::with_capacity(rows.len());
-        for (node_id, network_key, display_name, lifecycle, inventory_revision, visibility) in rows
-        {
-            nodes.push(
-                node_diagnostic(
-                    &state,
-                    node_id,
-                    network_key,
-                    display_name,
-                    lifecycle,
-                    inventory_revision,
-                    visibility,
-                )
-                .await,
-            );
-        }
-        result.push(AgentDiagnostic {
-            agent_id,
-            agent_epoch,
-            last_report_sequence,
-            clock_status: clock_status.unwrap_or_else(|| "unknown".to_owned()),
-            clock_skew_ms,
-            liveness,
-            last_received_at,
-            capabilities,
-            active_boot_id,
-            boot_status,
-            previous_boot_id,
-            close_report_id,
-            shutdown_state,
-            shutdown_started_at,
-            shutdown_deadline_at,
-            shutdown_finished_at,
-            shutdown_unresolved_range: shutdown_unresolved_from.zip(shutdown_unresolved_to),
-            shutdown_last_error,
-            shutdown_forced: shutdown_forced != 0,
-            shutdown_report_id,
-            shutdown_report_sequence,
-            shutdown_updated_at,
-            sequence_gap_count,
-            security_event_count,
-            host,
-            nodes,
-        });
+        result.push(agent_diagnostic(&state, row).await);
     }
     Json(result)
+}
+
+/// Build one Server-owned Agent diagnostic with identity, liveness,
+/// boot/report state, credential state, Inventory, and collector
+/// diagnostics kept as separate dimensions (design §14.3, §14.4).
+async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> AgentDiagnostic {
+    let AgentAdminRow {
+        agent_id,
+        agent_epoch,
+        active_boot_id,
+        active_boot_status: boot_status,
+        previous_boot_id,
+        close_report_id,
+        shutdown_state,
+        shutdown_started_at,
+        shutdown_deadline_at,
+        shutdown_finished_at,
+        shutdown_unresolved_from,
+        shutdown_unresolved_to,
+        shutdown_last_error,
+        shutdown_forced,
+        shutdown_report_id,
+        shutdown_report_sequence,
+        shutdown_updated_at,
+        last_report_sequence,
+        agent_capabilities_json: capabilities_json,
+        clock_skew_ms,
+        clock_status,
+        last_received_at,
+        security_event_count,
+    } = row;
+    let capabilities = serde_json::from_str(&capabilities_json).unwrap_or_default();
+    let liveness = agent_liveness(last_received_at.as_deref()).to_owned();
+    let sequence_gap_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM report_sequence_gaps WHERE agent_id=?")
+            .bind(&agent_id)
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap_or(0);
+    let credentials = credential_summaries(state, &agent_id).await;
+    let host_components = sqlx::query_as::<_, (String, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, i64, i64)>(
+        "SELECT component_key, state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision FROM component_status WHERE agent_id = ? AND scope = 'host' ORDER BY component_key",
+    )
+    .bind(&agent_id)
+    .fetch_all(state.db().pool())
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|(component, state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision)| HostComponentDiagnostic {
+        component, state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision,
+    })
+    .collect::<Vec<_>>();
+    let host = sqlx::query_as::<_, HostProjectionRow>(
+        "SELECT h.cpu_percent, h.memory_total_bytes, h.memory_used_bytes, h.load1, h.load5, h.load15, h.network_rx_bytes_per_sec, h.network_tx_bytes_per_sec, h.spool_queued_bytes, h.spool_queued_reports, h.spool_oldest_queued_age_ms, h.spool_in_flight, h.spool_last_delivery_error, h.spool_last_delivery_at, h.spool_capacity_bytes AS spool_capacity_bytes, h.spool_max_age_seconds AS spool_max_age_seconds, h.spool_dropped_sequence_from AS spool_dropped_sequence_from, h.spool_dropped_sequence_to AS spool_dropped_sequence_to, h.spool_dropped_time_from AS spool_dropped_time_from, h.spool_dropped_time_to AS spool_dropped_time_to, h.spool_dropped_height_from AS spool_dropped_height_from, h.spool_dropped_height_to AS spool_dropped_height_to, h.spool_pending_history_gaps AS spool_pending_history_gaps, h.spool_report_too_large AS spool_report_too_large, h.spool_store_fatal AS spool_store_fatal, h.spool_store_error AS spool_store_error, h.updated_at FROM current_host_observations h WHERE h.agent_id = ?",
+    )
+    .bind(&agent_id)
+    .fetch_optional(state.db().pool())
+    .await
+    .ok()
+    .flatten()
+    .map(|row| HostDiagnostic {
+        cpu_percent: row.cpu_percent, memory_total_bytes: row.memory_total_bytes, memory_used_bytes: row.memory_used_bytes, load1: row.load1, load5: row.load5, load15: row.load15, network_rx_bytes_per_sec: row.network_rx_bytes_per_sec, network_tx_bytes_per_sec: row.network_tx_bytes_per_sec,
+        spool_queued_bytes: row.spool_queued_bytes, spool_queued_reports: row.spool_queued_reports, spool_oldest_queued_age_ms: row.spool_oldest_queued_age_ms, spool_in_flight: row.spool_in_flight.map(|v| v != 0), spool_last_delivery_error: row.spool_last_delivery_error, spool_last_delivery_at: row.spool_last_delivery_at,
+        spool_capacity_bytes: row.spool_capacity_bytes, spool_max_age_seconds: row.spool_max_age_seconds, spool_dropped_sequence_from: row.spool_dropped_sequence_from, spool_dropped_sequence_to: row.spool_dropped_sequence_to, spool_dropped_time_from: row.spool_dropped_time_from, spool_dropped_time_to: row.spool_dropped_time_to, spool_dropped_height_from: row.spool_dropped_height_from, spool_dropped_height_to: row.spool_dropped_height_to, spool_pending_history_gaps: row.spool_pending_history_gaps, spool_report_too_large: row.spool_report_too_large.map(|v| v != 0), spool_store_fatal: row.spool_store_fatal.map(|v| v != 0), spool_store_error: row.spool_store_error,
+        updated_at: row.updated_at, components: host_components,
+    });
+    let rows = sqlx::query_as::<_, (String, String, Option<String>, String, i64, String)>(
+        "SELECT node_id, network_key, display_name, lifecycle, inventory_revision, visibility FROM nodes WHERE agent_id = ? ORDER BY node_id",
+    )
+    .bind(&agent_id)
+    .fetch_all(state.db().pool())
+    .await
+    .unwrap_or_default();
+    let mut nodes = Vec::with_capacity(rows.len());
+    for (node_id, network_key, display_name, lifecycle, inventory_revision, visibility) in rows {
+        nodes.push(
+            node_diagnostic(
+                state,
+                node_id,
+                network_key,
+                display_name,
+                lifecycle,
+                inventory_revision,
+                visibility,
+            )
+            .await,
+        );
+    }
+    AgentDiagnostic {
+        agent_id,
+        agent_epoch,
+        last_report_sequence,
+        clock_status: clock_status.unwrap_or_else(|| "unknown".to_owned()),
+        clock_skew_ms,
+        liveness,
+        last_received_at,
+        capabilities,
+        active_boot_id,
+        boot_status,
+        previous_boot_id,
+        close_report_id,
+        shutdown_state,
+        shutdown_started_at,
+        shutdown_deadline_at,
+        shutdown_finished_at,
+        shutdown_unresolved_range: shutdown_unresolved_from.zip(shutdown_unresolved_to),
+        shutdown_last_error,
+        shutdown_forced: shutdown_forced != 0,
+        shutdown_report_id,
+        shutdown_report_sequence,
+        shutdown_updated_at,
+        sequence_gap_count,
+        security_event_count,
+        credentials,
+        host,
+        nodes,
+    }
+}
+
+/// Redacted credential state for one Agent, newest first. `active` is
+/// Server-computed so the WebUI never derives security policy locally.
+async fn credential_summaries(state: &AppState, agent_id: &str) -> Vec<AgentCredentialSummary> {
+    let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+    sqlx::query_as::<_, (String, String, Option<String>, Option<String>)>(
+        "SELECT credential_id, created_at, revoked_at, revoke_after FROM agent_credentials WHERE agent_id = ? ORDER BY created_at DESC, credential_id",
+    )
+    .bind(agent_id)
+    .fetch_all(state.db().pool())
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|(credential_id, created_at, revoked_at, revoke_after)| {
+        let active = revoked_at.is_none()
+            && revoke_after.as_deref().is_none_or(|after| after > now.as_str());
+        AgentCredentialSummary {
+            credential_id,
+            created_at,
+            revoked_at,
+            revoke_after,
+            active,
+        }
+    })
+    .collect()
 }
 
 /// Liveness rule shared by the diagnostics list and the overview: an Agent
@@ -826,6 +879,525 @@ fn agent_liveness(last_received_at: Option<&str>) -> &'static str {
             }
         })
         .unwrap_or("unknown")
+}
+
+/// Browser mutation trust boundary shared by every Admin security
+/// mutation (design §13.1, §19.4): same-origin, JSON content type (when the
+/// mutation carries a body), and a CSRF token matching the session —
+/// checked before any body parsing. Bodyless mutations (e.g. revoke) do
+/// not require the JSON content type because the generated browser client
+/// omits it when there is no body.
+fn mutation_guard(
+    headers: &HeaderMap,
+    principal: &super::AuthenticatedSession,
+    auth: &crate::auth::AuthConfig,
+    request_id: &super::RequestId,
+    require_json_body: bool,
+) -> Option<Response> {
+    let content_type_valid = !require_json_body
+        || headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("application/json"));
+    let origin_valid = auth.origin_matches(headers.get(header::ORIGIN));
+    let csrf_valid = headers
+        .get("x-csrf-token")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|token| bool::from(token.as_bytes().ct_eq(principal.0.csrf_token.as_bytes())));
+    if !content_type_valid || !origin_valid || !csrf_valid {
+        return Some(mutation_error(
+            &request_id.0,
+            StatusCode::FORBIDDEN,
+            "csrf_validation_failed",
+            "mutation validation failed",
+        ));
+    }
+    None
+}
+
+/// One-time Enrollment Token issued to an Owner (design §4.5, §12.5). The
+/// full token is delivered exactly once in the success response.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct EnrollmentTokenResponse {
+    pub token_id: String,
+    pub token: String,
+    pub expires_at: String,
+    pub lifetime_hours: i64,
+    pub request_id: String,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenLifetimeRequest {
+    pub expires_in_hours: Option<i64>,
+}
+
+/// Create a single-use Enrollment Token for a new Agent. The response is
+/// the Owner's only plaintext copy; the Server stores only the digest and
+/// the Audit row records the token id and expiry — never the token.
+#[utoipa::path(
+    post,
+    path = "/api/admin/v1/agents/enroll-token",
+    tag = "admin",
+    request_body = TokenLifetimeRequest,
+    responses((status = 200, body = EnrollmentTokenResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody))
+)]
+pub(crate) async fn admin_enrollment_token(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Extension(principal): Extension<super::AuthenticatedSession>,
+    Extension(request_id): Extension<super::RequestId>,
+    body: axum::body::Bytes,
+) -> Response {
+    if let Some(response) = mutation_guard(&headers, &principal, state.auth(), &request_id, true) {
+        return response;
+    }
+    let body: TokenLifetimeRequest = match serde_json::from_slice(&body) {
+        Ok(body) => body,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::BAD_REQUEST,
+                "invalid_json",
+                "request body is invalid",
+            );
+        }
+    };
+    let lifetime_hours = body.expires_in_hours.unwrap_or(24);
+    if !(1..=168).contains(&lifetime_hours) {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::BAD_REQUEST,
+            "invalid_lifetime",
+            "enrollment token lifetime must be 1..=168 hours",
+        );
+    }
+    let lifetime = std::time::Duration::from_secs((lifetime_hours as u64) * 3600);
+    match crate::enrollment::create_enrollment_token(
+        state.db(),
+        &state.auth().pepper,
+        Some(&principal.0.user_id),
+        lifetime,
+    )
+    .await
+    {
+        Ok(record) => Json(EnrollmentTokenResponse {
+            token_id: record.token_id,
+            token: record.token,
+            expires_at: record.expires_at,
+            lifetime_hours,
+            request_id: request_id.0.to_string(),
+        })
+        .into_response(),
+        Err(_) => mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        ),
+    }
+}
+
+/// One-time Recovery Token issued for an existing Agent. Exchanging it
+/// advances the Agent Epoch and rotates the credential without creating a
+/// duplicate Agent (design §4.5).
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct RecoveryTokenResponse {
+    pub agent_id: String,
+    pub agent_epoch: i64,
+    pub token_id: String,
+    pub token: String,
+    pub expires_at: String,
+    pub request_id: String,
+}
+
+/// Create a single-use Recovery Token for an existing Agent (credential
+/// loss, design §4.5). The response is the Owner's only plaintext copy.
+#[utoipa::path(
+    post,
+    path = "/api/admin/v1/agents/{agent_id}/recover",
+    tag = "admin",
+    params(("agent_id" = String, Path, description = "Agent ID")),
+    request_body = TokenLifetimeRequest,
+    responses((status = 200, body = RecoveryTokenResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody))
+)]
+pub(crate) async fn admin_recovery_token(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    headers: HeaderMap,
+    Extension(principal): Extension<super::AuthenticatedSession>,
+    Extension(request_id): Extension<super::RequestId>,
+    body: axum::body::Bytes,
+) -> Response {
+    if let Some(response) = mutation_guard(&headers, &principal, state.auth(), &request_id, true) {
+        return response;
+    }
+    let body: TokenLifetimeRequest = match serde_json::from_slice(&body) {
+        Ok(body) => body,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::BAD_REQUEST,
+                "invalid_json",
+                "request body is invalid",
+            );
+        }
+    };
+    let lifetime_hours = body.expires_in_hours.unwrap_or(24);
+    if !(1..=168).contains(&lifetime_hours) {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::BAD_REQUEST,
+            "invalid_lifetime",
+            "recovery token lifetime must be 1..=168 hours",
+        );
+    }
+    let lifetime = std::time::Duration::from_secs((lifetime_hours as u64) * 3600);
+    let epoch: Option<i64> =
+        match sqlx::query_scalar("SELECT agent_epoch FROM agents WHERE agent_id = ?")
+            .bind(&agent_id)
+            .fetch_optional(state.db().pool())
+            .await
+        {
+            Ok(epoch) => epoch,
+            Err(_) => {
+                return mutation_error(
+                    &request_id.0,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "server database is unavailable",
+                );
+            }
+        };
+    let Some(agent_epoch) = epoch else {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::NOT_FOUND,
+            "agent_not_found",
+            "agent not found",
+        );
+    };
+    match crate::enrollment::create_recovery_token(
+        state.db(),
+        &state.auth().pepper,
+        Some(&principal.0.user_id),
+        &agent_id,
+        lifetime,
+    )
+    .await
+    {
+        Ok(record) => Json(RecoveryTokenResponse {
+            agent_id,
+            agent_epoch,
+            token_id: record.token_id,
+            token: record.token,
+            expires_at: record.expires_at,
+            request_id: request_id.0.to_string(),
+        })
+        .into_response(),
+        Err(crate::enrollment::RecoveryError::AgentNotFound) => mutation_error(
+            &request_id.0,
+            StatusCode::NOT_FOUND,
+            "agent_not_found",
+            "agent not found",
+        ),
+        Err(_) => mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RotationRequest {
+    pub overlap_hours: Option<i64>,
+    pub revoke_previous: Option<bool>,
+}
+
+/// Rotation result: the new credential secret is shown once; every
+/// previously valid credential either stays valid through `revoke_after`
+/// or was revoked immediately (design §12.6).
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct RotationResponse {
+    pub agent_id: String,
+    pub credential_id: String,
+    pub credential: String,
+    pub created_at: String,
+    pub overlap_hours: i64,
+    pub revoke_after: Option<String>,
+    pub revoked_previous_ids: Vec<String>,
+    pub overlap_credential_ids: Vec<String>,
+    pub request_id: String,
+}
+
+/// Rotate an Agent credential: issue a fresh credential, keep the previous
+/// one valid through an explicit overlap window, and optionally revoke it
+/// immediately. Distinct from recovery: the Agent Epoch is untouched and
+/// no duplicate Agent is created.
+#[utoipa::path(
+    post,
+    path = "/api/admin/v1/agents/{agent_id}/credentials/rotate",
+    tag = "admin",
+    params(("agent_id" = String, Path, description = "Agent ID")),
+    request_body = RotationRequest,
+    responses((status = 200, body = RotationResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody))
+)]
+pub(crate) async fn admin_rotate_credential(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    headers: HeaderMap,
+    Extension(principal): Extension<super::AuthenticatedSession>,
+    Extension(request_id): Extension<super::RequestId>,
+    body: axum::body::Bytes,
+) -> Response {
+    if let Some(response) = mutation_guard(&headers, &principal, state.auth(), &request_id, true) {
+        return response;
+    }
+    let body: RotationRequest = match serde_json::from_slice(&body) {
+        Ok(body) => body,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::BAD_REQUEST,
+                "invalid_json",
+                "request body is invalid",
+            );
+        }
+    };
+    let overlap_hours = body.overlap_hours.unwrap_or(24);
+    if !(1..=168).contains(&overlap_hours) {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::BAD_REQUEST,
+            "invalid_lifetime",
+            "overlap window must be 1..=168 hours",
+        );
+    }
+    let overlap = std::time::Duration::from_secs((overlap_hours as u64) * 3600);
+    match crate::enrollment::rotate_agent_credential(
+        state.db(),
+        &state.auth().pepper,
+        Some(&principal.0.user_id),
+        &agent_id,
+        overlap,
+        body.revoke_previous.unwrap_or(false),
+    )
+    .await
+    {
+        Ok(rotated) => Json(RotationResponse {
+            agent_id: rotated.agent_id,
+            credential_id: rotated.credential_id,
+            credential: rotated.credential,
+            created_at: rotated.created_at,
+            overlap_hours: rotated.overlap_hours,
+            revoke_after: rotated.revoke_after,
+            revoked_previous_ids: rotated.revoked_previous_ids,
+            overlap_credential_ids: rotated.overlap_credential_ids,
+            request_id: request_id.0.to_string(),
+        })
+        .into_response(),
+        Err(crate::enrollment::RotationError::AgentNotFound) => mutation_error(
+            &request_id.0,
+            StatusCode::NOT_FOUND,
+            "agent_not_found",
+            "agent not found",
+        ),
+        Err(_) => mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        ),
+    }
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct RevokeResponse {
+    pub agent_id: String,
+    pub credential_id: String,
+    pub revoked_at: String,
+    pub request_id: String,
+}
+
+/// Revoke one Agent credential immediately (design §12.6: revoke takes
+/// effect immediately). The Audit row records the credential id and
+/// instant only.
+#[utoipa::path(
+    post,
+    path = "/api/admin/v1/agents/{agent_id}/credentials/{credential_id}/revoke",
+    tag = "admin",
+    params(("agent_id" = String, Path, description = "Agent ID"), ("credential_id" = String, Path, description = "Credential ID")),
+    responses((status = 200, body = RevokeResponse), (status = 403, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody), (status = 409, body = crate::http::ApiErrorBody))
+)]
+pub(crate) async fn admin_revoke_credential(
+    State(state): State<AppState>,
+    Path((agent_id, credential_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Extension(principal): Extension<super::AuthenticatedSession>,
+    Extension(request_id): Extension<super::RequestId>,
+) -> Response {
+    if let Some(response) = mutation_guard(&headers, &principal, state.auth(), &request_id, false) {
+        return response;
+    }
+    match crate::enrollment::revoke_agent_credential(
+        state.db(),
+        Some(&principal.0.user_id),
+        &agent_id,
+        &credential_id,
+    )
+    .await
+    {
+        Ok(revoked) => Json(RevokeResponse {
+            agent_id: revoked.agent_id,
+            credential_id: revoked.credential_id,
+            revoked_at: revoked.revoked_at,
+            request_id: request_id.0.to_string(),
+        })
+        .into_response(),
+        Err(crate::enrollment::RevokeError::NotFound) => mutation_error(
+            &request_id.0,
+            StatusCode::NOT_FOUND,
+            "credential_not_found",
+            "agent or credential not found",
+        ),
+        Err(crate::enrollment::RevokeError::AlreadyRevoked) => mutation_error(
+            &request_id.0,
+            StatusCode::CONFLICT,
+            "credential_already_revoked",
+            "credential is already revoked",
+        ),
+        Err(_) => mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        ),
+    }
+}
+
+/// One redacted Audit row for an Agent lifecycle event. The stored
+/// `after_json` bodies are redacted by construction: they carry ids,
+/// instants, and counts, never token or credential plaintext.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct AgentAuditItem {
+    pub audit_event_id: i64,
+    pub event_kind: String,
+    pub actor_username: Option<String>,
+    pub created_at: String,
+    pub details: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct AgentAuditResponse {
+    pub agent_id: String,
+    pub items: Vec<AgentAuditItem>,
+}
+
+/// Redacted Audit trail scoped to one Agent (design §9, §14.3: security
+/// mutations carry a redacted Audit link; immutable event listing).
+#[utoipa::path(
+    get,
+    path = "/api/admin/v1/agents/{agent_id}/audit",
+    tag = "admin",
+    params(("agent_id" = String, Path, description = "Agent ID")),
+    responses((status = 200, body = AgentAuditResponse), (status = 403, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody))
+)]
+pub(crate) async fn admin_agent_audit(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Extension(_session): Extension<super::AuthenticatedSession>,
+    Extension(request_id): Extension<super::RequestId>,
+) -> Response {
+    let agent_exists =
+        sqlx::query_scalar::<_, String>("SELECT agent_id FROM agents WHERE agent_id = ?")
+            .bind(&agent_id)
+            .fetch_optional(state.db().pool())
+            .await
+            .ok()
+            .flatten()
+            .is_some();
+    if !agent_exists {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::NOT_FOUND,
+            "agent_not_found",
+            "agent not found",
+        );
+    }
+    let rows = sqlx::query_as::<_, (i64, String, Option<String>, String, Option<String>)>(
+        "SELECT a.audit_event_id, a.event_kind, u.username, a.created_at, a.after_json
+         FROM audit_events a LEFT JOIN users u ON u.user_id = a.actor_user_id
+         WHERE a.target_kind = 'agent' AND a.target_id = ?
+         ORDER BY a.created_at DESC, a.audit_event_id DESC LIMIT 50",
+    )
+    .bind(&agent_id)
+    .fetch_all(state.db().pool())
+    .await
+    .unwrap_or_default();
+    Json(AgentAuditResponse {
+        agent_id,
+        items: rows
+            .into_iter()
+            .map(
+                |(audit_event_id, event_kind, actor_username, created_at, after_json)| {
+                    AgentAuditItem {
+                        audit_event_id,
+                        event_kind,
+                        actor_username,
+                        created_at,
+                        details: after_json
+                            .as_deref()
+                            .and_then(|body| serde_json::from_str(body).ok()),
+                    }
+                },
+            )
+            .collect(),
+    })
+    .into_response()
+}
+
+/// Owner-only Agent detail: one full AgentDiagnostic (identity, liveness,
+/// boot/report state, credential state, Inventory, diagnostics).
+#[utoipa::path(
+    get,
+    path = "/api/admin/v1/agents/{agent_id}",
+    tag = "admin",
+    params(("agent_id" = String, Path, description = "Agent ID")),
+    responses((status = 200, body = AgentDiagnostic), (status = 403, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody))
+)]
+pub(crate) async fn admin_agent_detail(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Extension(_session): Extension<super::AuthenticatedSession>,
+    Extension(request_id): Extension<super::RequestId>,
+) -> Response {
+    let Some(row) = sqlx::query_as::<_, AgentAdminRow>(
+        "SELECT agent_id, agent_epoch, active_boot_id, active_boot_status, previous_boot_id, close_report_id, shutdown_state, shutdown_started_at, shutdown_deadline_at, shutdown_finished_at, shutdown_unresolved_from, shutdown_unresolved_to, shutdown_last_error, shutdown_forced, shutdown_report_id, shutdown_report_sequence, shutdown_updated_at, last_report_sequence, agent_capabilities_json, clock_skew_ms, clock_status, last_received_at, security_event_count FROM agents WHERE agent_id = ?",
+    )
+    .bind(&agent_id)
+    .fetch_optional(state.db().pool())
+    .await
+    .ok()
+    .flatten()
+    else {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::NOT_FOUND,
+            "agent_not_found",
+            "agent not found",
+        );
+    };
+    Json(agent_diagnostic(&state, row).await).into_response()
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -1286,6 +1858,18 @@ pub fn router() -> Router<AppState> {
         .route("/overview", get(overview))
         .route("/nodes/{node_id}/history", get(admin_node_history))
         .route("/agents", get(diagnostics))
+        .route("/agents/{agent_id}", get(admin_agent_detail))
+        .route("/agents/{agent_id}/audit", get(admin_agent_audit))
+        .route("/agents/enroll-token", post(admin_enrollment_token))
+        .route("/agents/{agent_id}/recover", post(admin_recovery_token))
+        .route(
+            "/agents/{agent_id}/credentials/rotate",
+            post(admin_rotate_credential),
+        )
+        .route(
+            "/agents/{agent_id}/credentials/{credential_id}/revoke",
+            post(admin_revoke_credential),
+        )
         .route("/nodes/{node_id}/visibility", put(set_visibility))
         .fallback(api_not_found)
         .layer(axum::middleware::from_fn(group_middleware))
@@ -1813,5 +2397,291 @@ mod tests {
         assert_eq!(value["summary"]["nodes"]["unknown"], 0);
         // Retired Nodes never enter the attention queue.
         assert_eq!(value["attention"].as_array().unwrap().len(), 0);
+    }
+
+    /// Test state with an Owner user and one enrolled Agent row.
+    async fn lifecycle_state() -> (tempfile::TempDir, AppState) {
+        let dir = tempdir().unwrap();
+        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let pepper_path = dir.path().join("pepper");
+        crate::secrets::create_pepper_file(&pepper_path).unwrap();
+        let auth = crate::auth::AuthConfig::development(
+            crate::secrets::load_pepper_file(&pepper_path).unwrap(),
+            "http://127.0.0.1:8080".to_owned(),
+        );
+        let state = AppState::new(database, None, auth);
+        sqlx::query("INSERT INTO users (user_id, username, role, password_hash, created_at, updated_at) VALUES ('owner', 'owner', 'owner', 'hash', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')").execute(state.db().pool()).await.unwrap();
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('agent-lifecycle-test', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+            .execute(state.db().pool()).await.unwrap();
+        // One already-issued credential, like a real enrolled Agent.
+        sqlx::query("INSERT INTO agent_credentials (credential_id, agent_id, credential_digest, created_at, revoked_at, revoke_after) VALUES ('credential-initial', 'agent-lifecycle-test', x'00', '2026-01-01T00:00:00Z', NULL, NULL)")
+            .execute(state.db().pool()).await.unwrap();
+        (dir, state)
+    }
+
+    fn lifecycle_session() -> AuthenticatedSession {
+        AuthenticatedSession(crate::auth::SessionInfo {
+            session_id: "session".to_owned(),
+            user_id: "owner".to_owned(),
+            username: "owner".to_owned(),
+            role: "owner".to_owned(),
+            created_at: OffsetDateTime::now_utc(),
+            last_seen_at: OffsetDateTime::now_utc(),
+            expires_at: OffsetDateTime::now_utc(),
+            csrf_token: "csrf".to_owned(),
+        })
+    }
+
+    fn mutation_headers(csrf: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONTENT_TYPE,
+            "application/json; charset=utf-8".parse().unwrap(),
+        );
+        headers.insert(header::ORIGIN, "http://127.0.0.1:8080".parse().unwrap());
+        headers.insert("x-csrf-token", csrf.parse().unwrap());
+        headers
+    }
+
+    fn request_id() -> crate::http::RequestId {
+        crate::http::RequestId(std::sync::Arc::from("req-123"))
+    }
+
+    #[tokio::test]
+    async fn admin_lifecycle_mutations_write_redacted_audit_and_validate() {
+        let (_dir, state) = lifecycle_state().await;
+        let session = lifecycle_session();
+        let extension = Extension(session);
+
+        // Enrollment token: the one-time secret appears only in the success
+        // response and never in the Audit body.
+        let response = admin_enrollment_token(
+            State(state.clone()),
+            mutation_headers("csrf"),
+            extension,
+            Extension(request_id()),
+            axum::body::Bytes::from_static(br#"{"expiresInHours": 24}"#),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        let enroll_token = value["token"].as_str().unwrap().to_owned();
+        assert!(enroll_token.starts_with(crate::enrollment::ENROLLMENT_TOKEN_PREFIX));
+        assert_eq!(value["lifetime_hours"], 24);
+        assert_eq!(value["request_id"], "req-123");
+        let audit_body: Option<String> = sqlx::query_scalar(
+            "SELECT after_json FROM audit_events WHERE event_kind = 'enrollment_token_created'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert!(
+            audit_body.as_deref().is_none_or(|body| {
+                !body.contains(&enroll_token)
+                    && !body.contains(crate::enrollment::ENROLLMENT_TOKEN_PREFIX)
+            }),
+            "enrollment audit must be redacted"
+        );
+
+        // CSRF, lifetime, and unknown-agent outcomes are typed.
+        let response = admin_enrollment_token(
+            State(state.clone()),
+            mutation_headers("wrong-csrf"),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(br#"{"expiresInHours": 24}"#),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let response = admin_enrollment_token(
+            State(state.clone()),
+            mutation_headers("csrf"),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(br#"{"expiresInHours": 0}"#),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        // Recovery token for the existing Agent.
+        let response = admin_recovery_token(
+            State(state.clone()),
+            Path("agent-lifecycle-test".to_owned()),
+            mutation_headers("csrf"),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(br#"{"expiresInHours": 12}"#),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        let recover_token = value["token"].as_str().unwrap().to_owned();
+        assert!(recover_token.starts_with(crate::enrollment::RECOVERY_TOKEN_PREFIX));
+        assert_eq!(value["agent_epoch"], 1);
+        let response = admin_recovery_token(
+            State(state.clone()),
+            Path("no-such-agent".to_owned()),
+            mutation_headers("csrf"),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(br#"{"expiresInHours": 12}"#),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        // Rotation with overlap: fresh credential shown once; the previous
+        // credential remains valid through revoke_after.
+        let response = admin_rotate_credential(
+            State(state.clone()),
+            Path("agent-lifecycle-test".to_owned()),
+            mutation_headers("csrf"),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(br#"{"overlapHours": 24, "revokePrevious": false}"#),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        let rotated_secret = value["credential"].as_str().unwrap().to_owned();
+        assert!(rotated_secret.starts_with(crate::enrollment::AGENT_CREDENTIAL_PREFIX));
+        assert_eq!(value["overlap_hours"], 24);
+        assert!(value["revoke_after"].is_string());
+        assert_eq!(value["overlap_credential_ids"].as_array().unwrap().len(), 1);
+        assert_eq!(value["revoked_previous_ids"].as_array().unwrap().len(), 0);
+
+        // Rotation with explicit old-credential revocation.
+        let response = admin_rotate_credential(
+            State(state.clone()),
+            Path("agent-lifecycle-test".to_owned()),
+            mutation_headers("csrf"),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(br#"{"overlapHours": 24, "revokePrevious": true}"#),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(value["revoked_previous_ids"].as_array().unwrap().len(), 2);
+        assert!(value["revoke_after"].is_null());
+
+        // The detail view exposes the credential dimension (ids and
+        // instants only, never secrets).
+        let response = admin_agent_detail(
+            State(state.clone()),
+            Path("agent-lifecycle-test".to_owned()),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        let credentials = value["credentials"].as_array().unwrap();
+        assert_eq!(credentials.len(), 3);
+        assert!(
+            credentials
+                .iter()
+                .all(|c| c["credential_id"].is_string() && c["active"].is_boolean())
+        );
+        let active = credentials.iter().filter(|c| c["active"] == true).count();
+        assert_eq!(active, 1, "one credential stays active after rotation");
+        let response = admin_agent_detail(
+            State(state.clone()),
+            Path("no-such-agent".to_owned()),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        // Explicit revocation of the last active credential.
+        let credential_id =
+            credentials.iter().find(|c| c["active"] == true).unwrap()["credential_id"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+        let response = admin_revoke_credential(
+            State(state.clone()),
+            Path(("agent-lifecycle-test".to_owned(), credential_id.clone())),
+            mutation_headers("csrf"),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = admin_revoke_credential(
+            State(state.clone()),
+            Path(("agent-lifecycle-test".to_owned(), credential_id)),
+            mutation_headers("csrf"),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let response = admin_revoke_credential(
+            State(state.clone()),
+            Path((
+                "agent-lifecycle-test".to_owned(),
+                "unknown-credential".to_owned(),
+            )),
+            mutation_headers("csrf"),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        // The redacted Audit trail lists every security mutation with the
+        // Owner actor and never contains secret material.
+        let response = admin_agent_audit(
+            State(state.clone()),
+            Path("agent-lifecycle-test".to_owned()),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        let items = value["items"].as_array().unwrap();
+        let kinds: Vec<&str> = items
+            .iter()
+            .map(|item| item["event_kind"].as_str().unwrap())
+            .collect();
+        for expected in [
+            "recovery_token_created",
+            "agent_credential_rotated",
+            "agent_credential_revoked",
+        ] {
+            assert!(kinds.contains(&expected), "missing audit kind {expected}");
+        }
+        let serialized = value.to_string();
+        for secret in [&enroll_token, &recover_token, &rotated_secret] {
+            assert!(
+                !serialized.contains(secret.as_str()),
+                "audit trail must never contain one-time secrets"
+            );
+        }
+        assert!(
+            items.iter().all(|item| {
+                item["actor_username"].as_str().unwrap_or("") == "owner"
+                    && item["details"].is_object()
+            }),
+            "every lifecycle audit row names the Owner actor with redacted details"
+        );
     }
 }

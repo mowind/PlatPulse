@@ -66,6 +66,10 @@ with sqlite3.connect(path) as db:
         (fresh, agent_id),
     )
     db.execute(
+        "INSERT OR IGNORE INTO agent_credentials (credential_id, agent_id, credential_digest, created_at, revoked_at, revoke_after) VALUES (?, ?, x'00', ?, NULL, NULL)",
+        ("0195f2a1-0021-4021-8021-000000000021", agent_id, now),
+    )
+    db.execute(
         "INSERT OR IGNORE INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES (?, ?, ?, 210425, 210425, 'lat', ?, ?)",
         (network_key, network_name, network_genesis, now, now),
     )

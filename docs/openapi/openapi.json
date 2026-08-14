@@ -33,6 +33,376 @@
         }
       }
     },
+    "/api/admin/v1/agents/enroll-token": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Create a single-use Enrollment Token for a new Agent. The response is\nthe Owner's only plaintext copy; the Server stores only the digest and\nthe Audit row records the token id and expiry — never the token.",
+        "operationId": "admin_enrollment_token",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenLifetimeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnrollmentTokenResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/agents/{agent_id}": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Owner-only Agent detail: one full AgentDiagnostic (identity, liveness,\nboot/report state, credential state, Inventory, diagnostics).",
+        "operationId": "admin_agent_detail",
+        "parameters": [
+          {
+            "name": "agent_id",
+            "in": "path",
+            "description": "Agent ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentDiagnostic"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/agents/{agent_id}/audit": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Redacted Audit trail scoped to one Agent (design §9, §14.3: security\nmutations carry a redacted Audit link; immutable event listing).",
+        "operationId": "admin_agent_audit",
+        "parameters": [
+          {
+            "name": "agent_id",
+            "in": "path",
+            "description": "Agent ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentAuditResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/agents/{agent_id}/credentials/rotate": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Rotate an Agent credential: issue a fresh credential, keep the previous\none valid through an explicit overlap window, and optionally revoke it\nimmediately. Distinct from recovery: the Agent Epoch is untouched and\nno duplicate Agent is created.",
+        "operationId": "admin_rotate_credential",
+        "parameters": [
+          {
+            "name": "agent_id",
+            "in": "path",
+            "description": "Agent ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RotationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RotationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/agents/{agent_id}/credentials/{credential_id}/revoke": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Revoke one Agent credential immediately (design §12.6: revoke takes\neffect immediately). The Audit row records the credential id and\ninstant only.",
+        "operationId": "admin_revoke_credential",
+        "parameters": [
+          {
+            "name": "agent_id",
+            "in": "path",
+            "description": "Agent ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "credential_id",
+            "in": "path",
+            "description": "Credential ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevokeResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/agents/{agent_id}/recover": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Create a single-use Recovery Token for an existing Agent (credential\nloss, design §4.5). The response is the Owner's only plaintext copy.",
+        "operationId": "admin_recovery_token",
+        "parameters": [
+          {
+            "name": "agent_id",
+            "in": "path",
+            "description": "Agent ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenLifetimeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryTokenResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/v1/events": {
       "get": {
         "tags": [
@@ -286,6 +656,67 @@
             "agent_bearer": []
           }
         ]
+      }
+    },
+    "/api/agent/v1/recover": {
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Exchange a single-use Recovery Token for an Epoch advance and a fresh\ncredential on the SAME Agent identity (design §4.5: Recovery rotates the\ncredential and advances the Agent Epoch without creating a duplicate\nAgent). The token arrives in the `Authorization: Bearer` header — never\nin a URL or body — and the same token can never recover twice.",
+        "operationId": "recover_handler",
+        "responses": {
+          "200": {
+            "description": "Recovered; the response carries the one-time Agent Credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoverResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired recovery token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The recovery token was already consumed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many recovery attempts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server setup is incomplete or the database is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/public/v1/events": {
@@ -929,6 +1360,86 @@
           }
         }
       },
+      "AgentAuditItem": {
+        "type": "object",
+        "description": "One redacted Audit row for an Agent lifecycle event. The stored\n`after_json` bodies are redacted by construction: they carry ids,\ninstants, and counts, never token or credential plaintext.",
+        "required": [
+          "audit_event_id",
+          "event_kind",
+          "created_at"
+        ],
+        "properties": {
+          "actor_username": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "audit_event_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "details": {},
+          "event_kind": {
+            "type": "string"
+          }
+        }
+      },
+      "AgentAuditResponse": {
+        "type": "object",
+        "required": [
+          "agent_id",
+          "items"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentAuditItem"
+            }
+          }
+        }
+      },
+      "AgentCredentialSummary": {
+        "type": "object",
+        "description": "Redacted Agent credential summary. Only the non-sensitive credential\nid and lifecycle instants are exposed; the credential secret itself is\nnever stored by the Server and never appears in any Admin DTO.",
+        "required": [
+          "credential_id",
+          "created_at",
+          "active"
+        ],
+        "properties": {
+          "active": {
+            "type": "boolean",
+            "description": "Server-computed validity: not revoked and not past `revoke_after`."
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "credential_id": {
+            "type": "string"
+          },
+          "revoke_after": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Rotation overlap deadline; the credential stops authenticating at\nthis instant even without an explicit revoke."
+          },
+          "revoked_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "AgentDiagnostic": {
         "type": "object",
         "required": [
@@ -942,6 +1453,7 @@
           "clock_status",
           "liveness",
           "capabilities",
+          "credentials",
           "nodes"
         ],
         "properties": {
@@ -982,6 +1494,13 @@
               "string",
               "null"
             ]
+          },
+          "credentials": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentCredentialSummary"
+            },
+            "description": "Credential state as a separate dimension (design: identity,\nliveness, boot/report, inventory, credentials, diagnostics)."
           },
           "host": {
             "oneOf": [
@@ -1373,6 +1892,35 @@
             "format": "int64",
             "description": "Agent→Server protocol major the Server speaks.",
             "minimum": 0
+          }
+        }
+      },
+      "EnrollmentTokenResponse": {
+        "type": "object",
+        "description": "One-time Enrollment Token issued to an Owner (design §4.5, §12.5). The\nfull token is delivered exactly once in the success response.",
+        "required": [
+          "token_id",
+          "token",
+          "expires_at",
+          "lifetime_hours",
+          "request_id"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": "string"
+          },
+          "lifetime_hours": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          },
+          "token_id": {
+            "type": "string"
           }
         }
       },
@@ -2162,6 +2710,164 @@
           "not_ready"
         ]
       },
+      "RecoverResponse": {
+        "type": "object",
+        "description": "Success payload of one Recovery exchange (Agent wire: snake_case,\ndesign §4.5). The Agent identity is preserved, the Agent Epoch\nadvances, and `credential` is a fresh `pp_agent_…` token delivered\nexactly once.",
+        "required": [
+          "agent_id",
+          "agent_epoch",
+          "credential",
+          "protocol_version"
+        ],
+        "properties": {
+          "agent_epoch": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Agent Epoch advanced by this Recovery exchange."
+          },
+          "agent_id": {
+            "type": "string",
+            "description": "The existing Agent identity the Recovery Token was bound to."
+          },
+          "credential": {
+            "type": "string",
+            "description": "Full Agent Credential token; single delivery."
+          },
+          "protocol_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Agent→Server protocol major the Server speaks.",
+            "minimum": 0
+          }
+        }
+      },
+      "RecoveryTokenResponse": {
+        "type": "object",
+        "description": "One-time Recovery Token issued for an existing Agent. Exchanging it\nadvances the Agent Epoch and rotates the credential without creating a\nduplicate Agent (design §4.5).",
+        "required": [
+          "agent_id",
+          "agent_epoch",
+          "token_id",
+          "token",
+          "expires_at",
+          "request_id"
+        ],
+        "properties": {
+          "agent_epoch": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "agent_id": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          },
+          "token_id": {
+            "type": "string"
+          }
+        }
+      },
+      "RevokeResponse": {
+        "type": "object",
+        "required": [
+          "agent_id",
+          "credential_id",
+          "revoked_at",
+          "request_id"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "credential_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "revoked_at": {
+            "type": "string"
+          }
+        }
+      },
+      "RotationRequest": {
+        "type": "object",
+        "properties": {
+          "overlapHours": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "revokePrevious": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      },
+      "RotationResponse": {
+        "type": "object",
+        "description": "Rotation result: the new credential secret is shown once; every\npreviously valid credential either stays valid through `revoke_after`\nor was revoked immediately (design §12.6).",
+        "required": [
+          "agent_id",
+          "credential_id",
+          "credential",
+          "created_at",
+          "overlap_hours",
+          "revoked_previous_ids",
+          "overlap_credential_ids",
+          "request_id"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "credential": {
+            "type": "string"
+          },
+          "credential_id": {
+            "type": "string"
+          },
+          "overlap_credential_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "overlap_hours": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "revoke_after": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revoked_previous_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "RpcDiagnostic": {
         "type": "object",
         "required": [
@@ -2367,6 +3073,18 @@
           },
           "value_revision": {
             "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "TokenLifetimeRequest": {
+        "type": "object",
+        "properties": {
+          "expiresInHours": {
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int64"
           }
         }

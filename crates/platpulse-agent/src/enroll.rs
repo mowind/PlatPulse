@@ -239,13 +239,15 @@ mod tests {
         )
         .await
         .unwrap();
-        let (_, token) = platpulse_server::enrollment::create_enrollment_token(
+        let record = platpulse_server::enrollment::create_enrollment_token(
             &db,
             &pepper,
+            None,
             platpulse_server::enrollment::ENROLLMENT_TOKEN_DEFAULT_LIFETIME,
         )
         .await
         .unwrap();
+        let token = record.token;
 
         let state = platpulse_server::http::AppState::new(db, None, auth);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

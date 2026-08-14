@@ -57,6 +57,44 @@ export type AdminOverviewSummary = {
     nodes: NodeSummary;
 };
 
+/**
+ * One redacted Audit row for an Agent lifecycle event. The stored
+ * `after_json` bodies are redacted by construction: they carry ids,
+ * instants, and counts, never token or credential plaintext.
+ */
+export type AgentAuditItem = {
+    actor_username?: string | null;
+    audit_event_id: number;
+    created_at: string;
+    details?: unknown;
+    event_kind: string;
+};
+
+export type AgentAuditResponse = {
+    agent_id: string;
+    items: Array<AgentAuditItem>;
+};
+
+/**
+ * Redacted Agent credential summary. Only the non-sensitive credential
+ * id and lifecycle instants are exposed; the credential secret itself is
+ * never stored by the Server and never appears in any Admin DTO.
+ */
+export type AgentCredentialSummary = {
+    /**
+     * Server-computed validity: not revoked and not past `revoke_after`.
+     */
+    active: boolean;
+    created_at: string;
+    credential_id: string;
+    /**
+     * Rotation overlap deadline; the credential stops authenticating at
+     * this instant even without an explicit revoke.
+     */
+    revoke_after?: string | null;
+    revoked_at?: string | null;
+};
+
 export type AgentDiagnostic = {
     active_boot_id?: string | null;
     agent_epoch: number;
@@ -66,6 +104,11 @@ export type AgentDiagnostic = {
     clock_skew_ms?: number | null;
     clock_status: string;
     close_report_id?: string | null;
+    /**
+     * Credential state as a separate dimension (design: identity,
+     * liveness, boot/report, inventory, credentials, diagnostics).
+     */
+    credentials: Array<AgentCredentialSummary>;
     host?: null | HostDiagnostic;
     last_received_at?: string | null;
     last_report_sequence?: number | null;
@@ -142,6 +185,18 @@ export type ConsensusDiagnostic = {
     validator?: boolean | null;
     value_revision: number;
     view_number?: number | null;
+};
+
+/**
+ * One-time Enrollment Token issued to an Owner (design §4.5, §12.5). The
+ * full token is delivered exactly once in the success response.
+ */
+export type EnrollmentTokenResponse = {
+    expires_at: string;
+    lifetime_hours: number;
+    request_id: string;
+    token: string;
+    token_id: string;
 };
 
 export type HostComponentDiagnostic = {
@@ -312,6 +367,49 @@ export type ReadyResponse = {
 
 export type ReadyState = 'ready' | 'not_ready';
 
+/**
+ * One-time Recovery Token issued for an existing Agent. Exchanging it
+ * advances the Agent Epoch and rotates the credential without creating a
+ * duplicate Agent (design §4.5).
+ */
+export type RecoveryTokenResponse = {
+    agent_epoch: number;
+    agent_id: string;
+    expires_at: string;
+    request_id: string;
+    token: string;
+    token_id: string;
+};
+
+export type RevokeResponse = {
+    agent_id: string;
+    credential_id: string;
+    request_id: string;
+    revoked_at: string;
+};
+
+export type RotationRequest = {
+    overlapHours?: number | null;
+    revokePrevious?: boolean | null;
+};
+
+/**
+ * Rotation result: the new credential secret is shown once; every
+ * previously valid credential either stays valid through `revoke_after`
+ * or was revoked immediately (design §12.6).
+ */
+export type RotationResponse = {
+    agent_id: string;
+    created_at: string;
+    credential: string;
+    credential_id: string;
+    overlap_credential_ids: Array<string>;
+    overlap_hours: number;
+    request_id: string;
+    revoke_after?: string | null;
+    revoked_previous_ids: Array<string>;
+};
+
 export type RpcDiagnostic = {
     attempted_at?: string | null;
     client_version?: string | null;
@@ -361,6 +459,10 @@ export type SyncDiagnostic = {
     value_revision: number;
 };
 
+export type TokenLifetimeRequest = {
+    expiresInHours?: number | null;
+};
+
 export type VisibilityRequest = {
     visibility: string;
 };
@@ -385,6 +487,158 @@ export type DiagnosticsResponses = {
 };
 
 export type DiagnosticsResponse = DiagnosticsResponses[keyof DiagnosticsResponses];
+
+export type AdminEnrollmentTokenData = {
+    body: TokenLifetimeRequest;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/agents/enroll-token';
+};
+
+export type AdminEnrollmentTokenErrors = {
+    400: ApiErrorBody;
+    403: ApiErrorBody;
+};
+
+export type AdminEnrollmentTokenError = AdminEnrollmentTokenErrors[keyof AdminEnrollmentTokenErrors];
+
+export type AdminEnrollmentTokenResponses = {
+    200: EnrollmentTokenResponse;
+};
+
+export type AdminEnrollmentTokenResponse = AdminEnrollmentTokenResponses[keyof AdminEnrollmentTokenResponses];
+
+export type AdminAgentDetailData = {
+    body?: never;
+    path: {
+        /**
+         * Agent ID
+         */
+        agent_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/agents/{agent_id}';
+};
+
+export type AdminAgentDetailErrors = {
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+};
+
+export type AdminAgentDetailError = AdminAgentDetailErrors[keyof AdminAgentDetailErrors];
+
+export type AdminAgentDetailResponses = {
+    200: AgentDiagnostic;
+};
+
+export type AdminAgentDetailResponse = AdminAgentDetailResponses[keyof AdminAgentDetailResponses];
+
+export type AdminAgentAuditData = {
+    body?: never;
+    path: {
+        /**
+         * Agent ID
+         */
+        agent_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/agents/{agent_id}/audit';
+};
+
+export type AdminAgentAuditErrors = {
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+};
+
+export type AdminAgentAuditError = AdminAgentAuditErrors[keyof AdminAgentAuditErrors];
+
+export type AdminAgentAuditResponses = {
+    200: AgentAuditResponse;
+};
+
+export type AdminAgentAuditResponse = AdminAgentAuditResponses[keyof AdminAgentAuditResponses];
+
+export type AdminRotateCredentialData = {
+    body: RotationRequest;
+    path: {
+        /**
+         * Agent ID
+         */
+        agent_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/agents/{agent_id}/credentials/rotate';
+};
+
+export type AdminRotateCredentialErrors = {
+    400: ApiErrorBody;
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+};
+
+export type AdminRotateCredentialError = AdminRotateCredentialErrors[keyof AdminRotateCredentialErrors];
+
+export type AdminRotateCredentialResponses = {
+    200: RotationResponse;
+};
+
+export type AdminRotateCredentialResponse = AdminRotateCredentialResponses[keyof AdminRotateCredentialResponses];
+
+export type AdminRevokeCredentialData = {
+    body?: never;
+    path: {
+        /**
+         * Agent ID
+         */
+        agent_id: string;
+        /**
+         * Credential ID
+         */
+        credential_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/agents/{agent_id}/credentials/{credential_id}/revoke';
+};
+
+export type AdminRevokeCredentialErrors = {
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+    409: ApiErrorBody;
+};
+
+export type AdminRevokeCredentialError = AdminRevokeCredentialErrors[keyof AdminRevokeCredentialErrors];
+
+export type AdminRevokeCredentialResponses = {
+    200: RevokeResponse;
+};
+
+export type AdminRevokeCredentialResponse = AdminRevokeCredentialResponses[keyof AdminRevokeCredentialResponses];
+
+export type AdminRecoveryTokenData = {
+    body: TokenLifetimeRequest;
+    path: {
+        /**
+         * Agent ID
+         */
+        agent_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/agents/{agent_id}/recover';
+};
+
+export type AdminRecoveryTokenErrors = {
+    400: ApiErrorBody;
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+};
+
+export type AdminRecoveryTokenError = AdminRecoveryTokenErrors[keyof AdminRecoveryTokenErrors];
+
+export type AdminRecoveryTokenResponses = {
+    200: RecoveryTokenResponse;
+};
+
+export type AdminRecoveryTokenResponse = AdminRecoveryTokenResponses[keyof AdminRecoveryTokenResponses];
 
 export type AdminEventsData = {
     body?: never;

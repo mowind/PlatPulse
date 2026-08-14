@@ -6,6 +6,12 @@ import HomeLayout from './layouts/HomeLayout'
 import LoginPage from './pages/LoginPage'
 import { NetworkPage, NodePage } from './pages/HomePages'
 import AdminHome from './pages/AdminHome'
+import AdminAgentsList, {
+  AdminAgentDetail,
+  AdminAgentEnroll,
+  AdminAgentRecover,
+  AdminAgentRotate,
+} from './pages/AdminAgents'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 
 /**
@@ -91,7 +97,17 @@ const router = createBrowserRouter([
         <AdminLayout />
       </RequireOwner>
     ),
-    children: [{ index: true, element: <AdminHome /> }],
+    children: [
+      { index: true, element: <AdminHome /> },
+      { path: 'agents', element: <AdminAgentsList /> },
+      { path: 'agents/enroll', element: <AdminAgentEnroll /> },
+      { path: 'agents/:agentId', element: <AdminAgentDetail /> },
+      { path: 'agents/:agentId/recover', element: <AdminAgentRecover /> },
+      { path: 'agents/:agentId/rotate', element: <AdminAgentRotate /> },
+      // Placeholder for later Phase 2 sections (e.g. PAGE-ACCESS-AUDIT):
+      // links from security mutations must never land on a blank page.
+      { path: '*', element: <AdminComingSoon /> },
+    ],
   },
 ])
 
@@ -105,4 +121,13 @@ export default function App() {
 
 function HomeIndex() {
   return null
+}
+
+function AdminComingSoon() {
+  return (
+    <section className="page">
+      <h1>This section arrives in a later phase</h1>
+      <p>The full Audit review surface is delivered with the People, roles, and Sessions slice.</p>
+    </section>
+  )
 }

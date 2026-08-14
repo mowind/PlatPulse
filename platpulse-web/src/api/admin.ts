@@ -10,12 +10,23 @@
 import { QueryClient, keepPreviousData, useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import {
+  adminAgentAudit,
+  adminAgentDetail,
+  adminEnrollmentToken,
+  adminRecoveryToken,
+  adminRevokeCredential,
+  adminRotateCredential,
   diagnostics,
   overview,
   setVisibility,
   type AdminOverview,
+  type AgentAuditResponse,
   type AgentDiagnostic,
   type ApiErrorBody,
+  type EnrollmentTokenResponse,
+  type RecoveryTokenResponse,
+  type RevokeResponse,
+  type RotationResponse,
   type VisibilityRequest,
   type VisibilityResponse,
 } from './generated'
@@ -39,6 +50,9 @@ const adminKeys = {
   all: ['admin'] as const,
   overview: ['admin', 'overview'] as const,
   diagnostics: ['admin', 'diagnostics'] as const,
+  agents: ['admin', 'agents'] as const,
+  agentDetail: (agentId: string) => ['admin', 'agents', agentId] as const,
+  agentAudit: (agentId: string) => ['admin', 'agents', agentId, 'audit'] as const,
 }
 
 /**
@@ -129,6 +143,47 @@ export function useAdminDiagnostics(generation: number) {
   })
 }
 
+/** Server-owned Agent detail: identity, liveness, boot/report, credentials,
+ * Inventory, and diagnostics as separate dimensions. */
+export async function fetchAdminAgent(
+  agentId: string,
+  signal?: AbortSignal,
+): Promise<AgentDiagnostic> {
+  return requestAdmin(
+    () => adminAgentDetail({ path: { agent_id: agentId }, signal }),
+    'Unable to load the Agent',
+  )
+}
+
+/** Redacted Audit trail scoped to one Agent. */
+export async function fetchAdminAgentAudit(
+  agentId: string,
+  signal?: AbortSignal,
+): Promise<AgentAuditResponse> {
+  return requestAdmin(
+    () => adminAgentAudit({ path: { agent_id: agentId }, signal }),
+    'Unable to load the Agent audit trail',
+  )
+}
+
+export function useAdminAgentDetail(generation: number, agentId: string) {
+  return useQuery({
+    queryKey: [...adminKeys.agentDetail(agentId), generation],
+    queryFn: ({ signal }) => fetchAdminAgent(agentId, signal),
+    placeholderData: keepPreviousData,
+    enabled: agentId.length > 0,
+  })
+}
+
+export function useAdminAgentAudit(generation: number, agentId: string) {
+  return useQuery({
+    queryKey: [...adminKeys.agentAudit(agentId), generation],
+    queryFn: ({ signal }) => fetchAdminAgentAudit(agentId, signal),
+    placeholderData: keepPreviousData,
+    enabled: agentId.length > 0,
+  })
+}
+
 /**
  * Mutation seam: no optimistic state, no automatic retry. Success invalidates
  * the Admin namespace immediately so the panels refetch authoritative REST.
@@ -146,6 +201,83 @@ export async function updateNodeVisibility(
         headers: { 'X-CSRF-Token': csrfToken },
       }),
     'Unable to update Node visibility',
+  )
+  void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+  return response
+}
+
+/** Create a one-time Enrollment Token (design §4.5). The secret appears
+ * only in the success response; the caller renders it exactly once. */
+export async function createEnrollmentToken(
+  csrfToken: string,
+  expiresInHours: number,
+): Promise<EnrollmentTokenResponse> {
+  const response = await requestAdmin(
+    () =>
+      adminEnrollmentToken({
+        body: { expiresInHours },
+        headers: { 'X-CSRF-Token': csrfToken },
+      }),
+    'Unable to create an enrollment token',
+  )
+  void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+  return response
+}
+
+/** Create a one-time Recovery Token for an existing Agent (design §4.5).
+ * Exchange advances the Agent Epoch without a duplicate Agent. */
+export async function createRecoveryToken(
+  agentId: string,
+  csrfToken: string,
+  expiresInHours: number,
+): Promise<RecoveryTokenResponse> {
+  const response = await requestAdmin(
+    () =>
+      adminRecoveryToken({
+        path: { agent_id: agentId },
+        body: { expiresInHours },
+        headers: { 'X-CSRF-Token': csrfToken },
+      }),
+    'Unable to create a recovery token',
+  )
+  void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+  return response
+}
+
+/** Rotate an Agent credential: fresh credential with an explicit overlap
+ * window and optional immediate old-credential revocation (design §12.6). */
+export async function rotateAgentCredential(
+  agentId: string,
+  csrfToken: string,
+  overlapHours: number,
+  revokePrevious: boolean,
+): Promise<RotationResponse> {
+  const response = await requestAdmin(
+    () =>
+      adminRotateCredential({
+        path: { agent_id: agentId },
+        body: { overlapHours, revokePrevious },
+        headers: { 'X-CSRF-Token': csrfToken },
+      }),
+    'Unable to rotate the credential',
+  )
+  void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+  return response
+}
+
+/** Revoke one Agent credential immediately (design §12.6). */
+export async function revokeAgentCredential(
+  agentId: string,
+  credentialId: string,
+  csrfToken: string,
+): Promise<RevokeResponse> {
+  const response = await requestAdmin(
+    () =>
+      adminRevokeCredential({
+        path: { agent_id: agentId, credential_id: credentialId },
+        headers: { 'X-CSRF-Token': csrfToken },
+      }),
+    'Unable to revoke the credential',
   )
   void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
   return response
