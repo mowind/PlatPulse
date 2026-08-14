@@ -1,9 +1,20 @@
 import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router'
 import { updateNodeVisibility, fetchAdminDiagnostics, fetchAdminNodeHistory, useAdminRealtime } from '../api/admin'
 import type { AgentDiagnostic } from '../api/generated'
 import { useAuth } from '../auth/AuthContext'
+import AdminShellPrototype from '../prototypes/AdminShellPrototype'
 
 export default function AdminHome() {
+  const [searchParams] = useSearchParams()
+  const prototypeVariant = searchParams.get('variant')
+  if (import.meta.env.DEV && prototypeVariant && ['a', 'b', 'c'].includes(prototypeVariant)) {
+    return <AdminShellPrototype />
+  }
+  return <AdminDiagnostics />
+}
+
+function AdminDiagnostics() {
   const { status } = useAuth()
   const [nodeId, setNodeId] = useState('')
   const [visibility, setVisibility] = useState<'private' | 'public'>('public')
