@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { AdminAgentAuditData, AdminAgentAuditErrors, AdminAgentAuditResponses, AdminAgentDetailData, AdminAgentDetailErrors, AdminAgentDetailResponses, AdminEnrollmentTokenData, AdminEnrollmentTokenErrors, AdminEnrollmentTokenResponses, AdminEventsData, AdminEventsResponses, AdminNetworkDetailData, AdminNetworkDetailErrors, AdminNetworkDetailResponses, AdminNetworksData, AdminNetworksResponses, AdminNodeDetailData, AdminNodeDetailErrors, AdminNodeDetailResponses, AdminNodeHistoryData, AdminNodeHistoryErrors, AdminNodeHistoryResponses, AdminNodesData, AdminNodesResponses, AdminRecoveryTokenData, AdminRecoveryTokenErrors, AdminRecoveryTokenResponses, AdminRevokeCredentialData, AdminRevokeCredentialErrors, AdminRevokeCredentialResponses, AdminRotateCredentialData, AdminRotateCredentialErrors, AdminRotateCredentialResponses, CreateNetworkData, CreateNetworkErrors, CreateNetworkResponses, DiagnosticsData, DiagnosticsResponses, LiveData, LiveResponses, LoginHandlerData, LoginHandlerErrors, LoginHandlerResponses, LogoutHandlerData, LogoutHandlerErrors, LogoutHandlerResponses, OverviewData, OverviewResponses, PublicEventsData, PublicEventsResponses, PublicNetworkData, PublicNetworkErrors, PublicNetworkResponses, PublicNetworksData, PublicNetworksResponses, PublicNodeDetailData, PublicNodeDetailErrors, PublicNodeDetailResponses, PublicNodeHistoryData, PublicNodeHistoryErrors, PublicNodeHistoryExportData, PublicNodeHistoryExportErrors, PublicNodeHistoryExportResponses, PublicNodeHistoryResponses, ReadyData, ReadyErrors, ReadyResponses, SessionHandlerData, SessionHandlerErrors, SessionHandlerResponses, SetNodeMetadataData, SetNodeMetadataErrors, SetNodeMetadataResponses, SetVisibilityData, SetVisibilityErrors, SetVisibilityResponses, UpdateNetworkData, UpdateNetworkErrors, UpdateNetworkResponses } from './types.gen';
+import type { AdminAgentAuditData, AdminAgentAuditErrors, AdminAgentAuditResponses, AdminAgentDetailData, AdminAgentDetailErrors, AdminAgentDetailResponses, AdminEnrollmentTokenData, AdminEnrollmentTokenErrors, AdminEnrollmentTokenResponses, AdminEventsData, AdminEventsResponses, AdminNetworkDetailData, AdminNetworkDetailErrors, AdminNetworkDetailResponses, AdminNetworksData, AdminNetworksResponses, AdminNodeDetailData, AdminNodeDetailErrors, AdminNodeDetailResponses, AdminNodeHistoryData, AdminNodeHistoryErrors, AdminNodeHistoryResponses, AdminNodesData, AdminNodesResponses, AdminNodeTransfersData, AdminNodeTransfersErrors, AdminNodeTransfersResponses, AdminRecoveryTokenData, AdminRecoveryTokenErrors, AdminRecoveryTokenResponses, AdminRevokeCredentialData, AdminRevokeCredentialErrors, AdminRevokeCredentialResponses, AdminRotateCredentialData, AdminRotateCredentialErrors, AdminRotateCredentialResponses, AdminTransferDetailData, AdminTransferDetailErrors, AdminTransferDetailResponses, CancelNodeTransferData, CancelNodeTransferErrors, CancelNodeTransferResponses, CreateNetworkData, CreateNetworkErrors, CreateNetworkResponses, CreateNodeTransferData, CreateNodeTransferErrors, CreateNodeTransferResponses, DiagnosticsData, DiagnosticsResponses, LiveData, LiveResponses, LoginHandlerData, LoginHandlerErrors, LoginHandlerResponses, LogoutHandlerData, LogoutHandlerErrors, LogoutHandlerResponses, OverviewData, OverviewResponses, PublicEventsData, PublicEventsResponses, PublicNetworkData, PublicNetworkErrors, PublicNetworkResponses, PublicNetworksData, PublicNetworksResponses, PublicNodeDetailData, PublicNodeDetailErrors, PublicNodeDetailResponses, PublicNodeHistoryData, PublicNodeHistoryErrors, PublicNodeHistoryExportData, PublicNodeHistoryExportErrors, PublicNodeHistoryExportResponses, PublicNodeHistoryResponses, ReadyData, ReadyErrors, ReadyResponses, SessionHandlerData, SessionHandlerErrors, SessionHandlerResponses, SetNodeMetadataData, SetNodeMetadataErrors, SetNodeMetadataResponses, SetVisibilityData, SetVisibilityErrors, SetVisibilityResponses, UpdateNetworkData, UpdateNetworkErrors, UpdateNetworkResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -126,6 +126,28 @@ export const setNodeMetadata = <ThrowOnError extends boolean = false>(options: O
 });
 
 /**
+ * Transfer history of one Node (newest first), with pending rows past
+ * their deadline materialized as `expired`.
+ */
+export const adminNodeTransfers = <ThrowOnError extends boolean = false>(options: Options<AdminNodeTransfersData, ThrowOnError>): RequestResult<AdminNodeTransfersResponses, AdminNodeTransfersErrors, ThrowOnError> => (options.client ?? client).get<AdminNodeTransfersResponses, AdminNodeTransfersErrors, ThrowOnError>({ url: '/api/admin/v1/nodes/{node_id}/transfers', ...options });
+
+/**
+ * Create a pending two-phase Transfer. The source Agent stays
+ * authoritative; ownership only switches after the target Agent declares
+ * the Node ID with a validated Network Identity during ingestion. A
+ * conflicting pending Transfer records a typed `conflict` outcome and
+ * rejects the new request without touching ownership.
+ */
+export const createNodeTransfer = <ThrowOnError extends boolean = false>(options: Options<CreateNodeTransferData, ThrowOnError>): RequestResult<CreateNodeTransferResponses, CreateNodeTransferErrors, ThrowOnError> => (options.client ?? client).post<CreateNodeTransferResponses, CreateNodeTransferErrors, ThrowOnError>({
+    url: '/api/admin/v1/nodes/{node_id}/transfers',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
  * Owner-only visibility mutation. All browser mutation trust-boundary
  * checks are explicit here because Admin DTOs must not be writable by a
  * Viewer or by cross-origin requests.
@@ -140,6 +162,17 @@ export const setVisibility = <ThrowOnError extends boolean = false>(options: Opt
 });
 
 export const overview = <ThrowOnError extends boolean = false>(options?: Options<OverviewData, ThrowOnError>): RequestResult<OverviewResponses, unknown, ThrowOnError> => (options?.client ?? client).get<OverviewResponses, unknown, ThrowOnError>({ url: '/api/admin/v1/overview', ...options });
+
+/**
+ * One Transfer by id, with Server-owned effective status.
+ */
+export const adminTransferDetail = <ThrowOnError extends boolean = false>(options: Options<AdminTransferDetailData, ThrowOnError>): RequestResult<AdminTransferDetailResponses, AdminTransferDetailErrors, ThrowOnError> => (options.client ?? client).get<AdminTransferDetailResponses, AdminTransferDetailErrors, ThrowOnError>({ url: '/api/admin/v1/transfers/{transfer_id}', ...options });
+
+/**
+ * Cancel a pending Transfer. Only `pending` can be cancelled; ownership
+ * never changes and the outcome is typed and audited.
+ */
+export const cancelNodeTransfer = <ThrowOnError extends boolean = false>(options: Options<CancelNodeTransferData, ThrowOnError>): RequestResult<CancelNodeTransferResponses, CancelNodeTransferErrors, ThrowOnError> => (options.client ?? client).post<CancelNodeTransferResponses, CancelNodeTransferErrors, ThrowOnError>({ url: '/api/admin/v1/transfers/{transfer_id}/cancel', ...options });
 
 export const publicEvents = <ThrowOnError extends boolean = false>(options?: Options<PublicEventsData, ThrowOnError>): RequestResult<PublicEventsResponses, unknown, ThrowOnError> => (options?.client ?? client).get<PublicEventsResponses, unknown, ThrowOnError>({ url: '/api/public/v1/events', ...options });
 

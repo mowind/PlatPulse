@@ -26,7 +26,7 @@ test.describe('Owner Network Registry (PAGE-ADMIN-NETWORKS)', () => {
     await expect(row).toContainText('platon-e2e', { timeout: 15_000 })
     await expect(row).toContainText('210425')
     await expect(row).toContainText('lat')
-    await expect(row).toContainText('4 active · 1 retired')
+    await expect(row).toContainText('6 active · 1 retired')
     // Node B observes a contradicting chain id; the mismatch is typed.
     await expect(row).toContainText('Mismatched')
     await expectNoHorizontalOverflow(page)

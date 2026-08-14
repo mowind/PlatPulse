@@ -87,6 +87,24 @@ impl ApiErrorBody {
             },
         }
     }
+
+    /// Error envelope with audit/field references (issue #46: confirmation
+    /// and mutation errors carry request and audit references).
+    pub(crate) fn with_fields(
+        code: &'static str,
+        message: &'static str,
+        request_id: &str,
+        fields: Vec<String>,
+    ) -> Self {
+        Self {
+            error: ApiError {
+                code,
+                message,
+                request_id: request_id.to_owned(),
+                fields,
+            },
+        }
+    }
 }
 
 /// Request correlation id inserted by `request_id_middleware` and echoed in

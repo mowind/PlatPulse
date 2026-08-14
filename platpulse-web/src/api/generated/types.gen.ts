@@ -128,6 +128,7 @@ export type AdminNodeDetail = {
     rpc?: null | RpcDiagnostic;
     rpc_endpoint: string;
     sync?: null | SyncDiagnostic;
+    transfer?: null | NodeTransfer;
     updated_at: string;
     visibility: string;
 };
@@ -484,6 +485,51 @@ export type NodeSummary = {
     total: number;
     unhealthy: number;
     unknown: number;
+};
+
+/**
+ * Owner-authorized two-phase Node Transfer (design §4.4, issue #46). The
+ * typed status is Server-owned: `pending`, `completed`, `cancelled`,
+ * `expired`, `rejected`, `conflict`, or `identity_mismatch`. A `pending`
+ * row past its Server-authoritative `expires_at` is reported as `expired`
+ * and never auto-extends.
+ */
+export type NodeTransfer = {
+    cancelled_at?: string | null;
+    completed_at?: string | null;
+    created_at: string;
+    expires_at: string;
+    mismatched_fields: Array<string>;
+    node_id: string;
+    operator_reason?: string | null;
+    rejection_code?: string | null;
+    rejection_reason?: string | null;
+    source_agent_id: string;
+    status: string;
+    target_agent_id: string;
+    transfer_id: string;
+    updated_at: string;
+};
+
+/**
+ * Create a pending Transfer: Owner picks the target Agent, an expiry
+ * (1..=168 hours, default 72), and an optional operator reason that is
+ * recorded in Audit.
+ */
+export type NodeTransferCreateRequest = {
+    expiresInHours?: number | null;
+    operatorReason?: string | null;
+    targetAgentId: string;
+};
+
+/**
+ * Mutation receipt for a Transfer create/cancel: the authoritative typed
+ * Transfer plus the request and Audit references for the success view.
+ */
+export type NodeTransferMutationResponse = {
+    audit_event_id: number;
+    request_id: string;
+    transfer: NodeTransfer;
 };
 
 /**
@@ -1055,6 +1101,60 @@ export type SetNodeMetadataResponses = {
 
 export type SetNodeMetadataResponse = SetNodeMetadataResponses[keyof SetNodeMetadataResponses];
 
+export type AdminNodeTransfersData = {
+    body?: never;
+    path: {
+        /**
+         * Node ID
+         */
+        node_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/nodes/{node_id}/transfers';
+};
+
+export type AdminNodeTransfersErrors = {
+    404: ApiErrorBody;
+};
+
+export type AdminNodeTransfersError = AdminNodeTransfersErrors[keyof AdminNodeTransfersErrors];
+
+export type AdminNodeTransfersResponses = {
+    /**
+     * Owner-only Transfer history for one Node
+     */
+    200: Array<NodeTransfer>;
+};
+
+export type AdminNodeTransfersResponse = AdminNodeTransfersResponses[keyof AdminNodeTransfersResponses];
+
+export type CreateNodeTransferData = {
+    body: NodeTransferCreateRequest;
+    path: {
+        /**
+         * Node ID
+         */
+        node_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/nodes/{node_id}/transfers';
+};
+
+export type CreateNodeTransferErrors = {
+    400: ApiErrorBody;
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+    409: ApiErrorBody;
+};
+
+export type CreateNodeTransferError = CreateNodeTransferErrors[keyof CreateNodeTransferErrors];
+
+export type CreateNodeTransferResponses = {
+    200: NodeTransferMutationResponse;
+};
+
+export type CreateNodeTransferResponse = CreateNodeTransferResponses[keyof CreateNodeTransferResponses];
+
 export type SetVisibilityData = {
     body: VisibilityRequest;
     path: {
@@ -1096,6 +1196,56 @@ export type OverviewResponses = {
 };
 
 export type OverviewResponse = OverviewResponses[keyof OverviewResponses];
+
+export type AdminTransferDetailData = {
+    body?: never;
+    path: {
+        /**
+         * Transfer ID
+         */
+        transfer_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/transfers/{transfer_id}';
+};
+
+export type AdminTransferDetailErrors = {
+    404: ApiErrorBody;
+};
+
+export type AdminTransferDetailError = AdminTransferDetailErrors[keyof AdminTransferDetailErrors];
+
+export type AdminTransferDetailResponses = {
+    200: NodeTransfer;
+};
+
+export type AdminTransferDetailResponse = AdminTransferDetailResponses[keyof AdminTransferDetailResponses];
+
+export type CancelNodeTransferData = {
+    body?: never;
+    path: {
+        /**
+         * Transfer ID
+         */
+        transfer_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/transfers/{transfer_id}/cancel';
+};
+
+export type CancelNodeTransferErrors = {
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+    409: ApiErrorBody;
+};
+
+export type CancelNodeTransferError = CancelNodeTransferErrors[keyof CancelNodeTransferErrors];
+
+export type CancelNodeTransferResponses = {
+    200: NodeTransferMutationResponse;
+};
+
+export type CancelNodeTransferResponse = CancelNodeTransferResponses[keyof CancelNodeTransferResponses];
 
 export type PublicEventsData = {
     body?: never;

@@ -19,6 +19,7 @@ import type {
   AdminNodeListItem,
   NodeIdentityStatus,
 } from '../api/generated'
+import { transferBadge } from './AdminNodeTransfer'
 
 /**
  * PAGE-ADMIN-NODES, PAGE-ADMIN-NODE-DETAIL, and PAGE-ADMIN-NODE-VISIBILITY
@@ -495,10 +496,17 @@ export function AdminNodeDetail() {
             >
               {query.data.visibility === 'public' ? 'Make private' : 'Publish to Home'}
             </Link>
+            <Link
+              className="secondary-action"
+              to={`/admin/nodes/${query.data.node_id}/transfer`}
+            >
+              Transfer ownership
+            </Link>
           </div>
           <MetadataPanel node={query.data} csrfToken={csrfToken} />
           <HealthPanel node={query.data} />
           <IdentityPanel node={query.data} />
+          <TransferPanel node={query.data} />
           <ObservationsPanel node={query.data} />
         </>
       )}
@@ -661,6 +669,73 @@ function MetadataPanel({
           <dd>{formatObservedAt(node.updated_at)}</dd>
         </div>
       </dl>
+    </article>
+  )
+}
+
+/** Two-phase ownership handover summary (issue #46): the latest typed
+ * outcome with a direct link to PAGE-ADMIN-NODE-TRANSFER. */
+function TransferPanel({ node }: { node: AdminNodeDetailDto }) {
+  const transfer = node.transfer
+  const badge = transfer ? transferBadge(transfer.status) : null
+  return (
+    <article className="panel">
+      <div className="panel-heading">
+        <h2>Node transfer</h2>
+        {badge ? <StatusBadge status={badge.label} tone={badge.tone} /> : null}
+      </div>
+      <p className="panel-copy">
+        Transfer is two-phase: the source Agent stays authoritative until the target Agent
+        declares the same Node ID with a validated Network Identity. The Server never pushes
+        an RPC Endpoint or command to either Agent.
+      </p>
+      {badge === null ? (
+        <p className="panel-state">
+          <StatusBadge status="Empty" tone="ok" /> This Node has never been transferred.{' '}
+          <Link className="text-action" to={`/admin/nodes/${node.node_id}/transfer`}>
+            Transfer ownership
+          </Link>
+        </p>
+      ) : (
+        <dl className="detail-list">
+          <div>
+            <dt>Status</dt>
+            <dd>{badge.label}</dd>
+          </div>
+          <div>
+            <dt>Source → Target</dt>
+            <dd>
+              {shortId(transfer!.source_agent_id)} → {shortId(transfer!.target_agent_id)}
+            </dd>
+          </div>
+          <div>
+            <dt>Expires</dt>
+            <dd>{formatObservedAt(transfer!.expires_at)}</dd>
+          </div>
+          {transfer!.mismatched_fields.length > 0 && (
+            <div>
+              <dt>Mismatched fields</dt>
+              <dd>{transfer!.mismatched_fields.join(', ')}</dd>
+            </div>
+          )}
+          <div>
+            <dt>Workflow</dt>
+            <dd>
+              <Link className="text-action" to={`/admin/nodes/${node.node_id}/transfer`}>
+                Open the transfer workflow
+              </Link>
+            </dd>
+          </div>
+        </dl>
+      )}
+      {transfer?.status === 'identity_mismatch' && (
+        <p className="panel-state" role="alert">
+          <StatusBadge status="Identity mismatch" tone="error" /> Blocking diagnostic: the
+          target-declared Network Identity contradicts the registered Network. Ownership stays
+          with the source Agent and new history is not merged into the registered Network
+          history.
+        </p>
+      )}
     </article>
   )
 }

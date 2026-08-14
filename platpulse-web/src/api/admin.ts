@@ -16,11 +16,14 @@ import {
   adminNetworkDetail,
   adminNetworks,
   adminNodeDetail,
+  adminNodeTransfers,
   adminNodes,
   adminRecoveryToken,
   adminRevokeCredential,
   adminRotateCredential,
+  cancelNodeTransfer as cancelNodeTransferApi,
   createNetwork,
+  createNodeTransfer as createNodeTransferApi,
   diagnostics,
   overview,
   setNodeMetadata,
@@ -40,6 +43,9 @@ import {
   type NetworkUpdateRequest,
   type NodeMetadataRequest,
   type NodeMetadataResponse,
+  type NodeTransfer,
+  type NodeTransferCreateRequest,
+  type NodeTransferMutationResponse,
   type RecoveryTokenResponse,
   type RevokeResponse,
   type RotationResponse,
@@ -71,6 +77,7 @@ const adminKeys = {
   agentAudit: (agentId: string) => ['admin', 'agents', agentId, 'audit'] as const,
   nodes: ['admin', 'nodes'] as const,
   nodeDetail: (nodeId: string) => ['admin', 'nodes', nodeId] as const,
+  nodeTransfers: (nodeId: string) => ['admin', 'nodes', nodeId, 'transfers'] as const,
   networks: ['admin', 'networks'] as const,
   networkDetail: (networkKey: string) => ['admin', 'networks', networkKey] as const,
 }
@@ -82,14 +89,26 @@ const adminKeys = {
  */
 let adminCacheGeneration: number | null = null
 
-/** A failed Admin call, keyed by the Server's stable error `code`. */
+/** A failed Admin call, keyed by the Server's stable error `code`, with the
+ * request and Audit references an operator can use to look the failure up
+ * (issue #46: confirmation and mutation errors expose references, never
+ * sensitive details). */
 export class AdminApiError extends Error {
   readonly code: string
+  readonly requestId: string | null
+  readonly fields: string[]
 
-  constructor(code: string, message: string) {
+  constructor(
+    code: string,
+    message: string,
+    requestId: string | null = null,
+    fields: string[] = [],
+  ) {
     super(message)
     this.name = 'AdminApiError'
     this.code = code
+    this.requestId = requestId
+    this.fields = fields
   }
 }
 
@@ -122,6 +141,8 @@ async function requestAdmin<T>(
     throw new AdminApiError(
       body?.error?.code ?? 'unavailable',
       body?.error?.message ?? fallbackMessage,
+      body?.error?.requestId ?? null,
+      body?.error?.fields ?? [],
     )
   }
   return data
@@ -241,6 +262,84 @@ export function useAdminNodeDetail(generation: number, nodeId: string) {
     // Node's URL (per-Node scoping and non-leaking unknown/private state).
     enabled: nodeId.length > 0,
   })
+}
+
+/** Two-phase Transfer history of one Node (issue #46): typed outcomes with
+ * Server-owned effective status — pending, completed, cancelled, expired,
+ * rejected, conflict, identity_mismatch — and Audit references. */
+export async function fetchAdminNodeTransfers(
+  nodeId: string,
+  signal?: AbortSignal,
+): Promise<NodeTransfer[]> {
+  return requestAdmin(
+    () => adminNodeTransfers({ path: { node_id: nodeId }, signal }),
+    'Unable to load the transfer history',
+  )
+}
+
+export function useAdminNodeTransfers(generation: number, nodeId: string) {
+  return useQuery({
+    queryKey: [...adminKeys.nodeTransfers(nodeId), generation],
+    queryFn: ({ signal }) => fetchAdminNodeTransfers(nodeId, signal),
+    // No placeholder: another Node's transfers must never render under
+    // this Node's URL.
+    enabled: nodeId.length > 0,
+  })
+}
+
+/** Create a pending two-phase Transfer. The source Agent stays
+ * authoritative until the target declares the Node ID with a validated
+ * Network Identity; the response carries the typed Transfer and the
+ * request/Audit references for the success view. */
+export async function createNodeTransfer(
+  nodeId: string,
+  request: NodeTransferCreateRequest,
+  csrfToken: string,
+): Promise<NodeTransferMutationResponse> {
+  try {
+    const response = await requestAdmin(
+      () =>
+        createNodeTransferApi({
+          path: { node_id: nodeId },
+          body: request,
+          headers: { 'X-CSRF-Token': csrfToken },
+        }),
+      'Unable to start the Node transfer',
+    )
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    return response
+  } catch (error) {
+    // A failed mutation (e.g. a concurrent operator's pending transfer)
+    // must reload the authoritative state instead of leaving a stale form
+    // visible (webui.md §6.4: conflicts refetch current state).
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    throw error
+  }
+}
+
+/** Cancel a pending Transfer. Only `pending` can be cancelled; ownership
+ * never changes and the outcome is typed and audited. */
+export async function cancelNodeTransfer(
+  transferId: string,
+  csrfToken: string,
+): Promise<NodeTransferMutationResponse> {
+  try {
+    const response = await requestAdmin(
+      () =>
+        cancelNodeTransferApi({
+          path: { transfer_id: transferId },
+          headers: { 'X-CSRF-Token': csrfToken },
+        }),
+      'Unable to cancel the Node transfer',
+    )
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    return response
+  } catch (error) {
+    // The transfer may already be expired/terminal on the Server; reload
+    // authoritative state so the timeline shows the true outcome.
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    throw error
+  }
 }
 
 /** Owner-only Network Registry projection (design §7.1). */

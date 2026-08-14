@@ -66,6 +66,14 @@ node_d = "0195f2a1-0017-4017-8017-000000000017"
 # it never shares mutation state with the Overview test (Node C) or the
 # metadata test (Node C); parallel projects never observe a mutated Node.
 node_e = "0195f2a1-0018-4018-8018-000000000018"
+# Node F is dedicated to PAGE-ADMIN-NODE-TRANSFER: its seeded history
+# covers identity mismatch, completed, cancelled, expired, and conflict
+# outcomes, and the mutation test creates + cancels one pending transfer.
+node_f = "0195f2a1-0019-4019-8019-000000000019"
+# Node G belongs to the target Agent after a completed Transfer, so the
+# completed outcome is observable on a Node whose ownership already moved.
+node_g = "0195f2a1-0020-4020-8020-000000000020"
+target_agent = "0195f2a1-0021-4021-8021-000000000021"
 
 with sqlite3.connect(path) as db:
     db.execute(
@@ -81,6 +89,14 @@ with sqlite3.connect(path) as db:
         ("0195f2a1-0021-4021-8021-000000000021", agent_id, now),
     )
     db.execute(
+        "INSERT OR IGNORE INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES (?, 1, ?, ?)",
+        (target_agent, now, now),
+    )
+    db.execute(
+        "INSERT OR IGNORE INTO agent_credentials (credential_id, agent_id, credential_digest, created_at, revoked_at, revoke_after) VALUES (?, ?, x'01', ?, NULL, NULL)",
+        ("0195f2a1-0022-4022-8022-000000000022", target_agent, now),
+    )
+    db.execute(
         "INSERT OR IGNORE INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES (?, ?, ?, 210425, 210425, 'lat', ?, ?)",
         (network_key, network_name, network_genesis, now, now),
     )
@@ -90,11 +106,14 @@ with sqlite3.connect(path) as db:
         (node_c, "Node C", "ws://127.0.0.1:6792", "private"),
         (node_d, "Node D (retired)", "ws://127.0.0.1:6793", "private"),
         (node_e, "Node E (private)", "ws://127.0.0.1:6794", "private"),
+        (node_f, "Node F (transfer)", "ws://127.0.0.1:6795", "private"),
+        (node_g, "Node G (transferred)", "ws://127.0.0.1:6796", "private"),
     ):
         lifecycle = "retired" if node_id == node_d else "active"
+        owner = target_agent if node_id == node_g else agent_id
         db.execute(
             "INSERT OR IGNORE INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
-            (node_id, agent_id, network_key, name, endpoint, lifecycle, visibility, now, now),
+            (node_id, owner, network_key, name, endpoint, lifecycle, visibility, now, now),
         )
 
     # Node A: healthy and current (RPC, sync, and consensus all ok and fresh).
@@ -132,6 +151,60 @@ with sqlite3.connect(path) as db:
                 "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES (?, 'node', ?, ?, ?, 'ok', ?, ?, ?, 1, 1)",
                 (agent_id, node_b, node_b, component, stale, stale, stale),
             )
+
+    # Transfer history (issue #46): Node F carries every terminal/conflict
+    # outcome; Node G shows a completed Transfer on a Node already owned by
+    # the target Agent. Expiry is Server-authoritative: the expired pending
+    # row is materialized by the list route on first read.
+    def transfer_time(days: int) -> str:
+        return (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    for transfer_id, node_id, status, extra in (
+        (
+            "0195f2a1-0031-4031-8031-000000000031",
+            node_f,
+            "identity_mismatch",
+            (None, None, "identity_mismatch", "the target-declared Network identity contradicts the registered Network; ownership stays with the source Agent", '["genesis_hash", "address_hrp"]'),
+        ),
+        (
+            "0195f2a1-0032-4032-8032-000000000032",
+            node_g,
+            "completed",
+            (transfer_time(9), None, None, None, None),
+        ),
+        (
+            "0195f2a1-0033-4033-8033-000000000033",
+            node_f,
+            "cancelled",
+            (None, transfer_time(6), None, None, None),
+        ),
+        (
+            "0195f2a1-0034-4034-8034-000000000034",
+            node_f,
+            "expired",
+            (None, None, None, None, None),
+        ),
+        (
+            "0195f2a1-0035-4035-8035-000000000035",
+            node_f,
+            "conflict",
+            (None, None, None, None, None),
+        ),
+    ):
+        created = transfer_time(12)
+        completed_at, cancelled_at, rejection_code, rejection_reason, mismatched = extra
+        # The expired row must be pending in storage with a past deadline so
+        # the list route materializes it as `expired` (never auto-extends).
+        status_value = "pending" if status == "expired" else status
+        expires = (
+            transfer_time(1)
+            if status == "expired"
+            else (transfer_time(4) if status == "identity_mismatch" else transfer_time(11))
+        )
+        db.execute(
+            "INSERT OR IGNORE INTO node_transfers (transfer_id, node_id, source_agent_id, target_agent_id, status, operator_reason, created_at, expires_at, cancelled_at, completed_at, rejection_code, rejection_reason, mismatched_fields, updated_at) VALUES (?, ?, ?, ?, ?, 'move the validator host', ?, ?, ?, ?, ?, ?, ?, ?)",
+            (transfer_id, node_id, agent_id, target_agent, status_value, created, expires, cancelled_at, completed_at, rejection_code, rejection_reason, mismatched, created),
+        )
 PY
 
 cd "$ROOT"

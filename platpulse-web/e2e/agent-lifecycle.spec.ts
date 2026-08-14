@@ -33,10 +33,10 @@ test.describe('Agent inventory and detail (PAGE-ADMIN-AGENTS)', () => {
     await openAgents(page)
 
     // Liveness and report state are separate from credentials and Inventory.
-    const row = page.getByRole('row', { name: /0195f2a1/ })
+    const row = page.getByRole('row', { name: /0195f2a1-0011/ })
     await expect(row).toContainText('Current', { timeout: 15_000 })
     await expect(row).toContainText('#42')
-    await expect(row).toContainText('5 Nodes')
+    await expect(row).toContainText('6 Nodes')
     await expect(row).toContainText(/active/)
     await expect(row).toContainText('0 gaps · 0 security events')
     await expect(page.getByRole('link', { name: 'Enroll a new Agent' })).toBeVisible()

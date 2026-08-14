@@ -10,7 +10,7 @@ const NODE_C = '0195f2a1-0016-4016-8016-000000000016'
 /** Published count from the Server-owned summary strip ("N of 5 Nodes…"). */
 async function publishedCount(page: Parameters<typeof loginAs>[0]): Promise<number> {
   const text = await page.locator('.summary-strip').textContent()
-  const match = text?.match(/(\d+) of 5 Nodes are visible/)
+  const match = text?.match(/(\d+) of 7 Nodes are visible/)
   if (!match) throw new Error(`unexpected summary strip: ${text}`)
   return Number(match[1])
 }
@@ -68,7 +68,7 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
     // workflow test publishes/retracts its own scratch Node concurrently, so
     // the exact total is only asserted to move by one around this mutation.
     const strip = page.locator('.summary-strip')
-    await expect(strip).toContainText(/of 5 Nodes are visible/, { timeout: 15_000 })
+    await expect(strip).toContainText(/of 7 Nodes are visible/, { timeout: 15_000 })
     const publishedBefore = await publishedCount(page)
 
     try {

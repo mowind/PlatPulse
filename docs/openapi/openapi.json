@@ -827,6 +827,131 @@
         }
       }
     },
+    "/api/admin/v1/nodes/{node_id}/transfers": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Transfer history of one Node (newest first), with pending rows past\ntheir deadline materialized as `expired`.",
+        "operationId": "admin_node_transfers",
+        "parameters": [
+          {
+            "name": "node_id",
+            "in": "path",
+            "description": "Node ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Owner-only Transfer history for one Node",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/NodeTransfer"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Create a pending two-phase Transfer. The source Agent stays\nauthoritative; ownership only switches after the target Agent declares\nthe Node ID with a validated Network Identity during ingestion. A\nconflicting pending Transfer records a typed `conflict` outcome and\nrejects the new request without touching ownership.",
+        "operationId": "create_node_transfer",
+        "parameters": [
+          {
+            "name": "node_id",
+            "in": "path",
+            "description": "Node ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NodeTransferCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NodeTransferMutationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/v1/nodes/{node_id}/visibility": {
       "put": {
         "tags": [
@@ -912,6 +1037,110 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AdminOverview"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/transfers/{transfer_id}": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "One Transfer by id, with Server-owned effective status.",
+        "operationId": "admin_transfer_detail",
+        "parameters": [
+          {
+            "name": "transfer_id",
+            "in": "path",
+            "description": "Transfer ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NodeTransfer"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/transfers/{transfer_id}/cancel": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Cancel a pending Transfer. Only `pending` can be cancelled; ownership\nnever changes and the outcome is typed and audited.",
+        "operationId": "cancel_node_transfer",
+        "parameters": [
+          {
+            "name": "transfer_id",
+            "in": "path",
+            "description": "Transfer ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NodeTransferMutationResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
                 }
               }
             }
@@ -1972,6 +2201,17 @@
               },
               {
                 "$ref": "#/components/schemas/SyncDiagnostic"
+              }
+            ]
+          },
+          "transfer": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/NodeTransfer",
+                "description": "Most recent two-phase Transfer for this Node (any outcome), with the\nServer-owned effective status; `None` when no Transfer ever existed."
               }
             ]
           },
@@ -3254,6 +3494,129 @@
           "unknown": {
             "type": "integer",
             "format": "int64"
+          }
+        }
+      },
+      "NodeTransfer": {
+        "type": "object",
+        "description": "Owner-authorized two-phase Node Transfer (design §4.4, issue #46). The\ntyped status is Server-owned: `pending`, `completed`, `cancelled`,\n`expired`, `rejected`, `conflict`, or `identity_mismatch`. A `pending`\nrow past its Server-authoritative `expires_at` is reported as `expired`\nand never auto-extends.",
+        "required": [
+          "transfer_id",
+          "node_id",
+          "source_agent_id",
+          "target_agent_id",
+          "status",
+          "created_at",
+          "expires_at",
+          "mismatched_fields",
+          "updated_at"
+        ],
+        "properties": {
+          "cancelled_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "completed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string"
+          },
+          "mismatched_fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "operator_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rejection_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rejection_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_agent_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "target_agent_id": {
+            "type": "string"
+          },
+          "transfer_id": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        }
+      },
+      "NodeTransferCreateRequest": {
+        "type": "object",
+        "description": "Create a pending Transfer: Owner picks the target Agent, an expiry\n(1..=168 hours, default 72), and an optional operator reason that is\nrecorded in Audit.",
+        "required": [
+          "targetAgentId"
+        ],
+        "properties": {
+          "expiresInHours": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "operatorReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "targetAgentId": {
+            "type": "string"
+          }
+        }
+      },
+      "NodeTransferMutationResponse": {
+        "type": "object",
+        "description": "Mutation receipt for a Transfer create/cancel: the authoritative typed\nTransfer plus the request and Audit references for the success view.",
+        "required": [
+          "transfer",
+          "request_id",
+          "audit_event_id"
+        ],
+        "properties": {
+          "audit_event_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "transfer": {
+            "$ref": "#/components/schemas/NodeTransfer"
           }
         }
       },
