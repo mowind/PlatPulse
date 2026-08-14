@@ -1,0 +1,18 @@
+# PlatPulse Server configuration example
+# Copy to /etc/platpulse/server.toml and adjust paths for the installation.
+
+state_dir = "/var/lib/platpulse"
+db_path = "/var/lib/platpulse/platpulse.db"
+pepper_file = "/etc/platpulse/secrets/server-pepper"
+
+# Optional: omit to use /usr/share/platpulse/web from the release bundle.
+# web_root = "/usr/share/platpulse/web"
+
+listen = "127.0.0.1:8080"
+public_base_url = "http://127.0.0.1:8080"
+development = true
+
+# Production deployments should use HTTPS directly or an explicitly trusted
+# HTTPS reverse proxy. Example reverse-proxy settings:
+# trusted_proxy_cidrs = ["10.0.0.0/8"]
+# trusted_proxy_scheme = "https"

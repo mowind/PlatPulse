@@ -77,6 +77,35 @@ jobs:
           test -z "$(git status --porcelain -- src/api/generated)" \
             || { echo 'Generated API client is not fresh'; git status --porcelain -- src/api/generated; exit 1; }
 
+  release-package:
+    name: Release package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: platpulse-web/package-lock.json
+
+      - name: Install WebUI dependencies
+        working-directory: platpulse-web
+        run: npm ci
+
+      - name: Build release package
+        run: scripts/package-release.sh
+
+      - name: Verify release package layout
+        run: |
+          test -x target/release-package/root/usr/bin/platpulse-server
+          test -f target/release-package/root/usr/share/platpulse/web/index.html
+          test -d target/release-package/root/usr/share/platpulse/web/assets
+          test -s target/platpulse-server-*.tar.gz
+
   web-e2e:
     name: WebUI e2e (fixed viewports)
     runs-on: ubuntu-latest

@@ -25,6 +25,9 @@ pub const DEFAULT_DB_FILE: &str = "platpulse.db";
 /// it under `/etc/platpulse/secrets/`, design §18.1).
 pub const DEFAULT_PEPPER_FILE: &str = "server-pepper";
 
+/// Default installed WebUI root for release packages.
+pub const DEFAULT_WEB_ROOT: &str = "/usr/share/platpulse/web";
+
 /// Settings read from `server.toml`. All fields are optional: the CLI and
 /// built-in defaults fill the gaps, so a minimal local config only needs
 /// the paths `init` must create.
@@ -37,7 +40,8 @@ pub struct ServerConfigFile {
     pub db_path: Option<PathBuf>,
     /// Standalone pepper secret file; defaults to `<state_dir>/server-pepper`.
     pub pepper_file: Option<PathBuf>,
-    /// Built WebUI root (`index.html` plus `assets/`); optional.
+    /// Built WebUI root (`index.html` plus `assets/`); defaults to the
+    /// release installation directory when not specified.
     pub web_root: Option<PathBuf>,
     /// Address the HTTP listener binds to; defaults to `127.0.0.1:8080`.
     pub listen: Option<SocketAddr>,
@@ -193,10 +197,12 @@ impl ServerConfig {
             .clone()
             .or_else(|| file.and_then(|file| file.pepper_file.clone()))
             .unwrap_or_else(|| state_dir.join(DEFAULT_PEPPER_FILE));
-        let web_root = cli
-            .web_root
-            .clone()
-            .or_else(|| file.and_then(|file| file.web_root.clone()));
+        let web_root = Some(
+            cli.web_root
+                .clone()
+                .or_else(|| file.and_then(|file| file.web_root.clone()))
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_WEB_ROOT)),
+        );
         let listen = cli
             .listen
             .or_else(|| file.and_then(|file| file.listen))
@@ -315,7 +321,26 @@ development = false
         );
         assert_eq!(config.listen, DEFAULT_LISTEN);
         assert_eq!(config.public_base_url, "http://127.0.0.1:8080");
+        assert_eq!(config.web_root, Some(PathBuf::from(DEFAULT_WEB_ROOT)));
         assert!(!config.development);
+    }
+
+    #[test]
+    fn web_root_cli_override_beats_config_and_default() {
+        let dir = tempdir().unwrap();
+        let path = write_config(
+            dir.path(),
+            "state_dir = \"/srv/platpulse\"\nweb_root = \"/config/web\"\n",
+        );
+        let config = ServerConfig::resolve(
+            Some(&path),
+            &CliOverrides {
+                web_root: Some(PathBuf::from("/cli/web")),
+                ..CliOverrides::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(config.web_root, Some(PathBuf::from("/cli/web")));
     }
 
     #[test]

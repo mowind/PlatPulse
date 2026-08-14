@@ -126,6 +126,8 @@ The release-candidate browser run validates the public/private projection bounda
 
 ## Server setup and login
 
+Production packaging and the single-process Server/WebUI layout are documented in [`docs/deployment.md`](docs/deployment.md); a copyable config is [`crates/platpulse-server/server.example.toml`](crates/platpulse-server/server.example.toml). The release bundle installs WebUI assets at `/usr/share/platpulse/web` by default, so `web_root` is optional.
+
 ```bash
 # 1. Create the state directory, SQLite schema, and pepper file
 platpulse-server init --config /etc/platpulse/server.toml
