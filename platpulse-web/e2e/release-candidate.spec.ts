@@ -23,9 +23,9 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
   test('Owner diagnostics and SSE reconnect do not disturb an active form field', async ({ page }) => {
     await loginAs(page)
     await page.getByRole('link', { name: 'Admin', exact: true }).click()
-    await expect(page.getByRole('heading', { level: 1, name: 'Admin diagnostics' })).toBeVisible()
-    await expect(page.getByText('Node A', { exact: true })).toBeVisible({ timeout: 15_000 })
-    await expect(page.getByText('Node B (private)', { exact: true })).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Node A' })).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByRole('button', { name: 'Node B (private)' })).toBeVisible({ timeout: 15_000 })
 
     const nodeId = page.getByLabel('Node ID')
     await nodeId.fill('0195f2a1-0014-4014-8014-000000000014')

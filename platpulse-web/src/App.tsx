@@ -9,25 +9,34 @@ import AdminHome from './pages/AdminHome'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 
 /**
- * Route gate: Home and Admin are private by default (design §12.2/§13.1).
- * Unauthenticated visitors are guided to the login page and returned to
- * the route they originally requested; non-Owners are refused with an
- * explicit Owner-required panel.
+ * Route gates (design §3.2, §3.3): Home and Admin are private by default.
+ * The first protected render is always an explicit access check that never
+ * flashes data from a previous session; Guests are guided to the login page
+ * (with the requested route preserved) and non-Owners are refused with a
+ * stable, non-leaking Owner-required panel.
  */
+function CheckingAccess() {
+  return (
+    <main className="app-main">
+      <p role="status">Checking access…</p>
+    </main>
+  )
+}
+
 function RequireSession({ children }: { children: ReactNode }) {
-  const { status } = useAuth()
+  const { status, accessLost } = useAuth()
   const location = useLocation()
 
   if (status.state === 'loading') {
-    return (
-      <main className="app-main">
-        <p role="status">Checking session…</p>
-      </main>
-    )
+    return <CheckingAccess />
   }
   if (status.state === 'guest') {
     return (
-      <Navigate to="/login" state={{ from: location.pathname }} replace />
+      <Navigate
+        to="/login"
+        state={{ from: location.pathname, sessionExpired: accessLost }}
+        replace
+      />
     )
   }
   return children
@@ -35,7 +44,11 @@ function RequireSession({ children }: { children: ReactNode }) {
 
 function RequireOwner({ children }: { children: ReactNode }) {
   const { status } = useAuth()
-  if (status.state !== 'authenticated') {
+
+  if (status.state === 'loading') {
+    return <CheckingAccess />
+  }
+  if (status.state === 'guest') {
     return <RequireSession>{children}</RequireSession>
   }
   if (status.session.role !== 'owner') {
@@ -43,6 +56,10 @@ function RequireOwner({ children }: { children: ReactNode }) {
       <section className="page">
         <h1>Owner access required</h1>
         <p>The Admin dashboard is restricted to Owners.</p>
+        <p className="muted">
+          This session cannot view Admin data. Sign out and sign in with an
+          Owner account to continue.
+        </p>
       </section>
     )
   }

@@ -21,7 +21,9 @@ export default function LoginPage() {
     return <Navigate to="/" replace />
   }
 
-  const from = (location.state as { from?: string } | null)?.from ?? '/'
+  const from = (location.state as { from?: string; sessionExpired?: boolean } | null)?.from ?? '/'
+  const sessionExpired =
+    (location.state as { sessionExpired?: boolean } | null)?.sessionExpired ?? false
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -49,6 +51,11 @@ export default function LoginPage() {
           The Home dashboard is private by default. Sign in with your Owner
           or Viewer account.
         </p>
+        {sessionExpired && (
+          <p className="form-success" role="status">
+            Your session expired or was revoked. Sign in again to continue.
+          </p>
+        )}
         {error && (
           <p className="form-error" role="alert">
             {error}

@@ -19,14 +19,14 @@ test.describe('Authenticated shell', () => {
   test('Admin shell fits the viewport without horizontal overflow', async ({ page }) => {
     await loginAs(page)
     await page.getByRole('link', { name: 'Admin', exact: true }).click()
-    await expectShellFitsViewport(page, 'Admin')
+    await expectShellFitsViewport(page, 'Overview')
   })
 
   test('Home and Admin navigation is reachable in both directions', async ({ page }) => {
     await loginAs(page)
     await page.getByRole('link', { name: 'Admin', exact: true }).click()
     await expect(page).toHaveURL(/\/admin$/)
-    await expectShellFitsViewport(page, 'Admin')
+    await expectShellFitsViewport(page, 'Overview')
 
     await page.getByRole('link', { name: 'Home', exact: true }).click()
     await expect(page).toHaveURL(/\/$/)
@@ -53,7 +53,7 @@ test.describe('Authenticated shell', () => {
     await expectFocusedElementHasVisibleFocus(page)
     await page.keyboard.press('Enter')
     await expect(page).toHaveURL(/\/admin$/)
-    await expect(page.getByRole('heading', { level: 1, name: 'Admin' })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
 
     // Navigation remounts the layout, so find Sign out by tabbing around
     // the (small, wrapping) header focus order.

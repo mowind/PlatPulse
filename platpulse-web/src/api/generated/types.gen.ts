@@ -42,6 +42,21 @@ export type AdminBlockHistoryResponse = {
     rawRetentionDays: number;
 };
 
+export type AdminOverview = {
+    /**
+     * Server-owned attention queue. The WebUI presents these items and
+     * never recomputes health policy or attention in the browser.
+     */
+    attention: Array<AttentionItem>;
+    generated_at: string;
+    summary: AdminOverviewSummary;
+};
+
+export type AdminOverviewSummary = {
+    agents: AgentSummary;
+    nodes: NodeSummary;
+};
+
 export type AgentDiagnostic = {
     active_boot_id?: string | null;
     agent_epoch: number;
@@ -74,6 +89,13 @@ export type AgentDiagnostic = {
     shutdown_updated_at?: string | null;
 };
 
+export type AgentSummary = {
+    offline: number;
+    online: number;
+    total: number;
+    unknown: number;
+};
+
 export type ApiError = {
     code: string;
     fields: Array<string>;
@@ -89,6 +111,20 @@ export type ApiError = {
  */
 export type ApiErrorBody = {
     error: ApiError;
+};
+
+export type AttentionItem = {
+    /**
+     * Stable item key (kind + subject) for list rendering and tests.
+     */
+    id: string;
+    kind: string;
+    message: string;
+    observed_at: string;
+    severity: string;
+    subject_id: string;
+    subject_kind: string;
+    subject_label: string;
 };
 
 export type ConsensusDiagnostic = {
@@ -164,6 +200,11 @@ export type NodeDiagnostic = {
     consensus?: null | ConsensusDiagnostic;
     current_head?: number | null;
     display_name?: string | null;
+    /**
+     * Server-owned freshness dimension: `current`, `stale`, or `unknown`.
+     * The WebUI formats this state; it never derives it from `Date.now()`.
+     */
+    freshness: string;
     health: string;
     health_reason: string;
     historical_high_watermark?: number | null;
@@ -179,6 +220,22 @@ export type NodeDiagnostic = {
     rpc?: null | RpcDiagnostic;
     sync?: null | SyncDiagnostic;
     visibility: string;
+};
+
+export type NodeSummary = {
+    healthy: number;
+    /**
+     * Nodes published to the Public projection.
+     */
+    published: number;
+    /**
+     * Nodes in a non-active lifecycle (e.g. retired); not part of the
+     * health buckets because no observation policy applies to them.
+     */
+    retired: number;
+    total: number;
+    unhealthy: number;
+    unknown: number;
 };
 
 export type ProcessDiagnostic = {
@@ -406,6 +463,22 @@ export type SetVisibilityResponses = {
 };
 
 export type SetVisibilityResponse = SetVisibilityResponses[keyof SetVisibilityResponses];
+
+export type OverviewData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/overview';
+};
+
+export type OverviewResponses = {
+    /**
+     * Server-owned attention queue and overview summary
+     */
+    200: AdminOverview;
+};
+
+export type OverviewResponse = OverviewResponses[keyof OverviewResponses];
 
 export type PublicEventsData = {
     body?: never;

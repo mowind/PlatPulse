@@ -457,6 +457,23 @@ fn derive_health(
         ("unknown", "one or more observations are unsupported")
     }
 }
+
+/// Server-owned freshness dimension for the Admin Node view: `current` when
+/// the newest retained observation is fresh, `stale` when an older retained
+/// observation exists, and `unknown` when nothing was ever observed.
+fn derive_freshness<'a>(received_at: impl Iterator<Item = &'a str>) -> &'static str {
+    let latest = received_at.filter_map(crate::auth::parse_rfc3339).max();
+    match latest {
+        None => "unknown",
+        Some(value)
+            if (crate::auth::now_utc() - value).whole_seconds().abs()
+                <= FRESHNESS_LIMIT_SECONDS =>
+        {
+            "current"
+        }
+        Some(_) => "stale",
+    }
+}
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct NodeDiagnostic {
@@ -468,6 +485,9 @@ pub struct NodeDiagnostic {
     pub visibility: String,
     pub health: String,
     pub health_reason: String,
+    /// Server-owned freshness dimension: `current`, `stale`, or `unknown`.
+    /// The WebUI formats this state; it never derives it from `Date.now()`.
+    pub freshness: String,
     pub process: Option<ProcessDiagnostic>,
     pub rpc: Option<RpcDiagnostic>,
     pub sync: Option<SyncDiagnostic>,
@@ -523,6 +543,112 @@ async fn consensus_diagnostic(state: &AppState, node_id: &str) -> Option<Consens
         state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision,
         epoch, view_number, validator: validator.map(|value| value != 0), highest_qc_block, highest_lock_block, highest_commit_block,
     })
+}
+
+/// Collect the full Server-owned diagnostic view for one Node. Used by both
+/// the Agent diagnostics list and the Owner overview so health, freshness,
+/// and reasons are computed once in the Server.
+async fn node_diagnostic(
+    state: &AppState,
+    node_id: String,
+    network_key: String,
+    display_name: Option<String>,
+    lifecycle: String,
+    inventory_revision: i64,
+    visibility: String,
+) -> NodeDiagnostic {
+    let process = process_diagnostic(state, &node_id).await;
+    let rpc = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>, Option<i64>)>(
+        "SELECT c.rpc_client_version, s.state, s.error_code, s.error_message, s.attempted_at, s.observed_at, s.received_at, s.state_revision, s.value_revision FROM component_status s LEFT JOIN current_node_chain_observations c ON c.node_id = s.node_id WHERE s.node_id = ? AND s.component_key = 'rpc'",
+    )
+    .bind(&node_id)
+    .fetch_optional(state.db().pool())
+    .await
+    .ok()
+    .flatten();
+    let rpc = if let Some((
+        client_version,
+        component_state,
+        error_code,
+        error_message,
+        attempted_at,
+        observed_at,
+        received_at,
+        state_revision,
+        value_revision,
+    )) = rpc
+    {
+        let namespaces = sqlx::query_scalar::<_, String>("SELECT namespace FROM current_node_rpc_namespaces WHERE node_id = ? ORDER BY namespace")
+            .bind(&node_id).fetch_all(state.db().pool()).await.unwrap_or_default();
+        let methods = sqlx::query_scalar::<_, String>(
+            "SELECT method FROM current_node_rpc_methods WHERE node_id = ? ORDER BY method",
+        )
+        .bind(&node_id)
+        .fetch_all(state.db().pool())
+        .await
+        .unwrap_or_default();
+        Some(RpcDiagnostic {
+            client_version,
+            namespaces,
+            methods,
+            state: component_state,
+            error_code,
+            error_message,
+            attempted_at,
+            observed_at,
+            received_at,
+            state_revision,
+            value_revision,
+        })
+    } else {
+        None
+    };
+    let sync = sync_diagnostic(state, &node_id).await;
+    let consensus = consensus_diagnostic(state, &node_id).await;
+    let (health, health_reason) =
+        derive_health(&lifecycle, rpc.as_ref(), sync.as_ref(), consensus.as_ref());
+    let freshness = derive_freshness(
+        rpc.as_ref()
+            .and_then(|c| c.received_at.as_deref())
+            .into_iter()
+            .chain(sync.as_ref().and_then(|c| c.received_at.as_deref()))
+            .chain(consensus.as_ref().and_then(|c| c.received_at.as_deref())),
+    );
+    let history = sqlx::query_as::<_, (Option<i64>, Option<i64>, Option<String>, Option<i64>, Option<String>)>(
+        "SELECT c.current_block, h.historical_high_watermark, h.resync_state, r.block_number, r.confidence FROM current_node_chain_observations c LEFT JOIN block_history_state h ON h.node_id=c.node_id LEFT JOIN nodes n ON n.node_id=c.node_id LEFT JOIN network_reference_heads r ON r.network_key=n.network_key WHERE c.node_id=?"
+    ).bind(&node_id).fetch_optional(state.db().pool()).await.ok().flatten();
+    let (
+        current_head,
+        historical_high_watermark,
+        resync_state,
+        network_reference_head,
+        network_reference_confidence,
+    ) = history.unwrap_or((None, None, None, None, None));
+    let resync_state = resync_state.unwrap_or_else(|| "normal".to_owned());
+    NodeDiagnostic {
+        node_id,
+        network_key,
+        display_name,
+        lifecycle,
+        inventory_revision,
+        visibility,
+        health: health.to_owned(),
+        health_reason: health_reason.to_owned(),
+        freshness: freshness.to_owned(),
+        process,
+        rpc,
+        sync,
+        consensus,
+        current_head,
+        historical_high_watermark,
+        resync_progress: historical_high_watermark
+            .zip(current_head)
+            .map(|(high, current)| format!("{current}/{high}")),
+        network_reference_head,
+        network_reference_confidence: network_reference_confidence
+            .unwrap_or_else(|| "unknown".to_owned()),
+        resync_state,
+    }
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -597,20 +723,7 @@ async fn diagnostics(
             security_event_count,
         } = row;
         let capabilities = serde_json::from_str(&capabilities_json).unwrap_or_default();
-        let liveness = last_received_at
-            .as_deref()
-            .and_then(crate::auth::parse_rfc3339)
-            .map(|received| {
-                if (crate::auth::now_utc() - received).whole_seconds()
-                    <= crate::http::agent::AGENT_OFFLINE_AFTER_SECONDS
-                {
-                    "online"
-                } else {
-                    "offline"
-                }
-            })
-            .unwrap_or("unknown")
-            .to_owned();
+        let liveness = agent_liveness(last_received_at.as_deref()).to_owned();
         let sequence_gap_count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM report_sequence_gaps WHERE agent_id=?")
                 .bind(&agent_id)
@@ -653,90 +766,18 @@ async fn diagnostics(
         let mut nodes = Vec::with_capacity(rows.len());
         for (node_id, network_key, display_name, lifecycle, inventory_revision, visibility) in rows
         {
-            let process = process_diagnostic(&state, &node_id).await;
-            let rpc = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>, Option<i64>)>(
-                "SELECT c.rpc_client_version, s.state, s.error_code, s.error_message, s.attempted_at, s.observed_at, s.received_at, s.state_revision, s.value_revision FROM component_status s LEFT JOIN current_node_chain_observations c ON c.node_id = s.node_id WHERE s.node_id = ? AND s.component_key = 'rpc'",
-            )
-            .bind(&node_id)
-            .fetch_optional(state.db().pool())
-            .await
-            .ok()
-            .flatten();
-            let rpc = if let Some((
-                client_version,
-                component_state,
-                error_code,
-                error_message,
-                attempted_at,
-                observed_at,
-                received_at,
-                state_revision,
-                value_revision,
-            )) = rpc
-            {
-                let namespaces = sqlx::query_scalar::<_, String>("SELECT namespace FROM current_node_rpc_namespaces WHERE node_id = ? ORDER BY namespace")
-                    .bind(&node_id).fetch_all(state.db().pool()).await.unwrap_or_default();
-                let methods = sqlx::query_scalar::<_, String>(
-                    "SELECT method FROM current_node_rpc_methods WHERE node_id = ? ORDER BY method",
+            nodes.push(
+                node_diagnostic(
+                    &state,
+                    node_id,
+                    network_key,
+                    display_name,
+                    lifecycle,
+                    inventory_revision,
+                    visibility,
                 )
-                .bind(&node_id)
-                .fetch_all(state.db().pool())
-                .await
-                .unwrap_or_default();
-                Some(RpcDiagnostic {
-                    client_version,
-                    namespaces,
-                    methods,
-                    state: component_state,
-                    error_code,
-                    error_message,
-                    attempted_at,
-                    observed_at,
-                    received_at,
-                    state_revision,
-                    value_revision,
-                })
-            } else {
-                None
-            };
-            let sync = sync_diagnostic(&state, &node_id).await;
-            let consensus = consensus_diagnostic(&state, &node_id).await;
-            let (health, health_reason) =
-                derive_health(&lifecycle, rpc.as_ref(), sync.as_ref(), consensus.as_ref());
-            let history = sqlx::query_as::<_, (Option<i64>, Option<i64>, Option<String>, Option<i64>, Option<String>)>(
-                "SELECT c.current_block, h.historical_high_watermark, h.resync_state, r.block_number, r.confidence FROM current_node_chain_observations c LEFT JOIN block_history_state h ON h.node_id=c.node_id LEFT JOIN nodes n ON n.node_id=c.node_id LEFT JOIN network_reference_heads r ON r.network_key=n.network_key WHERE c.node_id=?"
-            ).bind(&node_id).fetch_optional(state.db().pool()).await.ok().flatten();
-            let (
-                current_head,
-                historical_high_watermark,
-                resync_state,
-                network_reference_head,
-                network_reference_confidence,
-            ) = history.unwrap_or((None, None, None, None, None));
-            let resync_state = resync_state.unwrap_or_else(|| "normal".to_owned());
-            nodes.push(NodeDiagnostic {
-                node_id,
-                network_key,
-                display_name,
-                lifecycle,
-                inventory_revision,
-                visibility,
-                health: health.to_owned(),
-                health_reason: health_reason.to_owned(),
-                process,
-                rpc,
-                sync,
-                consensus,
-                current_head,
-                historical_high_watermark,
-                resync_progress: historical_high_watermark
-                    .zip(current_head)
-                    .map(|(high, current)| format!("{current}/{high}")),
-                network_reference_head,
-                network_reference_confidence: network_reference_confidence
-                    .unwrap_or_else(|| "unknown".to_owned()),
-                resync_state,
-            });
+                .await,
+            );
         }
         result.push(AgentDiagnostic {
             agent_id,
@@ -768,6 +809,357 @@ async fn diagnostics(
         });
     }
     Json(result)
+}
+
+/// Liveness rule shared by the diagnostics list and the overview: an Agent
+/// is `online` only when a report arrived within the offline window.
+fn agent_liveness(last_received_at: Option<&str>) -> &'static str {
+    last_received_at
+        .and_then(crate::auth::parse_rfc3339)
+        .map(|received| {
+            if (crate::auth::now_utc() - received).whole_seconds()
+                <= crate::http::agent::AGENT_OFFLINE_AFTER_SECONDS
+            {
+                "online"
+            } else {
+                "offline"
+            }
+        })
+        .unwrap_or("unknown")
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct AdminOverview {
+    pub generated_at: String,
+    pub summary: AdminOverviewSummary,
+    /// Server-owned attention queue. The WebUI presents these items and
+    /// never recomputes health policy or attention in the browser.
+    pub attention: Vec<AttentionItem>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct AdminOverviewSummary {
+    pub agents: AgentSummary,
+    pub nodes: NodeSummary,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct AgentSummary {
+    pub total: i64,
+    pub online: i64,
+    pub offline: i64,
+    pub unknown: i64,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct NodeSummary {
+    pub total: i64,
+    pub healthy: i64,
+    pub unhealthy: i64,
+    pub unknown: i64,
+    /// Nodes in a non-active lifecycle (e.g. retired); not part of the
+    /// health buckets because no observation policy applies to them.
+    pub retired: i64,
+    /// Nodes published to the Public projection.
+    pub published: i64,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct AttentionItem {
+    /// Stable item key (kind + subject) for list rendering and tests.
+    pub id: String,
+    pub kind: String,
+    pub severity: String,
+    pub subject_kind: String,
+    pub subject_id: String,
+    pub subject_label: String,
+    pub message: String,
+    pub observed_at: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct OverviewAgentRow {
+    agent_id: String,
+    last_received_at: Option<String>,
+    shutdown_state: String,
+    security_event_count: i64,
+    sequence_gap_count: i64,
+    spool_store_fatal: Option<i64>,
+    spool_dropped_sequence_to: Option<i64>,
+}
+
+fn severity_rank(severity: &str) -> u8 {
+    match severity {
+        "critical" => 0,
+        "warning" => 1,
+        _ => 2,
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/admin/v1/overview",
+    tag = "admin",
+    responses((status = 200, description = "Server-owned attention queue and overview summary", body = AdminOverview))
+)]
+async fn overview(
+    State(state): State<AppState>,
+    Extension(_session): Extension<super::AuthenticatedSession>,
+    Extension(request_id): Extension<super::RequestId>,
+) -> Response {
+    let generated_at = crate::auth::format_rfc3339(crate::auth::now_utc());
+    // A database failure is a Server failure: it must surface as an error
+    // envelope, never as an authoritative empty queue (webui.md §5.3).
+    let agents = match sqlx::query_as::<_, OverviewAgentRow>(
+        "SELECT a.agent_id, a.last_received_at, a.shutdown_state, a.security_event_count, (SELECT COUNT(*) FROM report_sequence_gaps g WHERE g.agent_id = a.agent_id) AS sequence_gap_count, h.spool_store_fatal, h.spool_dropped_sequence_to FROM agents a LEFT JOIN current_host_observations h ON h.agent_id = a.agent_id ORDER BY a.agent_id",
+    )
+    .fetch_all(state.db().pool())
+    .await
+    {
+        Ok(agents) => agents,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    };
+    let mut agent_summary = AgentSummary {
+        total: agents.len() as i64,
+        online: 0,
+        offline: 0,
+        unknown: 0,
+    };
+    let mut attention: Vec<AttentionItem> = Vec::new();
+    for agent in &agents {
+        let liveness = agent_liveness(agent.last_received_at.as_deref());
+        match liveness {
+            "online" => agent_summary.online += 1,
+            "offline" => agent_summary.offline += 1,
+            _ => agent_summary.unknown += 1,
+        }
+        if liveness == "offline" {
+            attention.push(AttentionItem {
+                id: format!("agent_offline:agent:{}", agent.agent_id),
+                kind: "agent_offline".to_owned(),
+                severity: "warning".to_owned(),
+                subject_kind: "agent".to_owned(),
+                subject_id: agent.agent_id.clone(),
+                subject_label: agent.agent_id.clone(),
+                message: "the Agent has not reported within the liveness window".to_owned(),
+                observed_at: agent
+                    .last_received_at
+                    .clone()
+                    .unwrap_or_else(|| generated_at.clone()),
+            });
+        }
+        if agent.spool_store_fatal.is_some_and(|value| value != 0) {
+            attention.push(AttentionItem {
+                id: format!("agent_spool_fatal:agent:{}", agent.agent_id),
+                kind: "agent_spool_fatal".to_owned(),
+                severity: "critical".to_owned(),
+                subject_kind: "agent".to_owned(),
+                subject_id: agent.agent_id.clone(),
+                subject_label: agent.agent_id.clone(),
+                message: "the Agent spool store is in a fatal state; durable reports are at risk"
+                    .to_owned(),
+                observed_at: generated_at.clone(),
+            });
+        }
+        if agent.spool_dropped_sequence_to.is_some() {
+            attention.push(AttentionItem {
+                id: format!("agent_spool_overflow:agent:{}", agent.agent_id),
+                kind: "agent_spool_overflow".to_owned(),
+                severity: "warning".to_owned(),
+                subject_kind: "agent".to_owned(),
+                subject_id: agent.agent_id.clone(),
+                subject_label: agent.agent_id.clone(),
+                message: "the Agent spool overflowed and discarded queued reports".to_owned(),
+                observed_at: generated_at.clone(),
+            });
+        }
+        if agent.sequence_gap_count > 0 {
+            attention.push(AttentionItem {
+                id: format!("agent_report_gap:agent:{}", agent.agent_id),
+                kind: "agent_report_gap".to_owned(),
+                severity: "warning".to_owned(),
+                subject_kind: "agent".to_owned(),
+                subject_id: agent.agent_id.clone(),
+                subject_label: agent.agent_id.clone(),
+                message: format!(
+                    "{} report sequence gap{} recorded",
+                    agent.sequence_gap_count,
+                    if agent.sequence_gap_count == 1 {
+                        " was"
+                    } else {
+                        "s were"
+                    }
+                ),
+                observed_at: generated_at.clone(),
+            });
+        }
+        if agent.security_event_count > 0 {
+            attention.push(AttentionItem {
+                id: format!("agent_security_event:agent:{}", agent.agent_id),
+                kind: "agent_security_event".to_owned(),
+                severity: "critical".to_owned(),
+                subject_kind: "agent".to_owned(),
+                subject_id: agent.agent_id.clone(),
+                subject_label: agent.agent_id.clone(),
+                message: format!(
+                    "{} security event{} recorded",
+                    agent.security_event_count,
+                    if agent.security_event_count == 1 {
+                        " was"
+                    } else {
+                        "s were"
+                    }
+                ),
+                observed_at: generated_at.clone(),
+            });
+        }
+        if matches!(
+            agent.shutdown_state.as_str(),
+            "stopping" | "draining" | "send_failed" | "forced_kill_recovery"
+        ) {
+            attention.push(AttentionItem {
+                id: format!("agent_shutdown_incomplete:agent:{}", agent.agent_id),
+                kind: "agent_shutdown_incomplete".to_owned(),
+                severity: "warning".to_owned(),
+                subject_kind: "agent".to_owned(),
+                subject_id: agent.agent_id.clone(),
+                subject_label: agent.agent_id.clone(),
+                message: format!("the Agent shutdown is {}", agent.shutdown_state),
+                observed_at: generated_at.clone(),
+            });
+        }
+    }
+    let rows = match sqlx::query_as::<_, (String, String, Option<String>, String, i64, String)>(
+        "SELECT node_id, network_key, display_name, lifecycle, inventory_revision, visibility FROM nodes ORDER BY node_id",
+    )
+    .fetch_all(state.db().pool())
+    .await
+    {
+        Ok(rows) => rows,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    };
+    let mut node_summary = NodeSummary {
+        total: rows.len() as i64,
+        healthy: 0,
+        unhealthy: 0,
+        unknown: 0,
+        retired: 0,
+        published: 0,
+    };
+    for (node_id, network_key, display_name, lifecycle, inventory_revision, visibility) in rows {
+        let diagnostic = node_diagnostic(
+            &state,
+            node_id.clone(),
+            network_key,
+            display_name.clone(),
+            lifecycle.clone(),
+            inventory_revision,
+            visibility.clone(),
+        )
+        .await;
+        if visibility == "public" {
+            node_summary.published += 1;
+        }
+        if lifecycle != "active" {
+            node_summary.retired += 1;
+            continue;
+        }
+        let observed_at = diagnostic
+            .rpc
+            .as_ref()
+            .and_then(|c| c.received_at.as_deref())
+            .into_iter()
+            .chain(
+                diagnostic
+                    .sync
+                    .as_ref()
+                    .and_then(|c| c.received_at.as_deref()),
+            )
+            .chain(
+                diagnostic
+                    .consensus
+                    .as_ref()
+                    .and_then(|c| c.received_at.as_deref()),
+            )
+            .filter_map(crate::auth::parse_rfc3339)
+            .max()
+            .map(crate::auth::format_rfc3339)
+            .unwrap_or_else(|| generated_at.clone());
+        match diagnostic.health.as_str() {
+            "healthy" => node_summary.healthy += 1,
+            "unhealthy" => {
+                node_summary.unhealthy += 1;
+                attention.push(AttentionItem {
+                    id: format!("node_unhealthy:node:{node_id}"),
+                    kind: "node_unhealthy".to_owned(),
+                    severity: "critical".to_owned(),
+                    subject_kind: "node".to_owned(),
+                    subject_id: node_id.clone(),
+                    subject_label: display_name.unwrap_or_else(|| node_id.clone()),
+                    message: diagnostic.health_reason.clone(),
+                    observed_at: observed_at.clone(),
+                });
+            }
+            _ => {
+                node_summary.unknown += 1;
+                attention.push(AttentionItem {
+                    id: format!("node_health_unknown:node:{node_id}"),
+                    kind: "node_health_unknown".to_owned(),
+                    severity: "warning".to_owned(),
+                    subject_kind: "node".to_owned(),
+                    subject_id: node_id.clone(),
+                    subject_label: display_name.unwrap_or_else(|| node_id.clone()),
+                    message: diagnostic.health_reason.clone(),
+                    observed_at: observed_at.clone(),
+                });
+            }
+        }
+        if diagnostic.resync_state != "normal" {
+            attention.push(AttentionItem {
+                id: format!("node_resync:node:{node_id}"),
+                kind: "node_resync".to_owned(),
+                severity: "warning".to_owned(),
+                subject_kind: "node".to_owned(),
+                subject_id: node_id.clone(),
+                subject_label: node_id.clone(),
+                message: format!("the Node resync state is {}", diagnostic.resync_state),
+                observed_at: observed_at.clone(),
+            });
+        }
+    }
+    attention.sort_by(|a, b| {
+        severity_rank(&a.severity)
+            .cmp(&severity_rank(&b.severity))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    Json(AdminOverview {
+        generated_at,
+        summary: AdminOverviewSummary {
+            agents: agent_summary,
+            nodes: node_summary,
+        },
+        attention,
+    })
+    .into_response()
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -891,6 +1283,7 @@ async fn admin_node_history(
 pub fn router() -> Router<AppState> {
     Router::<AppState>::new()
         .route("/events", get(admin_events))
+        .route("/overview", get(overview))
         .route("/nodes/{node_id}/history", get(admin_node_history))
         .route("/agents", get(diagnostics))
         .route("/nodes/{node_id}/visibility", put(set_visibility))
@@ -1150,5 +1543,275 @@ mod tests {
         assert_eq!(component["received_at"], "2026-01-01T00:00:02Z");
         assert_eq!(component["state_revision"], 2);
         assert_eq!(component["value_revision"], 1);
+    }
+
+    #[test]
+    fn derive_freshness_ranks_retained_observations() {
+        let now = crate::auth::now_utc();
+        let recent = crate::auth::format_rfc3339(now - time::Duration::seconds(30));
+        let stale = crate::auth::format_rfc3339(now - time::Duration::hours(3));
+        assert_eq!(
+            derive_freshness([recent.as_str(), stale.as_str()].into_iter()),
+            "current"
+        );
+        assert_eq!(derive_freshness([stale.as_str()].into_iter()), "stale");
+        assert_eq!(derive_freshness([].into_iter()), "unknown");
+        // Future-skewed clocks are never shown as current.
+        let future = crate::auth::format_rfc3339(now + time::Duration::hours(1));
+        assert_eq!(derive_freshness([future.as_str()].into_iter()), "stale");
+    }
+
+    #[tokio::test]
+    async fn overview_reports_server_owned_attention_and_summary() {
+        let dir = tempdir().unwrap();
+        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let pepper_path = dir.path().join("pepper");
+        crate::secrets::create_pepper_file(&pepper_path).unwrap();
+        let auth = crate::auth::AuthConfig::development(
+            crate::secrets::load_pepper_file(&pepper_path).unwrap(),
+            "http://127.0.0.1:8080".to_owned(),
+        );
+        let state = AppState::new(database, None, auth);
+        let now = crate::auth::now_utc();
+        let fresh = crate::auth::format_rfc3339(now - time::Duration::seconds(20));
+        let created = "2026-01-01T00:00:00Z";
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at, last_received_at, shutdown_state, security_event_count) VALUES ('agent-ov', 1, ?, ?, ?, 'running', 0)")
+            .bind(created)
+            .bind(created)
+            .bind(&fresh)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('mainnet', 'Main', '0xgenesis', 1, 1, 'lat', ?, ?)")
+            .bind(created)
+            .bind(created)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        for (node_id, name, visibility, rpc_state) in [
+            ("node-a", "Node A", "public", "ok"),
+            ("node-b", "Node B", "private", "error"),
+        ] {
+            sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES (?, 'agent-ov', 'mainnet', ?, 'ws://127.0.0.1:1', 'active', ?, 1, ?, ?)")
+                .bind(node_id)
+                .bind(name)
+                .bind(visibility)
+                .bind(created)
+                .bind(created)
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO current_node_chain_observations (node_id, current_block, syncing, updated_at) VALUES (?, 100, 0, ?)")
+                .bind(node_id)
+                .bind(&fresh)
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+            for component in ["rpc", "sync", "consensus"] {
+                let component_state = if component == "rpc" { rpc_state } else { "ok" };
+                sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES ('agent-ov', 'node', ?, ?, ?, ?, ?, ?, ?, 1, 1)")
+                    .bind(node_id)
+                    .bind(node_id)
+                    .bind(component)
+                    .bind(component_state)
+                    .bind(&fresh)
+                    .bind(&fresh)
+                    .bind(&fresh)
+                    .execute(state.db().pool())
+                    .await
+                    .unwrap();
+            }
+        }
+        let session = crate::auth::SessionInfo {
+            session_id: "session".to_owned(),
+            user_id: "owner".to_owned(),
+            username: "owner".to_owned(),
+            role: "owner".to_owned(),
+            created_at: OffsetDateTime::now_utc(),
+            last_seen_at: OffsetDateTime::now_utc(),
+            expires_at: OffsetDateTime::now_utc(),
+            csrf_token: "csrf".to_owned(),
+        };
+        let response = overview(
+            State(state),
+            Extension(AuthenticatedSession(session)),
+            Extension(crate::http::RequestId(std::sync::Arc::from("request"))),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(value["summary"]["nodes"]["total"], 2);
+        assert_eq!(value["summary"]["nodes"]["healthy"], 1);
+        assert_eq!(value["summary"]["nodes"]["unhealthy"], 1);
+        assert_eq!(value["summary"]["nodes"]["unknown"], 0);
+        assert_eq!(value["summary"]["nodes"]["retired"], 0);
+        assert_eq!(value["summary"]["nodes"]["published"], 1);
+        assert_eq!(value["summary"]["agents"]["total"], 1);
+        assert_eq!(value["summary"]["agents"]["online"], 1);
+        assert_eq!(value["summary"]["agents"]["offline"], 0);
+        let attention = value["attention"].as_array().unwrap();
+        assert_eq!(attention.len(), 1);
+        assert_eq!(attention[0]["kind"], "node_unhealthy");
+        assert_eq!(attention[0]["severity"], "critical");
+        assert_eq!(attention[0]["subject_kind"], "node");
+        assert_eq!(attention[0]["subject_id"], "node-b");
+        assert_eq!(attention[0]["subject_label"], "Node B");
+        assert_eq!(attention[0]["message"], "RPC collection failed");
+    }
+
+    #[tokio::test]
+    async fn overview_flags_offline_agents_spool_loss_and_unknown_nodes() {
+        let dir = tempdir().unwrap();
+        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let pepper_path = dir.path().join("pepper");
+        crate::secrets::create_pepper_file(&pepper_path).unwrap();
+        let auth = crate::auth::AuthConfig::development(
+            crate::secrets::load_pepper_file(&pepper_path).unwrap(),
+            "http://127.0.0.1:8080".to_owned(),
+        );
+        let state = AppState::new(database, None, auth);
+        let now = crate::auth::now_utc();
+        let stale = crate::auth::format_rfc3339(now - time::Duration::hours(1));
+        let created = "2026-01-01T00:00:00Z";
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at, last_received_at, shutdown_state, security_event_count) VALUES ('agent-ov2', 1, ?, ?, ?, 'running', 2)")
+            .bind(created)
+            .bind(created)
+            .bind(&stale)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO current_host_observations (agent_id, spool_store_fatal, spool_dropped_sequence_to, updated_at) VALUES ('agent-ov2', 1, 5, ?)")
+            .bind(&stale)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('mainnet', 'Main', '0xgenesis', 1, 1, 'lat', ?, ?)")
+            .bind(created)
+            .bind(created)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ('node-unknown', 'agent-ov2', 'mainnet', 'Node Unknown', 'ws://127.0.0.1:2', 'active', 'private', 1, ?, ?)")
+            .bind(created)
+            .bind(created)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let session = crate::auth::SessionInfo {
+            session_id: "session".to_owned(),
+            user_id: "owner".to_owned(),
+            username: "owner".to_owned(),
+            role: "owner".to_owned(),
+            created_at: OffsetDateTime::now_utc(),
+            last_seen_at: OffsetDateTime::now_utc(),
+            expires_at: OffsetDateTime::now_utc(),
+            csrf_token: "csrf".to_owned(),
+        };
+        let response = overview(
+            State(state),
+            Extension(AuthenticatedSession(session)),
+            Extension(crate::http::RequestId(std::sync::Arc::from("request"))),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(value["summary"]["agents"]["total"], 1);
+        assert_eq!(value["summary"]["agents"]["online"], 0);
+        assert_eq!(value["summary"]["agents"]["offline"], 1);
+        assert_eq!(value["summary"]["nodes"]["total"], 1);
+        assert_eq!(value["summary"]["nodes"]["unknown"], 1);
+        assert_eq!(value["summary"]["nodes"]["retired"], 0);
+        let kinds = value["attention"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| {
+                (
+                    item["kind"].as_str().unwrap().to_owned(),
+                    item["severity"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(kinds.contains(&("agent_security_event".to_owned(), "critical".to_owned())));
+        assert!(kinds.contains(&("agent_spool_fatal".to_owned(), "critical".to_owned())));
+        assert!(kinds.contains(&("agent_offline".to_owned(), "warning".to_owned())));
+        assert!(kinds.contains(&("agent_spool_overflow".to_owned(), "warning".to_owned())));
+        assert!(kinds.contains(&("node_health_unknown".to_owned(), "warning".to_owned())));
+        // Critical items sort before warnings.
+        assert_eq!(value["attention"][0]["severity"], "critical");
+    }
+
+    #[tokio::test]
+    async fn overview_counts_retired_nodes_outside_health_buckets() {
+        let dir = tempdir().unwrap();
+        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let pepper_path = dir.path().join("pepper");
+        crate::secrets::create_pepper_file(&pepper_path).unwrap();
+        let auth = crate::auth::AuthConfig::development(
+            crate::secrets::load_pepper_file(&pepper_path).unwrap(),
+            "http://127.0.0.1:8080".to_owned(),
+        );
+        let state = AppState::new(database, None, auth);
+        let created = "2026-01-01T00:00:00Z";
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('agent-retired', 1, ?, ?)")
+            .bind(created)
+            .bind(created)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('mainnet', 'Main', '0xgenesis', 1, 1, 'lat', ?, ?)")
+            .bind(created)
+            .bind(created)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ('node-retired', 'agent-retired', 'mainnet', 'Node Retired', 'ws://127.0.0.1:3', 'retired', 'private', 1, ?, ?)")
+            .bind(created)
+            .bind(created)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let session = crate::auth::SessionInfo {
+            session_id: "session".to_owned(),
+            user_id: "owner".to_owned(),
+            username: "owner".to_owned(),
+            role: "owner".to_owned(),
+            created_at: OffsetDateTime::now_utc(),
+            last_seen_at: OffsetDateTime::now_utc(),
+            expires_at: OffsetDateTime::now_utc(),
+            csrf_token: "csrf".to_owned(),
+        };
+        let response = overview(
+            State(state),
+            Extension(AuthenticatedSession(session)),
+            Extension(crate::http::RequestId(std::sync::Arc::from("request"))),
+        )
+        .await;
+        let value: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(value["summary"]["nodes"]["total"], 1);
+        assert_eq!(value["summary"]["nodes"]["retired"], 1);
+        assert_eq!(value["summary"]["nodes"]["healthy"], 0);
+        assert_eq!(value["summary"]["nodes"]["unhealthy"], 0);
+        assert_eq!(value["summary"]["nodes"]["unknown"], 0);
+        // Retired Nodes never enter the attention queue.
+        assert_eq!(value["attention"].as_array().unwrap().len(), 0);
     }
 }

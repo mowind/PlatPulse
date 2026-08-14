@@ -1,6 +1,7 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
+import { adminQueryClient } from './api/admin'
 import { client } from './api/generated/client.gen'
 
 const OWNER_SESSION = {
@@ -31,7 +32,7 @@ function errorBody(code: string): Response {
   return jsonResponse({ error: { code, message: code, requestId: 'r1', fields: [] } }, 401)
 }
 
-type RouteHandler = (init?: RequestInit) => Response
+type RouteHandler = (init?: RequestInit) => Response | Promise<Response>
 
 /** Stub global fetch with per-URL handlers; `*`-suffixed keys match prefixes. */
 const TEST_ORIGIN = 'http://platpulse.test'
@@ -62,6 +63,45 @@ async function signIn(username = 'admin', password = 'correct horse battery') {
   )
 }
 
+/** Navigate the in-memory router to /admin the way a browser back/forward
+ * event would, so tests exercise the same route transition as the shell.
+ * Wrapped in `act` so React flushes the navigation before assertions run. */
+async function goToAdmin() {
+  await act(async () => {
+    window.history.pushState({}, '', '/admin')
+    window.dispatchEvent(new PopStateEvent('popstate'))
+    await Promise.resolve()
+  })
+}
+
+/** Minimal EventSource stand-in so Admin SSE behavior is testable in jsdom. */
+class FakeEventSource {
+  static latest: FakeEventSource | null = null
+  private handlers: Record<string, Array<(event: { data?: string }) => void>> = {}
+  onopen: (() => void) | null = null
+  onerror: (() => void) | null = null
+
+  constructor(public url: string) {
+    FakeEventSource.latest = this
+  }
+
+  addEventListener(type: string, handler: (event: { data?: string }) => void) {
+    ;(this.handlers[type] ??= []).push(handler)
+  }
+
+  removeEventListener(type: string, handler: (event: { data?: string }) => void) {
+    this.handlers[type] = (this.handlers[type] ?? []).filter((candidate) => candidate !== handler)
+  }
+
+  close() {
+    if (FakeEventSource.latest === this) FakeEventSource.latest = null
+  }
+
+  emit(type: string, data?: string) {
+    for (const handler of this.handlers[type] ?? []) handler({ data })
+  }
+}
+
 beforeEach(() => {
   window.history.replaceState({}, '', '/')
   // The generated fetch client builds `new Request(url)`; Node's undici
@@ -72,6 +112,9 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  // The Admin QueryClient lives at module scope (like the router); drop its
+  // values between tests so no cached REST data crosses test boundaries.
+  adminQueryClient.clear()
 })
 
 describe('App shell with private Home', () => {
@@ -213,17 +256,238 @@ describe('App shell with private Home', () => {
     render(<App />)
     const adminLink = await screen.findByRole('link', { name: 'Admin' })
     fireEvent.click(adminLink)
-    await screen.findByRole('heading', { level: 1, name: 'Admin diagnostics' })
+    await screen.findByRole('heading', { level: 1, name: 'Overview' })
     fireEvent.change(screen.getByLabelText('Node ID'), { target: { value: 'node-1' } })
     fireEvent.click(screen.getByRole('button', { name: 'Update visibility' }))
 
-    expect((await screen.findByRole('status')).textContent).toContain('node-1 is now public.')
+    expect(await screen.findByText('node-1 is now public.')).toBeTruthy()
     const reportRequest = fetchMock.mock.calls
       .map(([input]) => input)
       .find((input): input is Request => input instanceof Request && input.url.includes('/api/admin/v1/nodes/node-1/visibility'))
     expect(reportRequest).toBeTruthy()
     expect(reportRequest?.method).toBe('PUT')
     expect(reportRequest?.headers.get('X-CSRF-Token')).toBe('csrf-token')
+  })
+
+  it('shows Checking access… before authorization resolves and never renders a session flash', async () => {
+    let resolveSession: ((value: Response) => void) | null = null
+    const sessionGate = new Promise<Response>((resolve) => {
+      resolveSession = resolve
+    })
+    mockFetch({ '/api/public/v1/session': () => sessionGate })
+
+    render(<App />)
+    await goToAdmin()
+    expect((await screen.findByRole('status')).textContent).toContain('Checking access')
+    expect(screen.queryByRole('heading', { level: 1, name: 'Overview' })).toBeNull()
+
+    resolveSession!(jsonResponse(OWNER_SESSION, 200))
+    expect(await screen.findByRole('heading', { level: 1, name: 'Overview' })).toBeTruthy()
+  })
+
+  it('refetches Admin REST after an SSE invalidation without remounting the page', async () => {
+    let overviewCalls = 0
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/overview': () => {
+        overviewCalls += 1
+        return jsonResponse(
+          {
+            generatedAt: '2026-08-12T00:00:00Z',
+            summary: {
+              agents: { total: 1, online: 1, offline: 0, unknown: 0 },
+              nodes: { total: 1, healthy: 1, unhealthy: 0, unknown: 0, retired: 0, published: 1 },
+            },
+            attention: [],
+          },
+          200,
+        )
+      },
+      '/api/admin/v1/agents': () => jsonResponse([], 200),
+    })
+    vi.stubGlobal('EventSource', FakeEventSource)
+
+    render(<App />)
+    await goToAdmin()
+    await screen.findByRole('heading', { level: 1, name: 'Overview' })
+    await waitFor(() => expect(overviewCalls).toBe(1))
+
+    await act(async () => {
+      FakeEventSource.latest?.emit(
+        'invalidation',
+        JSON.stringify({ version: 1, eventId: 2, resource: 'node', revision: 2 }),
+      )
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(overviewCalls).toBe(2))
+    // The heading and page survive the refetch.
+    expect(screen.getByRole('heading', { level: 1, name: 'Overview' })).toBeTruthy()
+  })
+
+  it('treats an SSE access reset as a session loss without leaking Admin data', async () => {
+    let sessionActive = true
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input instanceof Request ? input.url : input).replace(TEST_ORIGIN, '')
+      if (url === '/api/public/v1/session') {
+        return Promise.resolve(
+          sessionActive ? jsonResponse(OWNER_SESSION, 200) : errorBody('auth_required'),
+        )
+      }
+      if (url === '/api/admin/v1/overview') {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              generatedAt: '2026-08-12T00:00:00Z',
+              summary: {
+                agents: { total: 1, online: 1, offline: 0, unknown: 0 },
+                nodes: { total: 1, healthy: 1, unhealthy: 0, unknown: 0, retired: 0, published: 1 },
+              },
+              attention: [],
+            },
+            200,
+          ),
+        )
+      }
+      if (url === '/api/admin/v1/agents') return Promise.resolve(jsonResponse([], 200))
+      return Promise.resolve(jsonResponse({ error: { code: 'not_found' } }, 404))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('EventSource', FakeEventSource)
+
+    render(<App />)
+    await goToAdmin()
+    await screen.findByRole('heading', { level: 1, name: 'Overview' })
+
+    sessionActive = false
+    await act(async () => {
+      FakeEventSource.latest?.emit(
+        'reset',
+        JSON.stringify({ version: 1, eventId: 0, resource: 'collection', reset: true }),
+      )
+      await Promise.resolve()
+    })
+
+    await screen.findByRole('heading', { level: 1, name: 'Sign in to PlatPulse' }, { timeout: 3000 })
+    expect(screen.getByRole('status').textContent).toContain('expired or was revoked')
+    expect(screen.queryByRole('heading', { level: 1, name: 'Overview' })).toBeNull()
+  })
+
+  it('never flashes a previous session Admin cache after re-login', async () => {
+    let session: unknown = OWNER_SESSION
+    const pendingOverview: Array<{ resolve: (value: Response) => void; slot: 1 | 2 }> = []
+    let overviewCalls = 0
+    const attention = (label: string, message: string) => [
+      {
+        id: `node_unhealthy:node:${label}`,
+        kind: 'node_unhealthy',
+        severity: 'critical',
+        subject_kind: 'node',
+        subject_id: label,
+        subject_label: label,
+        message,
+        observed_at: '2026-08-12T00:00:00Z',
+      },
+    ]
+    const firstOverview = {
+      generated_at: '2026-08-12T00:00:00Z',
+      summary: {
+        agents: { total: 1, online: 1, offline: 0, unknown: 0 },
+        nodes: { total: 1, healthy: 1, unhealthy: 0, unknown: 0, retired: 0, published: 1 },
+      },
+      attention: attention('Node X', 'RPC collection failed'),
+    }
+    const secondOverview = {
+      ...firstOverview,
+      attention: attention('Node Y', 'sync collection failed'),
+    }
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input instanceof Request ? input.url : input).replace(TEST_ORIGIN, '')
+      if (url === '/api/public/v1/session') {
+        return Promise.resolve(session ? jsonResponse(session, 200) : errorBody('auth_required'))
+      }
+      if (url === '/api/public/v1/login') {
+        session = {
+          ...OWNER_SESSION,
+          session: { ...OWNER_SESSION.session, userId: 'u9', username: 'admin-b' },
+        }
+        return Promise.resolve(jsonResponse(session, 200))
+      }
+      if (url === '/api/admin/v1/overview') {
+        overviewCalls += 1
+        // Hold the fetch so the test can prove the panel starts from a clean
+        // slate while the REST refetch is still in flight.
+        return new Promise((resolve) => {
+          pendingOverview.push({ resolve, slot: overviewCalls === 1 ? 1 : 2 })
+        })
+      }
+      if (url === '/api/admin/v1/agents') return Promise.resolve(jsonResponse([], 200))
+      return Promise.resolve(jsonResponse({ error: { code: 'not_found' } }, 404))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('EventSource', FakeEventSource)
+
+    render(<App />)
+    await goToAdmin()
+    await waitFor(() => expect(overviewCalls).toBe(1))
+    // While the first fetch is held, the panel must show Starting, not a
+    // previous session's data.
+    expect(screen.getByText('Checking the Server for attention…')).toBeTruthy()
+    pendingOverview.find((entry) => entry.slot === 1)?.resolve(jsonResponse(firstOverview, 200))
+    await screen.findByText('Node X')
+
+    // Session A is revoked while the Admin surface is open.
+    session = null
+    await act(async () => {
+      FakeEventSource.latest?.emit(
+        'reset',
+        JSON.stringify({ version: 1, eventId: 0, resource: 'collection', reset: true }),
+      )
+      await Promise.resolve()
+    })
+    await screen.findByRole('heading', { level: 1, name: 'Sign in to PlatPulse' })
+    expect(screen.queryByText('Node X')).toBeNull()
+
+    // A different Owner signs in and re-enters Admin while the new REST
+    // refetch is deliberately slow: neither the old session's data nor the
+    // new payload may appear before the refetch completes.
+    fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'admin-b' } })
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'pw' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { level: 1, name: 'Home' })).toBeTruthy(),
+    )
+    await goToAdmin()
+    await waitFor(() => expect(overviewCalls).toBe(2))
+    expect(screen.queryByText('Node X')).toBeNull()
+    expect(screen.queryByText('Node Y')).toBeNull()
+
+    pendingOverview.find((entry) => entry.slot === 2)?.resolve(jsonResponse(secondOverview, 200))
+    expect(await screen.findByText('Node Y')).toBeTruthy()
+    expect(screen.queryByText('Node X')).toBeNull()
+  })
+
+  it('refuses the Admin shell for a Viewer without rendering Admin data', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(VIEWER_SESSION, 200),
+      '/api/admin/v1/overview': () =>
+        jsonResponse({ error: { code: 'owner_required' } }, 403),
+    })
+
+    render(<App />)
+    // Settle the shared router at Home first (the Viewer session renders the
+    // Home shell from any starting route), then navigate to the Admin route.
+    await act(async () => {
+      window.history.pushState({}, '', '/')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+    await screen.findByRole('heading', { level: 1, name: 'Home' })
+    await goToAdmin()
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Owner access required' }),
+    ).toBeTruthy()
+    expect(screen.queryByRole('heading', { level: 1, name: 'Overview' })).toBeNull()
+    expect(screen.queryByText('Attention queue')).toBeNull()
   })
 
   it('keeps keyboard submission working on the login form', async () => {

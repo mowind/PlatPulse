@@ -33,7 +33,7 @@ test.describe('Private Home login', () => {
 
     await page.getByRole('link', { name: 'Admin', exact: true }).click()
     await expect(page).toHaveURL(/\/admin$/)
-    await expect(page.getByRole('heading', { level: 1, name: 'Admin' })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
     await expectNoHorizontalOverflow(page)
 
     await page.getByRole('link', { name: 'Home', exact: true }).click()
@@ -80,7 +80,7 @@ test.describe('Private Home login', () => {
     await expectNoHorizontalOverflow(page)
 
     await page.getByRole('link', { name: 'Admin', exact: true }).click()
-    await expect(page.getByRole('heading', { level: 1, name: 'Admin' })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
     await expectNoHorizontalOverflow(page)
   })
 })
