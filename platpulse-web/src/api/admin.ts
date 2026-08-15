@@ -75,6 +75,27 @@ import {
   notificationEvents,
   retryDelivery,
   testNotificationChannel,
+  backupArtifactDetail,
+  backupCreate as backupCreateApi,
+  backupVerify as backupVerifyApi,
+  backupsList,
+  cancelOperation as cancelOperationApi,
+  doctorOverview,
+  doctorRun as doctorRunApi,
+  operationDetail,
+  operationsList,
+  retentionImpact as retentionImpactApi,
+  retentionOverview,
+  retentionRun as retentionRunApi,
+  updateRetentionPolicy as updateRetentionPolicyApi,
+  type BackupArtifactDetail as BackupArtifactDetailDto,
+  type BackupArtifactSummary,
+  type DoctorOverview,
+  type OperationDetail,
+  type OperationMutationResponse,
+  type OperationSummary,
+  type RetentionOverview,
+  type RetentionPolicyDto,
   type ChannelDto,
   type ChannelTestResponse,
   type DeliveryRetryResponse,
@@ -167,6 +188,15 @@ const adminKeys = {
   notificationChannels: ['admin', 'notifications', 'channels'] as const,
   notificationChannelDetail: (channelId: string) =>
     ['admin', 'notifications', 'channels', channelId] as const,
+  operations: (filters: OperationFilters) => ['admin', 'operations', filters] as const,
+  operationDetail: (operationId: string) =>
+    ['admin', 'operations', operationId] as const,
+  retention: ['admin', 'retention'] as const,
+  retentionImpact: (family: string, days: number) =>
+    ['admin', 'retention', 'impact', family, days] as const,
+  backups: ['admin', 'backups'] as const,
+  backupDetail: (artifactId: string) => ['admin', 'backups', artifactId] as const,
+  doctor: ['admin', 'doctor'] as const,
 }
 
 /** Immutable Audit listing filters (issue #47). */
@@ -1441,5 +1471,381 @@ export async function testNotificationChannelEntry(
   } catch (error) {
     void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
     throw error
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Operations, retention, backup, and Doctor (issue #50): durable, REST-
+// authoritative Operations with progress, warnings, errors, request ID, and
+// Audit links. Every mutation returns an Operation reference immediately
+// and invalidates the Admin cache; SSE only accelerates refetch.
+// ---------------------------------------------------------------------------
+
+/** Immutable Operation listing filters. */
+export type OperationFilters = {
+  status?: string
+  kind?: string
+}
+
+/** Fixed display labels for Operation statuses (webui.md §5.5). */
+export function operationStatusLabel(status: string | null | undefined): string {
+  switch (status) {
+    case 'queued':
+      return 'Queued'
+    case 'running':
+      return 'Running'
+    case 'succeeded':
+      return 'Succeeded'
+    case 'succeeded_with_warnings':
+      return 'Succeeded with warnings'
+    case 'failed':
+      return 'Failed'
+    case 'cancelled':
+      return 'Cancelled'
+    default:
+      return 'Unknown'
+  }
+}
+
+/** Fixed display labels for Operation kinds. */
+export function operationKindLabel(kind: string | null | undefined): string {
+  switch (kind) {
+    case 'retention_run':
+      return 'Retention run'
+    case 'backup_create':
+      return 'Backup creation'
+    case 'backup_verify':
+      return 'Backup verification'
+    case 'doctor_run':
+      return 'Doctor'
+    default:
+      return kind ?? 'Unknown'
+  }
+}
+
+export async function fetchAdminOperations(
+  filters: OperationFilters,
+  signal?: AbortSignal,
+): Promise<OperationSummary[]> {
+  return requestAdmin(
+    () =>
+      operationsList({
+        query: {
+          status: filters.status || undefined,
+          kind: filters.kind || undefined,
+        },
+        signal,
+      }),
+    'Unable to load Operations',
+  )
+}
+
+export function useAdminOperations(generation: number, filters: OperationFilters) {
+  return useQuery({
+    queryKey: [...adminKeys.operations(filters), generation],
+    queryFn: ({ signal }) => fetchAdminOperations(filters, signal),
+    placeholderData: keepPreviousData,
+  })
+}
+
+/** Operation detail: no placeholder — one Operation's DTO must never
+ * render under another Operation's URL. */
+export async function fetchAdminOperation(
+  operationId: string,
+  signal?: AbortSignal,
+): Promise<OperationDetail> {
+  return requestAdmin(
+    () => operationDetail({ path: { operation_id: operationId }, signal }),
+    'Unable to load the Operation',
+  )
+}
+
+export function useAdminOperation(generation: number, operationId: string) {
+  return useQuery({
+    queryKey: [...adminKeys.operationDetail(operationId), generation],
+    queryFn: ({ signal }) => fetchAdminOperation(operationId, signal),
+    enabled: operationId.length > 0,
+  })
+}
+
+/** Cancel a queued or running Operation. Confirmed and audited; refetches
+ * authoritative state (no optimistic update). */
+export async function cancelOperationEntry(
+  operationId: string,
+  csrfToken: string,
+): Promise<OperationMutationResponse> {
+  try {
+    const response = await requestAdmin(
+      () =>
+        cancelOperationApi({
+          path: { operation_id: operationId },
+          headers: { 'X-CSRF-Token': csrfToken },
+        }),
+      'Unable to cancel the Operation',
+    )
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    return response
+  } catch (error) {
+    // The Operation may already be terminal on the Server; reload so the
+    // detail shows the true outcome.
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    throw error
+  }
+}
+
+/** Retention policies with safety bounds, protected state, last run. */
+export async function fetchAdminRetention(signal?: AbortSignal): Promise<RetentionOverview> {
+  return requestAdmin(
+    () => retentionOverview({ signal }),
+    'Unable to load retention policies',
+  )
+}
+
+export function useAdminRetention(generation: number) {
+  return useQuery({
+    queryKey: [...adminKeys.retention, generation],
+    queryFn: ({ signal }) => fetchAdminRetention(signal),
+    placeholderData: keepPreviousData,
+  })
+}
+
+/** Read-only impact preview: never writes and never audits. The edit form
+ * calls this before typed confirmation (webui.md §8.4). It is still a
+ * CSRF-guarded POST (JSON body), so it carries the session token. */
+export function useRetentionImpact(generation: number, family: string, days: number, csrfToken: string) {
+  return useQuery({
+    queryKey: [...adminKeys.retentionImpact(family, days), generation],
+    queryFn: ({ signal }) =>
+      requestAdmin(
+        () =>
+          retentionImpactApi({
+            body: { family, retentionDays: days },
+            headers: { 'X-CSRF-Token': csrfToken },
+            signal,
+          }),
+        'Unable to preview the retention impact',
+      ),
+    enabled: family.length > 0 && days >= 0 && csrfToken.length > 0,
+  })
+}
+
+/** Apply a retention policy change within its fixed safety bounds.
+ * Confirmed, audited, refetched — never optimistic. */
+export async function updateRetentionPolicyEntry(
+  family: string,
+  retentionDays: number,
+  csrfToken: string,
+): Promise<{ policy: RetentionPolicyDto; auditEventId: number }> {
+  try {
+    const response = await requestAdmin(
+      () =>
+        updateRetentionPolicyApi({
+          path: { family },
+          body: { retentionDays },
+          headers: { 'X-CSRF-Token': csrfToken },
+        }),
+      'Unable to update the retention policy',
+    )
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    return response
+  } catch (error) {
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    throw error
+  }
+}
+
+/** Queue a retention run; returns the Operation reference immediately. */
+export async function runRetentionEntry(
+  families: string[] | null,
+  csrfToken: string,
+): Promise<OperationMutationResponse> {
+  try {
+    const response = await requestAdmin(
+      () =>
+        retentionRunApi({
+          body: { families: families ?? undefined },
+          headers: { 'X-CSRF-Token': csrfToken },
+        }),
+      'Unable to start the retention run',
+    )
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    return response
+  } catch (error) {
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    throw error
+  }
+}
+
+/** Backup artifact list: sanitized metadata only (no paths, no contents). */
+export async function fetchAdminBackups(signal?: AbortSignal): Promise<BackupArtifactSummary[]> {
+  return requestAdmin(
+    () => backupsList({ signal }),
+    'Unable to load backup artifacts',
+  )
+}
+
+export function useAdminBackups(generation: number) {
+  return useQuery({
+    queryKey: [...adminKeys.backups, generation],
+    queryFn: ({ signal }) => fetchAdminBackups(signal),
+    placeholderData: keepPreviousData,
+  })
+}
+
+export async function fetchAdminBackup(
+  artifactId: string,
+  signal?: AbortSignal,
+): Promise<BackupArtifactDetailDto> {
+  return requestAdmin(
+    () => backupArtifactDetail({ path: { artifact_id: artifactId }, signal }),
+    'Unable to load the backup artifact',
+  )
+}
+
+export function useAdminBackup(generation: number, artifactId: string) {
+  return useQuery({
+    queryKey: [...adminKeys.backupDetail(artifactId), generation],
+    queryFn: ({ signal }) => fetchAdminBackup(artifactId, signal),
+    enabled: artifactId.length > 0,
+  })
+}
+
+/** Queue a backup creation (typed confirmation happens in the page). */
+export async function createBackupEntry(csrfToken: string): Promise<OperationMutationResponse> {
+  try {
+    const response = await requestAdmin(
+      () =>
+        backupCreateApi({
+          headers: { 'X-CSRF-Token': csrfToken },
+        }),
+      'Unable to start the backup',
+    )
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    return response
+  } catch (error) {
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    throw error
+  }
+}
+
+/** Queue a backup verification (checksum, read-only integrity, schema). */
+export async function verifyBackupEntry(
+  artifactId: string,
+  csrfToken: string,
+): Promise<OperationMutationResponse> {
+  try {
+    const response = await requestAdmin(
+      () =>
+        backupVerifyApi({
+          path: { artifact_id: artifactId },
+          headers: { 'X-CSRF-Token': csrfToken },
+        }),
+      'Unable to start the backup verification',
+    )
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    return response
+  } catch (error) {
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    throw error
+  }
+}
+
+/** The most recent read-only Doctor report and its checks. */
+export async function fetchAdminDoctor(signal?: AbortSignal): Promise<DoctorOverview> {
+  return requestAdmin(
+    () => doctorOverview({ signal }),
+    'Unable to load the Doctor report',
+  )
+}
+
+export function useAdminDoctor(generation: number) {
+  return useQuery({
+    queryKey: [...adminKeys.doctor, generation],
+    queryFn: ({ signal }) => fetchAdminDoctor(signal),
+    placeholderData: keepPreviousData,
+  })
+}
+
+/** Queue a read-only Doctor run. Doctor never auto-fixes, deletes,
+ * migrates, or rotates secrets. */
+export async function runDoctorEntry(csrfToken: string): Promise<OperationMutationResponse> {
+  try {
+    const response = await requestAdmin(
+      () =>
+        doctorRunApi({
+          headers: { 'X-CSRF-Token': csrfToken },
+        }),
+      'Unable to start the Doctor run',
+    )
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    return response
+  } catch (error) {
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    throw error
+  }
+}
+
+/** Doctor check status vocabulary: Server-owned words shown as sent. */
+export function doctorCheckStatusLabel(status: string | null | undefined): string {
+  switch (status) {
+    case 'pass':
+      return 'Pass'
+    case 'warning':
+      return 'Warning'
+    case 'fail':
+      return 'Fail'
+    case 'not_configured':
+      return 'Not configured'
+    case 'skipped':
+      return 'Skipped'
+    default:
+      return 'Unknown'
+  }
+}
+
+/** Badge tone for Operation statuses (shared by every Operation surface). */
+export function operationTone(
+  status: string | null | undefined,
+): 'ok' | 'warning' | 'error' | 'neutral' {
+  switch (status) {
+    case 'succeeded':
+      return 'ok'
+    case 'succeeded_with_warnings':
+    case 'running':
+    case 'queued':
+      return 'warning'
+    case 'failed':
+    case 'cancelled':
+      return 'error'
+    default:
+      return 'neutral'
+  }
+}
+
+/** Badge tone for backup artifact verification state. */
+export function verificationTone(
+  verification: string | null | undefined,
+): 'ok' | 'warning' | 'error' {
+  switch (verification) {
+    case 'ok':
+      return 'ok'
+    case 'failed':
+      return 'error'
+    default:
+      return 'warning'
+  }
+}
+
+/** Display label for backup artifact verification state. */
+export function verificationLabel(verification: string | null | undefined): string {
+  switch (verification) {
+    case 'ok':
+      return 'Verified'
+    case 'failed':
+      return 'Verification failed'
+    case 'pending':
+      return 'Not verified'
+    default:
+      return 'Unknown'
   }
 }

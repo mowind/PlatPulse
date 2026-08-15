@@ -16,6 +16,7 @@ pub(crate) mod agent;
 pub(crate) mod alerts_admin;
 pub(crate) mod health;
 pub(crate) mod notifications_admin;
+pub(crate) mod operations_admin;
 pub(crate) mod public;
 pub(crate) mod realtime;
 pub(crate) mod report_ingestion;
@@ -117,6 +118,24 @@ impl ApiErrorBody {
             error: ApiError {
                 code,
                 message: std::borrow::Cow::Borrowed(message),
+                request_id: request_id.to_owned(),
+                fields,
+            },
+        }
+    }
+
+    /// Error envelope with a validated dynamic message and field
+    /// references (used for retention safety-bound failures).
+    pub(crate) fn with_fields_message(
+        code: &'static str,
+        message: String,
+        request_id: &str,
+        fields: Vec<String>,
+    ) -> Self {
+        Self {
+            error: ApiError {
+                code,
+                message: std::borrow::Cow::Owned(message),
                 request_id: request_id.to_owned(),
                 fields,
             },
@@ -274,6 +293,7 @@ pub struct AppState {
     proxy_policy: ProxyTrustPolicy,
     channels: crate::config::NotificationChannels,
     delivery_provider: Arc<dyn crate::notifications::DeliveryProvider>,
+    backup_dir: Option<PathBuf>,
     pub(crate) public_realtime: RealtimeHub,
     pub(crate) admin_realtime: RealtimeHub,
 }
@@ -302,6 +322,14 @@ impl AppState {
         provider: Arc<dyn crate::notifications::DeliveryProvider>,
     ) -> Self {
         self.delivery_provider = provider;
+        self
+    }
+
+    /// Point backup Operations at a dedicated backup directory (design
+    /// §20.1: never inside the Server state directory). `None` keeps the
+    /// backup surface honestly NotConfigured.
+    pub fn with_backup_dir(mut self, backup_dir: Option<PathBuf>) -> Self {
+        self.backup_dir = backup_dir;
         self
     }
 
@@ -367,6 +395,7 @@ impl AppState {
             },
             channels,
             delivery_provider: Arc::new(crate::notifications::TelegramProvider::default()),
+            backup_dir: None,
             public_realtime: RealtimeHub::default(),
             admin_realtime: RealtimeHub::default(),
         }
@@ -421,6 +450,10 @@ impl AppState {
         &self.channels
     }
 
+    pub(crate) fn backup_dir(&self) -> Option<&PathBuf> {
+        self.backup_dir.as_ref()
+    }
+
     pub(crate) fn delivery_provider(&self) -> Arc<dyn crate::notifications::DeliveryProvider> {
         Arc::clone(&self.delivery_provider)
     }
@@ -445,7 +478,7 @@ impl AppState {
         &self.recover_limiter
     }
 
-    fn web_assets(&self) -> Option<&PathBuf> {
+    pub(crate) fn web_assets(&self) -> Option<&PathBuf> {
         self.web_assets.as_ref()
     }
 
@@ -453,7 +486,7 @@ impl AppState {
         self.web_index.as_ref()
     }
 
-    fn web_assets_ready(&self) -> bool {
+    pub(crate) fn web_assets_ready(&self) -> bool {
         self.web_assets_ready
     }
 }
@@ -484,6 +517,7 @@ pub fn build_app(state: AppState) -> Router {
     let admin_group = admin::router()
         .merge(access::router())
         .merge(alerts_admin::router())
+        .merge(operations_admin::router())
         .merge(notifications_admin::router())
         .layer(axum::middleware::from_fn(owner_role_guard))
         .layer(axum::middleware::from_fn_with_state(

@@ -143,7 +143,7 @@ export default function AdminLayout() {
           <NavLink to="/admin/networks" end onClick={closeNav}>
             Networks
           </NavLink>
-          <p className="admin-nav-label">Alerts</p>
+      <p className="admin-nav-label">Alerts</p>
           <NavLink to="/admin/alerts/rules" end onClick={closeNav}>
             Alert Rules
           </NavLink>
@@ -161,6 +161,22 @@ export default function AdminLayout() {
           </NavLink>
           <NavLink to="/admin/alerts/channels" end onClick={closeNav}>
             Channels
+          </NavLink>
+          <NavLink to="/admin/operations" end onClick={closeNav}>
+            Operations
+          </NavLink>
+          <p className="admin-nav-label">Data</p>
+          <NavLink to="/admin/data" end onClick={closeNav}>
+            Data
+          </NavLink>
+          <NavLink to="/admin/data/retention" end onClick={closeNav}>
+            Retention
+          </NavLink>
+          <NavLink to="/admin/data/backups" end onClick={closeNav}>
+            Backups
+          </NavLink>
+          <NavLink to="/admin/data/doctor" end onClick={closeNav}>
+            Doctor
           </NavLink>
           <p className="admin-nav-label">Access</p>
           <NavLink to="/admin/access/people" end onClick={closeNav}>

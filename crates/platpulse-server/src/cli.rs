@@ -160,6 +160,10 @@ pub struct ServeArgs {
     /// `web_assets_missing` from `/health/ready` instead.
     #[arg(long)]
     pub web_assets: Option<PathBuf>,
+    /// Dedicated backup directory for Admin-triggered backup artifacts
+    /// (design §20.1; never the Server state directory).
+    #[arg(long)]
+    pub backup_dir: Option<PathBuf>,
     /// Address the HTTP listener binds to.
     #[arg(long)]
     pub listen: Option<SocketAddr>,
@@ -200,6 +204,7 @@ pub fn resolve_serve_config(args: &ServeArgs) -> Result<ServerConfig, crate::con
             db_path: args.db_path.clone(),
             pepper_file: args.pepper_file.clone(),
             web_root: args.web_assets.clone(),
+            backup_dir: args.backup_dir.clone(),
             listen: args.listen,
             base_url: args.base_url.clone(),
             development: args.dev,
@@ -348,6 +353,14 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
             crate::redaction::redact_sensitive(&error.to_string())
         );
     }
+    // Retention policies are seeded idempotently with the design §11.3
+    // defaults; existing rows are never rewritten.
+    if let Err(error) = crate::retention::ensure_seeded(database.pool()).await {
+        eprintln!(
+            "retention policy seeding deferred: {}",
+            crate::redaction::redact_sensitive(&error.to_string())
+        );
+    }
     let mut state = crate::AppState::new_with_proxy_policy(
         database,
         config.web_root.clone(),
@@ -355,7 +368,8 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         config.trusted_proxy_cidrs.clone(),
         config.trusted_proxy_scheme.clone(),
         config.notifications.clone(),
-    );
+    )
+    .with_backup_dir(config.backup_dir.clone());
     // Development mode never touches a real provider: the e2e suite and
     // local development observe delivery state machines deterministically
     // through the fixed-failure double (production uses TelegramProvider).
@@ -364,6 +378,15 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
             .with_delivery_provider(std::sync::Arc::new(crate::notifications::DevNullProvider));
     }
     let app = crate::http::build_app(state.clone());
+
+    // Operations left `running` by a crash are honestly failed (issue #50,
+    // webui.md §5.5); queued rows survive and the worker below picks them up.
+    if let Err(error) = crate::operations::requeue_interrupted_operations(state.db().pool()).await {
+        eprintln!(
+            "operation re-arm deferred: {}",
+            crate::redaction::redact_sensitive(&error.to_string())
+        );
+    }
 
     // Alert evaluation sweep: persists rule state and Incident transitions
     // for every active subject on a fixed cadence (design §17.2). Report
@@ -422,6 +445,32 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                     Err(error) => {
                         eprintln!(
                             "notification delivery deferred: {}",
+                            crate::redaction::redact_sensitive(&error.to_string())
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    // Operations worker (issue #50, webui.md §5.5): advances one queued
+    // retention/backup/Doctor Operation per tick in bounded steps. State is
+    // persisted per step, so navigation, browser close, or SSE loss never
+    // loses progress; SSE publishes only accelerate REST refetches.
+    {
+        let worker_state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(crate::operations::OPERATION_INTERVAL);
+            loop {
+                tick.tick().await;
+                if worker_state.is_shutting_down() {
+                    break;
+                }
+                match crate::operations::process_operations(&worker_state).await {
+                    Ok(_) => {}
+                    Err(error) => {
+                        eprintln!(
+                            "operation worker deferred: {}",
                             crate::redaction::redact_sensitive(&error.to_string())
                         );
                     }

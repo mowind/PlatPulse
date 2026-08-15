@@ -11,6 +11,7 @@ PORT="${E2E_PORT:-4173}"
 PASSWORD="${PLATPULSE_E2E_PASSWORD:-platpulse-e2e-admin-2026}"
 VIEWER_PASSWORD="${PLATPULSE_E2E_VIEWER_PASSWORD:-platpulse-e2e-viewer-2026}"
 STATE_DIR="$(mktemp -d /tmp/platpulse-e2e-XXXXXX)"
+BACKUP_DIR="$(mktemp -d /tmp/platpulse-e2e-backups-XXXXXX)"
 CONFIG="$STATE_DIR/server.toml"
 
 # Build the production bundle the Server will host.
@@ -22,6 +23,10 @@ state_dir = "$STATE_DIR"
 db_path = "$STATE_DIR/platpulse.db"
 pepper_file = "$STATE_DIR/server-pepper"
 web_root = "$WEB_DIR/dist"
+# Backup artifacts for the Admin backup surface (issue #50) live in a
+# dedicated directory, never inside the Server state directory (design
+# §20.1).
+backup_dir = "$BACKUP_DIR"
 listen = "127.0.0.1:$PORT"
 public_base_url = "http://127.0.0.1:$PORT"
 development = true
@@ -328,6 +333,44 @@ with sqlite3.connect(path) as db:
         "INSERT OR IGNORE INTO delivery_attempts (attempt_id, delivery_id, attempt_number, attempted_at, outcome, provider_result, error_kind, duration_ms, retry_after_seconds) VALUES ('0195f2a1-0065-4065-8065-000000000065', ?, 2, ?, 'failed', 'telegram_api_error 400', 'telegram_api', 150, NULL)",
         ("0195f2a1-0055-4055-8055-000000000055", notif_time),
     )
+
+    # Retention fixture (issue #50): 2000 raw Block Summaries for Node A
+    # older than every retention policy (400 days) so the bounded run
+    # takes ~16 batches at 128 rows each and the suite can observe a
+    # Running Operation and cancel it deterministically. One fresh row
+    # stays inside every policy window and must survive the run.
+    old_block_time = (datetime.now(timezone.utc) - timedelta(days=400)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    fresh_block_time = (datetime.now(timezone.utc) - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    coinbase = "0x0000000000000000000000000000000000000000"
+    db.execute(
+        "INSERT INTO block_history_state (node_id, historical_high_watermark, cumulative_block_count, cumulative_transaction_count, cumulative_self_seal_count, updated_at) VALUES (?, 3000, 2002, 4004, 0, ?)",
+        (node_a, now),
+    )
+    db.execute(
+        "INSERT INTO block_coverage_intervals (node_id, first_height, last_height, status, created_at, updated_at) VALUES (?, 0, 3000, 'covered', ?, ?)",
+        (node_a, old_block_time, old_block_time),
+    )
+    db.executemany(
+        "INSERT OR IGNORE INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, source, coinbase, seal_signer_match, protocol_proposer_kind, attribution_reason, accepted_at) VALUES (?, ?, ?, ?, ?, 210425, 210425, 'lat', ?, ?, 2, 'subscription', ?, 'unknown', 'unknown', 'test', ?)",
+        [
+            (
+                node_a,
+                height,
+                "0x" + format(height, "064x"),
+                ("0x" + format(height - 1, "064x")) if height > 0 else "0x" + "0" * 64,
+                network_genesis,
+                height,
+                old_block_time,
+                coinbase,
+                old_block_time,
+            )
+            for height in range(0, 2000)
+        ],
+    )
+    db.execute(
+        "INSERT OR IGNORE INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, source, coinbase, seal_signer_match, protocol_proposer_kind, attribution_reason, accepted_at) VALUES (?, 3000, ?, ?, ?, 210425, 210425, 'lat', 3000, ?, 2, 'subscription', ?, 'unknown', 'unknown', 'test', ?)",
+        (node_a, "0x" + format(3000, "064x"), "0x" + format(2999, "064x"), network_genesis, fresh_block_time, coinbase, fresh_block_time),
+    )
 PY
 
 # Keep Node A's seeded observations fresh for the whole suite: the
@@ -359,4 +402,10 @@ while True:
 REFRESH
 
 cd "$ROOT"
+# The e2e suite needs the backup directory to exercise failure
+# preservation (tampering with an artifact must fail verification without
+# deleting the artifact). The marker lives in /tmp because Playwright
+# clears its test-results output directory after the server starts.
+printf '%s\n' "$BACKUP_DIR" > /tmp/platpulse-e2e-backup-dir
+
 exec cargo run -q -p platpulse-server -- serve --config "$CONFIG"

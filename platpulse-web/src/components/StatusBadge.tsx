@@ -17,12 +17,26 @@ const STATUS_ICONS: Record<string, string> = {
   'You are offline': '✕',
   // Server-owned words are presented as the Server sends them (webui.md
   // §5.4): the positive realtime state, the Node Health Summary severity,
-  // and the attention severity are not WebUI dimensions.
+  // the attention severity, Operation states (§5.5), and Doctor check
+  // states are not WebUI dimensions.
   Connected: '✓',
   Critical: '✕',
   Warning: '⚠',
   healthy: '✓',
   unhealthy: '✕',
+  // Operation states (webui.md §5.5); SucceededWithWarnings is never
+  // displayed as plain Success.
+  Queued: '…',
+  Running: '↻',
+  Succeeded: '✓',
+  'Succeeded with warnings': '⚠',
+  Failed: '✕',
+  Cancelled: '⊘',
+  // Doctor check statuses are Server-owned words shown as sent.
+  Pass: '✓',
+  Fail: '✕',
+  'Not configured': '∅',
+  Skipped: '→',
 }
 
 /** Server component states map onto the WebUI collection vocabulary. */

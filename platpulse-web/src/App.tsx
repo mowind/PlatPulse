@@ -33,6 +33,15 @@ import AdminSilencesList from './pages/AdminSilences'
 import AdminMaintenanceList from './pages/AdminMaintenance'
 import AdminDeliveriesList, { AdminDeliveryDetail } from './pages/AdminDeliveries'
 import AdminChannelsList, { AdminChannelDetail } from './pages/AdminChannels'
+import AdminOperationsList from './pages/AdminOperations'
+import AdminOperationDetail from './pages/AdminOperation'
+import AdminData from './pages/AdminData'
+import AdminRetentionList from './pages/AdminRetention'
+import AdminRetentionEdit from './pages/AdminRetentionEdit'
+import AdminBackupsList from './pages/AdminBackups'
+import AdminBackupCreate from './pages/AdminBackupCreate'
+import AdminBackupDetail from './pages/AdminBackup'
+import AdminDoctor from './pages/AdminDoctor'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import { ensureGuestEnabledKnown, subscribeGuestEnabled } from './api/public'
 
@@ -183,8 +192,17 @@ const router = createBrowserRouter([
       { path: 'alerts/deliveries/:deliveryId', element: <AdminDeliveryDetail /> },
       { path: 'alerts/channels', element: <AdminChannelsList /> },
       { path: 'alerts/channels/:channelId', element: <AdminChannelDetail /> },
-      // Placeholder for later Phase 2 sections (e.g. Data and Maintenance):
-      // links from security mutations must never land on a blank page.
+      { path: 'operations', element: <AdminOperationsList /> },
+      { path: 'operations/:operationId', element: <AdminOperationDetail /> },
+      { path: 'data', element: <AdminData /> },
+      { path: 'data/retention', element: <AdminRetentionList /> },
+      { path: 'data/retention/edit', element: <AdminRetentionEdit /> },
+      { path: 'data/backups', element: <AdminBackupsList /> },
+      { path: 'data/backups/create', element: <AdminBackupCreate /> },
+      { path: 'data/backups/:artifactId', element: <AdminBackupDetail /> },
+      { path: 'data/doctor', element: <AdminDoctor /> },
+      // Placeholder for later Phase 2 sections (e.g. Restore): links from
+      // security mutations must never land on a blank page.
       { path: '*', element: <AdminComingSoon /> },
     ],
   },

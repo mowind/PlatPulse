@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { AdminAgentAuditData, AdminAgentAuditErrors, AdminAgentAuditResponses, AdminAgentDetailData, AdminAgentDetailErrors, AdminAgentDetailResponses, AdminEnrollmentTokenData, AdminEnrollmentTokenErrors, AdminEnrollmentTokenResponses, AdminEventsData, AdminEventsResponses, AdminNetworkDetailData, AdminNetworkDetailErrors, AdminNetworkDetailResponses, AdminNetworksData, AdminNetworksResponses, AdminNodeDetailData, AdminNodeDetailErrors, AdminNodeDetailResponses, AdminNodeHistoryData, AdminNodeHistoryErrors, AdminNodeHistoryResponses, AdminNodesData, AdminNodesResponses, AdminNodeTransfersData, AdminNodeTransfersErrors, AdminNodeTransfersResponses, AdminRecoveryTokenData, AdminRecoveryTokenErrors, AdminRecoveryTokenResponses, AdminRevokeCredentialData, AdminRevokeCredentialErrors, AdminRevokeCredentialResponses, AdminRotateCredentialData, AdminRotateCredentialErrors, AdminRotateCredentialResponses, AdminTransferDetailData, AdminTransferDetailErrors, AdminTransferDetailResponses, AlertIncidentDetailData, AlertIncidentDetailErrors, AlertIncidentDetailResponses, AlertIncidentsData, AlertIncidentsErrors, AlertIncidentsResponses, AlertMaintenanceData, AlertMaintenanceDetailData, AlertMaintenanceDetailErrors, AlertMaintenanceDetailResponses, AlertMaintenanceErrors, AlertMaintenanceResponses, AlertRuleDetailData, AlertRuleDetailErrors, AlertRuleDetailResponses, AlertRulesData, AlertRulesErrors, AlertRulesResponses, AlertSilenceDetailData, AlertSilenceDetailErrors, AlertSilenceDetailResponses, AlertSilencesData, AlertSilencesErrors, AlertSilencesResponses, AuditListData, AuditListErrors, AuditListResponses, CancelMaintenanceWindowData, CancelMaintenanceWindowErrors, CancelMaintenanceWindowResponses, CancelNodeTransferData, CancelNodeTransferErrors, CancelNodeTransferResponses, CancelSilenceData, CancelSilenceErrors, CancelSilenceResponses, CreateMaintenanceWindowData, CreateMaintenanceWindowErrors, CreateMaintenanceWindowResponses, CreateNetworkData, CreateNetworkErrors, CreateNetworkResponses, CreateNodeTransferData, CreateNodeTransferErrors, CreateNodeTransferResponses, CreatePersonData, CreatePersonErrors, CreatePersonResponses, CreateSilenceData, CreateSilenceErrors, CreateSilenceResponses, DeleteRuleOverrideData, DeleteRuleOverrideErrors, DeleteRuleOverrideResponses, DiagnosticsData, DiagnosticsResponses, GetAccessSettingsData, GetAccessSettingsErrors, GetAccessSettingsResponses, LiveData, LiveResponses, LoginHandlerData, LoginHandlerErrors, LoginHandlerResponses, LogoutHandlerData, LogoutHandlerErrors, LogoutHandlerResponses, NotificationChannelDetailData, NotificationChannelDetailErrors, NotificationChannelDetailResponses, NotificationChannelsData, NotificationChannelsErrors, NotificationChannelsResponses, NotificationDeliveriesData, NotificationDeliveriesErrors, NotificationDeliveriesResponses, NotificationDeliveryDetailData, NotificationDeliveryDetailErrors, NotificationDeliveryDetailResponses, NotificationEventDetailData, NotificationEventDetailErrors, NotificationEventDetailResponses, NotificationEventsData, NotificationEventsErrors, NotificationEventsResponses, OverviewData, OverviewResponses, PeopleListData, PeopleListErrors, PeopleListResponses, PreviewAlertRuleData, PreviewAlertRuleErrors, PreviewAlertRuleResponses, PublicAccessSettingsData, PublicAccessSettingsResponses, PublicEventsData, PublicEventsResponses, PublicNetworkData, PublicNetworkErrors, PublicNetworkResponses, PublicNetworksData, PublicNetworksResponses, PublicNodeDetailData, PublicNodeDetailErrors, PublicNodeDetailResponses, PublicNodeHistoryData, PublicNodeHistoryErrors, PublicNodeHistoryExportData, PublicNodeHistoryExportErrors, PublicNodeHistoryExportResponses, PublicNodeHistoryResponses, ReadyData, ReadyErrors, ReadyResponses, ResetPersonPasswordData, ResetPersonPasswordErrors, ResetPersonPasswordResponses, RetryDeliveryData, RetryDeliveryErrors, RetryDeliveryResponses, RevokeOtherSessionsData, RevokeOtherSessionsErrors, RevokeOtherSessionsResponses, RevokeSessionData, RevokeSessionErrors, RevokeSessionResponses, SessionHandlerData, SessionHandlerErrors, SessionHandlerResponses, SessionsListData, SessionsListErrors, SessionsListResponses, SetAccessSettingsData, SetAccessSettingsErrors, SetAccessSettingsResponses, SetNodeMetadataData, SetNodeMetadataErrors, SetNodeMetadataResponses, SetPersonRoleData, SetPersonRoleErrors, SetPersonRoleResponses, SetPersonStatusData, SetPersonStatusErrors, SetPersonStatusResponses, SetVisibilityData, SetVisibilityErrors, SetVisibilityResponses, TestNotificationChannelData, TestNotificationChannelErrors, TestNotificationChannelResponses, UpdateAlertRuleData, UpdateAlertRuleErrors, UpdateAlertRuleResponses, UpdateNetworkData, UpdateNetworkErrors, UpdateNetworkResponses, UpsertRuleOverrideData, UpsertRuleOverrideErrors, UpsertRuleOverrideResponses } from './types.gen';
+import type { AdminAgentAuditData, AdminAgentAuditErrors, AdminAgentAuditResponses, AdminAgentDetailData, AdminAgentDetailErrors, AdminAgentDetailResponses, AdminEnrollmentTokenData, AdminEnrollmentTokenErrors, AdminEnrollmentTokenResponses, AdminEventsData, AdminEventsResponses, AdminNetworkDetailData, AdminNetworkDetailErrors, AdminNetworkDetailResponses, AdminNetworksData, AdminNetworksResponses, AdminNodeDetailData, AdminNodeDetailErrors, AdminNodeDetailResponses, AdminNodeHistoryData, AdminNodeHistoryErrors, AdminNodeHistoryResponses, AdminNodesData, AdminNodesResponses, AdminNodeTransfersData, AdminNodeTransfersErrors, AdminNodeTransfersResponses, AdminRecoveryTokenData, AdminRecoveryTokenErrors, AdminRecoveryTokenResponses, AdminRevokeCredentialData, AdminRevokeCredentialErrors, AdminRevokeCredentialResponses, AdminRotateCredentialData, AdminRotateCredentialErrors, AdminRotateCredentialResponses, AdminTransferDetailData, AdminTransferDetailErrors, AdminTransferDetailResponses, AlertIncidentDetailData, AlertIncidentDetailErrors, AlertIncidentDetailResponses, AlertIncidentsData, AlertIncidentsErrors, AlertIncidentsResponses, AlertMaintenanceData, AlertMaintenanceDetailData, AlertMaintenanceDetailErrors, AlertMaintenanceDetailResponses, AlertMaintenanceErrors, AlertMaintenanceResponses, AlertRuleDetailData, AlertRuleDetailErrors, AlertRuleDetailResponses, AlertRulesData, AlertRulesErrors, AlertRulesResponses, AlertSilenceDetailData, AlertSilenceDetailErrors, AlertSilenceDetailResponses, AlertSilencesData, AlertSilencesErrors, AlertSilencesResponses, AuditListData, AuditListErrors, AuditListResponses, BackupArtifactDetailData, BackupArtifactDetailErrors, BackupArtifactDetailResponses, BackupCreateData, BackupCreateErrors, BackupCreateResponses, BackupsListData, BackupsListErrors, BackupsListResponses, BackupVerifyData, BackupVerifyErrors, BackupVerifyResponses, CancelMaintenanceWindowData, CancelMaintenanceWindowErrors, CancelMaintenanceWindowResponses, CancelNodeTransferData, CancelNodeTransferErrors, CancelNodeTransferResponses, CancelOperationData, CancelOperationErrors, CancelOperationResponses, CancelSilenceData, CancelSilenceErrors, CancelSilenceResponses, CreateMaintenanceWindowData, CreateMaintenanceWindowErrors, CreateMaintenanceWindowResponses, CreateNetworkData, CreateNetworkErrors, CreateNetworkResponses, CreateNodeTransferData, CreateNodeTransferErrors, CreateNodeTransferResponses, CreatePersonData, CreatePersonErrors, CreatePersonResponses, CreateSilenceData, CreateSilenceErrors, CreateSilenceResponses, DeleteRuleOverrideData, DeleteRuleOverrideErrors, DeleteRuleOverrideResponses, DiagnosticsData, DiagnosticsResponses, DoctorOverviewData, DoctorOverviewErrors, DoctorOverviewResponses, DoctorRunData, DoctorRunErrors, DoctorRunResponses, GetAccessSettingsData, GetAccessSettingsErrors, GetAccessSettingsResponses, LiveData, LiveResponses, LoginHandlerData, LoginHandlerErrors, LoginHandlerResponses, LogoutHandlerData, LogoutHandlerErrors, LogoutHandlerResponses, NotificationChannelDetailData, NotificationChannelDetailErrors, NotificationChannelDetailResponses, NotificationChannelsData, NotificationChannelsErrors, NotificationChannelsResponses, NotificationDeliveriesData, NotificationDeliveriesErrors, NotificationDeliveriesResponses, NotificationDeliveryDetailData, NotificationDeliveryDetailErrors, NotificationDeliveryDetailResponses, NotificationEventDetailData, NotificationEventDetailErrors, NotificationEventDetailResponses, NotificationEventsData, NotificationEventsErrors, NotificationEventsResponses, OperationDetailData, OperationDetailErrors, OperationDetailResponses, OperationsListData, OperationsListErrors, OperationsListResponses, OverviewData, OverviewResponses, PeopleListData, PeopleListErrors, PeopleListResponses, PreviewAlertRuleData, PreviewAlertRuleErrors, PreviewAlertRuleResponses, PublicAccessSettingsData, PublicAccessSettingsResponses, PublicEventsData, PublicEventsResponses, PublicNetworkData, PublicNetworkErrors, PublicNetworkResponses, PublicNetworksData, PublicNetworksResponses, PublicNodeDetailData, PublicNodeDetailErrors, PublicNodeDetailResponses, PublicNodeHistoryData, PublicNodeHistoryErrors, PublicNodeHistoryExportData, PublicNodeHistoryExportErrors, PublicNodeHistoryExportResponses, PublicNodeHistoryResponses, ReadyData, ReadyErrors, ReadyResponses, ResetPersonPasswordData, ResetPersonPasswordErrors, ResetPersonPasswordResponses, RetentionImpactData, RetentionImpactErrors, RetentionImpactResponses, RetentionOverviewData, RetentionOverviewErrors, RetentionOverviewResponses, RetentionRunData, RetentionRunErrors, RetentionRunResponses, RetryDeliveryData, RetryDeliveryErrors, RetryDeliveryResponses, RevokeOtherSessionsData, RevokeOtherSessionsErrors, RevokeOtherSessionsResponses, RevokeSessionData, RevokeSessionErrors, RevokeSessionResponses, SessionHandlerData, SessionHandlerErrors, SessionHandlerResponses, SessionsListData, SessionsListErrors, SessionsListResponses, SetAccessSettingsData, SetAccessSettingsErrors, SetAccessSettingsResponses, SetNodeMetadataData, SetNodeMetadataErrors, SetNodeMetadataResponses, SetPersonRoleData, SetPersonRoleErrors, SetPersonRoleResponses, SetPersonStatusData, SetPersonStatusErrors, SetPersonStatusResponses, SetVisibilityData, SetVisibilityErrors, SetVisibilityResponses, TestNotificationChannelData, TestNotificationChannelErrors, TestNotificationChannelResponses, UpdateAlertRuleData, UpdateAlertRuleErrors, UpdateAlertRuleResponses, UpdateNetworkData, UpdateNetworkErrors, UpdateNetworkResponses, UpdateRetentionPolicyData, UpdateRetentionPolicyErrors, UpdateRetentionPolicyResponses, UpsertRuleOverrideData, UpsertRuleOverrideErrors, UpsertRuleOverrideResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -239,6 +239,42 @@ export const cancelSilence = <ThrowOnError extends boolean = false>(options: Opt
  */
 export const auditList = <ThrowOnError extends boolean = false>(options?: Options<AuditListData, ThrowOnError>): RequestResult<AuditListResponses, AuditListErrors, ThrowOnError> => (options?.client ?? client).get<AuditListResponses, AuditListErrors, ThrowOnError>({ url: '/api/admin/v1/audit', ...options });
 
+/**
+ * List backup artifacts with sanitized metadata only (file base name,
+ * size, checksum, schema, Server version, timestamps, verification).
+ */
+export const backupsList = <ThrowOnError extends boolean = false>(options?: Options<BackupsListData, ThrowOnError>): RequestResult<BackupsListResponses, BackupsListErrors, ThrowOnError> => (options?.client ?? client).get<BackupsListResponses, BackupsListErrors, ThrowOnError>({ url: '/api/admin/v1/backups', ...options });
+
+/**
+ * Queue a backup creation. Returns immediately with the Operation
+ * reference; the artifact lands in the configured backup directory.
+ */
+export const backupCreate = <ThrowOnError extends boolean = false>(options?: Options<BackupCreateData, ThrowOnError>): RequestResult<BackupCreateResponses, BackupCreateErrors, ThrowOnError> => (options?.client ?? client).post<BackupCreateResponses, BackupCreateErrors, ThrowOnError>({ url: '/api/admin/v1/backups', ...options });
+
+/**
+ * Backup artifact detail. Database contents are never exposed; only the
+ * sanitized manifest metadata plus the verification outcome.
+ */
+export const backupArtifactDetail = <ThrowOnError extends boolean = false>(options: Options<BackupArtifactDetailData, ThrowOnError>): RequestResult<BackupArtifactDetailResponses, BackupArtifactDetailErrors, ThrowOnError> => (options.client ?? client).get<BackupArtifactDetailResponses, BackupArtifactDetailErrors, ThrowOnError>({ url: '/api/admin/v1/backups/{artifact_id}', ...options });
+
+/**
+ * Queue a backup verification (checksum, read-only integrity, schema).
+ * A failed verification never deletes the artifact or any previous one.
+ */
+export const backupVerify = <ThrowOnError extends boolean = false>(options: Options<BackupVerifyData, ThrowOnError>): RequestResult<BackupVerifyResponses, BackupVerifyErrors, ThrowOnError> => (options.client ?? client).post<BackupVerifyResponses, BackupVerifyErrors, ThrowOnError>({ url: '/api/admin/v1/backups/{artifact_id}/verify', ...options });
+
+/**
+ * The most recent read-only Doctor report (previous diagnostic results
+ * survive failed runs) and its checks.
+ */
+export const doctorOverview = <ThrowOnError extends boolean = false>(options?: Options<DoctorOverviewData, ThrowOnError>): RequestResult<DoctorOverviewResponses, DoctorOverviewErrors, ThrowOnError> => (options?.client ?? client).get<DoctorOverviewResponses, DoctorOverviewErrors, ThrowOnError>({ url: '/api/admin/v1/doctor', ...options });
+
+/**
+ * Queue a read-only Doctor run. Doctor never auto-fixes, deletes,
+ * migrates, or rotates secrets.
+ */
+export const doctorRun = <ThrowOnError extends boolean = false>(options?: Options<DoctorRunData, ThrowOnError>): RequestResult<DoctorRunResponses, DoctorRunErrors, ThrowOnError> => (options?.client ?? client).post<DoctorRunResponses, DoctorRunErrors, ThrowOnError>({ url: '/api/admin/v1/doctor', ...options });
+
 export const adminEvents = <ThrowOnError extends boolean = false>(options?: Options<AdminEventsData, ThrowOnError>): RequestResult<AdminEventsResponses, unknown, ThrowOnError> => (options?.client ?? client).get<AdminEventsResponses, unknown, ThrowOnError>({ url: '/api/admin/v1/events', ...options });
 
 export const adminNetworks = <ThrowOnError extends boolean = false>(options?: Options<AdminNetworksData, ThrowOnError>): RequestResult<AdminNetworksResponses, unknown, ThrowOnError> => (options?.client ?? client).get<AdminNetworksResponses, unknown, ThrowOnError>({ url: '/api/admin/v1/networks', ...options });
@@ -375,6 +411,25 @@ export const notificationEvents = <ThrowOnError extends boolean = false>(options
  */
 export const notificationEventDetail = <ThrowOnError extends boolean = false>(options: Options<NotificationEventDetailData, ThrowOnError>): RequestResult<NotificationEventDetailResponses, NotificationEventDetailErrors, ThrowOnError> => (options.client ?? client).get<NotificationEventDetailResponses, NotificationEventDetailErrors, ThrowOnError>({ url: '/api/admin/v1/notifications/events/{event_id}', ...options });
 
+/**
+ * List durable Operations with optional status/kind filters (newest
+ * first, bounded page size).
+ */
+export const operationsList = <ThrowOnError extends boolean = false>(options?: Options<OperationsListData, ThrowOnError>): RequestResult<OperationsListResponses, OperationsListErrors, ThrowOnError> => (options?.client ?? client).get<OperationsListResponses, OperationsListErrors, ThrowOnError>({ url: '/api/admin/v1/operations', ...options });
+
+/**
+ * Operation detail: progress, warnings, errors, result summary, request
+ * ID, and the creating Audit Event link.
+ */
+export const operationDetail = <ThrowOnError extends boolean = false>(options: Options<OperationDetailData, ThrowOnError>): RequestResult<OperationDetailResponses, OperationDetailErrors, ThrowOnError> => (options.client ?? client).get<OperationDetailResponses, OperationDetailErrors, ThrowOnError>({ url: '/api/admin/v1/operations/{operation_id}', ...options });
+
+/**
+ * Cancel a queued or running Operation. Queued Operations cancel
+ * immediately; running Operations set the cancel flag and stop at the
+ * next bounded batch. Terminal Operations cannot be cancelled.
+ */
+export const cancelOperation = <ThrowOnError extends boolean = false>(options: Options<CancelOperationData, ThrowOnError>): RequestResult<CancelOperationResponses, CancelOperationErrors, ThrowOnError> => (options.client ?? client).post<CancelOperationResponses, CancelOperationErrors, ThrowOnError>({ url: '/api/admin/v1/operations/{operation_id}/cancel', ...options });
+
 export const overview = <ThrowOnError extends boolean = false>(options?: Options<OverviewData, ThrowOnError>): RequestResult<OverviewResponses, unknown, ThrowOnError> => (options?.client ?? client).get<OverviewResponses, unknown, ThrowOnError>({ url: '/api/admin/v1/overview', ...options });
 
 /**
@@ -435,6 +490,51 @@ export const setPersonRole = <ThrowOnError extends boolean = false>(options: Opt
  */
 export const setPersonStatus = <ThrowOnError extends boolean = false>(options: Options<SetPersonStatusData, ThrowOnError>): RequestResult<SetPersonStatusResponses, SetPersonStatusErrors, ThrowOnError> => (options.client ?? client).put<SetPersonStatusResponses, SetPersonStatusErrors, ThrowOnError>({
     url: '/api/admin/v1/people/{user_id}/status',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Retention policies with their safety bounds, the protected state list,
+ * and the most recent retention run.
+ */
+export const retentionOverview = <ThrowOnError extends boolean = false>(options?: Options<RetentionOverviewData, ThrowOnError>): RequestResult<RetentionOverviewResponses, RetentionOverviewErrors, ThrowOnError> => (options?.client ?? client).get<RetentionOverviewResponses, RetentionOverviewErrors, ThrowOnError>({ url: '/api/admin/v1/retention', ...options });
+
+/**
+ * Read-only impact preview for a proposed retention value. Never writes
+ * and never audits; the edit form calls this before typed confirmation.
+ */
+export const retentionImpact = <ThrowOnError extends boolean = false>(options: Options<RetentionImpactData, ThrowOnError>): RequestResult<RetentionImpactResponses, RetentionImpactErrors, ThrowOnError> => (options.client ?? client).post<RetentionImpactResponses, RetentionImpactErrors, ThrowOnError>({
+    url: '/api/admin/v1/retention/impact',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Update one retention policy within its fixed safety bounds. Audited and
+ * applied immediately; retention execution stays batched and protected.
+ */
+export const updateRetentionPolicy = <ThrowOnError extends boolean = false>(options: Options<UpdateRetentionPolicyData, ThrowOnError>): RequestResult<UpdateRetentionPolicyResponses, UpdateRetentionPolicyErrors, ThrowOnError> => (options.client ?? client).put<UpdateRetentionPolicyResponses, UpdateRetentionPolicyErrors, ThrowOnError>({
+    url: '/api/admin/v1/retention/policies/{family}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Queue a retention run. Returns immediately with the Operation
+ * reference; the worker executes it in bounded batches.
+ */
+export const retentionRun = <ThrowOnError extends boolean = false>(options: Options<RetentionRunData, ThrowOnError>): RequestResult<RetentionRunResponses, RetentionRunErrors, ThrowOnError> => (options.client ?? client).post<RetentionRunResponses, RetentionRunErrors, ThrowOnError>({
+    url: '/api/admin/v1/retention/run',
     ...options,
     headers: {
         'Content-Type': 'application/json',

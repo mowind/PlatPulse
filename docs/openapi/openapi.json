@@ -1478,6 +1478,231 @@
         }
       }
     },
+    "/api/admin/v1/backups": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "List backup artifacts with sanitized metadata only (file base name,\nsize, checksum, schema, Server version, timestamps, verification).",
+        "operationId": "backups_list",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/BackupArtifactSummary"
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Queue a backup creation. Returns immediately with the Operation\nreference; the artifact lands in the configured backup directory.",
+        "operationId": "backup_create",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationMutationResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/backups/{artifact_id}": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Backup artifact detail. Database contents are never exposed; only the\nsanitized manifest metadata plus the verification outcome.",
+        "operationId": "backup_artifact_detail",
+        "parameters": [
+          {
+            "name": "artifact_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupArtifactDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/backups/{artifact_id}/verify": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Queue a backup verification (checksum, read-only integrity, schema).\nA failed verification never deletes the artifact or any previous one.",
+        "operationId": "backup_verify",
+        "parameters": [
+          {
+            "name": "artifact_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationMutationResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/doctor": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "The most recent read-only Doctor report (previous diagnostic results\nsurvive failed runs) and its checks.",
+        "operationId": "doctor_overview",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DoctorOverview"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Queue a read-only Doctor run. Doctor never auto-fixes, deletes,\nmigrates, or rotates secrets.",
+        "operationId": "doctor_run",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationMutationResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/v1/events": {
       "get": {
         "tags": [
@@ -2574,6 +2799,182 @@
         }
       }
     },
+    "/api/admin/v1/operations": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "List durable Operations with optional status/kind filters (newest\nfirst, bounded page size).",
+        "operationId": "operations_list",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Filter by Operation status",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "description": "Filter by Operation kind",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size (1-200, default 50)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OperationSummary"
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/operations/{operation_id}": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Operation detail: progress, warnings, errors, result summary, request\nID, and the creating Audit Event link.",
+        "operationId": "operation_detail",
+        "parameters": [
+          {
+            "name": "operation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/operations/{operation_id}/cancel": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Cancel a queued or running Operation. Queued Operations cancel\nimmediately; running Operations set the cancel flag and stop at the\nnext bounded batch. Terminal Operations cannot be cancelled.",
+        "operationId": "cancel_operation",
+        "parameters": [
+          {
+            "name": "operation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationMutationResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/v1/overview": {
       "get": {
         "tags": [
@@ -2941,6 +3342,210 @@
             }
           },
           "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/retention": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Retention policies with their safety bounds, the protected state list,\nand the most recent retention run.",
+        "operationId": "retention_overview",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetentionOverview"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/retention/impact": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Read-only impact preview for a proposed retention value. Never writes\nand never audits; the edit form calls this before typed confirmation.",
+        "operationId": "retention_impact",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RetentionImpactRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetentionImpact"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/retention/policies/{family}": {
+      "put": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Update one retention policy within its fixed safety bounds. Audited and\napplied immediately; retention execution stays batched and protected.",
+        "operationId": "update_retention_policy",
+        "parameters": [
+          {
+            "name": "family",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RetentionPolicyUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetentionPolicyMutationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/retention/run": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Queue a retention run. Returns immediately with the Operation\nreference; the worker executes it in bounded batches.",
+        "operationId": "retention_run",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RetentionRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationMutationResponse"
+                }
+              }
+            }
+          },
+          "400": {
             "description": "",
             "content": {
               "application/json": {
@@ -5131,6 +5736,88 @@
           }
         }
       },
+      "BackupArtifactDetail": {
+        "type": "object",
+        "required": [
+          "artifact"
+        ],
+        "properties": {
+          "artifact": {
+            "$ref": "#/components/schemas/BackupArtifactSummary"
+          },
+          "verificationError": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "BackupArtifactSummary": {
+        "type": "object",
+        "required": [
+          "artifactId",
+          "filename",
+          "bytes",
+          "sha256",
+          "schemaVersion",
+          "serverVersion",
+          "createdAt",
+          "verification"
+        ],
+        "properties": {
+          "artifactId": {
+            "type": "string"
+          },
+          "bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "createOperationId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "dataRangeMax": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dataRangeMin": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filename": {
+            "type": "string"
+          },
+          "schemaVersion": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "serverVersion": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "verification": {
+            "type": "string"
+          },
+          "verifiedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "ChannelDto": {
         "type": "object",
         "required": [
@@ -5473,6 +6160,53 @@
           },
           "state": {
             "type": "string"
+          }
+        }
+      },
+      "DoctorCheckDto": {
+        "type": "object",
+        "required": [
+          "checkId",
+          "label",
+          "status",
+          "detail"
+        ],
+        "properties": {
+          "checkId": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "DoctorOverview": {
+        "type": "object",
+        "required": [
+          "checks"
+        ],
+        "properties": {
+          "checks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DoctorCheckDto"
+            }
+          },
+          "lastRun": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/OperationSummary"
+              }
+            ]
           }
         }
       },
@@ -6700,6 +7434,131 @@
           }
         }
       },
+      "OperationDetail": {
+        "type": "object",
+        "required": [
+          "operation",
+          "warnings",
+          "errors",
+          "cancellable"
+        ],
+        "properties": {
+          "cancellable": {
+            "type": "boolean",
+            "description": "`true` while the Operation is queued or running (cancel is allowed)."
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OperationIssue"
+            }
+          },
+          "operation": {
+            "$ref": "#/components/schemas/OperationSummary"
+          },
+          "result": {},
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OperationIssue"
+            }
+          }
+        }
+      },
+      "OperationIssue": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "OperationMutationResponse": {
+        "type": "object",
+        "required": [
+          "operation",
+          "auditEventId"
+        ],
+        "properties": {
+          "auditEventId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "operation": {
+            "$ref": "#/components/schemas/OperationDetail"
+          }
+        }
+      },
+      "OperationSummary": {
+        "type": "object",
+        "required": [
+          "operationId",
+          "kind",
+          "status",
+          "progressPercent",
+          "createdAt",
+          "cancelRequested"
+        ],
+        "properties": {
+          "auditEventId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "cancelRequested": {
+            "type": "boolean"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "finishedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "operationId": {
+            "type": "string"
+          },
+          "progressLabel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "progressPercent": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "requestId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "startedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
       "ParamSchema": {
         "type": "object",
         "description": "Editor schema for one condition parameter, sent to the WebUI so the\ntyped rule form renders per-rule fields (no free-form DSL ever).",
@@ -7267,6 +8126,205 @@
         "properties": {
           "password": {
             "type": "string"
+          }
+        }
+      },
+      "RetentionBounds": {
+        "type": "object",
+        "required": [
+          "minDays",
+          "maxDays"
+        ],
+        "properties": {
+          "maxDays": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "minDays": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "RetentionImpact": {
+        "type": "object",
+        "required": [
+          "family",
+          "retentionDays",
+          "unsupported",
+          "bounds",
+          "notes"
+        ],
+        "properties": {
+          "bounds": {
+            "$ref": "#/components/schemas/RetentionBounds"
+          },
+          "estimatedRows": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Rows that would be removed; `None` for unsupported families."
+          },
+          "family": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "retentionDays": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "unsupported": {
+            "type": "boolean"
+          }
+        }
+      },
+      "RetentionImpactRequest": {
+        "type": "object",
+        "required": [
+          "family",
+          "retentionDays"
+        ],
+        "properties": {
+          "family": {
+            "type": "string"
+          },
+          "retentionDays": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "RetentionOverview": {
+        "type": "object",
+        "required": [
+          "policies",
+          "protectedState"
+        ],
+        "properties": {
+          "lastRun": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/OperationSummary"
+              }
+            ]
+          },
+          "policies": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RetentionPolicyDto"
+            }
+          },
+          "protectedState": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "RetentionPolicyDto": {
+        "type": "object",
+        "required": [
+          "family",
+          "label",
+          "retentionDays",
+          "minDays",
+          "maxDays",
+          "defaultDays",
+          "supported",
+          "enabled",
+          "updatedAt"
+        ],
+        "properties": {
+          "defaultDays": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "family": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "maxDays": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "minDays": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "retentionDays": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "supported": {
+            "type": "boolean"
+          },
+          "updatedAt": {
+            "type": "string"
+          },
+          "updatedBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "RetentionPolicyMutationResponse": {
+        "type": "object",
+        "required": [
+          "policy",
+          "auditEventId"
+        ],
+        "properties": {
+          "auditEventId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "policy": {
+            "$ref": "#/components/schemas/RetentionPolicyDto"
+          }
+        }
+      },
+      "RetentionPolicyUpdateRequest": {
+        "type": "object",
+        "required": [
+          "retentionDays"
+        ],
+        "properties": {
+          "retentionDays": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "RetentionRunRequest": {
+        "type": "object",
+        "properties": {
+          "families": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Restrict the run to these families; absent means every enabled and\nsupported policy."
           }
         }
       },

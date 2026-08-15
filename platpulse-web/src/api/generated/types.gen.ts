@@ -389,6 +389,26 @@ export type AuditResponse = {
     nextBefore?: number | null;
 };
 
+export type BackupArtifactDetail = {
+    artifact: BackupArtifactSummary;
+    verificationError?: string | null;
+};
+
+export type BackupArtifactSummary = {
+    artifactId: string;
+    bytes: number;
+    createOperationId?: string | null;
+    createdAt: string;
+    dataRangeMax?: string | null;
+    dataRangeMin?: string | null;
+    filename: string;
+    schemaVersion: number;
+    serverVersion: string;
+    sha256: string;
+    verification: string;
+    verifiedAt?: string | null;
+};
+
 export type ChannelDto = {
     channelId: string;
     channelKind: string;
@@ -464,6 +484,18 @@ export type DeliverySummary = {
     deliveryId: string;
     destination: string;
     state: string;
+};
+
+export type DoctorCheckDto = {
+    checkId: string;
+    detail: string;
+    label: string;
+    status: string;
+};
+
+export type DoctorOverview = {
+    checks: Array<DoctorCheckDto>;
+    lastRun?: null | OperationSummary;
 };
 
 /**
@@ -797,6 +829,41 @@ export type ObservedNetworkIdentity = {
     p2p_network_id?: number | null;
 };
 
+export type OperationDetail = {
+    /**
+     * `true` while the Operation is queued or running (cancel is allowed).
+     */
+    cancellable: boolean;
+    errors: Array<OperationIssue>;
+    operation: OperationSummary;
+    result?: unknown;
+    warnings: Array<OperationIssue>;
+};
+
+export type OperationIssue = {
+    code: string;
+    message: string;
+};
+
+export type OperationMutationResponse = {
+    auditEventId: number;
+    operation: OperationDetail;
+};
+
+export type OperationSummary = {
+    auditEventId?: number | null;
+    cancelRequested: boolean;
+    createdAt: string;
+    finishedAt?: string | null;
+    kind: string;
+    operationId: string;
+    progressLabel?: string | null;
+    progressPercent: number;
+    requestId?: string | null;
+    startedAt?: string | null;
+    status: string;
+};
+
 /**
  * Editor schema for one condition parameter, sent to the WebUI so the
  * typed rule form renders per-rule fields (no free-form DSL ever).
@@ -947,6 +1014,64 @@ export type RecoveryTokenResponse = {
 
 export type ResetPasswordRequest = {
     password: string;
+};
+
+export type RetentionBounds = {
+    maxDays: number;
+    minDays: number;
+};
+
+export type RetentionImpact = {
+    bounds: RetentionBounds;
+    /**
+     * Rows that would be removed; `None` for unsupported families.
+     */
+    estimatedRows?: number | null;
+    family: string;
+    notes: Array<string>;
+    retentionDays: number;
+    unsupported: boolean;
+};
+
+export type RetentionImpactRequest = {
+    family: string;
+    retentionDays: number;
+};
+
+export type RetentionOverview = {
+    lastRun?: null | OperationSummary;
+    policies: Array<RetentionPolicyDto>;
+    protectedState: Array<string>;
+};
+
+export type RetentionPolicyDto = {
+    defaultDays: number;
+    enabled: boolean;
+    family: string;
+    label: string;
+    maxDays: number;
+    minDays: number;
+    retentionDays: number;
+    supported: boolean;
+    updatedAt: string;
+    updatedBy?: string | null;
+};
+
+export type RetentionPolicyMutationResponse = {
+    auditEventId: number;
+    policy: RetentionPolicyDto;
+};
+
+export type RetentionPolicyUpdateRequest = {
+    retentionDays: number;
+};
+
+export type RetentionRunRequest = {
+    /**
+     * Restrict the run to these families; absent means every enabled and
+     * supported policy.
+     */
+    families?: Array<string> | null;
 };
 
 export type RevokeOthersResponse = {
@@ -1839,6 +1964,126 @@ export type AuditListResponses = {
 
 export type AuditListResponse = AuditListResponses[keyof AuditListResponses];
 
+export type BackupsListData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/backups';
+};
+
+export type BackupsListErrors = {
+    503: ApiErrorBody;
+};
+
+export type BackupsListError = BackupsListErrors[keyof BackupsListErrors];
+
+export type BackupsListResponses = {
+    200: Array<BackupArtifactSummary>;
+};
+
+export type BackupsListResponse = BackupsListResponses[keyof BackupsListResponses];
+
+export type BackupCreateData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/backups';
+};
+
+export type BackupCreateErrors = {
+    503: ApiErrorBody;
+};
+
+export type BackupCreateError = BackupCreateErrors[keyof BackupCreateErrors];
+
+export type BackupCreateResponses = {
+    200: OperationMutationResponse;
+};
+
+export type BackupCreateResponse = BackupCreateResponses[keyof BackupCreateResponses];
+
+export type BackupArtifactDetailData = {
+    body?: never;
+    path: {
+        artifact_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/backups/{artifact_id}';
+};
+
+export type BackupArtifactDetailErrors = {
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type BackupArtifactDetailError = BackupArtifactDetailErrors[keyof BackupArtifactDetailErrors];
+
+export type BackupArtifactDetailResponses = {
+    200: BackupArtifactDetail;
+};
+
+export type BackupArtifactDetailResponse = BackupArtifactDetailResponses[keyof BackupArtifactDetailResponses];
+
+export type BackupVerifyData = {
+    body?: never;
+    path: {
+        artifact_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/backups/{artifact_id}/verify';
+};
+
+export type BackupVerifyErrors = {
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type BackupVerifyError = BackupVerifyErrors[keyof BackupVerifyErrors];
+
+export type BackupVerifyResponses = {
+    200: OperationMutationResponse;
+};
+
+export type BackupVerifyResponse = BackupVerifyResponses[keyof BackupVerifyResponses];
+
+export type DoctorOverviewData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/doctor';
+};
+
+export type DoctorOverviewErrors = {
+    503: ApiErrorBody;
+};
+
+export type DoctorOverviewError = DoctorOverviewErrors[keyof DoctorOverviewErrors];
+
+export type DoctorOverviewResponses = {
+    200: DoctorOverview;
+};
+
+export type DoctorOverviewResponse = DoctorOverviewResponses[keyof DoctorOverviewResponses];
+
+export type DoctorRunData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/doctor';
+};
+
+export type DoctorRunErrors = {
+    503: ApiErrorBody;
+};
+
+export type DoctorRunError = DoctorRunErrors[keyof DoctorRunErrors];
+
+export type DoctorRunResponses = {
+    200: OperationMutationResponse;
+};
+
+export type DoctorRunResponse = DoctorRunResponses[keyof DoctorRunResponses];
+
 export type AdminEventsData = {
     body?: never;
     path?: never;
@@ -2347,6 +2592,83 @@ export type NotificationEventDetailResponses = {
 
 export type NotificationEventDetailResponse = NotificationEventDetailResponses[keyof NotificationEventDetailResponses];
 
+export type OperationsListData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Filter by Operation status
+         */
+        status?: string;
+        /**
+         * Filter by Operation kind
+         */
+        kind?: string;
+        /**
+         * Page size (1-200, default 50)
+         */
+        limit?: number;
+    };
+    url: '/api/admin/v1/operations';
+};
+
+export type OperationsListErrors = {
+    503: ApiErrorBody;
+};
+
+export type OperationsListError = OperationsListErrors[keyof OperationsListErrors];
+
+export type OperationsListResponses = {
+    200: Array<OperationSummary>;
+};
+
+export type OperationsListResponse = OperationsListResponses[keyof OperationsListResponses];
+
+export type OperationDetailData = {
+    body?: never;
+    path: {
+        operation_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/operations/{operation_id}';
+};
+
+export type OperationDetailErrors = {
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type OperationDetailError = OperationDetailErrors[keyof OperationDetailErrors];
+
+export type OperationDetailResponses = {
+    200: OperationDetail;
+};
+
+export type OperationDetailResponse = OperationDetailResponses[keyof OperationDetailResponses];
+
+export type CancelOperationData = {
+    body?: never;
+    path: {
+        operation_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/operations/{operation_id}/cancel';
+};
+
+export type CancelOperationErrors = {
+    404: ApiErrorBody;
+    409: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type CancelOperationError = CancelOperationErrors[keyof CancelOperationErrors];
+
+export type CancelOperationResponses = {
+    200: OperationMutationResponse;
+};
+
+export type CancelOperationResponse = CancelOperationResponses[keyof CancelOperationResponses];
+
 export type OverviewData = {
     body?: never;
     path?: never;
@@ -2490,6 +2812,88 @@ export type SetPersonStatusResponses = {
 };
 
 export type SetPersonStatusResponse = SetPersonStatusResponses[keyof SetPersonStatusResponses];
+
+export type RetentionOverviewData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/retention';
+};
+
+export type RetentionOverviewErrors = {
+    503: ApiErrorBody;
+};
+
+export type RetentionOverviewError = RetentionOverviewErrors[keyof RetentionOverviewErrors];
+
+export type RetentionOverviewResponses = {
+    200: RetentionOverview;
+};
+
+export type RetentionOverviewResponse = RetentionOverviewResponses[keyof RetentionOverviewResponses];
+
+export type RetentionImpactData = {
+    body: RetentionImpactRequest;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/retention/impact';
+};
+
+export type RetentionImpactErrors = {
+    400: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type RetentionImpactError = RetentionImpactErrors[keyof RetentionImpactErrors];
+
+export type RetentionImpactResponses = {
+    200: RetentionImpact;
+};
+
+export type RetentionImpactResponse = RetentionImpactResponses[keyof RetentionImpactResponses];
+
+export type UpdateRetentionPolicyData = {
+    body: RetentionPolicyUpdateRequest;
+    path: {
+        family: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/retention/policies/{family}';
+};
+
+export type UpdateRetentionPolicyErrors = {
+    400: ApiErrorBody;
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type UpdateRetentionPolicyError = UpdateRetentionPolicyErrors[keyof UpdateRetentionPolicyErrors];
+
+export type UpdateRetentionPolicyResponses = {
+    200: RetentionPolicyMutationResponse;
+};
+
+export type UpdateRetentionPolicyResponse = UpdateRetentionPolicyResponses[keyof UpdateRetentionPolicyResponses];
+
+export type RetentionRunData = {
+    body: RetentionRunRequest;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/retention/run';
+};
+
+export type RetentionRunErrors = {
+    400: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type RetentionRunError = RetentionRunErrors[keyof RetentionRunErrors];
+
+export type RetentionRunResponses = {
+    200: OperationMutationResponse;
+};
+
+export type RetentionRunResponse = RetentionRunResponses[keyof RetentionRunResponses];
 
 export type SessionsListData = {
     body?: never;

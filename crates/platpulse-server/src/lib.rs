@@ -11,15 +11,18 @@
 
 pub mod alerts;
 pub mod auth;
+pub mod backup;
 pub mod cli;
 pub mod config;
 pub mod database;
+pub mod doctor;
 pub mod enrollment;
 pub mod http;
 pub mod init;
 pub mod network;
 pub mod notifications;
 pub mod openapi;
+pub mod operations;
 pub mod redaction;
 pub mod retention;
 pub mod secrets;

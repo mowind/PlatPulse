@@ -43,6 +43,10 @@ pub struct ServerConfigFile {
     /// Built WebUI root (`index.html` plus `assets/`); defaults to the
     /// release installation directory when not specified.
     pub web_root: Option<PathBuf>,
+    /// Dedicated backup directory for Admin-triggered backup artifacts
+    /// (design §20.1). Must never point at the Server state directory;
+    /// when absent the backup surface reports NotConfigured.
+    pub backup_dir: Option<PathBuf>,
     /// Address the HTTP listener binds to; defaults to `127.0.0.1:8080`.
     pub listen: Option<SocketAddr>,
     /// Origin the Server validates login requests against, e.g.
@@ -92,6 +96,7 @@ pub struct CliOverrides {
     pub db_path: Option<PathBuf>,
     pub pepper_file: Option<PathBuf>,
     pub web_root: Option<PathBuf>,
+    pub backup_dir: Option<PathBuf>,
     pub listen: Option<SocketAddr>,
     pub base_url: Option<String>,
     pub development: bool,
@@ -106,6 +111,7 @@ pub struct ServerConfig {
     pub db_path: PathBuf,
     pub pepper_file: PathBuf,
     pub web_root: Option<PathBuf>,
+    pub backup_dir: Option<PathBuf>,
     pub listen: SocketAddr,
     /// Exact origin used for strict login validation and cookie policy.
     pub public_base_url: String,
@@ -173,6 +179,8 @@ pub enum ConfigError {
     MissingTelegramChatId { path: PathBuf },
     #[error("invalid notification policy in {path}: {reason}")]
     InvalidNotificationPolicy { path: PathBuf, reason: String },
+    #[error("backup_dir must not point at the Server state directory in {path} (design §20.1)")]
+    InvalidBackupDir { path: PathBuf },
 }
 
 impl ServerConfigFile {
@@ -267,6 +275,19 @@ impl ServerConfig {
                 .or_else(|| file.and_then(|file| file.web_root.clone()))
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_WEB_ROOT)),
         );
+        let backup_dir = cli
+            .backup_dir
+            .clone()
+            .or_else(|| file.and_then(|file| file.backup_dir.clone()));
+        if let Some(dir) = &backup_dir {
+            if dir == &state_dir {
+                return Err(ConfigError::InvalidBackupDir {
+                    path: config_path
+                        .map(Path::to_owned)
+                        .unwrap_or_else(|| PathBuf::from("<cli>")),
+                });
+            }
+        }
         let listen = cli
             .listen
             .or_else(|| file.and_then(|file| file.listen))
@@ -315,6 +336,7 @@ impl ServerConfig {
             db_path,
             pepper_file,
             web_root,
+            backup_dir,
             listen,
             public_base_url,
             development,
