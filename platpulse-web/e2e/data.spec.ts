@@ -302,7 +302,10 @@ test.describe.serial('Data mutations (one run on desktop-1280)', () => {
     await page.getByLabel(/Type the backup file name/).fill('wrong-name.db')
     await expect(start).toBeDisabled()
     await page.getByLabel(/Type the backup file name/).fill(filename)
-    await expect(start).toBeEnabled()
+    // Validation is a Server-computed read of the whole artifact; a
+    // refetch triggered by concurrent Admin mutations may briefly reset
+    // the gate, so allow the state to settle under parallel load.
+    await expect(start).toBeEnabled({ timeout: 15_000 })
     await start.click()
 
     // The running Server refuses before any mutation with the typed

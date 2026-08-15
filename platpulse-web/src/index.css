@@ -208,6 +208,13 @@ button {
 .node-card h2 { margin-top: 0; }
 .node-list { list-style: none; margin: 0; padding: 0; }
 .node-list li { display: flex; justify-content: space-between; gap: 1rem; padding: 0.5rem 0; border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent); }
+/* Flex children must be allowed to shrink below their min-content and
+   wrap anywhere: event summaries carry long unbreakable Node IDs, and
+   the meta line carries timestamps — under wider system fonts the
+   min-content alone would overflow narrow viewports (mobile-first,
+   webui.md §10.2). */
+.node-list li span,
+.node-list li small { min-width: 0; overflow-wrap: anywhere; }
 .status { font-weight: 700; }
 .status-healthy { color: #15803d; }
 .status-unhealthy { color: #b91c1c; }
