@@ -348,13 +348,21 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
             crate::redaction::redact_sensitive(&error.to_string())
         );
     }
-    let state = crate::AppState::new_with_proxy_policy(
+    let mut state = crate::AppState::new_with_proxy_policy(
         database,
         config.web_root.clone(),
         auth,
         config.trusted_proxy_cidrs.clone(),
         config.trusted_proxy_scheme.clone(),
+        config.notifications.clone(),
     );
+    // Development mode never touches a real provider: the e2e suite and
+    // local development observe delivery state machines deterministically
+    // through the fixed-failure double (production uses TelegramProvider).
+    if config.development {
+        state = state
+            .with_delivery_provider(std::sync::Arc::new(crate::notifications::DevNullProvider));
+    }
     let app = crate::http::build_app(state.clone());
 
     // Alert evaluation sweep: persists rule state and Incident transitions
@@ -382,6 +390,38 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                     Err(error) => {
                         eprintln!(
                             "alert evaluation sweep deferred: {}",
+                            crate::redaction::redact_sensitive(&error.to_string())
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    // Notification delivery worker (design §17.4): sends due Outbox rows
+    // through the configured channels with bounded retry/backoff and
+    // Retry-After awareness, reaches DeadLetter after max attempts, and
+    // re-arms Deliveries left in_flight by a crash. The loop stops on
+    // shutdown; the worker publishes Admin invalidations only.
+    {
+        let worker_state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(crate::notifications::DELIVERY_INTERVAL);
+            loop {
+                tick.tick().await;
+                if worker_state.is_shutting_down() {
+                    break;
+                }
+                match crate::notifications::process_due_deliveries(
+                    &worker_state,
+                    &*worker_state.delivery_provider(),
+                )
+                .await
+                {
+                    Ok(_) => {}
+                    Err(error) => {
+                        eprintln!(
+                            "notification delivery deferred: {}",
                             crate::redaction::redact_sensitive(&error.to_string())
                         );
                     }

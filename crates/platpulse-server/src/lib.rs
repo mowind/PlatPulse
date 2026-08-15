@@ -18,6 +18,7 @@ pub mod enrollment;
 pub mod http;
 pub mod init;
 pub mod network;
+pub mod notifications;
 pub mod openapi;
 pub mod redaction;
 pub mod retention;

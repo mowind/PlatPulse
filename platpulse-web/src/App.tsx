@@ -31,6 +31,8 @@ import AdminAlertRulesList, {
 import AdminIncidentsList, { AdminIncidentDetail } from './pages/AdminIncidents'
 import AdminSilencesList from './pages/AdminSilences'
 import AdminMaintenanceList from './pages/AdminMaintenance'
+import AdminDeliveriesList, { AdminDeliveryDetail } from './pages/AdminDeliveries'
+import AdminChannelsList, { AdminChannelDetail } from './pages/AdminChannels'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import { ensureGuestEnabledKnown, subscribeGuestEnabled } from './api/public'
 
@@ -177,6 +179,10 @@ const router = createBrowserRouter([
       { path: 'alerts/incidents/:incidentId', element: <AdminIncidentDetail /> },
       { path: 'alerts/silences', element: <AdminSilencesList /> },
       { path: 'alerts/maintenance', element: <AdminMaintenanceList /> },
+      { path: 'alerts/deliveries', element: <AdminDeliveriesList /> },
+      { path: 'alerts/deliveries/:deliveryId', element: <AdminDeliveryDetail /> },
+      { path: 'alerts/channels', element: <AdminChannelsList /> },
+      { path: 'alerts/channels/:channelId', element: <AdminChannelDetail /> },
       // Placeholder for later Phase 2 sections (e.g. Data and Maintenance):
       // links from security mutations must never land on a blank page.
       { path: '*', element: <AdminComingSoon /> },

@@ -67,6 +67,21 @@ import {
   type MaintenanceCreateRequest,
   type MaintenanceDto,
   type MaintenanceMutationResponse,
+  notificationChannels,
+  notificationChannelDetail,
+  notificationDeliveries,
+  notificationDeliveryDetail,
+  notificationEventDetail,
+  notificationEvents,
+  retryDelivery,
+  testNotificationChannel,
+  type ChannelDto,
+  type ChannelTestResponse,
+  type DeliveryRetryResponse,
+  type NotificationDeliveryDetail,
+  type NotificationDeliveriesResponse,
+  type NotificationEventDetail,
+  type NotificationEventsResponse,
   type RuleOverrideResponse,
   type RuleOverrideUpsertRequest,
   type RulePreviewResponse,
@@ -142,6 +157,16 @@ const adminKeys = {
     ['admin', 'alerts', 'incidents', incidentId] as const,
   alertSilences: ['admin', 'alerts', 'silences'] as const,
   alertMaintenance: ['admin', 'alerts', 'maintenance'] as const,
+  notificationEvents: ['admin', 'notifications', 'events'] as const,
+  notificationEventDetail: (eventId: string) =>
+    ['admin', 'notifications', 'events', eventId] as const,
+  notificationDeliveries: (filters: DeliveryFilters) =>
+    ['admin', 'notifications', 'deliveries', filters] as const,
+  notificationDeliveryDetail: (deliveryId: string) =>
+    ['admin', 'notifications', 'deliveries', deliveryId] as const,
+  notificationChannels: ['admin', 'notifications', 'channels'] as const,
+  notificationChannelDetail: (channelId: string) =>
+    ['admin', 'notifications', 'channels', channelId] as const,
 }
 
 /** Immutable Audit listing filters (issue #47). */
@@ -1215,4 +1240,206 @@ export async function fetchAdminMaintenanceDetail(
     () => alertMaintenanceDetail({ path: { window_id: windowId }, signal }),
     'Unable to load the Maintenance Window',
   )
+}
+
+// ---------------------------------------------------------------------------
+// Notifications (issue #49): durable Notification Events, per-channel
+// Delivery attempts with bounded retry/backoff, Retry-After, DeadLetter,
+// manual retry (never a duplicate Event), and redacted channel policy.
+// REST is authoritative; mutations never optimistically mark success and
+// always invalidate the Admin cache (webui.md §6.4).
+// ---------------------------------------------------------------------------
+
+/** Outbox listing filters (issue #49). */
+export type DeliveryFilters = {
+  state?: string
+  channel?: string
+  before?: string
+  limit?: number
+}
+
+export type NotificationEventsFilters = {
+  eventKind?: string
+  before?: string
+  limit?: number
+}
+
+/** Notification Events with their per-channel Delivery summaries. */
+export async function fetchAdminNotificationEvents(
+  filters: NotificationEventsFilters,
+  signal?: AbortSignal,
+): Promise<NotificationEventsResponse> {
+  return requestAdmin(
+    () =>
+      notificationEvents({
+        query: {
+          event_kind: filters.eventKind,
+          before: filters.before,
+          limit: filters.limit,
+        },
+        signal,
+      }),
+    'Unable to load the Notification Events',
+  )
+}
+
+export function useAdminNotificationEvents(
+  generation: number,
+  filters: NotificationEventsFilters,
+) {
+  return useQuery({
+    queryKey: [...adminKeys.notificationEvents, filters, generation],
+    queryFn: ({ signal }) => fetchAdminNotificationEvents(filters, signal),
+    placeholderData: keepPreviousData,
+  })
+}
+
+/** One Notification Event with full Deliveries. */
+export async function fetchAdminNotificationEvent(
+  eventId: string,
+  signal?: AbortSignal,
+): Promise<NotificationEventDetail> {
+  return requestAdmin(
+    () => notificationEventDetail({ path: { event_id: eventId }, signal }),
+    'Unable to load the Notification Event',
+  )
+}
+
+export function useAdminNotificationEvent(generation: number, eventId: string) {
+  return useQuery({
+    queryKey: [...adminKeys.notificationEventDetail(eventId), generation],
+    queryFn: ({ signal }) => fetchAdminNotificationEvent(eventId, signal),
+    enabled: eventId.length > 0,
+  })
+}
+
+/** Outbox rows (the Delivery list) with retry/dead-letter filters. */
+export async function fetchAdminDeliveries(
+  filters: DeliveryFilters,
+  signal?: AbortSignal,
+): Promise<NotificationDeliveriesResponse> {
+  return requestAdmin(
+    () =>
+      notificationDeliveries({
+        query: {
+          state: filters.state,
+          channel: filters.channel,
+          before: filters.before,
+          limit: filters.limit,
+        },
+        signal,
+      }),
+    'Unable to load the Notification Deliveries',
+  )
+}
+
+export function useAdminDeliveries(generation: number, filters: DeliveryFilters) {
+  return useQuery({
+    queryKey: [...adminKeys.notificationDeliveries(filters), generation],
+    queryFn: ({ signal }) => fetchAdminDeliveries(filters, signal),
+    placeholderData: keepPreviousData,
+  })
+}
+
+/** One Delivery with attempt history, provider results, Retry-After, and
+ * DeadLetter outcome. No placeholder: one Delivery's DTO must never render
+ * under another Delivery's URL. */
+export async function fetchAdminDelivery(
+  deliveryId: string,
+  signal?: AbortSignal,
+): Promise<NotificationDeliveryDetail> {
+  return requestAdmin(
+    () => notificationDeliveryDetail({ path: { delivery_id: deliveryId }, signal }),
+    'Unable to load the Notification Delivery',
+  )
+}
+
+export function useAdminDeliveryDetail(generation: number, deliveryId: string) {
+  return useQuery({
+    queryKey: [...adminKeys.notificationDeliveryDetail(deliveryId), generation],
+    queryFn: ({ signal }) => fetchAdminDelivery(deliveryId, signal),
+    enabled: deliveryId.length > 0,
+  })
+}
+
+/** Configured channels with redacted destinations and provider refs. */
+export async function fetchAdminChannels(signal?: AbortSignal): Promise<ChannelDto[]> {
+  return requestAdmin(() => notificationChannels({ signal }), 'Unable to load the channels')
+}
+
+export function useAdminChannels(generation: number) {
+  return useQuery({
+    queryKey: [...adminKeys.notificationChannels, generation],
+    queryFn: ({ signal }) => fetchAdminChannels(signal),
+    placeholderData: keepPreviousData,
+  })
+}
+
+/** One configured channel (policy + redacted destination). */
+export async function fetchAdminChannel(
+  channelId: string,
+  signal?: AbortSignal,
+): Promise<ChannelDto> {
+  return requestAdmin(
+    () => notificationChannelDetail({ path: { channel_id: channelId }, signal }),
+    'Unable to load the channel',
+  )
+}
+
+export function useAdminChannelDetail(generation: number, channelId: string) {
+  return useQuery({
+    queryKey: [...adminKeys.notificationChannelDetail(channelId), generation],
+    queryFn: ({ signal }) => fetchAdminChannel(channelId, signal),
+    enabled: channelId.length > 0,
+  })
+}
+
+/** Manual retry: re-arms one Delivery (new attempt on the next worker pass,
+ * never a duplicate Event/Incident/transition). Duplicate parallel retries
+ * and non-retryable states are typed 409s; the failure path refetches
+ * authoritative state. */
+export async function retryDeliveryEntry(
+  deliveryId: string,
+  csrfToken: string,
+): Promise<DeliveryRetryResponse> {
+  try {
+    const response = await requestAdmin(
+      () =>
+        retryDelivery({
+          path: { delivery_id: deliveryId },
+          headers: { 'X-CSRF-Token': csrfToken },
+        }),
+      'Unable to retry the Delivery',
+    )
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    return response
+  } catch (error) {
+    // The Delivery may already be queued (parallel retry) or resolved on
+    // the Server; reload authoritative state.
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    throw error
+  }
+}
+
+/** Owner test notification: creates a `test` Event (clearly separate from
+ * business Incidents), sends synchronously, audits, and refetches. */
+export async function testNotificationChannelEntry(
+  channelId: string,
+  csrfToken: string,
+): Promise<ChannelTestResponse> {
+  try {
+    const response = await requestAdmin(
+      () =>
+        testNotificationChannel({
+          path: { channel_id: channelId },
+          headers: { 'X-CSRF-Token': csrfToken },
+        }),
+      'Unable to send the test notification',
+    )
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    return response
+  } catch (error) {
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    throw error
+  }
 }

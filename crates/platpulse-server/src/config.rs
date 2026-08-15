@@ -57,6 +57,33 @@ pub struct ServerConfigFile {
     pub trusted_proxy_cidrs: Option<Vec<String>>,
     /// Scheme asserted by a configured trusted proxy (`http` or `https`).
     pub trusted_proxy_scheme: Option<String>,
+    /// Notification channel configuration (design §17.4). The TOML carries
+    /// only the token file reference and the destination, never token
+    /// contents.
+    pub notifications: Option<NotificationsSectionFile>,
+}
+
+/// `[notifications.telegram]`: the approved Telegram delivery path. The
+/// provider token lives in a dedicated secret file referenced by
+/// `token_file`; this file never holds the token itself (design §18.1).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct TelegramChannelFile {
+    pub enabled: Option<bool>,
+    pub token_file: Option<PathBuf>,
+    pub chat_id: Option<String>,
+    /// Maximum automatic attempts (including the first) before a Delivery
+    /// reaches DeadLetter; defaults to 5.
+    pub max_attempts: Option<u32>,
+    /// Exponential backoff base in seconds; defaults to 60.
+    pub retry_base_seconds: Option<u32>,
+}
+
+/// The `[notifications]` section of `server.toml`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct NotificationsSectionFile {
+    pub telegram: Option<TelegramChannelFile>,
 }
 
 /// Per-setting overrides from the `serve` CLI flags.
@@ -85,6 +112,37 @@ pub struct ServerConfig {
     pub development: bool,
     pub trusted_proxy_cidrs: Vec<IpNet>,
     pub trusted_proxy_scheme: Option<String>,
+    /// Resolved notification channels (design §17.4).
+    pub notifications: NotificationChannels,
+}
+
+/// Resolved Telegram channel policy. Present only when the channel is
+/// configured in `server.toml`.
+#[derive(Debug, Clone)]
+pub struct TelegramChannel {
+    pub enabled: bool,
+    /// Path to the secret file holding the Bot API token. The WebUI, logs,
+    /// Audit rows, and DTOs only ever see a redacted reference to this path.
+    pub token_file: PathBuf,
+    /// Destination chat identifier; DTOs only ever see a redacted summary.
+    pub chat_id: String,
+    pub max_attempts: u32,
+    pub retry_base_seconds: u32,
+}
+
+/// Resolved notification channels. A channel is present only when it is
+/// configured in `server.toml`; unconfigured channels create no
+/// Deliveries. Provider tokens never enter the WebUI, logs, or Audit.
+#[derive(Debug, Clone, Default)]
+pub struct NotificationChannels {
+    pub telegram: Option<TelegramChannel>,
+}
+
+impl NotificationChannels {
+    /// The configured Telegram channel, if any.
+    pub fn telegram(&self) -> Option<&TelegramChannel> {
+        self.telegram.as_ref()
+    }
 }
 
 #[derive(Debug, Error)]
@@ -109,6 +167,12 @@ pub enum ConfigError {
     InvalidTrustedProxyCidr(String),
     #[error("invalid trusted proxy scheme: {0}")]
     InvalidTrustedProxyScheme(String),
+    #[error("notifications.telegram.token_file is required in {path}")]
+    MissingTelegramTokenFile { path: PathBuf },
+    #[error("notifications.telegram.chat_id is required in {path}")]
+    MissingTelegramChatId { path: PathBuf },
+    #[error("invalid notification policy in {path}: {reason}")]
+    InvalidNotificationPolicy { path: PathBuf, reason: String },
 }
 
 impl ServerConfigFile {
@@ -242,8 +306,11 @@ impl ServerConfig {
             }
         }
 
+        let config_path = config_path.map(Path::to_owned);
+        let notifications = resolve_notification_channels(file, &config_path)?;
+
         Ok(Self {
-            config_path: config_path.map(Path::to_owned),
+            config_path,
             state_dir,
             db_path,
             pepper_file,
@@ -253,8 +320,62 @@ impl ServerConfig {
             development,
             trusted_proxy_cidrs,
             trusted_proxy_scheme,
+            notifications,
         })
     }
+}
+
+fn resolve_notification_channels(
+    file: Option<&ServerConfigFile>,
+    config_path: &Option<PathBuf>,
+) -> Result<NotificationChannels, ConfigError> {
+    let Some(section) = file.and_then(|value| value.notifications.as_ref()) else {
+        return Ok(NotificationChannels::default());
+    };
+    let Some(telegram) = section.telegram.as_ref() else {
+        return Ok(NotificationChannels::default());
+    };
+    let path = config_path
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("<cli>"));
+    let token_file = telegram
+        .token_file
+        .clone()
+        .ok_or_else(|| ConfigError::MissingTelegramTokenFile { path: path.clone() })?;
+    let chat_id = telegram
+        .chat_id
+        .clone()
+        .ok_or_else(|| ConfigError::MissingTelegramChatId { path: path.clone() })?;
+    if chat_id.trim().is_empty() {
+        return Err(ConfigError::InvalidNotificationPolicy {
+            path,
+            reason: "notifications.telegram.chat_id must not be empty".to_owned(),
+        });
+    }
+    let max_attempts = telegram.max_attempts.unwrap_or(5);
+    if !(1..=20).contains(&max_attempts) {
+        return Err(ConfigError::InvalidNotificationPolicy {
+            path: path.clone(),
+            reason: "notifications.telegram.max_attempts must be between 1 and 20".to_owned(),
+        });
+    }
+    let retry_base_seconds = telegram.retry_base_seconds.unwrap_or(60);
+    if !(1..=3600).contains(&retry_base_seconds) {
+        return Err(ConfigError::InvalidNotificationPolicy {
+            path: path.clone(),
+            reason: "notifications.telegram.retry_base_seconds must be between 1 and 3600"
+                .to_owned(),
+        });
+    }
+    Ok(NotificationChannels {
+        telegram: Some(TelegramChannel {
+            enabled: telegram.enabled.unwrap_or(true),
+            token_file,
+            chat_id,
+            max_attempts,
+            retry_base_seconds,
+        }),
+    })
 }
 
 #[cfg(test)]
@@ -446,6 +567,48 @@ development = false
                 "{raw} must be rejected as an origin"
             );
         }
+    }
+
+    #[test]
+    fn notification_telegram_section_resolves_with_defaults_and_validates() {
+        let dir = tempdir().unwrap();
+        let path = write_config(
+            dir.path(),
+            "state_dir = \"/srv/platpulse\"\n[notifications.telegram]\ntoken_file = \"/etc/platpulse/secrets/telegram-token\"\nchat_id = \"123456789\"\n",
+        );
+        let config = ServerConfig::resolve(Some(&path), &CliOverrides::default()).unwrap();
+        let telegram = config
+            .notifications
+            .telegram()
+            .expect("telegram configured");
+        assert!(telegram.enabled);
+        assert_eq!(
+            telegram.token_file,
+            Path::new("/etc/platpulse/secrets/telegram-token")
+        );
+        assert_eq!(telegram.chat_id, "123456789");
+        assert_eq!(telegram.max_attempts, 5);
+        assert_eq!(telegram.retry_base_seconds, 60);
+
+        let path = write_config(
+            dir.path(),
+            "state_dir = \"/srv/platpulse\"\n[notifications.telegram]\nchat_id = \"1\"\nmax_attempts = 2\nretry_base_seconds = 10\n",
+        );
+        let error = ServerConfig::resolve(Some(&path), &CliOverrides::default()).unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigError::MissingTelegramTokenFile { .. }
+        ));
+
+        let path = write_config(
+            dir.path(),
+            "state_dir = \"/srv/platpulse\"\n[notifications.telegram]\ntoken_file = \"/tmp/t\"\nchat_id = \"1\"\nmax_attempts = 0\n",
+        );
+        let error = ServerConfig::resolve(Some(&path), &CliOverrides::default()).unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigError::InvalidNotificationPolicy { .. }
+        ));
     }
 
     #[test]

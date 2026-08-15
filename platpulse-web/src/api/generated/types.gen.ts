@@ -336,6 +336,21 @@ export type ApiErrorBody = {
     error: ApiError;
 };
 
+/**
+ * One recorded provider attempt (redacted provider result).
+ */
+export type AttemptRow = {
+    attemptId: string;
+    attemptNumber: number;
+    attemptedAt: string;
+    deliveryId: string;
+    durationMs?: number | null;
+    errorKind?: string | null;
+    outcome: string;
+    providerResult: string;
+    retryAfterSeconds?: number | null;
+};
+
 export type AttentionItem = {
     /**
      * Stable item key (kind + subject) for list rendering and tests.
@@ -374,6 +389,27 @@ export type AuditResponse = {
     nextBefore?: number | null;
 };
 
+export type ChannelDto = {
+    channelId: string;
+    channelKind: string;
+    /**
+     * Redacted destination summary (last four characters only).
+     */
+    destination: string;
+    enabled: boolean;
+    maxAttempts: number;
+    /**
+     * Redacted provider reference (secret file base name only).
+     */
+    providerRef: string;
+    retryBaseSeconds: number;
+};
+
+export type ChannelTestResponse = DeliveryRow & {
+    auditEventId: number;
+    eventId: string;
+};
+
 export type ConsensusDiagnostic = {
     attempted_at?: string | null;
     epoch?: number | null;
@@ -397,6 +433,39 @@ export type CreatePersonRequest = {
     username: string;
 };
 
+export type DeliveryRetryResponse = DeliveryRow & {
+    auditEventId: number;
+};
+
+/**
+ * One Notification Delivery row (redacted by construction: `destination`
+ * is a masked summary and `last_result` is a fixed provider vocabulary,
+ * never raw provider output).
+ */
+export type DeliveryRow = {
+    attemptCount: number;
+    channelKind: string;
+    createdAt: string;
+    deliveryId: string;
+    destination: string;
+    eventId: string;
+    lastAttemptAt?: string | null;
+    lastErrorKind?: string | null;
+    lastResult?: string | null;
+    nextAttemptAt?: string | null;
+    retryAfterSeconds?: number | null;
+    state: string;
+    updatedAt: string;
+};
+
+export type DeliverySummary = {
+    attemptCount: number;
+    channelKind: string;
+    deliveryId: string;
+    destination: string;
+    state: string;
+};
+
 /**
  * One-time Enrollment Token issued to an Owner (design §4.5, §12.5). The
  * full token is delivered exactly once in the success response.
@@ -407,6 +476,21 @@ export type EnrollmentTokenResponse = {
     request_id: string;
     token: string;
     token_id: string;
+};
+
+/**
+ * One Notification Event.
+ */
+export type EventRow = {
+    createdAt: string;
+    eventId: string;
+    eventKind: string;
+    incidentId?: string | null;
+    ruleKey?: string | null;
+    severity: string;
+    subjectKey?: string | null;
+    subjectKind?: string | null;
+    summary: string;
 };
 
 export type HostComponentDiagnostic = {
@@ -677,6 +761,29 @@ export type NodeTransferMutationResponse = {
     audit_event_id: number;
     request_id: string;
     transfer: NodeTransfer;
+};
+
+export type NotificationDeliveriesResponse = {
+    items: Array<DeliveryRow>;
+    nextBefore?: string | null;
+};
+
+export type NotificationDeliveryDetail = DeliveryRow & {
+    attempts: Array<AttemptRow>;
+    event: EventRow;
+};
+
+export type NotificationEventDetail = EventRow & {
+    deliveries: Array<DeliveryRow>;
+};
+
+export type NotificationEventItem = EventRow & {
+    deliveries: Array<DeliverySummary>;
+};
+
+export type NotificationEventsResponse = {
+    items: Array<NotificationEventItem>;
+    nextBefore?: string | null;
 };
 
 /**
@@ -2022,6 +2129,223 @@ export type SetVisibilityResponses = {
 };
 
 export type SetVisibilityResponse = SetVisibilityResponses[keyof SetVisibilityResponses];
+
+export type NotificationChannelsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/notifications/channels';
+};
+
+export type NotificationChannelsErrors = {
+    503: ApiErrorBody;
+};
+
+export type NotificationChannelsError = NotificationChannelsErrors[keyof NotificationChannelsErrors];
+
+export type NotificationChannelsResponses = {
+    200: Array<ChannelDto>;
+};
+
+export type NotificationChannelsResponse = NotificationChannelsResponses[keyof NotificationChannelsResponses];
+
+export type NotificationChannelDetailData = {
+    body?: never;
+    path: {
+        /**
+         * Channel ID (telegram)
+         */
+        channel_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/notifications/channels/{channel_id}';
+};
+
+export type NotificationChannelDetailErrors = {
+    404: ApiErrorBody;
+};
+
+export type NotificationChannelDetailError = NotificationChannelDetailErrors[keyof NotificationChannelDetailErrors];
+
+export type NotificationChannelDetailResponses = {
+    200: ChannelDto;
+};
+
+export type NotificationChannelDetailResponse = NotificationChannelDetailResponses[keyof NotificationChannelDetailResponses];
+
+export type TestNotificationChannelData = {
+    body?: never;
+    path: {
+        /**
+         * Channel ID (telegram)
+         */
+        channel_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/notifications/channels/{channel_id}/test';
+};
+
+export type TestNotificationChannelErrors = {
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+    409: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type TestNotificationChannelError = TestNotificationChannelErrors[keyof TestNotificationChannelErrors];
+
+export type TestNotificationChannelResponses = {
+    200: ChannelTestResponse;
+};
+
+export type TestNotificationChannelResponse = TestNotificationChannelResponses[keyof TestNotificationChannelResponses];
+
+export type NotificationDeliveriesData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Delivery state filter (pending, retry_scheduled, succeeded, failed, dead_letter, suppressed, in_flight)
+         */
+        state?: string;
+        /**
+         * Channel filter (telegram)
+         */
+        channel?: string;
+        /**
+         * Opaque keyset cursor from a previous page
+         */
+        before?: string;
+        /**
+         * Page size (1-100, default 50)
+         */
+        limit?: number;
+    };
+    url: '/api/admin/v1/notifications/deliveries';
+};
+
+export type NotificationDeliveriesErrors = {
+    400: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type NotificationDeliveriesError = NotificationDeliveriesErrors[keyof NotificationDeliveriesErrors];
+
+export type NotificationDeliveriesResponses = {
+    200: NotificationDeliveriesResponse;
+};
+
+export type NotificationDeliveriesResponse2 = NotificationDeliveriesResponses[keyof NotificationDeliveriesResponses];
+
+export type NotificationDeliveryDetailData = {
+    body?: never;
+    path: {
+        /**
+         * Notification Delivery ID
+         */
+        delivery_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/notifications/deliveries/{delivery_id}';
+};
+
+export type NotificationDeliveryDetailErrors = {
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type NotificationDeliveryDetailError = NotificationDeliveryDetailErrors[keyof NotificationDeliveryDetailErrors];
+
+export type NotificationDeliveryDetailResponses = {
+    200: NotificationDeliveryDetail;
+};
+
+export type NotificationDeliveryDetailResponse = NotificationDeliveryDetailResponses[keyof NotificationDeliveryDetailResponses];
+
+export type RetryDeliveryData = {
+    body?: never;
+    path: {
+        /**
+         * Notification Delivery ID
+         */
+        delivery_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/notifications/deliveries/{delivery_id}/retry';
+};
+
+export type RetryDeliveryErrors = {
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+    409: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type RetryDeliveryError = RetryDeliveryErrors[keyof RetryDeliveryErrors];
+
+export type RetryDeliveryResponses = {
+    200: DeliveryRetryResponse;
+};
+
+export type RetryDeliveryResponse = RetryDeliveryResponses[keyof RetryDeliveryResponses];
+
+export type NotificationEventsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Filter by event kind (incident, test)
+         */
+        event_kind?: string;
+        /**
+         * Opaque keyset cursor from a previous page
+         */
+        before?: string;
+        /**
+         * Page size (1-100, default 50)
+         */
+        limit?: number;
+    };
+    url: '/api/admin/v1/notifications/events';
+};
+
+export type NotificationEventsErrors = {
+    400: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type NotificationEventsError = NotificationEventsErrors[keyof NotificationEventsErrors];
+
+export type NotificationEventsResponses = {
+    200: NotificationEventsResponse;
+};
+
+export type NotificationEventsResponse2 = NotificationEventsResponses[keyof NotificationEventsResponses];
+
+export type NotificationEventDetailData = {
+    body?: never;
+    path: {
+        /**
+         * Notification Event ID
+         */
+        event_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/notifications/events/{event_id}';
+};
+
+export type NotificationEventDetailErrors = {
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type NotificationEventDetailError = NotificationEventDetailErrors[keyof NotificationEventDetailErrors];
+
+export type NotificationEventDetailResponses = {
+    200: NotificationEventDetail;
+};
+
+export type NotificationEventDetailResponse = NotificationEventDetailResponses[keyof NotificationEventDetailResponses];
 
 export type OverviewData = {
     body?: never;

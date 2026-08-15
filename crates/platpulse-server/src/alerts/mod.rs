@@ -1265,6 +1265,9 @@ pub struct EvaluationOutcome {
     pub changed: bool,
     pub opened_incident: Option<String>,
     pub resolved_incident: Option<bool>,
+    /// Severity the transition ran under (override-aware); carried so the
+    /// Notification Event matches the Incident it records.
+    pub transition_severity: Option<String>,
     pub state: String,
 }
 
@@ -1414,6 +1417,7 @@ pub async fn evaluate_rule(
         .await?;
         outcome.changed = true;
         outcome.opened_incident = Some(incident_id);
+        outcome.transition_severity = Some(effective.severity.clone());
     }
     if transition.resolves_incident {
         let resolved_at = format_rfc3339(now);
@@ -1430,6 +1434,7 @@ pub async fn evaluate_rule(
         if result.rows_affected() > 0 {
             outcome.changed = true;
             outcome.resolved_incident = Some(true);
+            outcome.transition_severity = Some(effective.severity.clone());
         }
     }
 
@@ -1488,11 +1493,15 @@ fn evidence_json(
 /// report ingestion transaction: the Agent's offline/host rules and every
 /// reported Node's rules run on the freshly committed projection facts.
 /// Returns the number of state transitions.
+/// Evaluate every catalog rule against the reporting Agent and its owned
+/// Nodes inside the caller's transaction, and record Notification Events
+/// for Incident transitions in the same transaction (design §17.4).
 pub async fn evaluate_report(
     executor: &mut sqlx::SqliteConnection,
 
     agent_id: &str,
     node_ids: &[String],
+    channels: &crate::config::NotificationChannels,
     now: OffsetDateTime,
 ) -> Result<usize, AlertError> {
     let mut changes = 0usize;
@@ -1501,12 +1510,32 @@ pub async fn evaluate_report(
             SubjectKind::Agent | SubjectKind::Host => {
                 let outcome =
                     evaluate_rule(executor, rule.key, rule.subject_kind, agent_id, now).await?;
+                record_transition_events(
+                    executor,
+                    &outcome,
+                    rule,
+                    rule.subject_kind,
+                    agent_id,
+                    channels,
+                    now,
+                )
+                .await?;
                 changes += outcome.changed as usize;
             }
             SubjectKind::Node => {
                 for node_id in node_ids {
                     let outcome =
                         evaluate_rule(executor, rule.key, SubjectKind::Node, node_id, now).await?;
+                    record_transition_events(
+                        executor,
+                        &outcome,
+                        rule,
+                        SubjectKind::Node,
+                        node_id,
+                        channels,
+                        now,
+                    )
+                    .await?;
                     changes += outcome.changed as usize;
                 }
             }
@@ -1514,6 +1543,71 @@ pub async fn evaluate_report(
         }
     }
     Ok(changes)
+}
+
+/// Notification Events for Incident transitions, written in the caller's
+/// transaction next to the transition itself. A manual retry never re-runs
+/// this: it re-arms the existing Delivery row.
+async fn record_transition_events(
+    executor: &mut sqlx::SqliteConnection,
+    outcome: &EvaluationOutcome,
+    rule: &RuleDefinition,
+    subject_kind: SubjectKind,
+    subject_key: &str,
+    channels: &crate::config::NotificationChannels,
+    now: OffsetDateTime,
+) -> Result<(), AlertError> {
+    if outcome.opened_incident.is_some() {
+        let severity = outcome
+            .transition_severity
+            .as_deref()
+            .unwrap_or(rule.default_severity);
+        crate::notifications::record_notification_event(
+            executor,
+            crate::notifications::NotificationEventInput {
+                kind: "incident",
+                incident_id: outcome.opened_incident.as_deref(),
+                rule_key: Some(rule.key),
+                subject: Some((subject_kind, subject_key)),
+                severity,
+                summary: &format!(
+                    "Incident opened: {} on {} {}",
+                    rule.key,
+                    subject_kind.as_str(),
+                    subject_key
+                ),
+            },
+            channels,
+            now,
+        )
+        .await?;
+    }
+    if outcome.resolved_incident == Some(true) {
+        let severity = outcome
+            .transition_severity
+            .as_deref()
+            .unwrap_or(rule.default_severity);
+        crate::notifications::record_notification_event(
+            executor,
+            crate::notifications::NotificationEventInput {
+                kind: "incident",
+                incident_id: None,
+                rule_key: Some(rule.key),
+                subject: Some((subject_kind, subject_key)),
+                severity,
+                summary: &format!(
+                    "Incident resolved: {} on {} {}",
+                    rule.key,
+                    subject_kind.as_str(),
+                    subject_key
+                ),
+            },
+            channels,
+            now,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// The full evaluation sweep: every catalog rule against every active
@@ -1542,6 +1636,16 @@ pub async fn sweep(state: &crate::http::AppState) -> Result<usize, AlertError> {
                 for agent_id in &agents {
                     let outcome =
                         evaluate_rule(&mut tx, rule.key, rule.subject_kind, agent_id, now).await?;
+                    record_transition_events(
+                        &mut tx,
+                        &outcome,
+                        rule,
+                        rule.subject_kind,
+                        agent_id,
+                        state.channels(),
+                        now,
+                    )
+                    .await?;
                     changes += outcome.changed as usize;
                 }
             }
@@ -1549,6 +1653,16 @@ pub async fn sweep(state: &crate::http::AppState) -> Result<usize, AlertError> {
                 for node_id in &nodes {
                     let outcome =
                         evaluate_rule(&mut tx, rule.key, SubjectKind::Node, node_id, now).await?;
+                    record_transition_events(
+                        &mut tx,
+                        &outcome,
+                        rule,
+                        SubjectKind::Node,
+                        node_id,
+                        state.channels(),
+                        now,
+                    )
+                    .await?;
                     changes += outcome.changed as usize;
                 }
             }
@@ -1884,9 +1998,15 @@ mod tests {
         now: OffsetDateTime,
     ) -> usize {
         let mut conn = pool.acquire().await.unwrap();
-        evaluate_report(&mut conn, agent_id, node_ids, now)
-            .await
-            .unwrap()
+        evaluate_report(
+            &mut conn,
+            agent_id,
+            node_ids,
+            &crate::config::NotificationChannels::default(),
+            now,
+        )
+        .await
+        .unwrap()
     }
 
     #[tokio::test]

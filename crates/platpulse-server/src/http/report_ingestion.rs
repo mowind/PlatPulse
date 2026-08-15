@@ -1921,6 +1921,7 @@ async fn handler(
         &mut tx,
         &auth.agent_id,
         &node_ids,
+        state.channels(),
         crate::auth::now_utc(),
     )
     .await

@@ -156,6 +156,12 @@ export default function AdminLayout() {
           <NavLink to="/admin/alerts/maintenance" end onClick={closeNav}>
             Maintenance
           </NavLink>
+          <NavLink to="/admin/alerts/deliveries" end onClick={closeNav}>
+            Deliveries
+          </NavLink>
+          <NavLink to="/admin/alerts/channels" end onClick={closeNav}>
+            Channels
+          </NavLink>
           <p className="admin-nav-label">Access</p>
           <NavLink to="/admin/access/people" end onClick={closeNav}>
             People
@@ -166,8 +172,7 @@ export default function AdminLayout() {
           <NavLink to="/admin/access/audit" end onClick={closeNav}>
             Audit
           </NavLink>
-          {/* Later Phase 2 groups arrive here: Alerts and Operations,
-              Data and Maintenance. */}
+          {/* Later Phase 2 groups arrive here: Data and Maintenance. */}
         </nav>
         <div
           className={navOpen ? 'admin-nav-scrim admin-nav-scrim-open' : 'admin-nav-scrim'}

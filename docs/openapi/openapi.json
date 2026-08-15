@@ -2099,6 +2099,481 @@
         }
       }
     },
+    "/api/admin/v1/notifications/channels": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "List the configured notification channels with redacted destination\nsummaries and provider references. Policy (retry bound, backoff base)\nis Server config, not browser state.",
+        "operationId": "notification_channels",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ChannelDto"
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/notifications/channels/{channel_id}": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "One configured channel: policy, redacted destination, redacted provider\nreference.",
+        "operationId": "notification_channel_detail",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "description": "Channel ID (telegram)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/notifications/channels/{channel_id}/test": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Send a test notification through a channel. Test Notifications are\nclearly separate from business Incidents (event kind `test`), always\nproduce an Audit Event, and send synchronously so the response carries\nthe resulting Delivery state. Provider tokens never enter the request,\nresponse, Audit body, or logs.",
+        "operationId": "test_notification_channel",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "description": "Channel ID (telegram)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelTestResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/notifications/deliveries": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "List Notification Deliveries (the Outbox) with retry/dead-letter\nfilters. Every row carries its own per-channel state, so one failed\ndestination never erases successful Delivery state.",
+        "operationId": "notification_deliveries",
+        "parameters": [
+          {
+            "name": "state",
+            "in": "query",
+            "description": "Delivery state filter (pending, retry_scheduled, succeeded, failed, dead_letter, suppressed, in_flight)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "channel",
+            "in": "query",
+            "description": "Channel filter (telegram)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Opaque keyset cursor from a previous page",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size (1-100, default 50)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationDeliveriesResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/notifications/deliveries/{delivery_id}": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "One Delivery with its redacted destination, attempt history, provider\nresults, Retry-After, and DeadLetter outcome.",
+        "operationId": "notification_delivery_detail",
+        "parameters": [
+          {
+            "name": "delivery_id",
+            "in": "path",
+            "description": "Notification Delivery ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationDeliveryDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/notifications/deliveries/{delivery_id}/retry": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Manual retry: re-arms one Delivery for the worker. It creates a new\nDelivery attempt on the next worker pass but never a new Notification\nEvent, Incident, or business transition. Duplicate parallel retries are\nrefused (409 `delivery_already_queued`); suppressed and succeeded\nDeliveries are not retryable (409 `delivery_not_retryable`).",
+        "operationId": "retry_delivery",
+        "parameters": [
+          {
+            "name": "delivery_id",
+            "in": "path",
+            "description": "Notification Delivery ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeliveryRetryResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/notifications/events": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "List Notification Events (newest first) with their per-channel Delivery\nsummaries. Events are durable business records independent of Delivery\noutcomes and remain visible across browser navigation.",
+        "operationId": "notification_events",
+        "parameters": [
+          {
+            "name": "event_kind",
+            "in": "query",
+            "description": "Filter by event kind (incident, test)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Opaque keyset cursor from a previous page",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size (1-100, default 50)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationEventsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/notifications/events/{event_id}": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "One Notification Event with its full per-channel Deliveries.",
+        "operationId": "notification_event_detail",
+        "parameters": [
+          {
+            "name": "event_id",
+            "in": "path",
+            "description": "Notification Event ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationEventDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/v1/overview": {
       "get": {
         "tags": [
@@ -4505,6 +4980,59 @@
           }
         }
       },
+      "AttemptRow": {
+        "type": "object",
+        "description": "One recorded provider attempt (redacted provider result).",
+        "required": [
+          "attemptId",
+          "deliveryId",
+          "attemptNumber",
+          "attemptedAt",
+          "outcome",
+          "providerResult"
+        ],
+        "properties": {
+          "attemptId": {
+            "type": "string"
+          },
+          "attemptNumber": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "attemptedAt": {
+            "type": "string"
+          },
+          "deliveryId": {
+            "type": "string"
+          },
+          "durationMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "errorKind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "providerResult": {
+            "type": "string"
+          },
+          "retryAfterSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          }
+        }
+      },
       "AttentionItem": {
         "type": "object",
         "required": [
@@ -4602,6 +5130,70 @@
             "description": "Cursor for the next older page; absent when the listing is complete."
           }
         }
+      },
+      "ChannelDto": {
+        "type": "object",
+        "required": [
+          "channelId",
+          "channelKind",
+          "enabled",
+          "destination",
+          "providerRef",
+          "maxAttempts",
+          "retryBaseSeconds"
+        ],
+        "properties": {
+          "channelId": {
+            "type": "string"
+          },
+          "channelKind": {
+            "type": "string"
+          },
+          "destination": {
+            "type": "string",
+            "description": "Redacted destination summary (last four characters only)."
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "maxAttempts": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "providerRef": {
+            "type": "string",
+            "description": "Redacted provider reference (secret file base name only)."
+          },
+          "retryBaseSeconds": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "ChannelTestResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/DeliveryRow"
+          },
+          {
+            "type": "object",
+            "required": [
+              "eventId",
+              "auditEventId"
+            ],
+            "properties": {
+              "auditEventId": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "eventId": {
+                "type": "string"
+              }
+            }
+          }
+        ]
       },
       "ComponentDiagnostic": {
         "type": "object",
@@ -4765,6 +5357,125 @@
           }
         }
       },
+      "DeliveryRetryResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/DeliveryRow"
+          },
+          {
+            "type": "object",
+            "required": [
+              "auditEventId"
+            ],
+            "properties": {
+              "auditEventId": {
+                "type": "integer",
+                "format": "int64"
+              }
+            }
+          }
+        ]
+      },
+      "DeliveryRow": {
+        "type": "object",
+        "description": "One Notification Delivery row (redacted by construction: `destination`\nis a masked summary and `last_result` is a fixed provider vocabulary,\nnever raw provider output).",
+        "required": [
+          "deliveryId",
+          "eventId",
+          "channelKind",
+          "destination",
+          "state",
+          "attemptCount",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "attemptCount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "channelKind": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "deliveryId": {
+            "type": "string"
+          },
+          "destination": {
+            "type": "string"
+          },
+          "eventId": {
+            "type": "string"
+          },
+          "lastAttemptAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastErrorKind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastResult": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nextAttemptAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retryAfterSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "state": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          }
+        }
+      },
+      "DeliverySummary": {
+        "type": "object",
+        "required": [
+          "deliveryId",
+          "channelKind",
+          "destination",
+          "state",
+          "attemptCount"
+        ],
+        "properties": {
+          "attemptCount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "channelKind": {
+            "type": "string"
+          },
+          "deliveryId": {
+            "type": "string"
+          },
+          "destination": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        }
+      },
       "EnrollResponse": {
         "type": "object",
         "description": "Success payload of one Agent Enrollment (Agent wire: snake_case,\ndesign §9.1). `credential` is the full `pp_agent_…` token and is\ndelivered to the enrolling Agent exactly once; the Server stores only\nits pepper-keyed digest.",
@@ -4821,6 +5532,58 @@
             "type": "string"
           },
           "token_id": {
+            "type": "string"
+          }
+        }
+      },
+      "EventRow": {
+        "type": "object",
+        "description": "One Notification Event.",
+        "required": [
+          "eventId",
+          "eventKind",
+          "severity",
+          "summary",
+          "createdAt"
+        ],
+        "properties": {
+          "createdAt": {
+            "type": "string"
+          },
+          "eventId": {
+            "type": "string"
+          },
+          "eventKind": {
+            "type": "string"
+          },
+          "incidentId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ruleKey": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "severity": {
+            "type": "string"
+          },
+          "subjectKey": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subjectKind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "summary": {
             "type": "string"
           }
         }
@@ -5795,6 +6558,113 @@
           },
           "transfer": {
             "$ref": "#/components/schemas/NodeTransfer"
+          }
+        }
+      },
+      "NotificationDeliveriesResponse": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeliveryRow"
+            }
+          },
+          "nextBefore": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "NotificationDeliveryDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/DeliveryRow"
+          },
+          {
+            "type": "object",
+            "required": [
+              "attempts",
+              "event"
+            ],
+            "properties": {
+              "attempts": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/AttemptRow"
+                }
+              },
+              "event": {
+                "$ref": "#/components/schemas/EventRow"
+              }
+            }
+          }
+        ]
+      },
+      "NotificationEventDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/EventRow"
+          },
+          {
+            "type": "object",
+            "required": [
+              "deliveries"
+            ],
+            "properties": {
+              "deliveries": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/DeliveryRow"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "NotificationEventItem": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/EventRow"
+          },
+          {
+            "type": "object",
+            "required": [
+              "deliveries"
+            ],
+            "properties": {
+              "deliveries": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/DeliverySummary"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "NotificationEventsResponse": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NotificationEventItem"
+            }
+          },
+          "nextBefore": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },

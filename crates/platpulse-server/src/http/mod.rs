@@ -15,6 +15,7 @@ pub(crate) mod admin;
 pub(crate) mod agent;
 pub(crate) mod alerts_admin;
 pub(crate) mod health;
+pub(crate) mod notifications_admin;
 pub(crate) mod public;
 pub(crate) mod realtime;
 pub(crate) mod report_ingestion;
@@ -271,6 +272,8 @@ pub struct AppState {
     web_assets_ready: bool,
     runtime: Arc<ServerRuntime>,
     proxy_policy: ProxyTrustPolicy,
+    channels: crate::config::NotificationChannels,
+    delivery_provider: Arc<dyn crate::notifications::DeliveryProvider>,
     pub(crate) public_realtime: RealtimeHub,
     pub(crate) admin_realtime: RealtimeHub,
 }
@@ -283,18 +286,36 @@ impl AppState {
     /// the hashed `assets/` directory: an incomplete build must not report
     /// ready.
     pub fn new(db: ServerDatabase, web_assets: Option<PathBuf>, auth: AuthConfig) -> Self {
-        Self::new_with_proxy_policy(db, web_assets, auth, Vec::new(), None)
+        Self::new_with_proxy_policy(
+            db,
+            web_assets,
+            auth,
+            Vec::new(),
+            None,
+            crate::config::NotificationChannels::default(),
+        )
+    }
+
+    /// Override the delivery provider (test doubles use this seam).
+    pub fn with_delivery_provider(
+        mut self,
+        provider: Arc<dyn crate::notifications::DeliveryProvider>,
+    ) -> Self {
+        self.delivery_provider = provider;
+        self
     }
 
     /// Build state with the listener's explicit trusted-proxy policy. Proxy
     /// headers are accepted only from a matching peer and only when the
-    /// configured asserted scheme is HTTPS.
+    /// configured asserted scheme is HTTPS. `channels` carries the resolved
+    /// notification channel policy (design §17.4).
     pub fn new_with_proxy_policy(
         db: ServerDatabase,
         web_assets: Option<PathBuf>,
         auth: AuthConfig,
         trusted_proxy_cidrs: Vec<IpNet>,
         trusted_proxy_scheme: Option<String>,
+        channels: crate::config::NotificationChannels,
     ) -> Self {
         let web_index = web_assets
             .as_deref()
@@ -344,6 +365,8 @@ impl AppState {
                 trusted_proxy_cidrs,
                 trusted_proxy_scheme,
             },
+            channels,
+            delivery_provider: Arc::new(crate::notifications::TelegramProvider::default()),
             public_realtime: RealtimeHub::default(),
             admin_realtime: RealtimeHub::default(),
         }
@@ -392,6 +415,14 @@ impl AppState {
 
     pub(crate) fn db(&self) -> &ServerDatabase {
         &self.db
+    }
+
+    pub(crate) fn channels(&self) -> &crate::config::NotificationChannels {
+        &self.channels
+    }
+
+    pub(crate) fn delivery_provider(&self) -> Arc<dyn crate::notifications::DeliveryProvider> {
+        Arc::clone(&self.delivery_provider)
     }
 
     pub(crate) fn database(&self) -> Arc<ServerDatabase> {
@@ -453,6 +484,7 @@ pub fn build_app(state: AppState) -> Router {
     let admin_group = admin::router()
         .merge(access::router())
         .merge(alerts_admin::router())
+        .merge(notifications_admin::router())
         .layer(axum::middleware::from_fn(owner_role_guard))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

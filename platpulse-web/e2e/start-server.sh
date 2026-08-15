@@ -25,7 +25,22 @@ web_root = "$WEB_DIR/dist"
 listen = "127.0.0.1:$PORT"
 public_base_url = "http://127.0.0.1:$PORT"
 development = true
+
+# Notification delivery fixture (issue #49): Telegram is configured with a
+# fake token file and an aggressive bounded-retry policy so the Playwright
+# suite can exercise retry/dead-letter deterministically without touching a
+# real provider. The token content never enters the Server database or the
+# WebUI; only the redacted destination and the secret file base name are
+# exposed.
+[notifications.telegram]
+enabled = true
+token_file = "$STATE_DIR/telegram-token"
+chat_id = "987654321"
+max_attempts = 2
+retry_base_seconds = 1
 EOF
+
+printf '%s\n' 'fake-e2e-telegram-token' > "$STATE_DIR/telegram-token"
 
 cd "$ROOT"
 cargo run -q -p platpulse-server -- init --config "$CONFIG" >/dev/null
@@ -205,6 +220,114 @@ with sqlite3.connect(path) as db:
             "INSERT OR IGNORE INTO node_transfers (transfer_id, node_id, source_agent_id, target_agent_id, status, operator_reason, created_at, expires_at, cancelled_at, completed_at, rejection_code, rejection_reason, mismatched_fields, updated_at) VALUES (?, ?, ?, ?, ?, 'move the validator host', ?, ?, ?, ?, ?, ?, ?, ?)",
             (transfer_id, node_id, agent_id, target_agent, status_value, created, expires, cancelled_at, completed_at, rejection_code, rejection_reason, mismatched, created),
         )
+
+    # Notification fixtures (issue #49): durable Events with per-channel
+    # Deliveries in every visible state. The delivery worker runs against
+    # the fake token, so retried rows fail fast (network/API error) and
+    # reach Dead letter after the configured 2 attempts; seeded terminal
+    # rows stay untouched and deterministic for the suite.
+    notif_time = transfer_time(0)  # a few hours ago, stable ordering
+    for event_id, kind, incident, rule, subject, severity, summary, in (
+        (
+            "0195f2a1-0041-4041-8041-000000000041",
+            "incident",
+            None,
+            "node.rpc_unreachable",
+            ("node", node_a),
+            "warning",
+            "Incident opened: node.rpc_unreachable on node " + node_a,
+        ),
+        (
+            "0195f2a1-0042-4042-8042-000000000042",
+            "incident",
+            None,
+            "agent.offline",
+            ("agent", agent_id),
+            "warning",
+            "Incident opened: agent.offline on agent " + agent_id,
+        ),
+        (
+            "0195f2a1-0043-4043-8043-000000000043",
+            "incident",
+            None,
+            "node.observation_stale",
+            ("node", node_b),
+            "critical",
+            "Incident opened: node.observation_stale on node " + node_b,
+        ),
+        (
+            "0195f2a1-0044-4044-8044-000000000044",
+            "test",
+            None,
+            None,
+            None,
+            "info",
+            "Test notification via telegram",
+        ),
+        (
+            # Dedicated Event for the manual-retry e2e: its Delivery is
+            # retried (and re-dead-lettered) without perturbing the rows
+            # other assertions rely on.
+            "0195f2a1-0045-4045-8045-000000000045",
+            "incident",
+            None,
+            "node.process_not_running",
+            ("node", node_b),
+            "critical",
+            "Incident opened: node.process_not_running on node " + node_b,
+        ),
+    ):
+        db.execute(
+            "INSERT OR IGNORE INTO notification_events (event_id, event_kind, incident_id, rule_key, subject_kind, subject_key, severity, summary, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (event_id, kind, incident, rule, subject[0] if subject else None, subject[1] if subject else None, severity, summary, notif_time),
+        )
+
+    # Dead letter: exhausted bounded retries (2/2) with a redacted provider
+    # result. Manual retry re-arms this row for one more attempt.
+    db.execute(
+        "INSERT OR IGNORE INTO notification_deliveries (delivery_id, event_id, channel_kind, destination, state, attempt_count, next_attempt_at, last_attempt_at, last_result, last_error_kind, retry_after_seconds, created_at, updated_at) VALUES (?, ?, 'telegram', '****4321', 'dead_letter', 2, NULL, ?, 'telegram_network_error', 'network', NULL, ?, ?)",
+        ("0195f2a1-0051-4051-8051-000000000051", "0195f2a1-0041-4041-8041-000000000041", notif_time, notif_time, notif_time),
+    )
+    db.execute(
+        "INSERT OR IGNORE INTO delivery_attempts (attempt_id, delivery_id, attempt_number, attempted_at, outcome, provider_result, error_kind, duration_ms, retry_after_seconds) VALUES ('0195f2a1-0061-4061-8061-000000000061', ?, 1, ?, 'failed', 'telegram_network_error', 'network', 800, NULL)",
+        ("0195f2a1-0051-4051-8051-000000000051", notif_time),
+    )
+    db.execute(
+        "INSERT OR IGNORE INTO delivery_attempts (attempt_id, delivery_id, attempt_number, attempted_at, outcome, provider_result, error_kind, duration_ms, retry_after_seconds) VALUES ('0195f2a1-0062-4062-8062-000000000062', ?, 2, ?, 'failed', 'telegram_api_error 429', 'telegram_api', 210, 5)",
+        ("0195f2a1-0051-4051-8051-000000000051", notif_time),
+    )
+    # Delivered: one successful destination; failed neighbors never erase it.
+    db.execute(
+        "INSERT OR IGNORE INTO notification_deliveries (delivery_id, event_id, channel_kind, destination, state, attempt_count, next_attempt_at, last_attempt_at, last_result, last_error_kind, retry_after_seconds, created_at, updated_at) VALUES (?, ?, 'telegram', '****4321', 'succeeded', 1, NULL, ?, 'ok', NULL, NULL, ?, ?)",
+        ("0195f2a1-0052-4052-8052-000000000052", "0195f2a1-0042-4042-8042-000000000042", notif_time, notif_time, notif_time),
+    )
+    db.execute(
+        "INSERT OR IGNORE INTO delivery_attempts (attempt_id, delivery_id, attempt_number, attempted_at, outcome, provider_result, error_kind, duration_ms, retry_after_seconds) VALUES ('0195f2a1-0063-4063-8063-000000000063', ?, 1, ?, 'succeeded', 'ok', NULL, 350, NULL)",
+        ("0195f2a1-0052-4052-8052-000000000052", notif_time),
+    )
+    # Suppressed: a Silence matched at Event creation; not retryable.
+    db.execute(
+        "INSERT OR IGNORE INTO notification_deliveries (delivery_id, event_id, channel_kind, destination, state, attempt_count, next_attempt_at, last_attempt_at, last_result, last_error_kind, retry_after_seconds, created_at, updated_at) VALUES (?, ?, 'telegram', '****4321', 'suppressed', 0, NULL, NULL, 'suppressed_by_silence:0195f2a1-0071-4071-8071-000000000071', NULL, NULL, ?, ?)",
+        ("0195f2a1-0053-4053-8053-000000000053", "0195f2a1-0043-4043-8043-000000000043", notif_time, notif_time),
+    )
+    # Failed test: the seeded test Event was sent once and failed.
+    db.execute(
+        "INSERT OR IGNORE INTO notification_deliveries (delivery_id, event_id, channel_kind, destination, state, attempt_count, next_attempt_at, last_attempt_at, last_result, last_error_kind, retry_after_seconds, created_at, updated_at) VALUES (?, ?, 'telegram', '****4321', 'failed', 1, NULL, ?, 'telegram_api_error 401', 'telegram_api', NULL, ?, ?)",
+        ("0195f2a1-0054-4054-8054-000000000054", "0195f2a1-0044-4044-8044-000000000044", notif_time, notif_time, notif_time),
+    )
+    # Manual-retry target: exhausted Dead letter, retried by the e2e flow.
+    db.execute(
+        "INSERT OR IGNORE INTO notification_deliveries (delivery_id, event_id, channel_kind, destination, state, attempt_count, next_attempt_at, last_attempt_at, last_result, last_error_kind, retry_after_seconds, created_at, updated_at) VALUES (?, ?, 'telegram', '****4321', 'dead_letter', 2, NULL, ?, 'telegram_network_error', 'network', NULL, ?, ?)",
+        ("0195f2a1-0055-4055-8055-000000000055", "0195f2a1-0045-4045-8045-000000000045", notif_time, notif_time, notif_time),
+    )
+    db.execute(
+        "INSERT OR IGNORE INTO delivery_attempts (attempt_id, delivery_id, attempt_number, attempted_at, outcome, provider_result, error_kind, duration_ms, retry_after_seconds) VALUES ('0195f2a1-0064-4064-8064-000000000064', ?, 1, ?, 'failed', 'telegram_network_error', 'network', 900, NULL)",
+        ("0195f2a1-0055-4055-8055-000000000055", notif_time),
+    )
+    db.execute(
+        "INSERT OR IGNORE INTO delivery_attempts (attempt_id, delivery_id, attempt_number, attempted_at, outcome, provider_result, error_kind, duration_ms, retry_after_seconds) VALUES ('0195f2a1-0065-4065-8065-000000000065', ?, 2, ?, 'failed', 'telegram_api_error 400', 'telegram_api', 150, NULL)",
+        ("0195f2a1-0055-4055-8055-000000000055", notif_time),
+    )
 PY
 
 # Keep Node A's seeded observations fresh for the whole suite: the
