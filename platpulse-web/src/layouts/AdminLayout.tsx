@@ -143,6 +143,19 @@ export default function AdminLayout() {
           <NavLink to="/admin/networks" end onClick={closeNav}>
             Networks
           </NavLink>
+          <p className="admin-nav-label">Alerts</p>
+          <NavLink to="/admin/alerts/rules" end onClick={closeNav}>
+            Alert Rules
+          </NavLink>
+          <NavLink to="/admin/alerts/incidents" end onClick={closeNav}>
+            Incidents
+          </NavLink>
+          <NavLink to="/admin/alerts/silences" end onClick={closeNav}>
+            Silences
+          </NavLink>
+          <NavLink to="/admin/alerts/maintenance" end onClick={closeNav}>
+            Maintenance
+          </NavLink>
           <p className="admin-nav-label">Access</p>
           <NavLink to="/admin/access/people" end onClick={closeNav}>
             People

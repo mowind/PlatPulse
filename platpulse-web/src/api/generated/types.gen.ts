@@ -278,6 +278,47 @@ export type AgentSummary = {
     unknown: number;
 };
 
+export type AlertRuleDetail = {
+    condition: RuleCondition;
+    createdAt: string;
+    enabled: boolean;
+    openIncidents: number;
+    overrides: Array<RuleOverrideDto>;
+    ruleKey: string;
+    schema: Array<ParamSchema>;
+    severity: string;
+    states: Array<RuleStateDto>;
+    subjectKind: string;
+    updatedAt: string;
+    version: number;
+    versions: Array<RuleVersionDto>;
+};
+
+export type AlertRuleSummary = {
+    condition: RuleCondition;
+    createdAt: string;
+    enabled: boolean;
+    evaluation: RuleEvaluationSummary;
+    openIncidents: number;
+    ruleKey: string;
+    schema: Array<ParamSchema>;
+    severity: string;
+    subjectKind: string;
+    updatedAt: string;
+    version: number;
+};
+
+export type AlertRuleUpdateRequest = {
+    condition?: null | RuleCondition;
+    enabled?: boolean | null;
+    severity?: string | null;
+};
+
+export type AlertRuleUpdateResponse = {
+    auditEventId: number;
+    rule: AlertRuleDetail;
+};
+
 export type ApiError = {
     code: string;
     fields: Array<string>;
@@ -411,6 +452,41 @@ export type HostDiagnostic = {
     updated_at: string;
 };
 
+export type IncidentDetail = {
+    evaluation?: null | RuleStateDto;
+    incidentId: string;
+    openedAt: string;
+    openedEvidence: unknown;
+    resolvedAt?: string | null;
+    resolvedEvidence?: unknown;
+    ruleKey: string;
+    ruleVersion: number;
+    sequence: number;
+    severity: string;
+    state: string;
+    subjectKey: string;
+    subjectKind: string;
+    suppressions: Array<SuppressionMatch>;
+};
+
+export type IncidentListItem = {
+    incidentId: string;
+    openedAt: string;
+    resolvedAt?: string | null;
+    ruleKey: string;
+    ruleVersion: number;
+    sequence: number;
+    severity: string;
+    state: string;
+    subjectKey: string;
+    subjectKind: string;
+};
+
+export type IncidentListResponse = {
+    incidents: Array<IncidentListItem>;
+    total: number;
+};
+
 export type LiveResponse = {
     status: string;
 };
@@ -418,6 +494,39 @@ export type LiveResponse = {
 export type LoginRequest = {
     password: string;
     username: string;
+};
+
+export type MaintenanceCreateRequest = {
+    endsAt: string;
+    expectedRuleKeys: Array<string>;
+    reason: string;
+    scopeKind: string;
+    scopeValue: string;
+    startsAt: string;
+};
+
+export type MaintenanceDto = {
+    cancelledAt?: string | null;
+    cancelledBy?: string | null;
+    createdAt: string;
+    createdBy: string;
+    endsAt: string;
+    expectedRuleKeys: Array<string>;
+    reason: string;
+    scopeKind: string;
+    scopeValue: string;
+    startsAt: string;
+    status: string;
+    windowId: string;
+};
+
+export type MaintenanceListResponse = {
+    windows: Array<MaintenanceDto>;
+};
+
+export type MaintenanceMutationResponse = {
+    auditEventId: number;
+    window: MaintenanceDto;
 };
 
 /**
@@ -581,6 +690,20 @@ export type ObservedNetworkIdentity = {
     p2p_network_id?: number | null;
 };
 
+/**
+ * Editor schema for one condition parameter, sent to the WebUI so the
+ * typed rule form renders per-rule fields (no free-form DSL ever).
+ */
+export type ParamSchema = {
+    default: number;
+    description: string;
+    key: string;
+    label: string;
+    max: number;
+    min: number;
+    unit: string;
+};
+
 export type PeopleResponse = {
     users: Array<Person>;
 };
@@ -608,6 +731,12 @@ export type PersonRoleRequest = {
 
 export type PersonStatusRequest = {
     disabled: boolean;
+};
+
+export type PreviewInput = {
+    detail: string;
+    kind: string;
+    value?: number | null;
 };
 
 export type ProcessDiagnostic = {
@@ -776,6 +905,98 @@ export type RpcDiagnostic = {
 };
 
 /**
+ * Typed per-rule condition parameters (design §17.1: `for`, recovery
+ * threshold/hysteresis, and an optional typed threshold). `for_secs` is
+ * the sustained firing duration before an Incident opens;
+ * `recovery_for_secs` is the sustained fresh recovery duration before it
+ * resolves. Boolean-fact rules fix their internal threshold at 0.5 and do
+ * not accept a user threshold.
+ */
+export type RuleCondition = {
+    for_secs: number;
+    recovery_for_secs: number;
+    threshold?: number | null;
+};
+
+export type RuleEvaluationSummary = {
+    evaluationUnavailable: number;
+    firing: number;
+    normal: number;
+    pending: number;
+    recovering: number;
+    subjects: number;
+};
+
+export type RuleOverrideDto = {
+    condition?: null | RuleCondition;
+    enabled?: boolean | null;
+    scopeKind: string;
+    scopeValue: string;
+    severity?: string | null;
+    updatedAt: string;
+};
+
+export type RuleOverrideResponse = {
+    overrides: Array<RuleOverrideDto>;
+    ruleKey: string;
+};
+
+export type RuleOverrideUpsertRequest = {
+    condition?: null | RuleCondition;
+    enabled?: boolean | null;
+    scopeKind: string;
+    scopeValue: string;
+    severity?: string | null;
+};
+
+export type RulePreviewRequest = {
+    condition?: null | RuleCondition;
+    enabled?: boolean | null;
+    severity?: string | null;
+};
+
+export type RulePreviewResponse = {
+    condition: RuleCondition;
+    enabled: boolean;
+    ruleKey: string;
+    severity: string;
+    subjects: Array<RulePreviewSubject>;
+};
+
+export type RulePreviewSubject = {
+    currentState: string;
+    input: PreviewInput;
+    note: string;
+    projectedState: string;
+    subjectKey: string;
+    subjectKind: string;
+    wouldFire: boolean;
+};
+
+export type RuleStateDto = {
+    evaluationUnavailable: boolean;
+    firingSince?: string | null;
+    inputDetail?: string | null;
+    inputKind: string;
+    inputValue?: number | null;
+    lastEvaluatedAt: string;
+    openIncidents: number;
+    pendingSince?: string | null;
+    recoveringSince?: string | null;
+    since: string;
+    state: string;
+    subjectKey: string;
+    subjectKind: string;
+};
+
+export type RuleVersionDto = {
+    condition: RuleCondition;
+    createdAt: string;
+    severity: string;
+    version: number;
+};
+
+/**
  * One coarse, non-sensitive Session row (design §12.3): creation, last
  * activity, expiry, and a coarse client hint — never the token, a full
  * User-Agent, or a raw IP.
@@ -813,6 +1034,53 @@ export type SessionResponse = {
 
 export type SessionsResponse = {
     sessions: Array<SessionItem>;
+};
+
+export type SilenceCreateRequest = {
+    endsAt: string;
+    matcherKind: string;
+    matcherValue?: string | null;
+    reason: string;
+    startsAt: string;
+};
+
+export type SilenceDto = {
+    cancelledAt?: string | null;
+    cancelledBy?: string | null;
+    createdAt: string;
+    createdBy: string;
+    endsAt: string;
+    matcherKind: string;
+    matcherValue?: string | null;
+    reason: string;
+    silenceId: string;
+    startsAt: string;
+    status: string;
+};
+
+export type SilenceListResponse = {
+    silences: Array<SilenceDto>;
+};
+
+export type SilenceMutationResponse = {
+    auditEventId: number;
+    silence: SilenceDto;
+};
+
+/**
+ * One active suppression policy matching a subject.
+ */
+export type SuppressionMatch = {
+    endsAt: string;
+    id: string;
+    kind: string;
+    /**
+     * Maintenance-only: whether this match marks the Incident suppressed
+     * (design §17.5). Silences never mark Incidents.
+     */
+    marksIncident: boolean;
+    reason: string;
+    startsAt: string;
 };
 
 export type SyncDiagnostic = {
@@ -1052,6 +1320,380 @@ export type AdminRecoveryTokenResponses = {
 };
 
 export type AdminRecoveryTokenResponse = AdminRecoveryTokenResponses[keyof AdminRecoveryTokenResponses];
+
+export type AlertIncidentsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Filter by open or resolved
+         */
+        state?: string;
+        /**
+         * Filter by severity
+         */
+        severity?: string;
+        /**
+         * Filter by Rule key
+         */
+        rule_key?: string;
+        /**
+         * Filter by subject kind
+         */
+        subject_kind?: string;
+        /**
+         * Maximum rows (1..=500)
+         */
+        limit?: number;
+    };
+    url: '/api/admin/v1/alerts/incidents';
+};
+
+export type AlertIncidentsErrors = {
+    503: ApiErrorBody;
+};
+
+export type AlertIncidentsError = AlertIncidentsErrors[keyof AlertIncidentsErrors];
+
+export type AlertIncidentsResponses = {
+    200: IncidentListResponse;
+};
+
+export type AlertIncidentsResponse = AlertIncidentsResponses[keyof AlertIncidentsResponses];
+
+export type AlertIncidentDetailData = {
+    body?: never;
+    path: {
+        incident_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/alerts/incidents/{incident_id}';
+};
+
+export type AlertIncidentDetailErrors = {
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type AlertIncidentDetailError = AlertIncidentDetailErrors[keyof AlertIncidentDetailErrors];
+
+export type AlertIncidentDetailResponses = {
+    200: IncidentDetail;
+};
+
+export type AlertIncidentDetailResponse = AlertIncidentDetailResponses[keyof AlertIncidentDetailResponses];
+
+export type AlertMaintenanceData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Filter by active, expired, or cancelled
+         */
+        status?: string;
+    };
+    url: '/api/admin/v1/alerts/maintenance';
+};
+
+export type AlertMaintenanceErrors = {
+    503: ApiErrorBody;
+};
+
+export type AlertMaintenanceError = AlertMaintenanceErrors[keyof AlertMaintenanceErrors];
+
+export type AlertMaintenanceResponses = {
+    200: MaintenanceListResponse;
+};
+
+export type AlertMaintenanceResponse = AlertMaintenanceResponses[keyof AlertMaintenanceResponses];
+
+export type CreateMaintenanceWindowData = {
+    body: MaintenanceCreateRequest;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/alerts/maintenance';
+};
+
+export type CreateMaintenanceWindowErrors = {
+    400: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type CreateMaintenanceWindowError = CreateMaintenanceWindowErrors[keyof CreateMaintenanceWindowErrors];
+
+export type CreateMaintenanceWindowResponses = {
+    200: MaintenanceMutationResponse;
+};
+
+export type CreateMaintenanceWindowResponse = CreateMaintenanceWindowResponses[keyof CreateMaintenanceWindowResponses];
+
+export type AlertMaintenanceDetailData = {
+    body?: never;
+    path: {
+        window_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/alerts/maintenance/{window_id}';
+};
+
+export type AlertMaintenanceDetailErrors = {
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type AlertMaintenanceDetailError = AlertMaintenanceDetailErrors[keyof AlertMaintenanceDetailErrors];
+
+export type AlertMaintenanceDetailResponses = {
+    200: MaintenanceDto;
+};
+
+export type AlertMaintenanceDetailResponse = AlertMaintenanceDetailResponses[keyof AlertMaintenanceDetailResponses];
+
+export type CancelMaintenanceWindowData = {
+    body?: never;
+    path: {
+        window_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/alerts/maintenance/{window_id}/cancel';
+};
+
+export type CancelMaintenanceWindowErrors = {
+    404: ApiErrorBody;
+    409: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type CancelMaintenanceWindowError = CancelMaintenanceWindowErrors[keyof CancelMaintenanceWindowErrors];
+
+export type CancelMaintenanceWindowResponses = {
+    200: MaintenanceMutationResponse;
+};
+
+export type CancelMaintenanceWindowResponse = CancelMaintenanceWindowResponses[keyof CancelMaintenanceWindowResponses];
+
+export type AlertRulesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/alerts/rules';
+};
+
+export type AlertRulesErrors = {
+    503: ApiErrorBody;
+};
+
+export type AlertRulesError = AlertRulesErrors[keyof AlertRulesErrors];
+
+export type AlertRulesResponses = {
+    200: Array<AlertRuleSummary>;
+};
+
+export type AlertRulesResponse = AlertRulesResponses[keyof AlertRulesResponses];
+
+export type AlertRuleDetailData = {
+    body?: never;
+    path: {
+        rule_key: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/alerts/rules/{rule_key}';
+};
+
+export type AlertRuleDetailErrors = {
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type AlertRuleDetailError = AlertRuleDetailErrors[keyof AlertRuleDetailErrors];
+
+export type AlertRuleDetailResponses = {
+    200: AlertRuleDetail;
+};
+
+export type AlertRuleDetailResponse = AlertRuleDetailResponses[keyof AlertRuleDetailResponses];
+
+export type UpdateAlertRuleData = {
+    body: AlertRuleUpdateRequest;
+    path: {
+        rule_key: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/alerts/rules/{rule_key}';
+};
+
+export type UpdateAlertRuleErrors = {
+    400: ApiErrorBody;
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type UpdateAlertRuleError = UpdateAlertRuleErrors[keyof UpdateAlertRuleErrors];
+
+export type UpdateAlertRuleResponses = {
+    200: AlertRuleUpdateResponse;
+};
+
+export type UpdateAlertRuleResponse = UpdateAlertRuleResponses[keyof UpdateAlertRuleResponses];
+
+export type UpsertRuleOverrideData = {
+    body: RuleOverrideUpsertRequest;
+    path: {
+        rule_key: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/alerts/rules/{rule_key}/overrides';
+};
+
+export type UpsertRuleOverrideErrors = {
+    400: ApiErrorBody;
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type UpsertRuleOverrideError = UpsertRuleOverrideErrors[keyof UpsertRuleOverrideErrors];
+
+export type UpsertRuleOverrideResponses = {
+    200: RuleOverrideResponse;
+};
+
+export type UpsertRuleOverrideResponse = UpsertRuleOverrideResponses[keyof UpsertRuleOverrideResponses];
+
+export type DeleteRuleOverrideData = {
+    body?: never;
+    path: {
+        rule_key: string;
+        scope_kind: string;
+        scope_value: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/alerts/rules/{rule_key}/overrides/{scope_kind}/{scope_value}';
+};
+
+export type DeleteRuleOverrideErrors = {
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type DeleteRuleOverrideError = DeleteRuleOverrideErrors[keyof DeleteRuleOverrideErrors];
+
+export type DeleteRuleOverrideResponses = {
+    200: RuleOverrideResponse;
+};
+
+export type DeleteRuleOverrideResponse = DeleteRuleOverrideResponses[keyof DeleteRuleOverrideResponses];
+
+export type PreviewAlertRuleData = {
+    body: RulePreviewRequest;
+    path: {
+        rule_key: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/alerts/rules/{rule_key}/preview';
+};
+
+export type PreviewAlertRuleErrors = {
+    400: ApiErrorBody;
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type PreviewAlertRuleError = PreviewAlertRuleErrors[keyof PreviewAlertRuleErrors];
+
+export type PreviewAlertRuleResponses = {
+    200: RulePreviewResponse;
+};
+
+export type PreviewAlertRuleResponse = PreviewAlertRuleResponses[keyof PreviewAlertRuleResponses];
+
+export type AlertSilencesData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Filter by active, expired, or cancelled
+         */
+        status?: string;
+    };
+    url: '/api/admin/v1/alerts/silences';
+};
+
+export type AlertSilencesErrors = {
+    503: ApiErrorBody;
+};
+
+export type AlertSilencesError = AlertSilencesErrors[keyof AlertSilencesErrors];
+
+export type AlertSilencesResponses = {
+    200: SilenceListResponse;
+};
+
+export type AlertSilencesResponse = AlertSilencesResponses[keyof AlertSilencesResponses];
+
+export type CreateSilenceData = {
+    body: SilenceCreateRequest;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/alerts/silences';
+};
+
+export type CreateSilenceErrors = {
+    400: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type CreateSilenceError = CreateSilenceErrors[keyof CreateSilenceErrors];
+
+export type CreateSilenceResponses = {
+    200: SilenceMutationResponse;
+};
+
+export type CreateSilenceResponse = CreateSilenceResponses[keyof CreateSilenceResponses];
+
+export type AlertSilenceDetailData = {
+    body?: never;
+    path: {
+        silence_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/alerts/silences/{silence_id}';
+};
+
+export type AlertSilenceDetailErrors = {
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type AlertSilenceDetailError = AlertSilenceDetailErrors[keyof AlertSilenceDetailErrors];
+
+export type AlertSilenceDetailResponses = {
+    200: SilenceDto;
+};
+
+export type AlertSilenceDetailResponse = AlertSilenceDetailResponses[keyof AlertSilenceDetailResponses];
+
+export type CancelSilenceData = {
+    body?: never;
+    path: {
+        silence_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/alerts/silences/{silence_id}/cancel';
+};
+
+export type CancelSilenceErrors = {
+    404: ApiErrorBody;
+    409: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type CancelSilenceError = CancelSilenceErrors[keyof CancelSilenceErrors];
+
+export type CancelSilenceResponses = {
+    200: SilenceMutationResponse;
+};
+
+export type CancelSilenceResponse = CancelSilenceResponses[keyof CancelSilenceResponses];
 
 export type AuditListData = {
     body?: never;

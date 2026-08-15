@@ -357,6 +357,39 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
     );
     let app = crate::http::build_app(state.clone());
 
+    // Alert evaluation sweep: persists rule state and Incident transitions
+    // for every active subject on a fixed cadence (design §17.2). Report
+    // ingestion already evaluates its reported subjects in-transaction; the
+    // sweep covers time-based facts and restores timers after restart. The
+    // loop stops on shutdown and every sweep drains before the WAL
+    // checkpoint.
+    {
+        let sweep_state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(crate::alerts::SWEEP_INTERVAL);
+            loop {
+                tick.tick().await;
+                if sweep_state.is_shutting_down() {
+                    break;
+                }
+                match crate::alerts::sweep(&sweep_state).await {
+                    Ok(changes) if changes > 0 => {
+                        sweep_state
+                            .admin_realtime()
+                            .publish("alerts", None::<String>, 1);
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        eprintln!(
+                            "alert evaluation sweep deferred: {}",
+                            crate::redaction::redact_sensitive(&error.to_string())
+                        );
+                    }
+                }
+            }
+        });
+    }
+
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
     println!("listening on {}", config.listen);
     let server = axum::serve(

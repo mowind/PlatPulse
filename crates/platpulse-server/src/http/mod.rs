@@ -13,6 +13,7 @@
 pub(crate) mod access;
 pub(crate) mod admin;
 pub(crate) mod agent;
+pub(crate) mod alerts_admin;
 pub(crate) mod health;
 pub(crate) mod public;
 pub(crate) mod realtime;
@@ -67,7 +68,8 @@ pub struct ApiErrorBody {
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ApiError {
     code: &'static str,
-    message: &'static str,
+    #[schema(value_type = String)]
+    message: std::borrow::Cow<'static, str>,
     #[serde(rename = "requestId")]
     request_id: String,
     fields: Vec<String>,
@@ -82,7 +84,20 @@ impl ApiErrorBody {
         Self {
             error: ApiError {
                 code,
-                message,
+                message: std::borrow::Cow::Borrowed(message),
+                request_id: request_id.to_owned(),
+                fields: Vec::new(),
+            },
+        }
+    }
+
+    /// Error envelope carrying a validated, non-sensitive dynamic message
+    /// (used for typed alert validation failures).
+    pub(crate) fn with_message(code: &'static str, message: String, request_id: &str) -> Self {
+        Self {
+            error: ApiError {
+                code,
+                message: std::borrow::Cow::Owned(message),
                 request_id: request_id.to_owned(),
                 fields: Vec::new(),
             },
@@ -100,7 +115,7 @@ impl ApiErrorBody {
         Self {
             error: ApiError {
                 code,
-                message,
+                message: std::borrow::Cow::Borrowed(message),
                 request_id: request_id.to_owned(),
                 fields,
             },
@@ -437,6 +452,7 @@ pub fn build_app(state: AppState) -> Router {
     ));
     let admin_group = admin::router()
         .merge(access::router())
+        .merge(alerts_admin::router())
         .layer(axum::middleware::from_fn(owner_role_guard))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

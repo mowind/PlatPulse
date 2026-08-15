@@ -1473,7 +1473,7 @@ fn agent_liveness(last_received_at: Option<&str>) -> &'static str {
 /// checked before any body parsing. Bodyless mutations (e.g. revoke) do
 /// not require the JSON content type because the generated browser client
 /// omits it when there is no body.
-fn mutation_guard(
+pub(crate) fn mutation_guard(
     headers: &HeaderMap,
     principal: &super::AuthenticatedSession,
     auth: &crate::auth::AuthConfig,

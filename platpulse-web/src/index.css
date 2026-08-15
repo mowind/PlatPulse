@@ -93,6 +93,9 @@ body {
 
 .page h1 {
   margin-top: 0;
+  /* Rule/Incident keys and Agent/Node IDs are single unbreakable tokens;
+     on narrow viewports the heading must wrap instead of overflowing. */
+  overflow-wrap: anywhere;
 }
 
 /* Login page: single-column form, centered, usable at 360px. */
@@ -1142,4 +1145,83 @@ button {
   align-items: center;
   gap: 0.5rem;
   margin-bottom: 0.5rem;
+}
+
+/* Phase 2 Alerts surfaces (issue #48): typed Rule forms, preview tables,
+   filter bars, and inline confirmations reuse the shared table/form
+   vocabulary with a few additions. */
+
+.page-form {
+  max-width: 36rem;
+  display: grid;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.page-form fieldset.field {
+  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-radius: 0.375rem;
+  padding: 0.75rem;
+  margin: 0;
+}
+
+.page-form legend {
+  font-weight: 700;
+}
+
+.check-list {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+}
+
+.check-list label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 44px;
+}
+
+.check-list input {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+
+.filter-bar label {
+  font-weight: 700;
+}
+
+.confirm-inline {
+  display: inline-flex;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+/* Field-level validation (webui.md §0.3): each invalid input names its own
+   error via aria-describedby; the page summary lists every error. */
+.form-error-list {
+  max-width: 36rem;
+  margin: 0 0 1rem;
+  padding: 0.75rem 1rem 0.75rem 2.25rem;
+  border: 1px solid #b91c1c;
+  border-radius: 0.375rem;
+  color: #b91c1c;
+  background: color-mix(in srgb, #b91c1c 6%, transparent);
+}
+
+.field-error {
+  color: #b91c1c;
+  font-weight: 700;
+  margin-top: 0.25rem;
+}
+
+.field input[aria-invalid='true'] {
+  border-color: #b91c1c;
 }

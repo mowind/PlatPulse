@@ -24,6 +24,13 @@ import AdminNetworksList, {
 import AdminPeople from './pages/AdminPeople'
 import AdminSessions from './pages/AdminSessions'
 import AdminAudit from './pages/AdminAudit'
+import AdminAlertRulesList, {
+  AdminAlertRuleDetail,
+  AdminAlertRuleEdit,
+} from './pages/AdminAlertRules'
+import AdminIncidentsList, { AdminIncidentDetail } from './pages/AdminIncidents'
+import AdminSilencesList from './pages/AdminSilences'
+import AdminMaintenanceList from './pages/AdminMaintenance'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import { ensureGuestEnabledKnown, subscribeGuestEnabled } from './api/public'
 
@@ -163,6 +170,13 @@ const router = createBrowserRouter([
       { path: 'access/people', element: <AdminPeople /> },
       { path: 'access/sessions', element: <AdminSessions /> },
       { path: 'access/audit', element: <AdminAudit /> },
+      { path: 'alerts/rules', element: <AdminAlertRulesList /> },
+      { path: 'alerts/rules/:ruleKey', element: <AdminAlertRuleDetail /> },
+      { path: 'alerts/rules/:ruleKey/edit', element: <AdminAlertRuleEdit /> },
+      { path: 'alerts/incidents', element: <AdminIncidentsList /> },
+      { path: 'alerts/incidents/:incidentId', element: <AdminIncidentDetail /> },
+      { path: 'alerts/silences', element: <AdminSilencesList /> },
+      { path: 'alerts/maintenance', element: <AdminMaintenanceList /> },
       // Placeholder for later Phase 2 sections (e.g. Data and Maintenance):
       // links from security mutations must never land on a blank page.
       { path: '*', element: <AdminComingSoon /> },

@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { AdminAgentAuditData, AdminAgentAuditErrors, AdminAgentAuditResponses, AdminAgentDetailData, AdminAgentDetailErrors, AdminAgentDetailResponses, AdminEnrollmentTokenData, AdminEnrollmentTokenErrors, AdminEnrollmentTokenResponses, AdminEventsData, AdminEventsResponses, AdminNetworkDetailData, AdminNetworkDetailErrors, AdminNetworkDetailResponses, AdminNetworksData, AdminNetworksResponses, AdminNodeDetailData, AdminNodeDetailErrors, AdminNodeDetailResponses, AdminNodeHistoryData, AdminNodeHistoryErrors, AdminNodeHistoryResponses, AdminNodesData, AdminNodesResponses, AdminNodeTransfersData, AdminNodeTransfersErrors, AdminNodeTransfersResponses, AdminRecoveryTokenData, AdminRecoveryTokenErrors, AdminRecoveryTokenResponses, AdminRevokeCredentialData, AdminRevokeCredentialErrors, AdminRevokeCredentialResponses, AdminRotateCredentialData, AdminRotateCredentialErrors, AdminRotateCredentialResponses, AdminTransferDetailData, AdminTransferDetailErrors, AdminTransferDetailResponses, AuditListData, AuditListErrors, AuditListResponses, CancelNodeTransferData, CancelNodeTransferErrors, CancelNodeTransferResponses, CreateNetworkData, CreateNetworkErrors, CreateNetworkResponses, CreateNodeTransferData, CreateNodeTransferErrors, CreateNodeTransferResponses, CreatePersonData, CreatePersonErrors, CreatePersonResponses, DiagnosticsData, DiagnosticsResponses, GetAccessSettingsData, GetAccessSettingsErrors, GetAccessSettingsResponses, LiveData, LiveResponses, LoginHandlerData, LoginHandlerErrors, LoginHandlerResponses, LogoutHandlerData, LogoutHandlerErrors, LogoutHandlerResponses, OverviewData, OverviewResponses, PeopleListData, PeopleListErrors, PeopleListResponses, PublicAccessSettingsData, PublicAccessSettingsResponses, PublicEventsData, PublicEventsResponses, PublicNetworkData, PublicNetworkErrors, PublicNetworkResponses, PublicNetworksData, PublicNetworksResponses, PublicNodeDetailData, PublicNodeDetailErrors, PublicNodeDetailResponses, PublicNodeHistoryData, PublicNodeHistoryErrors, PublicNodeHistoryExportData, PublicNodeHistoryExportErrors, PublicNodeHistoryExportResponses, PublicNodeHistoryResponses, ReadyData, ReadyErrors, ReadyResponses, ResetPersonPasswordData, ResetPersonPasswordErrors, ResetPersonPasswordResponses, RevokeOtherSessionsData, RevokeOtherSessionsErrors, RevokeOtherSessionsResponses, RevokeSessionData, RevokeSessionErrors, RevokeSessionResponses, SessionHandlerData, SessionHandlerErrors, SessionHandlerResponses, SessionsListData, SessionsListErrors, SessionsListResponses, SetAccessSettingsData, SetAccessSettingsErrors, SetAccessSettingsResponses, SetNodeMetadataData, SetNodeMetadataErrors, SetNodeMetadataResponses, SetPersonRoleData, SetPersonRoleErrors, SetPersonRoleResponses, SetPersonStatusData, SetPersonStatusErrors, SetPersonStatusResponses, SetVisibilityData, SetVisibilityErrors, SetVisibilityResponses, UpdateNetworkData, UpdateNetworkErrors, UpdateNetworkResponses } from './types.gen';
+import type { AdminAgentAuditData, AdminAgentAuditErrors, AdminAgentAuditResponses, AdminAgentDetailData, AdminAgentDetailErrors, AdminAgentDetailResponses, AdminEnrollmentTokenData, AdminEnrollmentTokenErrors, AdminEnrollmentTokenResponses, AdminEventsData, AdminEventsResponses, AdminNetworkDetailData, AdminNetworkDetailErrors, AdminNetworkDetailResponses, AdminNetworksData, AdminNetworksResponses, AdminNodeDetailData, AdminNodeDetailErrors, AdminNodeDetailResponses, AdminNodeHistoryData, AdminNodeHistoryErrors, AdminNodeHistoryResponses, AdminNodesData, AdminNodesResponses, AdminNodeTransfersData, AdminNodeTransfersErrors, AdminNodeTransfersResponses, AdminRecoveryTokenData, AdminRecoveryTokenErrors, AdminRecoveryTokenResponses, AdminRevokeCredentialData, AdminRevokeCredentialErrors, AdminRevokeCredentialResponses, AdminRotateCredentialData, AdminRotateCredentialErrors, AdminRotateCredentialResponses, AdminTransferDetailData, AdminTransferDetailErrors, AdminTransferDetailResponses, AlertIncidentDetailData, AlertIncidentDetailErrors, AlertIncidentDetailResponses, AlertIncidentsData, AlertIncidentsErrors, AlertIncidentsResponses, AlertMaintenanceData, AlertMaintenanceDetailData, AlertMaintenanceDetailErrors, AlertMaintenanceDetailResponses, AlertMaintenanceErrors, AlertMaintenanceResponses, AlertRuleDetailData, AlertRuleDetailErrors, AlertRuleDetailResponses, AlertRulesData, AlertRulesErrors, AlertRulesResponses, AlertSilenceDetailData, AlertSilenceDetailErrors, AlertSilenceDetailResponses, AlertSilencesData, AlertSilencesErrors, AlertSilencesResponses, AuditListData, AuditListErrors, AuditListResponses, CancelMaintenanceWindowData, CancelMaintenanceWindowErrors, CancelMaintenanceWindowResponses, CancelNodeTransferData, CancelNodeTransferErrors, CancelNodeTransferResponses, CancelSilenceData, CancelSilenceErrors, CancelSilenceResponses, CreateMaintenanceWindowData, CreateMaintenanceWindowErrors, CreateMaintenanceWindowResponses, CreateNetworkData, CreateNetworkErrors, CreateNetworkResponses, CreateNodeTransferData, CreateNodeTransferErrors, CreateNodeTransferResponses, CreatePersonData, CreatePersonErrors, CreatePersonResponses, CreateSilenceData, CreateSilenceErrors, CreateSilenceResponses, DeleteRuleOverrideData, DeleteRuleOverrideErrors, DeleteRuleOverrideResponses, DiagnosticsData, DiagnosticsResponses, GetAccessSettingsData, GetAccessSettingsErrors, GetAccessSettingsResponses, LiveData, LiveResponses, LoginHandlerData, LoginHandlerErrors, LoginHandlerResponses, LogoutHandlerData, LogoutHandlerErrors, LogoutHandlerResponses, OverviewData, OverviewResponses, PeopleListData, PeopleListErrors, PeopleListResponses, PreviewAlertRuleData, PreviewAlertRuleErrors, PreviewAlertRuleResponses, PublicAccessSettingsData, PublicAccessSettingsResponses, PublicEventsData, PublicEventsResponses, PublicNetworkData, PublicNetworkErrors, PublicNetworkResponses, PublicNetworksData, PublicNetworksResponses, PublicNodeDetailData, PublicNodeDetailErrors, PublicNodeDetailResponses, PublicNodeHistoryData, PublicNodeHistoryErrors, PublicNodeHistoryExportData, PublicNodeHistoryExportErrors, PublicNodeHistoryExportResponses, PublicNodeHistoryResponses, ReadyData, ReadyErrors, ReadyResponses, ResetPersonPasswordData, ResetPersonPasswordErrors, ResetPersonPasswordResponses, RevokeOtherSessionsData, RevokeOtherSessionsErrors, RevokeOtherSessionsResponses, RevokeSessionData, RevokeSessionErrors, RevokeSessionResponses, SessionHandlerData, SessionHandlerErrors, SessionHandlerResponses, SessionsListData, SessionsListErrors, SessionsListResponses, SetAccessSettingsData, SetAccessSettingsErrors, SetAccessSettingsResponses, SetNodeMetadataData, SetNodeMetadataErrors, SetNodeMetadataResponses, SetPersonRoleData, SetPersonRoleErrors, SetPersonRoleResponses, SetPersonStatusData, SetPersonStatusErrors, SetPersonStatusResponses, SetVisibilityData, SetVisibilityErrors, SetVisibilityResponses, UpdateAlertRuleData, UpdateAlertRuleErrors, UpdateAlertRuleResponses, UpdateNetworkData, UpdateNetworkErrors, UpdateNetworkResponses, UpsertRuleOverrideData, UpsertRuleOverrideErrors, UpsertRuleOverrideResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -101,6 +101,135 @@ export const adminRecoveryToken = <ThrowOnError extends boolean = false>(options
         ...options.headers
     }
 });
+
+/**
+ * PAGE-ADMIN-INCIDENTS: durable Incident history. Incidents are opened by
+ * the state machine and resolved only by sustained fresh Known recovery;
+ * they are never manually resolvable, reopenable, or deletable.
+ */
+export const alertIncidents = <ThrowOnError extends boolean = false>(options?: Options<AlertIncidentsData, ThrowOnError>): RequestResult<AlertIncidentsResponses, AlertIncidentsErrors, ThrowOnError> => (options?.client ?? client).get<AlertIncidentsResponses, AlertIncidentsErrors, ThrowOnError>({ url: '/api/admin/v1/alerts/incidents', ...options });
+
+/**
+ * PAGE-ADMIN-INCIDENT: one Incident with its immutable evidence, the
+ * current independent evaluation state of its `(rule, subject)`, and any
+ * overlapping Silence/Maintenance suppressions (both reasons stay visible
+ * independently; webui.md §8.3).
+ */
+export const alertIncidentDetail = <ThrowOnError extends boolean = false>(options: Options<AlertIncidentDetailData, ThrowOnError>): RequestResult<AlertIncidentDetailResponses, AlertIncidentDetailErrors, ThrowOnError> => (options.client ?? client).get<AlertIncidentDetailResponses, AlertIncidentDetailErrors, ThrowOnError>({ url: '/api/admin/v1/alerts/incidents/{incident_id}', ...options });
+
+export const alertMaintenance = <ThrowOnError extends boolean = false>(options?: Options<AlertMaintenanceData, ThrowOnError>): RequestResult<AlertMaintenanceResponses, AlertMaintenanceErrors, ThrowOnError> => (options?.client ?? client).get<AlertMaintenanceResponses, AlertMaintenanceErrors, ThrowOnError>({ url: '/api/admin/v1/alerts/maintenance', ...options });
+
+/**
+ * POST /api/admin/v1/alerts/maintenance: create a time-bounded
+ * Maintenance Window for an Agent, Node, or Network scope. Expected
+ * conditions are a typed allowlist of rule keys; an empty list matches any
+ * rule. Maintenance marks expected Incidents suppressed and suppresses
+ * expected delivery, without changing facts, evaluation, or Node Health
+ * (design §17.5).
+ */
+export const createMaintenanceWindow = <ThrowOnError extends boolean = false>(options: Options<CreateMaintenanceWindowData, ThrowOnError>): RequestResult<CreateMaintenanceWindowResponses, CreateMaintenanceWindowErrors, ThrowOnError> => (options.client ?? client).post<CreateMaintenanceWindowResponses, CreateMaintenanceWindowErrors, ThrowOnError>({
+    url: '/api/admin/v1/alerts/maintenance',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+export const alertMaintenanceDetail = <ThrowOnError extends boolean = false>(options: Options<AlertMaintenanceDetailData, ThrowOnError>): RequestResult<AlertMaintenanceDetailResponses, AlertMaintenanceDetailErrors, ThrowOnError> => (options.client ?? client).get<AlertMaintenanceDetailResponses, AlertMaintenanceDetailErrors, ThrowOnError>({ url: '/api/admin/v1/alerts/maintenance/{window_id}', ...options });
+
+/**
+ * POST /api/admin/v1/alerts/maintenance/{window_id}/cancel: cancel an
+ * active Maintenance Window. Cancellation is audited and irreversible;
+ * the window stays visible with its outcome.
+ */
+export const cancelMaintenanceWindow = <ThrowOnError extends boolean = false>(options: Options<CancelMaintenanceWindowData, ThrowOnError>): RequestResult<CancelMaintenanceWindowResponses, CancelMaintenanceWindowErrors, ThrowOnError> => (options.client ?? client).post<CancelMaintenanceWindowResponses, CancelMaintenanceWindowErrors, ThrowOnError>({ url: '/api/admin/v1/alerts/maintenance/{window_id}/cancel', ...options });
+
+/**
+ * PAGE-ADMIN-ALERT-RULES: the typed Rule catalog with per-rule evaluation
+ * summary and Open Incident counts. The list is Server-owned; the schema
+ * renders the typed editor without any free-form input.
+ */
+export const alertRules = <ThrowOnError extends boolean = false>(options?: Options<AlertRulesData, ThrowOnError>): RequestResult<AlertRulesResponses, AlertRulesErrors, ThrowOnError> => (options?.client ?? client).get<AlertRulesResponses, AlertRulesErrors, ThrowOnError>({ url: '/api/admin/v1/alerts/rules', ...options });
+
+export const alertRuleDetail = <ThrowOnError extends boolean = false>(options: Options<AlertRuleDetailData, ThrowOnError>): RequestResult<AlertRuleDetailResponses, AlertRuleDetailErrors, ThrowOnError> => (options.client ?? client).get<AlertRuleDetailResponses, AlertRuleDetailErrors, ThrowOnError>({ url: '/api/admin/v1/alerts/rules/{rule_key}', ...options });
+
+/**
+ * PUT /api/admin/v1/alerts/rules/{rule_key}: edit the typed rule. Edits
+ * create an immutable version row; Incidents keep the version they opened
+ * under. Disabling stops new evaluation without deleting history.
+ */
+export const updateAlertRule = <ThrowOnError extends boolean = false>(options: Options<UpdateAlertRuleData, ThrowOnError>): RequestResult<UpdateAlertRuleResponses, UpdateAlertRuleErrors, ThrowOnError> => (options.client ?? client).put<UpdateAlertRuleResponses, UpdateAlertRuleErrors, ThrowOnError>({
+    url: '/api/admin/v1/alerts/rules/{rule_key}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * PUT /api/admin/v1/alerts/rules/{rule_key}/overrides: upsert a Network or
+ * Node override. Override fields (enabled/severity/condition) inherit from
+ * the global rule when unset. The override is audited; the base rule
+ * version is not bumped (Incidents keep their base-rule version).
+ */
+export const upsertRuleOverride = <ThrowOnError extends boolean = false>(options: Options<UpsertRuleOverrideData, ThrowOnError>): RequestResult<UpsertRuleOverrideResponses, UpsertRuleOverrideErrors, ThrowOnError> => (options.client ?? client).put<UpsertRuleOverrideResponses, UpsertRuleOverrideErrors, ThrowOnError>({
+    url: '/api/admin/v1/alerts/rules/{rule_key}/overrides',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * DELETE /api/admin/v1/alerts/rules/{rule_key}/overrides/{scope_kind}/{scope_value}:
+ * remove one Network/Node override (audited). The global rule is the only
+ * remaining authority for the subject.
+ */
+export const deleteRuleOverride = <ThrowOnError extends boolean = false>(options: Options<DeleteRuleOverrideData, ThrowOnError>): RequestResult<DeleteRuleOverrideResponses, DeleteRuleOverrideErrors, ThrowOnError> => (options.client ?? client).delete<DeleteRuleOverrideResponses, DeleteRuleOverrideErrors, ThrowOnError>({ url: '/api/admin/v1/alerts/rules/{rule_key}/overrides/{scope_kind}/{scope_value}', ...options });
+
+/**
+ * POST /api/admin/v1/alerts/rules/{rule_key}/preview: evaluate the rule
+ * (optionally with an unsaved draft) against current facts for every
+ * eligible subject WITHOUT creating Incidents, Notifications, or state
+ * rows. `projectedState` shows what the next persisted transition would
+ * be; `wouldFire` reflects the typed threshold comparison.
+ */
+export const previewAlertRule = <ThrowOnError extends boolean = false>(options: Options<PreviewAlertRuleData, ThrowOnError>): RequestResult<PreviewAlertRuleResponses, PreviewAlertRuleErrors, ThrowOnError> => (options.client ?? client).post<PreviewAlertRuleResponses, PreviewAlertRuleErrors, ThrowOnError>({
+    url: '/api/admin/v1/alerts/rules/{rule_key}/preview',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+export const alertSilences = <ThrowOnError extends boolean = false>(options?: Options<AlertSilencesData, ThrowOnError>): RequestResult<AlertSilencesResponses, AlertSilencesErrors, ThrowOnError> => (options?.client ?? client).get<AlertSilencesResponses, AlertSilencesErrors, ThrowOnError>({ url: '/api/admin/v1/alerts/silences', ...options });
+
+/**
+ * POST /api/admin/v1/alerts/silences: create a time-bounded delivery
+ * Silence. It suppresses matching delivery only; evaluation and Incidents
+ * are untouched (design §17.5, webui.md §8.3).
+ */
+export const createSilence = <ThrowOnError extends boolean = false>(options: Options<CreateSilenceData, ThrowOnError>): RequestResult<CreateSilenceResponses, CreateSilenceErrors, ThrowOnError> => (options.client ?? client).post<CreateSilenceResponses, CreateSilenceErrors, ThrowOnError>({
+    url: '/api/admin/v1/alerts/silences',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+export const alertSilenceDetail = <ThrowOnError extends boolean = false>(options: Options<AlertSilenceDetailData, ThrowOnError>): RequestResult<AlertSilenceDetailResponses, AlertSilenceDetailErrors, ThrowOnError> => (options.client ?? client).get<AlertSilenceDetailResponses, AlertSilenceDetailErrors, ThrowOnError>({ url: '/api/admin/v1/alerts/silences/{silence_id}', ...options });
+
+/**
+ * POST /api/admin/v1/alerts/silences/{silence_id}/cancel: cancel an
+ * active Silence before its natural expiry. Cancellation is audited and
+ * irreversible; the row stays visible with its outcome.
+ */
+export const cancelSilence = <ThrowOnError extends boolean = false>(options: Options<CancelSilenceData, ThrowOnError>): RequestResult<CancelSilenceResponses, CancelSilenceErrors, ThrowOnError> => (options.client ?? client).post<CancelSilenceResponses, CancelSilenceErrors, ThrowOnError>({ url: '/api/admin/v1/alerts/silences/{silence_id}/cancel', ...options });
 
 /**
  * Owner-only immutable Audit listing (design §18.2, issue #47): newest

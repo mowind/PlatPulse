@@ -1890,7 +1890,52 @@ async fn handler(
             .map_err(|_| ())
             .ok();
     }
-    if updated.is_err() || tx.commit().await.is_err() {
+    if updated.is_err() {
+        return error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "Server database is unavailable",
+        );
+    }
+    // Alert evaluation runs in the same transaction as the accepted
+    // projection (design §1058: Alert input and invalidation belong to the
+    // report transaction), so a transition is never observed without its
+    // accepted facts. The sweep re-evaluates the remaining subjects. Only
+    // Nodes owned by this Agent may be evaluated: a partially accepted or
+    // hostile report must never advance another Agent's Node alert state.
+    // Fail safe: without ownership proof no reported Node is evaluated here;
+    // the sweep re-evaluates owned subjects on its own schedule.
+    let owned: Vec<String> = sqlx::query_scalar("SELECT node_id FROM nodes WHERE agent_id = ?")
+        .bind(&auth.agent_id)
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap_or_default();
+    let node_ids: Vec<String> = parsed
+        .nodes
+        .iter()
+        .map(|node| node.node_id.to_string())
+        .filter(|node_id| owned.contains(node_id))
+        .collect();
+    let alert_changes = match crate::alerts::evaluate_report(
+        &mut tx,
+        &auth.agent_id,
+        &node_ids,
+        crate::auth::now_utc(),
+    )
+    .await
+    {
+        Ok(changes) => changes,
+        Err(_) => {
+            return error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Server database is unavailable",
+            );
+        }
+    };
+    if tx.commit().await.is_err() {
         return error(
             &request_id.0,
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1913,6 +1958,11 @@ async fn handler(
     state
         .public_realtime()
         .publish("node", None::<String>, parsed.report_sequence);
+    if alert_changes > 0 {
+        state
+            .admin_realtime()
+            .publish("alerts", None::<String>, parsed.report_sequence);
+    }
     (StatusCode::OK, Json(ReportResponse { receipt })).into_response()
 }
 
@@ -2020,7 +2070,7 @@ pub(crate) fn router() -> Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::AuthConfig;
+    use crate::auth::{AuthConfig, format_rfc3339, now_utc};
     use crate::database::{ServerDatabaseConfig, initialize};
     use crate::enrollment::AgentAuthInfo;
     use crate::network::create_network;
@@ -2813,12 +2863,20 @@ mod tests {
     }
 
     async fn pending_transfer(state: &AppState, node_id: &str, source: &str, target: &str) {
+        // Windows are relative to the real clock so the fixture never
+        // silently expires mid-suite.
+        let now = now_utc();
+        let created = format_rfc3339(now - time::Duration::hours(2));
+        let expires = format_rfc3339(now + time::Duration::hours(2));
         sqlx::query(
-            "INSERT INTO node_transfers (transfer_id, node_id, source_agent_id, target_agent_id, status, operator_reason, created_at, expires_at, updated_at) VALUES ('transfer-pending-1', ?, ?, ?, 'pending', 'move the validator', '2026-08-12T08:00:00Z', '2026-08-15T08:00:00Z', '2026-08-12T08:00:00Z')",
+            "INSERT INTO node_transfers (transfer_id, node_id, source_agent_id, target_agent_id, status, operator_reason, created_at, expires_at, updated_at) VALUES ('transfer-pending-1', ?, ?, ?, 'pending', 'move the validator', ?, ?, ?)",
         )
         .bind(node_id.to_string())
         .bind(source)
         .bind(target)
+        .bind(&created)
+        .bind(&expires)
+        .bind(&created)
         .execute(state.db().pool())
         .await
         .unwrap();

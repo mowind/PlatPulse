@@ -503,6 +503,900 @@
         }
       }
     },
+    "/api/admin/v1/alerts/incidents": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "PAGE-ADMIN-INCIDENTS: durable Incident history. Incidents are opened by\nthe state machine and resolved only by sustained fresh Known recovery;\nthey are never manually resolvable, reopenable, or deletable.",
+        "operationId": "alert_incidents",
+        "parameters": [
+          {
+            "name": "state",
+            "in": "query",
+            "description": "Filter by open or resolved",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "severity",
+            "in": "query",
+            "description": "Filter by severity",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rule_key",
+            "in": "query",
+            "description": "Filter by Rule key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "subject_kind",
+            "in": "query",
+            "description": "Filter by subject kind",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum rows (1..=500)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentListResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/alerts/incidents/{incident_id}": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "PAGE-ADMIN-INCIDENT: one Incident with its immutable evidence, the\ncurrent independent evaluation state of its `(rule, subject)`, and any\noverlapping Silence/Maintenance suppressions (both reasons stay visible\nindependently; webui.md §8.3).",
+        "operationId": "alert_incident_detail",
+        "parameters": [
+          {
+            "name": "incident_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/alerts/maintenance": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "alert_maintenance",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Filter by active, expired, or cancelled",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaintenanceListResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "POST /api/admin/v1/alerts/maintenance: create a time-bounded\nMaintenance Window for an Agent, Node, or Network scope. Expected\nconditions are a typed allowlist of rule keys; an empty list matches any\nrule. Maintenance marks expected Incidents suppressed and suppresses\nexpected delivery, without changing facts, evaluation, or Node Health\n(design §17.5).",
+        "operationId": "create_maintenance_window",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MaintenanceCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaintenanceMutationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/alerts/maintenance/{window_id}": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "alert_maintenance_detail",
+        "parameters": [
+          {
+            "name": "window_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaintenanceDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/alerts/maintenance/{window_id}/cancel": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "POST /api/admin/v1/alerts/maintenance/{window_id}/cancel: cancel an\nactive Maintenance Window. Cancellation is audited and irreversible;\nthe window stays visible with its outcome.",
+        "operationId": "cancel_maintenance_window",
+        "parameters": [
+          {
+            "name": "window_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaintenanceMutationResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/alerts/rules": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "PAGE-ADMIN-ALERT-RULES: the typed Rule catalog with per-rule evaluation\nsummary and Open Incident counts. The list is Server-owned; the schema\nrenders the typed editor without any free-form input.",
+        "operationId": "alert_rules",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AlertRuleSummary"
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/alerts/rules/{rule_key}": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "alert_rule_detail",
+        "parameters": [
+          {
+            "name": "rule_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertRuleDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "PUT /api/admin/v1/alerts/rules/{rule_key}: edit the typed rule. Edits\ncreate an immutable version row; Incidents keep the version they opened\nunder. Disabling stops new evaluation without deleting history.",
+        "operationId": "update_alert_rule",
+        "parameters": [
+          {
+            "name": "rule_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlertRuleUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertRuleUpdateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/alerts/rules/{rule_key}/overrides": {
+      "put": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "PUT /api/admin/v1/alerts/rules/{rule_key}/overrides: upsert a Network or\nNode override. Override fields (enabled/severity/condition) inherit from\nthe global rule when unset. The override is audited; the base rule\nversion is not bumped (Incidents keep their base-rule version).",
+        "operationId": "upsert_rule_override",
+        "parameters": [
+          {
+            "name": "rule_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RuleOverrideUpsertRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuleOverrideResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/alerts/rules/{rule_key}/overrides/{scope_kind}/{scope_value}": {
+      "delete": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "DELETE /api/admin/v1/alerts/rules/{rule_key}/overrides/{scope_kind}/{scope_value}:\nremove one Network/Node override (audited). The global rule is the only\nremaining authority for the subject.",
+        "operationId": "delete_rule_override",
+        "parameters": [
+          {
+            "name": "rule_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope_kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope_value",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuleOverrideResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/alerts/rules/{rule_key}/preview": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "POST /api/admin/v1/alerts/rules/{rule_key}/preview: evaluate the rule\n(optionally with an unsaved draft) against current facts for every\neligible subject WITHOUT creating Incidents, Notifications, or state\nrows. `projectedState` shows what the next persisted transition would\nbe; `wouldFire` reflects the typed threshold comparison.",
+        "operationId": "preview_alert_rule",
+        "parameters": [
+          {
+            "name": "rule_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RulePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RulePreviewResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/alerts/silences": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "alert_silences",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Filter by active, expired, or cancelled",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SilenceListResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "POST /api/admin/v1/alerts/silences: create a time-bounded delivery\nSilence. It suppresses matching delivery only; evaluation and Incidents\nare untouched (design §17.5, webui.md §8.3).",
+        "operationId": "create_silence",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SilenceCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SilenceMutationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/alerts/silences/{silence_id}": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "alert_silence_detail",
+        "parameters": [
+          {
+            "name": "silence_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SilenceDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/alerts/silences/{silence_id}/cancel": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "POST /api/admin/v1/alerts/silences/{silence_id}/cancel: cancel an\nactive Silence before its natural expiry. Cancellation is audited and\nirreversible; the row stays visible with its outcome.",
+        "operationId": "cancel_silence",
+        "parameters": [
+          {
+            "name": "silence_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SilenceMutationResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/v1/audit": {
       "get": {
         "tags": [
@@ -3400,6 +4294,179 @@
           }
         }
       },
+      "AlertRuleDetail": {
+        "type": "object",
+        "required": [
+          "ruleKey",
+          "subjectKind",
+          "enabled",
+          "severity",
+          "version",
+          "condition",
+          "schema",
+          "createdAt",
+          "updatedAt",
+          "versions",
+          "overrides",
+          "states",
+          "openIncidents"
+        ],
+        "properties": {
+          "condition": {
+            "$ref": "#/components/schemas/RuleCondition"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "openIncidents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "overrides": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RuleOverrideDto"
+            }
+          },
+          "ruleKey": {
+            "type": "string"
+          },
+          "schema": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ParamSchema"
+            }
+          },
+          "severity": {
+            "type": "string"
+          },
+          "states": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RuleStateDto"
+            }
+          },
+          "subjectKind": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "versions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RuleVersionDto"
+            }
+          }
+        }
+      },
+      "AlertRuleSummary": {
+        "type": "object",
+        "required": [
+          "ruleKey",
+          "subjectKind",
+          "enabled",
+          "severity",
+          "version",
+          "condition",
+          "schema",
+          "createdAt",
+          "updatedAt",
+          "openIncidents",
+          "evaluation"
+        ],
+        "properties": {
+          "condition": {
+            "$ref": "#/components/schemas/RuleCondition"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "evaluation": {
+            "$ref": "#/components/schemas/RuleEvaluationSummary"
+          },
+          "openIncidents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "ruleKey": {
+            "type": "string"
+          },
+          "schema": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ParamSchema"
+            }
+          },
+          "severity": {
+            "type": "string"
+          },
+          "subjectKind": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "AlertRuleUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "condition": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RuleCondition"
+              }
+            ]
+          },
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "severity": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "AlertRuleUpdateResponse": {
+        "type": "object",
+        "required": [
+          "rule",
+          "auditEventId"
+        ],
+        "properties": {
+          "auditEventId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "rule": {
+            "$ref": "#/components/schemas/AlertRuleDetail"
+          }
+        }
+      },
       "ApiError": {
         "type": "object",
         "required": [
@@ -4005,6 +5072,147 @@
           }
         }
       },
+      "IncidentDetail": {
+        "type": "object",
+        "required": [
+          "incidentId",
+          "ruleKey",
+          "ruleVersion",
+          "subjectKind",
+          "subjectKey",
+          "severity",
+          "state",
+          "sequence",
+          "openedAt",
+          "openedEvidence",
+          "suppressions"
+        ],
+        "properties": {
+          "evaluation": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RuleStateDto"
+              }
+            ]
+          },
+          "incidentId": {
+            "type": "string"
+          },
+          "openedAt": {
+            "type": "string"
+          },
+          "openedEvidence": {},
+          "resolvedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resolvedEvidence": {},
+          "ruleKey": {
+            "type": "string"
+          },
+          "ruleVersion": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "sequence": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "subjectKey": {
+            "type": "string"
+          },
+          "subjectKind": {
+            "type": "string"
+          },
+          "suppressions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SuppressionMatch"
+            }
+          }
+        }
+      },
+      "IncidentListItem": {
+        "type": "object",
+        "required": [
+          "incidentId",
+          "ruleKey",
+          "ruleVersion",
+          "subjectKind",
+          "subjectKey",
+          "severity",
+          "state",
+          "sequence",
+          "openedAt"
+        ],
+        "properties": {
+          "incidentId": {
+            "type": "string"
+          },
+          "openedAt": {
+            "type": "string"
+          },
+          "resolvedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ruleKey": {
+            "type": "string"
+          },
+          "ruleVersion": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "sequence": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "subjectKey": {
+            "type": "string"
+          },
+          "subjectKind": {
+            "type": "string"
+          }
+        }
+      },
+      "IncidentListResponse": {
+        "type": "object",
+        "required": [
+          "incidents",
+          "total"
+        ],
+        "properties": {
+          "incidents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IncidentListItem"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "LiveResponse": {
         "type": "object",
         "required": [
@@ -4028,6 +5236,133 @@
           },
           "username": {
             "type": "string"
+          }
+        }
+      },
+      "MaintenanceCreateRequest": {
+        "type": "object",
+        "required": [
+          "scopeKind",
+          "scopeValue",
+          "expectedRuleKeys",
+          "reason",
+          "startsAt",
+          "endsAt"
+        ],
+        "properties": {
+          "endsAt": {
+            "type": "string"
+          },
+          "expectedRuleKeys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reason": {
+            "type": "string"
+          },
+          "scopeKind": {
+            "type": "string"
+          },
+          "scopeValue": {
+            "type": "string"
+          },
+          "startsAt": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "MaintenanceDto": {
+        "type": "object",
+        "required": [
+          "windowId",
+          "scopeKind",
+          "scopeValue",
+          "expectedRuleKeys",
+          "reason",
+          "startsAt",
+          "endsAt",
+          "createdBy",
+          "createdAt",
+          "status"
+        ],
+        "properties": {
+          "cancelledAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cancelledBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "endsAt": {
+            "type": "string"
+          },
+          "expectedRuleKeys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reason": {
+            "type": "string"
+          },
+          "scopeKind": {
+            "type": "string"
+          },
+          "scopeValue": {
+            "type": "string"
+          },
+          "startsAt": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "windowId": {
+            "type": "string"
+          }
+        }
+      },
+      "MaintenanceListResponse": {
+        "type": "object",
+        "required": [
+          "windows"
+        ],
+        "properties": {
+          "windows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MaintenanceDto"
+            }
+          }
+        }
+      },
+      "MaintenanceMutationResponse": {
+        "type": "object",
+        "required": [
+          "window",
+          "auditEventId"
+        ],
+        "properties": {
+          "auditEventId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "window": {
+            "$ref": "#/components/schemas/MaintenanceDto"
           }
         }
       },
@@ -4495,6 +5830,45 @@
           }
         }
       },
+      "ParamSchema": {
+        "type": "object",
+        "description": "Editor schema for one condition parameter, sent to the WebUI so the\ntyped rule form renders per-rule fields (no free-form DSL ever).",
+        "required": [
+          "key",
+          "label",
+          "unit",
+          "min",
+          "max",
+          "default",
+          "description"
+        ],
+        "properties": {
+          "default": {
+            "type": "number",
+            "format": "double"
+          },
+          "description": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "max": {
+            "type": "number",
+            "format": "double"
+          },
+          "min": {
+            "type": "number",
+            "format": "double"
+          },
+          "unit": {
+            "type": "string"
+          }
+        }
+      },
       "PeopleResponse": {
         "type": "object",
         "required": [
@@ -4562,6 +5936,28 @@
         "properties": {
           "disabled": {
             "type": "boolean"
+          }
+        }
+      },
+      "PreviewInput": {
+        "type": "object",
+        "required": [
+          "kind",
+          "detail"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "value": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
           }
         }
       },
@@ -5206,6 +6602,356 @@
           }
         }
       },
+      "RuleCondition": {
+        "type": "object",
+        "description": "Typed per-rule condition parameters (design §17.1: `for`, recovery\nthreshold/hysteresis, and an optional typed threshold). `for_secs` is\nthe sustained firing duration before an Incident opens;\n`recovery_for_secs` is the sustained fresh recovery duration before it\nresolves. Boolean-fact rules fix their internal threshold at 0.5 and do\nnot accept a user threshold.",
+        "required": [
+          "for_secs",
+          "recovery_for_secs"
+        ],
+        "properties": {
+          "for_secs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "recovery_for_secs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "threshold": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
+      "RuleEvaluationSummary": {
+        "type": "object",
+        "required": [
+          "subjects",
+          "normal",
+          "pending",
+          "firing",
+          "recovering",
+          "evaluationUnavailable"
+        ],
+        "properties": {
+          "evaluationUnavailable": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "firing": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "normal": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "pending": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "recovering": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "subjects": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "RuleOverrideDto": {
+        "type": "object",
+        "required": [
+          "scopeKind",
+          "scopeValue",
+          "updatedAt"
+        ],
+        "properties": {
+          "condition": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RuleCondition"
+              }
+            ]
+          },
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "scopeKind": {
+            "type": "string"
+          },
+          "scopeValue": {
+            "type": "string"
+          },
+          "severity": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updatedAt": {
+            "type": "string"
+          }
+        }
+      },
+      "RuleOverrideResponse": {
+        "type": "object",
+        "required": [
+          "ruleKey",
+          "overrides"
+        ],
+        "properties": {
+          "overrides": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RuleOverrideDto"
+            }
+          },
+          "ruleKey": {
+            "type": "string"
+          }
+        }
+      },
+      "RuleOverrideUpsertRequest": {
+        "type": "object",
+        "required": [
+          "scopeKind",
+          "scopeValue"
+        ],
+        "properties": {
+          "condition": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RuleCondition"
+              }
+            ]
+          },
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "scopeKind": {
+            "type": "string"
+          },
+          "scopeValue": {
+            "type": "string"
+          },
+          "severity": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "RulePreviewRequest": {
+        "type": "object",
+        "properties": {
+          "condition": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RuleCondition"
+              }
+            ]
+          },
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "severity": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "RulePreviewResponse": {
+        "type": "object",
+        "required": [
+          "ruleKey",
+          "enabled",
+          "severity",
+          "condition",
+          "subjects"
+        ],
+        "properties": {
+          "condition": {
+            "$ref": "#/components/schemas/RuleCondition"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "ruleKey": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "subjects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RulePreviewSubject"
+            }
+          }
+        }
+      },
+      "RulePreviewSubject": {
+        "type": "object",
+        "required": [
+          "subjectKind",
+          "subjectKey",
+          "currentState",
+          "input",
+          "wouldFire",
+          "projectedState",
+          "note"
+        ],
+        "properties": {
+          "currentState": {
+            "type": "string"
+          },
+          "input": {
+            "$ref": "#/components/schemas/PreviewInput"
+          },
+          "note": {
+            "type": "string"
+          },
+          "projectedState": {
+            "type": "string"
+          },
+          "subjectKey": {
+            "type": "string"
+          },
+          "subjectKind": {
+            "type": "string"
+          },
+          "wouldFire": {
+            "type": "boolean"
+          }
+        }
+      },
+      "RuleStateDto": {
+        "type": "object",
+        "required": [
+          "subjectKind",
+          "subjectKey",
+          "state",
+          "since",
+          "inputKind",
+          "evaluationUnavailable",
+          "lastEvaluatedAt",
+          "openIncidents"
+        ],
+        "properties": {
+          "evaluationUnavailable": {
+            "type": "boolean"
+          },
+          "firingSince": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "inputDetail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "inputKind": {
+            "type": "string"
+          },
+          "inputValue": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "lastEvaluatedAt": {
+            "type": "string"
+          },
+          "openIncidents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "pendingSince": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "recoveringSince": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "since": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "subjectKey": {
+            "type": "string"
+          },
+          "subjectKind": {
+            "type": "string"
+          }
+        }
+      },
+      "RuleVersionDto": {
+        "type": "object",
+        "required": [
+          "version",
+          "severity",
+          "condition",
+          "createdAt"
+        ],
+        "properties": {
+          "condition": {
+            "$ref": "#/components/schemas/RuleCondition"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "SessionItem": {
         "type": "object",
         "description": "One coarse, non-sensitive Session row (design §12.3): creation, last\nactivity, expiry, and a coarse client hint — never the token, a full\nUser-Agent, or a raw IP.",
@@ -5308,6 +7054,168 @@
             "items": {
               "$ref": "#/components/schemas/SessionItem"
             }
+          }
+        }
+      },
+      "SilenceCreateRequest": {
+        "type": "object",
+        "required": [
+          "matcherKind",
+          "reason",
+          "startsAt",
+          "endsAt"
+        ],
+        "properties": {
+          "endsAt": {
+            "type": "string"
+          },
+          "matcherKind": {
+            "type": "string"
+          },
+          "matcherValue": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "startsAt": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SilenceDto": {
+        "type": "object",
+        "required": [
+          "silenceId",
+          "matcherKind",
+          "reason",
+          "startsAt",
+          "endsAt",
+          "createdBy",
+          "createdAt",
+          "status"
+        ],
+        "properties": {
+          "cancelledAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cancelledBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "endsAt": {
+            "type": "string"
+          },
+          "matcherKind": {
+            "type": "string"
+          },
+          "matcherValue": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "silenceId": {
+            "type": "string"
+          },
+          "startsAt": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "SilenceListResponse": {
+        "type": "object",
+        "required": [
+          "silences"
+        ],
+        "properties": {
+          "silences": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SilenceDto"
+            }
+          }
+        }
+      },
+      "SilenceMutationResponse": {
+        "type": "object",
+        "required": [
+          "silence",
+          "auditEventId"
+        ],
+        "properties": {
+          "auditEventId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "silence": {
+            "$ref": "#/components/schemas/SilenceDto"
+          }
+        }
+      },
+      "SubjectKind": {
+        "type": "string",
+        "description": "The typed catalog of rule subjects (design §17.1).",
+        "enum": [
+          "agent",
+          "host",
+          "node",
+          "network",
+          "validator",
+          "server"
+        ]
+      },
+      "SuppressionMatch": {
+        "type": "object",
+        "description": "One active suppression policy matching a subject.",
+        "required": [
+          "kind",
+          "id",
+          "reason",
+          "startsAt",
+          "endsAt",
+          "marksIncident"
+        ],
+        "properties": {
+          "endsAt": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "marksIncident": {
+            "type": "boolean",
+            "description": "Maintenance-only: whether this match marks the Incident suppressed\n(design §17.5). Silences never mark Incidents."
+          },
+          "reason": {
+            "type": "string"
+          },
+          "startsAt": {
+            "type": "string"
           }
         }
       },

@@ -20,7 +20,7 @@ use thiserror::Error;
 pub static SERVER_MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 /// The latest migration version compiled into the Server binary.
-pub const SERVER_SCHEMA_VERSION: i64 = 19;
+pub const SERVER_SCHEMA_VERSION: i64 = 20;
 
 /// The Server currently serializes all SQLite operations through one pool
 /// connection. Read scaling can be added with a concrete query need; it is
@@ -133,6 +133,8 @@ pub enum ServerDatabaseError {
     Connect(#[source] sqlx::Error),
     #[error("Server SQLite migration failed: {0}")]
     Migration(#[source] MigrateError),
+    #[error("Server alert catalog seed failed: {0}")]
+    CatalogSeed(String),
     #[error("Server SQLite pragma query failed: {0}")]
     PragmaQuery(#[source] sqlx::Error),
     #[error("Server SQLite required pragmas are not active: {0}")]
@@ -187,6 +189,24 @@ impl ServerDatabase {
         if let Err(error) = SERVER_MIGRATOR.run(&pool).await {
             pool.close().await;
             return Err(ServerDatabaseError::Migration(error));
+        }
+
+        // Seed the typed Alert Rule catalog (idempotent; Owner-edited rules
+        // are never overwritten) right after migrations so every database
+        // carries the full catalog from the start.
+        let seed_result = async {
+            let mut conn = pool
+                .acquire()
+                .await
+                .map_err(|error| ServerDatabaseError::CatalogSeed(error.to_string()))?;
+            crate::alerts::seed_catalog(&mut conn)
+                .await
+                .map_err(|error| ServerDatabaseError::CatalogSeed(error.to_string()))
+        }
+        .await;
+        if let Err(error) = seed_result {
+            pool.close().await;
+            return Err(error);
         }
 
         let pragmas = read_pragmas(&pool)
@@ -550,8 +570,6 @@ mod tests {
             "geo_location_cache",
             "validators",
             "node_validator_links",
-            "alert_rules",
-            "alert_incidents",
             "notification_events",
             "notification_outbox",
             "block_aggregate_1m",

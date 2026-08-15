@@ -22,8 +22,24 @@ import {
   adminRevokeCredential,
   adminRotateCredential,
   auditList,
+  alertIncidentDetail,
+  alertIncidents,
+  alertMaintenance,
+  alertMaintenanceDetail,
+  alertRuleDetail,
+  alertRules,
+  alertSilences,
+  alertSilenceDetail,
+  cancelMaintenanceWindow as cancelMaintenanceWindowApi,
   cancelNodeTransfer as cancelNodeTransferApi,
+  cancelSilence as cancelSilenceApi,
+  createMaintenanceWindow as createMaintenanceWindowApi,
   createNetwork,
+  createSilence as createSilenceApi,
+  deleteRuleOverride as deleteRuleOverrideApi,
+  previewAlertRule as previewAlertRuleApi,
+  updateAlertRule as updateAlertRuleApi,
+  upsertRuleOverride as upsertRuleOverrideApi,
   createNodeTransfer as createNodeTransferApi,
   createPerson,
   diagnostics,
@@ -42,6 +58,21 @@ import {
   updateNetwork,
   type AccessSettingsResponse,
   type AdminNetwork,
+  type AlertRuleDetail,
+  type AlertRuleSummary,
+  type AlertRuleUpdateRequest,
+  type AlertRuleUpdateResponse,
+  type IncidentDetail,
+  type IncidentListResponse,
+  type MaintenanceCreateRequest,
+  type MaintenanceDto,
+  type MaintenanceMutationResponse,
+  type RuleOverrideResponse,
+  type RuleOverrideUpsertRequest,
+  type RulePreviewResponse,
+  type SilenceCreateRequest,
+  type SilenceDto,
+  type SilenceMutationResponse,
   type AdminNetworkDetail,
   type AdminNodeDetail,
   type AdminNodeListItem,
@@ -104,6 +135,13 @@ const adminKeys = {
   sessions: ['admin', 'sessions'] as const,
   audit: (filters: AuditFilters) => ['admin', 'audit', filters] as const,
   access: ['admin', 'access'] as const,
+  alertRules: ['admin', 'alerts', 'rules'] as const,
+  alertRuleDetail: (ruleKey: string) => ['admin', 'alerts', 'rules', ruleKey] as const,
+  alertIncidents: ['admin', 'alerts', 'incidents'] as const,
+  alertIncidentDetail: (incidentId: string) =>
+    ['admin', 'alerts', 'incidents', incidentId] as const,
+  alertSilences: ['admin', 'alerts', 'silences'] as const,
+  alertMaintenance: ['admin', 'alerts', 'maintenance'] as const,
 }
 
 /** Immutable Audit listing filters (issue #47). */
@@ -831,4 +869,350 @@ export function useAdminRealtime(
   }, [generation])
 
   return { status, online }
+}
+
+// ---------------------------------------------------------------------------
+// Alerts (issue #48): typed Rules, evaluation state, Incidents, Silence and
+// Maintenance. REST is authoritative; mutations never optimistically mark
+// success and always invalidate the Admin cache (webui.md §6.4).
+// ---------------------------------------------------------------------------
+
+/** Owner-only typed Alert Rule catalog with per-rule evaluation summaries. */
+export async function fetchAdminAlertRules(signal?: AbortSignal): Promise<AlertRuleSummary[]> {
+  return requestAdmin(() => alertRules({ signal }), 'Unable to load the Alert Rules')
+}
+
+export function useAdminAlertRules(generation: number) {
+  return useQuery({
+    queryKey: [...adminKeys.alertRules, generation],
+    queryFn: ({ signal }) => fetchAdminAlertRules(signal),
+    placeholderData: keepPreviousData,
+  })
+}
+
+/** One Rule with immutable versions, overrides, and per-subject evaluation
+ * state. No placeholder: another Rule's DTO must never render under this
+ * Rule's URL. */
+export async function fetchAdminAlertRule(
+  ruleKey: string,
+  signal?: AbortSignal,
+): Promise<AlertRuleDetail> {
+  return requestAdmin(
+    () => alertRuleDetail({ path: { rule_key: ruleKey }, signal }),
+    'Unable to load the Alert Rule',
+  )
+}
+
+export function useAdminAlertRuleDetail(generation: number, ruleKey: string) {
+  return useQuery({
+    queryKey: [...adminKeys.alertRuleDetail(ruleKey), generation],
+    queryFn: ({ signal }) => fetchAdminAlertRule(ruleKey, signal),
+    enabled: ruleKey.length > 0,
+  })
+}
+
+/** Edit a typed Rule: immutable version bump, Audit row, and authoritative
+ * refetch. Disabling stops new evaluation without deleting history. */
+export async function updateAlertRuleEntry(
+  ruleKey: string,
+  request: AlertRuleUpdateRequest,
+  csrfToken: string,
+): Promise<AlertRuleUpdateResponse> {
+  try {
+    const response = await requestAdmin(
+      () =>
+        updateAlertRuleApi({
+          path: { rule_key: ruleKey },
+          body: request,
+          headers: { 'X-CSRF-Token': csrfToken },
+        }),
+      'Unable to update the Alert Rule',
+    )
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    return response
+  } catch (error) {
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    throw error
+  }
+}
+
+/** Read-only preview: evaluates the rule (optionally with an unsaved draft)
+ * against current facts without creating Incidents, Notifications, or state
+ * rows. Never invalidates anything. */
+export async function previewAlertRuleEntry(
+  ruleKey: string,
+  request: AlertRuleUpdateRequest,
+  csrfToken: string,
+  signal?: AbortSignal,
+): Promise<RulePreviewResponse> {
+  return requestAdmin(
+    () =>
+      previewAlertRuleApi({
+        path: { rule_key: ruleKey },
+        body: request,
+        headers: { 'X-CSRF-Token': csrfToken },
+        signal,
+      }),
+    'Unable to preview the Alert Rule',
+  )
+}
+
+/** Upsert a Network/Node override (audited). */
+export async function upsertRuleOverrideEntry(
+  ruleKey: string,
+  request: RuleOverrideUpsertRequest,
+  csrfToken: string,
+): Promise<RuleOverrideResponse> {
+  try {
+    const response = await requestAdmin(
+      () =>
+        upsertRuleOverrideApi({
+          path: { rule_key: ruleKey },
+          body: request,
+          headers: { 'X-CSRF-Token': csrfToken },
+        }),
+      'Unable to save the Rule override',
+    )
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    return response
+  } catch (error) {
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    throw error
+  }
+}
+
+/** Remove one Network/Node override (audited). */
+export async function deleteRuleOverrideEntry(
+  ruleKey: string,
+  scopeKind: string,
+  scopeValue: string,
+  csrfToken: string,
+): Promise<RuleOverrideResponse> {
+  try {
+    const response = await requestAdmin(
+      () =>
+        deleteRuleOverrideApi({
+          path: { rule_key: ruleKey, scope_kind: scopeKind, scope_value: scopeValue },
+          headers: { 'X-CSRF-Token': csrfToken },
+        }),
+      'Unable to remove the Rule override',
+    )
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    return response
+  } catch (error) {
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    throw error
+  }
+}
+
+export type IncidentFilters = {
+  state?: string
+  severity?: string
+  ruleKey?: string
+  subjectKind?: string
+  limit?: number
+}
+
+/** Owner-only Incident history. Incidents are never manually resolvable,
+ * reopenable, or deletable; the list carries Server-owned state and
+ * evidence references. */
+export async function fetchAdminIncidents(
+  filters: IncidentFilters,
+  signal?: AbortSignal,
+): Promise<IncidentListResponse> {
+  return requestAdmin(
+    () =>
+      alertIncidents({
+        query: {
+          state: filters.state,
+          severity: filters.severity,
+          rule_key: filters.ruleKey,
+          subject_kind: filters.subjectKind,
+          limit: filters.limit,
+        },
+        signal,
+      }),
+    'Unable to load the Incidents',
+  )
+}
+
+export function useAdminIncidents(generation: number, filters: IncidentFilters) {
+  return useQuery({
+    queryKey: [...adminKeys.alertIncidents, filters, generation],
+    queryFn: ({ signal }) => fetchAdminIncidents(filters, signal),
+    placeholderData: keepPreviousData,
+  })
+}
+
+export async function fetchAdminIncident(
+  incidentId: string,
+  signal?: AbortSignal,
+): Promise<IncidentDetail> {
+  return requestAdmin(
+    () => alertIncidentDetail({ path: { incident_id: incidentId }, signal }),
+    'Unable to load the Incident',
+  )
+}
+
+export function useAdminIncidentDetail(generation: number, incidentId: string) {
+  return useQuery({
+    queryKey: [...adminKeys.alertIncidentDetail(incidentId), generation],
+    queryFn: ({ signal }) => fetchAdminIncident(incidentId, signal),
+    // No placeholder: one Incident's DTO must never render under another.
+    enabled: incidentId.length > 0,
+  })
+}
+
+export type SilenceFilters = { status?: string }
+
+export async function fetchAdminSilences(
+  filters: SilenceFilters,
+  signal?: AbortSignal,
+): Promise<SilenceDto[]> {
+  const response = await requestAdmin(
+    () => alertSilences({ query: { status: filters.status }, signal }),
+    'Unable to load the Silences',
+  )
+  return response.silences
+}
+
+export function useAdminSilences(generation: number, filters: SilenceFilters) {
+  return useQuery({
+    queryKey: [...adminKeys.alertSilences, filters, generation],
+    queryFn: ({ signal }) => fetchAdminSilences(filters, signal),
+    placeholderData: keepPreviousData,
+  })
+}
+
+/** Create a time-bounded Silence. It suppresses delivery only; evaluation
+ * and Incidents are untouched. */
+export async function createSilenceEntry(
+  request: SilenceCreateRequest,
+  csrfToken: string,
+): Promise<SilenceMutationResponse> {
+  try {
+    const response = await requestAdmin(
+      () =>
+        createSilenceApi({
+          body: request,
+          headers: { 'X-CSRF-Token': csrfToken },
+        }),
+      'Unable to create the Silence',
+    )
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    return response
+  } catch (error) {
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    throw error
+  }
+}
+
+/** Cancel an active Silence (audited, irreversible). */
+export async function cancelSilenceEntry(
+  silenceId: string,
+  csrfToken: string,
+): Promise<SilenceMutationResponse> {
+  try {
+    const response = await requestAdmin(
+      () =>
+        cancelSilenceApi({
+          path: { silence_id: silenceId },
+          headers: { 'X-CSRF-Token': csrfToken },
+        }),
+      'Unable to cancel the Silence',
+    )
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    return response
+  } catch (error) {
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    throw error
+  }
+}
+
+export type MaintenanceFilters = { status?: string }
+
+export async function fetchAdminMaintenance(
+  filters: MaintenanceFilters,
+  signal?: AbortSignal,
+): Promise<MaintenanceDto[]> {
+  const response = await requestAdmin(
+    () => alertMaintenance({ query: { status: filters.status }, signal }),
+    'Unable to load the Maintenance Windows',
+  )
+  return response.windows
+}
+
+export function useAdminMaintenance(generation: number, filters: MaintenanceFilters) {
+  return useQuery({
+    queryKey: [...adminKeys.alertMaintenance, filters, generation],
+    queryFn: ({ signal }) => fetchAdminMaintenance(filters, signal),
+    placeholderData: keepPreviousData,
+  })
+}
+
+/** Create a time-bounded Maintenance Window for an Agent, Node, or Network
+ * scope with a typed expected-condition allowlist. */
+export async function createMaintenanceEntry(
+  request: MaintenanceCreateRequest,
+  csrfToken: string,
+): Promise<MaintenanceMutationResponse> {
+  try {
+    const response = await requestAdmin(
+      () =>
+        createMaintenanceWindowApi({
+          body: request,
+          headers: { 'X-CSRF-Token': csrfToken },
+        }),
+      'Unable to create the Maintenance Window',
+    )
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    return response
+  } catch (error) {
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    throw error
+  }
+}
+
+/** Cancel an active Maintenance Window (audited, irreversible). */
+export async function cancelMaintenanceEntry(
+  windowId: string,
+  csrfToken: string,
+): Promise<MaintenanceMutationResponse> {
+  try {
+    const response = await requestAdmin(
+      () =>
+        cancelMaintenanceWindowApi({
+          path: { window_id: windowId },
+          headers: { 'X-CSRF-Token': csrfToken },
+        }),
+      'Unable to cancel the Maintenance Window',
+    )
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    return response
+  } catch (error) {
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    throw error
+  }
+}
+
+/** Owner-only read of one Silence (detail page). */
+export async function fetchAdminSilence(
+  silenceId: string,
+  signal?: AbortSignal,
+): Promise<SilenceDto> {
+  return requestAdmin(
+    () => alertSilenceDetail({ path: { silence_id: silenceId }, signal }),
+    'Unable to load the Silence',
+  )
+}
+
+/** Owner-only read of one Maintenance Window (detail page). */
+export async function fetchAdminMaintenanceDetail(
+  windowId: string,
+  signal?: AbortSignal,
+): Promise<MaintenanceDto> {
+  return requestAdmin(
+    () => alertMaintenanceDetail({ path: { window_id: windowId }, signal }),
+    'Unable to load the Maintenance Window',
+  )
 }

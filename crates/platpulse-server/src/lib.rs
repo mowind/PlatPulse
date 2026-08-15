@@ -9,6 +9,7 @@
 //! the private Home/Admin gates. Keep startup logic in this library so it
 //! can be exercised from tests; `main.rs` stays a thin entry point.
 
+pub mod alerts;
 pub mod auth;
 pub mod cli;
 pub mod config;
