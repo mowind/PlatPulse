@@ -26,7 +26,7 @@ pub struct VisibilityResponse {
     pub visibility: String,
 }
 
-fn mutation_error(
+pub(crate) fn mutation_error(
     request_id: &str,
     status: StatusCode,
     code: &'static str,
@@ -44,7 +44,7 @@ fn mutation_error(
 /// all required before any Admin mutation parses its body. A malformed body
 /// must never bypass these checks or produce a framework-generated error
 /// with a different envelope.
-fn mutation_guard_ok(
+pub(crate) fn mutation_guard_ok(
     headers: &HeaderMap,
     state: &AppState,
     session: &AuthenticatedSession,
@@ -80,7 +80,7 @@ async fn admin_events(
         state.database(),
         state.auth().clone(),
         _session.0.session_id.clone(),
-        Some("owner".to_owned()),
+        _session.0.role.clone(),
     ))
     .keep_alive(
         KeepAlive::new()

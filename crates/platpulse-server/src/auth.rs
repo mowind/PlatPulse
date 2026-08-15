@@ -58,6 +58,42 @@ pub const LOGIN_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(15 * 60);
 /// `last_seen_at` is written at most this often (design §12.3).
 pub const SESSION_ACTIVITY_THROTTLE: Duration = Duration::from_secs(60);
 
+/// `server_settings` key controlling anonymous Home access (design §12.1:
+/// Guest may use Public Projections only when anonymous Home is explicitly
+/// enabled; §13.1: Guest disabled means Public API requires a Session).
+pub const SETTING_ANONYMOUS_HOME: &str = "anonymous_home";
+
+/// Read whether anonymous Home (Guest access) is currently enabled. The
+/// setting lives in `server_settings` so it survives restarts and is
+/// mutated only through the Owner Admin mutation, never by Agents.
+pub async fn anonymous_home_enabled(db: &ServerDatabase) -> Result<bool, sqlx::Error> {
+    let value = sqlx::query_scalar::<_, String>(
+        "SELECT setting_value FROM server_settings WHERE setting_key = ?",
+    )
+    .bind(SETTING_ANONYMOUS_HOME)
+    .fetch_optional(db.pool())
+    .await?;
+    Ok(value.as_deref() == Some("1"))
+}
+
+/// Whether at least one enabled Owner exists (design §12.2).
+pub async fn has_owner(db: &ServerDatabase) -> Result<bool, sqlx::Error> {
+    Ok(count_enabled_owners(db.pool()).await? > 0)
+}
+
+/// Count enabled Owners (design §12.1: the final valid Owner cannot be
+/// disabled or demoted, so the mutation path must know the exact count
+/// before it changes a role or disabled state). Accepts any SQLx executor
+/// so the count runs inside the same transaction as the mutation.
+pub async fn count_enabled_owners<'e, E>(executor: E) -> Result<i64, sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE role = 'owner' AND disabled_at IS NULL")
+        .fetch_one(executor)
+        .await
+}
+
 /// Authenticated-session policy: cookie name/attributes, strict origin, and
 /// token lifetimes.
 #[derive(Debug, Clone)]
@@ -175,11 +211,13 @@ pub enum LoginError {
     Database(#[from] sqlx::Error),
 }
 
-/// Identity mutation errors surfaced by CLI commands.
+/// Identity mutation errors surfaced by CLI commands and Admin mutations.
 #[derive(Debug, Error)]
 pub enum IdentityError {
     #[error("username '{0}' is already in use")]
     UsernameTaken(String),
+    #[error("role must be 'owner' or 'viewer'")]
+    InvalidRole,
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
 }
@@ -277,6 +315,39 @@ pub fn new_session_token() -> (String, String) {
     )
 }
 
+/// Derive a coarse, non-sensitive client hint from a User-Agent header
+/// (design §12.3: the Server never stores the full User-Agent or a raw IP;
+/// Session review shows only a coarse browser/platform family). Unknown or
+/// missing agents read as `Unknown`; no version or identifier is kept.
+pub fn client_hint_from_ua(user_agent: Option<&str>) -> String {
+    let Some(agent) = user_agent else {
+        return "Unknown".to_owned();
+    };
+    let browser = if agent.contains("Edg/") {
+        "Edge"
+    } else if agent.contains("OPR/") || agent.contains("Opera") {
+        "Opera"
+    } else if agent.contains("Chrome/") {
+        "Chrome"
+    } else if agent.contains("Firefox/") {
+        "Firefox"
+    } else if agent.contains("Safari/") {
+        "Safari"
+    } else {
+        "Unknown"
+    };
+    let platform = if agent.contains("Mobile")
+        || agent.contains("Android")
+        || agent.contains("iPhone")
+        || agent.contains("iPad")
+    {
+        "mobile"
+    } else {
+        "desktop"
+    };
+    format!("{browser} \u{00b7} {platform}")
+}
+
 /// Parse a session token into its non-sensitive id and full value.
 fn split_token(token: &str) -> Option<(&str, &str)> {
     let rest = token.strip_prefix(SESSION_TOKEN_PREFIX)?;
@@ -360,14 +431,20 @@ async fn find_user_by_username(
     .await
 }
 
-/// Whether at least one enabled Owner exists (design §12.2).
-pub async fn has_owner(db: &ServerDatabase) -> Result<bool, sqlx::Error> {
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM users WHERE role = 'owner' AND disabled_at IS NULL",
-    )
-    .fetch_one(db.pool())
-    .await?;
-    Ok(count > 0)
+/// Revoke every active Session of one user (design §12.1/§12.3: password,
+/// role, and disabled changes invalidate the related Sessions immediately).
+/// Returns the number of Sessions actually revoked.
+pub async fn revoke_user_sessions<'e, E>(executor: E, user_id: &str) -> Result<u64, sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    let result =
+        sqlx::query("UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL")
+            .bind(format_rfc3339(now_utc()))
+            .bind(user_id)
+            .execute(executor)
+            .await?;
+    Ok(result.rows_affected())
 }
 
 /// Insert an identity mutation into the bounded audit sink (design §18.2).
@@ -421,15 +498,18 @@ pub async fn write_audit_event(
     .await
 }
 
-/// Insert a human user with the given role from the CLI. The password is
-/// hashed by the caller; this function owns the transaction so the user
-/// row and its audit event cannot diverge.
+/// Insert a human user with the given role. The password is hashed by the
+/// caller; this function owns the transaction so the user row and its
+/// audit event cannot diverge. `actor_user_id` is the acting principal
+/// (Admin mutations) or `None` for local CLI provisioning. Returns the
+/// new user id.
 async fn insert_human_user(
     db: &ServerDatabase,
+    actor_user_id: Option<&str>,
     username: &str,
     role: HumanRole,
     password_hash: &str,
-) -> Result<(), IdentityError> {
+) -> Result<String, IdentityError> {
     let user_id = uuid::Uuid::new_v4().to_string();
     let now = format_rfc3339(now_utc());
     let mut transaction = db.pool().begin().await?;
@@ -458,7 +538,7 @@ async fn insert_human_user(
     let after = json!({ "username": username, "role": role.role() });
     insert_audit_event(
         &mut *transaction,
-        None,
+        actor_user_id,
         role.event_kind(),
         "user",
         username,
@@ -467,7 +547,7 @@ async fn insert_human_user(
     .await?;
 
     transaction.commit().await?;
-    Ok(())
+    Ok(user_id)
 }
 
 /// A human principal role provisioned from the CLI (design §12.1). Bundles
@@ -495,15 +575,16 @@ impl HumanRole {
     }
 }
 
-/// Create the first Owner (or an additional Owner) from the CLI
-/// (design §12.2). Same provisioning seam as Viewer creation; only the
-/// role and audit event differ.
+/// Create an Owner from the CLI (design §12.2). Same provisioning seam as
+/// Viewer creation; only the role and audit event differ.
 pub async fn create_owner(
     db: &ServerDatabase,
     username: &str,
     password_hash: &str,
 ) -> Result<(), IdentityError> {
-    insert_human_user(db, username, HumanRole::Owner, password_hash).await
+    insert_human_user(db, None, username, HumanRole::Owner, password_hash)
+        .await
+        .map(|_| ())
 }
 
 /// Create a Viewer from the CLI (design §12.1/§13.1): a human principal
@@ -515,7 +596,28 @@ pub async fn create_viewer(
     username: &str,
     password_hash: &str,
 ) -> Result<(), IdentityError> {
-    insert_human_user(db, username, HumanRole::Viewer, password_hash).await
+    insert_human_user(db, None, username, HumanRole::Viewer, password_hash)
+        .await
+        .map(|_| ())
+}
+
+/// Create a human user from an Owner Admin mutation (issue #47). The
+/// acting Owner is recorded as the Audit actor; `role` must be `owner` or
+/// `viewer` and the password is hashed by the caller. Returns the new
+/// user id.
+pub async fn create_user(
+    db: &ServerDatabase,
+    actor_user_id: &str,
+    username: &str,
+    role: &str,
+    password_hash: &str,
+) -> Result<String, IdentityError> {
+    let role = match role {
+        "owner" => HumanRole::Owner,
+        "viewer" => HumanRole::Viewer,
+        _ => return Err(IdentityError::InvalidRole),
+    };
+    insert_human_user(db, Some(actor_user_id), username, role, password_hash).await
 }
 
 /// Validate a human username: non-empty, bounded length, no whitespace or
@@ -571,6 +673,7 @@ async fn insert_session<'e, E>(
     user_id: &str,
     username: &str,
     role: &str,
+    client_hint: &str,
 ) -> Result<(SessionInfo, String), sqlx::Error>
 where
     E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
@@ -587,7 +690,7 @@ where
     );
 
     sqlx::query(
-        "INSERT INTO sessions (session_id, user_id, token_digest, csrf_token_digest, created_at, last_seen_at, expires_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)",
+        "INSERT INTO sessions (session_id, user_id, token_digest, csrf_token_digest, created_at, last_seen_at, expires_at, revoked_at, client_hint) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)",
     )
     .bind(&token_id)
     .bind(user_id)
@@ -596,6 +699,7 @@ where
     .bind(&created_at)
     .bind(&created_at)
     .bind(&expires_at)
+    .bind(client_hint)
     .execute(executor)
     .await?;
 
@@ -690,6 +794,7 @@ pub async fn login(
     username: &str,
     password: &str,
     presented_token: Option<&str>,
+    client_hint: &str,
 ) -> Result<(SessionInfo, String), LoginError> {
     let user = find_user_by_username(db, username)
         .await
@@ -740,6 +845,7 @@ pub async fn login(
         &user.user_id,
         &user.username,
         &user.role,
+        client_hint,
     )
     .await
     .map_err(LoginError::Database)?;
@@ -952,9 +1058,16 @@ mod tests {
 
         // The Viewer logs in with role `viewer` and its session
         // authenticates like any other human session.
-        let (session, full_token) = login(&db, &config, "viewer1", "correct horse battery", None)
-            .await
-            .unwrap();
+        let (session, full_token) = login(
+            &db,
+            &config,
+            "viewer1",
+            "correct horse battery",
+            None,
+            "Unknown",
+        )
+        .await
+        .unwrap();
         assert_eq!(session.role, "viewer");
         assert_eq!(
             authenticate_token(&db, &config, &full_token)
@@ -975,9 +1088,16 @@ mod tests {
         let db = test_db(dir.path()).await;
         create_test_owner(&db).await;
         let config = test_config(dir.path());
-        let (_, full_token) = login(&db, &config, "admin", "correct horse battery", None)
-            .await
-            .unwrap();
+        let (_, full_token) = login(
+            &db,
+            &config,
+            "admin",
+            "correct horse battery",
+            None,
+            "Unknown",
+        )
+        .await
+        .unwrap();
         db.close().await;
 
         // A restart reloads the pepper from disk rather than re-creating
@@ -1001,9 +1121,16 @@ mod tests {
         create_test_owner(&db).await;
         let config = test_config(dir.path());
 
-        let (session, full_token) = login(&db, &config, "admin", "correct horse battery", None)
-            .await
-            .unwrap();
+        let (session, full_token) = login(
+            &db,
+            &config,
+            "admin",
+            "correct horse battery",
+            None,
+            "Unknown",
+        )
+        .await
+        .unwrap();
         assert_eq!(session.username, "admin");
         assert_eq!(session.role, "owner");
         assert!(!session.csrf_token.is_empty());
@@ -1038,15 +1165,22 @@ mod tests {
         let config = test_config(dir.path());
 
         assert!(matches!(
-            login(&db, &config, "admin", "wrong password", None)
+            login(&db, &config, "admin", "wrong password", None, "Unknown")
                 .await
                 .unwrap_err(),
             LoginError::InvalidCredentials
         ));
         assert!(matches!(
-            login(&db, &config, "ghost", "correct horse battery", None)
-                .await
-                .unwrap_err(),
+            login(
+                &db,
+                &config,
+                "ghost",
+                "correct horse battery",
+                None,
+                "Unknown"
+            )
+            .await
+            .unwrap_err(),
             LoginError::InvalidCredentials
         ));
 
@@ -1057,9 +1191,16 @@ mod tests {
         .await
         .unwrap();
         assert!(matches!(
-            login(&db, &config, "admin", "correct horse battery", None)
-                .await
-                .unwrap_err(),
+            login(
+                &db,
+                &config,
+                "admin",
+                "correct horse battery",
+                None,
+                "Unknown"
+            )
+            .await
+            .unwrap_err(),
             LoginError::UserDisabled
         ));
     }
@@ -1071,9 +1212,16 @@ mod tests {
         create_test_owner(&db).await;
         let config = test_config(dir.path());
 
-        let (first, first_token) = login(&db, &config, "admin", "correct horse battery", None)
-            .await
-            .unwrap();
+        let (first, first_token) = login(
+            &db,
+            &config,
+            "admin",
+            "correct horse battery",
+            None,
+            "Unknown",
+        )
+        .await
+        .unwrap();
         assert_eq!(
             authenticate_token(&db, &config, &first_token)
                 .await
@@ -1090,6 +1238,7 @@ mod tests {
             "admin",
             "correct horse battery",
             Some(&first_token),
+            "Unknown",
         )
         .await
         .unwrap();
@@ -1116,6 +1265,7 @@ mod tests {
             "admin",
             "correct horse battery",
             Some("garbage"),
+            "Unknown",
         )
         .await
         .unwrap();

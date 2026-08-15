@@ -229,13 +229,36 @@ impl RealtimeHub {
         });
         tokio_stream::wrappers::ReceiverStream::new(receiver)
     }
+    /// Human-bound stream: closes with a `reset` event as soon as the
+    /// bound Session is no longer current — revoked, expired, idle, user
+    /// disabled, or role changed (design §13.5: revoke/disable/role-change
+    /// actively close the bound Human stream). `connected_role` is the
+    /// role the stream was opened with, so any role change closes it even
+    /// when the route group itself would still accept the session.
+    /// Build the access-reset event that closes a bound stream: an
+    /// `event: reset` carrying the collection-level reset payload. Shared
+    /// by the Human- and Guest-bound streams so the two authorization
+    /// paths cannot drift apart.
+    fn reset_event() -> Result<Event, Infallible> {
+        let event = Invalidation {
+            version: EVENT_VERSION,
+            event_id: 0,
+            resource: "collection".to_owned(),
+            resource_id: None,
+            revision: 0,
+            reset: Some(true),
+        };
+        let data = serde_json::to_string(&event).expect("invalidation serializes");
+        Ok(Event::default().event("reset").data(data))
+    }
+
     pub(crate) fn stream_with_session(
         &self,
         last_event_id: Option<u64>,
         db: std::sync::Arc<crate::database::ServerDatabase>,
         auth: crate::auth::AuthConfig,
         session_id: String,
-        expected_role: Option<String>,
+        connected_role: String,
     ) -> impl Stream<Item = Result<Event, Infallible>> + Send + 'static + use<> {
         let (sender, receiver) = tokio::sync::mpsc::channel(16);
         let hub = self.clone();
@@ -245,18 +268,57 @@ impl RealtimeHub {
             loop {
                 tokio::select! {
                     _ = check.tick() => {
-                        if !crate::auth::session_is_current(&db, &session_id, expected_role.as_deref(), &auth).await {
-                            let event = Invalidation { version: EVENT_VERSION, event_id: 0, resource: "collection".to_owned(), resource_id: None, revision: 0, reset: Some(true) };
-                            let data = serde_json::to_string(&event).expect("invalidation serializes");
-                            let _ = sender.send(Ok(Event::default().event("reset").data(data))).await;
+                        if !crate::auth::session_is_current(&db, &session_id, Some(&connected_role), &auth).await {
+                            let _ = sender.send(Self::reset_event()).await;
                             break;
                         }
                     }
                     result = async {
-                        if !crate::auth::session_is_current(&db, &session_id, expected_role.as_deref(), &auth).await {
-                            let event = Invalidation { version: EVENT_VERSION, event_id: 0, resource: "collection".to_owned(), resource_id: None, revision: 0, reset: Some(true) };
-                            let data = serde_json::to_string(&event).expect("invalidation serializes");
-                            let _ = sender.send(Ok(Event::default().event("reset").data(data))).await;
+                        if !crate::auth::session_is_current(&db, &session_id, Some(&connected_role), &auth).await {
+                            let _ = sender.send(Self::reset_event()).await;
+                            return true;
+                        }
+                        if let Some(invalidation) = hub.next_after(&mut cursor) {
+                            let closing = invalidation.resource == "server_shutdown";
+                            let id = invalidation.event_id.to_string();
+                            let data = serde_json::to_string(&invalidation).expect("invalidation serializes");
+                            if sender.send(Ok(Event::default().id(id).event("invalidation").data(data))).await.is_err() { return true; }
+                            closing
+                        } else if hub.inner.state.lock().expect("SSE hub mutex poisoned").closed { true } else { hub.inner.notify.notified().await; false }
+                    } => {
+                        if result { break; }
+                    }
+                }
+            }
+        });
+        tokio_stream::wrappers::ReceiverStream::new(receiver)
+    }
+
+    /// Guest-bound stream: no Human Session. It stays open only while
+    /// anonymous Home is enabled; disabling Guest access closes every
+    /// open Guest stream with a `reset` (design §13.5: anonymous Home
+    /// closing actively closes all Guest streams).
+    pub(crate) fn stream_with_guest(
+        &self,
+        last_event_id: Option<u64>,
+        db: std::sync::Arc<crate::database::ServerDatabase>,
+    ) -> impl Stream<Item = Result<Event, Infallible>> + Send + 'static + use<> {
+        let (sender, receiver) = tokio::sync::mpsc::channel(16);
+        let hub = self.clone();
+        let mut cursor = last_event_id.unwrap_or(0);
+        tokio::spawn(async move {
+            let mut check = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                tokio::select! {
+                    _ = check.tick() => {
+                        if !crate::auth::anonymous_home_enabled(&db).await.unwrap_or(false) {
+                            let _ = sender.send(Self::reset_event()).await;
+                            break;
+                        }
+                    }
+                    result = async {
+                        if !crate::auth::anonymous_home_enabled(&db).await.unwrap_or(false) {
+                            let _ = sender.send(Self::reset_event()).await;
                             return true;
                         }
                         if let Some(invalidation) = hub.next_after(&mut cursor) {
@@ -289,6 +351,14 @@ pub(crate) fn keepalive_interval() -> Duration {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use tempfile::tempdir;
+
+    use crate::auth::{AuthConfig, hash_password};
+    use crate::database::{ServerDatabase, ServerDatabaseConfig, initialize};
+    use crate::secrets::{create_pepper_file, load_pepper_file};
+
     use super::*;
     use tokio_stream::StreamExt;
 
@@ -337,5 +407,149 @@ mod tests {
         assert_eq!(event.resource_id, None);
         assert_eq!(parse_last_event_id(Some("12")), Some(12));
         assert_eq!(parse_last_event_id(Some("bad")), None);
+    }
+
+    async fn stream_db() -> (tempfile::TempDir, Arc<ServerDatabase>, AuthConfig) {
+        let dir = tempdir().unwrap();
+        let db = Arc::new(
+            initialize(ServerDatabaseConfig::new(dir.path().join("server.db")))
+                .await
+                .unwrap(),
+        );
+        let pepper_path = dir.path().join("pepper");
+        create_pepper_file(&pepper_path).unwrap();
+        let config = AuthConfig::development(
+            load_pepper_file(&pepper_path).unwrap(),
+            "http://127.0.0.1:8080".to_owned(),
+        );
+        let hash = hash_password(b"correct horse battery").unwrap();
+        crate::auth::create_owner(&db, "admin", &hash)
+            .await
+            .unwrap();
+        (dir, db, config)
+    }
+
+    /// A revoke must close a bound Human stream with a `reset` event
+    /// (design §13.5, issue #47: Session revoke closes the associated
+    /// Admin/Public SSE streams immediately).
+    #[tokio::test]
+    async fn session_revoke_closes_the_bound_stream_with_reset() {
+        let (_dir, db, config) = stream_db().await;
+        let (session, _) = crate::auth::login(
+            &db,
+            &config,
+            "admin",
+            "correct horse battery",
+            None,
+            "Unknown",
+        )
+        .await
+        .unwrap();
+        let hub = RealtimeHub::new(8);
+        let mut stream = Box::pin(hub.stream_with_session(
+            None,
+            Arc::clone(&db),
+            config.clone(),
+            session.session_id.clone(),
+            session.role.clone(),
+        ));
+        crate::auth::revoke_session(&db, &session.session_id)
+            .await
+            .unwrap();
+        let item = tokio::time::timeout(Duration::from_secs(3), stream.next())
+            .await
+            .expect("revoke must produce a reset event")
+            .expect("stream must stay open");
+        assert!(item.is_ok(), "the reset event must not be an error");
+        assert!(
+            !crate::auth::session_is_current(
+                &db,
+                &session.session_id,
+                Some(&session.role),
+                &config
+            )
+            .await,
+            "the revoked session must no longer be current"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_secs(3), stream.next())
+                .await
+                .expect("stream must close after reset")
+                .is_none()
+        );
+    }
+
+    /// A role change must close a bound Human stream even when the route
+    /// group itself would still accept the session (design §13.5).
+    #[tokio::test]
+    async fn role_change_closes_the_bound_stream() {
+        let (_dir, db, config) = stream_db().await;
+        let (session, _) = crate::auth::login(
+            &db,
+            &config,
+            "admin",
+            "correct horse battery",
+            None,
+            "Unknown",
+        )
+        .await
+        .unwrap();
+        let hub = RealtimeHub::new(8);
+        let mut stream = Box::pin(hub.stream_with_session(
+            None,
+            Arc::clone(&db),
+            config.clone(),
+            session.session_id.clone(),
+            session.role.clone(),
+        ));
+        sqlx::query("UPDATE users SET role = 'viewer' WHERE username = 'admin'")
+            .execute(db.pool())
+            .await
+            .unwrap();
+        let item = tokio::time::timeout(Duration::from_secs(3), stream.next())
+            .await
+            .expect("role change must produce a reset event")
+            .expect("stream must stay open");
+        assert!(item.is_ok(), "the reset event must not be an error");
+        assert!(
+            !crate::auth::session_is_current(
+                &db,
+                &session.session_id,
+                Some(&session.role),
+                &config
+            )
+            .await,
+            "the changed role must no longer satisfy the bound role"
+        );
+    }
+
+    /// Disabling anonymous Home must close every open Guest stream with a
+    /// reset (design §13.5: anonymous Home closing closes Guest streams).
+    #[tokio::test]
+    async fn guest_stream_closes_when_anonymous_home_is_disabled() {
+        let (_dir, db, _config) = stream_db().await;
+        sqlx::query(
+            "INSERT INTO server_settings (setting_key, setting_value, updated_at) VALUES ('anonymous_home', '1', '2026-01-01T00:00:00Z')",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+        let hub = RealtimeHub::new(8);
+        let mut stream = Box::pin(hub.stream_with_guest(None, Arc::clone(&db)));
+        sqlx::query(
+            "UPDATE server_settings SET setting_value = '0' WHERE setting_key = 'anonymous_home'",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+        let item = tokio::time::timeout(Duration::from_secs(3), stream.next())
+            .await
+            .expect("disabling guest access must produce a reset event")
+            .expect("stream must stay open");
+        assert!(item.is_ok(), "the reset event must not be an error");
+        assert!(
+            !crate::auth::anonymous_home_enabled(&db).await.unwrap(),
+            "anonymous Home must be disabled again"
+        );
     }
 }

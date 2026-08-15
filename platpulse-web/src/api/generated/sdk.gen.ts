@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { AdminAgentAuditData, AdminAgentAuditErrors, AdminAgentAuditResponses, AdminAgentDetailData, AdminAgentDetailErrors, AdminAgentDetailResponses, AdminEnrollmentTokenData, AdminEnrollmentTokenErrors, AdminEnrollmentTokenResponses, AdminEventsData, AdminEventsResponses, AdminNetworkDetailData, AdminNetworkDetailErrors, AdminNetworkDetailResponses, AdminNetworksData, AdminNetworksResponses, AdminNodeDetailData, AdminNodeDetailErrors, AdminNodeDetailResponses, AdminNodeHistoryData, AdminNodeHistoryErrors, AdminNodeHistoryResponses, AdminNodesData, AdminNodesResponses, AdminNodeTransfersData, AdminNodeTransfersErrors, AdminNodeTransfersResponses, AdminRecoveryTokenData, AdminRecoveryTokenErrors, AdminRecoveryTokenResponses, AdminRevokeCredentialData, AdminRevokeCredentialErrors, AdminRevokeCredentialResponses, AdminRotateCredentialData, AdminRotateCredentialErrors, AdminRotateCredentialResponses, AdminTransferDetailData, AdminTransferDetailErrors, AdminTransferDetailResponses, CancelNodeTransferData, CancelNodeTransferErrors, CancelNodeTransferResponses, CreateNetworkData, CreateNetworkErrors, CreateNetworkResponses, CreateNodeTransferData, CreateNodeTransferErrors, CreateNodeTransferResponses, DiagnosticsData, DiagnosticsResponses, LiveData, LiveResponses, LoginHandlerData, LoginHandlerErrors, LoginHandlerResponses, LogoutHandlerData, LogoutHandlerErrors, LogoutHandlerResponses, OverviewData, OverviewResponses, PublicEventsData, PublicEventsResponses, PublicNetworkData, PublicNetworkErrors, PublicNetworkResponses, PublicNetworksData, PublicNetworksResponses, PublicNodeDetailData, PublicNodeDetailErrors, PublicNodeDetailResponses, PublicNodeHistoryData, PublicNodeHistoryErrors, PublicNodeHistoryExportData, PublicNodeHistoryExportErrors, PublicNodeHistoryExportResponses, PublicNodeHistoryResponses, ReadyData, ReadyErrors, ReadyResponses, SessionHandlerData, SessionHandlerErrors, SessionHandlerResponses, SetNodeMetadataData, SetNodeMetadataErrors, SetNodeMetadataResponses, SetVisibilityData, SetVisibilityErrors, SetVisibilityResponses, UpdateNetworkData, UpdateNetworkErrors, UpdateNetworkResponses } from './types.gen';
+import type { AdminAgentAuditData, AdminAgentAuditErrors, AdminAgentAuditResponses, AdminAgentDetailData, AdminAgentDetailErrors, AdminAgentDetailResponses, AdminEnrollmentTokenData, AdminEnrollmentTokenErrors, AdminEnrollmentTokenResponses, AdminEventsData, AdminEventsResponses, AdminNetworkDetailData, AdminNetworkDetailErrors, AdminNetworkDetailResponses, AdminNetworksData, AdminNetworksResponses, AdminNodeDetailData, AdminNodeDetailErrors, AdminNodeDetailResponses, AdminNodeHistoryData, AdminNodeHistoryErrors, AdminNodeHistoryResponses, AdminNodesData, AdminNodesResponses, AdminNodeTransfersData, AdminNodeTransfersErrors, AdminNodeTransfersResponses, AdminRecoveryTokenData, AdminRecoveryTokenErrors, AdminRecoveryTokenResponses, AdminRevokeCredentialData, AdminRevokeCredentialErrors, AdminRevokeCredentialResponses, AdminRotateCredentialData, AdminRotateCredentialErrors, AdminRotateCredentialResponses, AdminTransferDetailData, AdminTransferDetailErrors, AdminTransferDetailResponses, AuditListData, AuditListErrors, AuditListResponses, CancelNodeTransferData, CancelNodeTransferErrors, CancelNodeTransferResponses, CreateNetworkData, CreateNetworkErrors, CreateNetworkResponses, CreateNodeTransferData, CreateNodeTransferErrors, CreateNodeTransferResponses, CreatePersonData, CreatePersonErrors, CreatePersonResponses, DiagnosticsData, DiagnosticsResponses, GetAccessSettingsData, GetAccessSettingsErrors, GetAccessSettingsResponses, LiveData, LiveResponses, LoginHandlerData, LoginHandlerErrors, LoginHandlerResponses, LogoutHandlerData, LogoutHandlerErrors, LogoutHandlerResponses, OverviewData, OverviewResponses, PeopleListData, PeopleListErrors, PeopleListResponses, PublicAccessSettingsData, PublicAccessSettingsResponses, PublicEventsData, PublicEventsResponses, PublicNetworkData, PublicNetworkErrors, PublicNetworkResponses, PublicNetworksData, PublicNetworksResponses, PublicNodeDetailData, PublicNodeDetailErrors, PublicNodeDetailResponses, PublicNodeHistoryData, PublicNodeHistoryErrors, PublicNodeHistoryExportData, PublicNodeHistoryExportErrors, PublicNodeHistoryExportResponses, PublicNodeHistoryResponses, ReadyData, ReadyErrors, ReadyResponses, ResetPersonPasswordData, ResetPersonPasswordErrors, ResetPersonPasswordResponses, RevokeOtherSessionsData, RevokeOtherSessionsErrors, RevokeOtherSessionsResponses, RevokeSessionData, RevokeSessionErrors, RevokeSessionResponses, SessionHandlerData, SessionHandlerErrors, SessionHandlerResponses, SessionsListData, SessionsListErrors, SessionsListResponses, SetAccessSettingsData, SetAccessSettingsErrors, SetAccessSettingsResponses, SetNodeMetadataData, SetNodeMetadataErrors, SetNodeMetadataResponses, SetPersonRoleData, SetPersonRoleErrors, SetPersonRoleResponses, SetPersonStatusData, SetPersonStatusErrors, SetPersonStatusResponses, SetVisibilityData, SetVisibilityErrors, SetVisibilityResponses, UpdateNetworkData, UpdateNetworkErrors, UpdateNetworkResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -17,6 +17,27 @@ export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends 
      */
     meta?: keyof ClientMeta extends never ? Record<string, unknown> : ClientMeta;
 };
+
+/**
+ * Owner-only read of the anonymous Home (Guest) setting.
+ */
+export const getAccessSettings = <ThrowOnError extends boolean = false>(options?: Options<GetAccessSettingsData, ThrowOnError>): RequestResult<GetAccessSettingsResponses, GetAccessSettingsErrors, ThrowOnError> => (options?.client ?? client).get<GetAccessSettingsResponses, GetAccessSettingsErrors, ThrowOnError>({ url: '/api/admin/v1/access', ...options });
+
+/**
+ * Owner-only toggle of anonymous Home (Guest) access (design §12.1).
+ * Disabling closes every open Guest stream (their bound check sees the
+ * setting change) and publishes a collection-level Public reset so open
+ * pages clear cached projections and re-resolve authorization; enabling
+ * publishes the same reset so anonymous visitors can render Home.
+ */
+export const setAccessSettings = <ThrowOnError extends boolean = false>(options: Options<SetAccessSettingsData, ThrowOnError>): RequestResult<SetAccessSettingsResponses, SetAccessSettingsErrors, ThrowOnError> => (options.client ?? client).put<SetAccessSettingsResponses, SetAccessSettingsErrors, ThrowOnError>({
+    url: '/api/admin/v1/access',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
 
 export const diagnostics = <ThrowOnError extends boolean = false>(options?: Options<DiagnosticsData, ThrowOnError>): RequestResult<DiagnosticsResponses, unknown, ThrowOnError> => (options?.client ?? client).get<DiagnosticsResponses, unknown, ThrowOnError>({ url: '/api/admin/v1/agents', ...options });
 
@@ -80,6 +101,14 @@ export const adminRecoveryToken = <ThrowOnError extends boolean = false>(options
         ...options.headers
     }
 });
+
+/**
+ * Owner-only immutable Audit listing (design §18.2, issue #47): newest
+ * first, bounded, with optional `event_kind`/`target_kind` filters and an
+ * `audit_event_id` cursor for older pages. Details are the redacted
+ * `after_json` bodies written by construction.
+ */
+export const auditList = <ThrowOnError extends boolean = false>(options?: Options<AuditListData, ThrowOnError>): RequestResult<AuditListResponses, AuditListErrors, ThrowOnError> => (options?.client ?? client).get<AuditListResponses, AuditListErrors, ThrowOnError>({ url: '/api/admin/v1/audit', ...options });
 
 export const adminEvents = <ThrowOnError extends boolean = false>(options?: Options<AdminEventsData, ThrowOnError>): RequestResult<AdminEventsResponses, unknown, ThrowOnError> => (options?.client ?? client).get<AdminEventsResponses, unknown, ThrowOnError>({ url: '/api/admin/v1/events', ...options });
 
@@ -164,6 +193,106 @@ export const setVisibility = <ThrowOnError extends boolean = false>(options: Opt
 export const overview = <ThrowOnError extends boolean = false>(options?: Options<OverviewData, ThrowOnError>): RequestResult<OverviewResponses, unknown, ThrowOnError> => (options?.client ?? client).get<OverviewResponses, unknown, ThrowOnError>({ url: '/api/admin/v1/overview', ...options });
 
 /**
+ * Owner-only People listing (design §12.1): every human principal with
+ * role, disabled state, and active Session count. Passwords and
+ * credentials are never projected.
+ */
+export const peopleList = <ThrowOnError extends boolean = false>(options?: Options<PeopleListData, ThrowOnError>): RequestResult<PeopleListResponses, PeopleListErrors, ThrowOnError> => (options?.client ?? client).get<PeopleListResponses, PeopleListErrors, ThrowOnError>({ url: '/api/admin/v1/people', ...options });
+
+/**
+ * Owner-only user creation (design §12.1: Owners may create accounts; no
+ * public registration). The password is hashed with Argon2id and never
+ * stored or returned in plaintext; the Audit row carries only the
+ * username and role.
+ */
+export const createPerson = <ThrowOnError extends boolean = false>(options: Options<CreatePersonData, ThrowOnError>): RequestResult<CreatePersonResponses, CreatePersonErrors, ThrowOnError> => (options.client ?? client).post<CreatePersonResponses, CreatePersonErrors, ThrowOnError>({
+    url: '/api/admin/v1/people',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Owner-only password reset (design §12.1: Owners may reset accounts).
+ * The new password is hashed and never returned; all Sessions of the
+ * user are revoked immediately so old state cannot continue.
+ */
+export const resetPersonPassword = <ThrowOnError extends boolean = false>(options: Options<ResetPersonPasswordData, ThrowOnError>): RequestResult<ResetPersonPasswordResponses, ResetPersonPasswordErrors, ThrowOnError> => (options.client ?? client).post<ResetPersonPasswordResponses, ResetPersonPasswordErrors, ThrowOnError>({
+    url: '/api/admin/v1/people/{user_id}/reset-password',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Owner-only role change (design §12.1/§12.3). The final valid Owner is
+ * protected; a role change revokes every Session of the affected user
+ * immediately, which closes their bound Public/Admin streams on the next
+ * revalidation.
+ */
+export const setPersonRole = <ThrowOnError extends boolean = false>(options: Options<SetPersonRoleData, ThrowOnError>): RequestResult<SetPersonRoleResponses, SetPersonRoleErrors, ThrowOnError> => (options.client ?? client).put<SetPersonRoleResponses, SetPersonRoleErrors, ThrowOnError>({
+    url: '/api/admin/v1/people/{user_id}/role',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Owner-only enable/disable (design §12.1). The final valid Owner cannot
+ * be disabled; disabling a user revokes all of their Sessions
+ * immediately, which closes their bound streams.
+ */
+export const setPersonStatus = <ThrowOnError extends boolean = false>(options: Options<SetPersonStatusData, ThrowOnError>): RequestResult<SetPersonStatusResponses, SetPersonStatusErrors, ThrowOnError> => (options.client ?? client).put<SetPersonStatusResponses, SetPersonStatusErrors, ThrowOnError>({
+    url: '/api/admin/v1/people/{user_id}/status',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Owner-only coarse Session listing (design §12.3). Only active
+ * (non-revoked) Sessions appear, with creation/last-activity/expiry and
+ * the coarse client hint — never tokens, full User-Agents, or raw IPs.
+ */
+export const sessionsList = <ThrowOnError extends boolean = false>(options?: Options<SessionsListData, ThrowOnError>): RequestResult<SessionsListResponses, SessionsListErrors, ThrowOnError> => (options?.client ?? client).get<SessionsListResponses, SessionsListErrors, ThrowOnError>({ url: '/api/admin/v1/sessions', ...options });
+
+/**
+ * Owner-only "revoke my other Sessions" (design §12.3: keeping the
+ * current Session and revoking all others are distinct operations).
+ */
+export const revokeOtherSessions = <ThrowOnError extends boolean = false>(options: Options<RevokeOtherSessionsData, ThrowOnError>): RequestResult<RevokeOtherSessionsResponses, RevokeOtherSessionsErrors, ThrowOnError> => (options.client ?? client).post<RevokeOtherSessionsResponses, RevokeOtherSessionsErrors, ThrowOnError>({
+    url: '/api/admin/v1/sessions/revoke-others',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Owner-only Session revoke (design §12.3: an Owner may revoke any
+ * Session). The revoked user's bound Public/Admin streams close on their
+ * next revalidation, and their tabs receive the access-generation
+ * transition without any token or DTO being broadcast.
+ */
+export const revokeSession = <ThrowOnError extends boolean = false>(options: Options<RevokeSessionData, ThrowOnError>): RequestResult<RevokeSessionResponses, RevokeSessionErrors, ThrowOnError> => (options.client ?? client).post<RevokeSessionResponses, RevokeSessionErrors, ThrowOnError>({
+    url: '/api/admin/v1/sessions/{session_id}/revoke',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
  * One Transfer by id, with Server-owned effective status.
  */
 export const adminTransferDetail = <ThrowOnError extends boolean = false>(options: Options<AdminTransferDetailData, ThrowOnError>): RequestResult<AdminTransferDetailResponses, AdminTransferDetailErrors, ThrowOnError> => (options.client ?? client).get<AdminTransferDetailResponses, AdminTransferDetailErrors, ThrowOnError>({ url: '/api/admin/v1/transfers/{transfer_id}', ...options });
@@ -173,6 +302,8 @@ export const adminTransferDetail = <ThrowOnError extends boolean = false>(option
  * never changes and the outcome is typed and audited.
  */
 export const cancelNodeTransfer = <ThrowOnError extends boolean = false>(options: Options<CancelNodeTransferData, ThrowOnError>): RequestResult<CancelNodeTransferResponses, CancelNodeTransferErrors, ThrowOnError> => (options.client ?? client).post<CancelNodeTransferResponses, CancelNodeTransferErrors, ThrowOnError>({ url: '/api/admin/v1/transfers/{transfer_id}/cancel', ...options });
+
+export const publicAccessSettings = <ThrowOnError extends boolean = false>(options?: Options<PublicAccessSettingsData, ThrowOnError>): RequestResult<PublicAccessSettingsResponses, unknown, ThrowOnError> => (options?.client ?? client).get<PublicAccessSettingsResponses, unknown, ThrowOnError>({ url: '/api/public/v1/access', ...options });
 
 export const publicEvents = <ThrowOnError extends boolean = false>(options?: Options<PublicEventsData, ThrowOnError>): RequestResult<PublicEventsResponses, unknown, ThrowOnError> => (options?.client ?? client).get<PublicEventsResponses, unknown, ThrowOnError>({ url: '/api/public/v1/events', ...options });
 

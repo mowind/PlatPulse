@@ -21,14 +21,26 @@ import {
   adminRecoveryToken,
   adminRevokeCredential,
   adminRotateCredential,
+  auditList,
   cancelNodeTransfer as cancelNodeTransferApi,
   createNetwork,
   createNodeTransfer as createNodeTransferApi,
+  createPerson,
   diagnostics,
+  getAccessSettings,
   overview,
+  peopleList,
+  resetPersonPassword,
+  revokeOtherSessions,
+  revokeSession,
+  sessionsList,
+  setAccessSettings,
   setNodeMetadata,
+  setPersonRole,
+  setPersonStatus,
   setVisibility,
   updateNetwork,
+  type AccessSettingsResponse,
   type AdminNetwork,
   type AdminNetworkDetail,
   type AdminNodeDetail,
@@ -37,6 +49,8 @@ import {
   type AgentAuditResponse,
   type AgentDiagnostic,
   type ApiErrorBody,
+  type AuditResponse,
+  type CreatePersonRequest,
   type EnrollmentTokenResponse,
   type NetworkCreateRequest,
   type NetworkResponse,
@@ -46,9 +60,15 @@ import {
   type NodeTransfer,
   type NodeTransferCreateRequest,
   type NodeTransferMutationResponse,
+  type PeopleResponse,
+  type Person,
   type RecoveryTokenResponse,
+  type ResetPasswordRequest,
+  type RevokeOthersResponse,
   type RevokeResponse,
+  type RevokeSessionResponse,
   type RotationResponse,
+  type SessionsResponse,
   type VisibilityRequest,
   type VisibilityResponse,
 } from './generated'
@@ -80,6 +100,17 @@ const adminKeys = {
   nodeTransfers: (nodeId: string) => ['admin', 'nodes', nodeId, 'transfers'] as const,
   networks: ['admin', 'networks'] as const,
   networkDetail: (networkKey: string) => ['admin', 'networks', networkKey] as const,
+  people: ['admin', 'people'] as const,
+  sessions: ['admin', 'sessions'] as const,
+  audit: (filters: AuditFilters) => ['admin', 'audit', filters] as const,
+  access: ['admin', 'access'] as const,
+}
+
+/** Immutable Audit listing filters (issue #47). */
+export type AuditFilters = {
+  eventKind?: string
+  targetKind?: string
+  before?: number
 }
 
 /**
@@ -543,6 +574,206 @@ export function resetAdminCache(generation: number): void {
   adminCacheGeneration = generation
   void adminQueryClient.cancelQueries({ queryKey: adminKeys.all })
   adminQueryClient.clear()
+}
+
+/** Owner-only People listing (issue #47): allowlisted rows with role,
+ * disabled state, and active Session count — never passwords or hashes. */
+export async function fetchAdminPeople(signal?: AbortSignal): Promise<PeopleResponse> {
+  return requestAdmin(() => peopleList({ signal }), 'Unable to load People')
+}
+
+export function useAdminPeople(generation: number) {
+  return useQuery({
+    queryKey: [...adminKeys.people, generation],
+    queryFn: ({ signal }) => fetchAdminPeople(signal),
+    placeholderData: keepPreviousData,
+  })
+}
+
+/** Create a user. The password is hashed by the Server and never returned;
+ * the response carries the allowlisted Person row only. */
+export async function createPersonEntry(
+  request: CreatePersonRequest,
+  csrfToken: string,
+): Promise<Person> {
+  const response = await requestAdmin(
+    () =>
+      createPerson({
+        body: request,
+        headers: { 'X-CSRF-Token': csrfToken },
+      }),
+    'Unable to create the user',
+  )
+  void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+  return response
+}
+
+/** Change a user's role. The Server revokes the user's Sessions when the
+ * role changes; a changed own role ends this session on the next request. */
+export async function changePersonRole(
+  userId: string,
+  role: string,
+  csrfToken: string,
+): Promise<Person> {
+  const response = await requestAdmin(
+    () =>
+      setPersonRole({
+        path: { user_id: userId },
+        body: { role },
+        headers: { 'X-CSRF-Token': csrfToken },
+      }),
+    'Unable to change the role',
+  )
+  void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+  return response
+}
+
+/** Enable or disable a user. Disabling revokes the user's Sessions
+ * immediately; the final valid Owner is protected by the Server. */
+export async function setPersonDisabled(
+  userId: string,
+  disabled: boolean,
+  csrfToken: string,
+): Promise<Person> {
+  const response = await requestAdmin(
+    () =>
+      setPersonStatus({
+        path: { user_id: userId },
+        body: { disabled },
+        headers: { 'X-CSRF-Token': csrfToken },
+      }),
+    disabled ? 'Unable to disable the user' : 'Unable to enable the user',
+  )
+  void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+  return response
+}
+
+/** Reset a user's password; the Server revokes all of the user's Sessions
+ * and never returns the password. */
+export async function resetPersonPasswordEntry(
+  userId: string,
+  password: ResetPasswordRequest['password'],
+  csrfToken: string,
+): Promise<void> {
+  await requestAdmin(
+    () =>
+      resetPersonPassword({
+        path: { user_id: userId },
+        body: { password },
+        headers: { 'X-CSRF-Token': csrfToken },
+      }),
+    'Unable to reset the password',
+  )
+  void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+}
+
+/** Coarse, non-sensitive Session listing (issue #47). */
+export async function fetchAdminSessions(signal?: AbortSignal): Promise<SessionsResponse> {
+  return requestAdmin(() => sessionsList({ signal }), 'Unable to load Sessions')
+}
+
+export function useAdminSessions(generation: number) {
+  return useQuery({
+    queryKey: [...adminKeys.sessions, generation],
+    queryFn: ({ signal }) => fetchAdminSessions(signal),
+    placeholderData: keepPreviousData,
+  })
+}
+
+/** Revoke one Session. The affected user's streams close and their tabs
+ * re-resolve authorization through the access-generation signal. */
+export async function revokeSessionEntry(
+  sessionId: string,
+  csrfToken: string,
+): Promise<RevokeSessionResponse> {
+  const response = await requestAdmin(
+    () =>
+      revokeSession({
+        path: { session_id: sessionId },
+        // The revoke carries no parameters, but the declared JSON body
+        // keeps every Admin mutation on the same trust boundary (design
+        // §12.4): JSON content type plus the synchronizer CSRF header.
+        body: {},
+        headers: { 'X-CSRF-Token': csrfToken },
+      }),
+    'Unable to revoke the session',
+  )
+  void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+  return response
+}
+
+/** Revoke every Session of the acting user except the current one. */
+export async function revokeOtherSessionsEntry(csrfToken: string): Promise<RevokeOthersResponse> {
+  const response = await requestAdmin(
+    () =>
+      revokeOtherSessions({
+        body: {},
+        headers: { 'X-CSRF-Token': csrfToken },
+      }),
+    'Unable to revoke the other sessions',
+  )
+  void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+  return response
+}
+
+/** Immutable redacted Audit listing (issue #47). */
+export async function fetchAdminAudit(
+  filters: AuditFilters,
+  signal?: AbortSignal,
+): Promise<AuditResponse> {
+  return requestAdmin(
+    () =>
+      auditList({
+        query: {
+          limit: 50,
+          event_kind: filters.eventKind,
+          target_kind: filters.targetKind,
+          before: filters.before,
+        },
+        signal,
+      }),
+    'Unable to load the Audit log',
+  )
+}
+
+export function useAdminAudit(generation: number, filters: AuditFilters) {
+  return useQuery({
+    queryKey: [...adminKeys.audit(filters), generation],
+    queryFn: ({ signal }) => fetchAdminAudit(filters, signal),
+    placeholderData: keepPreviousData,
+  })
+}
+
+/** Owner-only read of the anonymous Home (Guest) setting. */
+export async function fetchAdminAccess(signal?: AbortSignal): Promise<AccessSettingsResponse> {
+  return requestAdmin(() => getAccessSettings({ signal }), 'Unable to load access settings')
+}
+
+export function useAdminAccess(generation: number) {
+  return useQuery({
+    queryKey: [...adminKeys.access, generation],
+    queryFn: ({ signal }) => fetchAdminAccess(signal),
+    placeholderData: keepPreviousData,
+  })
+}
+
+/** Toggle anonymous Home (Guest) access. The Server closes open Guest
+ * streams on disable and publishes a Public collection reset in both
+ * directions. */
+export async function updateAccessSettings(
+  guestEnabled: boolean,
+  csrfToken: string,
+): Promise<AccessSettingsResponse> {
+  const response = await requestAdmin(
+    () =>
+      setAccessSettings({
+        body: { guestEnabled },
+        headers: { 'X-CSRF-Token': csrfToken },
+      }),
+    guestEnabled ? 'Unable to enable anonymous Home' : 'Unable to disable anonymous Home',
+  )
+  void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+  return response
 }
 
 export type RealtimeStatus = 'connecting' | 'connected' | 'disconnected'

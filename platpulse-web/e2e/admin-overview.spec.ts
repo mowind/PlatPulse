@@ -150,6 +150,12 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
     await page.keyboard.press('Tab')
     await expect(page.getByRole('link', { name: 'Networks' })).toBeFocused()
     await page.keyboard.press('Tab')
+    await expect(page.getByRole('link', { name: 'People' })).toBeFocused()
+    await page.keyboard.press('Tab')
+    await expect(page.getByRole('link', { name: 'Sessions' })).toBeFocused()
+    await page.keyboard.press('Tab')
+    await expect(page.getByRole('link', { name: 'Audit' })).toBeFocused()
+    await page.keyboard.press('Tab')
     await expect(page.getByRole('link', { name: 'Overview' })).toBeFocused()
     // Escape closes the drawer and restores focus to the opener.
     await page.keyboard.press('Escape')

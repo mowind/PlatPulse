@@ -207,5 +207,33 @@ with sqlite3.connect(path) as db:
         )
 PY
 
+# Keep Node A's seeded observations fresh for the whole suite: the
+# Server's freshness window is 120 seconds and the full Playwright run is
+# longer, so the healthy/current assertions on Node A would age out
+# mid-run without a refresher. This mirrors the existing seeding pattern
+# (the harness already provisions fixtures directly in SQLite); Node B
+# stays deliberately stale. The refresher is bounded to 20 minutes and
+# self-terminates when the suite's temporary state directory is gone.
+timeout 1200 python3 - "$STATE_DIR/platpulse.db" > /dev/null 2>&1 <<'REFRESH' &
+import sqlite3
+import sys
+import time
+from datetime import datetime, timedelta, timezone
+
+path = sys.argv[1]
+node_a = "0195f2a1-0014-4014-8014-000000000014"
+while True:
+    time.sleep(45)
+    fresh = (datetime.now(timezone.utc) - timedelta(seconds=20)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        with sqlite3.connect(path, timeout=5) as db:
+            db.execute(
+                "UPDATE component_status SET attempted_at = ?, observed_at = ?, received_at = ? WHERE node_id = ?",
+                (fresh, fresh, fresh, node_a),
+            )
+    except Exception:
+        break
+REFRESH
+
 cd "$ROOT"
 exec cargo run -q -p platpulse-server -- serve --config "$CONFIG"

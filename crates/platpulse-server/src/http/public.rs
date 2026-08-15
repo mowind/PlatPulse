@@ -7,6 +7,8 @@
 //! route except `POST /login` requires a valid human Session; the session
 //! guard itself lives in `super` and is attached in `build_app`.
 
+use std::pin::Pin;
+
 use axum::extract::{Extension, Path, Query, Request, State};
 use axum::http::header::{self, HeaderValue};
 use axum::http::{HeaderMap, StatusCode};
@@ -34,22 +36,43 @@ use crate::http::{
     get,
     path = "/api/public/v1/events",
     tag = "public",
-    responses((status = 200, description = "Authenticated Public invalidation stream"))
+    responses((status = 200, description = "Public invalidation stream (human-bound or Guest-bound when anonymous Home is enabled)"))
 )]
 pub(crate) async fn public_events(
     State(state): State<AppState>,
-    Extension(_session): Extension<AuthenticatedSession>,
     headers: HeaderMap,
-) -> Sse<impl Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>> {
+    session: Option<Extension<AuthenticatedSession>>,
+) -> Sse<
+    axum::response::sse::KeepAliveStream<
+        Pin<
+            Box<
+                dyn Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>
+                    + Send,
+            >,
+        >,
+    >,
+> {
     let cursor = parse_last_event_id(headers.get("last-event-id").and_then(|v| v.to_str().ok()));
-    Sse::new(state.public_realtime().stream_with_session(
-        cursor,
-        state.database(),
-        state.auth().clone(),
-        _session.0.session_id.clone(),
-        None,
-    ))
-    .keep_alive(
+    // Human sessions bind the stream to the connected role so revoke,
+    // expiry, disable, and role change all close it; anonymous Guests are
+    // bound to the `anonymous_home` setting (design §13.5).
+    let stream: Pin<
+        Box<dyn Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>> + Send>,
+    > = match session {
+        Some(Extension(session)) => Box::pin(state.public_realtime().stream_with_session(
+            cursor,
+            state.database(),
+            state.auth().clone(),
+            session.0.session_id.clone(),
+            session.0.role.clone(),
+        )),
+        None => Box::pin(
+            state
+                .public_realtime()
+                .stream_with_guest(cursor, state.database()),
+        ),
+    };
+    Sse::new(stream).keep_alive(
         KeepAlive::new()
             .interval(keepalive_interval())
             .text("keepalive"),
@@ -192,12 +215,18 @@ pub(crate) async fn login_handler(
     // 5. Credentials; a presented valid session is rotated on success.
     let presented =
         crate::auth::cookie_value(&headers, &state.auth().cookie_name).map(str::to_owned);
+    let client_hint = crate::auth::client_hint_from_ua(
+        headers
+            .get(header::USER_AGENT)
+            .and_then(|value| value.to_str().ok()),
+    );
     match login(
         state.db(),
         state.auth(),
         &body.username,
         &body.password,
         presented.as_deref(),
+        &client_hint,
     )
     .await
     {
@@ -865,6 +894,35 @@ pub(crate) async fn public_node_detail(
         ),
     }
 }
+/// Non-sensitive Public access projection: whether anonymous Home (Guest
+/// access) is currently enabled (design §12.1). This is the only public
+/// route reachable without a Session in both modes: the WebUI needs it to
+/// decide whether an anonymous visitor may render Home or must sign in. It
+/// carries no DTO from any other namespace and no session material.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicAccessSettings {
+    pub guest_enabled: bool,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/public/v1/access",
+    tag = "public",
+    responses((status = 200, description = "Whether anonymous Home access is enabled", body = PublicAccessSettings))
+)]
+pub(crate) async fn public_access_settings(State(state): State<AppState>) -> Response {
+    match crate::auth::anonymous_home_enabled(state.db()).await {
+        Ok(guest_enabled) => Json(PublicAccessSettings { guest_enabled }).into_response(),
+        Err(_) => error_response(
+            "unknown",
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        ),
+    }
+}
+
 fn error_response(
     request_id: &str,
     status: StatusCode,
@@ -883,6 +941,7 @@ pub fn router() -> Router<AppState> {
         .route("/login", post(login_handler))
         .route("/logout", post(logout_handler))
         .route("/session", get(session_handler))
+        .route("/access", get(public_access_settings))
         .route("/networks", get(public_networks))
         .route("/networks/{network_key}", get(public_network))
         .route("/nodes/{node_id}", get(public_node_detail))

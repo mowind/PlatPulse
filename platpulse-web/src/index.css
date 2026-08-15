@@ -370,13 +370,19 @@ button {
   overflow-x: auto;
 }
 
-.node-table {
+.node-table,
+.people-table,
+.sessions-table {
   width: 100%;
   border-collapse: collapse;
 }
 
 .node-table th,
-.node-table td {
+.node-table td,
+.people-table th,
+.people-table td,
+.sessions-table th,
+.sessions-table td {
   padding: 0.625rem 0.5rem;
   text-align: left;
   vertical-align: top;
@@ -384,10 +390,18 @@ button {
   overflow-wrap: anywhere;
 }
 
-.node-table thead th {
+.node-table thead th,
+.people-table thead th,
+.sessions-table thead th {
   font-size: 0.875rem;
   text-transform: uppercase;
   letter-spacing: 0.03em;
+}
+
+.people-table select,
+.sessions-table select {
+  min-height: 44px;
+  max-width: 100%;
 }
 
 .node-toggle {
@@ -488,12 +502,24 @@ button {
   .node-table tbody,
   .node-table tr,
   .node-table td,
-  .node-table th {
+  .node-table th,
+  .people-table,
+  .people-table tbody,
+  .people-table tr,
+  .people-table td,
+  .people-table th,
+  .sessions-table,
+  .sessions-table tbody,
+  .sessions-table tr,
+  .sessions-table td,
+  .sessions-table th {
     display: block;
     width: 100%;
   }
 
-  .node-table thead {
+  .node-table thead,
+  .people-table thead,
+  .sessions-table thead {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -501,7 +527,9 @@ button {
     clip: rect(0 0 0 0);
   }
 
-  .node-table tbody tr {
+  .node-table tbody tr,
+  .people-table tbody tr,
+  .sessions-table tbody tr {
     border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
     border-radius: 0.375rem;
     margin-bottom: 0.75rem;
@@ -509,7 +537,11 @@ button {
   }
 
   .node-table td[data-label],
-  .node-table th[data-label] {
+  .node-table th[data-label],
+  .people-table td[data-label],
+  .people-table th[data-label],
+  .sessions-table td[data-label],
+  .sessions-table th[data-label] {
     display: flex;
     justify-content: space-between;
     align-items: baseline;
@@ -517,7 +549,11 @@ button {
   }
 
   .node-table td[data-label]::before,
-  .node-table th[data-label]::before {
+  .node-table th[data-label]::before,
+  .people-table td[data-label]::before,
+  .people-table th[data-label]::before,
+  .sessions-table td[data-label]::before,
+  .sessions-table th[data-label]::before {
     content: attr(data-label);
     font-weight: 700;
     font-size: 0.75rem;
@@ -525,7 +561,9 @@ button {
     letter-spacing: 0.03em;
   }
 
-  .node-table .node-detail-row {
+  .node-table .node-detail-row,
+  .people-table .node-detail-row,
+  .sessions-table .node-detail-row {
     border: 0;
     padding: 0;
   }
@@ -810,6 +848,93 @@ button {
 
 .audit-context {
   margin: 0.25rem 0 0;
+}
+
+.audit-event-kind {
+  font-family: ui-monospace, monospace;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.audit-filters {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.75rem;
+  margin: 0.5rem 0;
+}
+
+@media (min-width: 42rem) {
+  .audit-filters {
+    grid-template-columns: minmax(14rem, 1fr) minmax(10rem, 12rem);
+    align-items: end;
+  }
+}
+
+.audit-filters .field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.audit-filters select {
+  min-height: 44px;
+}
+
+.audit-detail-list {
+  margin-top: 0.375rem;
+}
+
+.create-person-form,
+.reset-password-form {
+  display: grid;
+  gap: 0.75rem;
+  max-width: 28rem;
+  margin: 0.75rem 0 0;
+}
+
+.create-person-form .field,
+.reset-password-form .field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.create-person-form input,
+.create-person-form select,
+.reset-password-form input {
+  min-height: 44px;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+  border-radius: 0.375rem;
+  background: transparent;
+  color: inherit;
+}
+
+.account-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-weight: 600;
+}
+
+.account-state-enabled {
+  color: #15803d;
+}
+
+.field-error {
+  margin: 0;
+  color: #b91c1c;
+  font-weight: 600;
+}
+
+.session-others-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent);
 }
 
 /* PATTERN-SECRET-ONCE: the one-time secret is a single-use block with a

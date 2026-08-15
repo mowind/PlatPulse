@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { useEffect, useState } from 'react'
 import { createBrowserRouter, Navigate, useLocation } from 'react-router'
 import { RouterProvider } from 'react-router/dom'
 import AdminLayout from './layouts/AdminLayout'
@@ -20,7 +21,11 @@ import AdminNodeTransfer from './pages/AdminNodeTransfer'
 import AdminNetworksList, {
   AdminNetworkDetailPage,
 } from './pages/AdminNetworks'
+import AdminPeople from './pages/AdminPeople'
+import AdminSessions from './pages/AdminSessions'
+import AdminAudit from './pages/AdminAudit'
 import { AuthProvider, useAuth } from './auth/AuthContext'
+import { ensureGuestEnabledKnown, subscribeGuestEnabled } from './api/public'
 
 /**
  * Route gates (design §3.2, §3.3): Home and Admin are private by default.
@@ -40,11 +45,27 @@ function CheckingAccess() {
 function RequireSession({ children }: { children: ReactNode }) {
   const { status, accessLost } = useAuth()
   const location = useLocation()
+  // Anonymous Home (Guest) is allowed only when the Owner explicitly
+  // enabled it (design §12.1); the Server still enforces every read. The
+  // setting is cached and re-checked on Public resets by the Home layout.
+  const [guestEnabled, setGuestEnabled] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    void ensureGuestEnabledKnown().then(setGuestEnabled)
+    return subscribeGuestEnabled(setGuestEnabled)
+  }, [])
 
   if (status.state === 'loading') {
     return <CheckingAccess />
   }
   if (status.state === 'guest') {
+    if (guestEnabled === null) {
+      // Authorization is still resolving; never flash prior data.
+      return <CheckingAccess />
+    }
+    if (guestEnabled) {
+      return children
+    }
     return (
       <Navigate
         to="/login"
@@ -57,27 +78,48 @@ function RequireSession({ children }: { children: ReactNode }) {
 }
 
 function RequireOwner({ children }: { children: ReactNode }) {
-  const { status } = useAuth()
+  const { status, accessLost, hadSession } = useAuth()
+  const location = useLocation()
 
   if (status.state === 'loading') {
     return <CheckingAccess />
   }
   if (status.state === 'guest') {
-    return <RequireSession>{children}</RequireSession>
+    if (hadSession) {
+      // This app instance previously held a Session (signed out, or the
+      // session was lost while Admin was open): go back through the
+      // non-leaking login path, explaining revocations (design §3.3).
+      return (
+        <Navigate
+          to="/login"
+          state={{ from: location.pathname, sessionExpired: accessLost }}
+          replace
+        />
+      )
+    }
+    // Never-authenticated Guests never access Admin, even when anonymous
+    // Home is enabled (design §12.1: Guest uses only the Public
+    // Projection; webui.md §3.2). The outcome is the same stable,
+    // non-leaking panel a Viewer sees.
+    return <OwnerRequiredPanel />
   }
   if (status.session.role !== 'owner') {
-    return (
-      <section className="page">
-        <h1>Owner access required</h1>
-        <p>The Admin dashboard is restricted to Owners.</p>
-        <p className="muted">
-          This session cannot view Admin data. Sign out and sign in with an
-          Owner account to continue.
-        </p>
-      </section>
-    )
+    return <OwnerRequiredPanel />
   }
   return children
+}
+
+function OwnerRequiredPanel() {
+  return (
+    <section className="page">
+      <h1>Owner access required</h1>
+      <p>The Admin dashboard is restricted to Owners.</p>
+      <p className="muted">
+        This session cannot view Admin data. Sign in with an Owner account to
+        continue.
+      </p>
+    </section>
+  )
 }
 
 const router = createBrowserRouter([
@@ -118,7 +160,10 @@ const router = createBrowserRouter([
       { path: 'nodes/:nodeId/transfer', element: <AdminNodeTransfer /> },
       { path: 'networks', element: <AdminNetworksList /> },
       { path: 'networks/:networkKey', element: <AdminNetworkDetailPage /> },
-      // Placeholder for later Phase 2 sections (e.g. PAGE-ACCESS-AUDIT):
+      { path: 'access/people', element: <AdminPeople /> },
+      { path: 'access/sessions', element: <AdminSessions /> },
+      { path: 'access/audit', element: <AdminAudit /> },
+      // Placeholder for later Phase 2 sections (e.g. Data and Maintenance):
       // links from security mutations must never land on a blank page.
       { path: '*', element: <AdminComingSoon /> },
     ],
@@ -141,7 +186,7 @@ function AdminComingSoon() {
   return (
     <section className="page">
       <h1>This section arrives in a later phase</h1>
-      <p>The full Audit review surface is delivered with the People, roles, and Sessions slice.</p>
+      <p>The Data and Maintenance surfaces arrive with a later slice.</p>
     </section>
   )
 }

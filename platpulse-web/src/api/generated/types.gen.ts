@@ -4,6 +4,14 @@ export type ClientOptions = {
     baseUrl: `${string}://${string}` | (string & {});
 };
 
+export type AccessSettingsRequest = {
+    guestEnabled: boolean;
+};
+
+export type AccessSettingsResponse = {
+    guestEnabled: boolean;
+};
+
 export type AdminBlockHistoryItem = {
     attributionReason?: string | null;
     blockTimeMs?: number | null;
@@ -301,6 +309,30 @@ export type AttentionItem = {
     subject_label: string;
 };
 
+/**
+ * One immutable, redacted Audit row. `details` is the stored `after_json`
+ * body, which is redacted by construction (ids, instants, and counts only
+ * — never passwords, tokens, credentials, endpoints, raw peer IPs, or
+ * complete request bodies).
+ */
+export type AuditItem = {
+    actorUsername?: string | null;
+    auditEventId: number;
+    createdAt: string;
+    details?: unknown;
+    eventKind: string;
+    targetId: string;
+    targetKind: string;
+};
+
+export type AuditResponse = {
+    items: Array<AuditItem>;
+    /**
+     * Cursor for the next older page; absent when the listing is complete.
+     */
+    nextBefore?: number | null;
+};
+
 export type ConsensusDiagnostic = {
     attempted_at?: string | null;
     epoch?: number | null;
@@ -316,6 +348,12 @@ export type ConsensusDiagnostic = {
     validator?: boolean | null;
     value_revision: number;
     view_number?: number | null;
+};
+
+export type CreatePersonRequest = {
+    password: string;
+    role: string;
+    username: string;
 };
 
 /**
@@ -543,6 +581,35 @@ export type ObservedNetworkIdentity = {
     p2p_network_id?: number | null;
 };
 
+export type PeopleResponse = {
+    users: Array<Person>;
+};
+
+/**
+ * One allowlisted Person row. Passwords, hashes, and credentials never
+ * leave the Server (design §12.1: People review is safe on ordinary
+ * screens).
+ */
+export type Person = {
+    createdAt: string;
+    disabled: boolean;
+    role: string;
+    /**
+     * Active (non-revoked) Session count; never session material.
+     */
+    sessionCount: number;
+    userId: string;
+    username: string;
+};
+
+export type PersonRoleRequest = {
+    role: string;
+};
+
+export type PersonStatusRequest = {
+    disabled: boolean;
+};
+
 export type ProcessDiagnostic = {
     attempted_at?: string | null;
     cpu_percent?: number | null;
@@ -557,6 +624,17 @@ export type ProcessDiagnostic = {
     state_revision: number;
     uptime_ms?: number | null;
     value_revision: number;
+};
+
+/**
+ * Non-sensitive Public access projection: whether anonymous Home (Guest
+ * access) is currently enabled (design §12.1). This is the only public
+ * route reachable without a Session in both modes: the WebUI needs it to
+ * decide whether an anonymous visitor may render Home or must sign in. It
+ * carries no DTO from any other namespace and no session material.
+ */
+export type PublicAccessSettings = {
+    guestEnabled: boolean;
 };
 
 export type PublicBlockHistoryItem = {
@@ -631,11 +709,34 @@ export type RecoveryTokenResponse = {
     token_id: string;
 };
 
+export type ResetPasswordRequest = {
+    password: string;
+};
+
+export type RevokeOthersResponse = {
+    revokedCount: number;
+};
+
 export type RevokeResponse = {
     agent_id: string;
     credential_id: string;
     request_id: string;
     revoked_at: string;
+};
+
+/**
+ * Explicit JSON body for Session revoke mutations. The revoke carries no
+ * parameters, but declaring a body keeps the browser trust boundary
+ * uniform: every Admin mutation is a JSON request with the synchronizer
+ * CSRF header (design §12.4), including bodyless ones.
+ */
+export type RevokeSessionRequest = {
+    [key: string]: unknown;
+};
+
+export type RevokeSessionResponse = {
+    revokedAt: string;
+    sessionId: string;
 };
 
 export type RotationRequest = {
@@ -674,6 +775,23 @@ export type RpcDiagnostic = {
     value_revision?: number | null;
 };
 
+/**
+ * One coarse, non-sensitive Session row (design §12.3): creation, last
+ * activity, expiry, and a coarse client hint — never the token, a full
+ * User-Agent, or a raw IP.
+ */
+export type SessionItem = {
+    clientHint: string;
+    createdAt: string;
+    current: boolean;
+    expiresAt: string;
+    lastSeenAt: string;
+    role: string;
+    sessionId: string;
+    userId: string;
+    username: string;
+};
+
 export type SessionProjection = {
     createdAt: string;
     expiresAt: string;
@@ -691,6 +809,10 @@ export type SessionProjection = {
 export type SessionResponse = {
     csrfToken: string;
     session: SessionProjection;
+};
+
+export type SessionsResponse = {
+    sessions: Array<SessionItem>;
 };
 
 export type SyncDiagnostic = {
@@ -721,6 +843,47 @@ export type VisibilityResponse = {
     nodeId: string;
     visibility: string;
 };
+
+export type GetAccessSettingsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/access';
+};
+
+export type GetAccessSettingsErrors = {
+    403: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type GetAccessSettingsError = GetAccessSettingsErrors[keyof GetAccessSettingsErrors];
+
+export type GetAccessSettingsResponses = {
+    200: AccessSettingsResponse;
+};
+
+export type GetAccessSettingsResponse = GetAccessSettingsResponses[keyof GetAccessSettingsResponses];
+
+export type SetAccessSettingsData = {
+    body: AccessSettingsRequest;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/access';
+};
+
+export type SetAccessSettingsErrors = {
+    400: ApiErrorBody;
+    403: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type SetAccessSettingsError = SetAccessSettingsErrors[keyof SetAccessSettingsErrors];
+
+export type SetAccessSettingsResponses = {
+    200: AccessSettingsResponse;
+};
+
+export type SetAccessSettingsResponse = SetAccessSettingsResponses[keyof SetAccessSettingsResponses];
 
 export type DiagnosticsData = {
     body?: never;
@@ -889,6 +1052,43 @@ export type AdminRecoveryTokenResponses = {
 };
 
 export type AdminRecoveryTokenResponse = AdminRecoveryTokenResponses[keyof AdminRecoveryTokenResponses];
+
+export type AuditListData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Page size, 1..=100 (default 50)
+         */
+        limit?: number;
+        /**
+         * Filter by event kind
+         */
+        event_kind?: string;
+        /**
+         * Filter by target kind
+         */
+        target_kind?: string;
+        /**
+         * Return events older than this audit_event_id
+         */
+        before?: number;
+    };
+    url: '/api/admin/v1/audit';
+};
+
+export type AuditListErrors = {
+    403: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type AuditListError = AuditListErrors[keyof AuditListErrors];
+
+export type AuditListResponses = {
+    200: AuditResponse;
+};
+
+export type AuditListResponse = AuditListResponses[keyof AuditListResponses];
 
 export type AdminEventsData = {
     body?: never;
@@ -1197,6 +1397,201 @@ export type OverviewResponses = {
 
 export type OverviewResponse = OverviewResponses[keyof OverviewResponses];
 
+export type PeopleListData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/people';
+};
+
+export type PeopleListErrors = {
+    403: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type PeopleListError = PeopleListErrors[keyof PeopleListErrors];
+
+export type PeopleListResponses = {
+    200: PeopleResponse;
+};
+
+export type PeopleListResponse = PeopleListResponses[keyof PeopleListResponses];
+
+export type CreatePersonData = {
+    body: CreatePersonRequest;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/people';
+};
+
+export type CreatePersonErrors = {
+    400: ApiErrorBody;
+    403: ApiErrorBody;
+    409: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type CreatePersonError = CreatePersonErrors[keyof CreatePersonErrors];
+
+export type CreatePersonResponses = {
+    200: Person;
+};
+
+export type CreatePersonResponse = CreatePersonResponses[keyof CreatePersonResponses];
+
+export type ResetPersonPasswordData = {
+    body: ResetPasswordRequest;
+    path: {
+        /**
+         * User ID
+         */
+        user_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/people/{user_id}/reset-password';
+};
+
+export type ResetPersonPasswordErrors = {
+    400: ApiErrorBody;
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type ResetPersonPasswordError = ResetPersonPasswordErrors[keyof ResetPersonPasswordErrors];
+
+export type ResetPersonPasswordResponses = {
+    /**
+     * Password reset and Sessions revoked
+     */
+    204: void;
+};
+
+export type ResetPersonPasswordResponse = ResetPersonPasswordResponses[keyof ResetPersonPasswordResponses];
+
+export type SetPersonRoleData = {
+    body: PersonRoleRequest;
+    path: {
+        /**
+         * User ID
+         */
+        user_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/people/{user_id}/role';
+};
+
+export type SetPersonRoleErrors = {
+    400: ApiErrorBody;
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+    409: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type SetPersonRoleError = SetPersonRoleErrors[keyof SetPersonRoleErrors];
+
+export type SetPersonRoleResponses = {
+    200: Person;
+};
+
+export type SetPersonRoleResponse = SetPersonRoleResponses[keyof SetPersonRoleResponses];
+
+export type SetPersonStatusData = {
+    body: PersonStatusRequest;
+    path: {
+        /**
+         * User ID
+         */
+        user_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/people/{user_id}/status';
+};
+
+export type SetPersonStatusErrors = {
+    400: ApiErrorBody;
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+    409: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type SetPersonStatusError = SetPersonStatusErrors[keyof SetPersonStatusErrors];
+
+export type SetPersonStatusResponses = {
+    200: Person;
+};
+
+export type SetPersonStatusResponse = SetPersonStatusResponses[keyof SetPersonStatusResponses];
+
+export type SessionsListData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/sessions';
+};
+
+export type SessionsListErrors = {
+    403: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type SessionsListError = SessionsListErrors[keyof SessionsListErrors];
+
+export type SessionsListResponses = {
+    200: SessionsResponse;
+};
+
+export type SessionsListResponse = SessionsListResponses[keyof SessionsListResponses];
+
+export type RevokeOtherSessionsData = {
+    body: RevokeSessionRequest;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/sessions/revoke-others';
+};
+
+export type RevokeOtherSessionsErrors = {
+    403: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type RevokeOtherSessionsError = RevokeOtherSessionsErrors[keyof RevokeOtherSessionsErrors];
+
+export type RevokeOtherSessionsResponses = {
+    200: RevokeOthersResponse;
+};
+
+export type RevokeOtherSessionsResponse = RevokeOtherSessionsResponses[keyof RevokeOtherSessionsResponses];
+
+export type RevokeSessionData = {
+    body: RevokeSessionRequest;
+    path: {
+        /**
+         * Session ID
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/sessions/{session_id}/revoke';
+};
+
+export type RevokeSessionErrors = {
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+    409: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type RevokeSessionError = RevokeSessionErrors[keyof RevokeSessionErrors];
+
+export type RevokeSessionResponses = {
+    200: RevokeSessionResponse;
+};
+
+export type RevokeSessionResponse2 = RevokeSessionResponses[keyof RevokeSessionResponses];
+
 export type AdminTransferDetailData = {
     body?: never;
     path: {
@@ -1247,6 +1642,22 @@ export type CancelNodeTransferResponses = {
 
 export type CancelNodeTransferResponse = CancelNodeTransferResponses[keyof CancelNodeTransferResponses];
 
+export type PublicAccessSettingsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/public/v1/access';
+};
+
+export type PublicAccessSettingsResponses = {
+    /**
+     * Whether anonymous Home access is enabled
+     */
+    200: PublicAccessSettings;
+};
+
+export type PublicAccessSettingsResponse = PublicAccessSettingsResponses[keyof PublicAccessSettingsResponses];
+
 export type PublicEventsData = {
     body?: never;
     path?: never;
@@ -1256,7 +1667,7 @@ export type PublicEventsData = {
 
 export type PublicEventsResponses = {
     /**
-     * Authenticated Public invalidation stream
+     * Public invalidation stream (human-bound or Guest-bound when anonymous Home is enabled)
      */
     200: unknown;
 };

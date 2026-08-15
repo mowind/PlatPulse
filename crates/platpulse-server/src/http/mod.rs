@@ -10,6 +10,7 @@
 //! additionally requires the Owner role, and the Agent group is refused
 //! with `setup_required` until the first Owner exists (design §12.2).
 
+pub(crate) mod access;
 pub(crate) mod admin;
 pub(crate) mod agent;
 pub(crate) mod health;
@@ -424,15 +425,18 @@ pub fn build_app(state: AppState) -> Router {
         .map(|dir| dir.join("assets"))
         .unwrap_or_else(|| PathBuf::from("/nonexistent/platpulse-web-assets"));
 
-    // Public routes (except login) require a human Session; Admin requires
-    // an Owner session; Agent is refused with `setup_required` until the
+    // Public routes (except login and the non-sensitive access probe)
+    // require a human Session; when anonymous Home is enabled, Guest GETs
+    // of the read projection routes are allowed instead. Admin requires an
+    // Owner session; Agent is refused with `setup_required` until the
     // first Owner exists. Guards run outside the group middleware so their
     // responses never carry route-group headers or DTOs.
     let public_group = public::router().layer(axum::middleware::from_fn_with_state(
         state.clone(),
-        human_session_guard,
+        public_session_guard,
     ));
     let admin_group = admin::router()
+        .merge(access::router())
         .layer(axum::middleware::from_fn(owner_role_guard))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -634,18 +638,64 @@ fn stamp_client_ip(request: &mut Request) {
     }
 }
 
-/// Human session guard for the Public and Admin groups: every request
-/// except `POST /api/public/v1/login` must present a valid session cookie
-/// (design §12.2: Guest disabled by default; §13.1: Public API requires a
-/// Viewer/Owner Session).
+/// Human session guard for the Admin group: every request must present a
+/// valid session cookie (design §12.2: Guest disabled by default; §13.1:
+/// Admin requires a Viewer/Owner Session and Owner role on top).
 pub(crate) async fn human_session_guard(
     State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    session_guard(state, request, next, false).await
+}
+
+/// Human session guard for the Public group: every request except
+/// `POST /login` and the anonymous `/access` probe requires a valid
+/// session cookie. When anonymous Home is enabled, GET/HEAD requests of
+/// the read projection routes are additionally allowed for Guests
+/// (design §12.1, §13.1).
+pub(crate) async fn public_session_guard(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    session_guard(state, request, next, true).await
+}
+
+/// A read projection route an anonymous Guest may use when anonymous Home
+/// is enabled. Session-bearing routes (`/session`), mutations, and the
+/// Agent group are never guest-readable.
+fn guest_readable_path(path: &str) -> bool {
+    // The guard runs on the nested Public router, where the matched prefix
+    // has already been stripped, so paths are relative to the group.
+    path == "/networks"
+        || path.starts_with("/networks/")
+        || path.starts_with("/nodes/")
+        || path == "/events"
+}
+
+async fn session_guard(
+    state: AppState,
     mut request: Request,
     next: Next,
+    public_group: bool,
 ) -> Response {
     stamp_client_ip(&mut request);
     if request.method() == Method::POST && request.uri().path().ends_with("/login") {
         return next.run(request).await;
+    }
+    if public_group && (request.method() == Method::GET || request.method() == Method::HEAD) {
+        let path = request.uri().path().to_owned();
+        if path.ends_with("/access") {
+            return next.run(request).await;
+        }
+        if guest_readable_path(&path)
+            && crate::auth::anonymous_home_enabled(state.db())
+                .await
+                .unwrap_or(false)
+        {
+            return next.run(request).await;
+        }
     }
     let Some(token) = cookie_value(request.headers(), &state.auth().cookie_name) else {
         return session_error_response(
@@ -2275,5 +2325,51 @@ mod tests {
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert_eq!(body["error"]["code"], "auth_required");
         assert_eq!(body["error"]["message"], json!("authentication required"));
+    }
+
+    /// Enabling anonymous Home must allow anonymous GETs of the read
+    /// projection routes, never session-bearing routes; disabling restores
+    /// the session requirement immediately (design §12.1, issue #47).
+    #[tokio::test]
+    async fn guest_reads_are_allowed_only_when_anonymous_home_is_enabled() {
+        let (_, _, state) = test_state().await;
+        seed_owner(&state).await;
+
+        // The non-sensitive access probe is reachable in both modes.
+        let (status, body) =
+            json(get(build_app(state.clone()), "/api/public/v1/access").await).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["guestEnabled"], false);
+
+        sqlx::query(
+            "INSERT INTO server_settings (setting_key, setting_value, updated_at) VALUES ('anonymous_home', '1', '2026-01-01T00:00:00Z')",
+        )
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+
+        // Anonymous GETs of the read projection are now allowed.
+        let (status, body) =
+            json(get(build_app(state.clone()), "/api/public/v1/networks").await).await;
+        assert_eq!(status, StatusCode::OK, "{}", body);
+        let (status, _) = json(get(build_app(state.clone()), "/api/public/v1/access").await).await;
+        assert_eq!(status, StatusCode::OK);
+        // Session-bearing routes never become guest-readable.
+        let (status, body) =
+            json(get(build_app(state.clone()), "/api/public/v1/session").await).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"]["code"], "auth_required");
+
+        // Disabling restores the session requirement immediately.
+        sqlx::query(
+            "UPDATE server_settings SET setting_value = '0' WHERE setting_key = 'anonymous_home'",
+        )
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+        let (status, body) =
+            json(get(build_app(state.clone()), "/api/public/v1/networks").await).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"]["code"], "auth_required");
     }
 }

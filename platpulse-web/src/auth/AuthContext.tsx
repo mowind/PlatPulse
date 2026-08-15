@@ -33,6 +33,13 @@ interface AuthContextValue {
    * without leaking any prior session data.
    */
   accessLost: boolean
+  /**
+   * True once this app instance ever held a session (initial check or
+   * login). Lets protected routes distinguish a signed-out user, who is
+   * guided back to the login page, from a never-authenticated Guest, who
+   * gets the stable non-leaking Owner-required panel (design §12.1).
+   */
+  hadSession: boolean
   login: (username: string, password: string) => Promise<void>
   logout: () => Promise<void>
   /** Re-check the session after an access reset signal (SSE or 401). */
@@ -45,6 +52,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>({ state: 'loading' })
   const [generation, setGeneration] = useState(1)
   const [accessLost, setAccessLost] = useState(false)
+  const [hadSession, setHadSession] = useState(false)
   const statusRef = useRef(status)
   statusRef.current = status
 
@@ -63,6 +71,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             }
           : { state: 'guest' },
       )
+      if (response) setHadSession(true)
     })
     return () => {
       cancelled = true
@@ -78,6 +87,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return value + 1
     })
     setAccessLost(false)
+    setHadSession(true)
     setStatus({
       state: 'authenticated',
       session: response.session,
@@ -128,8 +138,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const value = useMemo(
-    () => ({ status, generation, accessLost, login, logout, recheckSession }),
-    [status, generation, accessLost, login, logout, recheckSession],
+    () => ({ status, generation, accessLost, hadSession, login, logout, recheckSession }),
+    [status, generation, accessLost, hadSession, login, logout, recheckSession],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

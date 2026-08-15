@@ -10,6 +10,106 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/admin/v1/access": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Owner-only read of the anonymous Home (Guest) setting.",
+        "operationId": "get_access_settings",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccessSettingsResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Owner-only toggle of anonymous Home (Guest) access (design §12.1).\nDisabling closes every open Guest stream (their bound check sees the\nsetting change) and publishes a collection-level Public reset so open\npages clear cached projections and re-resolve authorization; enabling\npublishes the same reset so anonymous visitors can render Home.",
+        "operationId": "set_access_settings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccessSettingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccessSettingsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/v1/agents": {
       "get": {
         "tags": [
@@ -391,6 +491,87 @@
             }
           },
           "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/audit": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Owner-only immutable Audit listing (design §18.2, issue #47): newest\nfirst, bounded, with optional `event_kind`/`target_kind` filters and an\n`audit_event_id` cursor for older pages. Details are the redacted\n`after_json` bodies written by construction.",
+        "operationId": "audit_list",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, 1..=100 (default 50)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "event_kind",
+            "in": "query",
+            "description": "Filter by event kind",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "target_kind",
+            "in": "query",
+            "description": "Filter by target kind",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Return events older than this audit_event_id",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
             "description": "",
             "content": {
               "application/json": {
@@ -1044,6 +1225,549 @@
         }
       }
     },
+    "/api/admin/v1/people": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Owner-only People listing (design §12.1): every human principal with\nrole, disabled state, and active Session count. Passwords and\ncredentials are never projected.",
+        "operationId": "people_list",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PeopleResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Owner-only user creation (design §12.1: Owners may create accounts; no\npublic registration). The password is hashed with Argon2id and never\nstored or returned in plaintext; the Audit row carries only the\nusername and role.",
+        "operationId": "create_person",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePersonRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Person"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/people/{user_id}/reset-password": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Owner-only password reset (design §12.1: Owners may reset accounts).\nThe new password is hashed and never returned; all Sessions of the\nuser are revoked immediately so old state cannot continue.",
+        "operationId": "reset_person_password",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "description": "User ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResetPasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Password reset and Sessions revoked"
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/people/{user_id}/role": {
+      "put": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Owner-only role change (design §12.1/§12.3). The final valid Owner is\nprotected; a role change revokes every Session of the affected user\nimmediately, which closes their bound Public/Admin streams on the next\nrevalidation.",
+        "operationId": "set_person_role",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "description": "User ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PersonRoleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Person"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/people/{user_id}/status": {
+      "put": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Owner-only enable/disable (design §12.1). The final valid Owner cannot\nbe disabled; disabling a user revokes all of their Sessions\nimmediately, which closes their bound streams.",
+        "operationId": "set_person_status",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "description": "User ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PersonStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Person"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/sessions": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Owner-only coarse Session listing (design §12.3). Only active\n(non-revoked) Sessions appear, with creation/last-activity/expiry and\nthe coarse client hint — never tokens, full User-Agents, or raw IPs.",
+        "operationId": "sessions_list",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionsResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/sessions/revoke-others": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Owner-only \"revoke my other Sessions\" (design §12.3: keeping the\ncurrent Session and revoking all others are distinct operations).",
+        "operationId": "revoke_other_sessions",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevokeSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevokeOthersResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/sessions/{session_id}/revoke": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Owner-only Session revoke (design §12.3: an Owner may revoke any\nSession). The revoked user's bound Public/Admin streams close on their\nnext revalidation, and their tabs receive the access-generation\ntransition without any token or DTO being broadcast.",
+        "operationId": "revoke_session",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "Session ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevokeSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevokeSessionResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/v1/transfers/{transfer_id}": {
       "get": {
         "tags": [
@@ -1275,6 +1999,26 @@
         }
       }
     },
+    "/api/public/v1/access": {
+      "get": {
+        "tags": [
+          "public"
+        ],
+        "operationId": "public_access_settings",
+        "responses": {
+          "200": {
+            "description": "Whether anonymous Home access is enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicAccessSettings"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/public/v1/events": {
       "get": {
         "tags": [
@@ -1283,7 +2027,7 @@
         "operationId": "public_events",
         "responses": {
           "200": {
-            "description": "Authenticated Public invalidation stream"
+            "description": "Public invalidation stream (human-bound or Guest-bound when anonymous Home is enabled)"
           }
         }
       }
@@ -1688,6 +2432,28 @@
   },
   "components": {
     "schemas": {
+      "AccessSettingsRequest": {
+        "type": "object",
+        "required": [
+          "guestEnabled"
+        ],
+        "properties": {
+          "guestEnabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AccessSettingsResponse": {
+        "type": "object",
+        "required": [
+          "guestEnabled"
+        ],
+        "properties": {
+          "guestEnabled": {
+            "type": "boolean"
+          }
+        }
+      },
       "AdminBlockHistoryItem": {
         "type": "object",
         "required": [
@@ -2712,6 +3478,64 @@
           }
         }
       },
+      "AuditItem": {
+        "type": "object",
+        "description": "One immutable, redacted Audit row. `details` is the stored `after_json`\nbody, which is redacted by construction (ids, instants, and counts only\n— never passwords, tokens, credentials, endpoints, raw peer IPs, or\ncomplete request bodies).",
+        "required": [
+          "auditEventId",
+          "eventKind",
+          "targetKind",
+          "targetId",
+          "createdAt"
+        ],
+        "properties": {
+          "actorUsername": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "auditEventId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "details": {},
+          "eventKind": {
+            "type": "string"
+          },
+          "targetId": {
+            "type": "string"
+          },
+          "targetKind": {
+            "type": "string"
+          }
+        }
+      },
+      "AuditResponse": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditItem"
+            }
+          },
+          "nextBefore": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Cursor for the next older page; absent when the listing is complete."
+          }
+        }
+      },
       "ComponentDiagnostic": {
         "type": "object",
         "required": [
@@ -2852,6 +3676,25 @@
               "null"
             ],
             "format": "int64"
+          }
+        }
+      },
+      "CreatePersonRequest": {
+        "type": "object",
+        "required": [
+          "username",
+          "password",
+          "role"
+        ],
+        "properties": {
+          "password": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
           }
         }
       },
@@ -3652,6 +4495,76 @@
           }
         }
       },
+      "PeopleResponse": {
+        "type": "object",
+        "required": [
+          "users"
+        ],
+        "properties": {
+          "users": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Person"
+            }
+          }
+        }
+      },
+      "Person": {
+        "type": "object",
+        "description": "One allowlisted Person row. Passwords, hashes, and credentials never\nleave the Server (design §12.1: People review is safe on ordinary\nscreens).",
+        "required": [
+          "userId",
+          "username",
+          "role",
+          "disabled",
+          "createdAt",
+          "sessionCount"
+        ],
+        "properties": {
+          "createdAt": {
+            "type": "string"
+          },
+          "disabled": {
+            "type": "boolean"
+          },
+          "role": {
+            "type": "string"
+          },
+          "sessionCount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Active (non-revoked) Session count; never session material."
+          },
+          "userId": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          }
+        }
+      },
+      "PersonRoleRequest": {
+        "type": "object",
+        "required": [
+          "role"
+        ],
+        "properties": {
+          "role": {
+            "type": "string"
+          }
+        }
+      },
+      "PersonStatusRequest": {
+        "type": "object",
+        "required": [
+          "disabled"
+        ],
+        "properties": {
+          "disabled": {
+            "type": "boolean"
+          }
+        }
+      },
       "ProcessDiagnostic": {
         "type": "object",
         "required": [
@@ -3734,6 +4647,18 @@
           "value_revision": {
             "type": "integer",
             "format": "int64"
+          }
+        }
+      },
+      "PublicAccessSettings": {
+        "type": "object",
+        "description": "Non-sensitive Public access projection: whether anonymous Home (Guest\naccess) is currently enabled (design §12.1). This is the only public\nroute reachable without a Session in both modes: the WebUI needs it to\ndecide whether an anonymous visitor may render Home or must sign in. It\ncarries no DTO from any other namespace and no session material.",
+        "required": [
+          "guestEnabled"
+        ],
+        "properties": {
+          "guestEnabled": {
+            "type": "boolean"
           }
         }
       },
@@ -4068,6 +4993,29 @@
           }
         }
       },
+      "ResetPasswordRequest": {
+        "type": "object",
+        "required": [
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string"
+          }
+        }
+      },
+      "RevokeOthersResponse": {
+        "type": "object",
+        "required": [
+          "revokedCount"
+        ],
+        "properties": {
+          "revokedCount": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "RevokeResponse": {
         "type": "object",
         "required": [
@@ -4087,6 +5035,25 @@
             "type": "string"
           },
           "revoked_at": {
+            "type": "string"
+          }
+        }
+      },
+      "RevokeSessionRequest": {
+        "type": "object",
+        "description": "Explicit JSON body for Session revoke mutations. The revoke carries no\nparameters, but declaring a body keeps the browser trust boundary\nuniform: every Admin mutation is a JSON request with the synchronizer\nCSRF header (design §12.4), including bodyless ones."
+      },
+      "RevokeSessionResponse": {
+        "type": "object",
+        "required": [
+          "sessionId",
+          "revokedAt"
+        ],
+        "properties": {
+          "revokedAt": {
+            "type": "string"
+          },
+          "sessionId": {
             "type": "string"
           }
         }
@@ -4239,6 +5206,50 @@
           }
         }
       },
+      "SessionItem": {
+        "type": "object",
+        "description": "One coarse, non-sensitive Session row (design §12.3): creation, last\nactivity, expiry, and a coarse client hint — never the token, a full\nUser-Agent, or a raw IP.",
+        "required": [
+          "sessionId",
+          "userId",
+          "username",
+          "role",
+          "clientHint",
+          "createdAt",
+          "lastSeenAt",
+          "expiresAt",
+          "current"
+        ],
+        "properties": {
+          "clientHint": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "current": {
+            "type": "boolean"
+          },
+          "expiresAt": {
+            "type": "string"
+          },
+          "lastSeenAt": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "userId": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          }
+        }
+      },
       "SessionProjection": {
         "type": "object",
         "required": [
@@ -4283,6 +5294,20 @@
           },
           "session": {
             "$ref": "#/components/schemas/SessionProjection"
+          }
+        }
+      },
+      "SessionsResponse": {
+        "type": "object",
+        "required": [
+          "sessions"
+        ],
+        "properties": {
+          "sessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SessionItem"
+            }
           }
         }
       },
