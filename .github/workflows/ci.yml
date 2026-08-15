@@ -138,3 +138,11 @@ jobs:
 
       - name: Run Playwright projects
         run: npm run e2e
+
+      - name: Upload Playwright failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: platpulse-web/test-results/
+          retention-days: 7

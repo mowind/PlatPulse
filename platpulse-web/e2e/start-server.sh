@@ -461,4 +461,49 @@ cd "$ROOT"
 # clears its test-results output directory after the server starts.
 printf '%s\n' "$BACKUP_DIR" > /tmp/platpulse-e2e-backup-dir
 
+# The seeded "fresh" fixtures (Agent 0011 liveness, Node A observations)
+# decay against the Server's 120s liveness/freshness windows while the
+# suite runs for 5+ minutes; a background refresher keeps only the
+# intended fresh fixtures fresh for the whole run. Node B's stale
+# timestamps are never touched: nodes.spec asserts its deterministic
+# Stale state. The refresher dies with the server (same process group).
+python3 - "$STATE_DIR/platpulse.db" <<'PY' &
+import sqlite3
+import sys
+import time
+from datetime import datetime, timedelta, timezone
+
+path = sys.argv[1]
+agent_id = "0195f2a1-0011-4011-8011-000000000011"
+target_agent = "0195f2a1-0021-4021-8021-000000000021"
+node_a = "0195f2a1-0014-4014-8014-000000000014"
+
+while True:
+    fresh = (datetime.now(timezone.utc) - timedelta(seconds=20)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        with sqlite3.connect(path, timeout=5) as db:
+            db.execute(
+                "UPDATE agents SET last_received_at = ? WHERE agent_id IN (?, ?)",
+                (fresh, agent_id, target_agent),
+            )
+            db.execute(
+                "UPDATE current_node_chain_observations SET updated_at = ? WHERE node_id = ?",
+                (fresh, node_a),
+            )
+            db.execute(
+                "UPDATE current_node_rpc_namespaces SET updated_at = ? WHERE node_id = ?",
+                (fresh, node_a),
+            )
+            db.execute(
+                "UPDATE component_status SET attempted_at = ?, observed_at = ?, received_at = ? "
+                "WHERE agent_id = ? AND node_id = ? AND scope = 'node'",
+                (fresh, fresh, fresh, agent_id, node_a),
+            )
+    except Exception:
+        # The Server holds the only write connection; a transient SQLITE_BUSY
+        # is fine at a 30s cadence inside the 120s windows.
+        pass
+    time.sleep(30)
+PY
+
 exec cargo run -q -p platpulse-server -- serve --config "$CONFIG"

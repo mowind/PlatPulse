@@ -32,10 +32,28 @@ export async function loginAs(
 
 /** The document must never overflow the viewport horizontally. */
 export async function expectNoHorizontalOverflow(page: Page) {
-  const overflow = await page.evaluate(
-    () => document.documentElement.scrollWidth - window.innerWidth,
-  )
-  expect(overflow, 'page must not overflow horizontally').toBeLessThanOrEqual(0)
+  const { overflow, offenders } = await page.evaluate(() => {
+    const vw = window.innerWidth
+    const offenders: string[] = []
+    for (const el of document.querySelectorAll<HTMLElement>('*')) {
+      const rect = el.getBoundingClientRect()
+      if (rect.right > vw + 0.5) {
+        offenders.push(
+          `${el.tagName.toLowerCase()}.${String(el.className).slice(0, 60)} ` +
+            `[left=${Math.round(rect.left)} width=${Math.round(rect.width)}] ` +
+            `"${(el.textContent ?? '').trim().replace(/\s+/g, ' ').slice(0, 60)}"`,
+        )
+      }
+    }
+    return {
+      overflow: document.documentElement.scrollWidth - vw,
+      offenders: offenders.slice(0, 10),
+    }
+  })
+  expect(
+    overflow,
+    `page must not overflow horizontally: ${offenders.join(' | ')}`,
+  ).toBeLessThanOrEqual(0)
 }
 
 /** Simulate browser zoom (200%) via CDP page scale. */
