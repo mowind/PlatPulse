@@ -24,6 +24,7 @@ pub mod notifications;
 pub mod openapi;
 pub mod operations;
 pub mod redaction;
+pub mod restore;
 pub mod retention;
 pub mod secrets;
 

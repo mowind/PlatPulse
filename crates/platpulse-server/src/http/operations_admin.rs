@@ -172,6 +172,52 @@ pub struct DoctorOverview {
     pub checks: Vec<DoctorCheckDto>,
 }
 
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreValidateRequest {
+    pub artifact_id: String,
+}
+
+/// Read-only Restore validation outcome (issue #51, design §20.2): the
+/// Server re-verifies the artifact file against its recorded manifest
+/// before any confirmation. Checksum and integrity are re-computed from
+/// the file; schema compatibility compares the artifact schema with the
+/// current Server schema (higher unsupported schemas are refused). Checks
+/// run in order and short-circuit, so `None` means the check was not
+/// reached (the first failed check is reported in `error`).
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreValidation {
+    pub artifact_id: String,
+    pub filename: String,
+    pub bytes: i64,
+    pub schema_version: i64,
+    pub server_version: String,
+    pub created_at: String,
+    /// `true` when the file checksum matches the manifest; `None` when the
+    /// checksum check was not reached.
+    pub checksum_ok: Option<bool>,
+    /// `true` when the full integrity check passed; `None` when it was not
+    /// reached.
+    pub integrity_ok: Option<bool>,
+    /// `true` when the schema is supported; `None` when it was not
+    /// reached.
+    pub schema_compatible: Option<bool>,
+    pub current_schema_version: i64,
+    /// Typed validation failure code when any check fails; `None` when the
+    /// artifact is restorable.
+    pub error: Option<String>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreSubmitRequest {
+    pub artifact_id: String,
+    /// Typed confirmation: must equal the artifact file base name.
+    pub confirmation: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct OperationsQuery {
     pub status: Option<String>,
@@ -187,11 +233,12 @@ const OPERATION_STATUSES: [&str; 6] = [
     "failed",
     "cancelled",
 ];
-const OPERATION_KINDS: [&str; 4] = [
+const OPERATION_KINDS: [&str; 5] = [
     "retention_run",
     "backup_create",
     "backup_verify",
     "doctor_run",
+    "restore",
 ];
 
 /// One `operations` row projected to the REST summary shape.
@@ -1161,6 +1208,180 @@ pub(crate) async fn backup_verify(
 }
 
 // ---------------------------------------------------------------------------
+// Restore (issue #51, design §20.2, webui.md §8.4)
+// ---------------------------------------------------------------------------
+
+/// Read-only Restore validation: identity selection plus fresh checksum,
+/// integrity, and schema-compatibility verification of the artifact file.
+/// Never writes and never audits; the restore page calls this before the
+/// typed confirmation. Validation outcomes are part of the 200 response;
+/// HTTP errors are reserved for unknown artifacts and missing capability.
+#[utoipa::path(
+    post,
+    path = "/api/admin/v1/restore/validate",
+    tag = "admin",
+    request_body = RestoreValidateRequest,
+    responses((status = 200, body = RestoreValidation), (status = 404, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
+)]
+pub(crate) async fn restore_validate(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Extension(principal): Extension<AuthenticatedSession>,
+    Extension(request_id): Extension<RequestId>,
+    Json(request): Json<RestoreValidateRequest>,
+) -> Response {
+    if let Some(response) = mutation_guard(&headers, &principal, state.auth(), &request_id, true) {
+        return response;
+    }
+    let identity =
+        match crate::restore::load_identity(state.db().pool(), &request.artifact_id).await {
+            Ok(Some(identity)) => identity,
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ApiErrorBody::with_fields(
+                        "restore_artifact_not_found",
+                        "unknown backup artifact",
+                        &request_id.0,
+                        vec!["artifactId".to_owned()],
+                    )),
+                )
+                    .into_response();
+            }
+            Err(_) => {
+                return mutation_error(
+                    &request_id.0,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "Server database is unavailable",
+                );
+            }
+        };
+    let Some(backup_dir) = state.backup_dir().map(|path| path.to_path_buf()) else {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "restore_unavailable",
+            "no backup directory is configured; set backup_dir in server.toml",
+        );
+    };
+    let outcome = crate::restore::check_artifact(
+        &backup_dir.join(&identity.filename),
+        &identity.sha256,
+        identity.schema_version,
+        crate::database::SERVER_SCHEMA_VERSION,
+    )
+    .await;
+    let (error, message) = match outcome {
+        Ok(()) => (None, None),
+        Err(crate::restore::RestoreError::Domain { code, message }) => {
+            (Some(code.to_owned()), Some(message))
+        }
+        Err(other) => (
+            Some(crate::restore::ERROR_IO.to_owned()),
+            Some(other.to_string()),
+        ),
+    };
+    // Checks run in order and short-circuit: a check that was never reached
+    // is reported as `None`, never as a passing result.
+    let (checksum_ok, integrity_ok, schema_compatible) = match error.as_deref() {
+        None => (Some(true), Some(true), Some(true)),
+        Some(crate::restore::ERROR_CHECKSUM) => (Some(false), None, None),
+        Some(crate::restore::ERROR_INTEGRITY) => (Some(true), Some(false), None),
+        Some(crate::restore::ERROR_SCHEMA) => (Some(true), Some(true), Some(false)),
+        _ => (None, None, None),
+    };
+    Json(RestoreValidation {
+        artifact_id: identity.artifact_id,
+        filename: identity.filename,
+        bytes: identity.bytes,
+        schema_version: identity.schema_version,
+        server_version: identity.server_version,
+        created_at: identity.created_at,
+        checksum_ok,
+        integrity_ok,
+        schema_compatible,
+        current_schema_version: crate::database::SERVER_SCHEMA_VERSION,
+        error,
+        message,
+    })
+    .into_response()
+}
+
+/// Queue the highest-risk Restore Operation. The workflow requires backup
+/// identity selection, checksum/schema validation (see `restore/validate`),
+/// and this typed confirmation (the artifact file base name). The worker
+/// re-validates everything and then refuses while the Server is running
+/// (`restore_requires_stopped_server`): the current database stays
+/// authoritative and the failure is recoverable through REST.
+#[utoipa::path(
+    post,
+    path = "/api/admin/v1/restore",
+    tag = "admin",
+    request_body = RestoreSubmitRequest,
+    responses((status = 200, body = OperationMutationResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
+)]
+pub(crate) async fn restore_submit(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Extension(principal): Extension<AuthenticatedSession>,
+    Extension(request_id): Extension<RequestId>,
+    Json(request): Json<RestoreSubmitRequest>,
+) -> Response {
+    if let Some(response) = mutation_guard(&headers, &principal, state.auth(), &request_id, true) {
+        return response;
+    }
+    let identity =
+        match crate::restore::load_identity(state.db().pool(), &request.artifact_id).await {
+            Ok(Some(identity)) => identity,
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ApiErrorBody::with_fields(
+                        "restore_artifact_not_found",
+                        "unknown backup artifact",
+                        &request_id.0,
+                        vec!["artifactId".to_owned()],
+                    )),
+                )
+                    .into_response();
+            }
+            Err(_) => {
+                return mutation_error(
+                    &request_id.0,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "Server database is unavailable",
+                );
+            }
+        };
+    if !crate::restore::confirmation_matches(&request.confirmation, &identity.filename) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiErrorBody::with_fields_message(
+                "restore_confirmation_mismatch",
+                "the typed confirmation must equal the backup file name".to_owned(),
+                &request_id.0,
+                vec!["artifactId".to_owned(), "confirmation".to_owned()],
+            )),
+        )
+            .into_response();
+    }
+    queue_operation(
+        &state,
+        &principal,
+        &request_id,
+        operations::KIND_RESTORE,
+        &serde_json::json!({
+            "artifactId": request.artifact_id,
+            "confirmation": request.confirmation,
+        }),
+        "restore_started",
+    )
+    .await
+}
+
+// ---------------------------------------------------------------------------
 // Doctor
 // ---------------------------------------------------------------------------
 
@@ -1332,6 +1553,8 @@ pub fn router() -> Router<AppState> {
             "/backups/{artifact_id}/verify",
             axum::routing::post(backup_verify),
         )
+        .route("/restore/validate", axum::routing::post(restore_validate))
+        .route("/restore", axum::routing::post(restore_submit))
         .route("/doctor", get(doctor_overview).post(doctor_run))
 }
 
@@ -1686,7 +1909,7 @@ mod tests {
             format!("platpulse-{artifact_id}.db")
         );
         assert_eq!(body["artifact"]["sha256"].as_str().unwrap().len(), 64);
-        assert_eq!(body["artifact"]["schemaVersion"], 22);
+        assert_eq!(body["artifact"]["schemaVersion"], 23);
         assert_eq!(body["artifact"]["verification"], "pending");
         assert!(
             !body["artifact"]["serverVersion"]
@@ -2085,5 +2308,162 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(status, "cancelled");
+    }
+
+    #[tokio::test]
+    async fn restore_validate_and_submit_refuse_while_the_server_runs() {
+        let (_dir, state) = test_state().await;
+        let pool = state.db().pool();
+
+        // Produce a real backup artifact through the backup Operation.
+        let response = backup_create(
+            State(state.clone()),
+            mutation_headers(),
+            Extension(session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        while crate::operations::process_operations(&state).await.unwrap() > 0 {}
+        let artifact_id = sqlx::query_scalar::<_, String>(
+            "SELECT artifact_id FROM backup_artifacts ORDER BY created_at DESC LIMIT 1",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        let filename = format!("platpulse-{artifact_id}.db");
+        let artifact_path = _dir.path().join("backups").join(&filename);
+
+        // Read-only validation passes for the untouched artifact.
+        let response = restore_validate(
+            State(state.clone()),
+            mutation_headers(),
+            Extension(session()),
+            Extension(request_id()),
+            Json(RestoreValidateRequest {
+                artifact_id: artifact_id.clone(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["checksumOk"], true);
+        assert_eq!(body["integrityOk"], true);
+        assert_eq!(body["schemaCompatible"], true);
+        assert_eq!(body["filename"], filename.as_str());
+        assert_eq!(body["currentSchemaVersion"], 23);
+        assert!(body["error"].is_null());
+
+        // Unknown identity is a typed 404.
+        let response = restore_validate(
+            State(state.clone()),
+            mutation_headers(),
+            Extension(session()),
+            Extension(request_id()),
+            Json(RestoreValidateRequest {
+                artifact_id: "unknown".to_owned(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["code"], "restore_artifact_not_found");
+
+        // The typed confirmation must equal the artifact file base name.
+        let response = restore_submit(
+            State(state.clone()),
+            mutation_headers(),
+            Extension(session()),
+            Extension(request_id()),
+            Json(RestoreSubmitRequest {
+                artifact_id: artifact_id.clone(),
+                confirmation: "wrong-name.db".to_owned(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["code"], "restore_confirmation_mismatch");
+
+        // A correct submission queues the `restore` Operation immediately.
+        let response = restore_submit(
+            State(state.clone()),
+            mutation_headers(),
+            Extension(session()),
+            Extension(request_id()),
+            Json(RestoreSubmitRequest {
+                artifact_id: artifact_id.clone(),
+                confirmation: filename.clone(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        let operation_id = body["operation"]["operation"]["operationId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(body["operation"]["operation"]["kind"], "restore");
+        assert!(body["auditEventId"].as_i64().unwrap() > 0);
+
+        // Run the worker: the restore validates, then is refused before any
+        // mutation (exclusive stopped-Server condition); the current
+        // database stays authoritative.
+        while crate::operations::process_operations(&state).await.unwrap() > 0 {}
+        let detail = load_operation_detail(pool, &operation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(detail.operation.status, "failed");
+        assert_eq!(detail.errors[0].code, crate::restore::ERROR_SERVER_RUNNING);
+        let result = detail.result.unwrap();
+        assert_eq!(result["validation"]["checksum"], "ok");
+        assert_eq!(result["refusal"], crate::restore::ERROR_SERVER_RUNNING);
+        // No safety copy or replacement happened; the Owner still exists
+        // and the artifact metadata is untouched.
+        let owners: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE role='owner'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(owners, 1);
+        let verification: String =
+            sqlx::query_scalar("SELECT verification FROM backup_artifacts WHERE artifact_id = ?")
+                .bind(&artifact_id)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(verification, "pending");
+        // The attempt is audited end-to-end (started + finished).
+        let audits: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM audit_events WHERE target_id = ? AND event_kind IN ('restore_started', 'operation_finished')",
+        )
+        .bind(&operation_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(audits, 2);
+
+        // A tampered artifact reports the checksum failure as a validation
+        // outcome (200), never as a mutation.
+        std::fs::write(&artifact_path, b"tampered").unwrap();
+        let response = restore_validate(
+            State(state.clone()),
+            mutation_headers(),
+            Extension(session()),
+            Extension(request_id()),
+            Json(RestoreValidateRequest {
+                artifact_id: artifact_id.clone(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["checksumOk"], false);
+        assert_eq!(body["error"], "restore_checksum_mismatch");
+        assert!(body["message"].as_str().unwrap().contains("checksum"));
+        // The short-circuited checks are reported as not reached (null),
+        // never as passing.
+        assert!(body["integrityOk"].is_null());
+        assert!(body["schemaCompatible"].is_null());
     }
 }

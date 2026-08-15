@@ -175,6 +175,9 @@ export default function AdminLayout() {
           <NavLink to="/admin/data/backups" end onClick={closeNav}>
             Backups
           </NavLink>
+          <NavLink to="/admin/data/restore" end onClick={closeNav}>
+            Restore
+          </NavLink>
           <NavLink to="/admin/data/doctor" end onClick={closeNav}>
             Doctor
           </NavLink>

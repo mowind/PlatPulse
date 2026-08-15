@@ -39,6 +39,7 @@ import AdminData from './pages/AdminData'
 import AdminRetentionList from './pages/AdminRetention'
 import AdminRetentionEdit from './pages/AdminRetentionEdit'
 import AdminBackupsList from './pages/AdminBackups'
+import AdminRestore from './pages/AdminRestore'
 import AdminBackupCreate from './pages/AdminBackupCreate'
 import AdminBackupDetail from './pages/AdminBackup'
 import AdminDoctor from './pages/AdminDoctor'
@@ -200,6 +201,7 @@ const router = createBrowserRouter([
       { path: 'data/backups', element: <AdminBackupsList /> },
       { path: 'data/backups/create', element: <AdminBackupCreate /> },
       { path: 'data/backups/:artifactId', element: <AdminBackupDetail /> },
+      { path: 'data/restore', element: <AdminRestore /> },
       { path: 'data/doctor', element: <AdminDoctor /> },
       // Placeholder for later Phase 2 sections (e.g. Restore): links from
       // security mutations must never land on a blank page.

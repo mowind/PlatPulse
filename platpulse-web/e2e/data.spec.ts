@@ -80,6 +80,58 @@ test.describe('Read-only Data surfaces (all viewports)', () => {
     await expect(page.getByRole('button', { name: 'Run Doctor' })).toBeVisible()
     await expectNoHorizontalOverflow(page)
   })
+
+  test('Restore renders prerequisites and the dedicated confirmation flow', async ({ page }) => {
+    await openAdmin(page, 'Restore')
+    await expect(page.getByRole('heading', { level: 1, name: 'Restore a backup' })).toBeVisible({
+      timeout: 15_000,
+    })
+    await expect(page.getByText(/exclusive stopped-Server condition/i)).toBeVisible()
+    await expect(page.getByText(/Secrets are never restored/)).toBeVisible()
+    await expect(page.getByText(/Failure preserves the current database/)).toBeVisible()
+    // The workflow cannot be triggered from a generic Operation row: the
+    // typed confirmation lives only on this dedicated route.
+    await expect(page.getByLabel(/Type the backup file name/)).not.toBeVisible()
+    await expectNoHorizontalOverflow(page)
+  })
+
+  test('Restore confirmation flow works on every viewport (read-only)', async ({ page }) => {
+    await openAdmin(page, 'Restore')
+    await expect(page.getByRole('heading', { level: 1, name: 'Restore a backup' })).toBeVisible({
+      timeout: 15_000,
+    })
+    const row = page.getByRole('row', { name: /platpulse-e2e-seed-good\.db/ })
+    await expect(row).toBeVisible({ timeout: 15_000 })
+    await page.getByLabel('platpulse-e2e-seed-good.db').click()
+    const start = page.getByRole('button', { name: 'Start Restore' })
+    await expect(start).toBeDisabled()
+    // Server-computed checksum, integrity, and schema validation.
+    await page.getByRole('button', { name: 'Validate this backup' }).click()
+    await expect(page.getByText('Pass').first()).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText(/backup 23 \/ Server 23/)).toBeVisible()
+    // The typed confirmation must match the backup file name.
+    await page.getByLabel(/Type the backup file name/).fill('wrong-name.db')
+    await expect(start).toBeDisabled()
+    await page.getByLabel(/Type the backup file name/).fill('platpulse-e2e-seed-good.db')
+    await expect(start).toBeEnabled()
+    await expectNoHorizontalOverflow(page)
+  })
+
+  test('Restore failure path is honest on every viewport (read-only)', async ({ page }) => {
+    await openAdmin(page, 'Restore')
+    await expect(page.getByRole('heading', { level: 1, name: 'Restore a backup' })).toBeVisible({
+      timeout: 15_000,
+    })
+    const row = page.getByRole('row', { name: /platpulse-e2e-seed-tampered\.db/ })
+    await expect(row).toBeVisible({ timeout: 15_000 })
+    await page.getByLabel('platpulse-e2e-seed-tampered.db').click()
+    await page.getByRole('button', { name: 'Validate this backup' }).click()
+    await expect(page.getByText(/restore_checksum_mismatch/)).toBeVisible({ timeout: 15_000 })
+    // Checks that were never reached are Not checked, never Pass.
+    await expect(page.getByText('Not checked').first()).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Start Restore' })).toBeDisabled()
+    await expectNoHorizontalOverflow(page)
+  })
 })
 
 test.describe.serial('Data mutations (one run on desktop-1280)', () => {
@@ -100,8 +152,10 @@ test.describe.serial('Data mutations (one run on desktop-1280)', () => {
     })
     // The report carries distinct check statuses and never offers fixes.
     await expect(page.getByText(/Database integrity/)).toBeVisible()
-    await expect(page.getByText('Pass')).toBeVisible()
-    await expect(page.getByText('Skipped').first()).toBeVisible()
+    await expect(page.getByText('Pass').first()).toBeVisible()
+    // The seeded, never-verified tampered artifact keeps the latest-backup
+    // check an honest Warning (it is the newest artifact at seed time).
+    await expect(page.getByText('Warning').first()).toBeVisible()
     await expect(page.getByRole('button', { name: /fix/i })).toHaveCount(0)
     // REST recovery: navigate away and back — the Operation is still there.
     await page.getByRole('link', { name: 'Operations', exact: true }).click()
@@ -183,7 +237,7 @@ test.describe.serial('Data mutations (one run on desktop-1280)', () => {
     await expect(row).toBeVisible({ timeout: 15_000 })
     await expect(row).toContainText(/\d+(\.\d+)? (B|KiB|MiB)/)
     await expect(row).toContainText(/[0-9a-f]{16}…/)
-    await expect(row).toContainText('22')
+    await expect(row).toContainText('23')
     await row.getByRole('link', { name: /platpulse-.*\.db/ }).click()
     await expect(page.getByRole('heading', { level: 1, name: /platpulse-.*\.db/ })).toBeVisible({
       timeout: 15_000,
@@ -213,6 +267,94 @@ test.describe.serial('Data mutations (one run on desktop-1280)', () => {
     await expect(page.getByText(/checksum mismatch/).first()).toBeVisible()
     await page.getByRole('link', { name: 'Backups', exact: true }).click()
     await expect(page.getByText('Verification failed').first()).toBeVisible({ timeout: 15_000 })
+    await expectNoHorizontalOverflow(page)
+  })
+
+  test('Restore is refused while the Server runs and the database stays authoritative', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'desktop-1280', 'mutations run once')
+    // A fresh verified backup is required as the restore identity.
+    await openAdmin(page, 'Backups')
+    await page.getByRole('link', { name: 'Create a backup' }).click()
+    await expect(page.getByRole('heading', { level: 1, name: 'Create a backup' })).toBeVisible({
+      timeout: 15_000,
+    })
+    await page.getByLabel(/Type the confirmation phrase/).fill('create backup')
+    await page.getByRole('button', { name: 'Queue backup' }).click()
+    await expect(page.getByText('Succeeded').first()).toBeVisible({ timeout: 90_000 })
+    // The dedicated high-risk route is reached through the Admin sidebar,
+    // never from a generic Operation row.
+    await page.getByRole('link', { name: 'Restore' }).click()
+    await expect(page.getByRole('heading', { level: 1, name: 'Restore a backup' })).toBeVisible({
+      timeout: 15_000,
+    })
+    const artifactRow = page.getByRole('row', { name: /platpulse-.*\.db/ }).first()
+    const filename = (await artifactRow.getByText(/platpulse-.*\.db/).textContent())!
+    await page.getByLabel(filename).click()
+    const start = page.getByRole('button', { name: 'Start Restore' })
+    await expect(start).toBeDisabled()
+
+    // Checksum, integrity, and schema validation are Server-computed and
+    // read-only.
+    await page.getByRole('button', { name: 'Validate this backup' }).click()
+    await expect(page.getByText('Pass').first()).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText(/backup 23 \/ Server 23/)).toBeVisible()
+    // A wrong typed confirmation is not enough.
+    await page.getByLabel(/Type the backup file name/).fill('wrong-name.db')
+    await expect(start).toBeDisabled()
+    await page.getByLabel(/Type the backup file name/).fill(filename)
+    await expect(start).toBeEnabled()
+    await start.click()
+
+    // The running Server refuses before any mutation with the typed
+    // stopped-Server failure; the Operation stays recoverable through REST.
+    await expect(
+      page.getByRole('heading', { name: 'Restore Operation', level: 2, exact: true }),
+    ).toBeVisible({
+      timeout: 15_000,
+    })
+    await expect(page.getByText('Failed').first()).toBeVisible({ timeout: 90_000 })
+    await expect(page.getByText(/exclusive stopped-Server condition is required/)).toBeVisible()
+    await expect(page.getByText(/platpulse-server restore --artifact-id/).first()).toBeVisible()
+    // The current database remains authoritative: backups still list the
+    // artifact and the Overview still loads.
+    await page.getByRole('link', { name: 'Backups', exact: true }).click()
+    await expect(page.getByRole('heading', { level: 1, name: 'Backups' })).toBeVisible({
+      timeout: 15_000,
+    })
+    await expect(page.getByRole('row', { name: /platpulse-.*\.db/ }).first()).toBeVisible({
+      timeout: 15_000,
+    })
+    await page.getByRole('link', { name: 'Overview', exact: true }).click()
+    await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible({
+      timeout: 15_000,
+    })
+    await expectNoHorizontalOverflow(page)
+  })
+
+  test('A tampered backup fails validation and cannot be restored', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'desktop-1280', 'mutations run once')
+    await openAdmin(page, 'Backups')
+    await expect(page.getByRole('row', { name: /platpulse-.*\.db/ }).first()).toBeVisible({
+      timeout: 15_000,
+    })
+    const backupDir = readFileSync('/tmp/platpulse-e2e-backup-dir', 'utf8').trim()
+    const artifactRow = page.getByRole('row', { name: /platpulse-.*\.db/ }).first()
+    const artifactId = (await artifactRow.getByRole('link').getAttribute('href'))!
+      .split('/')
+      .pop()!
+    writeFileSync(path.join(backupDir, `platpulse-${artifactId}.db`), 'tampered')
+
+    await page.getByRole('link', { name: 'Restore' }).click()
+    await expect(page.getByRole('heading', { level: 1, name: 'Restore a backup' })).toBeVisible({
+      timeout: 15_000,
+    })
+    const artifactRowRestore = page.getByRole('row', { name: /platpulse-.*\.db/ }).first()
+    const filename = (await artifactRowRestore.getByText(/platpulse-.*\.db/).textContent())!
+    await page.getByLabel(filename).click()
+    await page.getByRole('button', { name: 'Validate this backup' }).click()
+    await expect(page.getByText(/restore_checksum_mismatch/)).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText(/does not match its recorded manifest/)).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Start Restore' })).toBeDisabled()
     await expectNoHorizontalOverflow(page)
   })
 })

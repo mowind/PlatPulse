@@ -129,6 +129,18 @@ export default function AdminData() {
         </dl>
       )}
 
+      <h2>Restore</h2>
+      <p className="muted">
+        Restore requires an exclusive stopped Server, checksum and schema validation, and
+        a typed confirmation. It never restores secret files and preserves the current
+        database on failure.
+      </p>
+      <p>
+        <Link className="danger-action" to="/admin/data/restore">
+          Open the Restore workflow
+        </Link>
+      </p>
+
       <h2>Doctor</h2>
       {doctor.isError && (
         <p className="form-error" role="alert">

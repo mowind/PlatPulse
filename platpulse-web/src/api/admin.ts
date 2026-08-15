@@ -84,6 +84,8 @@ import {
   doctorRun as doctorRunApi,
   operationDetail,
   operationsList,
+  restoreSubmit as restoreSubmitApi,
+  restoreValidate as restoreValidateApi,
   retentionImpact as retentionImpactApi,
   retentionOverview,
   retentionRun as retentionRunApi,
@@ -94,6 +96,7 @@ import {
   type OperationDetail,
   type OperationMutationResponse,
   type OperationSummary,
+  type RestoreValidation,
   type RetentionOverview,
   type RetentionPolicyDto,
   type ChannelDto,
@@ -196,6 +199,8 @@ const adminKeys = {
     ['admin', 'retention', 'impact', family, days] as const,
   backups: ['admin', 'backups'] as const,
   backupDetail: (artifactId: string) => ['admin', 'backups', artifactId] as const,
+  restoreValidate: (artifactId: string) =>
+    ['admin', 'restore', 'validate', artifactId] as const,
   doctor: ['admin', 'doctor'] as const,
 }
 
@@ -1518,6 +1523,8 @@ export function operationKindLabel(kind: string | null | undefined): string {
       return 'Backup verification'
     case 'doctor_run':
       return 'Doctor'
+    case 'restore':
+      return 'Restore'
     default:
       return kind ?? 'Unknown'
   }
@@ -1741,6 +1748,78 @@ export async function verifyBackupEntry(
           headers: { 'X-CSRF-Token': csrfToken },
         }),
       'Unable to start the backup verification',
+    )
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    return response
+  } catch (error) {
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    throw error
+  }
+}
+
+/**
+ * Read-only Restore validation (issue #51, webui.md §8.4): fresh
+ * checksum, integrity, and schema compatibility of the artifact file,
+ * computed by the Server before any typed confirmation. Never writes and
+ * never audits.
+ */
+export async function validateRestoreEntry(
+  artifactId: string,
+  csrfToken: string,
+): Promise<RestoreValidation> {
+  return requestAdmin(
+    () =>
+      restoreValidateApi({
+        body: { artifactId },
+        headers: { 'X-CSRF-Token': csrfToken },
+      }),
+    'Unable to validate the backup for restore',
+  )
+}
+
+/** Restore validation outcome for the selected artifact (mutation-style
+ * POST, so it is CSRF-guarded; the page calls it on demand). */
+export function useRestoreValidation(
+  generation: number,
+  artifactId: string,
+  csrfToken: string,
+  enabled: boolean,
+) {
+  return useQuery({
+    queryKey: [...adminKeys.restoreValidate(artifactId), generation],
+    queryFn: ({ signal }) =>
+      requestAdmin(
+        () =>
+          restoreValidateApi({
+            body: { artifactId },
+            headers: { 'X-CSRF-Token': csrfToken },
+            signal,
+          }),
+        'Unable to validate the backup for restore',
+      ),
+    enabled: artifactId.length > 0 && csrfToken.length > 0 && enabled,
+  })
+}
+
+/**
+ * Queue the highest-risk Restore Operation. The typed confirmation must
+ * equal the selected backup file name; the Server re-validates everything
+ * in the worker and then refuses while the Server is running
+ * (`restore_requires_stopped_server`), preserving the current database.
+ */
+export async function submitRestoreEntry(
+  artifactId: string,
+  confirmation: string,
+  csrfToken: string,
+): Promise<OperationMutationResponse> {
+  try {
+    const response = await requestAdmin(
+      () =>
+        restoreSubmitApi({
+          body: { artifactId, confirmation },
+          headers: { 'X-CSRF-Token': csrfToken },
+        }),
+      'Unable to start the Restore',
     )
     void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
     return response

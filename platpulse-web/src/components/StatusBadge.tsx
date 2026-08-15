@@ -37,6 +37,10 @@ const STATUS_ICONS: Record<string, string> = {
   Fail: '✕',
   'Not configured': '∅',
   Skipped: '→',
+  // Restore validation (issue #51): a short-circuited check was never
+  // reached and is never presented as a passing result.
+  'Not checked': '∅',
+  'Checking…': '…',
 }
 
 /** Server component states map onto the WebUI collection vocabulary. */

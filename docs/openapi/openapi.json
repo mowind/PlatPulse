@@ -3364,6 +3364,118 @@
         }
       }
     },
+    "/api/admin/v1/restore": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Queue the highest-risk Restore Operation. The workflow requires backup\nidentity selection, checksum/schema validation (see `restore/validate`),\nand this typed confirmation (the artifact file base name). The worker\nre-validates everything and then refuses while the Server is running\n(`restore_requires_stopped_server`): the current database stays\nauthoritative and the failure is recoverable through REST.",
+        "operationId": "restore_submit",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestoreSubmitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationMutationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/restore/validate": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Read-only Restore validation: identity selection plus fresh checksum,\nintegrity, and schema-compatibility verification of the artifact file.\nNever writes and never audits; the restore page calls this before the\ntyped confirmation. Validation outcomes are part of the 200 response;\nHTTP errors are reserved for unknown artifacts and missing capability.",
+        "operationId": "restore_validate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestoreValidateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestoreValidation"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/v1/retention": {
       "get": {
         "tags": [
@@ -8125,6 +8237,106 @@
         ],
         "properties": {
           "password": {
+            "type": "string"
+          }
+        }
+      },
+      "RestoreSubmitRequest": {
+        "type": "object",
+        "required": [
+          "artifactId",
+          "confirmation"
+        ],
+        "properties": {
+          "artifactId": {
+            "type": "string"
+          },
+          "confirmation": {
+            "type": "string",
+            "description": "Typed confirmation: must equal the artifact file base name."
+          }
+        }
+      },
+      "RestoreValidateRequest": {
+        "type": "object",
+        "required": [
+          "artifactId"
+        ],
+        "properties": {
+          "artifactId": {
+            "type": "string"
+          }
+        }
+      },
+      "RestoreValidation": {
+        "type": "object",
+        "description": "Read-only Restore validation outcome (issue #51, design §20.2): the\nServer re-verifies the artifact file against its recorded manifest\nbefore any confirmation. Checksum and integrity are re-computed from\nthe file; schema compatibility compares the artifact schema with the\ncurrent Server schema (higher unsupported schemas are refused). Checks\nrun in order and short-circuit, so `None` means the check was not\nreached (the first failed check is reported in `error`).",
+        "required": [
+          "artifactId",
+          "filename",
+          "bytes",
+          "schemaVersion",
+          "serverVersion",
+          "createdAt",
+          "currentSchemaVersion"
+        ],
+        "properties": {
+          "artifactId": {
+            "type": "string"
+          },
+          "bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "checksumOk": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`true` when the file checksum matches the manifest; `None` when the\nchecksum check was not reached."
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "currentSchemaVersion": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Typed validation failure code when any check fails; `None` when the\nartifact is restorable."
+          },
+          "filename": {
+            "type": "string"
+          },
+          "integrityOk": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`true` when the full integrity check passed; `None` when it was not\nreached."
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "schemaCompatible": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`true` when the schema is supported; `None` when it was not\nreached."
+          },
+          "schemaVersion": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "serverVersion": {
             "type": "string"
           }
         }

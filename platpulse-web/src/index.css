@@ -609,6 +609,10 @@ button {
   color: #f8fafc;
   transform: translateX(-100%);
   visibility: hidden;
+  /* The Admin navigation must stay fully reachable on short viewports
+   * (webui.md §10.1): a drawer that clips its last links is not an
+   * accessible navigation. */
+  overflow-y: auto;
   transition:
     transform 0.2s ease,
     visibility 0s linear 0.2s;

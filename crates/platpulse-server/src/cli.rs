@@ -51,6 +51,10 @@ pub enum Command {
     /// Agent administration (design §18.2).
     #[command(subcommand)]
     Agent(AgentCommand),
+    /// Offline Restore (design §19/§20.2): the only path that may replace
+    /// the database. Requires an exclusive stopped-Server condition, the
+    /// artifact id, and a typed confirmation phrase (or explicit `--yes`).
+    Restore(RestoreArgs),
     /// Run the HTTP Server.
     Serve(ServeArgs),
 }
@@ -142,6 +146,21 @@ pub struct EnrollmentTokenCreateArgs {
     /// design (§4.5): the token is single-use and must not sit around.
     #[arg(long)]
     pub expires_in: Option<u64>,
+}
+
+#[derive(Debug, Args)]
+pub struct RestoreArgs {
+    /// `server.toml` (design §18.1).
+    #[arg(long)]
+    pub config: PathBuf,
+    /// The backup artifact id to restore (identity selection).
+    #[arg(long)]
+    pub artifact_id: String,
+    /// Explicit automation marker: skip the typed confirmation phrase
+    /// (design §19: destructive commands require the confirm phrase;
+    /// automation must pass `--yes`).
+    #[arg(long)]
+    pub yes: bool,
 }
 
 #[derive(Debug, Args, Default)]
@@ -320,6 +339,57 @@ pub async fn run_create_enrollment_token(
     Ok(())
 }
 
+/// Offline Restore (design §19/§20.2, issue #51): the only path that may
+/// replace the database. Refuses while a Server is running (exclusive
+/// stopped-Server condition), re-validates identity/checksum/integrity/
+/// schema, preserves the current database on every failure, never touches
+/// secret files, and records the outcome into the restored database so the
+/// WebUI can present it after the next Server start. Destructive commands
+/// require the typed confirmation phrase; automation must pass `--yes`.
+pub async fn run_restore(
+    config: &ServerConfig,
+    args: &RestoreArgs,
+) -> Result<(), crate::restore::RestoreError> {
+    crate::init::restrict_umask();
+    let confirmation = if args.yes {
+        crate::restore::Confirmation::Explicit
+    } else {
+        print!("Type the backup file name to confirm the restore: ");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        let mut phrase = String::new();
+        std::io::stdin()
+            .read_line(&mut phrase)
+            .map_err(crate::restore::RestoreError::Io)?;
+        crate::restore::Confirmation::Phrase(phrase.trim().to_owned())
+    };
+    let outcome = crate::restore::apply(config, &args.artifact_id, confirmation).await?;
+    if outcome.already_matching {
+        println!(
+            "Nothing to restore: the current database already matches backup '{}'.",
+            outcome.filename
+        );
+        return Ok(());
+    }
+    println!(
+        "Restored backup '{}' (schema {}).",
+        outcome.filename, outcome.schema_version
+    );
+    for warning in &outcome.warnings {
+        println!("warning: {warning}");
+    }
+    if let Some(safety) = &outcome.safety_copy {
+        println!("Safety copy of the previous database: {}", safety.display());
+    }
+    if outcome.outcome_recorded {
+        println!("Restore outcome recorded in the restored database.");
+    } else {
+        println!(
+            "warning: the Restore outcome could not be recorded in the restored database; the restore itself completed."
+        );
+    }
+    Ok(())
+}
+
 /// Run the HTTP Server: validate the listen address, load the pepper and
 /// database with strict permission checks, and serve the API plus Web
 /// assets until shutdown.
@@ -331,6 +401,12 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         &config.trusted_proxy_cidrs,
         config.trusted_proxy_scheme.as_deref(),
     )?;
+
+    // Exclusive stopped-Server detection (design §19, issue #51): the
+    // serving process holds the database lock for its lifetime, so
+    // `platpulse-server restore` can refuse while a Server is running, and
+    // a second Server refuses to start over the same database.
+    let _restore_lock = crate::restore::acquire_exclusive_lock(&config.db_path)?;
 
     let pepper = load_pepper_file(&config.pepper_file)?;
     let auth = if config.development {

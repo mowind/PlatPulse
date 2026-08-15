@@ -14,7 +14,16 @@ export async function loginAs(
   password = E2E_PASSWORD,
 ) {
   await page.goto('/')
-  await expect(page).toHaveURL(/\/login$/)
+  // The Guest-access e2e (access.spec.ts) enables anonymous Home for a
+  // short window; a fresh anonymous context then renders Home instead of
+  // the login page. Retry until the protected login flow is reachable
+  // again instead of misreading the Guest surface as a session.
+  await expect(async () => {
+    if (!page.url().endsWith('/login')) {
+      await page.goto('/')
+    }
+    await expect(page).toHaveURL(/\/login$/, { timeout: 1_000 })
+  }).toPass({ timeout: 30_000 })
   await page.getByLabel('Username').fill(username)
   await page.getByLabel('Password').fill(password)
   await page.getByRole('button', { name: 'Sign in' }).click()

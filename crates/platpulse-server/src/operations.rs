@@ -34,6 +34,7 @@ pub const KIND_RETENTION_RUN: &str = "retention_run";
 pub const KIND_BACKUP_CREATE: &str = "backup_create";
 pub const KIND_BACKUP_VERIFY: &str = "backup_verify";
 pub const KIND_DOCTOR_RUN: &str = "doctor_run";
+pub const KIND_RESTORE: &str = "restore";
 
 #[derive(Debug, Error)]
 pub enum OperationError {
@@ -47,6 +48,12 @@ pub enum OperationError {
 
 impl From<crate::backup::BackupError> for OperationError {
     fn from(error: crate::backup::BackupError) -> Self {
+        OperationError::Domain(error.to_string())
+    }
+}
+
+impl From<crate::restore::RestoreError> for OperationError {
+    fn from(error: crate::restore::RestoreError) -> Self {
         OperationError::Domain(error.to_string())
     }
 }
@@ -349,6 +356,7 @@ pub async fn process_operations(state: &AppState) -> Result<usize, OperationErro
         KIND_BACKUP_CREATE => crate::backup::create(state, &operation_id).await?,
         KIND_BACKUP_VERIFY => crate::backup::verify(state, &operation_id).await?,
         KIND_DOCTOR_RUN => crate::doctor::run(state, &operation_id).await?,
+        KIND_RESTORE => crate::restore::execute(state, &operation_id).await?,
         _ => {
             let _ = crate::operations::add_error(
                 state,

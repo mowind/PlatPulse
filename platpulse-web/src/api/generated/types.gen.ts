@@ -1016,6 +1016,58 @@ export type ResetPasswordRequest = {
     password: string;
 };
 
+export type RestoreSubmitRequest = {
+    artifactId: string;
+    /**
+     * Typed confirmation: must equal the artifact file base name.
+     */
+    confirmation: string;
+};
+
+export type RestoreValidateRequest = {
+    artifactId: string;
+};
+
+/**
+ * Read-only Restore validation outcome (issue #51, design §20.2): the
+ * Server re-verifies the artifact file against its recorded manifest
+ * before any confirmation. Checksum and integrity are re-computed from
+ * the file; schema compatibility compares the artifact schema with the
+ * current Server schema (higher unsupported schemas are refused). Checks
+ * run in order and short-circuit, so `None` means the check was not
+ * reached (the first failed check is reported in `error`).
+ */
+export type RestoreValidation = {
+    artifactId: string;
+    bytes: number;
+    /**
+     * `true` when the file checksum matches the manifest; `None` when the
+     * checksum check was not reached.
+     */
+    checksumOk?: boolean | null;
+    createdAt: string;
+    currentSchemaVersion: number;
+    /**
+     * Typed validation failure code when any check fails; `None` when the
+     * artifact is restorable.
+     */
+    error?: string | null;
+    filename: string;
+    /**
+     * `true` when the full integrity check passed; `None` when it was not
+     * reached.
+     */
+    integrityOk?: boolean | null;
+    message?: string | null;
+    /**
+     * `true` when the schema is supported; `None` when it was not
+     * reached.
+     */
+    schemaCompatible?: boolean | null;
+    schemaVersion: number;
+    serverVersion: string;
+};
+
 export type RetentionBounds = {
     maxDays: number;
     minDays: number;
@@ -2812,6 +2864,47 @@ export type SetPersonStatusResponses = {
 };
 
 export type SetPersonStatusResponse = SetPersonStatusResponses[keyof SetPersonStatusResponses];
+
+export type RestoreSubmitData = {
+    body: RestoreSubmitRequest;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/restore';
+};
+
+export type RestoreSubmitErrors = {
+    400: ApiErrorBody;
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type RestoreSubmitError = RestoreSubmitErrors[keyof RestoreSubmitErrors];
+
+export type RestoreSubmitResponses = {
+    200: OperationMutationResponse;
+};
+
+export type RestoreSubmitResponse = RestoreSubmitResponses[keyof RestoreSubmitResponses];
+
+export type RestoreValidateData = {
+    body: RestoreValidateRequest;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/restore/validate';
+};
+
+export type RestoreValidateErrors = {
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type RestoreValidateError = RestoreValidateErrors[keyof RestoreValidateErrors];
+
+export type RestoreValidateResponses = {
+    200: RestoreValidation;
+};
+
+export type RestoreValidateResponse = RestoreValidateResponses[keyof RestoreValidateResponses];
 
 export type RetentionOverviewData = {
     body?: never;

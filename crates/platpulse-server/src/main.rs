@@ -2,7 +2,7 @@ use clap::{CommandFactory, Parser};
 
 use platpulse_server::cli::{
     AgentCommand, Cli, Command, NetworkCommand, OwnerCommand, ViewerCommand, resolve_serve_config,
-    run_create_enrollment_token, run_network_create, run_owner_create, run_serve,
+    run_create_enrollment_token, run_network_create, run_owner_create, run_restore, run_serve,
     run_viewer_create,
 };
 use platpulse_server::config::ServerConfig;
@@ -65,6 +65,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Agent(AgentCommand::CreateEnrollmentToken(args)) => {
             let config = ServerConfig::resolve(Some(args.config.as_path()), &Default::default())?;
             run_create_enrollment_token(&config, &args).await?;
+        }
+        Command::Restore(args) => {
+            let config = ServerConfig::resolve(Some(args.config.as_path()), &Default::default())?;
+            run_restore(&config, &args).await?;
         }
         Command::Serve(args) => {
             let config = resolve_serve_config(&args)?;

@@ -397,9 +397,62 @@ while True:
                 "UPDATE component_status SET attempted_at = ?, observed_at = ?, received_at = ? WHERE node_id = ?",
                 (fresh, fresh, fresh, node_a),
             )
+            # The seeded Agent's liveness is time-based too; refresh it so
+            # the inventory stays deterministically Current for the whole
+            # suite (same pattern as Node A).
+            db.execute(
+                "UPDATE agents SET last_received_at = ? WHERE agent_id = ?",
+                (fresh, "0195f2a1-0011-4011-8011-000000000011"),
+            )
     except Exception:
         break
 REFRESH
+
+# Seed two Restore artifacts (issue #51) so every viewport can exercise
+# the confirmation and failure paths read-only: one intact artifact whose
+# manifest matches the file, and one tampered artifact whose manifest
+# checksum can never match. Desktop mutation tests create their own
+# artifacts and never touch these seeds.
+python3 - "$STATE_DIR/platpulse.db" "$BACKUP_DIR" <<'PY'
+import hashlib
+import os
+import sqlite3
+import sys
+
+db_path = sys.argv[1]
+backup_dir = sys.argv[2]
+
+good_id = "e2e-seed-good"
+good_name = f"platpulse-{good_id}.db"
+tampered_id = "e2e-seed-tampered"
+tampered_name = f"platpulse-{tampered_id}.db"
+
+with sqlite3.connect(db_path, timeout=5) as db:
+    schema = db.execute(
+        "SELECT COALESCE(MAX(version), 0) FROM _sqlx_migrations"
+    ).fetchone()[0]
+    # Consistent snapshot of the seeded database (same mechanism as the
+    # backup_create Operation: VACUUM INTO, then the manifest row).
+    db.execute(f"VACUUM INTO '{backup_dir}/{good_name}'")
+    good_sha = hashlib.sha256(
+        open(f"{backup_dir}/{good_name}", "rb").read()
+    ).hexdigest()
+    good_bytes = os.path.getsize(f"{backup_dir}/{good_name}")
+    db.execute(
+        "INSERT INTO backup_artifacts (artifact_id, filename, bytes, sha256, schema_version, server_version, created_at, verification, verified_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'ok', ?)",
+        (good_id, good_name, good_bytes, good_sha, schema, "0.1.0", "2026-08-12T08:30:00Z", "2026-08-12T08:31:00Z"),
+    )
+    # Tampered artifact: the recorded sha can never match the file bytes,
+    # so Restore validation deterministically reports the checksum failure.
+    with open(f"{backup_dir}/{tampered_name}", "wb") as f:
+        f.write(b"tampered e2e artifact")
+    tampered_bytes = os.path.getsize(f"{backup_dir}/{tampered_name}")
+    db.execute(
+        "INSERT INTO backup_artifacts (artifact_id, filename, bytes, sha256, schema_version, server_version, created_at, verification) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')",
+        (tampered_id, tampered_name, tampered_bytes, "0" * 64, schema, "0.1.0", "2026-08-12T08:32:00Z"),
+    )
+print("seeded restore artifacts")
+PY
 
 cd "$ROOT"
 # The e2e suite needs the backup directory to exercise failure

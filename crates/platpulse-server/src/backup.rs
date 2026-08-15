@@ -546,6 +546,6 @@ mod tests {
         let digest = crate::secrets::encode_hex(&hasher.finalize());
         let error = verify_artifact(&snapshot, &digest, 99).await.unwrap_err();
         assert!(error.to_string().contains("schema version"));
-        assert!(verify_artifact(&snapshot, &digest, 22).await.is_ok());
+        assert!(verify_artifact(&snapshot, &digest, 23).await.is_ok());
     }
 }
