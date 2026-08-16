@@ -294,6 +294,7 @@ pub struct AppState {
     channels: crate::config::NotificationChannels,
     delivery_provider: Arc<dyn crate::notifications::DeliveryProvider>,
     backup_dir: Option<PathBuf>,
+    geo: Arc<crate::geo::GeoLoader>,
     pub(crate) public_realtime: RealtimeHub,
     pub(crate) admin_realtime: RealtimeHub,
 }
@@ -322,6 +323,12 @@ impl AppState {
         provider: Arc<dyn crate::notifications::DeliveryProvider>,
     ) -> Self {
         self.delivery_provider = provider;
+        self
+    }
+
+    /// Configure the optional server-side GeoLite Country loader.
+    pub fn with_geo_loader(mut self, geo: Arc<crate::geo::GeoLoader>) -> Self {
+        self.geo = geo;
         self
     }
 
@@ -396,6 +403,7 @@ impl AppState {
             channels,
             delivery_provider: Arc::new(crate::notifications::TelegramProvider::default()),
             backup_dir: None,
+            geo: Arc::new(crate::geo::GeoLoader::disabled()),
             public_realtime: RealtimeHub::default(),
             admin_realtime: RealtimeHub::default(),
         }
@@ -452,6 +460,10 @@ impl AppState {
 
     pub(crate) fn backup_dir(&self) -> Option<&PathBuf> {
         self.backup_dir.as_ref()
+    }
+
+    pub(crate) fn geo(&self) -> &Arc<crate::geo::GeoLoader> {
+        &self.geo
     }
 
     pub(crate) fn delivery_provider(&self) -> Arc<dyn crate::notifications::DeliveryProvider> {

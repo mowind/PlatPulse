@@ -526,6 +526,16 @@ export type EventRow = {
     summary: string;
 };
 
+export type GeoStatusDiagnostic = {
+    build_epoch?: number | null;
+    cache_country_count: number;
+    configured: boolean;
+    digest?: string | null;
+    last_error?: string | null;
+    loaded_at?: string | null;
+    state: string;
+};
+
 export type HostComponentDiagnostic = {
     attempted_at?: string | null;
     component: string;
@@ -886,7 +896,9 @@ export type PeerChurnDiagnostic = {
     recent_departures: Array<PeerPresenceInterval>;
     /**
      * `unknown` means no successful Peer Snapshot exists; `empty` means a
-     * successful snapshot exists but no retained interval is available.
+     * successful snapshot exists but no retained interval is available;
+     * `error` means the latest collection failed while retained intervals
+     * and the last-good value remain available.
      */
     state: string;
     total_open_intervals: number;
@@ -1036,8 +1048,27 @@ export type PublicBlockHistoryItem = {
     transactionCount?: number | null;
 };
 
+export type PublicCountryCount = {
+    centroidLat?: number | null;
+    centroidLon?: number | null;
+    count: number;
+    countryCode: string;
+};
+
+export type PublicGeoInsight = {
+    attribution?: string | null;
+    countries?: Array<PublicCountryCount> | null;
+    lastGoodAt?: string | null;
+    /**
+     * Server-owned Geo database state. Raw IPs and MMDB paths never cross
+     * the Public projection boundary.
+     */
+    state: string;
+};
+
 export type PublicNetwork = {
     displayName: string;
+    geo: PublicGeoInsight;
     networkKey: string;
     nodes: Array<PublicNode>;
     peers: PublicPeerInsight;
@@ -2263,6 +2294,22 @@ export type AdminEventsResponses = {
      */
     200: unknown;
 };
+
+export type AdminGeoStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/geo';
+};
+
+export type AdminGeoStatusResponses = {
+    /**
+     * Owner-only safe Geo database status
+     */
+    200: GeoStatusDiagnostic;
+};
+
+export type AdminGeoStatusResponse = AdminGeoStatusResponses[keyof AdminGeoStatusResponses];
 
 export type AdminNetworksData = {
     body?: never;

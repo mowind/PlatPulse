@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "PlatPulse central ingestion, projection, and Web asset server"
+exclude = ["test-data/"]
 
 [lints]
 workspace = true
@@ -23,6 +24,7 @@ rpassword = "7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+maxminddb = "0.30"
 sqlx = { version = "0.8.6", default-features = false, features = ["sqlite", "runtime-tokio", "macros", "migrate"] }
 subtle = "2"
 thiserror = "2"

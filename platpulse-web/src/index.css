@@ -733,11 +733,65 @@ button {
   }
 }
 
+.geo-insight {
+  margin-top: 0.75rem;
+  padding: 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.geo-insight-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.geo-insight-heading h3 {
+  margin: 0;
+}
+
+.geo-country-list {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.geo-country-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.geo-country-list li:last-child {
+  border-bottom: 0;
+}
+
+.geo-centroid {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.geo-attribution {
+  margin: 0.75rem 0 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.geo-digest {
+  overflow-wrap: anywhere;
+}
 .history-list {
   display: grid;
   gap: 0.75rem;
   margin: 0.5rem 0 0;
 }
+
 
 /* Status pills: text plus icon always; color is supplementary (design
    §10.3). Server-owned summary words are presented as the Server sends
@@ -892,7 +946,8 @@ button {
   color: var(--muted);
 }
 
-.summary-strip {
+.summary-strip,
+.geo-status-strip {
   display: grid;
   gap: 0.5rem 1rem;
   margin: 0.5rem 0 0.75rem;
@@ -902,17 +957,20 @@ button {
   background: #f7f8fc;
 }
 
-.summary-strip div {
+.summary-strip div,
+.geo-status-strip div {
   display: flex;
   gap: 0.5rem;
   flex-wrap: wrap;
 }
 
-.summary-strip dt {
+.summary-strip dt,
+.geo-status-strip dt {
   font-weight: 800;
 }
 
-.summary-strip dd {
+.summary-strip dd,
+.geo-status-strip dd {
   margin: 0;
 }
 
@@ -1658,7 +1716,8 @@ button {
  * ------------------------------------------------------------------------- */
 
 @media (min-width: 42rem) {
-  .summary-strip {
+  .summary-strip,
+  .geo-status-strip {
     grid-template-columns: repeat(3, auto);
   }
 

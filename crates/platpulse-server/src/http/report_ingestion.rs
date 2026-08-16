@@ -250,6 +250,7 @@ async fn save_current_peers(
     node_id: &str,
     component: &ComponentObservation<PeerSnapshot>,
     received_at: &str,
+    geo: &crate::geo::GeoLoader,
 ) -> Result<(), sqlx::Error> {
     if component.status != ComponentStatus::Ok {
         return Ok(());
@@ -273,10 +274,14 @@ async fn save_current_peers(
             PeerDirection::Inbound => "inbound",
             PeerDirection::Outbound => "outbound",
         };
+        let canonical_ip = peer
+            .remote_ip
+            .as_deref()
+            .and_then(crate::geo::GeoLoader::canonical_public_ip);
         sqlx::query("INSERT INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, client_name, cbft_protocol_version, cbft_highest_qc_block, cbft_locked_block, cbft_commit_block, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(node_id)
             .bind(&peer.peer_id)
-            .bind(peer.remote_ip.as_deref())
+            .bind(canonical_ip.as_deref().or(peer.remote_ip.as_deref()))
             .bind(direction)
             .bind(peer.trusted as i64)
             .bind(peer.static_peer as i64)
@@ -289,6 +294,42 @@ async fn save_current_peers(
             .bind(received_at)
             .execute(&mut **tx)
             .await?;
+        if let Some(ip) = canonical_ip {
+            let existing_created_at: Option<String> = sqlx::query_scalar(
+                "SELECT created_at FROM geo_location_cache WHERE canonical_ip=?",
+            )
+            .bind(&ip)
+            .fetch_optional(&mut **tx)
+            .await?;
+            if let Ok(parsed) = ip.parse() {
+                if let Some(country_code) = geo.lookup_country(&parsed) {
+                    let (created_at, expires_at) = crate::geo::cache_refresh_window(
+                        existing_created_at.as_deref(),
+                        received_at,
+                    );
+                    sqlx::query("INSERT INTO geo_location_cache (canonical_ip, country_code, created_at, last_lookup_at, last_referenced_at, expires_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(canonical_ip) DO UPDATE SET country_code=excluded.country_code, created_at=excluded.created_at, last_lookup_at=excluded.last_lookup_at, last_referenced_at=excluded.last_referenced_at, expires_at=excluded.expires_at")
+                        .bind(&ip)
+                        .bind(country_code)
+                        .bind(created_at)
+                        .bind(received_at)
+                        .bind(received_at)
+                        .bind(expires_at)
+                        .execute(&mut **tx)
+                        .await?;
+                } else {
+                    // A transient lookup failure must not erase a last-good
+                    // country. It is still a current reference, but its
+                    // existing expiry is intentionally not extended.
+                    sqlx::query(
+                        "UPDATE geo_location_cache SET last_referenced_at=? WHERE canonical_ip=?",
+                    )
+                    .bind(received_at)
+                    .bind(&ip)
+                    .execute(&mut **tx)
+                    .await?;
+                }
+            }
+        }
         for capability in &peer.caps {
             sqlx::query("INSERT INTO current_node_peer_capabilities (node_id, peer_id, capability, updated_at) VALUES (?, ?, ?, ?)")
                 .bind(node_id)
@@ -299,6 +340,13 @@ async fn save_current_peers(
                 .await?;
         }
     }
+    // Raw IP cache rows are only valid while referenced by a current Peer.
+    // This query also removes rows left behind by a node's authoritative
+    // empty snapshot without exposing IPs outside the database.
+    sqlx::query("DELETE FROM geo_location_cache WHERE NOT EXISTS (SELECT 1 FROM current_node_peers WHERE current_node_peers.remote_ip = geo_location_cache.canonical_ip)")
+        .execute(&mut **tx)
+        .await?;
+    crate::geo::trim_cache(&mut **tx).await?;
     Ok(())
 }
 
@@ -532,6 +580,7 @@ async fn save_current(
     tx: &mut Transaction<'_, Sqlite>,
     report: &AgentReport,
     received_at: &str,
+    geo: &crate::geo::GeoLoader,
 ) -> Result<(), sqlx::Error> {
     let agent_id = report.agent_id.to_string();
     let host = &report.host;
@@ -781,7 +830,7 @@ async fn save_current(
                     .await?;
                 }
             }
-            save_current_peers(tx, &node_id, peers, received_at).await?;
+            save_current_peers(tx, &node_id, peers, received_at, geo).await?;
         }
         if let Some(process) = node.process.latest {
             sqlx::query("INSERT INTO current_node_process_observations (node_id, pid, started_at, cpu_percent, memory_bytes, uptime_ms, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET pid=excluded.pid, started_at=excluded.started_at, cpu_percent=excluded.cpu_percent, memory_bytes=excluded.memory_bytes, uptime_ms=excluded.uptime_ms, updated_at=excluded.updated_at")
@@ -1701,7 +1750,8 @@ async fn handler(
     projection_report
         .block_summaries
         .retain(|sample| !ownership_mismatches.contains(&sample.node_id));
-    if let Err(save_error) = save_current(&mut tx, &projection_report, &now_text).await {
+    if let Err(save_error) = save_current(&mut tx, &projection_report, &now_text, state.geo()).await
+    {
         eprintln!(
             "save_current error: {}",
             crate::redaction::redact_sensitive(&save_error.to_string())
@@ -2140,6 +2190,9 @@ async fn handler(
     state
         .admin_realtime()
         .publish("node", None::<String>, parsed.report_sequence);
+    state
+        .admin_realtime()
+        .publish("geo", None::<String>, parsed.report_sequence);
     state
         .public_realtime()
         .publish("node", None::<String>, parsed.report_sequence);

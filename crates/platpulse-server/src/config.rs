@@ -61,10 +61,21 @@ pub struct ServerConfigFile {
     pub trusted_proxy_cidrs: Option<Vec<String>>,
     /// Scheme asserted by a configured trusted proxy (`http` or `https`).
     pub trusted_proxy_scheme: Option<String>,
+    /// Optional GeoLite2 Country database configuration. The Server never
+    /// downloads the file or stores MaxMind credentials.
+    pub geo: Option<GeoSectionFile>,
     /// Notification channel configuration (design §17.4). The TOML carries
     /// only the token file reference and the destination, never token
     /// contents.
     pub notifications: Option<NotificationsSectionFile>,
+}
+
+/// The optional `[geo]` section. Only an operator-provided database path is
+/// accepted; credentials and downloader settings are intentionally absent.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct GeoSectionFile {
+    pub mmdb_path: Option<PathBuf>,
 }
 
 /// `[notifications.telegram]`: the approved Telegram delivery path. The
@@ -97,6 +108,7 @@ pub struct CliOverrides {
     pub pepper_file: Option<PathBuf>,
     pub web_root: Option<PathBuf>,
     pub backup_dir: Option<PathBuf>,
+    pub geo_mmdb: Option<PathBuf>,
     pub listen: Option<SocketAddr>,
     pub base_url: Option<String>,
     pub development: bool,
@@ -118,6 +130,8 @@ pub struct ServerConfig {
     pub development: bool,
     pub trusted_proxy_cidrs: Vec<IpNet>,
     pub trusted_proxy_scheme: Option<String>,
+    /// Resolved optional GeoLite2 Country database path.
+    pub geo: Option<PathBuf>,
     /// Resolved notification channels (design §17.4).
     pub notifications: NotificationChannels,
 }
@@ -328,6 +342,7 @@ impl ServerConfig {
         }
 
         let config_path = config_path.map(Path::to_owned);
+        let geo = cli.geo_mmdb.clone().or_else(|| resolve_geo_path(file));
         let notifications = resolve_notification_channels(file, &config_path)?;
 
         Ok(Self {
@@ -342,9 +357,15 @@ impl ServerConfig {
             development,
             trusted_proxy_cidrs,
             trusted_proxy_scheme,
+            geo,
             notifications,
         })
     }
+}
+
+fn resolve_geo_path(file: Option<&ServerConfigFile>) -> Option<PathBuf> {
+    file.and_then(|value| value.geo.as_ref())
+        .and_then(|section| section.mmdb_path.clone())
 }
 
 fn resolve_notification_channels(
@@ -414,6 +435,28 @@ mod tests {
         path
     }
 
+    #[test]
+    fn geo_path_is_optional_and_cli_override_wins() {
+        let dir = tempdir().unwrap();
+        let path = write_config(
+            dir.path(),
+            "state_dir = \"/srv/platpulse\"\n[geo]\nmmdb_path = \"/etc/platpulse/GeoLite2-Country.mmdb\"\n",
+        );
+        let config = ServerConfig::resolve(Some(&path), &CliOverrides::default()).unwrap();
+        assert_eq!(
+            config.geo,
+            Some(PathBuf::from("/etc/platpulse/GeoLite2-Country.mmdb"))
+        );
+        let config = ServerConfig::resolve(
+            Some(&path),
+            &CliOverrides {
+                geo_mmdb: Some(PathBuf::from("/tmp/test.mmdb")),
+                ..CliOverrides::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(config.geo, Some(PathBuf::from("/tmp/test.mmdb")));
+    }
     #[test]
     fn full_config_resolves_with_cli_override() {
         let dir = tempdir().unwrap();

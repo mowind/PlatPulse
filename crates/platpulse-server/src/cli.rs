@@ -183,6 +183,10 @@ pub struct ServeArgs {
     /// (design §20.1; never the Server state directory).
     #[arg(long)]
     pub backup_dir: Option<PathBuf>,
+    /// Optional operator-provided GeoLite2 Country MMDB. The Server never
+    /// downloads this file and never accepts credentials on the CLI.
+    #[arg(long)]
+    pub geo_mmdb: Option<PathBuf>,
     /// Address the HTTP listener binds to.
     #[arg(long)]
     pub listen: Option<SocketAddr>,
@@ -224,6 +228,7 @@ pub fn resolve_serve_config(args: &ServeArgs) -> Result<ServerConfig, crate::con
             pepper_file: args.pepper_file.clone(),
             web_root: args.web_assets.clone(),
             backup_dir: args.backup_dir.clone(),
+            geo_mmdb: args.geo_mmdb.clone(),
             listen: args.listen,
             base_url: args.base_url.clone(),
             development: args.dev,
@@ -445,7 +450,10 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         config.trusted_proxy_scheme.clone(),
         config.notifications.clone(),
     )
-    .with_backup_dir(config.backup_dir.clone());
+    .with_backup_dir(config.backup_dir.clone())
+    .with_geo_loader(std::sync::Arc::new(crate::geo::GeoLoader::new(
+        config.geo.clone(),
+    )));
     // Development mode never touches a real provider: the e2e suite and
     // local development observe delivery state machines deterministically
     // through the fixed-failure double (production uses TelegramProvider).
@@ -454,6 +462,48 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
             .with_delivery_provider(std::sync::Arc::new(crate::notifications::DevNullProvider));
     }
     let app = crate::http::build_app(state.clone());
+
+    // Geo database reload and raw-IP cache cleanup are deliberately
+    // best-effort. A malformed replacement keeps the last-good reader and
+    // never interrupts report ingestion or readiness.
+    {
+        let geo_state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                tick.tick().await;
+                if geo_state.is_shutting_down() {
+                    break;
+                }
+                let before_geo = geo_state.geo().status();
+                let geo_loader = std::sync::Arc::clone(geo_state.geo());
+                let reload_changed =
+                    tokio::task::spawn_blocking(move || geo_loader.reload_if_changed())
+                        .await
+                        .unwrap_or(false);
+                let after_geo = geo_state.geo().status();
+                let cleanup_changed = {
+                    let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+                    match crate::geo::cleanup_cache(geo_state.db().pool(), &now).await {
+                        Ok(removed) => removed > 0,
+                        Err(error) => {
+                            eprintln!(
+                                "geo cache cleanup deferred: {}",
+                                crate::redaction::redact_sensitive(&error.to_string())
+                            );
+                            false
+                        }
+                    }
+                };
+                if reload_changed || before_geo != after_geo || cleanup_changed {
+                    geo_state.admin_realtime().publish("geo", None::<String>, 1);
+                    geo_state
+                        .public_realtime()
+                        .publish("geo", None::<String>, 1);
+                }
+            }
+        });
+    }
 
     // Operations left `running` by a crash are honestly failed (issue #50,
     // webui.md §5.5); queued rows survive and the worker below picks them up.

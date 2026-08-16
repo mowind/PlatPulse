@@ -4221,10 +4221,67 @@ pub(crate) async fn cancel_node_transfer(
     .into_response()
 }
 
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct GeoStatusDiagnostic {
+    pub state: String,
+    pub configured: bool,
+    pub build_epoch: Option<u64>,
+    pub digest: Option<String>,
+    pub loaded_at: Option<String>,
+    pub last_error: Option<String>,
+    pub cache_country_count: i64,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/admin/v1/geo",
+    tag = "admin",
+    responses((status = 200, description = "Owner-only safe Geo database status", body = GeoStatusDiagnostic))
+)]
+pub(crate) async fn admin_geo_status(
+    State(state): State<AppState>,
+    Extension(_session): Extension<super::AuthenticatedSession>,
+    Extension(request_id): Extension<super::RequestId>,
+) -> Response {
+    let status = state.geo().status();
+    let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+    let rebuild_before = crate::geo::cache_rebuild_cutoff(&now);
+    let cache_country_count = match sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(DISTINCT country_code) FROM geo_location_cache WHERE expires_at > ? AND created_at > ?",
+    )
+    .bind(now)
+    .bind(rebuild_before)
+    .fetch_one(state.db().pool())
+    .await
+    {
+        Ok(count) => count,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    };
+    Json(GeoStatusDiagnostic {
+        state: status.state,
+        configured: status.configured,
+        build_epoch: status.build_epoch,
+        digest: status.digest,
+        loaded_at: status.loaded_at,
+        last_error: status.last_error,
+        cache_country_count,
+    })
+    .into_response()
+}
+
 pub fn router() -> Router<AppState> {
     Router::<AppState>::new()
         .route("/events", get(admin_events))
         .route("/overview", get(overview))
+        .route("/geo", get(admin_geo_status))
         .route("/nodes", get(admin_nodes))
         .route("/nodes/{node_id}", get(admin_node_detail))
         .route("/nodes/{node_id}/metadata", put(set_node_metadata))
@@ -4280,6 +4337,57 @@ mod tests {
     use tempfile::tempdir;
     use time::OffsetDateTime;
 
+    #[tokio::test]
+    async fn admin_geo_status_exposes_safe_metadata_only() {
+        let dir = tempdir().unwrap();
+        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let pepper_path = dir.path().join("pepper");
+        crate::secrets::create_pepper_file(&pepper_path).unwrap();
+        let auth = crate::auth::AuthConfig::development(
+            crate::secrets::load_pepper_file(&pepper_path).unwrap(),
+            "http://127.0.0.1:8080".to_owned(),
+        );
+        let state = AppState::new(database, None, auth);
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        let expires_at = crate::geo::cache_expiry(&now);
+        sqlx::query("INSERT INTO geo_location_cache (canonical_ip, country_code, created_at, last_lookup_at, last_referenced_at, expires_at) VALUES ('8.8.8.8', 'US', ?, ?, ?, ?)")
+            .bind(&now)
+            .bind(&now)
+            .bind(&now)
+            .bind(expires_at)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let session = crate::auth::SessionInfo {
+            session_id: "session".to_owned(),
+            user_id: "owner".to_owned(),
+            username: "owner".to_owned(),
+            role: "owner".to_owned(),
+            created_at: OffsetDateTime::now_utc(),
+            last_seen_at: OffsetDateTime::now_utc(),
+            expires_at: OffsetDateTime::now_utc(),
+            csrf_token: "csrf".to_owned(),
+        };
+        let response = admin_geo_status(
+            State(state),
+            Extension(AuthenticatedSession(session)),
+            Extension(crate::http::RequestId(std::sync::Arc::from("request"))),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        let value: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["state"], "disabled");
+        assert_eq!(value["configured"], false);
+        assert_eq!(value["cache_country_count"], 1);
+        assert!(!text.contains("8.8.8.8"));
+        assert!(!text.contains("server.db"));
+    }
     #[tokio::test]
     async fn visibility_mutation_accepts_json_parameters_and_updates_node() {
         let dir = tempdir().unwrap();

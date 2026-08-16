@@ -1716,6 +1716,26 @@
         }
       }
     },
+    "/api/admin/v1/geo": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "admin_geo_status",
+        "responses": {
+          "200": {
+            "description": "Owner-only safe Geo database status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeoStatusDiagnostic"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/v1/networks": {
       "get": {
         "tags": [
@@ -6485,6 +6505,52 @@
           }
         }
       },
+      "GeoStatusDiagnostic": {
+        "type": "object",
+        "required": [
+          "state",
+          "configured",
+          "cache_country_count"
+        ],
+        "properties": {
+          "build_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "cache_country_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "configured": {
+            "type": "boolean"
+          },
+          "digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "loaded_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string"
+          }
+        }
+      },
       "HostComponentDiagnostic": {
         "type": "object",
         "required": [
@@ -7799,7 +7865,7 @@
           },
           "state": {
             "type": "string",
-            "description": "`unknown` means no successful Peer Snapshot exists; `empty` means a\nsuccessful snapshot exists but no retained interval is available."
+            "description": "`unknown` means no successful Peer Snapshot exists; `empty` means a\nsuccessful snapshot exists but no retained interval is available;\n`error` means the latest collection failed while retained intervals\nand the last-good value remain available."
           },
           "total_open_intervals": {
             "type": "integer",
@@ -8332,17 +8398,84 @@
           }
         }
       },
+      "PublicCountryCount": {
+        "type": "object",
+        "required": [
+          "countryCode",
+          "count"
+        ],
+        "properties": {
+          "centroidLat": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "centroidLon": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "countryCode": {
+            "type": "string"
+          }
+        }
+      },
+      "PublicGeoInsight": {
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "attribution": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "countries": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/PublicCountryCount"
+            }
+          },
+          "lastGoodAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "description": "Server-owned Geo database state. Raw IPs and MMDB paths never cross\nthe Public projection boundary."
+          }
+        }
+      },
       "PublicNetwork": {
         "type": "object",
         "required": [
           "networkKey",
           "displayName",
           "peers",
+          "geo",
           "nodes"
         ],
         "properties": {
           "displayName": {
             "type": "string"
+          },
+          "geo": {
+            "$ref": "#/components/schemas/PublicGeoInsight"
           },
           "networkKey": {
             "type": "string"

@@ -12,6 +12,11 @@ listen = "127.0.0.1:8080"
 public_base_url = "https://monitor.example.com"
 development = false
 
+# Optional: use an operator-provided GeoLite2 Country database. PlatPulse does
+# not download, bundle, or store MaxMind credentials.
+# [geo]
+# mmdb_path = "/var/lib/platpulse/GeoLite2-Country.mmdb"
+
 # Production deployments should use HTTPS directly or an explicitly trusted
 # HTTPS reverse proxy. Example reverse-proxy settings:
 # trusted_proxy_cidrs = ["10.0.0.0/8"]

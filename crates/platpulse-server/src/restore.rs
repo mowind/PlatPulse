@@ -982,6 +982,7 @@ mod tests {
             public_base_url: "http://127.0.0.1:8080".to_owned(),
             trusted_proxy_cidrs: Vec::new(),
             trusted_proxy_scheme: None,
+            geo: None,
             development: false,
             notifications: crate::config::NotificationChannels::default(),
         }

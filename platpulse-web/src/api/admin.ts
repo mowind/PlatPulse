@@ -11,6 +11,7 @@ import { QueryClient, keepPreviousData, useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import {
   adminAgentAudit,
+  adminGeoStatus,
   adminAgentDetail,
   adminEnrollmentToken,
   adminNetworkDetail,
@@ -119,6 +120,7 @@ import {
   type AdminNodeListItem,
   type AdminOverview,
   type AgentAuditResponse,
+  type GeoStatusDiagnostic,
   type AgentDiagnostic,
   type ApiErrorBody,
   type AuditResponse,
@@ -164,6 +166,7 @@ const adminKeys = {
   all: ['admin'] as const,
   overview: ['admin', 'overview'] as const,
   diagnostics: ['admin', 'diagnostics'] as const,
+  geo: ['admin', 'geo'] as const,
   agents: ['admin', 'agents'] as const,
   agentDetail: (agentId: string) => ['admin', 'agents', agentId] as const,
   agentAudit: (agentId: string) => ['admin', 'agents', agentId, 'audit'] as const,
@@ -288,7 +291,22 @@ export async function fetchAdminOverview(signal?: AbortSignal): Promise<AdminOve
   )
 }
 
-/** Full Agent/Node diagnostics projected by the Server. */
+export async function fetchAdminGeoStatus(signal?: AbortSignal): Promise<GeoStatusDiagnostic> {
+  return requestAdmin(
+    () => adminGeoStatus({ signal }),
+    'Unable to load Geo database status',
+  )
+}
+
+export function useAdminGeoStatus(generation: number) {
+  return useQuery({
+    queryKey: [...adminKeys.geo, generation],
+    queryFn: ({ signal }) => fetchAdminGeoStatus(signal),
+    placeholderData: keepPreviousData,
+  })
+}
+
+
 export async function fetchAdminDiagnostics(signal?: AbortSignal): Promise<AgentDiagnostic[]> {
   return requestAdmin(
     () => diagnostics({ signal }),

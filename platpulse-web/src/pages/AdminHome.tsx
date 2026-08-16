@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import {
   updateNodeVisibility,
+  useAdminGeoStatus,
   useAdminDiagnostics,
   useAdminOverview,
   type RealtimeState,
@@ -33,6 +34,7 @@ export default function AdminHome() {
   const { realtime } = useAdminRealtimeContext()
   const overview = useAdminOverview(generation)
   const diagnostics = useAdminDiagnostics(generation)
+  const geo = useAdminGeoStatus(generation)
 
   return (
     <section className="page">
@@ -42,6 +44,7 @@ export default function AdminHome() {
         decides health and attention; this page only presents them.
       </p>
       <RealtimeNotice realtime={realtime} />
+      <GeoStatusPanel query={geo} />
       <AttentionPanel query={overview} />
       <NodePanel query={diagnostics} />
       <AgentPanel query={diagnostics} />
@@ -70,6 +73,29 @@ function RealtimeNotice({ realtime }: { realtime: RealtimeState }) {
 }
 
 type OverviewQuery = ReturnType<typeof useAdminOverview>
+type GeoStatusQuery = ReturnType<typeof useAdminGeoStatus>
+
+function GeoStatusPanel({ query }: { query: GeoStatusQuery }) {
+  const status = query.data?.state ?? 'unknown'
+  const label = status === 'current' ? 'Current' : status === 'stale' ? 'Stale' : status === 'error' ? 'Error' : status === 'disabled' ? 'Disabled' : 'Unknown'
+  const tone = status === 'current' ? 'ok' : status === 'error' ? 'error' : status === 'stale' ? 'warning' : 'neutral'
+  return (
+    <article className="panel">
+      <div className="panel-heading"><h2>Geo database</h2><StatusBadge status={label} tone={tone} /></div>
+      {!query.data && query.isPending && <p className="panel-state" role="status"><StatusBadge status="Starting" tone="neutral" /> Loading Geo status…</p>}
+      {!query.data && query.isError && <p className="panel-state" role="alert"><StatusBadge status="Error" tone="error" /> Unable to load Geo status. <button type="button" className="text-action" onClick={() => void query.refetch()}>Try again</button></p>}
+      {query.data && <dl className="geo-status-strip">
+        <div><dt>Configured</dt><dd>{query.data.configured ? 'Yes' : 'No'}</dd></div>
+        <div><dt>Build epoch</dt><dd>{query.data.build_epoch ?? 'Unknown'}</dd></div>
+        <div><dt>Cached countries</dt><dd>{query.data.cache_country_count.toLocaleString()}</dd></div>
+      </dl>}
+      {query.data && query.isRefetchError && <p className="panel-state" role="alert"><StatusBadge status="Error" tone="error" /> Geo status refresh failed; showing the last successful status. <button type="button" className="text-action" onClick={() => void query.refetch()}>Try again</button></p>}
+      {query.data?.last_error && <p className="panel-state" role="alert"><StatusBadge status="Error" tone="error" /> {query.data.last_error}</p>}
+      {query.data?.digest && <p className="muted geo-digest">Database digest: <code>{query.data.digest}</code></p>}
+    </article>
+  )
+}
+
 
 function AttentionPanel({ query }: { query: OverviewQuery }) {
   const data = query.data

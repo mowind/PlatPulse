@@ -375,6 +375,35 @@ pub(crate) async fn session_handler(
 
 #[derive(Debug, Serialize, ToSchema, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct PublicCountryCount {
+    pub country_code: String,
+    pub count: i64,
+    pub centroid_lat: Option<f64>,
+    pub centroid_lon: Option<f64>,
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicGeoInsight {
+    /// Server-owned Geo database state. Raw IPs and MMDB paths never cross
+    /// the Public projection boundary.
+    pub state: String,
+    pub last_good_at: Option<String>,
+    pub countries: Option<Vec<PublicCountryCount>>,
+    pub attribution: Option<String>,
+}
+
+fn unknown_public_geo_insight() -> PublicGeoInsight {
+    PublicGeoInsight {
+        state: "disabled".to_owned(),
+        last_good_at: None,
+        countries: None,
+        attribution: None,
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct PublicPeerInsight {
     /// Agent-reported collection state. The WebUI presents this separately
     /// from freshness and value availability.
@@ -420,6 +449,7 @@ pub struct PublicNetwork {
     pub network_key: String,
     pub display_name: String,
     pub peers: PublicPeerInsight,
+    pub geo: PublicGeoInsight,
     pub nodes: Vec<PublicNode>,
 }
 
@@ -817,6 +847,49 @@ fn aggregate_peer_insight(nodes: &[PublicNode]) -> PublicPeerInsight {
     }
 }
 
+async fn public_country_distribution(state: &AppState, network_key: &str) -> PublicGeoInsight {
+    let geo_status = state.geo().status();
+    if geo_status.state == "disabled" {
+        return unknown_public_geo_insight();
+    }
+    let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+    let rebuild_before = crate::geo::cache_rebuild_cutoff(&now);
+    let rows = sqlx::query_as::<_, (String, i64)>(
+        "SELECT g.country_code, COUNT(*) FROM current_node_peers p JOIN geo_location_cache g ON g.canonical_ip = p.remote_ip JOIN nodes n ON n.node_id = p.node_id WHERE n.network_key=? AND n.visibility='public' AND n.lifecycle='active' AND g.expires_at > ? AND g.created_at > ? GROUP BY g.country_code ORDER BY g.country_code",
+    )
+    .bind(network_key)
+    .bind(now)
+    .bind(rebuild_before)
+    .fetch_all(state.db().pool())
+    .await;
+    let Ok(rows) = rows else {
+        return PublicGeoInsight {
+            state: "error".to_owned(),
+            last_good_at: geo_status.loaded_at.clone(),
+            countries: None,
+            attribution: None,
+        };
+    };
+    let countries = rows
+        .into_iter()
+        .map(|(country_code, count)| {
+            let (centroid_lat, centroid_lon) = crate::geo::country_centroid(&country_code);
+            PublicCountryCount {
+                country_code,
+                count,
+                centroid_lat,
+                centroid_lon,
+            }
+        })
+        .collect::<Vec<_>>();
+    PublicGeoInsight {
+        state: geo_status.state,
+        last_good_at: geo_status.loaded_at,
+        countries: Some(countries),
+        attribution: Some(crate::geo::MAXMIND_ATTRIBUTION.to_owned()),
+    }
+}
+
 fn public_node(row: PublicNodeRow) -> (String, PublicNode) {
     let (health, health_reason) = health_for(
         &row.lifecycle,
@@ -947,12 +1020,14 @@ pub(crate) async fn public_networks(State(state): State<AppState>) -> Response {
                 network_key,
                 display_name: network_display_name,
                 peers: unknown_public_peer_insight(),
+                geo: unknown_public_geo_insight(),
                 nodes: vec![node],
             });
         }
     }
     for network in &mut networks {
         network.peers = aggregate_peer_insight(&network.nodes);
+        network.geo = public_country_distribution(&state, &network.network_key).await;
     }
     Json(networks).into_response()
 }
@@ -1001,10 +1076,12 @@ pub(crate) async fn public_network(
         .map(|row| public_node(row).1)
         .collect::<Vec<_>>();
     let peers = aggregate_peer_insight(&nodes);
+    let geo = public_country_distribution(&state, &network_key).await;
     Json(PublicNetwork {
         network_key,
         display_name,
         peers,
+        geo,
         nodes,
     })
     .into_response()
@@ -1193,6 +1270,9 @@ mod tests {
         assert!(peers.get("remoteIp").is_none());
         assert!(peers.get("clientName").is_none());
         assert_eq!(value[0]["peers"]["peerCount"], 2);
+        assert_eq!(value[0]["geo"]["state"], "disabled");
+        assert!(value[0]["geo"]["countries"].is_null());
+        assert!(String::from_utf8_lossy(&body).find("203.0.113.7").is_none());
 
         let stale_received =
             crate::auth::format_rfc3339(crate::auth::now_utc() - time::Duration::minutes(5));

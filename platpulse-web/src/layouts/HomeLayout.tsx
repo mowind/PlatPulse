@@ -10,6 +10,7 @@ import {
 import type { PublicNetwork } from '../api/generated'
 import { ServerStatusNotice } from '../components/ServerStatusNotice'
 import { PeerInsight } from '../components/PeerInsight'
+import { GeoInsight } from '../components/GeoInsight'
 
 /**
  * Home shell: reads only the Public Projection. Anonymous Guests may use
@@ -97,6 +98,7 @@ export default function HomeLayout() {
               <h2><Link to={`/networks/${network.networkKey}`}>{network.displayName}</Link></h2>
               <p className="muted">{network.networkKey}</p>
               <PeerInsight insight={network.peers} compact />
+              <GeoInsight insight={network.geo} />
               <ul className="node-list">{network.nodes.map((node) => <li key={node.nodeId}><Link to={`/nodes/${node.nodeId}`}>{node.displayName ?? node.nodeId}</Link><span className={`status status-${node.health}`}>{node.health}</span></li>)}</ul>
             </section>)}
           </div>

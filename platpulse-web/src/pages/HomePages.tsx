@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router'
 import { fetchNetwork, fetchNode, fetchNodeHistory, fetchNodeHistoryExport, usePublicRealtime } from '../api/public'
 import type { PublicNetwork, PublicNode } from '../api/generated'
 import { PeerInsight } from '../components/PeerInsight'
+import { GeoInsight } from '../components/GeoInsight'
 
 export function NetworkPage() {
   const { networkKey = '' } = useParams()
@@ -21,7 +22,7 @@ export function NetworkPage() {
 
   if (error) return <section className="page"><p role="alert" className="form-error">{error}</p><Link to="/">Back to Home</Link></section>
   if (!network) return <section className="page"><p role="status">Loading Network…</p></section>
-  return <section className="page"><p><Link to="/">← All Networks</Link></p><h1>{network.displayName}</h1><p className="muted">{network.networkKey}</p><PeerInsight insight={network.peers} /><div className="node-grid">{network.nodes.map((node) => <NodeCard node={node} key={node.nodeId} />)}</div></section>
+  return <section className="page"><p><Link to="/">← All Networks</Link></p><h1>{network.displayName}</h1><p className="muted">{network.networkKey}</p><PeerInsight insight={network.peers} /><GeoInsight insight={network.geo} /><div className="node-grid">{network.nodes.map((node) => <NodeCard node={node} key={node.nodeId} />)}</div></section>
 }
 
 export function NodePage() {
