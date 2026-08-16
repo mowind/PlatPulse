@@ -41,6 +41,34 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await setPageZoom(page, 2)
     await expectNoHorizontalOverflow(page)
   })
+
+  test('Public and Owner Geo surfaces stay explicit when the database is disabled', async ({ page }) => {
+    await loginAs(page)
+    const publicGeo = page.locator('.geo-insight').first()
+    await expect(publicGeo).toContainText('Peer countries')
+    await expect(publicGeo).toContainText('Disabled')
+    await expect(publicGeo).toContainText('Country insight is Disabled by the Server')
+    await expect(page.getByRole('link', { name: 'PlatON E2E Network' })).toBeVisible()
+    await page.getByRole('link', { name: 'PlatON E2E Network' }).click()
+    await expect(page.locator('.geo-insight')).toContainText('Disabled')
+    await expect(page.locator('.geo-attribution')).toHaveCount(0)
+
+    await page.getByRole('link', { name: 'Admin', exact: true }).click()
+    await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
+    const geoStatus = page.getByRole('heading', { level: 2, name: 'Geo database' }).locator('..')
+    await expect(geoStatus).toContainText('Disabled')
+    await expect(geoStatus).toContainText('Configured')
+    await expect(geoStatus).toContainText('No')
+
+    // Owner current Peer diagnostics are available, but raw peer addresses
+    // remain outside the Admin DTO as well as the Public projection.
+    await page.getByRole('link', { name: 'Nodes' }).click()
+    await page.getByRole('link', { name: 'Node A' }).click()
+    await expect(page.getByRole('heading', { level: 2, name: 'Peer snapshot' })).toBeVisible()
+    await expect(page.getByText('3 peers')).toBeVisible()
+    await expect(page.getByText('203.0.113.9')).toHaveCount(0)
+    await expectNoHorizontalOverflow(page)
+  })
   test('Owner diagnostics and SSE reconnect do not disturb an active form field', async ({ page }) => {
     await loginAs(page)
     await page.getByRole('link', { name: 'Admin', exact: true }).click()

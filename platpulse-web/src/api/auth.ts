@@ -26,12 +26,13 @@ function toAuthError(error: unknown, fallbackCode: string): AuthApiError {
 }
 
 /** Current session and CSRF token, or null when unauthenticated. */
-export async function fetchSession(): Promise<SessionResponse | null> {
+export async function fetchSession(signal?: AbortSignal): Promise<SessionResponse | null> {
   try {
-    const { data } = await sessionHandler()
+    const { data } = await sessionHandler({ signal })
     if (data) return data
     return null
-  } catch {
+  } catch (caught) {
+    if (caught instanceof DOMException && caught.name === 'AbortError') throw caught
     // Network failure: treat as unauthenticated; the login page will
     // surface a readable error if the Server is actually unreachable.
     return null

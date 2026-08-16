@@ -54,31 +54,45 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [accessLost, setAccessLost] = useState(false)
   const [hadSession, setHadSession] = useState(false)
   const statusRef = useRef(status)
+  const sessionProbeRef = useRef<AbortController | null>(null)
+  const sessionEpochRef = useRef(0)
   statusRef.current = status
 
   useEffect(() => {
-    let cancelled = false
-    fetchSession().then((response) => {
-      if (cancelled) return
-      // The initial check establishes the first generation; there is no
-      // previous session to discard, so the generation is not bumped.
-      setStatus(
-        response
-          ? {
-              state: 'authenticated',
-              session: response.session,
-              csrfToken: response.csrfToken,
-            }
-          : { state: 'guest' },
-      )
-      if (response) setHadSession(true)
-    })
+    const controller = new AbortController()
+    const epoch = sessionEpochRef.current + 1
+    sessionEpochRef.current = epoch
+    sessionProbeRef.current = controller
+    fetchSession(controller.signal)
+      .then((response) => {
+        if (controller.signal.aborted || sessionEpochRef.current !== epoch) return
+        // The initial check establishes the first generation; there is no
+        // previous session to discard, so the generation is not bumped.
+        setStatus(
+          response
+            ? {
+                state: 'authenticated',
+                session: response.session,
+                csrfToken: response.csrfToken,
+              }
+            : { state: 'guest' },
+        )
+        if (response) setHadSession(true)
+      })
+      .catch(() => {
+        // Aborted probes are expected during login/logout or unmount.
+      })
     return () => {
-      cancelled = true
+      controller.abort()
+      if (sessionProbeRef.current === controller) sessionProbeRef.current = null
+      sessionEpochRef.current += 1
     }
   }, [])
 
   const login = useCallback(async (username: string, password: string) => {
+    sessionProbeRef.current?.abort()
+    sessionProbeRef.current = null
+    sessionEpochRef.current += 1
     const response = await apiLogin(username, password)
     // Synchronously retire any cached Admin data from an earlier session
     // before the new session can render (design §3.3).
@@ -97,6 +111,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(async () => {
     await apiLogout()
+    sessionProbeRef.current?.abort()
+    sessionProbeRef.current = null
+    sessionEpochRef.current += 1
     setGeneration((value) => {
       resetAdminCache(value + 1)
       return value + 1
@@ -107,7 +124,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const recheckSession = useCallback(async () => {
     const current = statusRef.current
     if (current.state !== 'authenticated') return
-    const response = await fetchSession()
+    sessionProbeRef.current?.abort()
+    const controller = new AbortController()
+    const epoch = sessionEpochRef.current + 1
+    sessionEpochRef.current = epoch
+    sessionProbeRef.current = controller
+    let response: Awaited<ReturnType<typeof fetchSession>>
+    try {
+      response = await fetchSession(controller.signal)
+    } catch {
+      return
+    }
+    if (sessionProbeRef.current === controller) sessionProbeRef.current = null
+    if (controller.signal.aborted || sessionEpochRef.current !== epoch) return
     if (!response) {
       // Expired or revoked while the surface was open: the old session's
       // data must never flash again.

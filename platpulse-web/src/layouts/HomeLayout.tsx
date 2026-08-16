@@ -1,4 +1,4 @@
-import { Link, NavLink, Outlet, useNavigate } from 'react-router'
+import { Link, NavLink, Outlet, useNavigate, useOutletContext } from 'react-router'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import SignOutButton from '../components/SignOutButton'
 import { useAuth } from '../auth/AuthContext'
@@ -20,6 +20,12 @@ import { GeoInsight } from '../components/GeoInsight'
  * events: the shell re-checks the session and the Guest setting before any
  * cached projection can re-render (design §3.3, §6.3).
  */
+export type HomeRealtimeContext = { reloadKey: number; resetting: boolean }
+
+export function useHomeRealtimeContext(): HomeRealtimeContext {
+  return useOutletContext<HomeRealtimeContext>()
+}
+
 export default function HomeLayout() {
   const { status, recheckSession } = useAuth()
   const navigate = useNavigate()
@@ -28,20 +34,26 @@ export default function HomeLayout() {
   const [networks, setNetworks] = useState<PublicNetwork[]>([])
   const [error, setError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
+  const [resetting, setResetting] = useState(false)
+  const requestController = useRef<AbortController | null>(null)
+  const accessController = useRef<AbortController | null>(null)
   const authRef = useRef(status)
   authRef.current = status
 
   useEffect(() => {
-    let cancelled = false
-    fetchNetworks()
+    requestController.current?.abort()
+    const controller = new AbortController()
+    requestController.current = controller
+    fetchNetworks(controller.signal)
       .then((data) => {
-        if (!cancelled) setNetworks(data)
+        if (!controller.signal.aborted) setNetworks(data)
       })
       .catch((caught: Error) => {
-        if (!cancelled) setError(caught.message)
+        if (!controller.signal.aborted && caught.name !== 'AbortError') setError(caught.message)
       })
     return () => {
-      cancelled = true
+      controller.abort()
+      if (requestController.current === controller) requestController.current = null
     }
   }, [reloadKey])
 
@@ -52,15 +64,29 @@ export default function HomeLayout() {
     // flash while the new authorization resolves (design §3.3).
     setNetworks([])
     setError(null)
+    setResetting(true)
+    requestController.current?.abort()
+    accessController.current?.abort()
+    const controller = new AbortController()
+    accessController.current = controller
     void recheckSession()
-    void refreshGuestEnabled().then((enabled) => {
-      const current = authRef.current
-      if (current.state === 'guest' && !enabled) {
-        navigate('/login', { replace: true })
-      } else {
-        setReloadKey((value) => value + 1)
-      }
-    })
+    void refreshGuestEnabled(controller.signal)
+      .then((enabled) => {
+        if (controller.signal.aborted) return
+        const current = authRef.current
+        if (current.state === 'guest' && !enabled) {
+          navigate('/login', { replace: true })
+        } else {
+          setResetting(false)
+          setReloadKey((value) => value + 1)
+        }
+      })
+      .catch((caught: Error) => {
+        if (caught.name !== 'AbortError') {
+          setResetting(false)
+          setError(caught.message)
+        }
+      })
   }, [navigate, recheckSession])
 
   const realtimeStatus = usePublicRealtime(() => {
@@ -103,7 +129,7 @@ export default function HomeLayout() {
             </section>)}
           </div>
         </section>
-        <Outlet />
+        <Outlet context={{ reloadKey, resetting }} />
       </main>
     </div>
   )

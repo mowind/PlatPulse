@@ -7,7 +7,7 @@
 // carries invalidation/reset signals only, and every invalidation refetches
 // the matching Admin REST resource through the cache.
 
-import { QueryClient, keepPreviousData, useQuery } from '@tanstack/react-query'
+import { QueryClient, useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import {
   adminAgentAudit,
@@ -190,6 +190,7 @@ const adminKeys = {
     ['admin', 'alerts', 'incidents', incidentId] as const,
   alertSilences: ['admin', 'alerts', 'silences'] as const,
   alertMaintenance: ['admin', 'alerts', 'maintenance'] as const,
+  notificationRoot: ['admin', 'notifications'] as const,
   notificationEvents: ['admin', 'notifications', 'events'] as const,
   notificationEventDetail: (eventId: string) =>
     ['admin', 'notifications', 'events', eventId] as const,
@@ -200,6 +201,7 @@ const adminKeys = {
   notificationChannels: ['admin', 'notifications', 'channels'] as const,
   notificationChannelDetail: (channelId: string) =>
     ['admin', 'notifications', 'channels', channelId] as const,
+  operationsRoot: ['admin', 'operations'] as const,
   operations: (filters: OperationFilters) => ['admin', 'operations', filters] as const,
   operationDetail: (operationId: string) =>
     ['admin', 'operations', operationId] as const,
@@ -258,6 +260,7 @@ export class AdminApiError extends Error {
  */
 type AccessResetListener = () => void
 const accessResetListeners = new Set<AccessResetListener>()
+const adminRealtimeClosers = new Set<() => void>()
 
 export function subscribeAdminAccessReset(listener: AccessResetListener): () => void {
   accessResetListeners.add(listener)
@@ -265,6 +268,7 @@ export function subscribeAdminAccessReset(listener: AccessResetListener): () => 
 }
 
 function notifyAdminAccessReset(): void {
+  for (const close of adminRealtimeClosers) close()
   for (const listener of accessResetListeners) listener()
 }
 
@@ -305,7 +309,6 @@ export function useAdminGeoStatus(generation: number) {
   return useQuery({
     queryKey: [...adminKeys.geo, generation],
     queryFn: ({ signal }) => fetchAdminGeoStatus(signal),
-    placeholderData: keepPreviousData,
   })
 }
 
@@ -323,9 +326,6 @@ export function useAdminOverview(generation: number) {
     // generation is never rendered under the current one.
     queryKey: [...adminKeys.overview, generation],
     queryFn: ({ signal }) => fetchAdminOverview(signal),
-    // Keep the last authoritative value visible while an SSE-triggered
-    // refetch runs; a failed refetch never blanks the panel.
-    placeholderData: keepPreviousData,
   })
 }
 
@@ -333,7 +333,6 @@ export function useAdminDiagnostics(generation: number) {
   return useQuery({
     queryKey: [...adminKeys.diagnostics, generation],
     queryFn: ({ signal }) => fetchAdminDiagnostics(signal),
-    placeholderData: keepPreviousData,
   })
 }
 
@@ -364,7 +363,6 @@ export function useAdminAgentDetail(generation: number, agentId: string) {
   return useQuery({
     queryKey: [...adminKeys.agentDetail(agentId), generation],
     queryFn: ({ signal }) => fetchAdminAgent(agentId, signal),
-    placeholderData: keepPreviousData,
     enabled: agentId.length > 0,
   })
 }
@@ -373,7 +371,6 @@ export function useAdminAgentAudit(generation: number, agentId: string) {
   return useQuery({
     queryKey: [...adminKeys.agentAudit(agentId), generation],
     queryFn: ({ signal }) => fetchAdminAgentAudit(agentId, signal),
-    placeholderData: keepPreviousData,
     enabled: agentId.length > 0,
   })
 }
@@ -392,7 +389,6 @@ export function useAdminNodes(generation: number) {
   return useQuery({
     queryKey: [...adminKeys.nodes, generation],
     queryFn: ({ signal }) => fetchAdminNodes(signal),
-    placeholderData: keepPreviousData,
   })
 }
 
@@ -543,7 +539,6 @@ export function useAdminNetworks(generation: number) {
   return useQuery({
     queryKey: [...adminKeys.networks, generation],
     queryFn: ({ signal }) => fetchAdminNetworks(signal),
-    placeholderData: keepPreviousData,
   })
 }
 
@@ -744,7 +739,6 @@ export function useAdminPeople(generation: number) {
   return useQuery({
     queryKey: [...adminKeys.people, generation],
     queryFn: ({ signal }) => fetchAdminPeople(signal),
-    placeholderData: keepPreviousData,
   })
 }
 
@@ -834,7 +828,6 @@ export function useAdminSessions(generation: number) {
   return useQuery({
     queryKey: [...adminKeys.sessions, generation],
     queryFn: ({ signal }) => fetchAdminSessions(signal),
-    placeholderData: keepPreviousData,
   })
 }
 
@@ -898,7 +891,6 @@ export function useAdminAudit(generation: number, filters: AuditFilters) {
   return useQuery({
     queryKey: [...adminKeys.audit(filters), generation],
     queryFn: ({ signal }) => fetchAdminAudit(filters, signal),
-    placeholderData: keepPreviousData,
   })
 }
 
@@ -911,7 +903,6 @@ export function useAdminAccess(generation: number) {
   return useQuery({
     queryKey: [...adminKeys.access, generation],
     queryFn: ({ signal }) => fetchAdminAccess(signal),
-    placeholderData: keepPreviousData,
   })
 }
 
@@ -936,6 +927,67 @@ export async function updateAccessSettings(
 
 export type RealtimeStatus = 'connecting' | 'connected' | 'disconnected'
 export type RealtimeState = { status: RealtimeStatus; online: boolean }
+
+function invalidateAdminResource(resource: string, resourceId?: string): void {
+  const keys: Array<readonly unknown[]> = (() => {
+    switch (resource) {
+      case 'node':
+        return [adminKeys.overview, adminKeys.diagnostics, adminKeys.nodes, adminKeys.networks]
+      case 'peer':
+        return [adminKeys.overview, adminKeys.nodes, adminKeys.networks]
+      case 'geo':
+        return [adminKeys.geo, adminKeys.nodes, adminKeys.networks]
+      case 'network':
+        return [adminKeys.networks]
+      case 'access':
+        return [adminKeys.access, adminKeys.people, adminKeys.sessions]
+      case 'alerts':
+        return [
+          adminKeys.overview,
+          adminKeys.alertRules,
+          adminKeys.alertIncidents,
+          adminKeys.alertSilences,
+          adminKeys.alertMaintenance,
+        ]
+      case 'notifications':
+        return [adminKeys.notificationRoot]
+      case 'operations':
+        return [adminKeys.overview, adminKeys.operationsRoot]
+      case 'retention':
+        return [adminKeys.retention]
+      case 'backups':
+        return [adminKeys.backups]
+      case 'doctor':
+        return [adminKeys.doctor]
+      default:
+        return [adminKeys.all]
+    }
+  })()
+  if (resourceId && resource === 'node') {
+    keys.push(adminKeys.nodeDetail(resourceId), adminKeys.nodePeerChurn(resourceId), adminKeys.nodePeerHistory(resourceId), adminKeys.nodeTransfers(resourceId))
+  }
+  if (resourceId && resource === 'network') keys.push(adminKeys.networkDetail(resourceId))
+  void Promise.all(keys.map((queryKey) => adminQueryClient.invalidateQueries({ queryKey })))
+}
+
+function handleAdminInvalidation(data: string): void {
+  try {
+    const event = JSON.parse(data) as { resource?: unknown; resourceId?: unknown; reset?: unknown }
+    if (event.reset === true) {
+      void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+      return
+    }
+    const resource = typeof event.resource === 'string' ? event.resource : 'collection'
+    const resourceId = typeof event.resourceId === 'string' ? event.resourceId : undefined
+    invalidateAdminResource(resource, resourceId)
+  } catch {
+    // A malformed signal is never trusted as data; refetch the bounded Admin
+    // namespace instead of allowing a stale sensitive panel to persist.
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+  }
+}
+
+
 
 /**
  * One Admin SSE stream per shell per tab. Invalidations refetch the exact
@@ -969,19 +1021,26 @@ export function useAdminRealtime(
   useEffect(() => {
     if (typeof EventSource === 'undefined') return
     const events = new EventSource('/api/admin/v1/events')
+    const closeStream = () => events.close()
+    adminRealtimeClosers.add(closeStream)
     // The Server sends `event: reset` only when the session is no longer
     // current (expired, revoked, role-changed); that is an access-generation
     // transition. Every `invalidation` (including buffered replay resets)
     // only refetches the authoritative Admin REST namespace.
-    const onReset = () => accessReset.current()
-    const onInvalidation = () => {
-      void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    const onReset = () => {
+      events.close()
+      accessReset.current()
+    }
+    const onInvalidation = (event: Event) => {
+      const message = event as MessageEvent<string>
+      handleAdminInvalidation(message.data)
     }
     events.onopen = () => setStatus('connected')
     events.onerror = () => setStatus('disconnected')
     events.addEventListener('invalidation', onInvalidation)
     events.addEventListener('reset', onReset)
     return () => {
+      adminRealtimeClosers.delete(closeStream)
       events.removeEventListener('invalidation', onInvalidation)
       events.removeEventListener('reset', onReset)
       events.close()
@@ -1006,7 +1065,6 @@ export function useAdminAlertRules(generation: number) {
   return useQuery({
     queryKey: [...adminKeys.alertRules, generation],
     queryFn: ({ signal }) => fetchAdminAlertRules(signal),
-    placeholderData: keepPreviousData,
   })
 }
 
@@ -1160,7 +1218,6 @@ export function useAdminIncidents(generation: number, filters: IncidentFilters) 
   return useQuery({
     queryKey: [...adminKeys.alertIncidents, filters, generation],
     queryFn: ({ signal }) => fetchAdminIncidents(filters, signal),
-    placeholderData: keepPreviousData,
   })
 }
 
@@ -1200,7 +1257,6 @@ export function useAdminSilences(generation: number, filters: SilenceFilters) {
   return useQuery({
     queryKey: [...adminKeys.alertSilences, filters, generation],
     queryFn: ({ signal }) => fetchAdminSilences(filters, signal),
-    placeholderData: keepPreviousData,
   })
 }
 
@@ -1266,7 +1322,6 @@ export function useAdminMaintenance(generation: number, filters: MaintenanceFilt
   return useQuery({
     queryKey: [...adminKeys.alertMaintenance, filters, generation],
     queryFn: ({ signal }) => fetchAdminMaintenance(filters, signal),
-    placeholderData: keepPreviousData,
   })
 }
 
@@ -1385,7 +1440,6 @@ export function useAdminNotificationEvents(
   return useQuery({
     queryKey: [...adminKeys.notificationEvents, filters, generation],
     queryFn: ({ signal }) => fetchAdminNotificationEvents(filters, signal),
-    placeholderData: keepPreviousData,
   })
 }
 
@@ -1432,7 +1486,6 @@ export function useAdminDeliveries(generation: number, filters: DeliveryFilters)
   return useQuery({
     queryKey: [...adminKeys.notificationDeliveries(filters), generation],
     queryFn: ({ signal }) => fetchAdminDeliveries(filters, signal),
-    placeholderData: keepPreviousData,
   })
 }
 
@@ -1466,7 +1519,6 @@ export function useAdminChannels(generation: number) {
   return useQuery({
     queryKey: [...adminKeys.notificationChannels, generation],
     queryFn: ({ signal }) => fetchAdminChannels(signal),
-    placeholderData: keepPreviousData,
   })
 }
 
@@ -1611,7 +1663,6 @@ export function useAdminOperations(generation: number, filters: OperationFilters
   return useQuery({
     queryKey: [...adminKeys.operations(filters), generation],
     queryFn: ({ signal }) => fetchAdminOperations(filters, signal),
-    placeholderData: keepPreviousData,
   })
 }
 
@@ -1672,7 +1723,6 @@ export function useAdminRetention(generation: number) {
   return useQuery({
     queryKey: [...adminKeys.retention, generation],
     queryFn: ({ signal }) => fetchAdminRetention(signal),
-    placeholderData: keepPreviousData,
   })
 }
 
@@ -1755,7 +1805,6 @@ export function useAdminBackups(generation: number) {
   return useQuery({
     queryKey: [...adminKeys.backups, generation],
     queryFn: ({ signal }) => fetchAdminBackups(signal),
-    placeholderData: keepPreviousData,
   })
 }
 
@@ -1901,7 +1950,6 @@ export function useAdminDoctor(generation: number) {
   return useQuery({
     queryKey: [...adminKeys.doctor, generation],
     queryFn: ({ signal }) => fetchAdminDoctor(signal),
-    placeholderData: keepPreviousData,
   })
 }
 

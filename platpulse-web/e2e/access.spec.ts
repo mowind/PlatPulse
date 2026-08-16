@@ -218,8 +218,8 @@ test.describe('PAGE-ACCESS-AUDIT (Audit review)', () => {
     // single-connection SQLite Server, so waits are generous.
     await expect(auditItems.first()).toBeVisible({ timeout: 15_000 })
 
-    // Each filter change keeps the previous page visible while the new
-    // query runs (keepPreviousData), so the waits assert CONTENT, not
+    // Each filter change keeps the current page mounted while the new
+    // query runs, so the waits assert CONTENT, not
     // counts: every rendered item must match the selected kind before the
     // next step reads the list.
     await page.getByLabel('Event kind').selectOption('viewer_created')

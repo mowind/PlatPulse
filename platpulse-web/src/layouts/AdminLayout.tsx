@@ -29,6 +29,8 @@ export default function AdminLayout() {
   const [streamKey, setStreamKey] = useState(0)
   const [navOpen, setNavOpen] = useState(false)
   const previousGeneration = useRef(generation)
+  const streamKeyRef = useRef(0)
+  const accessGenerationRef = useRef(generation)
   const navToggleRef = useRef<HTMLButtonElement>(null)
   const navRef = useRef<HTMLElement>(null)
 
@@ -39,19 +41,27 @@ export default function AdminLayout() {
   useEffect(() => {
     if (previousGeneration.current === generation) return
     previousGeneration.current = generation
+    accessGenerationRef.current = generation
     resetAdminCache(generation)
-    setStreamKey((value) => value + 1)
+    streamKeyRef.current += 1
+    setStreamKey(streamKeyRef.current)
   }, [generation])
 
-  // Server-driven access resets (SSE `reset`, REST `auth_required`): re-check
-  // the session, which bumps the generation when the session changed and
-  // restarts the stream even when it did not.
-  useEffect(() => subscribeAdminAccessReset(() => void recheckSession()), [recheckSession])
-
-  const realtime = useAdminRealtime(streamKey, () => {
-    setStreamKey((value) => value + 1)
+  const handleAccessReset = useCallback(() => {
+    // Close the current stream and clear sensitive query data before the
+    // session probe starts; the next stream opens only under a fresh key.
+    accessGenerationRef.current += 1
+    resetAdminCache(accessGenerationRef.current)
+    streamKeyRef.current += 1
+    setStreamKey(streamKeyRef.current)
     void recheckSession()
-  })
+  }, [recheckSession])
+
+  // Server-driven access resets (SSE `reset`, REST `auth_required`): the
+  // reset handler performs close -> cancel/clear -> recheck synchronously.
+  useEffect(() => subscribeAdminAccessReset(handleAccessReset), [handleAccessReset])
+
+  const realtime = useAdminRealtime(streamKey, handleAccessReset)
 
   const closeNav = useCallback(() => setNavOpen(false), [])
 

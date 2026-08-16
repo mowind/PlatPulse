@@ -2229,6 +2229,7 @@ async fn handler(
             );
         }
     };
+    let peer_component_present = parsed.nodes.iter().any(|node| node.chain.peers.is_some());
     if tx.commit().await.is_err() {
         return error(
             &request_id.0,
@@ -2246,15 +2247,31 @@ async fn handler(
             crate::redaction::redact_sensitive(&error.to_string())
         );
     }
+    // Every committed report can change the Owner-side Node/Agent health
+    // projection (including host-only reports), while the Public projection
+    // changes only when the report contains a Node observation.
     state
         .admin_realtime()
         .publish("node", None::<String>, parsed.report_sequence);
-    state
-        .admin_realtime()
-        .publish("geo", None::<String>, parsed.report_sequence);
-    state
-        .public_realtime()
-        .publish("node", None::<String>, parsed.report_sequence);
+    if !parsed.nodes.is_empty() {
+        state
+            .public_realtime()
+            .publish("node", None::<String>, parsed.report_sequence);
+    }
+    if peer_component_present {
+        state
+            .admin_realtime()
+            .publish("peer", None::<String>, parsed.report_sequence);
+        state
+            .admin_realtime()
+            .publish("geo", None::<String>, parsed.report_sequence);
+        state
+            .public_realtime()
+            .publish("peer", None::<String>, parsed.report_sequence);
+        state
+            .public_realtime()
+            .publish("geo", None::<String>, parsed.report_sequence);
+    }
     if alert_changes > 0 {
         state
             .admin_realtime()
@@ -2627,6 +2644,24 @@ mod tests {
         let first_body = serde_json::to_vec(&value).unwrap();
         let first = submit(&state, &agent_id, first_body.clone()).await;
         assert_eq!(first.disposition, ReceiptDisposition::Accepted);
+        assert_eq!(
+            state
+                .admin_realtime()
+                .pending_events()
+                .iter()
+                .map(|event| event.resource.as_str())
+                .collect::<Vec<_>>(),
+            vec!["node", "peer", "geo"]
+        );
+        assert_eq!(
+            state
+                .public_realtime()
+                .pending_events()
+                .iter()
+                .map(|event| event.resource.as_str())
+                .collect::<Vec<_>>(),
+            vec!["node", "peer", "geo"]
+        );
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
                 "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=? AND closed_at IS NULL",

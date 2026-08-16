@@ -40,6 +40,9 @@ struct StoredEvent {
 struct HubState {
     next_id: u64,
     events: VecDeque<StoredEvent>,
+    /// Highest event ID removed because the bounded buffer overflowed.
+    /// Coalescing may create ID gaps without losing replay coverage.
+    dropped_through: u64,
     closed: bool,
 }
 
@@ -71,6 +74,7 @@ impl RealtimeHub {
                 state: Mutex::new(HubState {
                     next_id: 0,
                     events: VecDeque::new(),
+                    dropped_through: 0,
                     closed: false,
                 }),
                 notify: Notify::new(),
@@ -130,7 +134,9 @@ impl RealtimeHub {
         });
         state.events.push_back(StoredEvent { event });
         while state.events.len() > self.inner.capacity {
-            state.events.pop_front();
+            if let Some(removed) = state.events.pop_front() {
+                state.dropped_through = state.dropped_through.max(removed.event.event_id);
+            }
         }
         let id = state.next_id;
         drop(state);
@@ -163,10 +169,10 @@ impl RealtimeHub {
     fn next_after(&self, cursor: &mut u64) -> Option<Invalidation> {
         let state = self.inner.state.lock().expect("SSE hub mutex poisoned");
         let first = state.events.front()?.event.event_id;
-        if *cursor < first.saturating_sub(1) {
-            // A replay cursor fell behind the bounded buffer. A reset is
-            // represented by the first retained event id, then normal replay
-            // continues from that point.
+        if *cursor < state.dropped_through {
+            // Only an actual bounded-buffer eviction means the cursor missed
+            // authoritative notifications. Event-ID gaps caused by
+            // same-resource coalescing are still replayable.
             *cursor = first;
             return Some(Invalidation {
                 version: EVENT_VERSION,
@@ -186,6 +192,18 @@ impl RealtimeHub {
             *cursor = event.event_id;
         }
         event
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_events(&self) -> Vec<Invalidation> {
+        self.inner
+            .state
+            .lock()
+            .expect("SSE hub mutex poisoned")
+            .events
+            .iter()
+            .map(|stored| stored.event.clone())
+            .collect()
     }
 
     #[cfg(test)]
@@ -370,6 +388,7 @@ mod tests {
         let mut cursor = 0;
         let event = hub.next_after(&mut cursor).unwrap();
         assert_eq!(event.revision, 2);
+        assert_eq!(event.reset, None);
         assert_eq!(event.event_id, 2);
 
         hub.publish("node", Some("b"), 3);
@@ -380,6 +399,29 @@ mod tests {
         assert_eq!(reset.resource_id, None);
     }
 
+    #[test]
+    fn coalesced_id_gaps_do_not_count_as_buffer_misses() {
+        let hub = RealtimeHub::new(2);
+        hub.publish("node", Some("a"), 1);
+        hub.publish("node", Some("a"), 2);
+        hub.publish("node", Some("a"), 3);
+        let mut cursor = 0;
+        let event = hub.next_after(&mut cursor).unwrap();
+        assert_eq!(event.revision, 3);
+        assert_eq!(event.reset, None);
+    }
+
+    #[test]
+    fn an_evicted_event_requires_a_collection_reset() {
+        let hub = RealtimeHub::new(2);
+        hub.publish("node", Some("a"), 1);
+        hub.publish("node", Some("b"), 2);
+        hub.publish("node", Some("c"), 3);
+        let mut cursor = 0;
+        let event = hub.next_after(&mut cursor).unwrap();
+        assert_eq!(event.reset, Some(true));
+        assert_eq!(event.resource_id, None);
+    }
     #[tokio::test]
     async fn shutdown_emits_reset_and_closes_stream() {
         let hub = RealtimeHub::new(4);
