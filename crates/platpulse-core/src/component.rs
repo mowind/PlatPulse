@@ -133,6 +133,8 @@ pub enum ComponentKey {
     NetworkIdentity,
     /// `NodeChainObservation::static_metadata`
     StaticMetadata,
+    /// `NodeChainObservation::peers`
+    Peers,
 }
 
 /// Contract limits for [`BoundedError`].

@@ -136,6 +136,34 @@ const NODE_A_DETAIL = {
     highest_lock_block: 12842019,
     highest_commit_block: 12842019,
   },
+  peers: {
+    state: 'ok',
+    attempted_at: '2026-08-12T08:00:00Z',
+    observed_at: '2026-08-12T08:00:00Z',
+    received_at: '2026-08-12T08:00:00Z',
+    state_revision: 1,
+    value_revision: 1,
+    freshness: 'current',
+    peer_count: 1,
+    inbound_count: 1,
+    outbound_count: 0,
+    trusted_count: 1,
+    static_count: 0,
+    consensus_count: 1,
+    peers: [{
+      peer_id: 'peer-a',
+      direction: 'inbound',
+      trusted: true,
+      static_peer: false,
+      consensus_peer: true,
+      client_name: 'PlatON/v1.5.1',
+      capabilities: ['cbft/1'],
+      cbft_protocol_version: 1,
+      cbft_highest_qc_block: 12842019,
+      cbft_locked_block: 12842018,
+      cbft_commit_block: 12842017,
+    }],
+  },
 }
 
 function jsonResponse(body: unknown, status: number): Response {
@@ -257,6 +285,11 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     expect(screen.getByText(/platon\/1\.5\.1 · 3 namespaces/)).toBeTruthy()
     expect(screen.getByText(/last-good head 12842019/)).toBeTruthy()
     expect(screen.getByText(/last-good commit 12842019/)).toBeTruthy()
+    expect(screen.getByText('Peer snapshot')).toBeTruthy()
+    expect(screen.getByText(/1 peer · 1 inbound · 0 outbound/)).toBeTruthy()
+    expect(screen.getByText('peer-a')).toBeTruthy()
+    expect(screen.getByText('PlatON/v1.5.1')).toBeTruthy()
+    expect(screen.queryByText('203.0.113.4')).toBeNull()
   })
 
   it('shows the mismatch as a blocking diagnostic distinct from health', async () => {

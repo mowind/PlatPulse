@@ -33,6 +33,22 @@ pub const MAX_AGENT_CAPABILITIES: usize = 32;
 pub const MIN_TIMESTAMP_UNIX_SECONDS: i64 = 0;
 pub const MAX_TIMESTAMP_UNIX_SECONDS: i64 = 4_102_444_800; // 2100-01-01T00:00:00Z
 
+/// Maximum Peer entries in one current Peer Snapshot.
+pub const MAX_PEERS: usize = 1024;
+/// Maximum Peer ID length in bytes.
+pub const MAX_PEER_ID_BYTES: usize = 128;
+/// Maximum optional Peer client name length in bytes.
+pub const MAX_PEER_CLIENT_NAME_BYTES: usize = 256;
+/// Maximum capabilities carried by one Peer.
+pub const MAX_PEER_CAPABILITIES: usize = 64;
+/// Maximum capability string length in bytes.
+pub const MAX_PEER_CAPABILITY_BYTES: usize = 128;
+/// Maximum CBFT protocol version represented for one Peer.
+pub const MAX_PEER_CBFT_PROTOCOL_VERSION: u64 = 1024;
+/// Maximum CBFT block number accepted by the SQLite INTEGER projection.
+pub const MAX_PEER_CBFT_BLOCK: u64 = i64::MAX as u64;
+/// Maximum canonical literal IP length in bytes.
+pub const MAX_PEER_REMOTE_IP_BYTES: usize = 45;
 /// Maximum individual Agent-provided diagnostic/error code length.
 pub const MAX_ERROR_CODE_BYTES: usize = 128;
 /// Maximum individual Agent-provided diagnostic/error message length.

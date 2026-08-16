@@ -130,6 +130,7 @@ export type AdminNodeDetail = {
     network_reference_head?: number | null;
     node_id: string;
     node_key_fingerprint?: string | null;
+    peers?: null | PeerDiagnostic;
     process?: null | ProcessDiagnostic;
     resync_progress?: string | null;
     resync_state: string;
@@ -697,6 +698,7 @@ export type NodeDiagnostic = {
     network_reference_confidence: string;
     network_reference_head?: number | null;
     node_id: string;
+    peers?: null | PeerDiagnostic;
     process?: null | ProcessDiagnostic;
     resync_progress?: string | null;
     resync_state: string;
@@ -876,6 +878,46 @@ export type ParamSchema = {
     max: number;
     min: number;
     unit: string;
+};
+
+export type PeerDiagnostic = {
+    attempted_at?: string | null;
+    consensus_count?: number | null;
+    error_code?: string | null;
+    error_message?: string | null;
+    /**
+     * Server-owned freshness of the latest accepted Peer component state.
+     */
+    freshness: string;
+    inbound_count?: number | null;
+    observed_at?: string | null;
+    outbound_count?: number | null;
+    /**
+     * `None` means no successful Peer Snapshot has ever been observed;
+     * `Some(0)` is an authoritative successful empty snapshot.
+     */
+    peer_count?: number | null;
+    peers: Array<PeerDiagnosticEntry>;
+    received_at?: string | null;
+    state: string;
+    state_revision: number;
+    static_count?: number | null;
+    trusted_count?: number | null;
+    value_revision: number;
+};
+
+export type PeerDiagnosticEntry = {
+    capabilities: Array<string>;
+    cbft_commit_block?: number | null;
+    cbft_highest_qc_block?: number | null;
+    cbft_locked_block?: number | null;
+    cbft_protocol_version?: number | null;
+    client_name?: string | null;
+    consensus_peer: boolean;
+    direction: string;
+    peer_id: string;
+    static_peer: boolean;
+    trusted: boolean;
 };
 
 export type PeopleResponse = {

@@ -10,6 +10,8 @@
 //! explicit error, never to fabricated zero/false/Healthy values.
 
 use std::borrow::Cow;
+use std::collections::HashSet;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use alloy::network::Ethereum;
@@ -19,9 +21,9 @@ use alloy::providers::{
 use alloy::transports::{RpcError, TransportError};
 use platpulse_core::hex::{FingerprintHex, Hash32};
 use platpulse_core::network::{NetworkIdentity, RpcEndpoint, RpcScheme};
-use platpulse_core::observation::{ConsensusCurrent, SyncCurrent};
+use platpulse_core::observation::{ConsensusCurrent, PeerCurrent, PeerDirection, SyncCurrent};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{Value, json, value::RawValue};
 use thiserror::Error;
 use tokio::sync::broadcast::error::RecvError as BroadcastRecvError;
 use tokio::time::timeout;
@@ -38,12 +40,43 @@ pub const MAX_METHOD_CHARS: usize = 128;
 pub const MAX_ENODE_CHARS: usize = 512;
 pub const MAX_PEERS: usize = 1024;
 pub const MAX_PEER_ID_CHARS: usize = 128;
-pub const MAX_PEER_NAME_CHARS: usize = 128;
+pub const MAX_PEER_NAME_CHARS: usize = 256;
+pub const MAX_PEER_CAPABILITIES: usize = 64;
+pub const MAX_PEER_CAPABILITY_CHARS: usize = 128;
 pub const MAX_REMOTE_ADDRESS_CHARS: usize = 64;
-/// Maximum accepted probe response size (serialized value length).
-/// `admin_nodeInfo` carries the full validator set, so the bound must be
-/// generous but still fail closed before an unbounded allocation.
+/// Maximum accepted probe response size (serialized value length). The raw
+/// response is checked before nested JSON/DTO parsing so a broken Node cannot
+/// create unbounded peer or validator allocations.
 pub const MAX_PROBE_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+
+fn privileged_rpc_endpoint_allowed(endpoint: &RpcEndpoint) -> bool {
+    if endpoint.scheme() == RpcScheme::Ipc {
+        return true;
+    }
+    let Some(rest) = endpoint.as_str().split_once("://").map(|(_, rest)| rest) else {
+        return false;
+    };
+    let authority = rest.split('/').next().unwrap_or_default();
+    let host = if let Some(host) = authority.strip_prefix('[') {
+        host.split(']').next().unwrap_or_default()
+    } else {
+        authority
+            .rsplit_once(':')
+            .filter(|(_, port)| !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()))
+            .map_or(authority, |(host, _)| host)
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.parse::<IpAddr>().is_ok_and(|address| match address {
+        IpAddr::V4(address) => {
+            address.is_loopback() || address.is_private() || address.is_link_local()
+        }
+        IpAddr::V6(address) => {
+            address.is_loopback() || address.is_unique_local() || address.is_unicast_link_local()
+        }
+    })
+}
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const CALL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -82,14 +115,11 @@ impl RpcAdapter for AlloyRpcAdapter {
     }
 }
 
-/// One bounded peer entry extracted from `admin_peers`. Only the identity
-/// fields survive; raw protocol JSON is never retained.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AdminPeer {
-    pub id: String,
-    pub name: String,
-    pub remote_address: String,
-}
+/// One bounded peer entry extracted from `admin_peers`. Only typed,
+/// privacy-safe fields survive; raw protocol JSON, endpoint ports, and
+/// non-literal address values are discarded before this DTO reaches the
+/// collector.
+pub type AdminPeer = PeerCurrent;
 
 #[derive(Debug, Error)]
 enum ProbeError {
@@ -144,19 +174,21 @@ async fn call(
     method: &'static str,
     params: Value,
 ) -> Result<Value, ProbeError> {
-    let value: Value = timeout(
+    let raw: Box<RawValue> = timeout(
         CALL_TIMEOUT,
-        provider.raw_request::<_, Value>(Cow::Borrowed(method), params),
+        provider.raw_request::<_, Box<RawValue>>(Cow::Borrowed(method), params),
     )
     .await
     .map_err(|_| ProbeError::Timeout)?
     .map_err(ProbeError::from)?;
-    if value.to_string().len() > MAX_PROBE_RESPONSE_BYTES {
+    if raw.get().len() > MAX_PROBE_RESPONSE_BYTES {
         return Err(ProbeError::Malformed(format!(
             "{method} response exceeded the {MAX_PROBE_RESPONSE_BYTES}-byte bound"
         )));
     }
-    Ok(value)
+    serde_json::from_str(raw.get()).map_err(|error| {
+        ProbeError::Malformed(format!("{method} response was invalid JSON: {error}"))
+    })
 }
 
 fn record_method(methods: &mut Vec<String>, method: &'static str) {
@@ -377,8 +409,10 @@ fn parse_consensus_status(value: Value) -> Result<ConsensusCurrent, String> {
     })
 }
 
-/// Parse a bounded `admin_peers` array. Peers with malformed or oversized
-/// identity fields are skipped; an oversized array fails closed.
+/// Parse a bounded `admin_peers` array. A malformed entry rejects the whole
+/// snapshot so missing flags cannot be fabricated as false; oversized or
+/// structurally unusable snapshots fail closed. Only literal IPs and typed
+/// CBFT fields survive this boundary.
 pub fn parse_admin_peers(value: Value) -> Result<Vec<AdminPeer>, String> {
     let peers = value
         .as_array()
@@ -387,34 +421,186 @@ pub fn parse_admin_peers(value: Value) -> Result<Vec<AdminPeer>, String> {
         return Err(format!("admin_peers exceeded the {MAX_PEERS}-peer bound"));
     }
     let mut bounded = Vec::with_capacity(peers.len());
+    let mut peer_ids = HashSet::with_capacity(peers.len());
     for peer in peers {
-        let Some(peer) = peer.as_object() else {
-            continue;
-        };
-        let Some(id) = peer.get("id").and_then(Value::as_str) else {
-            continue;
-        };
+        let peer = peer
+            .as_object()
+            .ok_or_else(|| "admin_peers peer entry is not an object".to_owned())?;
+        let id = peer
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "admin_peers peer id is missing or not a string".to_owned())?;
         if id.is_empty() || id.chars().count() > MAX_PEER_ID_CHARS {
-            continue;
+            return Err(format!(
+                "admin_peers Peer ID exceeded the {MAX_PEER_ID_CHARS}-character bound"
+            ));
         }
-        let name = peer
-            .get("name")
-            .and_then(Value::as_str)
-            .map(|value| truncate_chars(value.to_owned(), MAX_PEER_NAME_CHARS))
-            .unwrap_or_default();
-        let remote_address = peer
+        if !peer_ids.insert(id) {
+            return Err(format!("admin_peers repeated Peer ID {id}"));
+        }
+
+        let network = peer
             .get("network")
-            .and_then(|network| network.get("remoteAddress"))
-            .and_then(Value::as_str)
-            .map(|value| truncate_chars(value.to_owned(), MAX_REMOTE_ADDRESS_CHARS))
-            .unwrap_or_default();
-        bounded.push(AdminPeer {
-            id: id.to_owned(),
-            name,
-            remote_address,
+            .and_then(Value::as_object)
+            .ok_or_else(|| "admin_peers network object is missing".to_owned())?;
+        let inbound = required_peer_bool(network, "inbound")?;
+        let trusted = required_peer_bool(network, "trusted")?;
+        let static_peer = required_peer_bool(network, "static")?;
+        let consensus_peer = required_peer_bool(network, "consensus")?;
+        let remote_ip = match network.get("remoteAddress") {
+            None => None,
+            Some(value) => {
+                let value = value
+                    .as_str()
+                    .ok_or_else(|| "admin_peers remoteAddress is not a string".to_owned())?;
+                if value.chars().count() > MAX_REMOTE_ADDRESS_CHARS {
+                    return Err(format!(
+                        "admin_peers remoteAddress exceeded the {MAX_REMOTE_ADDRESS_CHARS}-character bound"
+                    ));
+                }
+                Some(parse_literal_remote_ip(value).ok_or_else(|| {
+                    "admin_peers remoteAddress is not a literal IP address".to_owned()
+                })?)
+            }
+        };
+        let client_name = match peer.get("name") {
+            None => None,
+            Some(value) => {
+                let value = value
+                    .as_str()
+                    .ok_or_else(|| "admin_peers name is not a string".to_owned())?;
+                if value.is_empty() {
+                    return Err("admin_peers name must not be empty".to_owned());
+                }
+                if value.chars().count() > MAX_PEER_NAME_CHARS {
+                    return Err(format!(
+                        "admin_peers name exceeded the {MAX_PEER_NAME_CHARS}-character bound"
+                    ));
+                }
+                Some(value.to_owned())
+            }
+        };
+        let caps = parse_peer_caps(peer.get("caps"))?;
+        let (cbft_protocol_version, cbft_highest_qc_block, cbft_locked_block, cbft_commit_block) =
+            parse_cbft_fields(peer.get("protocols"))?;
+
+        bounded.push(PeerCurrent {
+            peer_id: id.to_owned(),
+            remote_ip,
+            direction: if inbound {
+                PeerDirection::Inbound
+            } else {
+                PeerDirection::Outbound
+            },
+            trusted,
+            static_peer,
+            consensus_peer,
+            client_name,
+            caps,
+            cbft_protocol_version,
+            cbft_highest_qc_block,
+            cbft_locked_block,
+            cbft_commit_block,
         });
     }
     Ok(bounded)
+}
+
+fn required_peer_bool(
+    network: &serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<bool, String> {
+    network
+        .get(field)
+        .and_then(Value::as_bool)
+        .ok_or_else(|| format!("admin_peers network.{field} is not a boolean"))
+}
+
+fn parse_peer_caps(value: Option<&Value>) -> Result<Vec<String>, String> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let caps = value
+        .as_array()
+        .ok_or_else(|| "admin_peers caps is not an array".to_owned())?;
+    if caps.len() > MAX_PEER_CAPABILITIES {
+        return Err(format!(
+            "admin_peers exceeded the {MAX_PEER_CAPABILITIES}-capability bound"
+        ));
+    }
+    let mut seen = HashSet::with_capacity(caps.len());
+    let mut bounded = Vec::with_capacity(caps.len());
+    for cap in caps {
+        let cap = cap
+            .as_str()
+            .ok_or_else(|| "admin_peers capability is not a string".to_owned())?;
+        if cap.is_empty() {
+            return Err("admin_peers capability must not be empty".to_owned());
+        }
+        if cap.chars().count() > MAX_PEER_CAPABILITY_CHARS {
+            return Err(format!(
+                "admin_peers capability exceeded the {MAX_PEER_CAPABILITY_CHARS}-character bound"
+            ));
+        }
+        if !seen.insert(cap) {
+            return Err("admin_peers repeated capability".to_owned());
+        }
+        bounded.push(cap.to_owned());
+    }
+    Ok(bounded)
+}
+
+type CbftFields = (Option<u64>, Option<u64>, Option<u64>, Option<u64>);
+
+fn parse_cbft_fields(value: Option<&Value>) -> Result<CbftFields, String> {
+    let Some(value) = value else {
+        return Ok((None, None, None, None));
+    };
+    let protocols = value
+        .as_object()
+        .ok_or_else(|| "admin_peers protocols is not an object".to_owned())?;
+    let Some(value) = protocols.get("cbft") else {
+        return Ok((None, None, None, None));
+    };
+    let cbft = value
+        .as_object()
+        .ok_or_else(|| "admin_peers protocols.cbft is not an object".to_owned())?;
+    let parse = |name: &str| -> Result<Option<u64>, String> {
+        let Some(value) = cbft.get(name) else {
+            return Ok(None);
+        };
+        let parsed = parse_u64_value(value)
+            .ok_or_else(|| format!("admin_peers CBFT field {name} is not a u64"))?;
+        if name == "protocolVersion"
+            && parsed > platpulse_core::protocol::MAX_PEER_CBFT_PROTOCOL_VERSION
+        {
+            return Err(format!(
+                "admin_peers CBFT protocol version {parsed} is out of bounds"
+            ));
+        }
+        if name != "protocolVersion" && parsed > platpulse_core::protocol::MAX_PEER_CBFT_BLOCK {
+            return Err(format!(
+                "admin_peers CBFT block field {name} is out of bounds"
+            ));
+        }
+        Ok(Some(parsed))
+    };
+    Ok((
+        parse("protocolVersion")?,
+        parse("highestQCBn")?,
+        parse("lockedBn")?,
+        parse("commitBn")?,
+    ))
+}
+
+fn parse_literal_remote_ip(value: &str) -> Option<String> {
+    if let Ok(address) = value.parse::<SocketAddr>() {
+        return Some(address.ip().to_string());
+    }
+    value
+        .parse::<IpAddr>()
+        .ok()
+        .map(|address| address.to_string())
 }
 
 /// Verify that `eth_subscribe("newHeads")` is available. An idle chain may
@@ -448,6 +634,11 @@ async fn probe_node(endpoint: &RpcEndpoint) -> Result<RpcSnapshot, RpcCollectErr
 }
 
 async fn probe_node_inner(endpoint: &RpcEndpoint) -> Result<RpcSnapshot, RpcCollectError> {
+    if !privileged_rpc_endpoint_allowed(endpoint) {
+        return Err(RpcCollectError::Failed(
+            "privileged RPC probe requires IPC or a loopback/private endpoint".to_owned(),
+        ));
+    }
     let provider = timeout(CONNECT_TIMEOUT, connect(endpoint))
         .await
         .map_err(|_| RpcCollectError::Failed("RPC connection timed out".to_owned()))?
@@ -602,24 +793,21 @@ async fn probe_node_inner(endpoint: &RpcEndpoint) -> Result<RpcSnapshot, RpcColl
         Err(error) => ProbeValue::Error(format!("debug_consensusStatus failed: {error}")),
     };
 
-    match call(&provider, "admin_peers", json!([])).await {
+    let peers = match call(&provider, "admin_peers", json!([])).await {
         Ok(value) => {
             record_method(&mut methods, "admin_peers");
-            // The bounded DTO is validated here; the peer snapshot itself is
-            // not yet projected into the v1 report (Peer Collector, Phase 3).
-            if let Err(error) = parse_admin_peers(value) {
-                return Err(RpcCollectError::Failed(format!(
+            match parse_admin_peers(value) {
+                Ok(peers) => {
+                    ProbeValue::Supported(platpulse_core::observation::PeerSnapshot { peers })
+                }
+                Err(error) => ProbeValue::Error(format!(
                     "admin_peers payload failed bounded validation: {error}"
-                )));
+                )),
             }
         }
-        Err(ProbeError::Transport(error)) if is_method_missing(&error) => {}
-        Err(error) => {
-            return Err(RpcCollectError::Failed(format!(
-                "admin_peers probe failed: {error}"
-            )));
-        }
-    }
+        Err(ProbeError::Transport(error)) if is_method_missing(&error) => ProbeValue::Unsupported,
+        Err(error) => ProbeValue::Error(format!("admin_peers probe failed: {error}")),
+    };
 
     if probe_subscription(&provider).await.is_ok() {
         record_method(&mut methods, "eth_subscribe");
@@ -639,12 +827,29 @@ async fn probe_node_inner(endpoint: &RpcEndpoint) -> Result<RpcSnapshot, RpcColl
         enode,
         sync,
         consensus,
+        peers,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn privileged_rpc_probe_rejects_public_endpoints() {
+        for endpoint in [
+            "ipc:///data/platon.ipc",
+            "ws://127.0.0.1:6790",
+            "wss://[fd00::1]:6790",
+            "ws://10.0.0.4:6790",
+            "ws://localhost:6790",
+        ] {
+            assert!(privileged_rpc_endpoint_allowed(&endpoint.parse().unwrap()));
+        }
+        for endpoint in ["ws://8.8.8.8:6790", "wss://node.example.com:6790"] {
+            assert!(!privileged_rpc_endpoint_allowed(&endpoint.parse().unwrap()));
+        }
+    }
 
     #[test]
     fn quantity_strings_are_bounded() {
@@ -780,18 +985,26 @@ mod tests {
     }
 
     #[test]
-    fn admin_peers_dto_is_bounded_and_skips_malformed_peers() {
+    fn admin_peers_dto_is_bounded_and_rejects_malformed_peers() {
         let value = json!([
-            {"id": "a".repeat(64), "name": "peer-a", "network": {"remoteAddress": "8.8.8.8:16789"}},
-            {"id": "b".repeat(64), "name": "peer-b", "network": {}},
-            {"id": "c".repeat(64)},
-            {"name": "no-id"}
+            {"id": "a".repeat(64), "name": "peer-a", "network": {"remoteAddress": "8.8.8.8:16789", "inbound": false, "trusted": false, "static": false, "consensus": false}, "caps": []},
+            {"id": "b".repeat(64), "name": "peer-b", "network": {"inbound": true, "trusted": false, "static": false, "consensus": true}, "caps": []},
+            {"id": "c".repeat(64), "name": "peer-c", "network": {"inbound": false, "trusted": true, "static": false, "consensus": false}, "caps": []}
         ]);
         let peers = parse_admin_peers(value).unwrap();
         assert_eq!(peers.len(), 3);
-        assert_eq!(peers[0].remote_address, "8.8.8.8:16789");
-        assert_eq!(peers[1].remote_address, "");
-        assert_eq!(peers[2].remote_address, "");
+        assert_eq!(peers[0].remote_ip.as_deref(), Some("8.8.8.8"));
+        assert_eq!(peers[0].direction, PeerDirection::Outbound);
+        assert_eq!(peers[1].remote_ip, None);
+        assert_eq!(peers[2].remote_ip, None);
+        assert!(parse_admin_peers(json!([{"id": "missing-network"}])).is_err());
+        assert!(
+            parse_admin_peers(json!([{
+                "id": "bad-flags",
+                "network": {"inbound": "yes", "trusted": false, "static": false, "consensus": false}
+            }]))
+            .is_err()
+        );
 
         let oversized = json!(vec![
             json!({"id": "x", "name": "", "network": {}});
@@ -799,6 +1012,58 @@ mod tests {
         ]);
         assert!(parse_admin_peers(oversized).is_err());
         assert!(parse_admin_peers(json!({"not": "an array"})).is_err());
+    }
+
+    #[test]
+    fn admin_peers_parses_typed_flags_capabilities_and_cbft_without_raw_json() {
+        let peers = parse_admin_peers(json!([{
+            "id": "peer-a",
+            "name": "PlatON/v1.5.1",
+            "network": {
+                "remoteAddress": "[2001:db8::4]:16789",
+                "inbound": true,
+                "trusted": true,
+                "static": true,
+                "consensus": false
+            },
+            "caps": ["cbft/1", "platon/1"],
+            "protocols": {
+                "cbft": {
+                    "protocolVersion": "0x1",
+                    "highestQCBn": "0x64",
+                    "lockedBn": 99,
+                    "commitBn": "98"
+                },
+                "secret": {"raw": "discarded"}
+            }
+        }]))
+        .unwrap();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].peer_id, "peer-a");
+        assert_eq!(peers[0].remote_ip.as_deref(), Some("2001:db8::4"));
+        assert_eq!(peers[0].direction, PeerDirection::Inbound);
+        assert!(peers[0].trusted);
+        assert!(peers[0].static_peer);
+        assert!(!peers[0].consensus_peer);
+        assert_eq!(peers[0].caps, ["cbft/1", "platon/1"]);
+        assert_eq!(peers[0].cbft_protocol_version, Some(1));
+        assert_eq!(peers[0].cbft_highest_qc_block, Some(100));
+        assert_eq!(peers[0].cbft_locked_block, Some(99));
+        assert_eq!(peers[0].cbft_commit_block, Some(98));
+
+        assert!(parse_admin_peers(json!([{"id":"peer-a", "caps": [true]}])).is_err());
+        assert!(parse_admin_peers(json!([{
+            "id": "peer-a",
+            "network": {"inbound": false, "trusted": false, "static": false, "consensus": false},
+            "caps": ["cbft/1", "cbft/1"]
+        }]))
+        .is_err());
+        assert!(
+            parse_admin_peers(json!([
+                {"id":"peer-a"}, {"id":"peer-a"}
+            ]))
+            .is_err()
+        );
     }
 
     #[test]

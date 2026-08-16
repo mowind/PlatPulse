@@ -5014,6 +5014,16 @@
               "null"
             ]
           },
+          "peers": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PeerDiagnostic"
+              }
+            ]
+          },
           "process": {
             "oneOf": [
               {
@@ -7144,6 +7154,16 @@
           "node_id": {
             "type": "string"
           },
+          "peers": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PeerDiagnostic"
+              }
+            ]
+          },
           "process": {
             "oneOf": [
               {
@@ -7707,6 +7727,180 @@
           },
           "unit": {
             "type": "string"
+          }
+        }
+      },
+      "PeerDiagnostic": {
+        "type": "object",
+        "required": [
+          "state",
+          "state_revision",
+          "value_revision",
+          "freshness",
+          "peers"
+        ],
+        "properties": {
+          "attempted_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "consensus_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "freshness": {
+            "type": "string",
+            "description": "Server-owned freshness of the latest accepted Peer component state."
+          },
+          "inbound_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "observed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outbound_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "peer_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "`None` means no successful Peer Snapshot has ever been observed;\n`Some(0)` is an authoritative successful empty snapshot."
+          },
+          "peers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PeerDiagnosticEntry"
+            }
+          },
+          "received_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string"
+          },
+          "state_revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "static_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "trusted_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "value_revision": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "PeerDiagnosticEntry": {
+        "type": "object",
+        "required": [
+          "peer_id",
+          "direction",
+          "trusted",
+          "static_peer",
+          "consensus_peer",
+          "capabilities"
+        ],
+        "properties": {
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cbft_commit_block": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "cbft_highest_qc_block": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "cbft_locked_block": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "cbft_protocol_version": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "client_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "consensus_peer": {
+            "type": "boolean"
+          },
+          "direction": {
+            "type": "string"
+          },
+          "peer_id": {
+            "type": "string"
+          },
+          "static_peer": {
+            "type": "boolean"
+          },
+          "trusted": {
+            "type": "boolean"
           }
         }
       },

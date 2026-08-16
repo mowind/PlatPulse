@@ -303,6 +303,14 @@ pub struct NodeChainObservation {
     pub network_identity: ComponentObservation<NetworkIdentity>,
     /// Slow-changing Node identity/metadata (5-minute cadence).
     pub static_metadata: ComponentObservation<NodeStaticMetadata>,
+    /// Optional bounded current Peer Snapshot. Older Agents omit this field;
+    /// an omitted component is not an authoritative empty snapshot.
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub peers: Option<ComponentObservation<PeerSnapshot>>,
 }
 
 /// RPC reachability + capability probe results.
@@ -372,4 +380,72 @@ pub struct NodeStaticMetadata {
         deserialize_with = "crate::component::strict_optional"
     )]
     pub enode: Option<String>,
+}
+
+/// A bounded successful Peer Snapshot for one Node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeerSnapshot {
+    /// Peers observed in this snapshot. An empty list is authoritative.
+    pub peers: Vec<PeerCurrent>,
+}
+
+/// Direction of a current P2P connection from the observed Node's view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PeerDirection {
+    Inbound,
+    Outbound,
+}
+
+/// Bounded, privacy-safe current Peer metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeerCurrent {
+    /// Stable remote Peer ID; never replaced with an IP address.
+    pub peer_id: String,
+    /// Canonical literal IPv4/IPv6 address, when the Node supplied one.
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub remote_ip: Option<String>,
+    pub direction: PeerDirection,
+    pub trusted: bool,
+    pub static_peer: bool,
+    pub consensus_peer: bool,
+    /// Bounded client name from the Peer handshake.
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub client_name: Option<String>,
+    /// Bounded advertised capability names.
+    pub caps: Vec<String>,
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub cbft_protocol_version: Option<u64>,
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub cbft_highest_qc_block: Option<u64>,
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub cbft_locked_block: Option<u64>,
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub cbft_commit_block: Option<u64>,
 }

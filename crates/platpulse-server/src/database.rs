@@ -20,7 +20,7 @@ use thiserror::Error;
 pub static SERVER_MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 /// The latest migration version compiled into the Server binary.
-pub const SERVER_SCHEMA_VERSION: i64 = 23;
+pub const SERVER_SCHEMA_VERSION: i64 = 24;
 
 /// The Server currently serializes all SQLite operations through one pool
 /// connection. Read scaling can be added with a concrete query need; it is
@@ -49,6 +49,8 @@ const REQUIRED_TABLES: &[&str] = &[
     "current_node_chain_observations",
     "current_node_rpc_namespaces",
     "current_node_rpc_methods",
+    "current_node_peers",
+    "current_node_peer_capabilities",
     "block_summaries",
     "block_history_state",
     "block_coverage_intervals",
@@ -566,7 +568,6 @@ mod tests {
         let database = ServerDatabase::open(config(&path)).await.unwrap();
         let forbidden = [
             "peers",
-            "current_node_peers",
             "geo_location_cache",
             "validators",
             "node_validator_links",

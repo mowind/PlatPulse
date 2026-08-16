@@ -589,6 +589,45 @@ pub struct ConsensusDiagnostic {
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
+pub struct PeerDiagnosticEntry {
+    pub peer_id: String,
+    pub direction: String,
+    pub trusted: bool,
+    pub static_peer: bool,
+    pub consensus_peer: bool,
+    pub client_name: Option<String>,
+    pub capabilities: Vec<String>,
+    pub cbft_protocol_version: Option<i64>,
+    pub cbft_highest_qc_block: Option<i64>,
+    pub cbft_locked_block: Option<i64>,
+    pub cbft_commit_block: Option<i64>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct PeerDiagnostic {
+    pub state: String,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+    pub attempted_at: Option<String>,
+    pub observed_at: Option<String>,
+    pub received_at: Option<String>,
+    pub state_revision: i64,
+    pub value_revision: i64,
+    /// Server-owned freshness of the latest accepted Peer component state.
+    pub freshness: String,
+    /// `None` means no successful Peer Snapshot has ever been observed;
+    /// `Some(0)` is an authoritative successful empty snapshot.
+    pub peer_count: Option<i64>,
+    pub inbound_count: Option<i64>,
+    pub outbound_count: Option<i64>,
+    pub trusted_count: Option<i64>,
+    pub static_count: Option<i64>,
+    pub consensus_count: Option<i64>,
+    pub peers: Vec<PeerDiagnosticEntry>,
+}
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
 pub struct ComponentDiagnostic {
     pub state: String,
     pub error_code: Option<String>,
@@ -684,6 +723,7 @@ pub struct NodeDiagnostic {
     pub rpc: Option<RpcDiagnostic>,
     pub sync: Option<SyncDiagnostic>,
     pub consensus: Option<ConsensusDiagnostic>,
+    pub peers: Option<PeerDiagnostic>,
     pub current_head: Option<i64>,
     pub historical_high_watermark: Option<i64>,
     pub resync_state: String,
@@ -734,6 +774,139 @@ async fn consensus_diagnostic(state: &AppState, node_id: &str) -> Option<Consens
     .map(|(state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision, epoch, view_number, validator, highest_qc_block, highest_lock_block, highest_commit_block)| ConsensusDiagnostic {
         state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision,
         epoch, view_number, validator: validator.map(|value| value != 0), highest_qc_block, highest_lock_block, highest_commit_block,
+    })
+}
+
+async fn peer_diagnostic(state: &AppState, node_id: &str) -> Option<PeerDiagnostic> {
+    let component = sqlx::query_as::<_, (
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        i64,
+        i64,
+    )>(
+        "SELECT state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision FROM component_status WHERE node_id=? AND component_key='peers'",
+    )
+    .bind(node_id)
+    .fetch_optional(state.db().pool())
+    .await
+    .ok()
+    .flatten()?;
+    let (
+        component_state,
+        error_code,
+        _agent_error_message,
+        attempted_at,
+        observed_at,
+        received_at,
+        state_revision,
+        value_revision,
+    ) = component;
+    // A projection read failure must not masquerade as an authoritative empty
+    // snapshot; return Unknown by omitting the diagnostic instead.
+    let rows = sqlx::query_as::<_, (
+        String,
+        String,
+        i64,
+        i64,
+        i64,
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+    )>(
+        "SELECT peer_id, direction, trusted, static_peer, consensus_peer, client_name, cbft_protocol_version, cbft_highest_qc_block, cbft_locked_block, cbft_commit_block FROM current_node_peers WHERE node_id=? ORDER BY peer_id LIMIT 1024",
+    )
+    .bind(node_id)
+    .fetch_all(state.db().pool())
+    .await
+    .ok()?;
+    let has_value = value_revision > 0;
+    let mut inbound_count = 0;
+    let mut outbound_count = 0;
+    let mut trusted_count = 0;
+    let mut static_count = 0;
+    let mut consensus_count = 0;
+    let mut peers = Vec::with_capacity(rows.len());
+    for (
+        peer_id,
+        direction,
+        trusted,
+        static_peer,
+        consensus_peer,
+        client_name,
+        cbft_protocol_version,
+        cbft_highest_qc_block,
+        cbft_locked_block,
+        cbft_commit_block,
+    ) in rows
+    {
+        match direction.as_str() {
+            "inbound" => inbound_count += 1,
+            "outbound" => outbound_count += 1,
+            _ => {}
+        }
+        if trusted != 0 {
+            trusted_count += 1;
+        }
+        if static_peer != 0 {
+            static_count += 1;
+        }
+        if consensus_peer != 0 {
+            consensus_count += 1;
+        }
+        let capabilities = sqlx::query_scalar::<_, String>(
+            "SELECT capability FROM current_node_peer_capabilities WHERE node_id=? AND peer_id=? ORDER BY capability",
+        )
+        .bind(node_id)
+        .bind(&peer_id)
+        .fetch_all(state.db().pool())
+        .await
+        .ok()?;
+        peers.push(PeerDiagnosticEntry {
+            peer_id,
+            direction,
+            trusted: trusted != 0,
+            static_peer: static_peer != 0,
+            consensus_peer: consensus_peer != 0,
+            client_name,
+            capabilities,
+            cbft_protocol_version,
+            cbft_highest_qc_block,
+            cbft_locked_block,
+            cbft_commit_block,
+        });
+    }
+    let freshness = if has_value {
+        derive_freshness(received_at.as_deref().into_iter()).to_owned()
+    } else {
+        "unknown".to_owned()
+    };
+    let peer_error = component_state == "error";
+    Some(PeerDiagnostic {
+        state: component_state,
+        error_code,
+        // Peer probe messages are Agent-controlled and may contain raw RPC
+        // payloads. Keep the Admin response privacy-safe; the typed code and
+        // state still identify the failure.
+        error_message: peer_error.then(|| "Peer Snapshot collection failed".to_owned()),
+        attempted_at,
+        observed_at,
+        received_at,
+        state_revision,
+        value_revision,
+        freshness,
+        peer_count: has_value.then_some(peers.len() as i64),
+        inbound_count: has_value.then_some(inbound_count),
+        outbound_count: has_value.then_some(outbound_count),
+        trusted_count: has_value.then_some(trusted_count),
+        static_count: has_value.then_some(static_count),
+        consensus_count: has_value.then_some(consensus_count),
+        peers,
     })
 }
 
@@ -797,6 +970,7 @@ async fn node_diagnostic(
     };
     let sync = sync_diagnostic(state, &node_id).await;
     let consensus = consensus_diagnostic(state, &node_id).await;
+    let peers = peer_diagnostic(state, &node_id).await;
     let (health, health_reason) =
         derive_health(&lifecycle, rpc.as_ref(), sync.as_ref(), consensus.as_ref());
     let freshness = derive_freshness(
@@ -804,7 +978,8 @@ async fn node_diagnostic(
             .and_then(|c| c.received_at.as_deref())
             .into_iter()
             .chain(sync.as_ref().and_then(|c| c.received_at.as_deref()))
-            .chain(consensus.as_ref().and_then(|c| c.received_at.as_deref())),
+            .chain(consensus.as_ref().and_then(|c| c.received_at.as_deref()))
+            .chain(peers.as_ref().and_then(|c| c.received_at.as_deref())),
     );
     let history = sqlx::query_as::<_, (Option<i64>, Option<i64>, Option<String>, Option<i64>, Option<String>)>(
         "SELECT c.current_block, h.historical_high_watermark, h.resync_state, r.block_number, r.confidence FROM current_node_chain_observations c LEFT JOIN block_history_state h ON h.node_id=c.node_id LEFT JOIN nodes n ON n.node_id=c.node_id LEFT JOIN network_reference_heads r ON r.network_key=n.network_key WHERE c.node_id=?"
@@ -831,6 +1006,7 @@ async fn node_diagnostic(
         rpc,
         sync,
         consensus,
+        peers,
         current_head,
         historical_high_watermark,
         resync_progress: historical_high_watermark
@@ -1147,6 +1323,7 @@ pub struct AdminNodeDetail {
     pub rpc: Option<RpcDiagnostic>,
     pub sync: Option<SyncDiagnostic>,
     pub consensus: Option<ConsensusDiagnostic>,
+    pub peers: Option<PeerDiagnostic>,
     pub current_head: Option<i64>,
     pub historical_high_watermark: Option<i64>,
     pub resync_state: String,
@@ -1245,6 +1422,7 @@ async fn admin_node_detail(
         rpc: diagnostic.rpc,
         sync: diagnostic.sync,
         consensus: diagnostic.consensus,
+        peers: diagnostic.peers,
         current_head: diagnostic.current_head,
         historical_high_watermark: diagnostic.historical_high_watermark,
         resync_state: diagnostic.resync_state,
@@ -4742,6 +4920,29 @@ mod tests {
             .await
             .unwrap();
         }
+        sqlx::query(
+            "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES ('agent-lifecycle-test', 'node', 'node-healthy', 'node-healthy', 'peers', 'ok', ?, ?, ?, 1, 1)",
+        )
+        .bind(&fresh)
+        .bind(&fresh)
+        .bind(&fresh)
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, client_name, cbft_protocol_version, cbft_highest_qc_block, cbft_locked_block, cbft_commit_block, updated_at) VALUES ('node-healthy', 'peer-healthy', '203.0.113.7', 'inbound', 1, 0, 1, 'PlatON/v1.5.1', 1, 100, 99, 98, ?)",
+        )
+        .bind(&fresh)
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO current_node_peer_capabilities (node_id, peer_id, capability, updated_at) VALUES ('node-healthy', 'peer-healthy', 'cbft/1', ?)",
+        )
+        .bind(&fresh)
+        .execute(state.db().pool())
+        .await
+        .unwrap();
         // Mismatched Node: RPC error with a last-good sync value retained
         // (last-good semantics) and a contradicting observed chain id.
         sqlx::query(
@@ -4872,6 +5073,7 @@ mod tests {
             value["sync"]["state"], "ok",
             "last-good sync stays visible beside the RPC error"
         );
+
         assert_eq!(value["sync"]["current_block"], 99);
         assert_eq!(value["current_head"], 99);
         assert_eq!(value["consensus"]["validator"], false);
@@ -4887,6 +5089,18 @@ mod tests {
                 .unwrap();
         assert_eq!(value["node_key_fingerprint"], "fp-healthy");
         assert_eq!(value["health"], "healthy");
+        assert_eq!(value["peers"]["state"], "ok");
+        assert_eq!(value["peers"]["peer_count"], 1);
+        assert_eq!(value["peers"]["peers"][0]["peer_id"], "peer-healthy");
+        assert_eq!(value["peers"]["peers"][0]["direction"], "inbound");
+        assert_eq!(
+            value["peers"]["peers"][0]["capabilities"],
+            serde_json::json!(["cbft/1"])
+        );
+        assert!(
+            !value.to_string().contains("203.0.113.7"),
+            "Admin diagnostics must not expose the stored remote address"
+        );
         // Unknown Node is a non-leaking 404 for Admin too.
         let response = admin_node_detail(
             State(state.clone()),

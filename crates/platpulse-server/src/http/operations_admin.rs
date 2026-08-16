@@ -1909,7 +1909,7 @@ mod tests {
             format!("platpulse-{artifact_id}.db")
         );
         assert_eq!(body["artifact"]["sha256"].as_str().unwrap().len(), 64);
-        assert_eq!(body["artifact"]["schemaVersion"], 23);
+        assert_eq!(body["artifact"]["schemaVersion"], 24);
         assert_eq!(body["artifact"]["verification"], "pending");
         assert!(
             !body["artifact"]["serverVersion"]
@@ -2351,7 +2351,7 @@ mod tests {
         assert_eq!(body["integrityOk"], true);
         assert_eq!(body["schemaCompatible"], true);
         assert_eq!(body["filename"], filename.as_str());
-        assert_eq!(body["currentSchemaVersion"], 23);
+        assert_eq!(body["currentSchemaVersion"], 24);
         assert!(body["error"].is_null());
 
         // Unknown identity is a typed 404.

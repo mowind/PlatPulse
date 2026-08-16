@@ -6,6 +6,7 @@
 //! one exact Report Receipt per `report_id`.
 
 use std::collections::HashSet;
+use std::net::IpAddr;
 
 use serde::{Deserialize, Serialize};
 
@@ -15,7 +16,7 @@ use crate::error::WireError;
 use crate::gap::HistoryGap;
 use crate::identity::{AgentId, BootId, NodeId, ReportId};
 use crate::inventory::NodeInventory;
-use crate::observation::{HostObservation, NodeChainObservation, NodeObservation};
+use crate::observation::{HostObservation, NodeChainObservation, NodeObservation, PeerSnapshot};
 use crate::protocol::PROTOCOL_VERSION;
 use crate::time::Rfc3339;
 
@@ -55,6 +56,8 @@ pub enum AgentCapability {
     ProcessPidFile,
     /// Bounded `debug_consensusStatus` collection.
     ConsensusStatus,
+    /// Bounded `admin_peers` Peer Snapshot collection.
+    PeerSnapshot,
 }
 
 /// The immutable AgentReport envelope (protocol v1).
@@ -202,6 +205,7 @@ impl AgentReport {
                 AgentCapability::ProcessSystemd => "process_systemd",
                 AgentCapability::ProcessPidFile => "process_pid_file",
                 AgentCapability::ConsensusStatus => "consensus_status",
+                AgentCapability::PeerSnapshot => "peer_snapshot",
             };
             check_len("agent_capabilities[]", capability, 128)?;
         }
@@ -268,6 +272,9 @@ impl AgentReport {
                 }
             }
             validate_chain_components(&obs.chain)?;
+            if let Some(peers) = &obs.chain.peers {
+                validate_peer_snapshot(obs.node_id, peers)?;
+            }
             if let Some(sync) = &obs.chain.sync.latest {
                 if sync.current_block > sync.highest_block {
                     return Err(WireError::ValueOutOfRange {
@@ -440,6 +447,109 @@ fn validate_chain_components(chain: &NodeChainObservation) -> Result<(), WireErr
     validate_component("consensus", &chain.consensus)?;
     validate_component("network_identity", &chain.network_identity)?;
     validate_component("static_metadata", &chain.static_metadata)?;
+    if let Some(peers) = &chain.peers {
+        validate_component("peers", peers)?;
+    }
+    Ok(())
+}
+
+fn validate_peer_snapshot(
+    node_id: NodeId,
+    component: &crate::component::ComponentObservation<PeerSnapshot>,
+) -> Result<(), WireError> {
+    let Some(snapshot) = component.latest.as_ref() else {
+        return Ok(());
+    };
+    if snapshot.peers.len() > crate::protocol::MAX_PEERS {
+        return Err(WireError::TooManyEntries {
+            field: "peers",
+            len: snapshot.peers.len(),
+            max: crate::protocol::MAX_PEERS,
+        });
+    }
+    let mut peer_ids = HashSet::with_capacity(snapshot.peers.len());
+    for peer in &snapshot.peers {
+        if peer.peer_id.is_empty() {
+            return Err(WireError::ValueOutOfRange {
+                field: "peers[].peer_id",
+            });
+        }
+        check_len(
+            "peers[].peer_id",
+            &peer.peer_id,
+            crate::protocol::MAX_PEER_ID_BYTES,
+        )?;
+        if !peer_ids.insert(peer.peer_id.as_str()) {
+            return Err(WireError::DuplicatePeerId {
+                node_id,
+                peer_id: peer.peer_id.clone(),
+            });
+        }
+        if let Some(remote_ip) = &peer.remote_ip {
+            check_len(
+                "peers[].remote_ip",
+                remote_ip,
+                crate::protocol::MAX_PEER_REMOTE_IP_BYTES,
+            )?;
+            if remote_ip.parse::<IpAddr>().is_err() {
+                return Err(WireError::ValueOutOfRange {
+                    field: "peers[].remote_ip",
+                });
+            }
+        }
+        if let Some(client_name) = &peer.client_name {
+            if client_name.is_empty() {
+                return Err(WireError::ValueOutOfRange {
+                    field: "peers[].client_name",
+                });
+            }
+            check_len(
+                "peers[].client_name",
+                client_name,
+                crate::protocol::MAX_PEER_CLIENT_NAME_BYTES,
+            )?;
+        }
+        check_entries(
+            "peers[].caps",
+            peer.caps.len(),
+            crate::protocol::MAX_PEER_CAPABILITIES,
+        )?;
+        let mut capabilities = HashSet::with_capacity(peer.caps.len());
+        for cap in &peer.caps {
+            if cap.is_empty() {
+                return Err(WireError::ValueOutOfRange {
+                    field: "peers[].caps[]",
+                });
+            }
+            if !capabilities.insert(cap.as_str()) {
+                return Err(WireError::ValueOutOfRange {
+                    field: "peers[].caps",
+                });
+            }
+            check_len(
+                "peers[].caps[]",
+                cap,
+                crate::protocol::MAX_PEER_CAPABILITY_BYTES,
+            )?;
+        }
+        if peer
+            .cbft_protocol_version
+            .is_some_and(|version| version > crate::protocol::MAX_PEER_CBFT_PROTOCOL_VERSION)
+        {
+            return Err(WireError::ValueOutOfRange {
+                field: "peers[].cbft_protocol_version",
+            });
+        }
+        for (field, value) in [
+            ("peers[].cbft_highest_qc_block", peer.cbft_highest_qc_block),
+            ("peers[].cbft_locked_block", peer.cbft_locked_block),
+            ("peers[].cbft_commit_block", peer.cbft_commit_block),
+        ] {
+            if value.is_some_and(|value| value > crate::protocol::MAX_PEER_CBFT_BLOCK) {
+                return Err(WireError::ValueOutOfRange { field });
+            }
+        }
+    }
     Ok(())
 }
 

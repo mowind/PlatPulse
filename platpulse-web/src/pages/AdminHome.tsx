@@ -367,6 +367,17 @@ function NodeRows({
                   }
                 />
                 <ComponentRow
+                  label="Peers"
+                  state={node.peers?.state}
+                  errorMessage={node.peers?.error_message}
+                  observedAt={node.peers?.received_at}
+                  detail={
+                    node.peers?.peer_count != null
+                      ? `${node.peers.peer_count} peers · ${node.peers.freshness}`
+                      : undefined
+                  }
+                />
+                <ComponentRow
                   label="Process"
                   state={node.process?.state}
                   errorMessage={node.process?.error_message}
@@ -415,7 +426,12 @@ function ComponentRow({
 }
 
 function latestReceivedAt(node: NodeDiagnostic): string | null | undefined {
-  const candidates = [node.rpc?.received_at, node.sync?.received_at, node.consensus?.received_at]
+  const candidates = [
+    node.rpc?.received_at,
+    node.sync?.received_at,
+    node.consensus?.received_at,
+    node.peers?.received_at,
+  ]
     .filter((value): value is string => typeof value === 'string')
     .sort()
   return candidates.at(-1)

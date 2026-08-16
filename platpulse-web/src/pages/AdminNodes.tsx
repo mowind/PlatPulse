@@ -508,6 +508,7 @@ export function AdminNodeDetail() {
           <IdentityPanel node={query.data} />
           <TransferPanel node={query.data} />
           <ObservationsPanel node={query.data} />
+        <PeerSnapshotPanel node={query.data} />
         </>
       )}
     </section>
@@ -848,7 +849,7 @@ function ObservationsPanel({ node }: { node: AdminNodeDetailDto }) {
     <article className="panel">
       <div className="panel-heading">
         <h2>Per-Node observations</h2>
-        <span className="panel-count">4 dimensions</span>
+        <span className="panel-count">5 dimensions</span>
       </div>
       <dl className="detail-list">
         <ObservationRow
@@ -899,7 +900,92 @@ function ObservationsPanel({ node }: { node: AdminNodeDetailDto }) {
               : undefined
           }
         />
+        <ObservationRow
+          label="Peers"
+          state={node.peers?.state}
+          errorMessage={node.peers?.error_message}
+          observedAt={node.peers?.observed_at}
+          receivedAt={node.peers?.received_at}
+          detail={
+            node.peers?.peer_count != null
+              ? `${node.peers.peer_count} peers · ${node.peers.freshness}`
+              : undefined
+          }
+        />
       </dl>
+    </article>
+  )
+}
+
+function PeerSnapshotPanel({ node }: { node: AdminNodeDetailDto }) {
+  const peers = node.peers
+  if (!peers) {
+    return (
+      <article className="panel">
+        <div className="panel-heading">
+          <h2>Peer snapshot</h2>
+          <StatusBadge status="Unknown" tone="neutral" />
+        </div>
+        <p className="panel-state">This Node has not reported a Peer Snapshot yet.</p>
+      </article>
+    )
+  }
+  const tone = peers.state === 'error' ? 'error' : peers.state === 'ok' ? 'ok' : 'neutral'
+  return (
+    <article className="panel">
+      <div className="panel-heading">
+        <h2>Peer snapshot</h2>
+        <StatusBadge status={componentStateLabel(peers.state)} tone={tone} />
+      </div>
+      <p className="panel-copy">
+        {peers.peer_count == null
+          ? 'No successful Peer Snapshot is retained.'
+          : `${peers.peer_count} peer${peers.peer_count === 1 ? '' : 's'} · ${peers.inbound_count ?? 0} inbound · ${peers.outbound_count ?? 0} outbound · freshness ${peers.freshness}.`}
+        {peers.state === 'error' && peers.error_message ? ` Last collection failed: ${peers.error_message}` : ''}
+      </p>
+      {peers.peer_count === 0 ? (
+        <p className="panel-state">
+          <StatusBadge status="Empty" tone="ok" /> The Agent reported an authoritative empty Peer Snapshot.
+        </p>
+      ) : peers.peers.length > 0 ? (
+        <div className="table-wrap">
+          <table className="node-table">
+            <caption className="sr-only">Current Peer Snapshot</caption>
+            <thead>
+              <tr>
+                <th scope="col">Peer ID</th>
+                <th scope="col">Direction</th>
+                <th scope="col">Flags</th>
+                <th scope="col">Client</th>
+                <th scope="col">Capabilities</th>
+                <th scope="col">CBFT</th>
+              </tr>
+            </thead>
+            <tbody>
+              {peers.peers.map((peer) => (
+                <tr key={peer.peer_id}>
+                  <th scope="row"><code>{peer.peer_id}</code></th>
+                  <td>{peer.direction}</td>
+                  <td>
+                    {[peer.trusted && 'trusted', peer.static_peer && 'static', peer.consensus_peer && 'consensus']
+                      .filter((value): value is string => Boolean(value))
+                      .join(', ') || 'none'}
+                  </td>
+                  <td>{peer.client_name ?? 'Unknown'}</td>
+                  <td>{peer.capabilities.length > 0 ? peer.capabilities.join(', ') : 'None'}</td>
+                  <td>
+                    {peer.cbft_commit_block != null
+                      ? `commit ${peer.cbft_commit_block}`
+                      : peer.cbft_protocol_version != null
+                        ? `protocol ${peer.cbft_protocol_version}`
+                        : 'Unknown'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
     </article>
   )
 }

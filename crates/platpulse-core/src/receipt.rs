@@ -127,7 +127,7 @@ pub struct NodeReceipt {
     pub current: NodeCurrentDisposition,
     /// The component revisions accepted for this Node (state/value revision
     /// pairs), e.g. for `rpc`, `sync`, `consensus`, `network_identity`,
-    /// `static_metadata`, `process`.
+    /// `static_metadata`, `process`, or optional `peers`.
     pub accepted_component_revisions: Vec<ComponentRevision>,
     /// Stable rejections for this Node's current observations. Per-Node
     /// current rejections are terminal.

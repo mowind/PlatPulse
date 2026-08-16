@@ -15,8 +15,8 @@ use platpulse_core::inventory::NodeInventory;
 use platpulse_core::network::{NetworkIdentity, RpcEndpoint};
 use platpulse_core::observation::{
     ConsensusCurrent, DiskCurrent, HostObservation, LoadCurrent, MemoryCurrent, NetworkThroughput,
-    NodeChainObservation, NodeObservation, NodeStaticMetadata, RpcCurrent, SpoolDiagnostics,
-    SyncCurrent,
+    NodeChainObservation, NodeObservation, NodeStaticMetadata, PeerSnapshot, RpcCurrent,
+    SpoolDiagnostics, SyncCurrent,
 };
 use platpulse_core::{
     AgentCapability, AgentReport, BootTransition, FingerprintHex, NodeCurrentDisposition,
@@ -88,6 +88,7 @@ pub struct RpcSnapshot {
     pub enode: Option<String>,
     pub sync: ProbeValue<SyncCurrent>,
     pub consensus: ProbeValue<ConsensusCurrent>,
+    pub peers: ProbeValue<PeerSnapshot>,
 }
 
 /// Injected Node RPC adapter. Implementations must perform one connection
@@ -374,7 +375,7 @@ fn collect_node<A: RpcAdapter>(
 ) -> NodeObservation {
     let started = std::time::Instant::now();
     let process = crate::process::collect(system, node.process.as_ref(), attempted);
-    let (rpc, network_identity, static_metadata, sync, consensus) =
+    let (rpc, network_identity, static_metadata, sync, consensus, peers) =
         match adapter.collect(&node.rpc_endpoint) {
             Ok(snapshot) => (
                 ok(
@@ -395,8 +396,10 @@ fn collect_node<A: RpcAdapter>(
                 ),
                 probe_component(snapshot.sync, attempted),
                 probe_component(snapshot.consensus, attempted),
+                probe_component(snapshot.peers, attempted),
             ),
             Err(_) => (
+                error(attempted, "rpc_unreachable", "RPC probe failed"),
                 error(attempted, "rpc_unreachable", "RPC probe failed"),
                 error(attempted, "rpc_unreachable", "RPC probe failed"),
                 error(attempted, "rpc_unreachable", "RPC probe failed"),
@@ -414,6 +417,7 @@ fn collect_node<A: RpcAdapter>(
             consensus,
             network_identity,
             static_metadata,
+            peers: Some(peers),
         },
     }
 }
@@ -467,7 +471,10 @@ pub fn collect_report_with_clock_skew<A: RpcAdapter>(
             report_id: ReportId::from_str(&Uuid::new_v4().to_string()).expect("UUID is valid"),
             generated_at: timestamp(),
             agent_version: crate::VERSION.to_owned(),
-            agent_capabilities: vec![AgentCapability::RpcCapabilityProbe],
+            agent_capabilities: vec![
+                AgentCapability::RpcCapabilityProbe,
+                AgentCapability::PeerSnapshot,
+            ],
             inventory,
             host,
             nodes: vec![],
@@ -488,7 +495,10 @@ pub fn collect_report_with_clock_skew<A: RpcAdapter>(
         .iter()
         .map(|node| collect_node(&mut system, node, attempted, adapter))
         .collect::<Vec<_>>();
-    let mut capabilities = vec![AgentCapability::RpcCapabilityProbe];
+    let mut capabilities = vec![
+        AgentCapability::RpcCapabilityProbe,
+        AgentCapability::PeerSnapshot,
+    ];
     if inventory.nodes.iter().any(|node| {
         node.process.as_ref().is_some_and(|selector| {
             matches!(
@@ -1259,6 +1269,7 @@ pub async fn apply_receipt(
 mod tests {
     use super::*;
     use crate::database::AgentDatabaseConfig;
+    use platpulse_core::observation::{PeerCurrent, PeerDirection};
     use tempfile::tempdir;
 
     fn snapshot() -> RpcSnapshot {
@@ -1292,6 +1303,7 @@ mod tests {
                 highest_lock_block: 98,
                 highest_commit_block: 97,
             }),
+            peers: ProbeValue::Supported(PeerSnapshot { peers: vec![] }),
             enode: None,
         }
     }
@@ -1386,6 +1398,7 @@ mod tests {
                     enode: None,
                     sync: ProbeValue::Unsupported,
                     consensus: ProbeValue::Unsupported,
+                    peers: ProbeValue::Unsupported,
                 },
             ),
         ])
@@ -1408,6 +1421,14 @@ mod tests {
         assert_eq!(report.nodes[1].node_id.to_string(), second_id);
         assert_eq!(report.nodes[1].chain.rpc.status, ComponentStatus::Ok);
         assert_eq!(
+            report.nodes[0].chain.peers.as_ref().unwrap().status,
+            ComponentStatus::Error
+        );
+        assert_eq!(
+            report.nodes[1].chain.peers.as_ref().unwrap().status,
+            ComponentStatus::Unsupported
+        );
+        assert_eq!(
             report.nodes[1]
                 .chain
                 .rpc
@@ -1416,6 +1437,89 @@ mod tests {
                 .unwrap()
                 .client_version,
             "fake-platon/testnet"
+        );
+    }
+
+    #[test]
+    fn peer_outcomes_are_independent_and_non_empty_values_are_typed() {
+        let dir = tempdir().unwrap();
+        let config = AgentConfig {
+            config_path: dir.path().join("agent.toml"),
+            server_url: "https://example.com".into(),
+            credential_file: dir.path().join("credential"),
+            state_db: dir.path().join("agent.db"),
+            backfill: crate::config::BackfillConfig::default(),
+        };
+        let first_endpoint: RpcEndpoint = "ws://127.0.0.1:6790".parse().unwrap();
+        let second_endpoint: RpcEndpoint = "ws://127.0.0.1:6791".parse().unwrap();
+        let first_id = "0195f2a1-0014-4014-8014-000000000014";
+        let second_id = "0195f2a1-0015-4015-8015-000000000015";
+        let inventory: NodeInventory = serde_json::from_str(&format!(
+            r#"{{"revision":1,"nodes":[{{"node_id":"{first_id}","network_key":"platon-mainnet","rpc_endpoint":"{}"}},{{"node_id":"{second_id}","network_key":"platon-testnet","rpc_endpoint":"{}"}}]}}"#,
+            first_endpoint.as_str(),
+            second_endpoint.as_str()
+        ))
+        .unwrap();
+        let mut first = snapshot();
+        first.peers = ProbeValue::Supported(PeerSnapshot {
+            peers: vec![PeerCurrent {
+                peer_id: "peer-a".to_owned(),
+                remote_ip: Some("203.0.113.4".to_owned()),
+                direction: PeerDirection::Inbound,
+                trusted: true,
+                static_peer: false,
+                consensus_peer: true,
+                client_name: Some("PlatON/v1.5.1".to_owned()),
+                caps: vec!["cbft/1".to_owned()],
+                cbft_protocol_version: Some(1),
+                cbft_highest_qc_block: Some(100),
+                cbft_locked_block: Some(99),
+                cbft_commit_block: Some(98),
+            }],
+        });
+        let mut second = snapshot();
+        second.peers = ProbeValue::Error("admin_peers failed".to_owned());
+        let adapter =
+            ScriptedRpcAdapter::for_nodes([(first_endpoint, first), (second_endpoint, second)]);
+        let report = collect_report(
+            &config,
+            "0195f2a1-0011-4011-8011-000000000011".parse().unwrap(),
+            1,
+            "0195f2a1-0012-4012-8012-000000000012".parse().unwrap(),
+            1,
+            inventory,
+            &adapter,
+        )
+        .unwrap();
+        assert_eq!(
+            report.nodes[0].chain.peers.as_ref().unwrap().status,
+            ComponentStatus::Ok
+        );
+        assert_eq!(
+            report.nodes[0]
+                .chain
+                .peers
+                .as_ref()
+                .unwrap()
+                .latest
+                .as_ref()
+                .unwrap()
+                .peers[0]
+                .peer_id,
+            "peer-a"
+        );
+        assert_eq!(
+            report.nodes[1].chain.peers.as_ref().unwrap().status,
+            ComponentStatus::Error
+        );
+        assert!(
+            report.nodes[1]
+                .chain
+                .peers
+                .as_ref()
+                .unwrap()
+                .latest
+                .is_none()
         );
     }
 

@@ -40,6 +40,8 @@ pub enum WireError {
     MissingNodeObservation { node_id: NodeId },
     /// Two per-Node observation entries reference the same Node.
     DuplicateNodeObservation { node_id: NodeId },
+    /// Two entries in one Peer Snapshot reference the same Peer ID.
+    DuplicatePeerId { node_id: NodeId, peer_id: String },
     /// A Block Summary references a Node that is not in the Inventory.
     BlockSampleForUnknownNode { node_id: NodeId },
     /// A History Gap references a Node that is not in the Inventory.
@@ -190,6 +192,9 @@ impl fmt::Display for WireError {
                 f,
                 "the report carries more than one current observation for {node_id}"
             ),
+            Self::DuplicatePeerId { node_id, peer_id } => {
+                write!(f, "Peer Snapshot for {node_id} repeats Peer ID {peer_id}")
+            }
             Self::BlockSampleForUnknownNode { node_id } => {
                 write!(
                     f,

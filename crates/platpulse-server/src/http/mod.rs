@@ -1460,6 +1460,19 @@ mod tests {
             assert!(tags.contains(&expected), "tag {expected} missing");
         }
         assert_eq!(tags.len(), 4, "route group tags must stay distinct");
+
+        let peer_schema = &spec["components"]["schemas"]["PeerDiagnostic"];
+        assert!(
+            peer_schema["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|field| field == "freshness")
+        );
+        assert!(peer_schema["properties"].get("peers").is_some());
+        let peer_entry = &spec["components"]["schemas"]["PeerDiagnosticEntry"];
+        assert!(peer_entry["properties"].get("remote_ip").is_none());
+        assert!(peer_entry["properties"].get("protocols").is_none());
     }
 
     #[tokio::test]
