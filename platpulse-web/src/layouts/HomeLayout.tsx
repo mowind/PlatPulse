@@ -82,7 +82,7 @@ export default function HomeLayout() {
           <h1>Home</h1>
           <h2>Network overview</h2>
           <p>Published Nodes grouped by Network. Private and retired Nodes are not listed.</p>
-          <p className="realtime-notice" role="status">
+          <p className="realtime-notice" role="status" data-live={realtimeStatus === 'connected'}>
             {realtimeStatus === 'connected'
               ? 'Connected'
               : realtimeStatus === 'connecting'
