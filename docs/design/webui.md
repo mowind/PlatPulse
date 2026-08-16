@@ -23,6 +23,7 @@ PlatPulse WebUI presents operational truth from the Server and gives authorized 
 - Home Dashboard: read-only Public Projections for Networks and PlatON Nodes;
 - Admin Dashboard: Owner-first operations workbench;
 - responsive behavior at 360×800, 390×844, 768×1024, and 1280×800;
+- Peer summaries, bounded Peer history, and privacy-preserving Geo aggregates;
 - independent collection, freshness, value, authorization, and operation states;
 - REST-authoritative data loading and SSE invalidation;
 - identity, lifecycle, access, alert, maintenance, retention, backup/restore, and Doctor workflows;
@@ -34,7 +35,7 @@ PlatPulse WebUI presents operational truth from the Server and gives authorized 
 - Agent, Server, SQLite, alert evaluator, notification provider, backup, or Doctor implementation;
 - endpoint editing, endpoint failover, remote commands, restart, upgrade, Docker control, or terminal access;
 - TUI, arbitrary scripts, SQL/DSL alert rules, network actions, or remote-control UI;
-- Peer/Geo, Validator, multi-tenant, HA, PostgreSQL, SSO/OIDC/TOTP/WebAuthn unless represented as an explicit Later/Unsupported state;
+- Validator, multi-tenant, HA, PostgreSQL, SSO/OIDC/TOTP/WebAuthn unless represented as an explicit Later/Unsupported state;
 - runtime theme/script injection or a second frontend framework.
 
 ## 2. Authorities and vocabulary

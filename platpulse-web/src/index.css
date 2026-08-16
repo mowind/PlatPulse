@@ -733,6 +733,118 @@ button {
   }
 }
 
+.peer-history-insight {
+  margin-top: 1rem;
+}
+
+.peer-history-insight .panel-heading {
+  align-items: flex-start;
+}
+
+.peer-history-summary {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+
+.peer-history-summary div {
+  min-width: 0;
+}
+
+.peer-history-summary dt {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.peer-history-summary dd {
+  margin: 0.2rem 0 0;
+  font-size: 1.05rem;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.peer-history-table-wrap {
+  margin-top: 1rem;
+}
+
+.peer-history-table-wrap h3 {
+  margin: 0 0 0.5rem;
+}
+
+.peer-history-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.peer-history-table th,
+.peer-history-table td {
+  padding: 0.6rem;
+  border-top: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.peer-history-table th {
+  font-weight: 700;
+}
+
+@media (max-width: 47.9rem) {
+  .peer-history-table,
+  .peer-history-table tbody,
+  .peer-history-table tr,
+  .peer-history-table td,
+  .peer-history-table th {
+    display: block;
+  }
+
+  .peer-history-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .peer-history-table tr {
+    padding: 0.65rem 0;
+    border-top: 1px solid var(--line);
+  }
+
+  .peer-history-table th[scope="row"] {
+    padding: 0 0 0.35rem;
+    border-top: 0;
+  }
+
+  .peer-history-table td {
+    display: grid;
+    grid-template-columns: minmax(8rem, 40%) minmax(0, 1fr);
+    gap: 0.75rem;
+    padding: 0.25rem 0;
+    border-top: 0;
+  }
+
+  .peer-history-table td::before {
+    content: attr(data-label);
+    color: var(--muted);
+    font-weight: 700;
+  }
+}
+
+@media (max-width: 45rem) {
+  .peer-history-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .geo-insight {
   margin-top: 0.75rem;
   padding: 0.8rem;

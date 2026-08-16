@@ -18,7 +18,8 @@ use crate::http::AppState;
 pub const RAW_BLOCK_SUMMARY_RETENTION_DAYS: i64 = 7;
 /// Maximum number of raw rows removed by one cleanup invocation.
 pub const RAW_BLOCK_SUMMARY_CLEANUP_BATCH: i64 = 128;
-/// Phase 1 does not provide 1m/1h aggregate history.
+/// Phase 3 provides five-minute and hourly Peer aggregate history; the
+/// legacy block-history aggregate families remain unsupported.
 pub const RAW_BLOCK_HISTORY_AGGREGATES_SUPPORTED: bool = false;
 /// Maximum number of rows removed by one bounded retention batch.
 pub const RETENTION_BATCH: i64 = 128;
@@ -31,6 +32,8 @@ pub const FAMILY_DIVERGENCE_OBSERVATION: &str = "divergence_observation";
 pub const FAMILY_AUDIT_EVENT: &str = "audit_event";
 pub const FAMILY_ALERT_NOTIFICATION: &str = "alert_notification";
 pub const FAMILY_PEER_PRESENCE_INTERVAL: &str = "peer_presence_interval";
+pub const FAMILY_PEER_AGGREGATE_5M: &str = "peer_aggregate_5m";
+pub const FAMILY_PEER_AGGREGATE_1H: &str = "peer_aggregate_1h";
 
 /// Policy defaults and safety bounds (design §11.3). `max_days = 0` means
 /// no upper bound (long-term family); `retention_days = 0` keeps forever.
@@ -43,7 +46,7 @@ pub struct PolicyDefaults {
     pub supported: bool,
 }
 
-pub const POLICY_CATALOG: [PolicyDefaults; 8] = [
+pub const POLICY_CATALOG: [PolicyDefaults; 10] = [
     PolicyDefaults {
         family: FAMILY_RAW_BLOCK_SUMMARY,
         label: "Raw Block Summaries",
@@ -106,6 +109,22 @@ pub const POLICY_CATALOG: [PolicyDefaults; 8] = [
         default_days: 30,
         min_days: 1,
         max_days: 365,
+        supported: true,
+    },
+    PolicyDefaults {
+        family: FAMILY_PEER_AGGREGATE_5M,
+        label: "Peer 5-Minute Aggregates",
+        default_days: 90,
+        min_days: 7,
+        max_days: 365,
+        supported: true,
+    },
+    PolicyDefaults {
+        family: FAMILY_PEER_AGGREGATE_1H,
+        label: "Peer 1-Hour Aggregates",
+        default_days: 0,
+        min_days: 0,
+        max_days: 0,
         supported: true,
     },
 ];
@@ -288,6 +307,9 @@ pub async fn estimate_impact(
     if !catalog.supported {
         return Ok((0, true));
     }
+    if retention_days == 0 {
+        return Ok((0, false));
+    }
     let cutoff = crate::auth::format_rfc3339(family_cutoff(now, retention_days));
     let count = match family {
         FAMILY_RAW_BLOCK_SUMMARY => {
@@ -327,6 +349,18 @@ pub async fn estimate_impact(
         }
         FAMILY_PEER_PRESENCE_INTERVAL => {
             sqlx::query_scalar("SELECT COUNT(*) FROM peer_presence_intervals WHERE closed_at IS NOT NULL AND closed_at < ?")
+                .bind(&cutoff)
+                .fetch_one(pool)
+                .await?
+        }
+        FAMILY_PEER_AGGREGATE_5M => {
+            sqlx::query_scalar("SELECT COUNT(*) FROM peer_aggregate_5m WHERE bucket_start < ?")
+                .bind(&cutoff)
+                .fetch_one(pool)
+                .await?
+        }
+        FAMILY_PEER_AGGREGATE_1H => {
+            sqlx::query_scalar("SELECT COUNT(*) FROM peer_aggregate_1h WHERE bucket_start < ?")
                 .bind(&cutoff)
                 .fetch_one(pool)
                 .await?
@@ -490,6 +524,12 @@ fn batch_sql(table: &str) -> &'static str {
         "peer_presence_intervals" => {
             "DELETE FROM peer_presence_intervals WHERE interval_id IN (SELECT interval_id FROM peer_presence_intervals WHERE closed_at IS NOT NULL AND closed_at < ? ORDER BY closed_at, interval_id LIMIT 128)"
         }
+        "peer_aggregate_5m" => {
+            "DELETE FROM peer_aggregate_5m WHERE aggregate_id IN (SELECT aggregate_id FROM peer_aggregate_5m WHERE bucket_start < ? ORDER BY bucket_start, aggregate_id LIMIT 128)"
+        }
+        "peer_aggregate_1h" => {
+            "DELETE FROM peer_aggregate_1h WHERE aggregate_id IN (SELECT aggregate_id FROM peer_aggregate_1h WHERE bucket_start < ? ORDER BY bucket_start, aggregate_id LIMIT 128)"
+        }
         _ => "SELECT 1",
     }
 }
@@ -557,6 +597,9 @@ async fn build_plan(
     };
 
     for policy in scope {
+        if policy.retention_days == 0 {
+            continue;
+        }
         let cutoff = crate::auth::format_rfc3339(family_cutoff(now, policy.retention_days));
         let entries = match policy.family.as_str() {
             FAMILY_RAW_BLOCK_SUMMARY => vec![(
@@ -606,6 +649,20 @@ async fn build_plan(
             FAMILY_PEER_PRESENCE_INTERVAL => vec![(
                 "peer_presence_intervals".to_owned(),
                 sqlx::query_scalar("SELECT COUNT(*) FROM peer_presence_intervals WHERE closed_at IS NOT NULL AND closed_at < ?")
+                    .bind(&cutoff)
+                    .fetch_one(pool)
+                    .await?,
+            )],
+            FAMILY_PEER_AGGREGATE_5M => vec![(
+                "peer_aggregate_5m".to_owned(),
+                sqlx::query_scalar("SELECT COUNT(*) FROM peer_aggregate_5m WHERE bucket_start < ?")
+                    .bind(&cutoff)
+                    .fetch_one(pool)
+                    .await?,
+            )],
+            FAMILY_PEER_AGGREGATE_1H => vec![(
+                "peer_aggregate_1h".to_owned(),
+                sqlx::query_scalar("SELECT COUNT(*) FROM peer_aggregate_1h WHERE bucket_start < ?")
                     .bind(&cutoff)
                     .fetch_one(pool)
                     .await?,
@@ -888,6 +945,138 @@ mod tests {
             .unwrap(),
             1,
             "retention preserves intervals inside the configured window"
+        );
+    }
+
+    #[tokio::test]
+    async fn aggregate_retention_deletes_old_five_minute_rows_and_keeps_hourly_forever() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let pool = database.pool();
+        let now = crate::auth::now_utc();
+        let now_text = crate::auth::format_rfc3339(now);
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('aggregate-retention-network', 'Aggregate Retention', '0xgenesis', 1, 1, 'lat', ?, ?)")
+            .bind(&now_text)
+            .bind(&now_text)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('aggregate-retention-agent', 1, ?, ?)")
+            .bind(&now_text)
+            .bind(&now_text)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ('aggregate-retention-node', 'aggregate-retention-agent', 'aggregate-retention-network', 'ws://127.0.0.1:1', 'active', 'private', 1, ?, ?)")
+            .bind(&now_text)
+            .bind(&now_text)
+            .execute(pool)
+            .await
+            .unwrap();
+        let old = "2020-01-01T00:00:00Z";
+        let insert_5m = "INSERT INTO peer_aggregate_5m (node_id, bucket_start, sample_count, total_peers, inbound_count, outbound_count, trusted_count, static_count, consensus_count, known_country_count, unknown_country_count, arrivals, departures, cbft_lag_count, cbft_lag_sum, first_observed_at, last_observed_at) VALUES ('aggregate-retention-node', ?, 1, 1, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, ?, ?)";
+        sqlx::query(insert_5m)
+            .bind(old)
+            .bind(old)
+            .bind(old)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(insert_5m)
+            .bind(&now_text)
+            .bind(&now_text)
+            .bind(&now_text)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO peer_aggregate_5m_countries (node_id, bucket_start, country_code, peer_count) VALUES ('aggregate-retention-node', ?, 'US', 1)")
+            .bind(old)
+            .execute(pool)
+            .await
+            .unwrap();
+        let insert_1h = "INSERT INTO peer_aggregate_1h (node_id, bucket_start, sample_count, total_peers, inbound_count, outbound_count, trusted_count, static_count, consensus_count, known_country_count, unknown_country_count, arrivals, departures, cbft_lag_count, cbft_lag_sum, first_observed_at, last_observed_at) VALUES ('aggregate-retention-node', ?, 1, 1, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, ?, ?)";
+        sqlx::query(insert_1h)
+            .bind(old)
+            .bind(old)
+            .bind(old)
+            .execute(pool)
+            .await
+            .unwrap();
+        ensure_seeded(pool).await.unwrap();
+        let operation_id = "aggregate-retention-operation";
+        sqlx::query("INSERT INTO operations (operation_id, kind, status, request_id, params_json, warnings_json, errors_json, created_at) VALUES (?, 'retention_run', 'queued', 'aggregate-retention-request', ?, '[]', '[]', ?)")
+            .bind(operation_id)
+            .bind(serde_json::json!({"families": [FAMILY_PEER_AGGREGATE_5M, FAMILY_PEER_AGGREGATE_1H]}).to_string())
+            .bind(&now_text)
+            .execute(pool)
+            .await
+            .unwrap();
+        let pepper_path = dir.path().join("pepper");
+        crate::secrets::create_pepper_file(&pepper_path).unwrap();
+        let state = AppState::new(
+            database,
+            None,
+            crate::auth::AuthConfig::development(
+                crate::secrets::load_pepper_file(&pepper_path).unwrap(),
+                "http://127.0.0.1:8080".to_owned(),
+            ),
+        );
+
+        execute_step(&state, operation_id).await.unwrap();
+        execute_step(&state, operation_id).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT status FROM operations WHERE operation_id=?")
+                .bind(operation_id)
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap(),
+            crate::operations::STATUS_SUCCEEDED
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM peer_aggregate_5m WHERE bucket_start=?"
+            )
+            .bind(old)
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM peer_aggregate_5m_countries WHERE bucket_start=?"
+            )
+            .bind(old)
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            0,
+            "country rows are removed by the aggregate foreign-key cascade"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM peer_aggregate_5m WHERE bucket_start=?"
+            )
+            .bind(&now_text)
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM peer_aggregate_1h WHERE bucket_start=?"
+            )
+            .bind(old)
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            1,
+            "the configured hourly zero-day policy keeps long-term rows"
         );
     }
 

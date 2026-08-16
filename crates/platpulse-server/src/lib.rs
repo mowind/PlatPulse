@@ -24,6 +24,7 @@ pub mod network;
 pub mod notifications;
 pub mod openapi;
 pub mod operations;
+pub mod peer_history;
 pub mod redaction;
 pub mod restore;
 pub mod retention;

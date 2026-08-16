@@ -197,6 +197,48 @@ export type AdminOverviewSummary = {
     nodes: NodeSummary;
 };
 
+export type AdminPeerAggregate = {
+    arrivals: number;
+    average_peers?: number | null;
+    bucket_start: string;
+    cbft_lag: AdminPeerLagSummary;
+    consensus_count: number;
+    countries: Array<AdminPeerCountryCount>;
+    departures: number;
+    inbound_count: number;
+    known_country_count: number;
+    last_observed_at: string;
+    outbound_count: number;
+    sample_count: number;
+    static_count: number;
+    total_peers: number;
+    trusted_count: number;
+    unknown_country_count: number;
+};
+
+export type AdminPeerCountryCount = {
+    count: number;
+    country_code: string;
+};
+
+export type AdminPeerHistory = {
+    five_minute: Array<AdminPeerAggregate>;
+    freshness: string;
+    hourly: Array<AdminPeerAggregate>;
+    /**
+     * Aggregate collection state; retained last-good rows remain visible
+     * when the latest Peer collection is in error.
+     */
+    state: string;
+};
+
+export type AdminPeerLagSummary = {
+    average?: number | null;
+    maximum?: number | null;
+    minimum?: number | null;
+    sample_count: number;
+};
+
 /**
  * One redacted Audit row for an Agent lifecycle event. The stored
  * `after_json` bodies are redacted by construction: they carry ids,
@@ -1098,6 +1140,36 @@ export type PublicNode = {
     syncState: string;
 };
 
+export type PublicPeerAggregate = {
+    arrivals: number;
+    averagePeers?: number | null;
+    bucketStart: string;
+    cbftLag: PublicPeerLagSummary;
+    consensusCount: number;
+    countries: Array<PublicCountryCount>;
+    departures: number;
+    inboundCount: number;
+    knownCountryCount: number;
+    lastObservedAt: string;
+    outboundCount: number;
+    sampleCount: number;
+    staticCount: number;
+    totalPeers: number;
+    trustedCount: number;
+    unknownCountryCount: number;
+};
+
+export type PublicPeerHistory = {
+    fiveMinute: Array<PublicPeerAggregate>;
+    freshness: string;
+    hourly: Array<PublicPeerAggregate>;
+    /**
+     * Aggregate collection state; history absence is never presented as a
+     * healthy zero-valued observation.
+     */
+    state: string;
+};
+
 export type PublicPeerInsight = {
     consensusCount?: number | null;
     /**
@@ -1131,6 +1203,13 @@ export type PublicPeerInsight = {
     state: string;
     staticCount?: number | null;
     trustedCount?: number | null;
+};
+
+export type PublicPeerLagSummary = {
+    average?: number | null;
+    maximum?: number | null;
+    minimum?: number | null;
+    sampleCount: number;
 };
 
 export type ReadyComponent = {
@@ -2538,6 +2617,33 @@ export type AdminNodePeerChurnResponses = {
 
 export type AdminNodePeerChurnResponse = AdminNodePeerChurnResponses[keyof AdminNodePeerChurnResponses];
 
+export type AdminNodePeerHistoryData = {
+    body?: never;
+    path: {
+        /**
+         * Node ID
+         */
+        node_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/nodes/{node_id}/peer-history';
+};
+
+export type AdminNodePeerHistoryErrors = {
+    404: ApiErrorBody;
+};
+
+export type AdminNodePeerHistoryError = AdminNodePeerHistoryErrors[keyof AdminNodePeerHistoryErrors];
+
+export type AdminNodePeerHistoryResponses = {
+    /**
+     * Owner-only bounded aggregate Peer history
+     */
+    200: AdminPeerHistory;
+};
+
+export type AdminNodePeerHistoryResponse = AdminNodePeerHistoryResponses[keyof AdminNodePeerHistoryResponses];
+
 export type AdminNodeTransfersData = {
     body?: never;
     path: {
@@ -3507,6 +3613,27 @@ export type PublicNodeHistoryExportResponses = {
 };
 
 export type PublicNodeHistoryExportResponse = PublicNodeHistoryExportResponses[keyof PublicNodeHistoryExportResponses];
+
+export type PublicNodePeerHistoryData = {
+    body?: never;
+    path: {
+        node_id: string;
+    };
+    query?: never;
+    url: '/api/public/v1/nodes/{node_id}/peer-history';
+};
+
+export type PublicNodePeerHistoryErrors = {
+    404: ApiErrorBody;
+};
+
+export type PublicNodePeerHistoryError = PublicNodePeerHistoryErrors[keyof PublicNodePeerHistoryErrors];
+
+export type PublicNodePeerHistoryResponses = {
+    200: PublicPeerHistory;
+};
+
+export type PublicNodePeerHistoryResponse = PublicNodePeerHistoryResponses[keyof PublicNodePeerHistoryResponses];
 
 export type SessionHandlerData = {
     body?: never;

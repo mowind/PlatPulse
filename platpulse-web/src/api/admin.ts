@@ -18,6 +18,7 @@ import {
   adminNetworks,
   adminNodeDetail,
   adminNodePeerChurn,
+  adminNodePeerHistory,
   adminNodeTransfers,
   adminNodes,
   adminRecoveryToken,
@@ -117,6 +118,7 @@ import {
   type AdminNetworkDetail,
   type AdminNodeDetail,
   type PeerChurnDiagnostic,
+  type AdminPeerHistory,
   type AdminNodeListItem,
   type AdminOverview,
   type AgentAuditResponse,
@@ -173,6 +175,7 @@ const adminKeys = {
   nodes: ['admin', 'nodes'] as const,
   nodeDetail: (nodeId: string) => ['admin', 'nodes', nodeId] as const,
   nodePeerChurn: (nodeId: string) => ['admin', 'nodes', nodeId, 'peer-churn'] as const,
+  nodePeerHistory: (nodeId: string) => ['admin', 'nodes', nodeId, 'peer-history'] as const,
   nodeTransfers: (nodeId: string) => ['admin', 'nodes', nodeId, 'transfers'] as const,
   networks: ['admin', 'networks'] as const,
   networkDetail: (networkKey: string) => ['admin', 'networks', networkKey] as const,
@@ -430,6 +433,23 @@ export async function fetchAdminNodePeerChurn(
   return requestAdmin(
     () => adminNodePeerChurn({ path: { node_id: nodeId }, signal }),
     'Unable to load Peer churn',
+  )
+}
+export function useAdminNodePeerHistory(generation: number, nodeId: string) {
+  return useQuery({
+    queryKey: [...adminKeys.nodePeerHistory(nodeId), generation],
+    queryFn: ({ signal }) => fetchAdminNodePeerHistory(nodeId, signal),
+    enabled: nodeId.length > 0,
+  })
+}
+
+export async function fetchAdminNodePeerHistory(
+  nodeId: string,
+  signal?: AbortSignal,
+): Promise<AdminPeerHistory> {
+  return requestAdmin(
+    () => adminNodePeerHistory({ path: { node_id: nodeId }, signal }),
+    'Unable to load Peer history',
   )
 }
 

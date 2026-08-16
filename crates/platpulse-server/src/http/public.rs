@@ -384,6 +384,107 @@ pub struct PublicCountryCount {
 
 #[derive(Debug, Serialize, ToSchema, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct PublicPeerHistory {
+    /// Aggregate collection state; history absence is never presented as a
+    /// healthy zero-valued observation.
+    pub state: String,
+    pub freshness: String,
+    pub five_minute: Vec<PublicPeerAggregate>,
+    pub hourly: Vec<PublicPeerAggregate>,
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicPeerAggregate {
+    pub bucket_start: String,
+    pub last_observed_at: String,
+    pub sample_count: i64,
+    pub total_peers: i64,
+    pub average_peers: Option<f64>,
+    pub inbound_count: i64,
+    pub outbound_count: i64,
+    pub trusted_count: i64,
+    pub static_count: i64,
+    pub consensus_count: i64,
+    pub known_country_count: i64,
+    pub unknown_country_count: i64,
+    pub countries: Vec<PublicCountryCount>,
+    pub arrivals: i64,
+    pub departures: i64,
+    pub cbft_lag: PublicPeerLagSummary,
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicPeerLagSummary {
+    pub sample_count: i64,
+    pub minimum: Option<i64>,
+    pub average: Option<f64>,
+    pub maximum: Option<i64>,
+}
+
+fn public_peer_aggregate(row: crate::peer_history::PeerAggregateRow) -> PublicPeerAggregate {
+    let average_peers =
+        (row.sample_count > 0).then(|| row.total_peers as f64 / row.sample_count as f64);
+    let average_lag =
+        (row.cbft_lag_count > 0).then(|| row.cbft_lag_sum as f64 / row.cbft_lag_count as f64);
+    PublicPeerAggregate {
+        bucket_start: row.bucket_start,
+        last_observed_at: row.last_observed_at,
+        sample_count: row.sample_count,
+        total_peers: row.total_peers,
+        average_peers,
+        inbound_count: row.inbound_count,
+        outbound_count: row.outbound_count,
+        trusted_count: row.trusted_count,
+        static_count: row.static_count,
+        consensus_count: row.consensus_count,
+        known_country_count: row.known_country_count,
+        unknown_country_count: row.unknown_country_count,
+        countries: row
+            .countries
+            .into_iter()
+            .map(|country| {
+                let (centroid_lat, centroid_lon) =
+                    crate::geo::country_centroid(&country.country_code);
+                PublicCountryCount {
+                    country_code: country.country_code,
+                    count: country.count,
+                    centroid_lat,
+                    centroid_lon,
+                }
+            })
+            .collect(),
+        arrivals: row.arrivals,
+        departures: row.departures,
+        cbft_lag: PublicPeerLagSummary {
+            sample_count: row.cbft_lag_count,
+            minimum: row.cbft_lag_min,
+            average: average_lag,
+            maximum: row.cbft_lag_max,
+        },
+    }
+}
+
+fn public_peer_history(history: crate::peer_history::PeerHistory) -> PublicPeerHistory {
+    PublicPeerHistory {
+        state: history.state,
+        freshness: history.freshness,
+        five_minute: history
+            .five_minute
+            .into_iter()
+            .map(public_peer_aggregate)
+            .collect(),
+        hourly: history
+            .hourly
+            .into_iter()
+            .map(public_peer_aggregate)
+            .collect(),
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct PublicGeoInsight {
     /// Server-owned Geo database state. Raw IPs and MMDB paths never cross
     /// the Public projection boundary.
@@ -586,6 +687,54 @@ pub(crate) async fn public_node_history(
                 .collect::<Vec<_>>(),
         )
         .into_response(),
+        Err(_) => error_response(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        ),
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/public/v1/nodes/{node_id}/peer-history",
+    tag = "public",
+    params(("node_id" = String, Path)),
+    responses((status = 200, body = PublicPeerHistory), (status = 404, body = crate::http::ApiErrorBody))
+)]
+pub(crate) async fn public_node_peer_history(
+    State(state): State<AppState>,
+    Path(node_id): Path<String>,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    let visible = sqlx::query_scalar::<_, i64>(
+        "SELECT 1 FROM nodes WHERE node_id=? AND visibility='public' AND lifecycle='active'",
+    )
+    .bind(&node_id)
+    .fetch_optional(state.db().pool())
+    .await;
+    match visible {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return error_response(
+                &request_id.0,
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "resource not found",
+            );
+        }
+        Err(_) => {
+            return error_response(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    }
+    match crate::peer_history::load_history(state.db().pool(), &node_id).await {
+        Ok(history) => Json(public_peer_history(history)).into_response(),
         Err(_) => error_response(
             &request_id.0,
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1215,6 +1364,10 @@ pub fn router() -> Router<AppState> {
         .route("/nodes/{node_id}", get(public_node_detail))
         .route("/nodes/{node_id}/history", get(public_node_history))
         .route(
+            "/nodes/{node_id}/peer-history",
+            get(public_node_peer_history),
+        )
+        .route(
             "/nodes/{node_id}/history/export",
             get(public_node_history_export),
         )
@@ -1465,6 +1618,18 @@ mod tests {
                 StatusCode::NOT_FOUND,
                 "export leaked {node_id}"
             );
+
+            let peer_history = public_node_peer_history(
+                State(state.clone()),
+                Path(node_id.to_owned()),
+                Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
+            )
+            .await;
+            assert_eq!(
+                peer_history.status(),
+                StatusCode::NOT_FOUND,
+                "peer history leaked {node_id}"
+            );
         }
     }
 
@@ -1485,6 +1650,64 @@ mod tests {
         let node = &value[0]["nodes"][0];
         assert_eq!(value[0]["nodes"].as_array().unwrap().len(), 1);
         assert_eq!(node["nodeId"], "node-public");
+        sqlx::query("INSERT INTO peer_aggregate_5m (node_id, bucket_start, sample_count, total_peers, inbound_count, outbound_count, trusted_count, static_count, consensus_count, known_country_count, unknown_country_count, arrivals, departures, cbft_lag_count, cbft_lag_sum, cbft_lag_min, cbft_lag_max, first_observed_at, last_observed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind("node-public")
+            .bind("2026-08-12T10:05:00Z")
+            .bind(2_i64)
+            .bind(10_i64)
+            .bind(4_i64)
+            .bind(6_i64)
+            .bind(3_i64)
+            .bind(2_i64)
+            .bind(1_i64)
+            .bind(7_i64)
+            .bind(3_i64)
+            .bind(2_i64)
+            .bind(1_i64)
+            .bind(2_i64)
+            .bind(3_i64)
+            .bind(0_i64)
+            .bind(3_i64)
+            .bind("2026-08-12T10:05:00Z")
+            .bind("2026-08-12T10:09:00Z")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO peer_aggregate_5m_countries (node_id, bucket_start, country_code, peer_count) VALUES (?, ?, ?, ?)")
+            .bind("node-public")
+            .bind("2026-08-12T10:05:00Z")
+            .bind("US")
+            .bind(7_i64)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let peer_history = public_node_peer_history(
+            State(state.clone()),
+            Path("node-public".to_owned()),
+            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
+        )
+        .await;
+        assert_eq!(peer_history.status(), StatusCode::OK);
+        let peer_history_body = to_bytes(peer_history.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let peer_history_value: serde_json::Value =
+            serde_json::from_slice(&peer_history_body).unwrap();
+        assert_eq!(peer_history_value["state"], "ok");
+        assert_eq!(peer_history_value["freshness"], "stale");
+        assert_eq!(
+            peer_history_value["fiveMinute"][0]["countries"][0]["countryCode"],
+            "US"
+        );
+        assert!(peer_history_value["hourly"].is_array());
+        assert!(peer_history_value["fiveMinute"][0].get("peerId").is_none());
+        let peer_history_text = String::from_utf8_lossy(&peer_history_body);
+        for forbidden in ["peer-a", "8.8.8.8", "provider-response"] {
+            assert!(
+                !peer_history_text.contains(forbidden),
+                "public history leaked {forbidden}"
+            );
+        }
         assert_eq!(node["hostCpuPercent"], 42.5);
         for forbidden in [
             "rpcEndpoint",

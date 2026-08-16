@@ -14,6 +14,7 @@ use sqlx::{FromRow, Sqlite, Transaction};
 
 use crate::enrollment::AgentAuthInfo;
 use crate::http::{AppState, ROUTE_GROUP_HEADER, RequestId};
+use crate::peer_history::PeerPresenceDelta;
 use platpulse_core::component::{ComponentKey, ComponentObservation, ComponentStatus};
 use platpulse_core::observation::{PeerDirection, PeerSnapshot};
 use platpulse_core::protocol::SUPPORTED_PROTOCOL_MAJORS;
@@ -178,11 +179,11 @@ async fn save_peer_presence(
     snapshot: &PeerSnapshot,
     received_at: &str,
     had_previous_successful_snapshot: bool,
-) -> Result<(), sqlx::Error> {
+) -> Result<PeerPresenceDelta, sqlx::Error> {
     // The first successful snapshot is the baseline. Presence intervals are
     // derived only from a difference between two successful snapshots.
     if !had_previous_successful_snapshot {
-        return Ok(());
+        return Ok(PeerPresenceDelta::default());
     }
     let previous_peer_ids: HashSet<String> =
         sqlx::query_scalar("SELECT peer_id FROM current_node_peers WHERE node_id=?")
@@ -204,6 +205,16 @@ async fn save_peer_presence(
         .iter()
         .map(|peer| peer.peer_id.as_str())
         .collect();
+    let delta = PeerPresenceDelta {
+        arrivals: incoming
+            .iter()
+            .filter(|peer_id| !previous_peer_ids.contains(**peer_id))
+            .count() as i64,
+        departures: previous_peer_ids
+            .iter()
+            .filter(|peer_id| !incoming.contains(peer_id.as_str()))
+            .count() as i64,
+    };
 
     // An interval is a snapshot of the arrival boundary. Once opened, its
     // identity/operational fields do not change while the Peer remains
@@ -242,7 +253,7 @@ async fn save_peer_presence(
                 .await?;
         }
     }
-    Ok(())
+    Ok(delta)
 }
 
 async fn save_current_peers(
@@ -818,7 +829,7 @@ async fn save_current(
                 received_at,
             )
             .await?;
-            if peers.status == ComponentStatus::Ok {
+            let presence_delta = if peers.status == ComponentStatus::Ok {
                 if let Some(snapshot) = peers.latest.as_ref() {
                     save_peer_presence(
                         tx,
@@ -827,10 +838,28 @@ async fn save_current(
                         received_at,
                         had_previous_successful_snapshot,
                     )
+                    .await?
+                } else {
+                    PeerPresenceDelta::default()
+                }
+            } else {
+                PeerPresenceDelta::default()
+            };
+            save_current_peers(tx, &node_id, peers, received_at, geo).await?;
+            if peers.status == ComponentStatus::Ok {
+                if let Some(snapshot) = peers.latest.as_ref() {
+                    let local_head = node.chain.sync.latest.map(|sync| sync.current_block);
+                    crate::peer_history::record_successful_snapshot(
+                        tx,
+                        &node_id,
+                        snapshot,
+                        received_at,
+                        local_head,
+                        presence_delta,
+                    )
                     .await?;
                 }
             }
-            save_current_peers(tx, &node_id, peers, received_at, geo).await?;
         }
         if let Some(process) = node.process.latest {
             sqlx::query("INSERT INTO current_node_process_observations (node_id, pid, started_at, cpu_percent, memory_bytes, uptime_ms, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET pid=excluded.pid, started_at=excluded.started_at, cpu_percent=excluded.cpu_percent, memory_bytes=excluded.memory_bytes, uptime_ms=excluded.uptime_ms, updated_at=excluded.updated_at")
@@ -4136,6 +4165,228 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(owner, source_agent);
+    }
+
+    #[tokio::test]
+    async fn successful_peer_snapshots_update_both_aggregate_families_once() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let node_id = "0195f2a1-0014-4014-8014-000000000014";
+        let mut value: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        value["nodes"][0]["chain"]["peers"] = serde_json::json!({
+            "status": "ok",
+            "attempted_at": "2026-08-12T10:00:00Z",
+            "latest_observed_at": "2026-08-12T10:00:00Z",
+            "state_revision": 1,
+            "value_revision": 1,
+            "latest": {
+                "peers": [
+                    {
+                        "peer_id": "peer-a",
+                        "remote_ip": "8.8.8.8",
+                        "direction": "inbound",
+                        "trusted": true,
+                        "static_peer": false,
+                        "consensus_peer": true,
+                        "client_name": "PlatON/v1.5.1",
+                        "caps": ["cbft/1"],
+                        "cbft_protocol_version": 1,
+                        "cbft_highest_qc_block": 100,
+                        "cbft_locked_block": 99,
+                        "cbft_commit_block": 98
+                    },
+                    {
+                        "peer_id": "peer-b",
+                        "remote_ip": "192.0.2.10",
+                        "direction": "outbound",
+                        "trusted": false,
+                        "static_peer": true,
+                        "consensus_peer": false,
+                        "client_name": "PlatON/v1.5.2",
+                        "caps": ["cbft/2"]
+                    }
+                ]
+            }
+        });
+        value["report_id"] = serde_json::json!("0195f2a1-0200-4200-8200-000000000200");
+        value["report_sequence"] = serde_json::json!(1);
+        let body = serde_json::to_vec(&value).unwrap();
+        sqlx::query("INSERT INTO geo_location_cache (canonical_ip, country_code, created_at, last_lookup_at, last_referenced_at, expires_at) VALUES ('8.8.8.8', 'US', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2099-01-01T00:00:00Z')")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            submit(&state, &agent_id, body.clone()).await.disposition,
+            ReceiptDisposition::Accepted
+        );
+        assert_eq!(
+            submit_status(&state, &agent_id, body).await,
+            StatusCode::OK,
+            "a report replay must return the durable receipt without reapplying it"
+        );
+
+        for table in ["peer_aggregate_5m", "peer_aggregate_1h"] {
+            let row: (i64, i64, i64, i64, i64, i64, i64) = sqlx::query_as(&format!(
+                "SELECT sample_count, total_peers, inbound_count, outbound_count, trusted_count, static_count, consensus_count FROM {table} WHERE node_id=?"
+            ))
+            .bind(node_id)
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap();
+            assert_eq!(row, (1, 2, 1, 1, 1, 1, 1));
+        }
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM peer_aggregate_5m_countries WHERE node_id=?",
+            )
+            .bind(node_id)
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            1,
+            "known public addresses are reduced to country counts only"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT peer_count FROM peer_aggregate_5m_countries WHERE node_id=? AND country_code='US'",
+            )
+            .bind(node_id)
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            1
+        );
+
+        value["report_id"] = serde_json::json!("0195f2a1-0201-4201-8201-000000000201");
+        value["report_sequence"] = serde_json::json!(2);
+        let second = submit(&state, &agent_id, serde_json::to_vec(&value).unwrap()).await;
+        assert_eq!(second.disposition, ReceiptDisposition::Accepted);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT sample_count FROM peer_aggregate_5m WHERE node_id=?",
+            )
+            .bind(node_id)
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            2
+        );
+
+        value["report_id"] = serde_json::json!("0195f2a1-0202-4202-8202-000000000202");
+        value["report_sequence"] = serde_json::json!(3);
+        value["nodes"][0]["chain"]["peers"]["latest"]["peers"] = serde_json::json!([]);
+        let third = submit(&state, &agent_id, serde_json::to_vec(&value).unwrap()).await;
+        assert_eq!(third.disposition, ReceiptDisposition::Accepted);
+        let churn: (i64, i64, i64) = sqlx::query_as(
+            "SELECT total_peers, arrivals, departures FROM peer_aggregate_5m WHERE node_id=?",
+        )
+        .bind(node_id)
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(churn, (4, 0, 2));
+        let history = crate::peer_history::load_history(state.db().pool(), node_id)
+            .await
+            .unwrap();
+        assert_eq!(history.state, "empty");
+        assert_eq!(history.five_minute[0].total_peers, 4);
+        sqlx::query("UPDATE component_status SET state='starting' WHERE node_id=? AND component_key='peers'")
+            .bind(node_id)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            crate::peer_history::load_history(state.db().pool(), node_id)
+                .await
+                .unwrap()
+                .state,
+            "starting"
+        );
+    }
+
+    #[tokio::test]
+    async fn aggregate_history_is_isolated_per_node() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let node_a = "0195f2a1-0014-4014-8014-000000000014";
+        let node_b = "0195f2a1-0015-4015-8015-000000000015";
+        let mut value: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        let mut second_inventory = value["inventory"]["nodes"][0].clone();
+        second_inventory["node_id"] = serde_json::json!(node_b);
+        second_inventory["rpc_endpoint"] = serde_json::json!("ws://127.0.0.1:6791");
+        value["inventory"]["nodes"] =
+            serde_json::json!([value["inventory"]["nodes"][0].clone(), second_inventory]);
+        let peer = serde_json::json!({
+            "peer_id": "peer-a",
+            "direction": "inbound",
+            "trusted": true,
+            "static_peer": false,
+            "consensus_peer": true,
+            "caps": []
+        });
+        value["nodes"][0]["chain"]["peers"] = serde_json::json!({
+            "status": "ok",
+            "attempted_at": "2026-08-12T10:00:00Z",
+            "latest_observed_at": "2026-08-12T10:00:00Z",
+            "state_revision": 1,
+            "value_revision": 1,
+            "latest": {"peers": [peer.clone()]}
+        });
+        let mut second_node = value["nodes"][0].clone();
+        second_node["node_id"] = serde_json::json!(node_b);
+        second_node["chain"]["peers"]["latest"]["peers"] = serde_json::json!([{
+            "peer_id": "peer-b",
+            "direction": "outbound",
+            "trusted": false,
+            "static_peer": true,
+            "consensus_peer": false,
+            "caps": []
+        }]);
+        value["nodes"] = serde_json::json!([value["nodes"][0].clone(), second_node]);
+        value["report_id"] = serde_json::json!("0195f2a1-0210-4210-8210-000000000210");
+        value["report_sequence"] = serde_json::json!(1);
+        assert_eq!(
+            submit(&state, &agent_id, serde_json::to_vec(&value).unwrap())
+                .await
+                .disposition,
+            ReceiptDisposition::Accepted
+        );
+        for node_id in [node_a, node_b] {
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM peer_aggregate_5m WHERE node_id=?",
+                )
+                .bind(node_id)
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap(),
+                1
+            );
+        }
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT total_peers FROM peer_aggregate_5m WHERE node_id=?",
+            )
+            .bind(node_a)
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT total_peers FROM peer_aggregate_5m WHERE node_id=?",
+            )
+            .bind(node_b)
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            1
+        );
     }
 
     #[tokio::test]

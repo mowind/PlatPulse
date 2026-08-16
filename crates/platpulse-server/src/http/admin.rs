@@ -636,6 +636,99 @@ pub struct PeerChurnDiagnostic {
     pub recent_departures: Vec<PeerPresenceInterval>,
 }
 
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct AdminPeerHistory {
+    /// Aggregate collection state; retained last-good rows remain visible
+    /// when the latest Peer collection is in error.
+    pub state: String,
+    pub freshness: String,
+    pub five_minute: Vec<AdminPeerAggregate>,
+    pub hourly: Vec<AdminPeerAggregate>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct AdminPeerAggregate {
+    pub bucket_start: String,
+    pub last_observed_at: String,
+    pub sample_count: i64,
+    pub total_peers: i64,
+    pub average_peers: Option<f64>,
+    pub inbound_count: i64,
+    pub outbound_count: i64,
+    pub trusted_count: i64,
+    pub static_count: i64,
+    pub consensus_count: i64,
+    pub known_country_count: i64,
+    pub unknown_country_count: i64,
+    pub countries: Vec<AdminPeerCountryCount>,
+    pub arrivals: i64,
+    pub departures: i64,
+    pub cbft_lag: AdminPeerLagSummary,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct AdminPeerCountryCount {
+    pub country_code: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct AdminPeerLagSummary {
+    pub sample_count: i64,
+    pub minimum: Option<i64>,
+    pub average: Option<f64>,
+    pub maximum: Option<i64>,
+}
+
+fn admin_peer_history(history: crate::peer_history::PeerHistory) -> AdminPeerHistory {
+    let convert = |row: crate::peer_history::PeerAggregateRow| {
+        let average_peers =
+            (row.sample_count > 0).then(|| row.total_peers as f64 / row.sample_count as f64);
+        let average_lag =
+            (row.cbft_lag_count > 0).then(|| row.cbft_lag_sum as f64 / row.cbft_lag_count as f64);
+        AdminPeerAggregate {
+            bucket_start: row.bucket_start,
+            last_observed_at: row.last_observed_at,
+            sample_count: row.sample_count,
+            total_peers: row.total_peers,
+            average_peers,
+            inbound_count: row.inbound_count,
+            outbound_count: row.outbound_count,
+            trusted_count: row.trusted_count,
+            static_count: row.static_count,
+            consensus_count: row.consensus_count,
+            known_country_count: row.known_country_count,
+            unknown_country_count: row.unknown_country_count,
+            countries: row
+                .countries
+                .into_iter()
+                .map(|country| AdminPeerCountryCount {
+                    country_code: country.country_code,
+                    count: country.count,
+                })
+                .collect(),
+            arrivals: row.arrivals,
+            departures: row.departures,
+            cbft_lag: AdminPeerLagSummary {
+                sample_count: row.cbft_lag_count,
+                minimum: row.cbft_lag_min,
+                average: average_lag,
+                maximum: row.cbft_lag_max,
+            },
+        }
+    };
+    AdminPeerHistory {
+        state: history.state,
+        freshness: history.freshness,
+        five_minute: history.five_minute.into_iter().map(convert).collect(),
+        hourly: history.hourly.into_iter().map(convert).collect(),
+    }
+}
+
 const PEER_CHURN_LIMIT: i64 = 128;
 const PEER_CHURN_WINDOW_HOURS: i64 = 24;
 
@@ -1627,6 +1720,52 @@ async fn admin_node_peer_churn(
     };
     match peer_churn_diagnostic(&state, &node_id).await {
         Ok(diagnostic) => Json(diagnostic).into_response(),
+        Err(_) => mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        ),
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/admin/v1/nodes/{node_id}/peer-history",
+    tag = "admin",
+    params(("node_id" = String, Path, description = "Node ID")),
+    responses((status = 200, description = "Owner-only bounded aggregate Peer history", body = AdminPeerHistory), (status = 404, body = crate::http::ApiErrorBody))
+)]
+pub(crate) async fn admin_node_peer_history(
+    State(state): State<AppState>,
+    Path(node_id): Path<String>,
+    Extension(_session): Extension<super::AuthenticatedSession>,
+    Extension(request_id): Extension<super::RequestId>,
+) -> Response {
+    let exists = sqlx::query_scalar::<_, String>("SELECT node_id FROM nodes WHERE node_id=?")
+        .bind(&node_id)
+        .fetch_optional(state.db().pool())
+        .await;
+    let Some(_) = (match exists {
+        Ok(node_id) => node_id,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    }) else {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "resource not found",
+        );
+    };
+    match crate::peer_history::load_history(state.db().pool(), &node_id).await {
+        Ok(history) => Json(admin_peer_history(history)).into_response(),
         Err(_) => mutation_error(
             &request_id.0,
             StatusCode::SERVICE_UNAVAILABLE,
@@ -4286,6 +4425,10 @@ pub fn router() -> Router<AppState> {
         .route("/nodes/{node_id}", get(admin_node_detail))
         .route("/nodes/{node_id}/metadata", put(set_node_metadata))
         .route("/nodes/{node_id}/peer-churn", get(admin_node_peer_churn))
+        .route(
+            "/nodes/{node_id}/peer-history",
+            get(admin_node_peer_history),
+        )
         .route("/nodes/{node_id}/history", get(admin_node_history))
         .route("/networks", get(admin_networks))
         .route("/networks/{network_key}", get(admin_network_detail))
@@ -5435,6 +5578,56 @@ mod tests {
         assert_eq!(churn["recent_departures"][0]["peer_id"], "peer-healthy");
         assert!(churn["recent_departures"][0]["duration_seconds"].is_number());
         assert!(!churn.to_string().contains("203.0.113.7"));
+        sqlx::query("INSERT INTO peer_aggregate_5m (node_id, bucket_start, sample_count, total_peers, inbound_count, outbound_count, trusted_count, static_count, consensus_count, known_country_count, unknown_country_count, arrivals, departures, cbft_lag_count, cbft_lag_sum, cbft_lag_min, cbft_lag_max, first_observed_at, last_observed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind("node-healthy")
+            .bind("2026-08-12T10:05:00Z")
+            .bind(1_i64)
+            .bind(1_i64)
+            .bind(1_i64)
+            .bind(0_i64)
+            .bind(1_i64)
+            .bind(0_i64)
+            .bind(1_i64)
+            .bind(1_i64)
+            .bind(0_i64)
+            .bind(1_i64)
+            .bind(0_i64)
+            .bind(0_i64)
+            .bind(0_i64)
+            .bind(Option::<i64>::None)
+            .bind(Option::<i64>::None)
+            .bind("2026-08-12T10:05:00Z")
+            .bind("2026-08-12T10:09:00Z")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO peer_aggregate_5m_countries (node_id, bucket_start, country_code, peer_count) VALUES (?, ?, ?, ?)")
+            .bind("node-healthy")
+            .bind("2026-08-12T10:05:00Z")
+            .bind("US")
+            .bind(1_i64)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let response = admin_node_peer_history(
+            State(state.clone()),
+            Path("node-healthy".to_owned()),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let peer_history: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(peer_history["state"], "ok");
+        assert_eq!(
+            peer_history["five_minute"][0]["countries"][0]["country_code"],
+            "US"
+        );
+        assert!(peer_history["hourly"].is_array());
+        assert!(!peer_history.to_string().contains("203.0.113.7"));
+        assert!(!peer_history.to_string().contains("peer-healthy"));
         sqlx::query(
             "UPDATE component_status SET state='error', error_code='admin_peers_failed', error_message='peer probe failed' WHERE node_id='node-healthy' AND component_key='peers'",
         )

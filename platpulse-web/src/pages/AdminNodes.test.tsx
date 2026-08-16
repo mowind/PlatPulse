@@ -311,7 +311,7 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
 
     await screen.findByRole('heading', { level: 1, name: /Node A/ })
     expect(await screen.findByText(/The latest Peer collection failed/)).toBeTruthy()
-    expect(screen.getByText('Error')).toBeTruthy()
+    expect(screen.getAllByText('Error').length).toBeGreaterThan(0)
   })
 
   it('deduplicates churn intervals and labels their mobile table cells', async () => {

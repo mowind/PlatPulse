@@ -6,6 +6,7 @@ import {
   updateNodeVisibility,
   useAdminNodeDetail,
   useAdminNodePeerChurn,
+  useAdminNodePeerHistory,
   useAdminNodes,
 } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
@@ -20,6 +21,7 @@ import type {
   AdminNodeListItem,
   NodeIdentityStatus,
 } from '../api/generated'
+import { PeerHistoryInsight, normalizeAdminPeerHistory } from '../components/PeerHistoryInsight'
 import { transferBadge } from './AdminNodeTransfer'
 
 /**
@@ -519,8 +521,9 @@ export function AdminNodeDetail() {
           <IdentityPanel node={query.data} />
           <TransferPanel node={query.data} />
           <ObservationsPanel node={query.data} />
-        <PeerSnapshotPanel node={query.data} />
-  <PeerChurnPanel nodeId={query.data.node_id} />
+          <PeerSnapshotPanel node={query.data} />
+          <PeerChurnPanel nodeId={query.data.node_id} />
+          <PeerHistoryPanel nodeId={query.data.node_id} />
         </>
       )}
     </section>
@@ -1000,6 +1003,28 @@ function PeerSnapshotPanel({ node }: { node: AdminNodeDetailDto }) {
       ) : null}
     </article>
   )
+}
+
+function PeerHistoryPanel({ nodeId }: { nodeId: string }) {
+  const { generation } = useAuth()
+  const query = useAdminNodePeerHistory(generation, nodeId)
+  if (query.isPending && !query.data) {
+    return (
+      <article className="panel">
+        <div className="panel-heading"><h2>Peer history</h2><StatusBadge status="Starting" tone="neutral" /></div>
+        <p className="panel-state">Loading retained Peer aggregates…</p>
+      </article>
+    )
+  }
+  if (query.isError && !query.data) {
+    return (
+      <article className="panel">
+        <div className="panel-heading"><h2>Peer history</h2><StatusBadge status="Error" tone="error" /></div>
+        <p className="panel-state" role="alert">{query.error instanceof Error ? query.error.message : 'Unable to load Peer history'} <button type="button" className="text-action" onClick={() => void query.refetch()}>Try again</button></p>
+      </article>
+    )
+  }
+  return <PeerHistoryInsight history={query.data ? normalizeAdminPeerHistory(query.data) : undefined} admin error={query.isError} />
 }
 
 function PeerChurnPanel({ nodeId }: { nodeId: string }) {

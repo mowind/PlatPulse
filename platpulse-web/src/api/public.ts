@@ -4,9 +4,11 @@ import {
   publicNetwork,
   publicNetworks,
   publicNodeDetail,
+  publicNodePeerHistory,
   type PublicAccessSettings,
   type PublicNetwork,
   type PublicNode,
+  type PublicPeerHistory,
 } from './generated'
 
 export async function fetchNetworks(): Promise<PublicNetwork[]> {
@@ -79,7 +81,13 @@ export async function ensureGuestEnabledKnown(): Promise<boolean> {
   return guestEnabledCache ?? false
 }
 
-export type PublicHistoryItem = { nodeId: string; height: number | null; blockTimeMs: number | null; transactionCount: number | null; source: string | null; coinbase: string | null; sealSignerMatch: string | null; protocolProposer: string | null; observedAt: string | null; freshness: string | null; gapFromHeight: number | null; gapToHeight: number | null; gapKind: string | null; gapReason: string | null; divergenceKind: string | null; divergenceReason: string | null }
+export async function fetchNodePeerHistory(nodeId: string): Promise<PublicPeerHistory> {
+  const { data, error } = await publicNodePeerHistory({ path: { node_id: nodeId } })
+  if (error || !data) throw new Error(error?.error?.message ?? 'Unable to load Peer history')
+  return data
+}
+
+ export type PublicHistoryItem = { nodeId: string; height: number | null; blockTimeMs: number | null; transactionCount: number | null; source: string | null; coinbase: string | null; sealSignerMatch: string | null; protocolProposer: string | null; observedAt: string | null; freshness: string | null; gapFromHeight: number | null; gapToHeight: number | null; gapKind: string | null; gapReason: string | null; divergenceKind: string | null; divergenceReason: string | null }
 
 export async function fetchNodeHistory(nodeId: string): Promise<PublicHistoryItem[]> {
   const response = await fetch(`/api/public/v1/nodes/${encodeURIComponent(nodeId)}/history`)

@@ -1696,7 +1696,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_json(response).await;
         let policies = body["policies"].as_array().unwrap();
-        assert_eq!(policies.len(), 8);
+        assert_eq!(policies.len(), 10);
         let raw = policies
             .iter()
             .find(|policy| policy["family"] == "raw_block_summary")

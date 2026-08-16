@@ -2188,6 +2188,47 @@
         }
       }
     },
+    "/api/admin/v1/nodes/{node_id}/peer-history": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "admin_node_peer_history",
+        "parameters": [
+          {
+            "name": "node_id",
+            "in": "path",
+            "description": "Node ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Owner-only bounded aggregate Peer history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminPeerHistory"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/v1/nodes/{node_id}/transfers": {
       "get": {
         "tags": [
@@ -4495,6 +4536,46 @@
         }
       }
     },
+    "/api/public/v1/nodes/{node_id}/peer-history": {
+      "get": {
+        "tags": [
+          "public"
+        ],
+        "operationId": "public_node_peer_history",
+        "parameters": [
+          {
+            "name": "node_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicPeerHistory"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/public/v1/session": {
       "get": {
         "tags": [
@@ -5271,6 +5352,173 @@
           },
           "nodes": {
             "$ref": "#/components/schemas/NodeSummary"
+          }
+        }
+      },
+      "AdminPeerAggregate": {
+        "type": "object",
+        "required": [
+          "bucket_start",
+          "last_observed_at",
+          "sample_count",
+          "total_peers",
+          "inbound_count",
+          "outbound_count",
+          "trusted_count",
+          "static_count",
+          "consensus_count",
+          "known_country_count",
+          "unknown_country_count",
+          "countries",
+          "arrivals",
+          "departures",
+          "cbft_lag"
+        ],
+        "properties": {
+          "arrivals": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "average_peers": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "bucket_start": {
+            "type": "string"
+          },
+          "cbft_lag": {
+            "$ref": "#/components/schemas/AdminPeerLagSummary"
+          },
+          "consensus_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "countries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminPeerCountryCount"
+            }
+          },
+          "departures": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "inbound_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "known_country_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "last_observed_at": {
+            "type": "string"
+          },
+          "outbound_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "sample_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "static_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total_peers": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "trusted_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "unknown_country_count": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "AdminPeerCountryCount": {
+        "type": "object",
+        "required": [
+          "country_code",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "country_code": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminPeerHistory": {
+        "type": "object",
+        "required": [
+          "state",
+          "freshness",
+          "five_minute",
+          "hourly"
+        ],
+        "properties": {
+          "five_minute": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminPeerAggregate"
+            }
+          },
+          "freshness": {
+            "type": "string"
+          },
+          "hourly": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminPeerAggregate"
+            }
+          },
+          "state": {
+            "type": "string",
+            "description": "Aggregate collection state; retained last-good rows remain visible\nwhen the latest Peer collection is in error."
+          }
+        }
+      },
+      "AdminPeerLagSummary": {
+        "type": "object",
+        "required": [
+          "sample_count"
+        ],
+        "properties": {
+          "average": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "maximum": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "minimum": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "sample_count": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
@@ -8608,6 +8856,124 @@
           }
         }
       },
+      "PublicPeerAggregate": {
+        "type": "object",
+        "required": [
+          "bucketStart",
+          "lastObservedAt",
+          "sampleCount",
+          "totalPeers",
+          "inboundCount",
+          "outboundCount",
+          "trustedCount",
+          "staticCount",
+          "consensusCount",
+          "knownCountryCount",
+          "unknownCountryCount",
+          "countries",
+          "arrivals",
+          "departures",
+          "cbftLag"
+        ],
+        "properties": {
+          "arrivals": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "averagePeers": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "bucketStart": {
+            "type": "string"
+          },
+          "cbftLag": {
+            "$ref": "#/components/schemas/PublicPeerLagSummary"
+          },
+          "consensusCount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "countries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicCountryCount"
+            }
+          },
+          "departures": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "inboundCount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "knownCountryCount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "lastObservedAt": {
+            "type": "string"
+          },
+          "outboundCount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "sampleCount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "staticCount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "totalPeers": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "trustedCount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "unknownCountryCount": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "PublicPeerHistory": {
+        "type": "object",
+        "required": [
+          "state",
+          "freshness",
+          "fiveMinute",
+          "hourly"
+        ],
+        "properties": {
+          "fiveMinute": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicPeerAggregate"
+            }
+          },
+          "freshness": {
+            "type": "string"
+          },
+          "hourly": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicPeerAggregate"
+            }
+          },
+          "state": {
+            "type": "string",
+            "description": "Aggregate collection state; history absence is never presented as a\nhealthy zero-valued observation."
+          }
+        }
+      },
       "PublicPeerInsight": {
         "type": "object",
         "required": [
@@ -8685,6 +9051,39 @@
               "integer",
               "null"
             ],
+            "format": "int64"
+          }
+        }
+      },
+      "PublicPeerLagSummary": {
+        "type": "object",
+        "required": [
+          "sampleCount"
+        ],
+        "properties": {
+          "average": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "maximum": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "minimum": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "sampleCount": {
+            "type": "integer",
             "format": "int64"
           }
         }
