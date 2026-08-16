@@ -30,6 +30,7 @@ pub const FAMILY_HISTORY_GAP: &str = "history_gap";
 pub const FAMILY_DIVERGENCE_OBSERVATION: &str = "divergence_observation";
 pub const FAMILY_AUDIT_EVENT: &str = "audit_event";
 pub const FAMILY_ALERT_NOTIFICATION: &str = "alert_notification";
+pub const FAMILY_PEER_PRESENCE_INTERVAL: &str = "peer_presence_interval";
 
 /// Policy defaults and safety bounds (design §11.3). `max_days = 0` means
 /// no upper bound (long-term family); `retention_days = 0` keeps forever.
@@ -42,7 +43,7 @@ pub struct PolicyDefaults {
     pub supported: bool,
 }
 
-pub const POLICY_CATALOG: [PolicyDefaults; 7] = [
+pub const POLICY_CATALOG: [PolicyDefaults; 8] = [
     PolicyDefaults {
         family: FAMILY_RAW_BLOCK_SUMMARY,
         label: "Raw Block Summaries",
@@ -97,6 +98,14 @@ pub const POLICY_CATALOG: [PolicyDefaults; 7] = [
         default_days: 180,
         min_days: 90,
         max_days: 0,
+        supported: true,
+    },
+    PolicyDefaults {
+        family: FAMILY_PEER_PRESENCE_INTERVAL,
+        label: "Peer Presence Intervals",
+        default_days: 30,
+        min_days: 1,
+        max_days: 365,
         supported: true,
     },
 ];
@@ -316,6 +325,12 @@ pub async fn estimate_impact(
                 .fetch_one(pool)
                 .await?
         }
+        FAMILY_PEER_PRESENCE_INTERVAL => {
+            sqlx::query_scalar("SELECT COUNT(*) FROM peer_presence_intervals WHERE closed_at IS NOT NULL AND closed_at < ?")
+                .bind(&cutoff)
+                .fetch_one(pool)
+                .await?
+        }
         _ => 0,
     };
     Ok((count, false))
@@ -332,6 +347,7 @@ pub fn protected_state_notes() -> Vec<&'static str> {
         "immutable Incident history",
         "Audit Events referenced by Operations",
         "Rule versions and policy rows",
+        "open Peer presence intervals",
     ]
 }
 
@@ -471,6 +487,9 @@ fn batch_sql(table: &str) -> &'static str {
         "notification_events" => {
             "DELETE FROM notification_events WHERE event_id IN (SELECT event_id FROM notification_events WHERE created_at < ? ORDER BY created_at LIMIT 128)"
         }
+        "peer_presence_intervals" => {
+            "DELETE FROM peer_presence_intervals WHERE interval_id IN (SELECT interval_id FROM peer_presence_intervals WHERE closed_at IS NOT NULL AND closed_at < ? ORDER BY closed_at, interval_id LIMIT 128)"
+        }
         _ => "SELECT 1",
     }
 }
@@ -580,6 +599,13 @@ async fn build_plan(
             FAMILY_ALERT_NOTIFICATION => vec![(
                 "notification_events".to_owned(),
                 sqlx::query_scalar("SELECT COUNT(*) FROM notification_events WHERE created_at < ?")
+                    .bind(&cutoff)
+                    .fetch_one(pool)
+                    .await?,
+            )],
+            FAMILY_PEER_PRESENCE_INTERVAL => vec![(
+                "peer_presence_intervals".to_owned(),
+                sqlx::query_scalar("SELECT COUNT(*) FROM peer_presence_intervals WHERE closed_at IS NOT NULL AND closed_at < ?")
                     .bind(&cutoff)
                     .fetch_one(pool)
                     .await?,
@@ -744,7 +770,125 @@ mod tests {
         assert!(validate_policy_days("history_gap", 179).is_err());
         assert_eq!(validate_policy_days("one_hour_aggregate", 0), Ok(()));
         assert!(validate_policy_days("one_hour_aggregate", 30).is_err());
+        assert_eq!(
+            validate_policy_days(FAMILY_PEER_PRESENCE_INTERVAL, 30),
+            Ok(())
+        );
+        assert!(validate_policy_days(FAMILY_PEER_PRESENCE_INTERVAL, 0).is_err());
+        assert!(validate_policy_days(FAMILY_PEER_PRESENCE_INTERVAL, 366).is_err());
         assert!(validate_policy_days("unknown_family", 7).is_err());
+    }
+
+    #[tokio::test]
+    async fn peer_presence_retention_deletes_only_old_closed_intervals() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let pool = database.pool();
+        let now = crate::auth::now_utc();
+        let now_text = crate::auth::format_rfc3339(now);
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('peer-retention-network', 'Peer Retention', '0xgenesis', 1, 1, 'lat', ?, ?)")
+            .bind(&now_text)
+            .bind(&now_text)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('peer-retention-agent', 1, ?, ?)")
+            .bind(&now_text)
+            .bind(&now_text)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ('peer-retention-node', 'peer-retention-agent', 'peer-retention-network', 'ws://127.0.0.1:1', 'active', 'private', 1, ?, ?)")
+            .bind(&now_text)
+            .bind(&now_text)
+            .execute(pool)
+            .await
+            .unwrap();
+        let insert = "INSERT INTO peer_presence_intervals (node_id, peer_id, direction, trusted, static_peer, consensus_peer, client_name, opened_at, closed_at) VALUES ('peer-retention-node', ?, 'inbound', 1, 0, 1, 'PlatON/v1.5.1', ?, ?)";
+        sqlx::query(insert)
+            .bind("peer-old")
+            .bind("2020-01-01T00:00:00Z")
+            .bind("2020-01-02T00:00:00Z")
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(insert)
+            .bind("peer-open")
+            .bind("2020-01-01T00:00:00Z")
+            .bind(None::<String>)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(insert)
+            .bind("peer-fresh")
+            .bind(&now_text)
+            .bind(&now_text)
+            .execute(pool)
+            .await
+            .unwrap();
+        ensure_seeded(pool).await.unwrap();
+        let operation_id = "peer-retention-operation";
+        sqlx::query("INSERT INTO operations (operation_id, kind, status, request_id, params_json, warnings_json, errors_json, created_at) VALUES (?, 'retention_run', 'queued', 'peer-retention-request', ?, '[]', '[]', ?)")
+            .bind(operation_id)
+            .bind(serde_json::json!({"families": [FAMILY_PEER_PRESENCE_INTERVAL]}).to_string())
+            .bind(&now_text)
+            .execute(pool)
+            .await
+            .unwrap();
+        let pepper_path = dir.path().join("pepper");
+        crate::secrets::create_pepper_file(&pepper_path).unwrap();
+        let state = AppState::new(
+            database,
+            None,
+            crate::auth::AuthConfig::development(
+                crate::secrets::load_pepper_file(&pepper_path).unwrap(),
+                "http://127.0.0.1:8080".to_owned(),
+            ),
+        );
+
+        execute_step(&state, operation_id).await.unwrap();
+        execute_step(&state, operation_id).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT status FROM operations WHERE operation_id=?",)
+                .bind(operation_id)
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap(),
+            crate::operations::STATUS_SUCCEEDED
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE peer_id='peer-old'",
+            )
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE peer_id='peer-open'",
+            )
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            1,
+            "retention never deletes open intervals"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE peer_id='peer-fresh'",
+            )
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            1,
+            "retention preserves intervals inside the configured window"
+        );
     }
 
     #[tokio::test]

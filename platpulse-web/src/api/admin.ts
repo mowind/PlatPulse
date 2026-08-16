@@ -16,6 +16,7 @@ import {
   adminNetworkDetail,
   adminNetworks,
   adminNodeDetail,
+  adminNodePeerChurn,
   adminNodeTransfers,
   adminNodes,
   adminRecoveryToken,
@@ -114,6 +115,7 @@ import {
   type SilenceMutationResponse,
   type AdminNetworkDetail,
   type AdminNodeDetail,
+  type PeerChurnDiagnostic,
   type AdminNodeListItem,
   type AdminOverview,
   type AgentAuditResponse,
@@ -167,6 +169,7 @@ const adminKeys = {
   agentAudit: (agentId: string) => ['admin', 'agents', agentId, 'audit'] as const,
   nodes: ['admin', 'nodes'] as const,
   nodeDetail: (nodeId: string) => ['admin', 'nodes', nodeId] as const,
+  nodePeerChurn: (nodeId: string) => ['admin', 'nodes', nodeId, 'peer-churn'] as const,
   nodeTransfers: (nodeId: string) => ['admin', 'nodes', nodeId, 'transfers'] as const,
   networks: ['admin', 'networks'] as const,
   networkDetail: (networkKey: string) => ['admin', 'networks', networkKey] as const,
@@ -391,6 +394,25 @@ export function useAdminNodeDetail(generation: number, nodeId: string) {
     // Node's URL (per-Node scoping and non-leaking unknown/private state).
     enabled: nodeId.length > 0,
   })
+}
+
+export function useAdminNodePeerChurn(generation: number, nodeId: string) {
+  return useQuery({
+    queryKey: [...adminKeys.nodePeerChurn(nodeId), generation],
+    queryFn: ({ signal }) => fetchAdminNodePeerChurn(nodeId, signal),
+    // A different Node's churn history must never render under this Node.
+    enabled: nodeId.length > 0,
+  })
+}
+
+export async function fetchAdminNodePeerChurn(
+  nodeId: string,
+  signal?: AbortSignal,
+): Promise<PeerChurnDiagnostic> {
+  return requestAdmin(
+    () => adminNodePeerChurn({ path: { node_id: nodeId }, signal }),
+    'Unable to load Peer churn',
+  )
 }
 
 /** Two-phase Transfer history of one Node (issue #46): typed outcomes with

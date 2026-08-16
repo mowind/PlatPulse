@@ -1,4 +1,5 @@
 //! Transactional AgentReport ingestion for the first Inventory vertical slice.
+use std::collections::HashSet;
 use std::str::FromStr;
 
 use axum::body::{Body, Bytes, to_bytes};
@@ -168,6 +169,79 @@ async fn save_component<T: serde::Serialize>(
         .bind(value_received_at)
         .bind(component.state_revision as i64).bind(component.value_revision as i64)
         .bind(error_code).bind(error_message).execute(&mut **tx).await?;
+    Ok(())
+}
+
+async fn save_peer_presence(
+    tx: &mut Transaction<'_, Sqlite>,
+    node_id: &str,
+    snapshot: &PeerSnapshot,
+    received_at: &str,
+    had_previous_successful_snapshot: bool,
+) -> Result<(), sqlx::Error> {
+    // The first successful snapshot is the baseline. Presence intervals are
+    // derived only from a difference between two successful snapshots.
+    if !had_previous_successful_snapshot {
+        return Ok(());
+    }
+    let previous_peer_ids: HashSet<String> =
+        sqlx::query_scalar("SELECT peer_id FROM current_node_peers WHERE node_id=?")
+            .bind(node_id)
+            .fetch_all(&mut **tx)
+            .await?
+            .into_iter()
+            .collect();
+    let open_peer_ids: HashSet<String> = sqlx::query_scalar(
+        "SELECT peer_id FROM peer_presence_intervals WHERE node_id=? AND closed_at IS NULL",
+    )
+    .bind(node_id)
+    .fetch_all(&mut **tx)
+    .await?
+    .into_iter()
+    .collect();
+    let incoming: HashSet<&str> = snapshot
+        .peers
+        .iter()
+        .map(|peer| peer.peer_id.as_str())
+        .collect();
+
+    // An interval is a snapshot of the arrival boundary. Once opened, its
+    // identity/operational fields do not change while the Peer remains
+    // present; a later changed snapshot is still the same connection.
+    for peer in &snapshot.peers {
+        if previous_peer_ids.contains(&peer.peer_id) || open_peer_ids.contains(&peer.peer_id) {
+            continue;
+        }
+        let direction = match peer.direction {
+            PeerDirection::Inbound => "inbound",
+            PeerDirection::Outbound => "outbound",
+        };
+        sqlx::query("INSERT INTO peer_presence_intervals (node_id, peer_id, direction, trusted, static_peer, consensus_peer, client_name, opened_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(node_id)
+            .bind(&peer.peer_id)
+            .bind(direction)
+            .bind(peer.trusted as i64)
+            .bind(peer.static_peer as i64)
+            .bind(peer.consensus_peer as i64)
+            .bind(peer.client_name.as_deref())
+            .bind(received_at)
+            .execute(&mut **tx)
+            .await?;
+    }
+
+    for peer_id in open_peer_ids {
+        if !incoming.contains(peer_id.as_str()) {
+            // Server timestamps are normally monotonic, but a wall-clock
+            // adjustment must not violate the interval ordering constraint.
+            sqlx::query("UPDATE peer_presence_intervals SET closed_at=CASE WHEN opened_at > ? THEN opened_at ELSE ? END WHERE node_id=? AND peer_id=? AND closed_at IS NULL")
+                .bind(received_at)
+                .bind(received_at)
+                .bind(node_id)
+                .bind(peer_id)
+                .execute(&mut **tx)
+                .await?;
+        }
+    }
     Ok(())
 }
 
@@ -669,6 +743,21 @@ async fn save_current(
         )
         .await?;
         if let Some(peers) = &node.chain.peers {
+            let had_previous_successful_snapshot = if peers.status == ComponentStatus::Ok
+                && peers.latest.is_some()
+            {
+                sqlx::query_scalar::<_, Option<String>>(
+                        "SELECT value_received_at FROM component_status WHERE agent_id=? AND scope='node' AND scope_key=? AND component_key='peers'",
+                    )
+                    .bind(&agent_id)
+                    .bind(&node_id)
+                    .fetch_optional(&mut **tx)
+                    .await?
+                    .flatten()
+                    .is_some()
+            } else {
+                false
+            };
             save_component(
                 tx,
                 &agent_id,
@@ -680,6 +769,18 @@ async fn save_current(
                 received_at,
             )
             .await?;
+            if peers.status == ComponentStatus::Ok {
+                if let Some(snapshot) = peers.latest.as_ref() {
+                    save_peer_presence(
+                        tx,
+                        &node_id,
+                        snapshot,
+                        received_at,
+                        had_previous_successful_snapshot,
+                    )
+                    .await?;
+                }
+            }
             save_current_peers(tx, &node_id, peers, received_at).await?;
         }
         if let Some(process) = node.process.latest {
@@ -2414,6 +2515,17 @@ mod tests {
         let first_body = serde_json::to_vec(&value).unwrap();
         let first = submit(&state, &agent_id, first_body.clone()).await;
         assert_eq!(first.disposition, ReceiptDisposition::Accepted);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=? AND closed_at IS NULL",
+            )
+            .bind("0195f2a1-0014-4014-8014-000000000014")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            0,
+            "the first successful Peer Snapshot establishes the baseline only"
+        );
         let first_value_received_at: String = sqlx::query_scalar(
             "SELECT value_received_at FROM component_status WHERE node_id=? AND component_key='peers'",
         )
@@ -2454,6 +2566,17 @@ mod tests {
 
         let replay = submit(&state, &agent_id, first_body).await;
         assert_eq!(replay, first);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=?",
+            )
+            .bind("0195f2a1-0014-4014-8014-000000000014")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            0,
+            "a replayed immutable report must not create a baseline presence interval"
+        );
 
         let mut duplicate_value = value.clone();
         duplicate_value["report_id"] = serde_json::json!("0195f2a1-0098-4098-8098-000000000098");
@@ -2510,6 +2633,17 @@ mod tests {
         assert_eq!(error_receipt.disposition, ReceiptDisposition::Accepted);
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=? AND closed_at IS NULL",
+            )
+            .bind("0195f2a1-0014-4014-8014-000000000014")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            0,
+            "a failed Peer collection cannot close or invent a baseline interval"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
                 "SELECT COUNT(*) FROM current_node_peers WHERE node_id=?",
             )
             .bind("0195f2a1-0014-4014-8014-000000000014")
@@ -2541,8 +2675,48 @@ mod tests {
             "an error receipt must not replace the last successful value receipt"
         );
 
-        value["report_id"] = serde_json::json!("0195f2a1-0100-4100-8100-000000000100");
+        value["report_id"] = serde_json::json!("0195f2a1-0104-4104-8104-000000000104");
         value["report_sequence"] = serde_json::json!(3);
+        value["nodes"][0]["chain"]["peers"] = serde_json::json!({
+            "status": "ok",
+            "attempted_at": "2026-08-12T10:00:07Z",
+            "latest_observed_at": "2026-08-12T10:00:00Z",
+            "state_revision": 3,
+            "value_revision": 2,
+            "latest": {
+                "peers": [{
+                    "peer_id": "peer-a",
+                    "remote_ip": "203.0.113.4",
+                    "direction": "outbound",
+                    "trusted": false,
+                    "static_peer": true,
+                    "consensus_peer": false,
+                    "client_name": "PlatON/v1.5.2",
+                    "caps": ["cbft/2"],
+                    "cbft_protocol_version": 2,
+                    "cbft_highest_qc_block": 101,
+                    "cbft_locked_block": 100,
+                    "cbft_commit_block": 99
+                }]
+            }
+        });
+        let unchanged_receipt =
+            submit(&state, &agent_id, serde_json::to_vec(&value).unwrap()).await;
+        assert_eq!(unchanged_receipt.disposition, ReceiptDisposition::Accepted);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=?",
+            )
+            .bind("0195f2a1-0014-4014-8014-000000000014")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            0,
+            "a successful snapshot that retains the Peer does not invent an arrival"
+        );
+
+        value["report_id"] = serde_json::json!("0195f2a1-0100-4100-8100-000000000100");
+        value["report_sequence"] = serde_json::json!(4);
         value["nodes"][0]["chain"]["peers"] = serde_json::json!({
             "status": "unsupported",
             "state_revision": 3,
@@ -2567,7 +2741,7 @@ mod tests {
         );
 
         value["report_id"] = serde_json::json!("0195f2a1-0101-4101-8101-000000000101");
-        value["report_sequence"] = serde_json::json!(4);
+        value["report_sequence"] = serde_json::json!(5);
         value["nodes"][0]["chain"]["peers"] = serde_json::json!({
             "status": "ok",
             "attempted_at": "2026-08-12T10:00:10Z",
@@ -2578,6 +2752,17 @@ mod tests {
         });
         let empty_receipt = submit(&state, &agent_id, serde_json::to_vec(&value).unwrap()).await;
         assert_eq!(empty_receipt.disposition, ReceiptDisposition::Accepted);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=? AND peer_id='peer-a'",
+            )
+            .bind("0195f2a1-0014-4014-8014-000000000014")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            0,
+            "an empty snapshot removes the baseline Peer without inventing a departure interval"
+        );
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
                 "SELECT COUNT(*) FROM current_node_peers WHERE node_id=?",
@@ -2605,7 +2790,7 @@ mod tests {
             .unwrap();
 
         value["report_id"] = serde_json::json!("0195f2a1-0102-4102-8102-000000000102");
-        value["report_sequence"] = serde_json::json!(5);
+        value["report_sequence"] = serde_json::json!(6);
         value["nodes"][0]["chain"]["peers"] = serde_json::json!({
             "status": "error",
             "attempted_at": "2026-08-12T10:00:15Z",
@@ -2631,6 +2816,262 @@ mod tests {
             .unwrap(),
             "2026-01-02T00:00:00Z",
             "an error after an empty snapshot must preserve its value receipt"
+        );
+
+        value["report_id"] = serde_json::json!("0195f2a1-0103-4103-8103-000000000103");
+        value["report_sequence"] = serde_json::json!(7);
+        value["nodes"][0]["chain"]["peers"] = serde_json::json!({
+            "status": "ok",
+            "attempted_at": "2026-08-12T10:00:20Z",
+            "latest_observed_at": "2026-08-12T10:00:20Z",
+            "state_revision": 6,
+            "value_revision": 3,
+            "latest": {
+                "peers": [{
+                    "peer_id": "peer-a",
+                    "remote_ip": "203.0.113.5",
+                    "direction": "outbound",
+                    "trusted": false,
+                    "static_peer": true,
+                    "consensus_peer": false,
+                    "client_name": "PlatON/v1.5.2",
+                    "caps": ["cbft/2"],
+                    "cbft_protocol_version": 2,
+                    "cbft_highest_qc_block": 200,
+                    "cbft_locked_block": 199,
+                    "cbft_commit_block": 198
+                }]
+            }
+        });
+        let reappearance_receipt =
+            submit(&state, &agent_id, serde_json::to_vec(&value).unwrap()).await;
+        assert_eq!(
+            reappearance_receipt.disposition,
+            ReceiptDisposition::Accepted
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=? AND peer_id='peer-a'",
+            )
+            .bind("0195f2a1-0014-4014-8014-000000000014")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            1,
+            "a Peer that reappears after the baseline was cleared opens a new interval"
+        );
+        let open_intervals: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=? AND peer_id='peer-a' AND closed_at IS NULL",
+        )
+        .bind("0195f2a1-0014-4014-8014-000000000014")
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(open_intervals, 1);
+        let first_interval_client: String = sqlx::query_scalar(
+            "SELECT client_name FROM peer_presence_intervals WHERE node_id=? AND peer_id='peer-a' ORDER BY interval_id LIMIT 1",
+        )
+        .bind("0195f2a1-0014-4014-8014-000000000014")
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            first_interval_client, "PlatON/v1.5.2",
+            "the arrival interval records the reappearance metadata"
+        );
+
+        value["report_id"] = serde_json::json!("0195f2a1-0105-4105-8105-000000000105");
+        value["report_sequence"] = serde_json::json!(8);
+        value["inventory"]["revision"] = serde_json::json!(2);
+        value["inventory"]["nodes"] = serde_json::json!([]);
+        value["nodes"] = serde_json::json!([]);
+        let retired = submit(&state, &agent_id, serde_json::to_vec(&value).unwrap()).await;
+        assert_eq!(retired.disposition, ReceiptDisposition::Accepted);
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT lifecycle FROM nodes WHERE node_id=?",)
+                .bind("0195f2a1-0014-4014-8014-000000000014")
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap(),
+            "retired"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=? AND peer_id='peer-a' AND closed_at IS NULL",
+            )
+            .bind("0195f2a1-0014-4014-8014-000000000014")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            1,
+            "retiring a Node without a snapshot does not fabricate a departure"
+        );
+    }
+
+    #[tokio::test]
+    async fn peer_presence_is_isolated_per_node_and_survives_server_restart() {
+        let (dir, state, agent_id) = state_with_agent().await;
+        let node_a = "0195f2a1-0014-4014-8014-000000000014";
+        let node_b = "0195f2a1-0015-4015-8015-000000000015";
+        let mut value: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        value["nodes"][0]["chain"]["peers"] = serde_json::json!({
+            "status": "ok",
+            "attempted_at": "2026-08-12T10:00:00Z",
+            "latest_observed_at": "2026-08-12T10:00:00Z",
+            "state_revision": 1,
+            "value_revision": 1,
+            "latest": {
+                "peers": [{
+                    "peer_id": "peer-a",
+                    "remote_ip": "203.0.113.10",
+                    "direction": "inbound",
+                    "trusted": true,
+                    "static_peer": false,
+                    "consensus_peer": true,
+                    "client_name": "PlatON/v1.5.1",
+                    "caps": ["cbft/1"],
+                    "cbft_protocol_version": 1,
+                    "cbft_highest_qc_block": 100,
+                    "cbft_locked_block": 99,
+                    "cbft_commit_block": 98
+                }]
+            }
+        });
+        let mut second_inventory = value["inventory"]["nodes"][0].clone();
+        second_inventory["node_id"] = serde_json::json!(node_b);
+        second_inventory["rpc_endpoint"] = serde_json::json!("ws://127.0.0.1:6791");
+        let mut inventory_nodes = value["inventory"]["nodes"].as_array().unwrap().clone();
+        inventory_nodes.push(second_inventory);
+        value["inventory"]["nodes"] = serde_json::json!(inventory_nodes);
+
+        let mut second_observation = value["nodes"][0].clone();
+        second_observation["node_id"] = serde_json::json!(node_b);
+        let mut peer_b = second_observation["chain"]["peers"]["latest"]["peers"][0].clone();
+        peer_b["peer_id"] = serde_json::json!("peer-b");
+        peer_b["remote_ip"] = serde_json::json!("203.0.113.11");
+        second_observation["chain"]["peers"]["latest"]["peers"] = serde_json::json!([peer_b]);
+        let mut observations = value["nodes"].as_array().unwrap().clone();
+        observations.push(second_observation);
+        value["nodes"] = serde_json::json!(observations);
+        value["report_id"] = serde_json::json!("0195f2a1-0110-4110-8110-000000000110");
+        value["report_sequence"] = serde_json::json!(1);
+        let first = submit(&state, &agent_id, serde_json::to_vec(&value).unwrap()).await;
+        assert_eq!(first.disposition, ReceiptDisposition::Accepted);
+        for (node_id, peer_id) in [(node_a, "peer-a"), (node_b, "peer-b")] {
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=? AND peer_id=? AND closed_at IS NULL",
+                )
+                .bind(node_id)
+                .bind(peer_id)
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap(),
+                0,
+                "each Node establishes its own successful baseline"
+            );
+        }
+
+        value["report_id"] = serde_json::json!("0195f2a1-0111-4111-8111-000000000111");
+        value["report_sequence"] = serde_json::json!(2);
+        value["nodes"][0]["chain"]["peers"]["latest"]["peers"] = serde_json::json!([]);
+        let second = submit(&state, &agent_id, serde_json::to_vec(&value).unwrap()).await;
+        assert_eq!(second.disposition, ReceiptDisposition::Accepted);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=? AND peer_id='peer-a' AND closed_at IS NULL",
+            )
+            .bind(node_a)
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            0,
+            "an empty snapshot closes only that Node's interval"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=? AND peer_id='peer-b' AND closed_at IS NULL",
+            )
+            .bind(node_b)
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            0,
+            "a different Node's unchanged baseline does not create an interval"
+        );
+
+        state.db().close().await;
+        let database = initialize(ServerDatabaseConfig::new(dir.path().join("server.db")))
+            .await
+            .unwrap();
+        let pepper_path = dir.path().join("pepper");
+        let auth = AuthConfig::development(
+            load_pepper_file(&pepper_path).unwrap(),
+            "http://127.0.0.1:8080".to_owned(),
+        );
+        let restarted = AppState::new(database, None, auth);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=? AND peer_id='peer-b' AND closed_at IS NULL",
+            )
+            .bind(node_b)
+            .fetch_one(restarted.db().pool())
+            .await
+            .unwrap(),
+            0,
+            "a Server restart does not fabricate a Peer departure or arrival"
+        );
+
+        let mut peer_a = value["nodes"][1]["chain"]["peers"]["latest"]["peers"][0].clone();
+        peer_a["peer_id"] = serde_json::json!("peer-a");
+        peer_a["remote_ip"] = serde_json::json!("203.0.113.10");
+        value["nodes"][0]["chain"]["peers"]["latest"]["peers"] = serde_json::json!([peer_a]);
+        value["report_id"] = serde_json::json!("0195f2a1-0112-4112-8112-000000000112");
+        value["report_sequence"] = serde_json::json!(3);
+        let after_restart =
+            submit(&restarted, &agent_id, serde_json::to_vec(&value).unwrap()).await;
+        assert_eq!(after_restart.disposition, ReceiptDisposition::Accepted);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=? AND peer_id='peer-a' AND closed_at IS NULL",
+            )
+            .bind(node_a)
+            .fetch_one(restarted.db().pool())
+            .await
+            .unwrap(),
+            1,
+            "the first post-restart difference opens a Node-scoped interval"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=? AND peer_id='peer-b'",
+            )
+            .bind(node_b)
+            .fetch_one(restarted.db().pool())
+            .await
+            .unwrap(),
+            0,
+            "Node B's unchanged baseline does not create Node A's interval"
+        );
+
+        value["report_id"] = serde_json::json!("0195f2a1-0113-4113-8113-000000000113");
+        value["report_sequence"] = serde_json::json!(4);
+        value["nodes"][0]["chain"]["peers"]["latest"]["peers"] = serde_json::json!([]);
+        let departure = submit(&restarted, &agent_id, serde_json::to_vec(&value).unwrap()).await;
+        assert_eq!(departure.disposition, ReceiptDisposition::Accepted);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=? AND peer_id='peer-a' AND closed_at IS NOT NULL",
+            )
+            .bind(node_a)
+            .fetch_one(restarted.db().pool())
+            .await
+            .unwrap(),
+            1,
+            "a later successful empty snapshot closes the open interval"
         );
     }
 

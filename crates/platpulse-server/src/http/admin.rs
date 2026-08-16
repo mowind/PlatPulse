@@ -605,6 +605,42 @@ pub struct PeerDiagnosticEntry {
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
+pub struct PeerPresenceInterval {
+    pub peer_id: String,
+    /// Server-observed arrival boundary of this connected interval.
+    pub opened_at: String,
+    /// Server-observed departure boundary; `None` means the interval is open.
+    pub closed_at: Option<String>,
+    /// Closed interval duration. Open intervals intentionally have no
+    /// duration because their end boundary is not known yet.
+    pub duration_seconds: Option<i64>,
+    pub direction: String,
+    pub trusted: bool,
+    pub static_peer: bool,
+    pub consensus_peer: bool,
+    pub client_name: Option<String>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct PeerChurnDiagnostic {
+    /// `unknown` means no successful Peer Snapshot exists; `empty` means a
+    /// successful snapshot exists but no retained interval is available;
+    /// `error` means the latest collection failed while retained intervals
+    /// and the last-good value remain available.
+    pub state: String,
+    pub freshness: String,
+    pub window_start: String,
+    pub total_open_intervals: i64,
+    pub recent_arrivals: Vec<PeerPresenceInterval>,
+    pub recent_departures: Vec<PeerPresenceInterval>,
+}
+
+const PEER_CHURN_LIMIT: i64 = 128;
+const PEER_CHURN_WINDOW_HOURS: i64 = 24;
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
 pub struct PeerDiagnostic {
     pub state: String,
     pub error_code: Option<String>,
@@ -614,7 +650,7 @@ pub struct PeerDiagnostic {
     pub received_at: Option<String>,
     pub state_revision: i64,
     pub value_revision: i64,
-    /// Server-owned freshness of the latest accepted Peer component state.
+    /// Server-owned freshness of the latest successful Peer value.
     pub freshness: String,
     /// `None` means no successful Peer Snapshot has ever been observed;
     /// `Some(0)` is an authoritative successful empty snapshot.
@@ -777,6 +813,123 @@ async fn consensus_diagnostic(state: &AppState, node_id: &str) -> Option<Consens
     })
 }
 
+type PeerPresenceRow = (
+    String,
+    String,
+    Option<String>,
+    String,
+    i64,
+    i64,
+    i64,
+    Option<String>,
+);
+
+fn peer_presence_interval_from_row(row: PeerPresenceRow) -> PeerPresenceInterval {
+    let (
+        peer_id,
+        opened_at,
+        closed_at,
+        direction,
+        trusted,
+        static_peer,
+        consensus_peer,
+        client_name,
+    ) = row;
+    let duration_seconds = closed_at.as_deref().and_then(|closed| {
+        let opened = crate::auth::parse_rfc3339(&opened_at)?;
+        let closed = crate::auth::parse_rfc3339(closed)?;
+        Some((closed - opened).whole_seconds().max(0))
+    });
+    PeerPresenceInterval {
+        peer_id,
+        opened_at,
+        closed_at,
+        duration_seconds,
+        direction,
+        trusted: trusted != 0,
+        static_peer: static_peer != 0,
+        consensus_peer: consensus_peer != 0,
+        client_name,
+    }
+}
+
+async fn peer_churn_diagnostic(
+    state: &AppState,
+    node_id: &str,
+) -> Result<PeerChurnDiagnostic, sqlx::Error> {
+    let window_start = crate::auth::format_rfc3339(
+        crate::auth::now_utc() - time::Duration::hours(PEER_CHURN_WINDOW_HOURS),
+    );
+    let unknown = || PeerChurnDiagnostic {
+        state: "unknown".to_owned(),
+        freshness: "unknown".to_owned(),
+        window_start: window_start.clone(),
+        total_open_intervals: 0,
+        recent_arrivals: Vec::new(),
+        recent_departures: Vec::new(),
+    };
+    let Some((component_state, value_received_at, value_revision)) =
+        sqlx::query_as::<_, (String, Option<String>, i64)>(
+            "SELECT state, value_received_at, value_revision FROM component_status WHERE node_id=? AND component_key='peers'",
+        )
+        .bind(node_id)
+        .fetch_optional(state.db().pool())
+        .await?
+    else {
+        return Ok(unknown());
+    };
+    if value_revision <= 0 {
+        return Ok(unknown());
+    }
+    let total_open_intervals = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=? AND closed_at IS NULL",
+    )
+    .bind(node_id)
+    .fetch_one(state.db().pool())
+    .await?;
+    let arrivals = sqlx::query_as::<_, PeerPresenceRow>(
+        "SELECT peer_id, opened_at, closed_at, direction, trusted, static_peer, consensus_peer, client_name FROM peer_presence_intervals WHERE node_id=? AND opened_at >= ? ORDER BY opened_at DESC, interval_id DESC LIMIT ?",
+    )
+    .bind(node_id)
+    .bind(&window_start)
+    .bind(PEER_CHURN_LIMIT)
+    .fetch_all(state.db().pool())
+    .await?
+    .into_iter()
+    .map(peer_presence_interval_from_row)
+    .collect::<Vec<_>>();
+    let departures = sqlx::query_as::<_, PeerPresenceRow>(
+        "SELECT peer_id, opened_at, closed_at, direction, trusted, static_peer, consensus_peer, client_name FROM peer_presence_intervals WHERE node_id=? AND closed_at >= ? ORDER BY closed_at DESC, interval_id DESC LIMIT ?",
+    )
+    .bind(node_id)
+    .bind(&window_start)
+    .bind(PEER_CHURN_LIMIT)
+    .fetch_all(state.db().pool())
+    .await?
+    .into_iter()
+    .map(peer_presence_interval_from_row)
+    .collect::<Vec<_>>();
+    let freshness = derive_freshness(value_received_at.as_deref().into_iter()).to_owned();
+    let has_intervals = total_open_intervals > 0 || !arrivals.is_empty() || !departures.is_empty();
+    let diagnostic_state = match component_state.as_str() {
+        "error" => "error",
+        "unsupported" => "unsupported",
+        "disabled" => "disabled",
+        "starting" => "starting",
+        "ok" if has_intervals => "ok",
+        "ok" => "empty",
+        _ => "unknown",
+    };
+    Ok(PeerChurnDiagnostic {
+        state: diagnostic_state.to_owned(),
+        freshness,
+        window_start,
+        total_open_intervals,
+        recent_arrivals: arrivals,
+        recent_departures: departures,
+    })
+}
+
 async fn peer_diagnostic(state: &AppState, node_id: &str) -> Option<PeerDiagnostic> {
     let component = sqlx::query_as::<_, (
         String,
@@ -785,10 +938,11 @@ async fn peer_diagnostic(state: &AppState, node_id: &str) -> Option<PeerDiagnost
         Option<String>,
         Option<String>,
         Option<String>,
+        Option<String>,
         i64,
         i64,
     )>(
-        "SELECT state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision FROM component_status WHERE node_id=? AND component_key='peers'",
+        "SELECT state, error_code, error_message, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision FROM component_status WHERE node_id=? AND component_key='peers'",
     )
     .bind(node_id)
     .fetch_optional(state.db().pool())
@@ -802,6 +956,7 @@ async fn peer_diagnostic(state: &AppState, node_id: &str) -> Option<PeerDiagnost
         attempted_at,
         observed_at,
         received_at,
+        value_received_at,
         state_revision,
         value_revision,
     ) = component;
@@ -881,8 +1036,9 @@ async fn peer_diagnostic(state: &AppState, node_id: &str) -> Option<PeerDiagnost
             cbft_commit_block,
         });
     }
+
     let freshness = if has_value {
-        derive_freshness(received_at.as_deref().into_iter()).to_owned()
+        derive_freshness(value_received_at.as_deref().into_iter()).to_owned()
     } else {
         "unknown".to_owned()
     };
@@ -1432,6 +1588,52 @@ async fn admin_node_detail(
         transfer,
     })
     .into_response()
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/admin/v1/nodes/{node_id}/peer-churn",
+    tag = "admin",
+    params(("node_id" = String, Path, description = "Node ID")),
+    responses((status = 200, description = "Owner-only bounded Peer arrival/departure history", body = PeerChurnDiagnostic), (status = 404, body = crate::http::ApiErrorBody))
+)]
+async fn admin_node_peer_churn(
+    State(state): State<AppState>,
+    Path(node_id): Path<String>,
+    Extension(_session): Extension<super::AuthenticatedSession>,
+    Extension(request_id): Extension<super::RequestId>,
+) -> Response {
+    let exists = sqlx::query_scalar::<_, String>("SELECT node_id FROM nodes WHERE node_id=?")
+        .bind(&node_id)
+        .fetch_optional(state.db().pool())
+        .await;
+    let Some(_) = (match exists {
+        Ok(node_id) => node_id,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    }) else {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "resource not found",
+        );
+    };
+    match peer_churn_diagnostic(&state, &node_id).await {
+        Ok(diagnostic) => Json(diagnostic).into_response(),
+        Err(_) => mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        ),
+    }
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -4026,6 +4228,7 @@ pub fn router() -> Router<AppState> {
         .route("/nodes", get(admin_nodes))
         .route("/nodes/{node_id}", get(admin_node_detail))
         .route("/nodes/{node_id}/metadata", put(set_node_metadata))
+        .route("/nodes/{node_id}/peer-churn", get(admin_node_peer_churn))
         .route("/nodes/{node_id}/history", get(admin_node_history))
         .route("/networks", get(admin_networks))
         .route("/networks/{network_key}", get(admin_network_detail))
@@ -4921,8 +5124,9 @@ mod tests {
             .unwrap();
         }
         sqlx::query(
-            "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES ('agent-lifecycle-test', 'node', 'node-healthy', 'node-healthy', 'peers', 'ok', ?, ?, ?, 1, 1)",
+            "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES ('agent-lifecycle-test', 'node', 'node-healthy', 'node-healthy', 'peers', 'ok', ?, ?, ?, ?, 1, 1)",
         )
+        .bind(&fresh)
         .bind(&fresh)
         .bind(&fresh)
         .bind(&fresh)
@@ -4943,8 +5147,15 @@ mod tests {
         .execute(state.db().pool())
         .await
         .unwrap();
+        sqlx::query(
+            "INSERT INTO peer_presence_intervals (node_id, peer_id, opened_at, closed_at, direction, trusted, static_peer, consensus_peer, client_name) VALUES ('node-healthy', 'peer-healthy', ?, ?, 'inbound', 1, 0, 1, 'PlatON/v1.5.1')",
+        )
+        .bind(&fixed)
+        .bind(&fresh)
+        .execute(state.db().pool())
+        .await
+        .unwrap();
         // Mismatched Node: RPC error with a last-good sync value retained
-        // (last-good semantics) and a contradicting observed chain id.
         sqlx::query(
             "INSERT INTO current_node_chain_observations (node_id, rpc_client_version, syncing, current_block, highest_block, consensus_epoch, consensus_validator, consensus_highest_commit_block, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, updated_at) VALUES ('node-mismatched', 'platon/1.5.1', 0, 99, 99, 1, 0, 99, '0x' || '01' || '00000000000000000000000000000000000000000000000000000000000000', 999999, 1, 'lat', ?)",
         )
@@ -5101,6 +5312,58 @@ mod tests {
             !value.to_string().contains("203.0.113.7"),
             "Admin diagnostics must not expose the stored remote address"
         );
+        let response = admin_node_peer_churn(
+            State(state.clone()),
+            Path("node-healthy".to_owned()),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let churn: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(churn["state"], "ok");
+        assert_eq!(churn["recent_departures"][0]["peer_id"], "peer-healthy");
+        assert!(churn["recent_departures"][0]["duration_seconds"].is_number());
+        assert!(!churn.to_string().contains("203.0.113.7"));
+        sqlx::query(
+            "UPDATE component_status SET state='error', error_code='admin_peers_failed', error_message='peer probe failed' WHERE node_id='node-healthy' AND component_key='peers'",
+        )
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+        let response = admin_node_peer_churn(
+            State(state.clone()),
+            Path("node-healthy".to_owned()),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let churn: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(churn["state"], "error");
+        assert_eq!(churn["recent_departures"][0]["peer_id"], "peer-healthy");
+        sqlx::query(
+            "UPDATE component_status SET state='unsupported', error_code=NULL, error_message=NULL WHERE node_id='node-healthy' AND component_key='peers'",
+        )
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+        let response = admin_node_peer_churn(
+            State(state.clone()),
+            Path("node-healthy".to_owned()),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let churn: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(churn["state"], "unsupported");
         // Unknown Node is a non-leaking 404 for Admin too.
         let response = admin_node_detail(
             State(state.clone()),

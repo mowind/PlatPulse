@@ -2127,6 +2127,47 @@
         }
       }
     },
+    "/api/admin/v1/nodes/{node_id}/peer-churn": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "admin_node_peer_churn",
+        "parameters": [
+          {
+            "name": "node_id",
+            "in": "path",
+            "description": "Node ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Owner-only bounded Peer arrival/departure history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PeerChurnDiagnostic"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/v1/nodes/{node_id}/transfers": {
       "get": {
         "tags": [
@@ -7730,6 +7771,45 @@
           }
         }
       },
+      "PeerChurnDiagnostic": {
+        "type": "object",
+        "required": [
+          "state",
+          "freshness",
+          "window_start",
+          "total_open_intervals",
+          "recent_arrivals",
+          "recent_departures"
+        ],
+        "properties": {
+          "freshness": {
+            "type": "string"
+          },
+          "recent_arrivals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PeerPresenceInterval"
+            }
+          },
+          "recent_departures": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PeerPresenceInterval"
+            }
+          },
+          "state": {
+            "type": "string",
+            "description": "`unknown` means no successful Peer Snapshot exists; `empty` means a\nsuccessful snapshot exists but no retained interval is available."
+          },
+          "total_open_intervals": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "window_start": {
+            "type": "string"
+          }
+        }
+      },
       "PeerDiagnostic": {
         "type": "object",
         "required": [
@@ -7767,7 +7847,7 @@
           },
           "freshness": {
             "type": "string",
-            "description": "Server-owned freshness of the latest accepted Peer component state."
+            "description": "Server-owned freshness of the latest successful Peer value."
           },
           "inbound_count": {
             "type": [
@@ -7892,6 +7972,59 @@
           },
           "direction": {
             "type": "string"
+          },
+          "peer_id": {
+            "type": "string"
+          },
+          "static_peer": {
+            "type": "boolean"
+          },
+          "trusted": {
+            "type": "boolean"
+          }
+        }
+      },
+      "PeerPresenceInterval": {
+        "type": "object",
+        "required": [
+          "peer_id",
+          "opened_at",
+          "direction",
+          "trusted",
+          "static_peer",
+          "consensus_peer"
+        ],
+        "properties": {
+          "client_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "closed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Server-observed departure boundary; `None` means the interval is open."
+          },
+          "consensus_peer": {
+            "type": "boolean"
+          },
+          "direction": {
+            "type": "string"
+          },
+          "duration_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Closed interval duration. Open intervals intentionally have no\nduration because their end boundary is not known yet."
+          },
+          "opened_at": {
+            "type": "string",
+            "description": "Server-observed arrival boundary of this connected interval."
           },
           "peer_id": {
             "type": "string"

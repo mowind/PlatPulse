@@ -292,6 +292,64 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     expect(screen.queryByText('203.0.113.4')).toBeNull()
   })
 
+  it('shows retained churn with Error when the latest Peer collection failed', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
+        jsonResponse(NODE_A_DETAIL, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014/peer-churn': () =>
+        jsonResponse({
+          state: 'error',
+          freshness: 'current',
+          window_start: '2026-08-11T08:00:00Z',
+          total_open_intervals: 1,
+          recent_arrivals: [],
+          recent_departures: [],
+        }, 200),
+    })
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+
+    await screen.findByRole('heading', { level: 1, name: /Node A/ })
+    expect(await screen.findByText(/The latest Peer collection failed/)).toBeTruthy()
+    expect(screen.getByText('Error')).toBeTruthy()
+  })
+
+  it('deduplicates churn intervals and labels their mobile table cells', async () => {
+    const interval = {
+      peer_id: 'peer-churn',
+      opened_at: '2026-08-12T09:00:00Z',
+      closed_at: '2026-08-12T09:30:00Z',
+      duration_seconds: 1800,
+      direction: 'inbound',
+      trusted: true,
+      static_peer: false,
+      consensus_peer: true,
+      client_name: 'PlatON/v1.5.1',
+    }
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
+        jsonResponse(NODE_A_DETAIL, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014/peer-churn': () =>
+        jsonResponse({
+          state: 'ok',
+          freshness: 'current',
+          window_start: '2026-08-11T08:00:00Z',
+          total_open_intervals: 0,
+          recent_arrivals: [interval],
+          recent_departures: [interval],
+        }, 200),
+    })
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+
+    await screen.findByRole('heading', { level: 1, name: /Node A/ })
+    expect(await screen.findByText('peer-churn')).toBeTruthy()
+    expect(screen.getAllByText('peer-churn')).toHaveLength(1)
+    expect(document.querySelector('th[data-label="Peer ID"]')).toBeTruthy()
+    expect(document.querySelector('td[data-label="Arrival"]')).toBeTruthy()
+    expect(document.querySelector('td[data-label="Departure"]')).toBeTruthy()
+  })
+
   it('shows the mismatch as a blocking diagnostic distinct from health', async () => {
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),

@@ -880,13 +880,26 @@ export type ParamSchema = {
     unit: string;
 };
 
+export type PeerChurnDiagnostic = {
+    freshness: string;
+    recent_arrivals: Array<PeerPresenceInterval>;
+    recent_departures: Array<PeerPresenceInterval>;
+    /**
+     * `unknown` means no successful Peer Snapshot exists; `empty` means a
+     * successful snapshot exists but no retained interval is available.
+     */
+    state: string;
+    total_open_intervals: number;
+    window_start: string;
+};
+
 export type PeerDiagnostic = {
     attempted_at?: string | null;
     consensus_count?: number | null;
     error_code?: string | null;
     error_message?: string | null;
     /**
-     * Server-owned freshness of the latest accepted Peer component state.
+     * Server-owned freshness of the latest successful Peer value.
      */
     freshness: string;
     inbound_count?: number | null;
@@ -915,6 +928,28 @@ export type PeerDiagnosticEntry = {
     client_name?: string | null;
     consensus_peer: boolean;
     direction: string;
+    peer_id: string;
+    static_peer: boolean;
+    trusted: boolean;
+};
+
+export type PeerPresenceInterval = {
+    client_name?: string | null;
+    /**
+     * Server-observed departure boundary; `None` means the interval is open.
+     */
+    closed_at?: string | null;
+    consensus_peer: boolean;
+    direction: string;
+    /**
+     * Closed interval duration. Open intervals intentionally have no
+     * duration because their end boundary is not known yet.
+     */
+    duration_seconds?: number | null;
+    /**
+     * Server-observed arrival boundary of this connected interval.
+     */
+    opened_at: string;
     peer_id: string;
     static_peer: boolean;
     trusted: boolean;
@@ -2425,6 +2460,33 @@ export type SetNodeMetadataResponses = {
 };
 
 export type SetNodeMetadataResponse = SetNodeMetadataResponses[keyof SetNodeMetadataResponses];
+
+export type AdminNodePeerChurnData = {
+    body?: never;
+    path: {
+        /**
+         * Node ID
+         */
+        node_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/nodes/{node_id}/peer-churn';
+};
+
+export type AdminNodePeerChurnErrors = {
+    404: ApiErrorBody;
+};
+
+export type AdminNodePeerChurnError = AdminNodePeerChurnErrors[keyof AdminNodePeerChurnErrors];
+
+export type AdminNodePeerChurnResponses = {
+    /**
+     * Owner-only bounded Peer arrival/departure history
+     */
+    200: PeerChurnDiagnostic;
+};
+
+export type AdminNodePeerChurnResponse = AdminNodePeerChurnResponses[keyof AdminNodePeerChurnResponses];
 
 export type AdminNodeTransfersData = {
     body?: never;

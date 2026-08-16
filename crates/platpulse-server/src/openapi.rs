@@ -68,6 +68,7 @@ impl Modify for AgentBearerScheme {
         crate::http::admin::set_node_metadata,
         crate::http::admin::admin_nodes,
         crate::http::admin::admin_node_detail,
+        crate::http::admin::admin_node_peer_churn,
         crate::http::admin::admin_networks,
         crate::http::admin::admin_network_detail,
         crate::http::admin::create_network,

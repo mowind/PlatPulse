@@ -5,6 +5,7 @@ import {
   updateNodeMetadata,
   updateNodeVisibility,
   useAdminNodeDetail,
+  useAdminNodePeerChurn,
   useAdminNodes,
 } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
@@ -31,8 +32,18 @@ import { transferBadge } from './AdminNodeTransfer'
  * the Server never remotely changes a Node.
  */
 
-function shortId(id: string): string {
-  return id.length > 11 ? `${id.slice(0, 8)}…` : id
+function shortId(value: string): string {
+  return value.length > 12 ? `${value.slice(0, 8)}…${value.slice(-4)}` : value
+}
+
+function formatDuration(seconds: number | null | undefined): string {
+  if (seconds == null) return 'Open'
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  const remainingSeconds = seconds % 60
+  if (minutes < 60) return `${minutes}m ${remainingSeconds}s`
+  const hours = Math.floor(minutes / 60)
+  return `${hours}h ${minutes % 60}m`
 }
 
 function healthTone(health: string): 'ok' | 'error' | 'neutral' {
@@ -509,6 +520,7 @@ export function AdminNodeDetail() {
           <TransferPanel node={query.data} />
           <ObservationsPanel node={query.data} />
         <PeerSnapshotPanel node={query.data} />
+  <PeerChurnPanel nodeId={query.data.node_id} />
         </>
       )}
     </section>
@@ -986,6 +998,138 @@ function PeerSnapshotPanel({ node }: { node: AdminNodeDetailDto }) {
           </table>
         </div>
       ) : null}
+    </article>
+  )
+}
+
+function PeerChurnPanel({ nodeId }: { nodeId: string }) {
+  const { generation } = useAuth()
+  const query = useAdminNodePeerChurn(generation, nodeId)
+  const churn = query.data
+  if (query.isPending) {
+    return (
+      <article className="panel">
+        <div className="panel-heading">
+          <h2>Peer churn</h2>
+          <StatusBadge status="Starting" tone="neutral" />
+        </div>
+        <p className="panel-state">Loading recent Peer arrivals and departures…</p>
+      </article>
+    )
+  }
+  if (query.isError && !churn) {
+    return (
+      <article className="panel">
+        <div className="panel-heading">
+          <h2>Peer churn</h2>
+          <StatusBadge status="Error" tone="error" />
+        </div>
+        <p className="panel-state">Recent Peer churn is unavailable. The last-good Peer Snapshot remains authoritative.</p>
+      </article>
+    )
+  }
+  if (!churn || churn.state === 'unknown') {
+    return (
+      <article className="panel">
+        <div className="panel-heading">
+          <h2>Peer churn</h2>
+          <StatusBadge status="Unknown" tone="neutral" />
+        </div>
+        <p className="panel-state">
+          No successful Peer Snapshot is available for churn history.
+        </p>
+      </article>
+    )
+  }
+  const refetchError = query.isError
+  const status = refetchError
+    ? 'Error'
+    : churn.state === 'empty'
+      ? 'Empty'
+      : churn.state === 'error'
+        ? 'Error'
+        : churn.state === 'unsupported'
+          ? 'Unsupported'
+          : churn.state === 'disabled'
+            ? 'Disabled'
+            : churn.state === 'starting'
+              ? 'Starting'
+              : freshnessLabel(churn.freshness)
+  const tone = refetchError || churn.state === 'error'
+    ? 'error'
+    : churn.state === 'ok' && churn.freshness === 'current'
+      ? 'ok'
+      : churn.state === 'ok' && churn.freshness === 'stale'
+        ? 'warning'
+        : 'neutral'
+  const intervals = [...churn.recent_arrivals, ...churn.recent_departures].filter(
+    (interval, index, all) =>
+      all.findIndex(
+        (candidate) =>
+          candidate.peer_id === interval.peer_id &&
+          candidate.opened_at === interval.opened_at &&
+          candidate.closed_at === interval.closed_at,
+      ) === index,
+  )
+  return (
+    <article className="panel">
+      <div className="panel-heading">
+        <h2>Peer churn</h2>
+        <StatusBadge status={status} tone={tone} />
+      </div>
+      {churn.state === 'empty' ? (
+        <p className="panel-state">
+          <StatusBadge status="Empty" tone="ok" /> No Peer presence interval has been retained for this Node yet.
+        </p>
+      ) : (
+        <>
+          <p className="panel-copy">
+            {refetchError
+              ? 'Refresh failed; showing retained intervals from the last successful response. '
+              : churn.state === 'error'
+                ? 'The latest Peer collection failed; retained intervals remain available. '
+                : churn.state === 'unsupported'
+                  ? 'Peer collection is unsupported; retained intervals remain available. '
+                  : churn.state === 'disabled'
+                    ? 'Peer collection is disabled; retained intervals remain available. '
+                    : ''}
+            Freshness: {freshnessLabel(churn.freshness)}. {churn.total_open_intervals} interval{churn.total_open_intervals === 1 ? '' : 's'} currently open; arrivals and departures are bounded to the last 24 hours. Raw addresses are never retained.
+          </p>
+          <div className="table-wrap">
+            <table className="node-table">
+              <caption className="sr-only">Recent Peer arrivals and departures</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Peer ID</th>
+                  <th scope="col">Arrival</th>
+                  <th scope="col">Departure</th>
+                  <th scope="col">Duration</th>
+                  <th scope="col">Direction</th>
+                  <th scope="col">Flags</th>
+                  <th scope="col">Client</th>
+                </tr>
+              </thead>
+              <tbody>
+                {intervals.map((interval) => (
+                  <tr key={`${interval.peer_id}-${interval.opened_at}-${interval.closed_at ?? 'open'}`}>
+                    <th scope="row" data-label="Peer ID"><code>{interval.peer_id}</code></th>
+                    <td data-label="Arrival">{formatObservedAt(interval.opened_at)}</td>
+                    <td data-label="Departure">{interval.closed_at ? formatObservedAt(interval.closed_at) : 'Current'}</td>
+                    <td data-label="Duration">{formatDuration(interval.duration_seconds)}</td>
+                    <td data-label="Direction">{interval.direction}</td>
+                    <td data-label="Flags">
+                      {[interval.trusted && 'trusted', interval.static_peer && 'static', interval.consensus_peer && 'consensus']
+                        .filter((value): value is string => Boolean(value))
+                        .join(', ') || 'none'}
+                    </td>
+                    <td data-label="Client">{interval.client_name ?? 'Unknown'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
     </article>
   )
 }
