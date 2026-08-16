@@ -55,9 +55,11 @@ impl std::fmt::Debug for GeoLoader {
 }
 
 impl GeoLoader {
+    /// Construct the loader without reading the configured file. Call `reload`
+    /// from a blocking context to perform the initial load.
     pub fn new(path: Option<PathBuf>) -> Self {
         let configured = path.is_some();
-        let loader = Self {
+        Self {
             path,
             database: RwLock::new(None),
             status: RwLock::new(GeoStatus {
@@ -68,11 +70,7 @@ impl GeoLoader {
                 loaded_at: None,
                 last_error: configured.then(|| "Geo database has not loaded".to_owned()),
             }),
-        };
-        if configured {
-            loader.reload();
         }
-        loader
     }
 
     pub fn disabled() -> Self {
@@ -461,6 +459,7 @@ mod tests {
         )
         .unwrap();
         let loader = GeoLoader::new(Some(path));
+        assert!(loader.reload());
         let status = loader.status();
         assert_eq!(status.state, "stale");
         assert!(status.build_epoch.is_some());
@@ -482,6 +481,7 @@ mod tests {
         )
         .unwrap();
         let loader = GeoLoader::new(Some(path.clone()));
+        assert!(loader.reload());
         assert_eq!(
             loader.lookup_country(&"89.160.20.112".parse().unwrap()),
             Some("SE".to_owned())

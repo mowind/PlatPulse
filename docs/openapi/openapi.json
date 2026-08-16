@@ -8449,7 +8449,27 @@
               "$ref": "#/components/schemas/PublicCountryCount"
             }
           },
+          "databaseAgeSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "errorReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "lastGoodAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "staleSince": {
             "type": [
               "string",
               "null"

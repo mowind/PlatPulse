@@ -1058,7 +1058,10 @@ export type PublicCountryCount = {
 export type PublicGeoInsight = {
     attribution?: string | null;
     countries?: Array<PublicCountryCount> | null;
+    databaseAgeSeconds?: number | null;
+    errorReason?: string | null;
     lastGoodAt?: string | null;
+    staleSince?: string | null;
     /**
      * Server-owned Geo database state. Raw IPs and MMDB paths never cross
      * the Public projection boundary.

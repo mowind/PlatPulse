@@ -389,6 +389,9 @@ pub struct PublicGeoInsight {
     /// the Public projection boundary.
     pub state: String,
     pub last_good_at: Option<String>,
+    pub database_age_seconds: Option<u64>,
+    pub stale_since: Option<String>,
+    pub error_reason: Option<String>,
     pub countries: Option<Vec<PublicCountryCount>>,
     pub attribution: Option<String>,
 }
@@ -397,6 +400,9 @@ fn unknown_public_geo_insight() -> PublicGeoInsight {
     PublicGeoInsight {
         state: "disabled".to_owned(),
         last_good_at: None,
+        database_age_seconds: None,
+        stale_since: None,
+        error_reason: None,
         countries: None,
         attribution: None,
     }
@@ -847,12 +853,37 @@ fn aggregate_peer_insight(nodes: &[PublicNode]) -> PublicPeerInsight {
     }
 }
 
+fn geo_timing(
+    status: &crate::geo::GeoStatus,
+    now: time::OffsetDateTime,
+) -> (Option<u64>, Option<String>) {
+    let Some(build_epoch) = status.build_epoch else {
+        return (None, None);
+    };
+    let Some(build_epoch_seconds) = i64::try_from(build_epoch).ok() else {
+        return (None, None);
+    };
+    let age_seconds = now
+        .unix_timestamp()
+        .saturating_sub(build_epoch_seconds)
+        .max(0) as u64;
+    let stale_since = build_epoch
+        .checked_add(crate::geo::DATABASE_MAX_AGE.as_secs())
+        .and_then(|epoch| i64::try_from(epoch).ok())
+        .filter(|epoch| now.unix_timestamp() >= *epoch)
+        .and_then(|epoch| time::OffsetDateTime::from_unix_timestamp(epoch).ok())
+        .map(crate::auth::format_rfc3339);
+    (Some(age_seconds), stale_since)
+}
+
 async fn public_country_distribution(state: &AppState, network_key: &str) -> PublicGeoInsight {
     let geo_status = state.geo().status();
     if geo_status.state == "disabled" {
         return unknown_public_geo_insight();
     }
-    let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+    let now_utc = crate::auth::now_utc();
+    let (database_age_seconds, stale_since) = geo_timing(&geo_status, now_utc);
+    let now = crate::auth::format_rfc3339(now_utc);
     let rebuild_before = crate::geo::cache_rebuild_cutoff(&now);
     let rows = sqlx::query_as::<_, (String, i64)>(
         "SELECT g.country_code, COUNT(*) FROM current_node_peers p JOIN geo_location_cache g ON g.canonical_ip = p.remote_ip JOIN nodes n ON n.node_id = p.node_id WHERE n.network_key=? AND n.visibility='public' AND n.lifecycle='active' AND g.expires_at > ? AND g.created_at > ? GROUP BY g.country_code ORDER BY g.country_code",
@@ -866,6 +897,12 @@ async fn public_country_distribution(state: &AppState, network_key: &str) -> Pub
         return PublicGeoInsight {
             state: "error".to_owned(),
             last_good_at: geo_status.loaded_at.clone(),
+            database_age_seconds,
+            stale_since,
+            error_reason: geo_status
+                .last_error
+                .clone()
+                .or_else(|| Some("Country distribution could not be loaded".to_owned())),
             countries: None,
             attribution: None,
         };
@@ -885,6 +922,9 @@ async fn public_country_distribution(state: &AppState, network_key: &str) -> Pub
     PublicGeoInsight {
         state: geo_status.state,
         last_good_at: geo_status.loaded_at,
+        database_age_seconds,
+        stale_since,
+        error_reason: geo_status.last_error,
         countries: Some(countries),
         attribution: Some(crate::geo::MAXMIND_ATTRIBUTION.to_owned()),
     }
@@ -1203,6 +1243,30 @@ mod tests {
             "http://127.0.0.1:8080".to_owned(),
         );
         (dir, AppState::new(database, None, auth))
+    }
+
+    #[test]
+    fn geo_timing_reports_age_and_stale_boundary() {
+        let build_epoch = 1_700_000_000;
+        let now =
+            time::OffsetDateTime::from_unix_timestamp(build_epoch + 31 * 24 * 60 * 60).unwrap();
+        let status = crate::geo::GeoStatus {
+            state: "stale".to_owned(),
+            configured: true,
+            build_epoch: Some(build_epoch as u64),
+            digest: Some("digest".to_owned()),
+            loaded_at: Some("2026-01-01T00:00:00Z".to_owned()),
+            last_error: None,
+        };
+        let (age_seconds, stale_since) = geo_timing(&status, now);
+        assert_eq!(age_seconds, Some(31 * 24 * 60 * 60));
+        assert_eq!(
+            stale_since,
+            Some(crate::auth::format_rfc3339(
+                time::OffsetDateTime::from_unix_timestamp(build_epoch + 30 * 24 * 60 * 60,)
+                    .unwrap(),
+            )),
+        );
     }
 
     async fn seed_public_data(state: &AppState) {

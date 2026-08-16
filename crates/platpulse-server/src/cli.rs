@@ -442,6 +442,13 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
             crate::redaction::redact_sensitive(&error.to_string())
         );
     }
+    let geo_loader = std::sync::Arc::new(crate::geo::GeoLoader::new(config.geo.clone()));
+    if config.geo.is_some() {
+        let initial_geo_loader = std::sync::Arc::clone(&geo_loader);
+        let _initial_load = tokio::task::spawn_blocking(move || initial_geo_loader.reload())
+            .await
+            .unwrap_or(false);
+    }
     let mut state = crate::AppState::new_with_proxy_policy(
         database,
         config.web_root.clone(),
@@ -451,9 +458,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         config.notifications.clone(),
     )
     .with_backup_dir(config.backup_dir.clone())
-    .with_geo_loader(std::sync::Arc::new(crate::geo::GeoLoader::new(
-        config.geo.clone(),
-    )));
+    .with_geo_loader(geo_loader);
     // Development mode never touches a real provider: the e2e suite and
     // local development observe delivery state machines deterministically
     // through the fixed-failure double (production uses TelegramProvider).
