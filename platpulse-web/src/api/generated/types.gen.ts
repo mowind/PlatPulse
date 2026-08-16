@@ -1005,6 +1005,7 @@ export type PublicNetwork = {
     displayName: string;
     networkKey: string;
     nodes: Array<PublicNode>;
+    peers: PublicPeerInsight;
 };
 
 export type PublicNode = {
@@ -1020,11 +1021,47 @@ export type PublicNode = {
     networkReferenceConfidence: string;
     networkReferenceHead?: number | null;
     nodeId: string;
+    peers: PublicPeerInsight;
     processState: string;
     resyncProgress?: string | null;
     resyncState: string;
     rpcState: string;
     syncState: string;
+};
+
+export type PublicPeerInsight = {
+    consensusCount?: number | null;
+    /**
+     * Server-owned freshness of the last successful Peer Snapshot.
+     */
+    freshness: string;
+    inboundCount?: number | null;
+    /**
+     * The last successful observation time. No peer identity or address is
+     * included in the Public projection.
+     */
+    observedAt?: string | null;
+    outboundCount?: number | null;
+    /**
+     * `None` means no successful snapshot has ever been observed; `Some(0)`
+     * is an authoritative successful empty snapshot.
+     */
+    peerCount?: number | null;
+    /**
+     * Server receipt time for the last accepted Peer snapshot.
+     */
+    receivedAt?: string | null;
+    /**
+     * Server-computed boundary at which the last observation became stale.
+     */
+    staleSince?: string | null;
+    /**
+     * Agent-reported collection state. The WebUI presents this separately
+     * from freshness and value availability.
+     */
+    state: string;
+    staticCount?: number | null;
+    trustedCount?: number | null;
 };
 
 export type ReadyComponent = {

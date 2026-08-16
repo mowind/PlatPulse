@@ -159,10 +159,13 @@ async fn save_component<T: serde::Serialize>(
 ) -> Result<(), sqlx::Error> {
     let error_code = component.error.as_ref().map(|e| e.code.as_str());
     let error_message = component.error.as_ref().map(|e| e.message.as_str());
-    sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision, error_code, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_id, scope, scope_key, component_key) DO UPDATE SET state=excluded.state, attempted_at=excluded.attempted_at, observed_at=COALESCE(excluded.observed_at, component_status.observed_at), received_at=excluded.received_at, state_revision=excluded.state_revision, value_revision=CASE WHEN excluded.value_revision > 0 THEN excluded.value_revision ELSE component_status.value_revision END, error_code=excluded.error_code, error_message=excluded.error_message")
+    let value_received_at = (component.status == ComponentStatus::Ok && component.latest.is_some())
+        .then_some(received_at);
+    sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision, error_code, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_id, scope, scope_key, component_key) DO UPDATE SET state=excluded.state, attempted_at=excluded.attempted_at, observed_at=COALESCE(excluded.observed_at, component_status.observed_at), received_at=excluded.received_at, value_received_at=COALESCE(excluded.value_received_at, component_status.value_received_at), state_revision=excluded.state_revision, value_revision=CASE WHEN excluded.value_revision > 0 THEN excluded.value_revision ELSE component_status.value_revision END, error_code=excluded.error_code, error_message=excluded.error_message")
         .bind(agent_id).bind(scope).bind(scope_key).bind(node_id).bind(format!("{key:?}").to_lowercase())
         .bind(status_name(component.status)).bind(component.attempted_at.map(|v| v.to_string()))
         .bind(component.latest_observed_at.map(|v| v.to_string())).bind(received_at)
+        .bind(value_received_at)
         .bind(component.state_revision as i64).bind(component.value_revision as i64)
         .bind(error_code).bind(error_message).execute(&mut **tx).await?;
     Ok(())
@@ -2411,6 +2414,20 @@ mod tests {
         let first_body = serde_json::to_vec(&value).unwrap();
         let first = submit(&state, &agent_id, first_body.clone()).await;
         assert_eq!(first.disposition, ReceiptDisposition::Accepted);
+        let first_value_received_at: String = sqlx::query_scalar(
+            "SELECT value_received_at FROM component_status WHERE node_id=? AND component_key='peers'",
+        )
+        .bind("0195f2a1-0014-4014-8014-000000000014")
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert!(!first_value_received_at.is_empty());
+        sqlx::query("UPDATE component_status SET value_received_at=? WHERE node_id=? AND component_key='peers'")
+            .bind("2026-01-01T00:00:00Z")
+            .bind("0195f2a1-0014-4014-8014-000000000014")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
         let current: (String, String, i64, String, Option<String>, Option<i64>) = sqlx::query_as(
             "SELECT peer_id, direction, trusted, client_name, remote_ip, cbft_commit_block FROM current_node_peers WHERE node_id=?",
         )
@@ -2512,6 +2529,17 @@ mod tests {
             .unwrap(),
             "error"
         );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT value_received_at FROM component_status WHERE node_id=? AND component_key='peers'",
+            )
+            .bind("0195f2a1-0014-4014-8014-000000000014")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            "2026-01-01T00:00:00Z",
+            "an error receipt must not replace the last successful value receipt"
+        );
 
         value["report_id"] = serde_json::json!("0195f2a1-0100-4100-8100-000000000100");
         value["report_sequence"] = serde_json::json!(3);
@@ -2560,6 +2588,49 @@ mod tests {
             .unwrap(),
             0,
             "a successful empty snapshot must clear current peers"
+        );
+        let empty_value_received_at: String = sqlx::query_scalar(
+            "SELECT value_received_at FROM component_status WHERE node_id=? AND component_key='peers'",
+        )
+        .bind("0195f2a1-0014-4014-8014-000000000014")
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_ne!(empty_value_received_at, "2026-01-01T00:00:00Z");
+        sqlx::query("UPDATE component_status SET value_received_at=? WHERE node_id=? AND component_key='peers'")
+            .bind("2026-01-02T00:00:00Z")
+            .bind("0195f2a1-0014-4014-8014-000000000014")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        value["report_id"] = serde_json::json!("0195f2a1-0102-4102-8102-000000000102");
+        value["report_sequence"] = serde_json::json!(5);
+        value["nodes"][0]["chain"]["peers"] = serde_json::json!({
+            "status": "error",
+            "attempted_at": "2026-08-12T10:00:15Z",
+            "latest_observed_at": "2026-08-12T10:00:10Z",
+            "state_revision": 5,
+            "value_revision": 2,
+            "latest": {"peers": []},
+            "error": {"code": "admin_peers_failed", "message": "peer probe failed after empty snapshot"}
+        });
+        let empty_error_receipt =
+            submit(&state, &agent_id, serde_json::to_vec(&value).unwrap()).await;
+        assert_eq!(
+            empty_error_receipt.disposition,
+            ReceiptDisposition::Accepted
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT value_received_at FROM component_status WHERE node_id=? AND component_key='peers'",
+            )
+            .bind("0195f2a1-0014-4014-8014-000000000014")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            "2026-01-02T00:00:00Z",
+            "an error after an empty snapshot must preserve its value receipt"
         );
     }
 

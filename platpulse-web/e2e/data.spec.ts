@@ -108,7 +108,7 @@ test.describe('Read-only Data surfaces (all viewports)', () => {
     // Server-computed checksum, integrity, and schema validation.
     await page.getByRole('button', { name: 'Validate this backup' }).click()
     await expect(page.getByText('Pass').first()).toBeVisible({ timeout: 15_000 })
-    await expect(page.getByText(/backup 23 \/ Server 23/)).toBeVisible()
+    await expect(page.getByText(/backup (\d+) \/ Server \1/)).toBeVisible()
     // The typed confirmation must match the backup file name.
     await page.getByLabel(/Type the backup file name/).fill('wrong-name.db')
     await expect(start).toBeDisabled()
@@ -237,7 +237,7 @@ test.describe.serial('Data mutations (one run on desktop-1280)', () => {
     await expect(row).toBeVisible({ timeout: 15_000 })
     await expect(row).toContainText(/\d+(\.\d+)? (B|KiB|MiB)/)
     await expect(row).toContainText(/[0-9a-f]{16}…/)
-    await expect(row).toContainText('23')
+    await expect(row.locator('td[data-label="Schema"]')).toHaveText(/\d+/)
     await row.getByRole('link', { name: /platpulse-.*\.db/ }).click()
     await expect(page.getByRole('heading', { level: 1, name: /platpulse-.*\.db/ })).toBeVisible({
       timeout: 15_000,
@@ -297,7 +297,7 @@ test.describe.serial('Data mutations (one run on desktop-1280)', () => {
     // read-only.
     await page.getByRole('button', { name: 'Validate this backup' }).click()
     await expect(page.getByText('Pass').first()).toBeVisible({ timeout: 15_000 })
-    await expect(page.getByText(/backup 23 \/ Server 23/)).toBeVisible()
+    await expect(page.getByText(/backup (\d+) \/ Server \1/)).toBeVisible()
     // A wrong typed confirmation is not enough.
     await page.getByLabel(/Type the backup file name/).fill('wrong-name.db')
     await expect(start).toBeDisabled()

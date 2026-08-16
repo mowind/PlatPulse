@@ -153,6 +153,23 @@ with sqlite3.connect(path) as db:
             (node_a, namespace, fresh),
         )
 
+    # Node A: bounded Public Peer insight. Raw peer identity, address, client,
+    # and capability fields remain in the current table but never cross the
+    # Public projection boundary.
+    db.execute(
+        "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES (?, 'node', ?, ?, 'peers', 'ok', ?, ?, ?, ?, 1, 1)",
+        (agent_id, node_a, node_a, fresh, fresh, fresh, fresh),
+    )
+    for peer_id, direction, trusted, static_peer, consensus_peer in (
+        ("peer-a-inbound", "inbound", 1, 1, 0),
+        ("peer-a-outbound", "outbound", 0, 0, 1),
+        ("peer-a-consensus", "outbound", 1, 0, 1),
+    ):
+        db.execute(
+            "INSERT INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, client_name, updated_at) VALUES (?, ?, '203.0.113.9', ?, ?, ?, ?, 'platond', ?)",
+            (node_a, peer_id, direction, trusted, static_peer, consensus_peer, fresh),
+        )
+
     # Node B: RPC collection failed but last-good sync values remain visible
     # (the Server preserves last-good semantics; the WebUI must keep showing
     # them with the Error context).
@@ -394,8 +411,8 @@ while True:
     try:
         with sqlite3.connect(path, timeout=5) as db:
             db.execute(
-                "UPDATE component_status SET attempted_at = ?, observed_at = ?, received_at = ? WHERE node_id = ?",
-                (fresh, fresh, fresh, node_a),
+                "UPDATE component_status SET attempted_at = ?, observed_at = ?, received_at = ?, value_received_at = CASE WHEN component_key = 'peers' THEN ? ELSE value_received_at END WHERE node_id = ?",
+                (fresh, fresh, fresh, fresh, node_a),
             )
             # The seeded Agent's liveness is time-based too; refresh it so
             # the inventory stays deterministically Current for the whole
@@ -495,9 +512,9 @@ while True:
                 (fresh, node_a),
             )
             db.execute(
-                "UPDATE component_status SET attempted_at = ?, observed_at = ?, received_at = ? "
+                "UPDATE component_status SET attempted_at = ?, observed_at = ?, received_at = ?, value_received_at = CASE WHEN component_key = 'peers' THEN ? ELSE value_received_at END "
                 "WHERE agent_id = ? AND node_id = ? AND scope = 'node'",
-                (fresh, fresh, fresh, agent_id, node_a),
+                (fresh, fresh, fresh, fresh, agent_id, node_a),
             )
     except Exception:
         # The Server holds the only write connection; a transient SQLITE_BUSY

@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { E2E_PASSWORD, expectNoHorizontalOverflow, loginAs } from './helpers'
+import { E2E_PASSWORD, expectNoHorizontalOverflow, loginAs, setPageZoom } from './helpers'
 
 test.describe('Phase 1 release-candidate vertical slice', () => {
   test('public projection isolates a private Node and Node detail works at fixed viewports', async ({ page }) => {
@@ -20,6 +20,27 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expect(page.getByText('Node B (private)', { exact: true })).toHaveCount(0)
   })
 
+  test('Public Peer insight exposes bounded summaries without peer identities', async ({ page }) => {
+    await loginAs(page)
+    const homePeer = page.locator('.peer-insight').first()
+    await expect(homePeer).toContainText('Peer insight')
+    await expect(homePeer).toContainText('Current')
+    await expect(homePeer).toContainText('3')
+    await expect(homePeer).toContainText('Inbound')
+    await expect(homePeer).toContainText('Outbound')
+    await expect(page.getByText('203.0.113.9')).toHaveCount(0)
+    await expect(page.getByText('peer-a-inbound')).toHaveCount(0)
+
+    await page.getByRole('link', { name: 'Node A' }).focus()
+    await expect(page.getByRole('link', { name: 'Node A' })).toBeFocused()
+    await page.keyboard.press('Enter')
+    const detailPeer = page.locator('.peer-insight').first()
+    await expect(detailPeer).toContainText('Current')
+    await expect(detailPeer).toContainText('Consensus')
+    await expect(detailPeer).toContainText('3')
+    await setPageZoom(page, 2)
+    await expectNoHorizontalOverflow(page)
+  })
   test('Owner diagnostics and SSE reconnect do not disturb an active form field', async ({ page }) => {
     await loginAs(page)
     await page.getByRole('link', { name: 'Admin', exact: true }).click()

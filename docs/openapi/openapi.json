@@ -8204,6 +8204,7 @@
         "required": [
           "networkKey",
           "displayName",
+          "peers",
           "nodes"
         ],
         "properties": {
@@ -8218,6 +8219,9 @@
             "items": {
               "$ref": "#/components/schemas/PublicNode"
             }
+          },
+          "peers": {
+            "$ref": "#/components/schemas/PublicPeerInsight"
           }
         }
       },
@@ -8232,6 +8236,7 @@
           "syncState",
           "consensusState",
           "processState",
+          "peers",
           "resyncState",
           "networkReferenceConfidence"
         ],
@@ -8294,6 +8299,9 @@
           "nodeId": {
             "type": "string"
           },
+          "peers": {
+            "$ref": "#/components/schemas/PublicPeerInsight"
+          },
           "processState": {
             "type": "string"
           },
@@ -8311,6 +8319,87 @@
           },
           "syncState": {
             "type": "string"
+          }
+        }
+      },
+      "PublicPeerInsight": {
+        "type": "object",
+        "required": [
+          "state",
+          "freshness"
+        ],
+        "properties": {
+          "consensusCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "freshness": {
+            "type": "string",
+            "description": "Server-owned freshness of the last successful Peer Snapshot."
+          },
+          "inboundCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "observedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The last successful observation time. No peer identity or address is\nincluded in the Public projection."
+          },
+          "outboundCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "peerCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "`None` means no successful snapshot has ever been observed; `Some(0)`\nis an authoritative successful empty snapshot."
+          },
+          "receivedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Server receipt time for the last accepted Peer snapshot."
+          },
+          "staleSince": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Server-computed boundary at which the last observation became stale."
+          },
+          "state": {
+            "type": "string",
+            "description": "Agent-reported collection state. The WebUI presents this separately\nfrom freshness and value availability."
+          },
+          "staticCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "trustedCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
           }
         }
       },

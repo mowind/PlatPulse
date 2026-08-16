@@ -375,9 +375,51 @@ pub(crate) async fn session_handler(
 
 #[derive(Debug, Serialize, ToSchema, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct PublicPeerInsight {
+    /// Agent-reported collection state. The WebUI presents this separately
+    /// from freshness and value availability.
+    pub state: String,
+    /// Server-owned freshness of the last successful Peer Snapshot.
+    pub freshness: String,
+    /// The last successful observation time. No peer identity or address is
+    /// included in the Public projection.
+    pub observed_at: Option<String>,
+    /// Server receipt time for the last accepted Peer snapshot.
+    pub received_at: Option<String>,
+    /// Server-computed boundary at which the last observation became stale.
+    pub stale_since: Option<String>,
+    /// `None` means no successful snapshot has ever been observed; `Some(0)`
+    /// is an authoritative successful empty snapshot.
+    pub peer_count: Option<i64>,
+    pub inbound_count: Option<i64>,
+    pub outbound_count: Option<i64>,
+    pub trusted_count: Option<i64>,
+    pub static_count: Option<i64>,
+    pub consensus_count: Option<i64>,
+}
+
+fn unknown_public_peer_insight() -> PublicPeerInsight {
+    PublicPeerInsight {
+        state: "unknown".to_owned(),
+        freshness: "unknown".to_owned(),
+        observed_at: None,
+        received_at: None,
+        stale_since: None,
+        peer_count: None,
+        inbound_count: None,
+        outbound_count: None,
+        trusted_count: None,
+        static_count: None,
+        consensus_count: None,
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct PublicNetwork {
     pub network_key: String,
     pub display_name: String,
+    pub peers: PublicPeerInsight,
     pub nodes: Vec<PublicNode>,
 }
 
@@ -567,6 +609,7 @@ pub struct PublicNode {
     pub sync_state: String,
     pub consensus_state: String,
     pub process_state: String,
+    pub peers: PublicPeerInsight,
     pub host_cpu_percent: Option<f64>,
     pub current_head: Option<i64>,
     pub historical_high_watermark: Option<i64>,
@@ -592,6 +635,16 @@ struct PublicNodeRow {
     process_state: Option<String>,
     sync_received_at: Option<String>,
     consensus_received_at: Option<String>,
+    peer_state: Option<String>,
+    peer_observed_at: Option<String>,
+    peer_value_received_at: Option<String>,
+    peer_value_revision: Option<i64>,
+    peer_count: Option<i64>,
+    peer_inbound_count: Option<i64>,
+    peer_outbound_count: Option<i64>,
+    peer_trusted_count: Option<i64>,
+    peer_static_count: Option<i64>,
+    peer_consensus_count: Option<i64>,
     current_head: Option<i64>,
     historical_high_watermark: Option<i64>,
     resync_state: Option<String>,
@@ -677,6 +730,93 @@ fn freshness_for(row: &PublicNodeRow) -> Option<String> {
     timestamps.first().and_then(|value| (*value).cloned())
 }
 
+fn public_peer_insight(row: &PublicNodeRow) -> PublicPeerInsight {
+    let has_value = row.peer_value_revision.unwrap_or_default() > 0;
+    let freshness = if has_value {
+        match row.peer_value_received_at.as_deref() {
+            Some(timestamp) if fresh(Some(timestamp), crate::auth::now_utc()) => "current",
+            Some(_) => "stale",
+            None => "unknown",
+        }
+    } else {
+        "unknown"
+    };
+    let stale_since = if freshness == "stale" {
+        row.peer_value_received_at.as_deref().and_then(|timestamp| {
+            crate::auth::parse_rfc3339(timestamp).map(|received| {
+                crate::auth::format_rfc3339(
+                    received + time::Duration::seconds(FRESHNESS_LIMIT_SECONDS),
+                )
+            })
+        })
+    } else {
+        None
+    };
+    PublicPeerInsight {
+        state: row
+            .peer_state
+            .clone()
+            .unwrap_or_else(|| "unknown".to_owned()),
+        freshness: freshness.to_owned(),
+        observed_at: row.peer_observed_at.clone(),
+        received_at: row.peer_value_received_at.clone(),
+        stale_since,
+        peer_count: has_value.then_some(row.peer_count).flatten(),
+        inbound_count: has_value.then_some(row.peer_inbound_count).flatten(),
+        outbound_count: has_value.then_some(row.peer_outbound_count).flatten(),
+        trusted_count: has_value.then_some(row.peer_trusted_count).flatten(),
+        static_count: has_value.then_some(row.peer_static_count).flatten(),
+        consensus_count: has_value.then_some(row.peer_consensus_count).flatten(),
+    }
+}
+
+fn aggregate_peer_insight(nodes: &[PublicNode]) -> PublicPeerInsight {
+    let insights = nodes.iter().map(|node| &node.peers).collect::<Vec<_>>();
+    let state = if insights.iter().any(|peer| peer.state == "error") {
+        "error"
+    } else if insights.iter().any(|peer| peer.state == "unsupported") {
+        "unsupported"
+    } else if insights.iter().any(|peer| peer.state == "disabled") {
+        "disabled"
+    } else if insights.iter().any(|peer| peer.state == "starting") {
+        "starting"
+    } else if insights.iter().all(|peer| peer.state == "ok")
+        && insights.iter().all(|peer| peer.peer_count.is_some())
+    {
+        "ok"
+    } else {
+        "unknown"
+    };
+    let all_values = insights.iter().all(|peer| peer.peer_count.is_some());
+    let freshness = if !all_values || insights.is_empty() {
+        "unknown"
+    } else if insights.iter().all(|peer| peer.freshness == "current") {
+        "current"
+    } else if insights.iter().any(|peer| peer.freshness == "stale") {
+        "stale"
+    } else {
+        "unknown"
+    };
+    let sum = |value: fn(&PublicPeerInsight) -> Option<i64>| {
+        all_values.then(|| insights.iter().filter_map(|peer| value(peer)).sum())
+    };
+    PublicPeerInsight {
+        state: state.to_owned(),
+        freshness: freshness.to_owned(),
+        // A Network has multiple observation times; exposing one would imply
+        // a precision the aggregate does not have.
+        observed_at: None,
+        received_at: None,
+        stale_since: None,
+        peer_count: sum(|peer| peer.peer_count),
+        inbound_count: sum(|peer| peer.inbound_count),
+        outbound_count: sum(|peer| peer.outbound_count),
+        trusted_count: sum(|peer| peer.trusted_count),
+        static_count: sum(|peer| peer.static_count),
+        consensus_count: sum(|peer| peer.consensus_count),
+    }
+}
+
 fn public_node(row: PublicNodeRow) -> (String, PublicNode) {
     let (health, health_reason) = health_for(
         &row.lifecycle,
@@ -690,6 +830,7 @@ fn public_node(row: PublicNodeRow) -> (String, PublicNode) {
         row.consensus_received_at.as_deref(),
     );
     let freshness = freshness_for(&row);
+    let peers = public_peer_insight(&row);
     let node = PublicNode {
         node_id: row.node_id.clone(),
         display_name: row.display_name,
@@ -701,6 +842,7 @@ fn public_node(row: PublicNodeRow) -> (String, PublicNode) {
         sync_state: row.sync_state.unwrap_or_else(|| "unknown".to_owned()),
         consensus_state: row.consensus_state.unwrap_or_else(|| "unknown".to_owned()),
         process_state: row.process_state.unwrap_or_else(|| "unknown".to_owned()),
+        peers,
         host_cpu_percent: row.host_cpu_percent,
         current_head: row.current_head,
         historical_high_watermark: row.historical_high_watermark,
@@ -719,6 +861,51 @@ fn public_node(row: PublicNodeRow) -> (String, PublicNode) {
     (row.network_display_name, node)
 }
 
+const PUBLIC_NODE_QUERY_BASE: &str = r#"SELECT n.node_id, n.display_name, n.network_key, r.display_name AS network_display_name,
+       n.lifecycle, s.state AS rpc_state, sy.state AS sync_state, co.state AS consensus_state,
+       p.state AS process_state, i.state AS identity_state, s.received_at AS updated_at,
+       sy.received_at AS sync_received_at, co.received_at AS consensus_received_at,
+       h.cpu_percent AS host_cpu_percent,
+       ps.state AS peer_state, ps.observed_at AS peer_observed_at,
+       ps.value_received_at AS peer_value_received_at,
+       ps.value_revision AS peer_value_revision,
+       CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN COALESCE(pc.peer_count, 0) ELSE NULL END AS peer_count,
+       CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN COALESCE(pc.inbound_count, 0) ELSE NULL END AS peer_inbound_count,
+       CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN COALESCE(pc.outbound_count, 0) ELSE NULL END AS peer_outbound_count,
+       CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN COALESCE(pc.trusted_count, 0) ELSE NULL END AS peer_trusted_count,
+       CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN COALESCE(pc.static_count, 0) ELSE NULL END AS peer_static_count,
+       CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN COALESCE(pc.consensus_count, 0) ELSE NULL END AS peer_consensus_count,
+       c.current_block AS current_head, hs.historical_high_watermark,
+       hs.resync_state, hs.resync_last_progress_at,
+       nr.block_number AS network_reference_head, nr.confidence AS network_reference_confidence
+  FROM nodes n
+  JOIN networks r ON r.network_key = n.network_key
+  LEFT JOIN component_status s ON s.node_id = n.node_id AND s.component_key = 'rpc'
+  LEFT JOIN component_status sy ON sy.node_id = n.node_id AND sy.component_key = 'sync'
+  LEFT JOIN component_status co ON co.node_id = n.node_id AND co.component_key = 'consensus'
+  LEFT JOIN component_status p ON p.node_id = n.node_id AND p.component_key = 'process'
+  LEFT JOIN component_status i ON i.node_id = n.node_id AND i.component_key = 'network_identity'
+  LEFT JOIN component_status ps ON ps.node_id = n.node_id AND ps.component_key = 'peers'
+  LEFT JOIN (
+       SELECT node_id,
+              COUNT(*) AS peer_count,
+              SUM(CASE WHEN direction = 'inbound' THEN 1 ELSE 0 END) AS inbound_count,
+              SUM(CASE WHEN direction = 'outbound' THEN 1 ELSE 0 END) AS outbound_count,
+              SUM(CASE WHEN trusted = 1 THEN 1 ELSE 0 END) AS trusted_count,
+              SUM(CASE WHEN static_peer = 1 THEN 1 ELSE 0 END) AS static_count,
+              SUM(CASE WHEN consensus_peer = 1 THEN 1 ELSE 0 END) AS consensus_count
+         FROM current_node_peers
+        GROUP BY node_id
+  ) pc ON pc.node_id = n.node_id
+  LEFT JOIN current_host_observations h ON h.agent_id = n.agent_id
+  LEFT JOIN current_node_chain_observations c ON c.node_id = n.node_id
+  LEFT JOIN block_history_state hs ON hs.node_id = n.node_id
+  LEFT JOIN network_reference_heads nr ON nr.network_key = n.network_key"#;
+
+fn public_node_query(filter: &str, order: &str) -> String {
+    format!("{PUBLIC_NODE_QUERY_BASE} WHERE {filter} ORDER BY {order}")
+}
+
 /// Public Home projection. The query boundary only selects public, active
 /// Nodes and never returns endpoint, Agent, host identity, capacity, or raw
 /// errors from the Admin projection.
@@ -729,26 +916,10 @@ fn public_node(row: PublicNodeRow) -> (String, PublicNode) {
     responses((status = 200, description = "Published Network and Node projection", body = [PublicNetwork]))
 )]
 pub(crate) async fn public_networks(State(state): State<AppState>) -> Response {
-    let rows = sqlx::query_as::<_, PublicNodeRow>(
-        "SELECT n.node_id, n.display_name, n.network_key, r.display_name AS network_display_name,
-                n.lifecycle, s.state AS rpc_state, sy.state AS sync_state, co.state AS consensus_state, p.state AS process_state, i.state AS identity_state, s.received_at AS updated_at, sy.received_at AS sync_received_at, co.received_at AS consensus_received_at, h.cpu_percent AS host_cpu_percent,
-                c.current_block AS current_head, hs.historical_high_watermark,
-                hs.resync_state, hs.resync_last_progress_at,
-                nr.block_number AS network_reference_head, nr.confidence AS network_reference_confidence
-           FROM nodes n
-           JOIN networks r ON r.network_key = n.network_key
-           LEFT JOIN component_status s ON s.node_id = n.node_id AND s.component_key = 'rpc'
-           LEFT JOIN component_status sy ON sy.node_id = n.node_id AND sy.component_key = 'sync'
-           LEFT JOIN component_status co ON co.node_id = n.node_id AND co.component_key = 'consensus'
-           LEFT JOIN component_status p ON p.node_id = n.node_id AND p.component_key = 'process'
-           LEFT JOIN component_status i ON i.node_id = n.node_id AND i.component_key = 'network_identity'
-           LEFT JOIN current_host_observations h ON h.agent_id = n.agent_id
-           LEFT JOIN current_node_chain_observations c ON c.node_id = n.node_id
-           LEFT JOIN block_history_state hs ON hs.node_id = n.node_id
-           LEFT JOIN network_reference_heads nr ON nr.network_key = n.network_key
-          WHERE n.visibility = 'public' AND n.lifecycle = 'active'
-          ORDER BY r.network_key, n.node_id",
-    )
+    let rows = sqlx::query_as::<_, PublicNodeRow>(&public_node_query(
+        "n.visibility = 'public' AND n.lifecycle = 'active'",
+        "r.network_key, n.node_id",
+    ))
     .fetch_all(state.db().pool())
     .await;
     let rows = match rows {
@@ -775,9 +946,13 @@ pub(crate) async fn public_networks(State(state): State<AppState>) -> Response {
             networks.push(PublicNetwork {
                 network_key,
                 display_name: network_display_name,
+                peers: unknown_public_peer_insight(),
                 nodes: vec![node],
             });
         }
+    }
+    for network in &mut networks {
+        network.peers = aggregate_peer_insight(&network.nodes);
     }
     Json(networks).into_response()
 }
@@ -794,25 +969,10 @@ pub(crate) async fn public_network(
     Path(network_key): Path<String>,
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
-    let rows = sqlx::query_as::<_, PublicNodeRow>(
-        "SELECT n.node_id, n.display_name, n.network_key, r.display_name AS network_display_name,
-                n.lifecycle, s.state AS rpc_state, sy.state AS sync_state, co.state AS consensus_state, p.state AS process_state, i.state AS identity_state, s.received_at AS updated_at, sy.received_at AS sync_received_at, co.received_at AS consensus_received_at, h.cpu_percent AS host_cpu_percent,
-                c.current_block AS current_head, hs.historical_high_watermark,
-                hs.resync_state, hs.resync_last_progress_at,
-                nr.block_number AS network_reference_head, nr.confidence AS network_reference_confidence
-           FROM nodes n JOIN networks r ON r.network_key = n.network_key
-           LEFT JOIN component_status s ON s.node_id = n.node_id AND s.component_key = 'rpc'
-           LEFT JOIN component_status sy ON sy.node_id = n.node_id AND sy.component_key = 'sync'
-           LEFT JOIN component_status co ON co.node_id = n.node_id AND co.component_key = 'consensus'
-           LEFT JOIN component_status p ON p.node_id = n.node_id AND p.component_key = 'process'
-           LEFT JOIN component_status i ON i.node_id = n.node_id AND i.component_key = 'network_identity'
-           LEFT JOIN current_host_observations h ON h.agent_id = n.agent_id
-           LEFT JOIN current_node_chain_observations c ON c.node_id = n.node_id
-           LEFT JOIN block_history_state hs ON hs.node_id = n.node_id
-           LEFT JOIN network_reference_heads nr ON nr.network_key = n.network_key
-          WHERE n.network_key = ? AND n.visibility = 'public' AND n.lifecycle = 'active'
-          ORDER BY n.node_id",
-    )
+    let rows = sqlx::query_as::<_, PublicNodeRow>(&public_node_query(
+        "n.network_key = ? AND n.visibility = 'public' AND n.lifecycle = 'active'",
+        "n.node_id",
+    ))
     .bind(&network_key)
     .fetch_all(state.db().pool())
     .await;
@@ -836,10 +996,15 @@ pub(crate) async fn public_network(
         }
     };
     let display_name = rows[0].network_display_name.clone();
-    let nodes = rows.into_iter().map(|row| public_node(row).1).collect();
+    let nodes = rows
+        .into_iter()
+        .map(|row| public_node(row).1)
+        .collect::<Vec<_>>();
+    let peers = aggregate_peer_insight(&nodes);
     Json(PublicNetwork {
         network_key,
         display_name,
+        peers,
         nodes,
     })
     .into_response()
@@ -857,24 +1022,10 @@ pub(crate) async fn public_node_detail(
     Path(node_id): Path<String>,
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
-    let row = sqlx::query_as::<_, PublicNodeRow>(
-        "SELECT n.node_id, n.display_name, n.network_key, r.display_name AS network_display_name,
-                n.lifecycle, s.state AS rpc_state, sy.state AS sync_state, co.state AS consensus_state, p.state AS process_state, i.state AS identity_state, s.received_at AS updated_at, sy.received_at AS sync_received_at, co.received_at AS consensus_received_at, h.cpu_percent AS host_cpu_percent,
-                c.current_block AS current_head, hs.historical_high_watermark,
-                hs.resync_state, hs.resync_last_progress_at,
-                nr.block_number AS network_reference_head, nr.confidence AS network_reference_confidence
-           FROM nodes n JOIN networks r ON r.network_key = n.network_key
-           LEFT JOIN component_status s ON s.node_id = n.node_id AND s.component_key = 'rpc'
-           LEFT JOIN component_status sy ON sy.node_id = n.node_id AND sy.component_key = 'sync'
-           LEFT JOIN component_status co ON co.node_id = n.node_id AND co.component_key = 'consensus'
-           LEFT JOIN component_status p ON p.node_id = n.node_id AND p.component_key = 'process'
-           LEFT JOIN component_status i ON i.node_id = n.node_id AND i.component_key = 'network_identity'
-           LEFT JOIN current_host_observations h ON h.agent_id = n.agent_id
-           LEFT JOIN current_node_chain_observations c ON c.node_id = n.node_id
-           LEFT JOIN block_history_state hs ON hs.node_id = n.node_id
-           LEFT JOIN network_reference_heads nr ON nr.network_key = n.network_key
-          WHERE n.node_id = ? AND n.visibility = 'public' AND n.lifecycle = 'active'",
-    )
+    let row = sqlx::query_as::<_, PublicNodeRow>(&public_node_query(
+        "n.node_id = ? AND n.visibility = 'public' AND n.lifecycle = 'active'",
+        "n.node_id",
+    ))
     .bind(&node_id)
     .fetch_optional(state.db().pool())
     .await;
@@ -995,6 +1146,182 @@ mod tests {
             .execute(state.db().pool()).await.unwrap();
         sqlx::query("INSERT INTO current_host_observations (agent_id, cpu_percent, updated_at) VALUES ('agent-public-test', 42.5, '2026-01-01T00:00:00Z')")
             .execute(state.db().pool()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn public_peer_projection_is_bounded_and_preserves_dimensions() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES ('agent-public-test', 'node', 'node-public', 'node-public', 'peers', 'ok', ?, ?, ?, 1, 1)")
+            .bind(&now)
+            .bind(&now)
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        for (peer_id, direction, trusted, static_peer, consensus_peer) in [
+            ("peer-inbound", "inbound", 1, 1, 0),
+            ("peer-outbound", "outbound", 0, 0, 1),
+        ] {
+            sqlx::query("INSERT INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, client_name, updated_at) VALUES ('node-public', ?, '203.0.113.7', ?, ?, ?, ?, 'raw-client-name', ?)")
+                .bind(peer_id)
+                .bind(direction)
+                .bind(trusted)
+                .bind(static_peer)
+                .bind(consensus_peer)
+                .bind(&now)
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+        }
+
+        let response = public_networks(State(state.clone())).await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let node = &value[0]["nodes"][0];
+        let peers = &node["peers"];
+        assert_eq!(peers["state"], "ok");
+        assert_eq!(peers["freshness"], "current");
+        assert_eq!(peers["peerCount"], 2);
+        assert_eq!(peers["inboundCount"], 1);
+        assert_eq!(peers["outboundCount"], 1);
+        assert_eq!(peers["trustedCount"], 1);
+        assert_eq!(peers["staticCount"], 1);
+        assert_eq!(peers["consensusCount"], 1);
+        assert!(peers.get("peerId").is_none());
+        assert!(peers.get("remoteIp").is_none());
+        assert!(peers.get("clientName").is_none());
+        assert_eq!(value[0]["peers"]["peerCount"], 2);
+
+        let stale_received =
+            crate::auth::format_rfc3339(crate::auth::now_utc() - time::Duration::minutes(5));
+        sqlx::query("UPDATE component_status SET state='ok', state_revision=2, observed_at=?, received_at=?, value_received_at=? WHERE node_id='node-public' AND component_key='peers'")
+            .bind(&now)
+            .bind(&stale_received)
+            .bind(&stale_received)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let response = public_node_detail(
+            State(state.clone()),
+            Path("node-public".to_owned()),
+            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
+        )
+        .await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["peers"]["freshness"], "stale");
+        assert!(value["peers"]["staleSince"].is_string());
+        assert_eq!(value["peers"]["receivedAt"], stale_received);
+        assert_eq!(value["peers"]["peerCount"], 2);
+
+        sqlx::query("UPDATE component_status SET state='error', state_revision=3 WHERE node_id='node-public' AND component_key='peers'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let response = public_node_detail(
+            State(state.clone()),
+            Path("node-public".to_owned()),
+            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
+        )
+        .await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["peers"]["state"], "error");
+        assert_eq!(value["peers"]["receivedAt"], stale_received);
+        assert_eq!(value["peers"]["peerCount"], 2);
+
+        sqlx::query("UPDATE component_status SET state='ok', state_revision=4, value_revision=2, observed_at=?, received_at=?, value_received_at=? WHERE node_id='node-public' AND component_key='peers'")
+            .bind(&now)
+            .bind(&now)
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM current_node_peers WHERE node_id='node-public'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let response = public_node_detail(
+            State(state),
+            Path("node-public".to_owned()),
+            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
+        )
+        .await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["peers"]["state"], "ok");
+        assert_eq!(value["peers"]["peerCount"], 0);
+        assert_eq!(value["peers"]["inboundCount"], 0);
+    }
+
+    #[tokio::test]
+    async fn public_peer_projection_does_not_expose_private_node_data() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES ('agent-public-test', 'node', 'node-private', 'node-private', 'peers', 'ok', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 1)")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, updated_at) VALUES ('node-private', 'private-peer', '10.0.0.2', 'inbound', 1, 1, 1, '2026-01-01T00:00:00Z')")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let response = public_networks(State(state.clone())).await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value[0]["nodes"].as_array().unwrap().len(), 1);
+        let private = public_node_detail(
+            State(state.clone()),
+            Path("node-private".to_owned()),
+            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
+        )
+        .await;
+        assert_eq!(private.status(), StatusCode::NOT_FOUND);
+
+        let network = public_network(
+            State(state.clone()),
+            Path("mainnet".to_owned()),
+            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
+        )
+        .await;
+        let body = to_bytes(network.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["nodes"].as_array().unwrap().len(), 1);
+        assert!(
+            String::from_utf8_lossy(&body)
+                .find("private-peer")
+                .is_none()
+        );
+
+        for node_id in ["node-private", "node-retired", "node-unknown"] {
+            let history = public_node_history(
+                State(state.clone()),
+                Path(node_id.to_owned()),
+                Query(HistoryQuery { limit: None }),
+                Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
+            )
+            .await;
+            assert_eq!(
+                history.status(),
+                StatusCode::NOT_FOUND,
+                "history leaked {node_id}"
+            );
+
+            let export = public_node_history_export(
+                State(state.clone()),
+                Path(node_id.to_owned()),
+                Query(HistoryQuery { limit: None }),
+                Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
+            )
+            .await;
+            assert_eq!(
+                export.status(),
+                StatusCode::NOT_FOUND,
+                "export leaked {node_id}"
+            );
+        }
     }
 
     #[tokio::test]

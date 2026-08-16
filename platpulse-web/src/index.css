@@ -633,6 +633,106 @@ button {
   overflow-wrap: anywhere;
 }
 
+.peer-insight {
+  margin-top: 1rem;
+  padding: 1rem;
+  background: #f8f9fd;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.peer-insight-compact {
+  padding: 0.8rem;
+}
+
+.peer-insight-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.peer-insight-heading h2,
+.peer-insight-heading h3 {
+  margin: 0;
+}
+
+.peer-dimensions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+  min-width: min(100%, 20rem);
+}
+
+.peer-dimensions > div {
+  display: grid;
+  min-width: 0;
+  gap: 0.25rem;
+}
+
+.peer-dimension-label {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.peer-dimensions .status-badge {
+  min-width: 0;
+  justify-content: center;
+}
+
+.peer-summary-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 1rem 0 0;
+}
+
+.peer-summary-list div {
+  min-width: 0;
+}
+
+.peer-summary-list dt {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.peer-summary-list dd {
+  margin: 0.2rem 0 0;
+  font-size: 1.05rem;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.peer-insight-note {
+  margin: 0.9rem 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.peer-observation-time {
+  margin: 0.3rem 0 0;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+@media (max-width: 30rem) {
+  .peer-dimensions {
+    grid-template-columns: 1fr;
+    min-width: 100%;
+  }
+
+  .peer-summary-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .history-list {
   display: grid;
   gap: 0.75rem;
