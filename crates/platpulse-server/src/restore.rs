@@ -21,7 +21,9 @@
 //! into the restored database (as a `restore` Operation plus Audit Event),
 //! so the WebUI can present the new state after the Server restarts.
 
-use std::fs::{File, OpenOptions};
+#[cfg(test)]
+use std::fs::File;
+use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -41,6 +43,7 @@ pub const ERROR_BACKUP_DIR: &str = "backup_dir_not_configured";
 pub const ERROR_CHECKSUM: &str = "restore_checksum_mismatch";
 pub const ERROR_INTEGRITY: &str = "restore_integrity_failed";
 pub const ERROR_SCHEMA: &str = "restore_schema_incompatible";
+pub const ERROR_PRIVACY: &str = "restore_privacy_failed";
 pub const ERROR_IO: &str = "restore_io_failed";
 
 /// Human-readable guidance attached to the stopped-Server refusal.
@@ -142,12 +145,10 @@ pub async fn check_artifact(
     expected_schema: i64,
     current_schema: i64,
 ) -> Result<(), RestoreError> {
-    let mut file = File::open(path).map_err(|error| {
-        RestoreError::domain(
-            ERROR_IO,
-            format!("cannot open the backup artifact: {error}"),
-        )
-    })?;
+    crate::file_security::validate_file(path)
+        .map_err(|message| RestoreError::domain(ERROR_IO, message))?;
+    let mut file = crate::file_security::open_readonly(path)
+        .map_err(|message| RestoreError::domain(ERROR_IO, message))?;
     let mut hasher = sha2::Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
     loop {
@@ -170,6 +171,8 @@ pub async fn check_artifact(
         ));
     }
 
+    crate::file_security::validate_file(path)
+        .map_err(|message| RestoreError::domain(ERROR_IO, message))?;
     let options = sqlx::sqlite::SqliteConnectOptions::new()
         .filename(path)
         .read_only(true);
@@ -229,12 +232,23 @@ pub async fn check_artifact(
             ),
         ));
     }
+    crate::backup::validate_snapshot_privacy(path)
+        .await
+        .map_err(|error| RestoreError::domain(ERROR_PRIVACY, error.to_string()))?;
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Exclusive stopped-Server condition
-// ---------------------------------------------------------------------------
+pub(crate) fn validated_artifact_path(dir: &Path, filename: &str) -> Result<PathBuf, RestoreError> {
+    if !crate::file_security::is_safe_basename(filename) {
+        return Err(RestoreError::domain(
+            ERROR_IO,
+            "backup manifest contains an unsafe artifact filename",
+        ));
+    }
+    crate::file_security::validate_private_directory(dir)
+        .map_err(|message| RestoreError::domain(ERROR_IO, message))?;
+    Ok(dir.join(filename))
+}
 
 /// Lock file living next to the database (`<db_path>.lock`). `serve` holds
 /// it for the process lifetime; the offline restore refuses to start while
@@ -255,17 +269,38 @@ pub struct ExclusiveGuard {
 /// Acquire the exclusive lock; `Err(ERROR_SERVER_RUNNING)` when a Server
 /// (or another restore) is running.
 pub fn acquire_exclusive_lock(db_path: &Path) -> Result<ExclusiveGuard, RestoreError> {
+    let parent = db_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    crate::file_security::validate_private_directory(parent)
+        .map_err(|message| RestoreError::domain(ERROR_IO, message))?;
     let lock_path = lock_path_for(db_path);
+    crate::file_security::validate_no_symlinked_ancestors(&lock_path)
+        .map_err(|message| RestoreError::domain(ERROR_IO, message))?;
+    if std::fs::symlink_metadata(&lock_path).is_ok() {
+        crate::file_security::validate_file(&lock_path)
+            .map_err(|message| RestoreError::domain(ERROR_IO, message))?;
+    }
+    #[cfg(unix)]
+    let file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
+            .mode(0o600)
+            .open(&lock_path)?
+    };
+    #[cfg(not(unix))]
     let file = OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
         .open(&lock_path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&lock_path, std::fs::Permissions::from_mode(0o600));
-    }
+    crate::file_security::validate_file(&lock_path)
+        .map_err(|message| RestoreError::domain(ERROR_IO, message))?;
     let lock = Flock::lock(file, FlockArg::LockExclusiveNonblock).map_err(|(_, _)| {
         RestoreError::domain(
             ERROR_SERVER_RUNNING,
@@ -355,8 +390,19 @@ pub async fn execute(state: &AppState, operation_id: &str) -> Result<(), Restore
         .await?;
         return Ok(());
     };
+    let artifact_path = match validated_artifact_path(&backup_dir, &identity.filename) {
+        Ok(path) => path,
+        Err(error) => {
+            let (code, message) = match error {
+                RestoreError::Domain { code, message } => (code, message),
+                other => (ERROR_IO, other.to_string()),
+            };
+            fail_operation(state, operation_id, code, &message).await?;
+            return Ok(());
+        }
+    };
     if let Err(error) = check_artifact(
-        &backup_dir.join(&identity.filename),
+        &artifact_path,
         &identity.sha256,
         identity.schema_version,
         crate::database::SERVER_SCHEMA_VERSION,
@@ -534,7 +580,26 @@ pub async fn apply(
             "no backup directory is configured; set backup_dir in server.toml",
         ));
     };
-    let artifact_path = backup_dir.join(&identity.filename);
+    let artifact_path = match validated_artifact_path(backup_dir, &identity.filename) {
+        Ok(path) => path,
+        Err(error) => {
+            let (code, message) = match &error {
+                RestoreError::Domain { code, message } => (*code, message.clone()),
+                other => (ERROR_IO, other.to_string()),
+            };
+            record_failure(
+                current.pool(),
+                artifact_id,
+                &identity.filename,
+                code,
+                &message,
+            )
+            .await
+            .ok();
+            current.close().await;
+            return Err(error);
+        }
+    };
     if let Err(error) = check_artifact(
         &artifact_path,
         &identity.sha256,
@@ -569,7 +634,7 @@ pub async fn apply(
     let safety_copy = safety_copy_path(&config.db_path);
     let temp_safety = temp_path_for(&safety_copy);
     let _ = std::fs::remove_file(&temp_safety);
-    if let Err(error) = vacuum_into(current.pool(), &temp_safety).await {
+    if let Err(error) = vacuum_into(current.pool(), &temp_safety, true).await {
         let (code, message) = failure_parts(&error);
         record_failure(
             current.pool(),
@@ -642,6 +707,34 @@ pub async fn apply(
         .ok();
         current.close().await;
         let _ = std::fs::remove_file(&temp_db);
+        if let Some(path) = safety_copy.as_ref() {
+            let _ = std::fs::remove_file(path);
+        }
+        return Err(error);
+    }
+    if let Err(error) = check_artifact(
+        &temp_db,
+        &identity.sha256,
+        identity.schema_version,
+        crate::database::SERVER_SCHEMA_VERSION,
+    )
+    .await
+    {
+        let (code, message) = failure_parts(&error);
+        record_failure(
+            current.pool(),
+            artifact_id,
+            &identity.filename,
+            code,
+            &message,
+        )
+        .await
+        .ok();
+        current.close().await;
+        let _ = std::fs::remove_file(&temp_db);
+        if let Some(path) = safety_copy.as_ref() {
+            let _ = std::fs::remove_file(path);
+        }
         return Err(error);
     }
     // The pool must be fully closed before the rename so no descriptor
@@ -667,7 +760,25 @@ pub async fn apply(
             rolled_back.close().await;
         }
         let _ = std::fs::remove_file(&temp_db);
+        if let Some(path) = safety_copy.as_ref() {
+            let _ = std::fs::remove_file(path);
+        }
         return Err(error.into());
+    }
+    if let Err(error) = crate::file_security::secure_new_file(&config.db_path) {
+        let rollback = safety_copy
+            .as_ref()
+            .ok_or_else(|| RestoreError::domain(ERROR_IO, "restore safety copy is unavailable"))
+            .and_then(|copy| rollback_to_safety_copy(&config.db_path, copy));
+        sanitize_or_remove(safety_copy.as_ref().expect("safety copy exists")).await;
+        if let Err(rollback_error) = rollback {
+            eprintln!(
+                "restore rollback failed: {}",
+                crate::redaction::redact_sensitive(&rollback_error.to_string())
+            );
+        }
+        let _ = std::fs::remove_file(&temp_db);
+        return Err(RestoreError::domain(ERROR_IO, error));
     }
     // The old database's WAL/SHM belong to the replaced file; stale files
     // are never replayed against the restored database.
@@ -709,11 +820,15 @@ pub async fn apply(
                 rollback_to_safety_copy(&config.db_path, safety_copy.as_ref().unwrap())
             {
                 eprintln!(
-                    "restore rollback failed (manual recovery from {} needed): {}",
-                    safety_copy.as_ref().unwrap().display(),
-                    crate::redaction::redact_sensitive(&rollback_error.to_string())
+                    "{}",
+                    crate::redaction::redact_sensitive(&format!(
+                        "restore rollback failed (manual recovery from {} needed): {}",
+                        safety_copy.as_ref().unwrap().display(),
+                        rollback_error
+                    ))
                 );
             }
+            sanitize_or_remove(safety_copy.as_ref().unwrap()).await;
             let _ = record_execution_failure(
                 config,
                 artifact_id,
@@ -758,6 +873,9 @@ pub async fn apply(
         }
     };
     restored.close().await;
+    if let Some(path) = safety_copy.as_ref() {
+        sanitize_or_remove(path).await;
+    }
     Ok(ApplyOutcome {
         status,
         artifact_id: artifact_id.to_owned(),
@@ -793,7 +911,19 @@ async fn record_outcome(
     }
     let operation_id = uuid::Uuid::new_v4().to_string();
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
-    let params = serde_json::json!({ "artifactId": artifact_id, "source": "cli" });
+    let params = crate::redaction::redact_json_value(&serde_json::json!({
+        "artifactId": artifact_id,
+        "source": "cli",
+    }));
+    let warnings = warnings
+        .iter()
+        .map(|warning| crate::redaction::redact_sensitive(warning))
+        .collect::<Vec<_>>();
+    let errors = errors
+        .iter()
+        .map(crate::redaction::redact_json_value)
+        .collect::<Vec<_>>();
+    let result = result.map(crate::redaction::redact_json_value);
     let mut tx = pool.begin().await?;
     sqlx::query(
         "INSERT INTO operations (operation_id, kind, status, progress_percent, progress_label, request_id, params_json, warnings_json, errors_json, result_json, created_at, started_at, finished_at) VALUES (?, 'restore', ?, 100, 'Restored', ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -804,7 +934,7 @@ async fn record_outcome(
     .bind(serde_json::to_string(&params)?)
     .bind(serde_json::to_string(&warnings)?)
     .bind(serde_json::to_string(&errors)?)
-    .bind(result.map(serde_json::to_string).transpose()?)
+    .bind(result.as_ref().map(serde_json::to_string).transpose()?)
     .bind(&now)
     .bind(&now)
     .bind(&now)
@@ -892,8 +1022,27 @@ async fn record_execution_failure(
 fn rollback_to_safety_copy(db_path: &Path, safety_copy: &Path) -> Result<(), RestoreError> {
     let temp = temp_path_for(db_path);
     let _ = std::fs::remove_file(&temp);
-    std::fs::copy(safety_copy, &temp)?;
-    sync_file(&temp)?;
+    let mut source = crate::file_security::open_readonly(safety_copy)
+        .map_err(|message| RestoreError::domain(ERROR_IO, message))?;
+    #[cfg(unix)]
+    let mut destination = {
+        use std::os::unix::fs::OpenOptionsExt;
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
+            .mode(0o600)
+            .open(&temp)?
+    };
+    #[cfg(not(unix))]
+    let mut destination = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)?;
+    std::io::copy(&mut source, &mut destination)?;
+    destination.sync_all()?;
+    crate::file_security::validate_file(&temp)
+        .map_err(|message| RestoreError::domain(ERROR_IO, message))?;
     std::fs::rename(&temp, db_path)?;
     let _ = std::fs::remove_file(with_suffix(db_path, "-wal"));
     let _ = std::fs::remove_file(with_suffix(db_path, "-shm"));
@@ -922,7 +1071,17 @@ fn temp_path_for(path: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-async fn vacuum_into(pool: &SqlitePool, destination: &Path) -> Result<(), RestoreError> {
+async fn sanitize_or_remove(path: &Path) {
+    if crate::backup::sanitize_snapshot(path).await.is_err() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+async fn vacuum_into(
+    pool: &SqlitePool,
+    destination: &Path,
+    sanitize: bool,
+) -> Result<(), RestoreError> {
     let absolute = destination
         .to_str()
         .ok_or_else(|| std::io::Error::other("database path is not valid UTF-8"))?;
@@ -932,20 +1091,63 @@ async fn vacuum_into(pool: &SqlitePool, destination: &Path) -> Result<(), Restor
             "database path must not contain single quotes",
         ));
     }
+    if std::fs::symlink_metadata(destination).is_ok()
+        || crate::file_security::validate_no_symlinked_ancestors(destination).is_err()
+    {
+        return Err(RestoreError::domain(
+            ERROR_IO,
+            "snapshot destination path is unsafe or already exists",
+        ));
+    }
     sqlx::query(&format!("VACUUM INTO '{absolute}'"))
         .execute(pool)
         .await?;
+    crate::file_security::secure_new_file(destination)
+        .map_err(|message| RestoreError::domain(ERROR_IO, message))?;
+    if sanitize {
+        crate::backup::sanitize_snapshot(destination)
+            .await
+            .map_err(|error| RestoreError::domain(ERROR_IO, error.to_string()))?;
+    }
     Ok(())
 }
 
 async fn copy_fsync(source: &Path, destination: &Path) -> Result<(), RestoreError> {
-    std::fs::copy(source, destination)?;
-    sync_file(destination)?;
+    if std::fs::symlink_metadata(destination).is_ok()
+        || crate::file_security::validate_no_symlinked_ancestors(destination).is_err()
+    {
+        return Err(RestoreError::domain(
+            ERROR_IO,
+            "copy destination path is unsafe or already exists",
+        ));
+    }
+    let mut source_file = crate::file_security::open_readonly(source)
+        .map_err(|message| RestoreError::domain(ERROR_IO, message))?;
+    #[cfg(unix)]
+    let mut destination_file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
+            .mode(0o600)
+            .open(destination)?
+    };
+    #[cfg(not(unix))]
+    let mut destination_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)?;
+    std::io::copy(&mut source_file, &mut destination_file)?;
+    destination_file.sync_all()?;
+    crate::file_security::validate_file(destination)
+        .map_err(|message| RestoreError::domain(ERROR_IO, message))?;
     Ok(())
 }
 
 fn sync_file(path: &Path) -> Result<(), RestoreError> {
-    let file = OpenOptions::new().write(true).open(path)?;
+    let file = crate::file_security::open_readwrite(path)
+        .map_err(|message| RestoreError::domain(ERROR_IO, message))?;
     file.sync_all()?;
     Ok(())
 }
@@ -1011,6 +1213,15 @@ mod tests {
         .execute(database.pool())
         .await
         .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&artifact_path, std::fs::Permissions::from_mode(0o600))
+                .unwrap();
+        }
+        crate::backup::sanitize_snapshot(&artifact_path)
+            .await
+            .unwrap();
         let bytes = std::fs::metadata(&artifact_path).unwrap().len() as i64;
         let sha256 = file_sha256(&artifact_path).await.unwrap();
         let now = crate::auth::format_rfc3339(crate::auth::now_utc());
@@ -1029,6 +1240,14 @@ mod tests {
         (config, artifact_id, sha256)
     }
 
+    #[test]
+    fn validated_artifact_path_rejects_traversal_and_absolute_names() {
+        let dir = tempdir().unwrap();
+        for filename in ["../server-pepper", "/etc/passwd", "nested/artifact.db"] {
+            let error = validated_artifact_path(dir.path(), filename).unwrap_err();
+            assert!(matches!(error, RestoreError::Domain { code: ERROR_IO, .. }));
+        }
+    }
     #[test]
     fn confirmation_matches_filename_case_insensitively() {
         assert!(confirmation_matches(" platpulse-a.db ", "platpulse-a.db"));
@@ -1063,6 +1282,12 @@ mod tests {
             .execute(database.pool())
             .await
             .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&snapshot, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        crate::backup::sanitize_snapshot(&snapshot).await.unwrap();
         let sha256 = file_sha256(&snapshot).await.unwrap();
         let schema: i64 =
             sqlx::query_scalar("SELECT COALESCE(MAX(version), 0) FROM _sqlx_migrations")
@@ -1081,6 +1306,11 @@ mod tests {
         // Integrity failure.
         let tampered = dir.path().join("tampered.db");
         std::fs::write(&tampered, b"not a database").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tampered, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
         let error = check_artifact(&tampered, &sha256, schema, schema)
             .await
             .unwrap_err();

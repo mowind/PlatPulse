@@ -463,6 +463,8 @@ where
     E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
 {
     let created_at = format_rfc3339(now_utc());
+    let after_json = after_json.map(crate::redaction::redact_json_value);
+    let target_id = crate::redaction::redact_sensitive(target_id);
     sqlx::query(
         "INSERT INTO audit_events (actor_user_id, event_kind, target_kind, target_id, before_json, after_json, created_at) VALUES (?, ?, ?, ?, NULL, ?, ?)",
     )
@@ -470,7 +472,7 @@ where
     .bind(event_kind)
     .bind(target_kind)
     .bind(target_id)
-    .bind(after_json.map(|value| value.to_string()))
+    .bind(after_json.as_ref().map(serde_json::Value::to_string))
     .bind(created_at)
     .execute(executor)
     .await?;

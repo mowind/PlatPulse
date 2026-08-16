@@ -313,12 +313,22 @@ async fn load_operation_detail(
     .await?;
     let cancellable = matches!(summary.status.as_str(), "queued" | "running");
     let parse_issues = |text: &str| -> Vec<OperationIssue> {
-        serde_json::from_str::<Vec<OperationIssue>>(text).unwrap_or_default()
+        serde_json::from_str::<Vec<OperationIssue>>(text)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|mut issue| {
+                issue.code = crate::redaction::redact_sensitive(&issue.code);
+                issue.message = crate::redaction::redact_sensitive(&issue.message);
+                issue
+            })
+            .collect()
     };
     Ok(Some(OperationDetail {
         warnings: parse_issues(&warnings),
         errors: parse_issues(&errors),
-        result: result.and_then(|text| serde_json::from_str(&text).ok()),
+        result: result
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .map(|value| crate::redaction::redact_json_value(&value)),
         cancellable,
         operation: summary,
     }))
@@ -991,9 +1001,9 @@ pub(crate) async fn retention_run(
     .await
 }
 
-// ---------------------------------------------------------------------------
-// Backups
-// ---------------------------------------------------------------------------
+fn redact_backup_filename(filename: String) -> String {
+    crate::redaction::redact_sensitive(&filename)
+}
 
 /// List backup artifacts with sanitized metadata only (file base name,
 /// size, checksum, schema, Server version, timestamps, verification).
@@ -1033,7 +1043,7 @@ pub(crate) async fn backups_list(
                 )| {
                     BackupArtifactSummary {
                         artifact_id,
-                        filename,
+                        filename: redact_backup_filename(filename),
                         bytes,
                         sha256,
                         schema_version,
@@ -1098,7 +1108,7 @@ pub(crate) async fn backup_artifact_detail(
         ))) => Json(BackupArtifactDetail {
             artifact: BackupArtifactSummary {
                 artifact_id,
-                filename,
+                filename: redact_backup_filename(filename),
                 bytes,
                 sha256,
                 schema_version,
@@ -1110,7 +1120,8 @@ pub(crate) async fn backup_artifact_detail(
                 verified_at,
                 create_operation_id,
             },
-            verification_error,
+            verification_error: verification_error
+                .map(|message| crate::redaction::redact_sensitive(&message)),
         })
         .into_response(),
         Ok(None) => (
@@ -1265,13 +1276,18 @@ pub(crate) async fn restore_validate(
             "no backup directory is configured; set backup_dir in server.toml",
         );
     };
-    let outcome = crate::restore::check_artifact(
-        &backup_dir.join(&identity.filename),
-        &identity.sha256,
-        identity.schema_version,
-        crate::database::SERVER_SCHEMA_VERSION,
-    )
-    .await;
+    let outcome = match crate::restore::validated_artifact_path(&backup_dir, &identity.filename) {
+        Ok(path) => {
+            crate::restore::check_artifact(
+                &path,
+                &identity.sha256,
+                identity.schema_version,
+                crate::database::SERVER_SCHEMA_VERSION,
+            )
+            .await
+        }
+        Err(error) => Err(error),
+    };
     let (error, message) = match outcome {
         Ok(()) => (None, None),
         Err(crate::restore::RestoreError::Domain { code, message }) => {
@@ -1279,7 +1295,7 @@ pub(crate) async fn restore_validate(
         }
         Err(other) => (
             Some(crate::restore::ERROR_IO.to_owned()),
-            Some(other.to_string()),
+            Some(crate::redaction::redact_sensitive(&other.to_string())),
         ),
     };
     // Checks run in order and short-circuit: a check that was never reached
@@ -1293,7 +1309,7 @@ pub(crate) async fn restore_validate(
     };
     Json(RestoreValidation {
         artifact_id: identity.artifact_id,
-        filename: identity.filename,
+        filename: redact_backup_filename(identity.filename),
         bytes: identity.bytes,
         schema_version: identity.schema_version,
         server_version: identity.server_version,
@@ -1303,7 +1319,7 @@ pub(crate) async fn restore_validate(
         schema_compatible,
         current_schema_version: crate::database::SERVER_SCHEMA_VERSION,
         error,
-        message,
+        message: message.map(|value| crate::redaction::redact_sensitive(&value)),
     })
     .into_response()
 }

@@ -138,9 +138,9 @@ impl GeoLoader {
         let Some(path) = self.path.as_deref() else {
             return false;
         };
-        let metadata = match std::fs::metadata(path) {
-            Ok(metadata) => metadata,
-            Err(_) => return self.reload(),
+        let metadata = match file_fingerprint(path) {
+            Some(metadata) => metadata,
+            None => return self.reload(),
         };
         let changed = self
             .database
@@ -188,9 +188,15 @@ impl GeoLoader {
 }
 
 fn load_database(path: &Path) -> Result<LoadedDatabase, String> {
-    let bytes = std::fs::read(path).map_err(|_| "Geo database could not be read".to_owned())?;
-    let metadata =
-        std::fs::metadata(path).map_err(|_| "Geo database metadata unavailable".to_owned())?;
+    use std::io::Read;
+    crate::file_security::validate_private_file(path)?;
+    let mut file = crate::file_security::open_readonly(path)?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|_| "Geo database could not be read".to_owned())?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| "Geo database metadata unavailable".to_owned())?;
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
     let digest = format!("{:x}", hasher.finalize());
@@ -202,6 +208,11 @@ fn load_database(path: &Path) -> Result<LoadedDatabase, String> {
         modified: metadata.modified().ok(),
         size: metadata.len(),
     })
+}
+
+fn file_fingerprint(path: &Path) -> Option<std::fs::Metadata> {
+    let file = crate::file_security::open_readonly(path).ok()?;
+    file.metadata().ok()
 }
 
 fn state_for_build(build_epoch: u64) -> String {
@@ -458,6 +469,11 @@ mod tests {
             include_bytes!("../test-data/GeoIP2-Country-Test.mmdb"),
         )
         .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
         let loader = GeoLoader::new(Some(path));
         assert!(loader.reload());
         let status = loader.status();
@@ -480,6 +496,11 @@ mod tests {
             include_bytes!("../test-data/GeoIP2-Country-Test.mmdb"),
         )
         .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
         let loader = GeoLoader::new(Some(path.clone()));
         assert!(loader.reload());
         assert_eq!(

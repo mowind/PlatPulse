@@ -1094,13 +1094,15 @@ pub(crate) async fn audit_list(
                     )| AuditItem {
                         audit_event_id,
                         event_kind,
-                        actor_username,
+                        actor_username: actor_username
+                            .map(|username| crate::redaction::redact_sensitive(&username)),
                         target_kind,
-                        target_id,
+                        target_id: crate::redaction::redact_sensitive(&target_id),
                         created_at,
                         details: after_json
                             .as_deref()
-                            .and_then(|body| serde_json::from_str(body).ok()),
+                            .and_then(|body| serde_json::from_str::<serde_json::Value>(body).ok())
+                            .map(|value| crate::redaction::redact_json_value(&value)),
                     },
                 )
                 .collect();

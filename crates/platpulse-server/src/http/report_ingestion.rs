@@ -57,7 +57,7 @@ fn rejection(code: platpulse_core::RejectionCode, reason: &str) -> platpulse_cor
     platpulse_core::Rejection {
         code,
         retryable: code.is_retryable(),
-        reason: reason.to_owned(),
+        reason: crate::redaction::redact_sensitive(reason),
     }
 }
 
@@ -160,7 +160,11 @@ async fn save_component<T: serde::Serialize>(
     received_at: &str,
 ) -> Result<(), sqlx::Error> {
     let error_code = component.error.as_ref().map(|e| e.code.as_str());
-    let error_message = component.error.as_ref().map(|e| e.message.as_str());
+    let redacted_error_message = component
+        .error
+        .as_ref()
+        .map(|error| crate::redaction::redact_sensitive(&error.message));
+    let error_message = redacted_error_message.as_deref();
     let value_received_at = (component.status == ComponentStatus::Ok && component.latest.is_some())
         .then_some(received_at);
     sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision, error_code, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_id, scope, scope_key, component_key) DO UPDATE SET state=excluded.state, attempted_at=excluded.attempted_at, observed_at=COALESCE(excluded.observed_at, component_status.observed_at), received_at=excluded.received_at, value_received_at=COALESCE(excluded.value_received_at, component_status.value_received_at), state_revision=excluded.state_revision, value_revision=CASE WHEN excluded.value_revision > 0 THEN excluded.value_revision ELSE component_status.value_revision END, error_code=excluded.error_code, error_message=excluded.error_message")
@@ -200,15 +204,15 @@ async fn save_peer_presence(
     .await?
     .into_iter()
     .collect();
-    let incoming: HashSet<&str> = snapshot
+    let incoming: HashSet<String> = snapshot
         .peers
         .iter()
-        .map(|peer| peer.peer_id.as_str())
+        .map(|peer| crate::redaction::redact_peer_identity(&peer.peer_id))
         .collect();
     let delta = PeerPresenceDelta {
         arrivals: incoming
             .iter()
-            .filter(|peer_id| !previous_peer_ids.contains(**peer_id))
+            .filter(|peer_id| !previous_peer_ids.contains(peer_id.as_str()))
             .count() as i64,
         departures: previous_peer_ids
             .iter()
@@ -220,21 +224,26 @@ async fn save_peer_presence(
     // identity/operational fields do not change while the Peer remains
     // present; a later changed snapshot is still the same connection.
     for peer in &snapshot.peers {
-        if previous_peer_ids.contains(&peer.peer_id) || open_peer_ids.contains(&peer.peer_id) {
+        let safe_peer_id = crate::redaction::redact_peer_identity(&peer.peer_id);
+        if previous_peer_ids.contains(&safe_peer_id) || open_peer_ids.contains(&safe_peer_id) {
             continue;
         }
         let direction = match peer.direction {
             PeerDirection::Inbound => "inbound",
             PeerDirection::Outbound => "outbound",
         };
+        let safe_client_name = peer
+            .client_name
+            .as_deref()
+            .map(crate::redaction::redact_sensitive);
         sqlx::query("INSERT INTO peer_presence_intervals (node_id, peer_id, direction, trusted, static_peer, consensus_peer, client_name, opened_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(node_id)
-            .bind(&peer.peer_id)
+            .bind(&safe_peer_id)
             .bind(direction)
             .bind(peer.trusted as i64)
             .bind(peer.static_peer as i64)
             .bind(peer.consensus_peer as i64)
-            .bind(peer.client_name.as_deref())
+            .bind(safe_client_name.as_deref())
             .bind(received_at)
             .execute(&mut **tx)
             .await?;
@@ -289,15 +298,20 @@ async fn save_current_peers(
             .remote_ip
             .as_deref()
             .and_then(crate::geo::GeoLoader::canonical_public_ip);
+        let safe_client_name = peer
+            .client_name
+            .as_deref()
+            .map(crate::redaction::redact_sensitive);
+        let safe_peer_id = crate::redaction::redact_peer_identity(&peer.peer_id);
         sqlx::query("INSERT INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, client_name, cbft_protocol_version, cbft_highest_qc_block, cbft_locked_block, cbft_commit_block, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(node_id)
-            .bind(&peer.peer_id)
-            .bind(canonical_ip.as_deref().or(peer.remote_ip.as_deref()))
+            .bind(&safe_peer_id)
+            .bind(canonical_ip.as_deref())
             .bind(direction)
             .bind(peer.trusted as i64)
             .bind(peer.static_peer as i64)
             .bind(peer.consensus_peer as i64)
-            .bind(peer.client_name.as_deref())
+            .bind(safe_client_name.as_deref())
             .bind(peer.cbft_protocol_version.map(|value| value as i64))
             .bind(peer.cbft_highest_qc_block.map(|value| value as i64))
             .bind(peer.cbft_locked_block.map(|value| value as i64))
@@ -342,10 +356,11 @@ async fn save_current_peers(
             }
         }
         for capability in &peer.caps {
+            let safe_capability = crate::redaction::redact_sensitive(capability);
             sqlx::query("INSERT INTO current_node_peer_capabilities (node_id, peer_id, capability, updated_at) VALUES (?, ?, ?, ?)")
                 .bind(node_id)
-                .bind(&peer.peer_id)
-                .bind(capability)
+                .bind(&safe_peer_id)
+                .bind(safe_capability)
                 .bind(received_at)
                 .execute(&mut **tx)
                 .await?;
@@ -673,6 +688,18 @@ async fn save_current(
     )
     .await?;
 
+    let spool_last_delivery_error = host
+        .spool
+        .latest
+        .as_ref()
+        .and_then(|value| value.last_delivery_error.as_deref())
+        .map(crate::redaction::redact_sensitive);
+    let spool_store_error = host
+        .spool
+        .latest
+        .as_ref()
+        .and_then(|value| value.store_error.as_deref())
+        .map(crate::redaction::redact_sensitive);
     sqlx::query("INSERT INTO current_host_observations (agent_id, cpu_percent, memory_total_bytes, memory_used_bytes, load1, load5, load15, network_rx_bytes_per_sec, network_tx_bytes_per_sec, clock_skew_ms, spool_queued_bytes, spool_queued_reports, spool_oldest_queued_age_ms, spool_dropped_reports, spool_dropped_samples, spool_in_flight, spool_last_delivery_error, spool_last_delivery_at, spool_capacity_bytes, spool_max_age_seconds, spool_dropped_sequence_from, spool_dropped_sequence_to, spool_dropped_time_from, spool_dropped_time_to, spool_dropped_height_from, spool_dropped_height_to, spool_pending_history_gaps, spool_report_too_large, spool_store_fatal, spool_store_error, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_id) DO UPDATE SET cpu_percent=COALESCE(excluded.cpu_percent, current_host_observations.cpu_percent), memory_total_bytes=COALESCE(excluded.memory_total_bytes, current_host_observations.memory_total_bytes), memory_used_bytes=COALESCE(excluded.memory_used_bytes, current_host_observations.memory_used_bytes), load1=COALESCE(excluded.load1, current_host_observations.load1), load5=COALESCE(excluded.load5, current_host_observations.load5), load15=COALESCE(excluded.load15, current_host_observations.load15), network_rx_bytes_per_sec=COALESCE(excluded.network_rx_bytes_per_sec, current_host_observations.network_rx_bytes_per_sec), network_tx_bytes_per_sec=COALESCE(excluded.network_tx_bytes_per_sec, current_host_observations.network_tx_bytes_per_sec), clock_skew_ms=COALESCE(excluded.clock_skew_ms, current_host_observations.clock_skew_ms), spool_queued_bytes=COALESCE(excluded.spool_queued_bytes, current_host_observations.spool_queued_bytes), spool_queued_reports=COALESCE(excluded.spool_queued_reports, current_host_observations.spool_queued_reports), spool_oldest_queued_age_ms=COALESCE(excluded.spool_oldest_queued_age_ms, current_host_observations.spool_oldest_queued_age_ms), spool_dropped_reports=COALESCE(excluded.spool_dropped_reports, current_host_observations.spool_dropped_reports), spool_dropped_samples=COALESCE(excluded.spool_dropped_samples, current_host_observations.spool_dropped_samples), spool_in_flight=COALESCE(excluded.spool_in_flight, current_host_observations.spool_in_flight), spool_last_delivery_error=COALESCE(excluded.spool_last_delivery_error, current_host_observations.spool_last_delivery_error), spool_last_delivery_at=COALESCE(excluded.spool_last_delivery_at, current_host_observations.spool_last_delivery_at), spool_capacity_bytes=COALESCE(excluded.spool_capacity_bytes, current_host_observations.spool_capacity_bytes), spool_max_age_seconds=COALESCE(excluded.spool_max_age_seconds, current_host_observations.spool_max_age_seconds), spool_dropped_sequence_from=COALESCE(excluded.spool_dropped_sequence_from, current_host_observations.spool_dropped_sequence_from), spool_dropped_sequence_to=COALESCE(excluded.spool_dropped_sequence_to, current_host_observations.spool_dropped_sequence_to), spool_dropped_time_from=COALESCE(excluded.spool_dropped_time_from, current_host_observations.spool_dropped_time_from), spool_dropped_time_to=COALESCE(excluded.spool_dropped_time_to, current_host_observations.spool_dropped_time_to), spool_dropped_height_from=COALESCE(excluded.spool_dropped_height_from, current_host_observations.spool_dropped_height_from), spool_dropped_height_to=COALESCE(excluded.spool_dropped_height_to, current_host_observations.spool_dropped_height_to), spool_pending_history_gaps=COALESCE(excluded.spool_pending_history_gaps, current_host_observations.spool_pending_history_gaps), spool_report_too_large=COALESCE(excluded.spool_report_too_large, current_host_observations.spool_report_too_large), spool_store_fatal=COALESCE(excluded.spool_store_fatal, current_host_observations.spool_store_fatal), spool_store_error=COALESCE(excluded.spool_store_error, current_host_observations.spool_store_error), updated_at=excluded.updated_at")
         .bind(&agent_id)
         .bind(host.cpu_percent.latest)
@@ -690,7 +717,7 @@ async fn save_current(
         .bind(host.spool.latest.as_ref().map(|v| v.dropped_reports as i64))
         .bind(host.spool.latest.as_ref().map(|v| v.dropped_samples as i64))
         .bind(host.spool.latest.as_ref().and_then(|v| v.in_flight.map(|value| value as i64)))
-        .bind(host.spool.latest.as_ref().and_then(|v| v.last_delivery_error.as_deref()))
+        .bind(spool_last_delivery_error.as_deref())
         .bind(host.spool.latest.as_ref().and_then(|v| v.last_delivery_at.as_ref()).map(ToString::to_string))
         .bind(host.spool.latest.as_ref().and_then(|v| v.capacity_bytes.map(|x| x as i64)))
         .bind(host.spool.latest.as_ref().and_then(|v| v.max_age_seconds.map(|x| x as i64)))
@@ -703,7 +730,7 @@ async fn save_current(
         .bind(host.spool.latest.as_ref().and_then(|v| v.pending_history_gaps.map(|x| x as i64)))
         .bind(host.spool.latest.as_ref().and_then(|v| v.report_too_large.map(|x| x as i64)))
         .bind(host.spool.latest.as_ref().and_then(|v| v.store_fatal.map(|x| x as i64)))
-        .bind(host.spool.latest.as_ref().and_then(|v| v.store_error.as_deref()))
+        .bind(spool_store_error.as_deref())
         .bind(received_at)
         .execute(&mut **tx)
         .await?;
@@ -720,7 +747,7 @@ async fn save_current(
         .bind(host.spool.latest.as_ref().and_then(|v| v.pending_history_gaps.map(|x| x as i64)))
         .bind(host.spool.latest.as_ref().and_then(|v| v.report_too_large.map(|x| x as i64)))
         .bind(host.spool.latest.as_ref().and_then(|v| v.store_fatal.map(|x| x as i64)))
-        .bind(host.spool.latest.as_ref().and_then(|v| v.store_error.as_deref()))
+        .bind(spool_store_error.as_deref())
         .bind(received_at)
         .execute(&mut **tx)
         .await?;
@@ -1834,7 +1861,7 @@ async fn handler(
         sqlx::query("INSERT OR IGNORE INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)")
             .bind(gap.node_id.to_string()).bind(gap.from_height as i64).bind(gap.to_height as i64)
             .bind(kind)
-            .bind(&gap.reason)
+            .bind(crate::redaction::redact_sensitive(&gap.reason))
             .bind(gap.recorded_at.to_string())
             .execute(&mut *tx).await.map_err(|_| ()).ok();
         if matches!(
@@ -2112,6 +2139,9 @@ async fn handler(
             platpulse_core::BootTransition::Closing => "final_stored",
             _ => "running",
         });
+    let shutdown_last_error = shutdown_diag
+        .and_then(|value| value.shutdown_last_error.as_deref())
+        .map(crate::redaction::redact_sensitive);
     let updated = sqlx::query("UPDATE agents SET active_boot_id=?, active_boot_status=?, previous_boot_id=?, close_report_id=CASE WHEN ?='closed' THEN ? ELSE close_report_id END, last_report_sequence=?, last_inventory_revision=?, inventory_sha256=?, last_received_at=?, clock_skew_ms=?, clock_status=?, agent_capabilities_json=?, shutdown_state=?, shutdown_started_at=?, shutdown_deadline_at=?, shutdown_finished_at=?, shutdown_unresolved_from=?, shutdown_unresolved_to=?, shutdown_last_error=?, shutdown_forced=?, shutdown_report_id=CASE WHEN ?='closed' THEN ? ELSE shutdown_report_id END, shutdown_report_sequence=?, shutdown_updated_at=?, updated_at=? WHERE agent_id=?")
         .bind(parsed.boot_id.to_string()).bind(lifecycle_status)
         .bind(parsed.previous_boot_id.map(|v| v.to_string()))
@@ -2125,7 +2155,7 @@ async fn handler(
         .bind(shutdown_diag.and_then(|v| v.shutdown_finished_at.as_ref()).map(ToString::to_string))
         .bind(shutdown_diag.and_then(|v| v.shutdown_unresolved_range.map(|range| range.0 as i64)))
         .bind(shutdown_diag.and_then(|v| v.shutdown_unresolved_range.map(|range| range.1 as i64)))
-        .bind(shutdown_diag.and_then(|v| v.shutdown_last_error.as_deref()))
+        .bind(shutdown_last_error.as_deref())
         .bind(shutdown_diag.and_then(|v| v.shutdown_forced).unwrap_or(false) as i64)
         .bind(lifecycle_status)
         .bind(parsed.report_id.to_string())
@@ -2633,7 +2663,7 @@ mod tests {
         assert_eq!(current.1, "inbound");
         assert_eq!(current.2, 1);
         assert_eq!(current.3, "PlatON/v1.5.1");
-        assert_eq!(current.4.as_deref(), Some("203.0.113.4"));
+        assert_eq!(current.4, None);
         assert_eq!(current.5, Some(98));
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
@@ -4287,6 +4317,14 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(churn, (4, 0, 2));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM geo_location_cache")
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap(),
+            0,
+            "the Geo cache must drop a row when its last current Peer reference disappears"
+        );
         let history = crate::peer_history::load_history(state.db().pool(), node_id)
             .await
             .unwrap();

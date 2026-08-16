@@ -151,6 +151,8 @@ pub enum ServerDatabaseError {
     IntegrityQuery(#[source] sqlx::Error),
     #[error("Server SQLite integrity check failed: {0}")]
     IntegrityFailed(String),
+    #[error("Server SQLite sensitive path is unsafe: {0}")]
+    Filesystem(String),
     #[error("Server SQLite database file is empty")]
     EmptyDatabase,
 }
@@ -159,6 +161,7 @@ pub enum ServerDatabaseError {
 /// connection.
 pub struct ServerDatabase {
     pool: SqlitePool,
+    path: PathBuf,
 }
 
 impl ServerDatabase {
@@ -173,11 +176,12 @@ impl ServerDatabase {
     /// serve path uses this guard so a missing or renamed state file can never
     /// silently become an empty writable database.
     pub async fn open_existing(config: ServerDatabaseConfig) -> Result<Self, ServerDatabaseError> {
-        if std::fs::metadata(config.path())
-            .map(|metadata| metadata.len() == 0)
-            .unwrap_or(true)
-        {
-            return Err(ServerDatabaseError::EmptyDatabase);
+        match std::fs::symlink_metadata(config.path()) {
+            Ok(metadata) if metadata.len() == 0 => {
+                return Err(ServerDatabaseError::EmptyDatabase);
+            }
+            Ok(_) => {}
+            Err(_) => return Err(ServerDatabaseError::EmptyDatabase),
         }
         Self::open_with(config, false).await
     }
@@ -186,6 +190,7 @@ impl ServerDatabase {
         config: ServerDatabaseConfig,
         create_if_missing: bool,
     ) -> Result<Self, ServerDatabaseError> {
+        prepare_database_path(&config, create_if_missing)?;
         let options = sqlite_options(&config, create_if_missing);
         let pool = SqlitePoolOptions::new()
             .max_connections(SERVER_WRITE_CONNECTIONS)
@@ -193,6 +198,12 @@ impl ServerDatabase {
             .connect_with(options)
             .await
             .map_err(ServerDatabaseError::Connect)?;
+
+        // SQLite creates the main file and WAL sidecars with the process
+        // umask. Secure files created by this startup path before exposing
+        // the database to the rest of the Server; pre-existing unsafe files
+        // were rejected by `prepare_database_path` above.
+        secure_database_files(config.path(), create_if_missing)?;
 
         if let Err(error) = SERVER_MIGRATOR.run(&pool).await {
             pool.close().await;
@@ -235,9 +246,17 @@ impl ServerDatabase {
             pool.close().await;
             return Err(error);
         }
-        Ok(Self { pool })
+        secure_database_files(config.path(), create_if_missing)?;
+        Ok(Self {
+            pool,
+            path: config.path().to_owned(),
+        })
     }
 
+    /// Filesystem path of the validated Server database.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
     /// Access the serialized SQLx pool for typed SQL operations.
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
@@ -270,6 +289,89 @@ pub async fn initialize(
     config: ServerDatabaseConfig,
 ) -> Result<ServerDatabase, ServerDatabaseError> {
     ServerDatabase::open(config).await
+}
+
+fn prepare_database_path(
+    config: &ServerDatabaseConfig,
+    create_if_missing: bool,
+) -> Result<(), ServerDatabaseError> {
+    let path = config.path();
+    let parent = path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    crate::file_security::validate_private_directory(parent)
+        .map_err(|error| ServerDatabaseError::Filesystem(format!("database parent: {error}")))?;
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.len() == 0 {
+                return Err(ServerDatabaseError::EmptyDatabase);
+            }
+            if create_if_missing {
+                crate::file_security::validate_owned_regular_file(path).map_err(|error| {
+                    ServerDatabaseError::Filesystem(format!("database file: {error}"))
+                })?;
+            } else {
+                crate::file_security::validate_file(path).map_err(|error| {
+                    ServerDatabaseError::Filesystem(format!("database file: {error}"))
+                })?;
+            };
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && create_if_missing => {}
+        Err(_) => {
+            return Err(ServerDatabaseError::Filesystem(
+                "cannot inspect the Server SQLite path".to_owned(),
+            ));
+        }
+    }
+    validate_existing_database_sidecars(path)?;
+    Ok(())
+}
+
+fn validate_existing_database_sidecars(path: &Path) -> Result<(), ServerDatabaseError> {
+    for suffix in ["-wal", "-shm"] {
+        let mut sidecar = path.as_os_str().to_owned();
+        sidecar.push(suffix);
+        let sidecar = PathBuf::from(sidecar);
+        match std::fs::symlink_metadata(&sidecar) {
+            Ok(_) => crate::file_security::validate_file(&sidecar).map_err(|error| {
+                ServerDatabaseError::Filesystem(format!("database sidecar: {error}"))
+            })?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => {
+                return Err(ServerDatabaseError::Filesystem(
+                    "cannot inspect the Server SQLite sidecar".to_owned(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn secure_database_files(path: &Path, created_by_startup: bool) -> Result<(), ServerDatabaseError> {
+    if created_by_startup {
+        crate::file_security::secure_new_file(path)
+            .map_err(|error| ServerDatabaseError::Filesystem(format!("database file: {error}")))?;
+    } else {
+        crate::file_security::validate_file(path)
+            .map_err(|error| ServerDatabaseError::Filesystem(format!("database file: {error}")))?;
+    }
+    for suffix in ["-wal", "-shm"] {
+        let mut sidecar = path.as_os_str().to_owned();
+        sidecar.push(suffix);
+        let sidecar = PathBuf::from(sidecar);
+        if std::fs::symlink_metadata(&sidecar).is_ok() {
+            let result = if created_by_startup {
+                crate::file_security::secure_new_file(&sidecar)
+            } else {
+                crate::file_security::validate_file(&sidecar)
+            };
+            result.map_err(|error| {
+                ServerDatabaseError::Filesystem(format!("database sidecar: {error}"))
+            })?;
+        }
+    }
+    Ok(())
 }
 
 fn sqlite_options(config: &ServerDatabaseConfig, create_if_missing: bool) -> SqliteConnectOptions {
@@ -382,6 +484,32 @@ mod tests {
         assert!(result.is_err());
         assert!(!path.exists());
     }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn restart_rejects_loose_or_symlinked_database_files() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("server.db");
+        let database = ServerDatabase::open(config(&path)).await.unwrap();
+        database.close().await;
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        assert!(matches!(
+            ServerDatabase::open_existing(config(&path)).await,
+            Err(ServerDatabaseError::Filesystem(_))
+        ));
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let real_path = directory.path().join("real-server.db");
+        std::fs::rename(&path, &real_path).unwrap();
+        symlink(&real_path, &path).unwrap();
+        assert!(matches!(
+            ServerDatabase::open_existing(config(&path)).await,
+            Err(ServerDatabaseError::Filesystem(_))
+        ));
+    }
+
     #[tokio::test]
     async fn fresh_database_runs_all_server_migrations_and_required_pragmas() {
         let directory = tempdir().unwrap();

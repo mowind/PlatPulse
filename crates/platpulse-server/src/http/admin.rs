@@ -871,8 +871,19 @@ async fn process_diagnostic(state: &AppState, node_id: &str) -> Option<ProcessDi
     .ok()
     .flatten()
     .map(|(state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision, pid, started_at, cpu_percent, memory_bytes, uptime_ms)| ProcessDiagnostic {
-        state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision,
-        pid, started_at, cpu_percent, memory_bytes, uptime_ms,
+        state,
+        error_code,
+        error_message: redact_optional_message(error_message),
+        attempted_at,
+        observed_at,
+        received_at,
+        state_revision,
+        value_revision,
+        pid,
+        started_at,
+        cpu_percent,
+        memory_bytes,
+        uptime_ms,
     })
 }
 
@@ -886,8 +897,19 @@ async fn sync_diagnostic(state: &AppState, node_id: &str) -> Option<SyncDiagnost
     .ok()
     .flatten()
     .map(|(state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision, syncing, current_block, highest_block, pulled_states, known_states)| SyncDiagnostic {
-        state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision,
-        syncing: syncing.map(|value| value != 0), current_block, highest_block, pulled_states, known_states,
+        state,
+        error_code,
+        error_message: redact_optional_message(error_message),
+        attempted_at,
+        observed_at,
+        received_at,
+        state_revision,
+        value_revision,
+        syncing: syncing.map(|value| value != 0),
+        current_block,
+        highest_block,
+        pulled_states,
+        known_states,
     })
 }
 
@@ -901,8 +923,20 @@ async fn consensus_diagnostic(state: &AppState, node_id: &str) -> Option<Consens
     .ok()
     .flatten()
     .map(|(state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision, epoch, view_number, validator, highest_qc_block, highest_lock_block, highest_commit_block)| ConsensusDiagnostic {
-        state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision,
-        epoch, view_number, validator: validator.map(|value| value != 0), highest_qc_block, highest_lock_block, highest_commit_block,
+        state,
+        error_code,
+        error_message: redact_optional_message(error_message),
+        attempted_at,
+        observed_at,
+        received_at,
+        state_revision,
+        value_revision,
+        epoch,
+        view_number,
+        validator: validator.map(|value| value != 0),
+        highest_qc_block,
+        highest_lock_block,
+        highest_commit_block,
     })
 }
 
@@ -934,7 +968,7 @@ fn peer_presence_interval_from_row(row: PeerPresenceRow) -> PeerPresenceInterval
         Some((closed - opened).whole_seconds().max(0))
     });
     PeerPresenceInterval {
-        peer_id,
+        peer_id: crate::redaction::redact_sensitive(&peer_id),
         opened_at,
         closed_at,
         duration_seconds,
@@ -942,7 +976,7 @@ fn peer_presence_interval_from_row(row: PeerPresenceRow) -> PeerPresenceInterval
         trusted: trusted != 0,
         static_peer: static_peer != 0,
         consensus_peer: consensus_peer != 0,
-        client_name,
+        client_name: client_name.map(|name| crate::redaction::redact_sensitive(&name)),
     }
 }
 
@@ -1116,13 +1150,16 @@ async fn peer_diagnostic(state: &AppState, node_id: &str) -> Option<PeerDiagnost
         .await
         .ok()?;
         peers.push(PeerDiagnosticEntry {
-            peer_id,
+            peer_id: crate::redaction::redact_sensitive(&peer_id),
             direction,
             trusted: trusted != 0,
             static_peer: static_peer != 0,
             consensus_peer: consensus_peer != 0,
-            client_name,
-            capabilities,
+            client_name: client_name.map(|name| crate::redaction::redact_sensitive(&name)),
+            capabilities: capabilities
+                .into_iter()
+                .map(|capability| crate::redaction::redact_sensitive(&capability))
+                .collect(),
             cbft_protocol_version,
             cbft_highest_qc_block,
             cbft_locked_block,
@@ -1207,7 +1244,7 @@ async fn node_diagnostic(
             methods,
             state: component_state,
             error_code,
-            error_message,
+            error_message: redact_optional_message(error_message),
             attempted_at,
             observed_at,
             received_at,
@@ -1391,6 +1428,10 @@ async fn node_identity_status(
     }
 }
 
+fn redact_optional_message(value: Option<String>) -> Option<String> {
+    value.map(|message| crate::redaction::redact_sensitive(&message))
+}
+
 /// Redacted destination summary (design §9, `PATTERN-REDACTED-DETAIL`):
 /// scheme and host with the port masked; path, query, and credentials are
 /// never exposed.
@@ -1403,18 +1444,28 @@ fn redact_endpoint(endpoint: &str) -> String {
         .split(['/', '?', '#'])
         .next()
         .unwrap_or("");
-    // Drop any userinfo (`user:secret@`) before the host: credentials in an
-    // endpoint must never reach a DTO.
     let authority = authority
         .rsplit_once('@')
         .map(|(_, host)| host)
         .unwrap_or(authority);
-    let host = authority
-        .rsplit_once(':')
-        .map(|(host, _)| host)
-        .unwrap_or(authority);
+    let (host, has_port) = if let Some(host) = authority.strip_prefix('[') {
+        match host.find(']') {
+            Some(end) => (&host[..end], host[end + 1..].starts_with(':')),
+            None => (host, false),
+        }
+    } else if authority.matches(':').count() == 1 {
+        let (host, _) = authority.split_once(':').unwrap_or((authority, ""));
+        (host, true)
+    } else {
+        (authority, false)
+    };
+    let host = if host.parse::<std::net::IpAddr>().is_ok() {
+        "[REDACTED_IP]"
+    } else {
+        host
+    };
     result.push_str(host);
-    if authority.contains(':') {
+    if has_port {
         result.push_str(":****");
     }
     result
@@ -1855,7 +1906,11 @@ async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> AgentDiagnost
         last_received_at,
         security_event_count,
     } = row;
-    let capabilities = serde_json::from_str(&capabilities_json).unwrap_or_default();
+    let capabilities = serde_json::from_str::<Vec<String>>(&capabilities_json)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|capability| crate::redaction::redact_sensitive(&capability))
+        .collect();
     let liveness = agent_liveness(last_received_at.as_deref()).to_owned();
     let sequence_gap_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM report_sequence_gaps WHERE agent_id=?")
@@ -1873,7 +1928,15 @@ async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> AgentDiagnost
     .unwrap_or_default()
     .into_iter()
     .map(|(component, state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision)| HostComponentDiagnostic {
-        component, state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision,
+        component,
+        state,
+        error_code,
+        error_message: redact_optional_message(error_message),
+        attempted_at,
+        observed_at,
+        received_at,
+        state_revision,
+        value_revision,
     })
     .collect::<Vec<_>>();
     let host = sqlx::query_as::<_, HostProjectionRow>(
@@ -1886,8 +1949,8 @@ async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> AgentDiagnost
     .flatten()
     .map(|row| HostDiagnostic {
         cpu_percent: row.cpu_percent, memory_total_bytes: row.memory_total_bytes, memory_used_bytes: row.memory_used_bytes, load1: row.load1, load5: row.load5, load15: row.load15, network_rx_bytes_per_sec: row.network_rx_bytes_per_sec, network_tx_bytes_per_sec: row.network_tx_bytes_per_sec,
-        spool_queued_bytes: row.spool_queued_bytes, spool_queued_reports: row.spool_queued_reports, spool_oldest_queued_age_ms: row.spool_oldest_queued_age_ms, spool_in_flight: row.spool_in_flight.map(|v| v != 0), spool_last_delivery_error: row.spool_last_delivery_error, spool_last_delivery_at: row.spool_last_delivery_at,
-        spool_capacity_bytes: row.spool_capacity_bytes, spool_max_age_seconds: row.spool_max_age_seconds, spool_dropped_sequence_from: row.spool_dropped_sequence_from, spool_dropped_sequence_to: row.spool_dropped_sequence_to, spool_dropped_time_from: row.spool_dropped_time_from, spool_dropped_time_to: row.spool_dropped_time_to, spool_dropped_height_from: row.spool_dropped_height_from, spool_dropped_height_to: row.spool_dropped_height_to, spool_pending_history_gaps: row.spool_pending_history_gaps, spool_report_too_large: row.spool_report_too_large.map(|v| v != 0), spool_store_fatal: row.spool_store_fatal.map(|v| v != 0), spool_store_error: row.spool_store_error,
+        spool_queued_bytes: row.spool_queued_bytes, spool_queued_reports: row.spool_queued_reports, spool_oldest_queued_age_ms: row.spool_oldest_queued_age_ms, spool_in_flight: row.spool_in_flight.map(|v| v != 0), spool_last_delivery_error: redact_optional_message(row.spool_last_delivery_error), spool_last_delivery_at: row.spool_last_delivery_at,
+        spool_capacity_bytes: row.spool_capacity_bytes, spool_max_age_seconds: row.spool_max_age_seconds, spool_dropped_sequence_from: row.spool_dropped_sequence_from, spool_dropped_sequence_to: row.spool_dropped_sequence_to, spool_dropped_time_from: row.spool_dropped_time_from, spool_dropped_time_to: row.spool_dropped_time_to, spool_dropped_height_from: row.spool_dropped_height_from, spool_dropped_height_to: row.spool_dropped_height_to, spool_pending_history_gaps: row.spool_pending_history_gaps, spool_report_too_large: row.spool_report_too_large.map(|v| v != 0), spool_store_fatal: row.spool_store_fatal.map(|v| v != 0), spool_store_error: redact_optional_message(row.spool_store_error),
         updated_at: row.updated_at, components: host_components,
     });
     let rows = sqlx::query_as::<_, (String, String, Option<String>, String, i64, String)>(
@@ -1930,7 +1993,7 @@ async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> AgentDiagnost
         shutdown_deadline_at,
         shutdown_finished_at,
         shutdown_unresolved_range: shutdown_unresolved_from.zip(shutdown_unresolved_to),
-        shutdown_last_error,
+        shutdown_last_error: redact_optional_message(shutdown_last_error),
         shutdown_forced: shutdown_forced != 0,
         shutdown_report_id,
         shutdown_report_sequence,
@@ -2458,11 +2521,13 @@ pub(crate) async fn admin_agent_audit(
                     AgentAuditItem {
                         audit_event_id,
                         event_kind,
-                        actor_username,
+                        actor_username: actor_username
+                            .map(|username| crate::redaction::redact_sensitive(&username)),
                         created_at,
                         details: after_json
                             .as_deref()
-                            .and_then(|body| serde_json::from_str(body).ok()),
+                            .and_then(|body| serde_json::from_str::<serde_json::Value>(body).ok())
+                            .map(|value| crate::redaction::redact_json_value(&value)),
                     }
                 },
             )
@@ -2936,17 +3001,25 @@ async fn admin_node_history(
                 node_key_valid_from: row.node_key_valid_from,
                 node_key_valid_until: row.node_key_valid_until,
                 seal_recovery_rule: row.seal_recovery_rule,
-                seal_evidence: row.seal_evidence,
+                seal_evidence: row
+                    .seal_evidence
+                    .map(|value| crate::redaction::redact_sensitive(&value)),
                 protocol_proposer: row.protocol_proposer,
-                attribution_reason: row.attribution_reason,
+                attribution_reason: row
+                    .attribution_reason
+                    .map(|value| crate::redaction::redact_sensitive(&value)),
                 freshness: row.observed_at.clone(),
                 observed_at: row.observed_at,
                 gap_from_height: row.from_height,
                 gap_to_height: row.to_height,
                 gap_kind: row.gap_kind,
-                gap_reason: row.gap_reason,
+                gap_reason: row
+                    .gap_reason
+                    .map(|value| crate::redaction::redact_sensitive(&value)),
                 divergence_kind: row.divergence_kind,
-                divergence_reason: row.divergence_reason,
+                divergence_reason: row
+                    .divergence_reason
+                    .map(|value| crate::redaction::redact_sensitive(&value)),
                 divergence_retained_hash: row.divergence_retained_hash,
                 divergence_observed_hash: row.divergence_observed_hash,
                 divergence_observed_at: row.divergence_observed_at,
@@ -5480,7 +5553,7 @@ mod tests {
                 .is_empty()
         );
         // Endpoints are redacted destination summaries.
-        assert_eq!(healthy["rpc_endpoint"], "ws://127.0.0.1:****");
+        assert_eq!(healthy["rpc_endpoint"], "ws://[REDACTED_IP]:****");
         assert!(
             healthy["lifecycle_guidance"]
                 .as_str()
@@ -5715,7 +5788,7 @@ mod tests {
     fn redact_endpoint_strips_userinfo_and_masks_the_port() {
         assert_eq!(
             redact_endpoint("ws://127.0.0.1:6790"),
-            "ws://127.0.0.1:****"
+            "ws://[REDACTED_IP]:****"
         );
         assert_eq!(
             redact_endpoint("wss://user:sekret@example.org:6790/path?token=x"),

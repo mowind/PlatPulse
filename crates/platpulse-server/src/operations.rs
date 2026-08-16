@@ -71,7 +71,8 @@ pub async fn create_operation(
 ) -> Result<(String, i64), OperationError> {
     let operation_id = uuid::Uuid::new_v4().to_string();
     let created_at = crate::auth::format_rfc3339(crate::auth::now_utc());
-    let params_text = serde_json::to_string(params)?;
+    let sanitized_params = crate::redaction::redact_json_value(params);
+    let params_text = serde_json::to_string(&sanitized_params)?;
     if params_text.len() > OPERATION_JSON_LIMIT {
         return Err(OperationError::Json(serde_json::Error::io(
             std::io::Error::other("operation params exceed the bounded size"),
@@ -98,7 +99,7 @@ pub async fn create_operation(
         &operation_id,
         Some(&serde_json::json!({
             "kind": kind,
-            "params": params,
+            "params": sanitized_params,
         })),
     )
     .await?;
@@ -206,6 +207,7 @@ pub async fn add_warning(
     code: &str,
     message: &str,
 ) -> Result<(), OperationError> {
+    let message = crate::redaction::redact_sensitive(message);
     append_json_list(
         state,
         operation_id,
@@ -222,6 +224,7 @@ pub async fn add_error(
     code: &str,
     message: &str,
 ) -> Result<(), OperationError> {
+    let message = crate::redaction::redact_sensitive(message);
     append_json_list(
         state,
         operation_id,
@@ -286,7 +289,11 @@ pub async fn finalize(
     publish_resources: &[&str],
 ) -> Result<(), OperationError> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
-    let result_text = result.map(serde_json::to_string).transpose()?;
+    let sanitized_result = result.map(crate::redaction::redact_json_value);
+    let result_text = sanitized_result
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
     let mut tx = state.db().pool().begin().await?;
     sqlx::query(
         "UPDATE operations SET status = ?, result_json = ?, finished_at = ? WHERE operation_id = ?",
@@ -305,7 +312,7 @@ pub async fn finalize(
         operation_id,
         Some(&serde_json::json!({
             "status": status,
-            "result": result,
+            "result": sanitized_result,
         })),
     )
     .await?;
@@ -397,7 +404,10 @@ mod tests {
         let (operation_id, audit_event_id) = create_operation(
             database.pool(),
             KIND_DOCTOR_RUN,
-            &serde_json::json!({}),
+            &serde_json::json!({
+                "confirmation": "203.0.113.7",
+                "token": "secret",
+            }),
             "req-1",
             "owner",
             "doctor_started",
@@ -420,6 +430,14 @@ mod tests {
                 "owner".to_owned()
             )
         );
+        let params: String =
+            sqlx::query_scalar("SELECT params_json FROM operations WHERE operation_id = ?")
+                .bind(&operation_id)
+                .fetch_one(database.pool())
+                .await
+                .unwrap();
+        assert!(!params.contains("203.0.113.7"));
+        assert!(!params.contains("secret"));
         let audit: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM audit_events WHERE event_kind='doctor_started' AND target_id=?",
         )

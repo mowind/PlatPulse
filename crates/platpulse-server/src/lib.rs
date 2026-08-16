@@ -17,6 +17,7 @@ pub mod config;
 pub mod database;
 pub mod doctor;
 pub mod enrollment;
+pub mod file_security;
 pub mod geo;
 pub mod http;
 pub mod init;

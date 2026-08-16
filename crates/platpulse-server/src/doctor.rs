@@ -201,23 +201,17 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
             status: STATUS_NOT_CONFIGURED,
             detail: "no backup directory configured; backup Operations will fail".to_owned(),
         }),
-        Some(dir) => match std::fs::metadata(dir) {
+        Some(dir) => match std::fs::symlink_metadata(dir) {
             Ok(metadata) if metadata.is_dir() => {
-                #[cfg(unix)]
-                let loose = {
-                    use std::os::unix::fs::PermissionsExt;
-                    metadata.permissions().mode() & 0o022 != 0
-                };
-                #[cfg(not(unix))]
-                let loose = false;
+                let safe = crate::file_security::validate_private_directory(dir).is_ok();
                 checks.push(DoctorCheck {
                     check_id: "backup_storage".to_owned(),
                     label: "Backup storage".to_owned(),
-                    status: if loose { STATUS_FAIL } else { STATUS_PASS },
-                    detail: if loose {
-                        "backup directory is group- or world-writable".to_owned()
+                    status: if safe { STATUS_PASS } else { STATUS_FAIL },
+                    detail: if safe {
+                        "backup directory exists with strict ownership and permissions".to_owned()
                     } else {
-                        "backup directory exists with strict permissions".to_owned()
+                        "backup directory is not private and owned by the Server user".to_owned()
                     },
                 });
             }
@@ -236,11 +230,11 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
                         .to_owned(),
                 })
             }
-            Err(error) => checks.push(DoctorCheck {
+            Err(_) => checks.push(DoctorCheck {
                 check_id: "backup_storage".to_owned(),
                 label: "Backup storage".to_owned(),
                 status: STATUS_FAIL,
-                detail: format!("cannot access backup directory: {error}"),
+                detail: "cannot access backup directory".to_owned(),
             }),
         },
     }
@@ -292,7 +286,46 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
         },
     });
 
-    // 9. Sensitive file discipline is a unix property; elsewhere skipped.
+    // 9. Sensitive state files and optional Geo database are checked through
+    // descriptor-based no-follow validation; failures are actionable but do
+    // not include filesystem paths in the Admin response.
+    let database_safe = crate::file_security::validate_file(state.db().path()).is_ok();
+    checks.push(DoctorCheck {
+        check_id: "database_storage".to_owned(),
+        label: "Database storage".to_owned(),
+        status: if database_safe {
+            STATUS_PASS
+        } else {
+            STATUS_FAIL
+        },
+        detail: if database_safe {
+            "Server database is a private regular file owned by the Server user".to_owned()
+        } else {
+            "Server database ownership or permissions are unsafe".to_owned()
+        },
+    });
+    checks.push(match state.geo().path() {
+        None => DoctorCheck {
+            check_id: "geo_database".to_owned(),
+            label: "Geo database".to_owned(),
+            status: STATUS_NOT_CONFIGURED,
+            detail: "no GeoLite database configured".to_owned(),
+        },
+        Some(path) if crate::file_security::validate_private_file(path).is_ok() => DoctorCheck {
+            check_id: "geo_database".to_owned(),
+            label: "Geo database".to_owned(),
+            status: STATUS_PASS,
+            detail: "configured GeoLite database is a private regular file".to_owned(),
+        },
+        Some(_) => DoctorCheck {
+            check_id: "geo_database".to_owned(),
+            label: "Geo database".to_owned(),
+            status: STATUS_FAIL,
+            detail: "configured GeoLite database ownership or permissions are unsafe".to_owned(),
+        },
+    });
+
+    // 10. Sensitive file discipline is a unix property; elsewhere skipped.
     #[cfg(unix)]
     {
         checks.push(DoctorCheck {

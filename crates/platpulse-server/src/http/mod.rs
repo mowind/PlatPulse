@@ -96,6 +96,7 @@ impl ApiErrorBody {
     /// Error envelope carrying a validated, non-sensitive dynamic message
     /// (used for typed alert validation failures).
     pub(crate) fn with_message(code: &'static str, message: String, request_id: &str) -> Self {
+        let message = crate::redaction::redact_sensitive(&message);
         Self {
             error: ApiError {
                 code,
@@ -114,6 +115,10 @@ impl ApiErrorBody {
         request_id: &str,
         fields: Vec<String>,
     ) -> Self {
+        let fields = fields
+            .into_iter()
+            .map(|field| crate::redaction::redact_sensitive(&field))
+            .collect();
         Self {
             error: ApiError {
                 code,
@@ -132,6 +137,11 @@ impl ApiErrorBody {
         request_id: &str,
         fields: Vec<String>,
     ) -> Self {
+        let message = crate::redaction::redact_sensitive(&message);
+        let fields = fields
+            .into_iter()
+            .map(|field| crate::redaction::redact_sensitive(&field))
+            .collect();
         Self {
             error: ApiError {
                 code,

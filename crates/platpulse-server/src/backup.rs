@@ -15,7 +15,9 @@ use std::path::Path;
 
 use serde_json::Value;
 use sha2::Digest;
+use sqlx::Row;
 use sqlx::SqlitePool;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use thiserror::Error;
 
 use crate::http::AppState;
@@ -26,6 +28,8 @@ pub enum BackupError {
     Sqlx(#[from] sqlx::Error),
     #[error("backup JSON error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("backup privacy validation failed: {0}")]
+    Privacy(String),
     #[error("backup IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error(transparent)]
@@ -186,13 +190,36 @@ async fn create_snapshot(
             std::io::Error::other("backup directory path must not contain single quotes").into(),
         );
     }
+    // VACUUM INTO refuses to overwrite an existing path. Refuse it before
+    // SQLite sees a substituted symlink or an operator's stale partial file.
+    if std::fs::symlink_metadata(temp_path).is_ok()
+        || std::fs::symlink_metadata(final_path).is_ok()
+        || crate::file_security::validate_no_symlinked_ancestors(temp_path).is_err()
+        || crate::file_security::validate_no_symlinked_ancestors(final_path).is_err()
+    {
+        return Err(
+            std::io::Error::other("backup artifact path is unsafe or already exists").into(),
+        );
+    }
     // One consistent snapshot statement on the single Server connection;
     // `VACUUM INTO` never touches live -wal/-shm and never overwrites.
     sqlx::query(&format!("VACUUM INTO '{temp_absolute}'"))
         .execute(state.db().pool())
         .await?;
+    if let Err(error) = crate::file_security::secure_new_file(temp_path) {
+        let _ = std::fs::remove_file(temp_path);
+        return Err(std::io::Error::other(error).into());
+    }
+    if let Err(error) = sanitize_snapshot(temp_path).await {
+        let _ = std::fs::remove_file(temp_path);
+        return Err(error);
+    }
+    if let Err(error) = validate_snapshot_privacy(temp_path).await {
+        let _ = std::fs::remove_file(temp_path);
+        return Err(error);
+    }
 
-    let file = std::fs::File::open(temp_path)?;
+    let file = crate::file_security::open_readonly(temp_path).map_err(std::io::Error::other)?;
     let bytes = file.metadata()?.len() as i64;
     let mut reader = file;
     let mut hasher = sha2::Sha256::new();
@@ -219,6 +246,7 @@ async fn create_snapshot(
     sync_file(temp_path)?;
     std::fs::rename(temp_path, final_path)?;
 
+    crate::file_security::validate_file(final_path).map_err(std::io::Error::other)?;
     let inserted = sqlx::query(
         "INSERT INTO backup_artifacts (artifact_id, filename, bytes, sha256, schema_version, server_version, created_at, data_range_min, data_range_max, verification, create_operation_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
     )
@@ -251,9 +279,167 @@ async fn create_snapshot(
 }
 
 fn sync_file(path: &Path) -> Result<(), BackupError> {
-    let file = std::fs::OpenOptions::new().write(true).open(path)?;
+    let file = crate::file_security::open_readwrite(path).map_err(std::io::Error::other)?;
     file.sync_all()?;
     Ok(())
+}
+
+pub(crate) async fn sanitize_snapshot(path: &Path) -> Result<(), BackupError> {
+    crate::file_security::validate_file(path).map_err(std::io::Error::other)?;
+    let options = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(false)
+        .journal_mode(SqliteJournalMode::Delete)
+        .synchronous(SqliteSynchronous::Full)
+        .foreign_keys(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await?;
+
+    // Raw Peer addresses and Geo cache are deliberately absent from a
+    // portable backup. Deleting followed by VACUUM matters: otherwise old
+    // SQLite pages could retain the bytes after a logical DELETE.
+    sqlx::query("UPDATE current_node_peers SET remote_ip=NULL")
+        .execute(&pool)
+        .await?;
+    sqlx::query("DELETE FROM geo_location_cache")
+        .execute(&pool)
+        .await?;
+
+    redact_snapshot_text_columns(&pool, true).await?;
+    redact_snapshot_receipts(&pool, true).await?;
+    sqlx::query("VACUUM").execute(&pool).await?;
+    pool.close().await;
+    crate::file_security::validate_file(path).map_err(std::io::Error::other)?;
+    Ok(())
+}
+
+pub(crate) async fn validate_snapshot_privacy(path: &Path) -> Result<(), BackupError> {
+    crate::file_security::validate_file(path).map_err(std::io::Error::other)?;
+    let options = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(false)
+        .read_only(true)
+        .foreign_keys(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await?;
+    let result = async {
+        process_snapshot_text_columns(&pool, false).await?;
+        process_snapshot_receipts(&pool, false).await
+    }
+    .await;
+    pool.close().await;
+    result
+}
+
+async fn redact_snapshot_text_columns(
+    pool: &SqlitePool,
+    sanitize: bool,
+) -> Result<(), BackupError> {
+    process_snapshot_text_columns(pool, sanitize).await
+}
+
+async fn process_snapshot_text_columns(
+    pool: &SqlitePool,
+    sanitize: bool,
+) -> Result<(), BackupError> {
+    let tables: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+    )
+    .fetch_all(pool)
+    .await?;
+    for table in tables {
+        let quoted_table = quote_identifier(&table);
+        let columns = sqlx::query(&format!("PRAGMA table_info({quoted_table})"))
+            .fetch_all(pool)
+            .await?;
+        for column in columns {
+            let name: String = column.try_get("name")?;
+            let declared_type: String = column.try_get("type")?;
+            if !declared_type.to_ascii_uppercase().contains("TEXT") {
+                continue;
+            }
+            let quoted_column = quote_identifier(&name);
+            let select = format!(
+                "SELECT rowid AS __rowid, {quoted_column} FROM {quoted_table} WHERE typeof({quoted_column})='text'"
+            );
+            let rows = sqlx::query(&select).fetch_all(pool).await?;
+            let update = format!("UPDATE {quoted_table} SET {quoted_column}=? WHERE rowid=?");
+            for row in rows {
+                let row_id: i64 = row.try_get("__rowid")?;
+                let value: String = row.try_get(1)?;
+                let redacted = redact_stored_text(&value);
+                if redacted == value {
+                    continue;
+                }
+                if !sanitize {
+                    return Err(BackupError::Privacy(
+                        "snapshot contains unredacted sensitive text".to_owned(),
+                    ));
+                }
+                sqlx::query(&update)
+                    .bind(redacted)
+                    .bind(row_id)
+                    .execute(pool)
+                    .await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn redact_snapshot_receipts(pool: &SqlitePool, sanitize: bool) -> Result<(), BackupError> {
+    process_snapshot_receipts(pool, sanitize).await
+}
+
+async fn process_snapshot_receipts(pool: &SqlitePool, sanitize: bool) -> Result<(), BackupError> {
+    let exists: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_report_receipts'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if exists == 0 {
+        return Ok(());
+    }
+    let rows = sqlx::query("SELECT rowid AS __rowid, receipt_body FROM agent_report_receipts")
+        .fetch_all(pool)
+        .await?;
+    for row in rows {
+        let row_id: i64 = row.try_get("__rowid")?;
+        let bytes: Vec<u8> = row.try_get("receipt_body")?;
+        let value = String::from_utf8(bytes)
+            .map_err(|_| BackupError::Privacy("receipt body is not valid UTF-8".to_owned()))?;
+        let redacted = redact_stored_text(&value);
+        if redacted == value {
+            continue;
+        }
+        if !sanitize {
+            return Err(BackupError::Privacy(
+                "snapshot contains an unredacted receipt".to_owned(),
+            ));
+        }
+        sqlx::query("UPDATE agent_report_receipts SET receipt_body=? WHERE rowid=?")
+            .bind(redacted.into_bytes())
+            .bind(row_id)
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
+}
+
+fn redact_stored_text(value: &str) -> String {
+    match serde_json::from_str::<Value>(value) {
+        Ok(json) => serde_json::to_string(&crate::redaction::redact_json_value(&json))
+            .unwrap_or_else(|_| crate::redaction::redact_sensitive(value)),
+        Err(_) => crate::redaction::redact_sensitive(value),
+    }
+}
+
+fn quote_identifier(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
 }
 
 /// Verify one artifact through the `backup_verify` Operation: file
@@ -337,10 +523,19 @@ pub async fn verify(state: &AppState, operation_id: &str) -> Result<(), BackupEr
         .await?;
         return Ok(());
     };
-    let path = backup_dir.join(&filename);
     let verified_at = crate::auth::format_rfc3339(crate::auth::now_utc());
-
-    let outcome = verify_artifact(&path, &expected_sha256, expected_schema).await;
+    let outcome = if crate::file_security::validate_private_directory(&backup_dir).is_err()
+        || !crate::file_security::is_safe_basename(&filename)
+    {
+        Err(std::io::Error::other("backup artifact path is unsafe").into())
+    } else {
+        verify_artifact(
+            &backup_dir.join(&filename),
+            &expected_sha256,
+            expected_schema,
+        )
+        .await
+    };
     if crate::operations::is_cancel_requested(state, operation_id).await? {
         crate::operations::finalize(
             state,
@@ -406,7 +601,8 @@ async fn verify_artifact(
     expected_sha256: &str,
     expected_schema: i64,
 ) -> Result<(), BackupError> {
-    let mut file = std::fs::File::open(path)?;
+    crate::file_security::validate_file(path).map_err(std::io::Error::other)?;
+    let mut file = crate::file_security::open_readonly(path).map_err(std::io::Error::other)?;
     let mut hasher = sha2::Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
     loop {
@@ -420,6 +616,7 @@ async fn verify_artifact(
     if actual != expected_sha256 {
         return Err(std::io::Error::other("artifact checksum mismatch").into());
     }
+    crate::file_security::validate_file(path).map_err(std::io::Error::other)?;
     let options = sqlx::sqlite::SqliteConnectOptions::new()
         .filename(path)
         .read_only(true);
@@ -442,6 +639,7 @@ async fn verify_artifact(
         ))
         .into());
     }
+    crate::backup::validate_snapshot_privacy(path).await?;
     Ok(())
 }
 
@@ -449,36 +647,9 @@ async fn verify_artifact(
 /// permissions (design §20.1: backups rely on OS ownership/permission
 /// protection). Returns a sanitized failure message on invalid layout.
 fn prepare_backup_dir(path: &Path) -> Result<(), String> {
-    match std::fs::metadata(path) {
-        Ok(metadata) => {
-            if !metadata.is_dir() {
-                return Err("configured backup directory is not a directory".to_owned());
-            }
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                if metadata.permissions().mode() & 0o022 != 0 {
-                    return Err(
-                        "configured backup directory is group- or world-writable; refusing to write backups"
-                            .to_owned(),
-                    );
-                }
-            }
-            Ok(())
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            std::fs::create_dir_all(path)
-                .map_err(|source| format!("cannot create backup directory: {source}"))?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-                    .map_err(|source| format!("cannot secure backup directory: {source}"))?;
-            }
-            Ok(())
-        }
-        Err(error) => Err(format!("cannot access backup directory: {error}")),
-    }
+    crate::file_security::ensure_private_directory(path).map_err(|_| {
+        "configured backup directory is group- or world-writable or otherwise unsafe".to_owned()
+    })
 }
 
 /// Read-only metadata query for the Admin surface: last verified artifact
@@ -520,6 +691,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn snapshot_redaction_masks_ip_literals_and_credentials_without_breaking_json() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE messages (id INTEGER PRIMARY KEY, body TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE agent_report_receipts (receipt_body BLOB NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO messages (body) VALUES (?)")
+            .bind(r#"{"error":"peer 203.0.113.7","token":"secret"}"#)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO agent_report_receipts (receipt_body) VALUES (?)")
+            .bind(br#"{"endpoint":"https://198.51.100.4"}"#.as_slice())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        redact_snapshot_text_columns(&pool, true).await.unwrap();
+        redact_snapshot_receipts(&pool, true).await.unwrap();
+
+        let body: String = sqlx::query_scalar("SELECT body FROM messages")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(!body.contains("203.0.113.7"));
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap()["token"],
+            "[REDACTED]"
+        );
+        let receipt: Vec<u8> = sqlx::query_scalar("SELECT receipt_body FROM agent_report_receipts")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(!String::from_utf8(receipt).unwrap().contains("198.51.100.4"));
+        sqlx::query("INSERT INTO agent_report_receipts (receipt_body) VALUES (?)")
+            .bind(vec![0xff_u8, b'2', b'0', b'3'])
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(matches!(
+            redact_snapshot_receipts(&pool, true).await,
+            Err(BackupError::Privacy(_))
+        ));
+    }
+    #[tokio::test]
     async fn verify_detects_checksum_and_integrity_failures_read_only() {
         let dir = tempfile::TempDir::new().unwrap();
         let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
@@ -530,6 +754,11 @@ mod tests {
         // Corrupt bytes cannot match any real sha256.
         let path = dir.path().join("snapshot.db");
         std::fs::write(&path, b"not a database").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
         let error = verify_artifact(&path, "00".repeat(32).as_str(), 22)
             .await
             .unwrap_err();
@@ -540,6 +769,12 @@ mod tests {
             .execute(database.pool())
             .await
             .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&snapshot, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        crate::backup::sanitize_snapshot(&snapshot).await.unwrap();
         let mut hasher = sha2::Sha256::new();
         let bytes = std::fs::read(&snapshot).unwrap();
         hasher.update(&bytes);
