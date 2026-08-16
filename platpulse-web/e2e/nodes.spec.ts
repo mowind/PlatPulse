@@ -32,7 +32,7 @@ test.describe('Owner Node inventory (PAGE-ADMIN-NODES)', () => {
     await expect(nodeARow).toContainText('Public')
     await expect(nodeARow).toContainText('12842019')
     // Endpoints are redacted destination summaries, never complete URLs.
-    await expect(nodeARow).toContainText('ws://127.0.0.1:****')
+    await expect(nodeARow).toContainText('ws://[REDACTED_IP]:****')
     await expect(nodeARow).not.toContainText('6790')
 
     // Node B: unhealthy with its own Error/Stale/Mismatched dimensions.
