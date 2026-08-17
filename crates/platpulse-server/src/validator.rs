@@ -1164,9 +1164,6 @@ async fn apply_provider_result(
                 .as_ref()
                 .and_then(|row| row.last_observation_key.as_deref())
                 == Some(key.as_str())
-                && existing
-                    .as_ref()
-                    .is_none_or(|row| row.candidate_rank.is_none())
             {
                 sqlx::query(
                     "UPDATE current_validator_insights SET outcome = 'success', diagnostic = NULL, last_attempt_received_at = ?, last_good_received_at = ?, updated_at = ? WHERE validator_id = ?",
@@ -1694,23 +1691,33 @@ mod tests {
         let provider = FakeProvider {
             results: std::sync::Mutex::new(vec![
                 ValidatorProviderResult::Success(ValidatorObservation {
+                    provider_timestamp: Some("2025-01-01T00:00:00Z".to_owned()),
                     rank: Some(1),
                     ..Default::default()
                 }),
                 ValidatorProviderResult::Success(ValidatorObservation {
+                    provider_timestamp: Some("2025-01-01T00:01:00Z".to_owned()),
+                    rank: Some(2),
+                    ..Default::default()
+                }),
+                ValidatorProviderResult::Success(ValidatorObservation {
+                    provider_timestamp: Some("2025-01-01T00:01:00Z".to_owned()),
                     rank: Some(2),
                     ..Default::default()
                 }),
                 ValidatorProviderResult::Error("temporary failure".to_owned()),
                 ValidatorProviderResult::Success(ValidatorObservation {
+                    provider_timestamp: Some("2025-01-01T00:02:00Z".to_owned()),
                     rank: Some(2),
                     ..Default::default()
                 }),
                 ValidatorProviderResult::Success(ValidatorObservation {
+                    provider_timestamp: Some("2025-01-01T00:03:00Z".to_owned()),
                     rank: Some(2),
                     ..Default::default()
                 }),
                 ValidatorProviderResult::Success(ValidatorObservation {
+                    provider_timestamp: Some("2025-01-01T00:03:00Z".to_owned()),
                     rank: Some(2),
                     ..Default::default()
                 }),
@@ -1726,6 +1733,27 @@ mod tests {
             .unwrap();
         assert_eq!(candidate.rank, Some(1));
         assert_eq!(candidate.candidate_rank, Some(2));
+        db.close().await;
+        let db = initialize(ServerDatabaseConfig::new(_dir.path().join("server.db")))
+            .await
+            .unwrap();
+        refresh_all(&db, &provider).await.unwrap();
+        let replayed_candidate = load_insight(&db, &validator.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(replayed_candidate.rank, Some(1));
+        assert_eq!(replayed_candidate.candidate_rank, Some(2));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM validator_ranking_history WHERE validator_id = ?"
+            )
+            .bind(&validator.validator_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap(),
+            0
+        );
         refresh_all(&db, &provider).await.unwrap();
         let after_failure = load_insight(&db, &validator.validator_id)
             .await
