@@ -25,6 +25,31 @@ pub struct Validator {
     pub created_at: String,
     pub updated_at: String,
     pub link_count: i64,
+    pub insight: Option<AdminValidatorInsight>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminValidatorInsight {
+    pub validator_node_id: String,
+    pub display_name: Option<String>,
+    pub state: String,
+    pub freshness: String,
+    pub outcome: String,
+    pub source: Option<String>,
+    pub provider_timestamp: Option<String>,
+    pub received_at: Option<String>,
+    pub attempted_at: Option<String>,
+    pub last_good_received_at: Option<String>,
+    pub rank: Option<i64>,
+    pub stake_amount: Option<String>,
+    pub reward_amount: Option<String>,
+    pub reward_rate: Option<String>,
+    pub delegator_count: Option<i64>,
+    pub epoch: Option<i64>,
+    pub block_count: Option<i64>,
+    pub counter_state: String,
+    pub diagnostic: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -112,7 +137,7 @@ pub struct ValidatorLinkListQuery {
 }
 
 fn error_response(request_id: &str, error: ValidatorError) -> Response {
-    let (status, code) = match error {
+    let (status, code) = match &error {
         ValidatorError::NetworkNotFound
         | ValidatorError::ValidatorNotFound
         | ValidatorError::NodeNotFound
@@ -131,15 +156,24 @@ fn error_response(request_id: &str, error: ValidatorError) -> Response {
         | ValidatorError::InvalidDisplayName
         | ValidatorError::InvalidRole
         | ValidatorError::InvalidTimestamp(_)
-        | ValidatorError::InvalidValidity => (StatusCode::BAD_REQUEST, "invalid_request"),
-        ValidatorError::Database(_) => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+        | ValidatorError::InvalidValidity
+        | ValidatorError::InvalidProviderObservation(_) => {
+            (StatusCode::BAD_REQUEST, "invalid_request")
+        }
+        ValidatorError::Database(_) | ValidatorError::Alert(_) => {
+            (StatusCode::SERVICE_UNAVAILABLE, "unavailable")
+        }
+    };
+    let message = match error {
+        ValidatorError::Database(_) | ValidatorError::Alert(_) => {
+            "server database is unavailable".to_owned()
+        }
+        error => error.to_string(),
     };
     (
         status,
         Json(crate::http::ApiErrorBody::with_message(
-            code,
-            error.to_string(),
-            request_id,
+            code, message, request_id,
         )),
     )
         .into_response()
@@ -160,6 +194,61 @@ async fn validator_dto(
             .bind(&record.validator_id)
             .fetch_one(state.db().pool())
             .await?;
+    let insight = validator::load_insight(state.db(), &record.validator_id)
+        .await?
+        .map(|row| AdminValidatorInsight {
+            validator_node_id: record.validator_node_id.clone(),
+            display_name: record.display_name.clone(),
+            state: if row.outcome == "success" {
+                validator::freshness(row.last_good_received_at.as_deref(), crate::auth::now_utc())
+                    .to_owned()
+            } else {
+                row.outcome.clone()
+            },
+            freshness: validator::freshness(
+                row.last_good_received_at.as_deref(),
+                crate::auth::now_utc(),
+            )
+            .to_owned(),
+            outcome: row.outcome,
+            source: row.source,
+            provider_timestamp: row.provider_timestamp,
+            received_at: row.last_good_received_at.clone(),
+            attempted_at: Some(row.last_attempt_received_at),
+            last_good_received_at: row.last_good_received_at,
+            rank: row.rank,
+            stake_amount: row.stake_amount,
+            reward_amount: row.reward_amount,
+            reward_rate: row.reward_rate,
+            delegator_count: row.delegator_count,
+            epoch: row.epoch,
+            block_count: row.block_count,
+            counter_state: row.counter_state,
+            diagnostic: row.diagnostic,
+        })
+        .or_else(|| {
+            Some(AdminValidatorInsight {
+                validator_node_id: record.validator_node_id.clone(),
+                display_name: record.display_name.clone(),
+                state: "unsupported".to_owned(),
+                freshness: "unknown".to_owned(),
+                outcome: "unsupported".to_owned(),
+                source: Some("disabled".to_owned()),
+                provider_timestamp: None,
+                received_at: None,
+                attempted_at: None,
+                last_good_received_at: None,
+                rank: None,
+                stake_amount: None,
+                reward_amount: None,
+                reward_rate: None,
+                delegator_count: None,
+                epoch: None,
+                block_count: None,
+                counter_state: "normal".to_owned(),
+                diagnostic: None,
+            })
+        });
     Ok(Validator {
         validator_id: record.validator_id,
         network_key: record.network_key,
@@ -168,6 +257,7 @@ async fn validator_dto(
         created_at: record.created_at,
         updated_at: record.updated_at,
         link_count,
+        insight,
     })
 }
 
@@ -401,16 +491,18 @@ pub(crate) async fn admin_node_validator_links(
         Ok(value) => value,
         Err(error) => return error_response(&request_id.0, error),
     };
-    if records.is_empty()
-        && sqlx::query_scalar::<_, i64>("SELECT 1 FROM nodes WHERE node_id = ?")
+    if records.is_empty() {
+        match sqlx::query_scalar::<_, i64>("SELECT 1 FROM nodes WHERE node_id = ?")
             .bind(&node_id)
             .fetch_optional(state.db().pool())
             .await
-            .ok()
-            .flatten()
-            .is_none()
-    {
-        return error_response(&request_id.0, ValidatorError::NodeNotFound);
+        {
+            Ok(Some(_)) => {}
+            Ok(None) => return error_response(&request_id.0, ValidatorError::NodeNotFound),
+            Err(error) => {
+                return error_response(&request_id.0, ValidatorError::Database(error));
+            }
+        }
     }
     let mut result = Vec::with_capacity(records.len());
     for record in records {
@@ -670,6 +762,7 @@ mod tests {
             created_at: "2025-01-01T00:00:00Z".to_owned(),
             updated_at: "2025-01-01T00:00:00Z".to_owned(),
             link_count: 1,
+            insight: None,
         })
         .unwrap();
         assert_eq!(value["validatorId"], "validator-1");

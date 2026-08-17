@@ -561,6 +561,22 @@ button {
  * Cards and lists
  * ------------------------------------------------------------------------- */
 
+.validator-insight {
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-muted);
+}
+
+.validator-insight-compact {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+}
+
+.validator-insight .detail-list {
+  margin: 0;
+}
+
 .network-grid,
 .node-grid,
 .agent-grid {

@@ -304,6 +304,7 @@ pub struct AppState {
     proxy_policy: ProxyTrustPolicy,
     channels: crate::config::NotificationChannels,
     delivery_provider: Arc<dyn crate::notifications::DeliveryProvider>,
+    validator_provider: crate::validator::SharedValidatorProvider,
     backup_dir: Option<PathBuf>,
     geo: Arc<crate::geo::GeoLoader>,
     pub(crate) public_realtime: RealtimeHub,
@@ -340,6 +341,14 @@ impl AppState {
     /// Configure the optional server-side GeoLite Country loader.
     pub fn with_geo_loader(mut self, geo: Arc<crate::geo::GeoLoader>) -> Self {
         self.geo = geo;
+        self
+    }
+
+    pub fn with_validator_provider(
+        mut self,
+        provider: crate::validator::SharedValidatorProvider,
+    ) -> Self {
+        self.validator_provider = provider;
         self
     }
 
@@ -413,6 +422,7 @@ impl AppState {
             },
             channels,
             delivery_provider: Arc::new(crate::notifications::TelegramProvider::default()),
+            validator_provider: Arc::new(crate::validator::DisabledValidatorProvider),
             backup_dir: None,
             geo: Arc::new(crate::geo::GeoLoader::disabled()),
             public_realtime: RealtimeHub::default(),
@@ -479,6 +489,10 @@ impl AppState {
 
     pub(crate) fn delivery_provider(&self) -> Arc<dyn crate::notifications::DeliveryProvider> {
         Arc::clone(&self.delivery_provider)
+    }
+
+    pub(crate) fn validator_provider(&self) -> crate::validator::SharedValidatorProvider {
+        Arc::clone(&self.validator_provider)
     }
 
     pub(crate) fn database(&self) -> Arc<ServerDatabase> {

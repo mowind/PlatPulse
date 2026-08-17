@@ -6262,6 +6262,121 @@
           }
         }
       },
+      "AdminValidatorInsight": {
+        "type": "object",
+        "required": [
+          "validatorNodeId",
+          "state",
+          "freshness",
+          "outcome",
+          "counterState"
+        ],
+        "properties": {
+          "attemptedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "blockCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "counterState": {
+            "type": "string"
+          },
+          "delegatorCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "diagnostic": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "displayName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "epoch": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "freshness": {
+            "type": "string"
+          },
+          "lastGoodReceivedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "providerTimestamp": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rank": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "receivedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rewardAmount": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rewardRate": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stakeAmount": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string"
+          },
+          "validatorNodeId": {
+            "type": "string"
+          }
+        }
+      },
       "AgentAuditItem": {
         "type": "object",
         "description": "One redacted Audit row for an Agent lifecycle event. The stored\n`after_json` bodies are redacted by construction: they carry ids,\ninstants, and counts, never token or credential plaintext.",
@@ -9531,6 +9646,7 @@
           "displayName",
           "peers",
           "geo",
+          "validators",
           "nodes"
         ],
         "properties": {
@@ -9551,6 +9667,12 @@
           },
           "peers": {
             "$ref": "#/components/schemas/PublicPeerInsight"
+          },
+          "validators": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicValidatorInsight"
+            }
           }
         }
       },
@@ -9648,6 +9770,16 @@
           },
           "syncState": {
             "type": "string"
+          },
+          "validator": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PublicValidatorInsight"
+              }
+            ]
           }
         }
       },
@@ -9880,6 +10012,115 @@
           "sampleCount": {
             "type": "integer",
             "format": "int64"
+          }
+        }
+      },
+      "PublicValidatorInsight": {
+        "type": "object",
+        "required": [
+          "validatorId",
+          "validatorNodeId",
+          "state",
+          "freshness",
+          "counterState"
+        ],
+        "properties": {
+          "blockCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "counterState": {
+            "type": "string"
+          },
+          "delegatorCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "displayName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "epoch": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "freshness": {
+            "type": "string"
+          },
+          "linkRole": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nodeId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "providerTimestamp": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rank": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "receivedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rewardAmount": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rewardRate": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stakeAmount": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string"
+          },
+          "validatorId": {
+            "type": "string"
+          },
+          "validatorNodeId": {
+            "type": "string"
           }
         }
       },
@@ -11237,6 +11478,16 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "insight": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AdminValidatorInsight"
+              }
             ]
           },
           "linkCount": {

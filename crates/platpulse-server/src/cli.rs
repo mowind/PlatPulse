@@ -459,6 +459,20 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
     )
     .with_backup_dir(config.backup_dir.clone())
     .with_geo_loader(geo_loader);
+    if let Some(provider_config) = config.validator_provider.clone() {
+        match crate::validator::ExplorerValidatorProvider::new(
+            &provider_config.base_url,
+            std::time::Duration::from_secs(provider_config.timeout_seconds),
+        ) {
+            Ok(provider) => {
+                state = state.with_validator_provider(std::sync::Arc::new(provider));
+            }
+            Err(error) => eprintln!(
+                "Validator Provider disabled: {}",
+                crate::redaction::redact_sensitive(&error)
+            ),
+        }
+    }
     // Development mode never touches a real provider: the e2e suite and
     // local development observe delivery state machines deterministically
     // through the fixed-failure double (production uses TelegramProvider).
@@ -605,6 +619,43 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                             crate::redaction::redact_sensitive(&error.to_string())
                         );
                     }
+                }
+            }
+        });
+    }
+
+    // Validator Provider refresh is Server-owned and deduplicated by the
+    // registered Validator table, never by Node links. Provider failures are
+    // persisted as diagnostics but do not enter Node health or readiness.
+    if let Some(provider_config) = config.validator_provider.clone() {
+        let provider_state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(
+                provider_config.refresh_seconds,
+            ));
+            loop {
+                tick.tick().await;
+                if provider_state.is_shutting_down() {
+                    break;
+                }
+                if let Err(error) = crate::validator::refresh_all_with_channels(
+                    provider_state.db(),
+                    &*provider_state.validator_provider(),
+                    provider_state.channels(),
+                )
+                .await
+                {
+                    eprintln!(
+                        "Validator Provider refresh deferred: {}",
+                        crate::redaction::redact_sensitive(&error.to_string())
+                    );
+                } else {
+                    provider_state
+                        .admin_realtime()
+                        .publish("validator", None::<String>, 1);
+                    provider_state
+                        .public_realtime()
+                        .publish("validator", None::<String>, 1);
                 }
             }
         });

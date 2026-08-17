@@ -31,6 +31,7 @@ use crate::auth::{
 use crate::http::{
     AppState, AuthenticatedSession, ClientIp, ROUTE_GROUP_HEADER, RequestId, api_not_found,
 };
+use crate::validator;
 
 #[utoipa::path(
     get,
@@ -557,7 +558,104 @@ pub struct PublicNetwork {
     pub display_name: String,
     pub peers: PublicPeerInsight,
     pub geo: PublicGeoInsight,
+    pub validators: Vec<PublicValidatorInsight>,
     pub nodes: Vec<PublicNode>,
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicValidatorInsight {
+    pub validator_id: String,
+    pub validator_node_id: String,
+    pub display_name: Option<String>,
+    pub node_id: Option<String>,
+    pub link_role: Option<String>,
+    pub state: String,
+    pub freshness: String,
+    pub source: Option<String>,
+    pub provider_timestamp: Option<String>,
+    pub received_at: Option<String>,
+    pub rank: Option<i64>,
+    pub stake_amount: Option<String>,
+    pub reward_amount: Option<String>,
+    pub reward_rate: Option<String>,
+    pub delegator_count: Option<i64>,
+    pub epoch: Option<i64>,
+    pub block_count: Option<i64>,
+    pub counter_state: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct PublicValidatorRow {
+    validator_id: String,
+    validator_node_id: String,
+    display_name: Option<String>,
+    node_id: Option<String>,
+    link_role: Option<String>,
+    source: Option<String>,
+    outcome: Option<String>,
+    provider_timestamp: Option<String>,
+    last_good_received_at: Option<String>,
+    rank: Option<i64>,
+    stake_amount: Option<String>,
+    reward_amount: Option<String>,
+    reward_rate: Option<String>,
+    delegator_count: Option<i64>,
+    epoch: Option<i64>,
+    block_count: Option<i64>,
+    counter_state: Option<String>,
+}
+
+async fn public_validator_insights(
+    state: &AppState,
+    network_key: &str,
+) -> Result<Vec<PublicValidatorInsight>, sqlx::Error> {
+    let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+    let rows = sqlx::query_as::<_, PublicValidatorRow>(
+        "SELECT v.validator_id, v.validator_node_id, v.display_name, (SELECT n2.node_id FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.visibility = 'public' AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1), (SELECT l2.role FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.visibility = 'public' AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1), i.source, i.outcome, i.provider_timestamp, i.last_good_received_at, i.rank, i.stake_amount, i.reward_amount, i.reward_rate, i.delegator_count, i.epoch, i.block_count, i.counter_state FROM validators v LEFT JOIN current_validator_insights i ON i.validator_id = v.validator_id WHERE v.network_key = ? AND EXISTS (SELECT 1 FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = v.validator_id AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.visibility = 'public' AND n.lifecycle = 'active') ORDER BY v.validator_node_id, v.validator_id",
+    )
+    .bind(&now)
+    .bind(&now)
+    .bind(&now)
+    .bind(&now)
+    .bind(network_key)
+    .bind(&now)
+    .bind(&now)
+    .fetch_all(state.db().pool())
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let freshness =
+                validator::freshness(row.last_good_received_at.as_deref(), crate::auth::now_utc());
+            let outcome = row.outcome.unwrap_or_else(|| "unsupported".to_owned());
+            let state = if outcome == "success" {
+                freshness
+            } else {
+                outcome.as_str()
+            };
+            PublicValidatorInsight {
+                validator_id: row.validator_id,
+                validator_node_id: row.validator_node_id,
+                display_name: row.display_name,
+                node_id: row.node_id,
+                link_role: row.link_role,
+                state: state.to_owned(),
+                freshness: freshness.to_owned(),
+                source: row.source.or_else(|| Some("disabled".to_owned())),
+                provider_timestamp: row.provider_timestamp,
+                received_at: row.last_good_received_at,
+                rank: row.rank,
+                stake_amount: row.stake_amount,
+                reward_amount: row.reward_amount,
+                reward_rate: row.reward_rate,
+                delegator_count: row.delegator_count,
+                epoch: row.epoch,
+                block_count: row.block_count,
+                counter_state: row.counter_state.unwrap_or_else(|| "normal".to_owned()),
+            }
+        })
+        .collect())
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -802,6 +900,7 @@ pub struct PublicNode {
     pub network_reference_head: Option<i64>,
     pub network_reference_confidence: String,
     pub resync_progress: Option<String>,
+    pub validator: Option<PublicValidatorInsight>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -1119,6 +1218,7 @@ fn public_node(row: PublicNodeRow) -> (String, PublicNode) {
                 None => format!("{current}/{high}"),
             },
         ),
+        validator: None,
     };
     (row.network_display_name, node)
 }
@@ -1210,6 +1310,7 @@ pub(crate) async fn public_networks(State(state): State<AppState>) -> Response {
                 display_name: network_display_name,
                 peers: unknown_public_peer_insight(),
                 geo: unknown_public_geo_insight(),
+                validators: Vec::new(),
                 nodes: vec![node],
             });
         }
@@ -1217,6 +1318,28 @@ pub(crate) async fn public_networks(State(state): State<AppState>) -> Response {
     for network in &mut networks {
         network.peers = aggregate_peer_insight(&network.nodes);
         network.geo = public_country_distribution(&state, &network.network_key).await;
+        match public_validator_insights(&state, &network.network_key).await {
+            Ok(validators) => {
+                network.validators = validators;
+                for node in &mut network.nodes {
+                    node.validator = network
+                        .validators
+                        .iter()
+                        .find(|validator| {
+                            validator.node_id.as_deref() == Some(node.node_id.as_str())
+                        })
+                        .cloned();
+                }
+            }
+            Err(_) => {
+                return error_response(
+                    "unknown",
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "server database is unavailable",
+                );
+            }
+        }
     }
     Json(networks).into_response()
 }
@@ -1260,17 +1383,35 @@ pub(crate) async fn public_network(
         }
     };
     let display_name = rows[0].network_display_name.clone();
-    let nodes = rows
+    let mut nodes = rows
         .into_iter()
         .map(|row| public_node(row).1)
         .collect::<Vec<_>>();
     let peers = aggregate_peer_insight(&nodes);
     let geo = public_country_distribution(&state, &network_key).await;
+    let validators = match public_validator_insights(&state, &network_key).await {
+        Ok(validators) => validators,
+        Err(_) => {
+            return error_response(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    };
+    for node in &mut nodes {
+        node.validator = validators
+            .iter()
+            .find(|validator| validator.node_id.as_deref() == Some(node.node_id.as_str()))
+            .cloned();
+    }
     Json(PublicNetwork {
         network_key,
         display_name,
         peers,
         geo,
+        validators,
         nodes,
     })
     .into_response()
@@ -1296,7 +1437,16 @@ pub(crate) async fn public_node_detail(
     .fetch_optional(state.db().pool())
     .await;
     match row {
-        Ok(Some(row)) => Json(public_node(row).1).into_response(),
+        Ok(Some(row)) => {
+            let (_, mut node) = public_node(row);
+            let network_key = node.network_key.clone();
+            if let Ok(validators) = public_validator_insights(&state, &network_key).await {
+                node.validator = validators
+                    .into_iter()
+                    .find(|validator| validator.node_id.as_deref() == Some(node.node_id.as_str()));
+            }
+            Json(node).into_response()
+        }
         Ok(None) => error_response(
             &request_id.0,
             StatusCode::NOT_FOUND,

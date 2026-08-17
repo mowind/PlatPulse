@@ -64,6 +64,8 @@ pub struct ServerConfigFile {
     /// Optional GeoLite2 Country database configuration. The Server never
     /// downloads the file or stores MaxMind credentials.
     pub geo: Option<GeoSectionFile>,
+    /// Optional Server-side Validator Provider configuration.
+    pub validator_provider: Option<ValidatorProviderSectionFile>,
     /// Notification channel configuration (design §17.4). The TOML carries
     /// only the token file reference and the destination, never token
     /// contents.
@@ -76,6 +78,16 @@ pub struct ServerConfigFile {
 #[serde(deny_unknown_fields, default)]
 pub struct GeoSectionFile {
     pub mmdb_path: Option<PathBuf>,
+}
+
+/// `[validator_provider]` configures the Server-side Explorer adapter.
+/// Provider credentials are intentionally not part of this section.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ValidatorProviderSectionFile {
+    pub base_url: Option<String>,
+    pub refresh_seconds: Option<u64>,
+    pub timeout_seconds: Option<u64>,
 }
 
 /// `[notifications.telegram]`: the approved Telegram delivery path. The
@@ -132,8 +144,17 @@ pub struct ServerConfig {
     pub trusted_proxy_scheme: Option<String>,
     /// Resolved optional GeoLite2 Country database path.
     pub geo: Option<PathBuf>,
+    /// Resolved optional Validator Provider settings.
+    pub validator_provider: Option<ValidatorProviderConfig>,
     /// Resolved notification channels (design §17.4).
     pub notifications: NotificationChannels,
+}
+
+#[derive(Debug, Clone)]
+pub struct ValidatorProviderConfig {
+    pub base_url: String,
+    pub refresh_seconds: u64,
+    pub timeout_seconds: u64,
 }
 
 /// Resolved Telegram channel policy. Present only when the channel is
@@ -343,6 +364,7 @@ impl ServerConfig {
 
         let config_path = config_path.map(Path::to_owned);
         let geo = cli.geo_mmdb.clone().or_else(|| resolve_geo_path(file));
+        let validator_provider = resolve_validator_provider(file);
         let notifications = resolve_notification_channels(file, &config_path)?;
 
         Ok(Self {
@@ -358,9 +380,19 @@ impl ServerConfig {
             trusted_proxy_cidrs,
             trusted_proxy_scheme,
             geo,
+            validator_provider,
             notifications,
         })
     }
+}
+
+fn resolve_validator_provider(file: Option<&ServerConfigFile>) -> Option<ValidatorProviderConfig> {
+    let section = file.and_then(|value| value.validator_provider.as_ref())?;
+    Some(ValidatorProviderConfig {
+        base_url: section.base_url.clone()?,
+        refresh_seconds: section.refresh_seconds.unwrap_or(60).clamp(1, 86_400),
+        timeout_seconds: section.timeout_seconds.unwrap_or(10).clamp(1, 300),
+    })
 }
 
 fn resolve_geo_path(file: Option<&ServerConfigFile>) -> Option<PathBuf> {

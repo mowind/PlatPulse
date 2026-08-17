@@ -257,6 +257,20 @@ pub static CATALOG: &[RuleDefinition] = &[
         default_condition: RuleCondition::with_threshold(120, 300, 90.0),
         threshold_param: Some(threshold_param("Usage", "%", 1.0, 100.0, 90.0)),
     },
+    RuleDefinition {
+        key: "validator.ranking_changed",
+        subject_kind: SubjectKind::Validator,
+        default_severity: "warning",
+        default_condition: RuleCondition::boolean(0, 120),
+        threshold_param: None,
+    },
+    RuleDefinition {
+        key: "validator.counter_reset",
+        subject_kind: SubjectKind::Validator,
+        default_severity: "critical",
+        default_condition: RuleCondition::boolean(0, 120),
+        threshold_param: None,
+    },
 ];
 
 pub fn catalog_rule(key: &str) -> Option<&'static RuleDefinition> {
@@ -968,6 +982,30 @@ pub async fn extract_input(
             .await?;
             Ok(consensus_input(row, now, stale_after_secs))
         }
+        (SubjectKind::Validator, "validator.ranking_changed")
+        | (SubjectKind::Validator, "validator.counter_reset") => {
+            let change_state = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT change_state FROM current_validator_insights WHERE validator_id = ?",
+            )
+            .bind(subject_key)
+            .fetch_optional(&mut *executor)
+            .await?
+            .flatten();
+            let Some(change_state) = change_state else {
+                return Ok(EvalInput::Unknown {
+                    reason: "Validator has never been observed".to_owned(),
+                });
+            };
+            let expected = if rule_key == "validator.ranking_changed" {
+                "ranking_changed"
+            } else {
+                "counter_reset"
+            };
+            Ok(known(
+                if change_state == expected { 1.0 } else { 0.0 },
+                format!("Validator change state: {change_state}"),
+            ))
+        }
         (SubjectKind::Host, "host.disk_pressure") => {
             let row = sqlx::query_as::<_, (Option<f64>, Option<String>)>(
                 "SELECT MAX(used_bytes * 1.0 / total_bytes), MAX(updated_at) FROM current_host_disk_mounts WHERE agent_id = ?",
@@ -1545,6 +1583,38 @@ pub async fn evaluate_report(
     Ok(changes)
 }
 
+/// Evaluate Validator-specific rules after a provider refresh. Provider
+/// degradation remains isolated to the Validator subject and never changes
+/// Node health or Server readiness.
+pub async fn evaluate_validator(
+    db: &crate::database::ServerDatabase,
+    validator_id: &str,
+    channels: &crate::config::NotificationChannels,
+    now: OffsetDateTime,
+) -> Result<usize, AlertError> {
+    let mut tx = db.pool().begin().await?;
+    let mut changes = 0usize;
+    for rule in CATALOG
+        .iter()
+        .filter(|rule| rule.subject_kind == SubjectKind::Validator)
+    {
+        let outcome =
+            evaluate_rule(&mut tx, rule.key, SubjectKind::Validator, validator_id, now).await?;
+        record_transition_events(
+            &mut tx,
+            &outcome,
+            rule,
+            SubjectKind::Validator,
+            validator_id,
+            channels,
+            now,
+        )
+        .await?;
+        changes += outcome.changed as usize;
+    }
+    tx.commit().await?;
+    Ok(changes)
+}
 /// Notification Events for Incident transitions, written in the caller's
 /// transaction next to the transition itself. A manual retry never re-runs
 /// this: it re-arms the existing Delivery row.

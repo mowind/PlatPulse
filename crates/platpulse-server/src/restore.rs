@@ -1185,6 +1185,7 @@ mod tests {
             trusted_proxy_cidrs: Vec::new(),
             trusted_proxy_scheme: None,
             geo: None,
+            validator_provider: None,
             development: false,
             notifications: crate::config::NotificationChannels::default(),
         }

@@ -18,6 +18,7 @@ import type {
   ValidatorLinkCreateRequest,
   ValidatorLinkUpdateRequest,
 } from '../api/generated'
+import { ValidatorInsight } from '../components/ValidatorInsight'
 
 const ROLES = ['primary', 'standby', 'observer'] as const
 
@@ -291,6 +292,7 @@ function ValidatorCard({
         <div><dt>Network</dt><dd>{validator.networkKey}</dd></div>
         <div><dt>Updated</dt><dd>{formatDate(validator.updatedAt)}</dd></div>
       </dl>
+      {validator.insight && <ValidatorInsight insight={validator.insight} compact />}
       <h4>Node Validator Links</h4>
       {validatorLinks.length === 0 ? <p className="muted">No links.</p> : (
         <ul className="compact-list">
@@ -325,6 +327,7 @@ export function AdminValidatorDetailPage() {
       <p><Link to="/admin/validators">← Validators</Link></p>
       <h1>{query.data.displayName || query.data.validatorNodeId}</h1>
       <p className="muted">{query.data.networkKey} · {query.data.validatorNodeId}</p>
+      {query.data.insight && <ValidatorInsight insight={query.data.insight} />}
       <section className="panel">
         <h2>Link history</h2>
         {query.data.links.length === 0 ? <p className="muted">No Node Validator Links.</p> : <ul className="compact-list">{query.data.links.map((link) => <li key={link.linkId}><strong>{link.role}</strong> · {link.nodeDisplayName || link.nodeId}<span className="table-secondary">{formatDate(link.validFrom)} → {formatDate(link.validUntil)}</span></li>)}</ul>}

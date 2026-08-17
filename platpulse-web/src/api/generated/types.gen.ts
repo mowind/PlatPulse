@@ -239,6 +239,28 @@ export type AdminPeerLagSummary = {
     sample_count: number;
 };
 
+export type AdminValidatorInsight = {
+    attemptedAt?: string | null;
+    blockCount?: number | null;
+    counterState: string;
+    delegatorCount?: number | null;
+    diagnostic?: string | null;
+    displayName?: string | null;
+    epoch?: number | null;
+    freshness: string;
+    lastGoodReceivedAt?: string | null;
+    outcome: string;
+    providerTimestamp?: string | null;
+    rank?: number | null;
+    receivedAt?: string | null;
+    rewardAmount?: string | null;
+    rewardRate?: string | null;
+    source?: string | null;
+    stakeAmount?: string | null;
+    state: string;
+    validatorNodeId: string;
+};
+
 /**
  * One redacted Audit row for an Agent lifecycle event. The stored
  * `after_json` bodies are redacted by construction: they carry ids,
@@ -1131,6 +1153,7 @@ export type PublicNetwork = {
     networkKey: string;
     nodes: Array<PublicNode>;
     peers: PublicPeerInsight;
+    validators: Array<PublicValidatorInsight>;
 };
 
 export type PublicNode = {
@@ -1152,6 +1175,7 @@ export type PublicNode = {
     resyncState: string;
     rpcState: string;
     syncState: string;
+    validator?: null | PublicValidatorInsight;
 };
 
 export type PublicPeerAggregate = {
@@ -1224,6 +1248,27 @@ export type PublicPeerLagSummary = {
     maximum?: number | null;
     minimum?: number | null;
     sampleCount: number;
+};
+
+export type PublicValidatorInsight = {
+    blockCount?: number | null;
+    counterState: string;
+    delegatorCount?: number | null;
+    displayName?: string | null;
+    epoch?: number | null;
+    freshness: string;
+    linkRole?: string | null;
+    nodeId?: string | null;
+    providerTimestamp?: string | null;
+    rank?: number | null;
+    receivedAt?: string | null;
+    rewardAmount?: string | null;
+    rewardRate?: string | null;
+    source?: string | null;
+    stakeAmount?: string | null;
+    state: string;
+    validatorId: string;
+    validatorNodeId: string;
 };
 
 export type ReadyComponent = {
@@ -1631,6 +1676,7 @@ export type TokenLifetimeRequest = {
 export type Validator = {
     createdAt: string;
     displayName?: string | null;
+    insight?: null | AdminValidatorInsight;
     linkCount: number;
     networkKey: string;
     updatedAt: string;

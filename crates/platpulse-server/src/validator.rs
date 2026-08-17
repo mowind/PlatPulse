@@ -5,7 +5,12 @@
 //! Node identity. Link mutations are transactional with their Audit Event and
 //! reject every temporal overlap for one Node before inserting or updating.
 
+use async_trait::async_trait;
+use reqwest::StatusCode;
+use serde_json::Value;
+use sha2::{Digest, Sha256};
 use sqlx::{FromRow, Sqlite, Transaction};
+use std::sync::Arc;
 use thiserror::Error;
 use time::OffsetDateTime;
 
@@ -14,6 +19,320 @@ use crate::database::ServerDatabase;
 
 pub const MAX_VALIDATOR_NODE_ID_LEN: usize = 256;
 pub const MAX_VALIDATOR_DISPLAY_NAME_LEN: usize = 128;
+pub const MAX_PROVIDER_DIAGNOSTIC_LEN: usize = 256;
+pub const MAX_PROVIDER_BODY_LEN: usize = 64 * 1024;
+
+/// Exact normalized values returned by a Server-side Validator Provider.
+/// Provider-specific JSON never crosses this boundary.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ValidatorObservation {
+    pub provider_timestamp: Option<String>,
+    pub rank: Option<i64>,
+    pub stake_amount: Option<String>,
+    pub reward_amount: Option<String>,
+    pub reward_rate: Option<String>,
+    pub delegator_count: Option<i64>,
+    pub epoch: Option<i64>,
+    pub block_count: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValidatorProviderResult {
+    Success(ValidatorObservation),
+    NotFound,
+    AuthoritativeEmpty,
+    Error(String),
+    Unsupported(String),
+}
+
+#[async_trait]
+pub trait ValidatorProvider: Send + Sync {
+    fn source(&self) -> &str;
+
+    async fn fetch(&self, network_key: &str, validator_node_id: &str) -> ValidatorProviderResult;
+}
+
+pub type SharedValidatorProvider = Arc<dyn ValidatorProvider>;
+
+/// The default provider is explicit rather than pretending that no provider
+/// means a zero-valued Validator.
+#[derive(Debug, Default)]
+pub struct DisabledValidatorProvider;
+
+#[async_trait]
+impl ValidatorProvider for DisabledValidatorProvider {
+    fn source(&self) -> &str {
+        "disabled"
+    }
+
+    async fn fetch(&self, _network_key: &str, _validator_node_id: &str) -> ValidatorProviderResult {
+        ValidatorProviderResult::Unsupported("provider is not configured".to_owned())
+    }
+}
+
+/// Initial Explorer adapter. Its response is deliberately reduced to the
+/// normalized observation above; unknown fields and response diagnostics are
+/// discarded at the trust boundary.
+#[derive(Clone)]
+pub struct ExplorerValidatorProvider {
+    client: reqwest::Client,
+    base_url: String,
+}
+
+impl ExplorerValidatorProvider {
+    pub fn new(base_url: &str, timeout: std::time::Duration) -> Result<Self, String> {
+        let base_url = base_url.trim().trim_end_matches('/');
+        if !(base_url.starts_with("https://") || base_url.starts_with("http://"))
+            || base_url.contains('@')
+            || base_url.contains('?')
+            || base_url.contains('#')
+        {
+            return Err(
+                "Explorer base URL must be an absolute HTTP(S) URL without credentials".to_owned(),
+            );
+        }
+        let client = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .map_err(|_| "unable to construct Explorer client".to_owned())?;
+        Ok(Self {
+            client,
+            base_url: base_url.to_owned(),
+        })
+    }
+
+    fn endpoint(&self, network_key: &str, validator_node_id: &str) -> String {
+        format!(
+            "{}/api/v1/networks/{}/validators/{}",
+            self.base_url,
+            url_path_segment(network_key),
+            url_path_segment(validator_node_id)
+        )
+    }
+}
+
+#[async_trait]
+impl ValidatorProvider for ExplorerValidatorProvider {
+    fn source(&self) -> &str {
+        "explorer"
+    }
+
+    async fn fetch(&self, network_key: &str, validator_node_id: &str) -> ValidatorProviderResult {
+        let response = match self
+            .client
+            .get(self.endpoint(network_key, validator_node_id))
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(_) => return ValidatorProviderResult::Error("Explorer request failed".to_owned()),
+        };
+        match response.status() {
+            StatusCode::NOT_FOUND => return ValidatorProviderResult::NotFound,
+            StatusCode::NOT_IMPLEMENTED | StatusCode::METHOD_NOT_ALLOWED => {
+                return ValidatorProviderResult::Unsupported(
+                    "Explorer endpoint is unsupported".to_owned(),
+                );
+            }
+            status if status.is_client_error() || status.is_server_error() => {
+                return ValidatorProviderResult::Error(
+                    "Explorer returned an unsuccessful response".to_owned(),
+                );
+            }
+            _ => {}
+        }
+        let body = match response.bytes().await {
+            Ok(body) if body.len() <= MAX_PROVIDER_BODY_LEN => body,
+            Ok(_) => {
+                return ValidatorProviderResult::Error(
+                    "Explorer response exceeded the size limit".to_owned(),
+                );
+            }
+            Err(_) => {
+                return ValidatorProviderResult::Error(
+                    "Explorer response could not be read".to_owned(),
+                );
+            }
+        };
+        let value: Value = match serde_json::from_slice(&body) {
+            Ok(value) => value,
+            Err(_) => {
+                return ValidatorProviderResult::Error(
+                    "Explorer response was malformed".to_owned(),
+                );
+            }
+        };
+        match normalize_explorer_response(&value) {
+            Ok(Some(observation)) => ValidatorProviderResult::Success(observation),
+            Ok(None) => ValidatorProviderResult::AuthoritativeEmpty,
+            Err(error) => ValidatorProviderResult::Error(error),
+        }
+    }
+}
+
+fn url_path_segment(value: &str) -> String {
+    value
+        .bytes()
+        .flat_map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                vec![byte as char]
+            }
+            byte => format!("%{byte:02X}").chars().collect(),
+        })
+        .collect()
+}
+
+fn normalize_explorer_response(value: &Value) -> Result<Option<ValidatorObservation>, String> {
+    if let Some(array) = value.as_array() {
+        return match array.as_slice() {
+            [] => Ok(None),
+            [single] => normalize_explorer_response(single),
+            _ => Err("Explorer returned multiple Validator observations".to_owned()),
+        };
+    }
+    let object = value
+        .as_object()
+        .ok_or_else(|| "Explorer response was not an object".to_owned())?;
+    for key in ["data", "validators", "result"] {
+        if let Some(array) = object.get(key).and_then(Value::as_array) {
+            if array.is_empty() {
+                return Ok(None);
+            }
+            if array.len() > 1 {
+                return Err("Explorer returned multiple Validator observations".to_owned());
+            }
+            return normalize_explorer_response(&array[0]);
+        }
+    }
+    let read_string = |names: &[&str]| -> Result<Option<String>, String> {
+        let Some(value) = names.iter().find_map(|name| object.get(*name)) else {
+            return Ok(None);
+        };
+        let value = match value.as_str() {
+            Some(value) => value.to_owned(),
+            None if value.is_number() => value.to_string(),
+            _ => return Err("Explorer returned an invalid text value".to_owned()),
+        };
+        normalize_bounded_text(&value)
+    };
+    let read_int = |names: &[&str]| -> Result<Option<i64>, String> {
+        let Some(value) = names.iter().find_map(|name| object.get(*name)) else {
+            return Ok(None);
+        };
+        if let Some(number) = value.as_i64() {
+            return if number >= 0 {
+                Ok(Some(number))
+            } else {
+                Err("Explorer returned a negative integer".to_owned())
+            };
+        }
+        let text = match value.as_str() {
+            Some(text) => text,
+            None => return Err("Explorer returned an invalid integer".to_owned()),
+        };
+        let parsed = text
+            .parse::<i64>()
+            .map_err(|_| "Explorer returned an out-of-range integer".to_owned())?;
+        if parsed < 0 {
+            return Err("Explorer returned a negative integer".to_owned());
+        }
+        Ok(Some(parsed))
+    };
+    let provider_timestamp = read_string(&["provider_timestamp", "timestamp", "updated_at"])?
+        .map(|value| canonical_timestamp(&value).map_err(|error| error.to_string()))
+        .transpose()?;
+    let observation = ValidatorObservation {
+        provider_timestamp,
+        rank: read_int(&["rank", "ranking"])?,
+        stake_amount: read_string(&["stake_amount", "stake", "staking_amount"])?,
+        reward_amount: read_string(&["reward_amount", "reward", "rewards"])?,
+        reward_rate: read_string(&["reward_rate", "rate", "percentage"])?,
+        delegator_count: read_int(&["delegator_count", "delegators", "delegatorCount"])?,
+        epoch: read_int(&["epoch", "epoch_number"])?,
+        block_count: read_int(&["block_count", "blocks"])?,
+    };
+    if observation == ValidatorObservation::default() {
+        return Err("Explorer response did not contain supported Validator fields".to_owned());
+    }
+    for value in [
+        observation.stake_amount.as_deref(),
+        observation.reward_amount.as_deref(),
+        observation.reward_rate.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        validate_nonnegative_decimal(value)?;
+    }
+    Ok(Some(observation))
+}
+
+fn normalize_bounded_text(value: &str) -> Result<Option<String>, String> {
+    if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) {
+        return Err("Explorer returned an invalid bounded value".to_owned());
+    }
+    Ok(Some(value.to_owned()))
+}
+
+fn validate_nonnegative_decimal(value: &str) -> Result<(), String> {
+    let mut dots = 0;
+    let mut digits = 0;
+    for character in value.chars() {
+        match character {
+            '0'..='9' => digits += 1,
+            '.' => dots += 1,
+            _ => return Err("Explorer returned an invalid numeric value".to_owned()),
+        }
+    }
+    if digits == 0 || dots > 1 {
+        return Err("Explorer returned an invalid numeric value".to_owned());
+    }
+    Ok(())
+}
+
+fn provider_diagnostic(value: String) -> String {
+    let value = crate::redaction::redact_sensitive(&value)
+        .replace("https://", "[redacted-url]/")
+        .replace("http://", "[redacted-url]/");
+    value.chars().take(MAX_PROVIDER_DIAGNOSTIC_LEN).collect()
+}
+
+fn observation_key(observation: &ValidatorObservation) -> String {
+    let bytes = format!(
+        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        observation.provider_timestamp,
+        observation.rank,
+        observation.stake_amount,
+        observation.reward_amount,
+        observation.reward_rate,
+        observation.delegator_count,
+        observation.epoch,
+        observation.block_count
+    );
+    let mut hash = Sha256::new();
+    hash.update(bytes.as_bytes());
+    format!("{:x}", hash.finalize())
+}
+
+fn decimal_decreased(previous: Option<&str>, current: Option<&str>) -> bool {
+    let Some((previous, current)) = previous.zip(current) else {
+        return false;
+    };
+    let normalize = |value: &str| {
+        let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
+        let whole = whole.trim_start_matches('0');
+        let whole = if whole.is_empty() { "0" } else { whole };
+        format!("{whole}.{}", fraction.trim_end_matches('0'))
+    };
+    let previous = normalize(previous);
+    let current = normalize(current);
+    let (previous_whole, previous_fraction) = previous.split_once('.').unwrap_or((&previous, ""));
+    let (current_whole, current_fraction) = current.split_once('.').unwrap_or((&current, ""));
+    previous_whole.len() > current_whole.len()
+        || (previous_whole.len() == current_whole.len()
+            && (previous_whole > current_whole
+                || (previous_whole == current_whole && previous_fraction > current_fraction)))
+}
 
 #[derive(Debug, Clone, FromRow)]
 pub struct ValidatorRecord {
@@ -73,6 +392,10 @@ pub enum ValidatorError {
     LinkAlreadyEnded,
     #[error("a link replacement must begin after the existing link")]
     LinkReplacementMustAdvance,
+    #[error("provider returned an invalid Validator observation: {0}")]
+    InvalidProviderObservation(String),
+    #[error("alert evaluation failed: {0}")]
+    Alert(String),
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
 }
@@ -571,6 +894,292 @@ pub async fn end_link(
     Ok((row, audit_id))
 }
 
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ValidatorInsightRecord {
+    pub validator_id: String,
+    pub source: Option<String>,
+    pub outcome: String,
+    pub diagnostic: Option<String>,
+    pub provider_timestamp: Option<String>,
+    pub last_attempt_received_at: String,
+    pub last_good_received_at: Option<String>,
+    pub last_good_provider_timestamp: Option<String>,
+    pub rank: Option<i64>,
+    pub stake_amount: Option<String>,
+    pub reward_amount: Option<String>,
+    pub reward_rate: Option<String>,
+    pub delegator_count: Option<i64>,
+    pub epoch: Option<i64>,
+    pub block_count: Option<i64>,
+    pub counter_state: String,
+    pub change_state: String,
+    pub candidate_previous_rank: Option<i64>,
+    pub candidate_rank: Option<i64>,
+    pub candidate_observations: i64,
+    pub last_observation_key: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RefreshSummary {
+    pub attempted: usize,
+    pub successful: usize,
+    pub changed: usize,
+}
+
+pub async fn load_insight(
+    db: &ServerDatabase,
+    validator_id: &str,
+) -> Result<Option<ValidatorInsightRecord>, ValidatorError> {
+    Ok(sqlx::query_as::<_, ValidatorInsightRecord>(
+        "SELECT validator_id, source, outcome, diagnostic, provider_timestamp, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, last_observation_key, updated_at FROM current_validator_insights WHERE validator_id = ?",
+    )
+    .bind(validator_id)
+    .fetch_optional(db.pool())
+    .await?)
+}
+
+pub async fn list_insights(
+    db: &ServerDatabase,
+    network_key: Option<&str>,
+) -> Result<Vec<ValidatorInsightRecord>, ValidatorError> {
+    let mut sql = String::from(
+        "SELECT i.validator_id, i.source, i.outcome, i.diagnostic, i.provider_timestamp, i.last_attempt_received_at, i.last_good_received_at, i.last_good_provider_timestamp, i.rank, i.stake_amount, i.reward_amount, i.reward_rate, i.delegator_count, i.epoch, i.block_count, i.counter_state, i.change_state, i.candidate_previous_rank, i.candidate_rank, i.candidate_observations, i.last_observation_key, i.updated_at FROM current_validator_insights i JOIN validators v ON v.validator_id = i.validator_id",
+    );
+    if network_key.is_some() {
+        sql.push_str(" WHERE v.network_key = ?");
+    }
+    sql.push_str(" ORDER BY v.network_key, v.validator_node_id, i.validator_id");
+    let query = sqlx::query_as::<_, ValidatorInsightRecord>(&sql);
+    let rows = if let Some(network_key) = network_key {
+        query.bind(network_key).fetch_all(db.pool()).await?
+    } else {
+        query.fetch_all(db.pool()).await?
+    };
+    Ok(rows)
+}
+
+pub fn freshness(last_good_received_at: Option<&str>, now: OffsetDateTime) -> &'static str {
+    let Some(received_at) = last_good_received_at.and_then(crate::auth::parse_rfc3339) else {
+        return "unknown";
+    };
+    if (now - received_at).whole_seconds().abs() <= 120 {
+        "fresh"
+    } else {
+        "stale"
+    }
+}
+
+pub async fn refresh_all(
+    db: &ServerDatabase,
+    provider: &dyn ValidatorProvider,
+) -> Result<RefreshSummary, ValidatorError> {
+    refresh_all_with_channels(
+        db,
+        provider,
+        &crate::config::NotificationChannels::default(),
+    )
+    .await
+}
+
+pub async fn refresh_all_with_channels(
+    db: &ServerDatabase,
+    provider: &dyn ValidatorProvider,
+    channels: &crate::config::NotificationChannels,
+) -> Result<RefreshSummary, ValidatorError> {
+    let validators = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT validator_id, network_key, validator_node_id FROM validators ORDER BY validator_id",
+    )
+    .fetch_all(db.pool())
+    .await?;
+    let mut summary = RefreshSummary {
+        attempted: validators.len(),
+        ..RefreshSummary::default()
+    };
+    for (validator_id, network_key, validator_node_id) in validators {
+        let result = provider.fetch(&network_key, &validator_node_id).await;
+        let changed = apply_provider_result(db, provider.source(), &validator_id, result).await?;
+        crate::alerts::evaluate_validator(db, &validator_id, channels, crate::auth::now_utc())
+            .await
+            .map_err(|error| ValidatorError::Alert(error.to_string()))?;
+        if changed.0 {
+            summary.successful += 1;
+        }
+        if changed.1 {
+            summary.changed += 1;
+        }
+    }
+    Ok(summary)
+}
+
+async fn apply_provider_result(
+    db: &ServerDatabase,
+    source: &str,
+    validator_id: &str,
+    result: ValidatorProviderResult,
+) -> Result<(bool, bool), ValidatorError> {
+    let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+    let existing = load_insight(db, validator_id).await?;
+    let mut tx = db.pool().begin().await?;
+    let mut confirmed_change = false;
+    match result {
+        ValidatorProviderResult::Success(observation) => {
+            validate_observation(&observation)?;
+            let key = observation_key(&observation);
+            if existing
+                .as_ref()
+                .and_then(|row| row.last_observation_key.as_deref())
+                == Some(key.as_str())
+            {
+                sqlx::query(
+                    "UPDATE current_validator_insights SET outcome = 'success', diagnostic = NULL, last_attempt_received_at = ?, last_good_received_at = ?, change_state = current_validator_insights.change_state, updated_at = ? WHERE validator_id = ?",
+                )
+                .bind(&now)
+                .bind(&now)
+                .bind(&now)
+                .bind(validator_id)
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
+                return Ok((true, false));
+            }
+            let previous_rank = existing.as_ref().and_then(|row| row.rank);
+            let counter_state = if existing.as_ref().is_some_and(|row| {
+                decimal_decreased(row.stake_amount.as_deref(), observation.stake_amount.as_deref())
+                    || decimal_decreased(row.reward_amount.as_deref(), observation.reward_amount.as_deref())
+                    || matches!((row.block_count, observation.block_count), (Some(old), Some(new)) if new < old)
+            }) {
+                "counter_reset"
+            } else {
+                "normal"
+            };
+            let mut candidate_previous_rank = existing
+                .as_ref()
+                .and_then(|row| row.candidate_previous_rank);
+            let mut candidate_rank = existing.as_ref().and_then(|row| row.candidate_rank);
+            let mut candidate_observations = existing
+                .as_ref()
+                .map_or(0, |row| row.candidate_observations);
+            if let Some(candidate) = candidate_rank {
+                if Some(candidate) == observation.rank && candidate_observations > 0 {
+                    if candidate_previous_rank != observation.rank {
+                        sqlx::query("INSERT OR IGNORE INTO validator_ranking_history (history_id, validator_id, previous_rank, current_rank, observed_at, provider_timestamp, observation_key) VALUES (?, ?, ?, ?, ?, ?, ?)")
+                            .bind(uuid::Uuid::new_v4().to_string())
+                            .bind(validator_id)
+                            .bind(candidate_previous_rank)
+                            .bind(observation.rank)
+                            .bind(&now)
+                            .bind(observation.provider_timestamp.as_deref())
+                            .bind(&key)
+                            .execute(&mut *tx)
+                            .await?;
+                        confirmed_change = true;
+                    }
+                    candidate_previous_rank = None;
+                    candidate_rank = None;
+                    candidate_observations = 0;
+                } else {
+                    candidate_previous_rank = previous_rank;
+                    candidate_rank = observation.rank;
+                    candidate_observations = if observation.rank.is_some() { 1 } else { 0 };
+                }
+            } else if previous_rank != observation.rank {
+                candidate_previous_rank = previous_rank;
+                candidate_rank = observation.rank;
+                candidate_observations = if observation.rank.is_some() { 1 } else { 0 };
+            }
+            let change_state = if counter_state == "counter_reset" {
+                "counter_reset"
+            } else if confirmed_change {
+                "ranking_changed"
+            } else {
+                "normal"
+            };
+            let source = bounded_source(source);
+            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, last_observation_key, updated_at) VALUES (?, ?, 'success', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=NULL, provider_timestamp=excluded.provider_timestamp, last_attempt_received_at=excluded.last_attempt_received_at, last_good_received_at=excluded.last_good_received_at, last_good_provider_timestamp=excluded.last_good_provider_timestamp, rank=excluded.rank, stake_amount=excluded.stake_amount, reward_amount=excluded.reward_amount, reward_rate=excluded.reward_rate, delegator_count=excluded.delegator_count, epoch=excluded.epoch, block_count=excluded.block_count, counter_state=excluded.counter_state, change_state=excluded.change_state, candidate_previous_rank=excluded.candidate_previous_rank, candidate_rank=excluded.candidate_rank, candidate_observations=excluded.candidate_observations, last_observation_key=excluded.last_observation_key, updated_at=excluded.updated_at")
+                .bind(validator_id)
+                .bind(source)
+                .bind(observation.provider_timestamp.as_deref())
+                .bind(&now)
+                .bind(&now)
+                .bind(observation.provider_timestamp.as_deref())
+                .bind(observation.rank)
+                .bind(observation.stake_amount.as_deref())
+                .bind(observation.reward_amount.as_deref())
+                .bind(observation.reward_rate.as_deref())
+                .bind(observation.delegator_count)
+                .bind(observation.epoch)
+                .bind(observation.block_count)
+                .bind(counter_state)
+                .bind(change_state)
+                .bind(candidate_previous_rank)
+                .bind(candidate_rank)
+                .bind(candidate_observations)
+                .bind(&key)
+                .bind(&now)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            Ok((true, confirmed_change))
+        }
+        outcome => {
+            let (name, diagnostic) = match outcome {
+                ValidatorProviderResult::NotFound => ("not_found", None),
+                ValidatorProviderResult::AuthoritativeEmpty => ("empty", None),
+                ValidatorProviderResult::Error(value) => {
+                    ("error", Some(provider_diagnostic(value)))
+                }
+                ValidatorProviderResult::Unsupported(value) => {
+                    ("unsupported", Some(provider_diagnostic(value)))
+                }
+                ValidatorProviderResult::Success(_) => unreachable!(),
+            };
+            let source = bounded_source(source);
+            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, candidate_previous_rank, candidate_rank, candidate_observations, last_observation_key, updated_at) VALUES (?, ?, ?, ?, NULL, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'normal', NULL, NULL, 0, NULL, ?) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=excluded.diagnostic, last_attempt_received_at=excluded.last_attempt_received_at, provider_timestamp=current_validator_insights.provider_timestamp, last_good_received_at=current_validator_insights.last_good_received_at, last_good_provider_timestamp=current_validator_insights.last_good_provider_timestamp, rank=current_validator_insights.rank, stake_amount=current_validator_insights.stake_amount, reward_amount=current_validator_insights.reward_amount, reward_rate=current_validator_insights.reward_rate, delegator_count=current_validator_insights.delegator_count, epoch=current_validator_insights.epoch, block_count=current_validator_insights.block_count, counter_state=current_validator_insights.counter_state, candidate_previous_rank=NULL, candidate_rank=NULL, candidate_observations=0, last_observation_key=NULL, updated_at=excluded.updated_at")
+                .bind(validator_id)
+                .bind(source)
+                .bind(name)
+                .bind(diagnostic)
+                .bind(&now)
+                .bind(&now)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            Ok((false, false))
+        }
+    }
+}
+
+fn bounded_source(source: &str) -> String {
+    source.chars().take(64).collect()
+}
+
+fn validate_observation(observation: &ValidatorObservation) -> Result<(), ValidatorError> {
+    if observation.rank.is_some_and(|value| value < 0)
+        || observation.delegator_count.is_some_and(|value| value < 0)
+        || observation.epoch.is_some_and(|value| value < 0)
+        || observation.block_count.is_some_and(|value| value < 0)
+    {
+        return Err(ValidatorError::InvalidProviderObservation(
+            "negative integer".to_owned(),
+        ));
+    }
+    for value in [
+        observation.stake_amount.as_deref(),
+        observation.reward_amount.as_deref(),
+        observation.reward_rate.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        validate_nonnegative_decimal(value).map_err(ValidatorError::InvalidProviderObservation)?;
+    }
+    if let Some(timestamp) = observation.provider_timestamp.as_deref() {
+        canonical_timestamp(timestamp)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;
@@ -709,6 +1318,146 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[derive(Default)]
+    struct FakeProvider {
+        results: std::sync::Mutex<Vec<ValidatorProviderResult>>,
+        calls: std::sync::Mutex<Vec<(String, String)>>,
+    }
+
+    #[async_trait]
+    impl ValidatorProvider for FakeProvider {
+        fn source(&self) -> &str {
+            "fake"
+        }
+
+        async fn fetch(
+            &self,
+            network_key: &str,
+            validator_node_id: &str,
+        ) -> ValidatorProviderResult {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((network_key.to_owned(), validator_node_id.to_owned()));
+            self.results.lock().unwrap().remove(0)
+        }
+    }
+
+    #[test]
+    fn explorer_response_normalization_preserves_numeric_strings_and_rejects_invalid_data() {
+        let value = serde_json::json!({
+            "rank": "7",
+            "stake": "123456789012345678901234567890.123456789",
+            "reward_rate": "0.125000000000000001",
+            "epoch": 42,
+            "timestamp": "2025-01-01T00:00:00Z"
+        });
+        let observation = normalize_explorer_response(&value).unwrap().unwrap();
+        assert_eq!(observation.rank, Some(7));
+        assert_eq!(
+            observation.stake_amount.as_deref(),
+            Some("123456789012345678901234567890.123456789")
+        );
+        assert_eq!(
+            observation.reward_rate.as_deref(),
+            Some("0.125000000000000001")
+        );
+        assert!(normalize_explorer_response(&serde_json::json!({"stake": "-1"})).is_err());
+        assert_eq!(
+            normalize_explorer_response(&serde_json::json!({"data": []})).unwrap(),
+            None
+        );
+        assert_eq!(
+            normalize_explorer_response(&serde_json::json!({"data": [{"rank": 3}]}))
+                .unwrap()
+                .unwrap()
+                .rank,
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn explorer_path_segments_are_encoded_without_leaking_raw_identifiers() {
+        assert_eq!(url_path_segment("node/a?b"), "node%2Fa%3Fb");
+    }
+    #[tokio::test]
+    async fn provider_refresh_preserves_last_good_and_confirms_rank_after_two_observations() {
+        let (_dir, db) = test_db().await;
+        let owner_id: String =
+            sqlx::query_scalar("SELECT user_id FROM users WHERE username = 'owner'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        let (validator, _) = create_validator(&db, "platon-mainnet", "0xprovider", None, &owner_id)
+            .await
+            .unwrap();
+        let provider = FakeProvider {
+            results: std::sync::Mutex::new(vec![
+                ValidatorProviderResult::Success(ValidatorObservation {
+                    provider_timestamp: Some("2025-01-01T00:00:00Z".to_owned()),
+                    rank: Some(1),
+                    stake_amount: Some("123456789012345678901234567890".to_owned()),
+                    reward_rate: Some("0.125000000000000001".to_owned()),
+                    ..ValidatorObservation::default()
+                }),
+                ValidatorProviderResult::Success(ValidatorObservation {
+                    provider_timestamp: Some("2025-01-01T00:01:00Z".to_owned()),
+                    rank: Some(2),
+                    stake_amount: Some("123456789012345678901234567889".to_owned()),
+                    ..ValidatorObservation::default()
+                }),
+                ValidatorProviderResult::Success(ValidatorObservation {
+                    provider_timestamp: Some("2025-01-01T00:02:00Z".to_owned()),
+                    rank: Some(2),
+                    stake_amount: Some("123456789012345678901234567888".to_owned()),
+                    ..ValidatorObservation::default()
+                }),
+                ValidatorProviderResult::Error(
+                    "provider timeout at https://secret.example".to_owned(),
+                ),
+            ]),
+            ..FakeProvider::default()
+        };
+        let first = refresh_all(&db, &provider).await.unwrap();
+        assert_eq!(first.attempted, 1);
+        let second = refresh_all(&db, &provider).await.unwrap();
+        assert_eq!(second.changed, 0);
+        let third = refresh_all(&db, &provider).await.unwrap();
+        assert_eq!(third.changed, 1);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM validator_ranking_history")
+                .fetch_one(db.pool())
+                .await
+                .unwrap(),
+            1
+        );
+        let insight = load_insight(&db, &validator.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(insight.outcome, "success");
+        assert_eq!(insight.rank, Some(2));
+        assert_eq!(
+            insight.stake_amount.as_deref(),
+            Some("123456789012345678901234567888")
+        );
+        assert_eq!(insight.counter_state, "counter_reset");
+        refresh_all(&db, &provider).await.unwrap();
+        let failed = load_insight(&db, &validator.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(failed.outcome, "error");
+        assert_eq!(failed.rank, Some(2));
+        assert_eq!(
+            failed.stake_amount.as_deref(),
+            Some("123456789012345678901234567888")
+        );
+        let failed_diagnostic = failed.diagnostic.unwrap_or_default();
+        assert!(failed_diagnostic.contains("provider timeout"));
+        assert!(!failed_diagnostic.contains("https://"));
     }
 
     #[tokio::test]
