@@ -67,7 +67,10 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     if (await menu.isVisible()) await menu.click()
     await page.getByRole('link', { name: 'Nodes', exact: true }).click()
     await page.getByRole('link', { name: 'Node A' }).click()
-    const peerSnapshot = page.getByRole('heading', { level: 2, name: 'Peer snapshot' }).locator('..')
+    const peerSnapshot = page
+      .getByRole('heading', { level: 2, name: 'Peer snapshot' })
+      .locator('..')
+      .locator('..')
     await expect(peerSnapshot).toContainText('3 peers')
     await expect(page.getByText('203.0.113.9')).toHaveCount(0)
     await expectNoHorizontalOverflow(page)
