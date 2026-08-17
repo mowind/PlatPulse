@@ -108,7 +108,7 @@ test.describe('two-phase Node Transfer (PAGE-ADMIN-NODE-TRANSFER)', () => {
     // The detail panel shows the completed outcome with source → target.
     await page.getByRole('link', { name: 'Back to Node detail' }).click()
     await expect(page.getByRole('heading', { level: 2, name: 'Node transfer' })).toBeVisible({ timeout: 15_000 })
-    await expect(page.getByText(/0195f2a1… → 0195f2a1…/)).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText('0195f2a1…0011 → 0195f2a1…0021', { exact: true })).toBeVisible({ timeout: 15_000 })
     await expectNoHorizontalOverflow(page)
   })
 })

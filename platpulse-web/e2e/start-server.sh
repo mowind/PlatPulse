@@ -201,7 +201,7 @@ with sqlite3.connect(path) as db:
             "0195f2a1-0031-4031-8031-000000000031",
             node_f,
             "identity_mismatch",
-            (None, None, "identity_mismatch", "the target-declared Network identity contradicts the registered Network; ownership stays with the source Agent", '["genesis_hash", "address_hrp"]'),
+            (None, None, "identity_mismatch", "the target-declared Network identity contradicts the registered Network; ownership stays with the source Agent", '["genesis_hash","address_hrp"]'),
         ),
         (
             "0195f2a1-0032-4032-8032-000000000032",
@@ -451,10 +451,23 @@ with sqlite3.connect(db_path, timeout=5) as db:
     # Consistent snapshot of the seeded database (same mechanism as the
     # backup_create Operation: VACUUM INTO, then the manifest row).
     db.execute(f"VACUUM INTO '{backup_dir}/{good_name}'")
+    # Portable backups omit raw network/geo data and use the same compact JSON
+    # representation as the Server's sanitizer so restore privacy validation
+    # accepts this deterministic fixture.
+    good_path = f"{backup_dir}/{good_name}"
+    with sqlite3.connect(good_path) as snapshot:
+        snapshot.execute("UPDATE nodes SET rpc_endpoint = replace(rpc_endpoint, '127.0.0.1', '[REDACTED_IP]')")
+        snapshot.execute("UPDATE current_node_peers SET remote_ip = NULL")
+        snapshot.execute("DELETE FROM geo_location_cache")
+        snapshot.commit()
+        snapshot.execute("VACUUM")
+    # Restore accepts only private regular files; match the production backup
+    # writer's 0600 mode for these hand-seeded artifacts.
+    os.chmod(good_path, 0o600)
     good_sha = hashlib.sha256(
-        open(f"{backup_dir}/{good_name}", "rb").read()
+        open(good_path, "rb").read()
     ).hexdigest()
-    good_bytes = os.path.getsize(f"{backup_dir}/{good_name}")
+    good_bytes = os.path.getsize(good_path)
     db.execute(
         "INSERT INTO backup_artifacts (artifact_id, filename, bytes, sha256, schema_version, server_version, created_at, verification, verified_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'ok', ?)",
         (good_id, good_name, good_bytes, good_sha, schema, "0.1.0", "2026-08-12T08:30:00Z", "2026-08-12T08:31:00Z"),
@@ -463,6 +476,7 @@ with sqlite3.connect(db_path, timeout=5) as db:
     # so Restore validation deterministically reports the checksum failure.
     with open(f"{backup_dir}/{tampered_name}", "wb") as f:
         f.write(b"tampered e2e artifact")
+    os.chmod(f"{backup_dir}/{tampered_name}", 0o600)
     tampered_bytes = os.path.getsize(f"{backup_dir}/{tampered_name}")
     db.execute(
         "INSERT INTO backup_artifacts (artifact_id, filename, bytes, sha256, schema_version, server_version, created_at, verification) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')",

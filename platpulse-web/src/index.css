@@ -723,9 +723,20 @@ button {
 }
 
 @media (max-width: 30rem) {
+  .peer-insight,
+  .peer-insight-heading {
+    min-width: 0;
+  }
+
+  .peer-insight-heading {
+    flex-direction: column;
+  }
+
   .peer-dimensions {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
     grid-template-columns: 1fr;
-    min-width: 100%;
   }
 
   .peer-summary-list {

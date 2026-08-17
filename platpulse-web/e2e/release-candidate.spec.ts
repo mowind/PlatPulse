@@ -55,7 +55,8 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
 
     await page.getByRole('link', { name: 'Admin', exact: true }).click()
     await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
-    const geoStatus = page.getByRole('heading', { level: 2, name: 'Geo database' }).locator('..')
+    const geoHeading = page.getByRole('heading', { level: 2, name: 'Geo database' })
+    const geoStatus = geoHeading.locator('..').locator('..')
     await expect(geoStatus).toContainText('Disabled')
     await expect(geoStatus).toContainText('Configured')
     await expect(geoStatus).toContainText('No')

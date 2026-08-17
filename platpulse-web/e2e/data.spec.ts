@@ -51,9 +51,10 @@ test.describe('Read-only Data surfaces (all viewports)', () => {
     await expect(raw).toContainText('7 days')
     await expect(raw).toContainText('1–30 days')
     // Unsupported aggregate families stay visible and honest.
-    await expect(page.getByRole('row', { name: /1-Hour Aggregates/ })).toContainText(
-      'Unsupported',
-    )
+    const oneHour = page.getByRole('row').filter({
+      has: page.getByRole('link', { name: '1-Hour Aggregates', exact: true }),
+    })
+    await expect(oneHour).toContainText('Unsupported')
     await expect(page.getByRole('heading', { level: 2, name: 'Protected state' })).toBeVisible()
     await expect(page.getByText('historical high-water marks', { exact: true })).toBeVisible()
     await expect(page.getByText('immutable Incident history', { exact: true })).toBeVisible()
