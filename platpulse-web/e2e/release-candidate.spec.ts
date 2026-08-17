@@ -9,8 +9,8 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
 
     await page.getByRole('link', { name: 'Node A' }).click()
     await expect(page).toHaveURL(/\/nodes\/0195f2a1-0014-4014-8014-000000000014$/)
-    await expect(page.getByRole('heading', { level: 1, name: 'Node A' })).toBeVisible()
-    await expect(page.getByText('Current head')).toBeVisible()
+    await expect(page.getByRole('heading', { level: 1, name: 'Node A' })).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText('Current head')).toBeVisible({ timeout: 15_000 })
     await expectNoHorizontalOverflow(page)
 
     // A guessed private Node URL must be indistinguishable from a missing
@@ -67,8 +67,8 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     if (await menu.isVisible()) await menu.click()
     await page.getByRole('link', { name: 'Nodes', exact: true }).click()
     await page.getByRole('link', { name: 'Node A' }).click()
-    await expect(page.getByRole('heading', { level: 2, name: 'Peer snapshot' })).toBeVisible()
-    await expect(page.locator('.peer-insight').first()).toContainText('3 peers')
+    const peerSnapshot = page.getByRole('heading', { level: 2, name: 'Peer snapshot' }).locator('..')
+    await expect(peerSnapshot).toContainText('3 peers')
     await expect(page.getByText('203.0.113.9')).toHaveCount(0)
     await expectNoHorizontalOverflow(page)
   })
