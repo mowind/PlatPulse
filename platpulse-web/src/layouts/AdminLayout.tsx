@@ -153,6 +153,9 @@ export default function AdminLayout() {
           <NavLink to="/admin/networks" end onClick={closeNav}>
             Networks
           </NavLink>
+          <NavLink to="/admin/validators" end onClick={closeNav}>
+            Validators
+          </NavLink>
       <p className="admin-nav-label">Alerts</p>
           <NavLink to="/admin/alerts/rules" end onClick={closeNav}>
             Alert Rules

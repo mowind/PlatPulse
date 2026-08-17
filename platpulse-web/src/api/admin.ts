@@ -22,6 +22,9 @@ import {
   adminNodeTransfers,
   adminNodes,
   adminRecoveryToken,
+  adminValidatorDetail,
+  adminValidatorLinks,
+  adminValidators,
   adminRevokeCredential,
   adminRotateCredential,
   auditList,
@@ -38,8 +41,11 @@ import {
   cancelSilence as cancelSilenceApi,
   createMaintenanceWindow as createMaintenanceWindowApi,
   createNetwork,
+  createNodeValidatorLink,
+  createValidator,
   createSilence as createSilenceApi,
   deleteRuleOverride as deleteRuleOverrideApi,
+  endValidatorLink,
   previewAlertRule as previewAlertRuleApi,
   updateAlertRule as updateAlertRuleApi,
   upsertRuleOverride as upsertRuleOverrideApi,
@@ -59,6 +65,7 @@ import {
   setPersonStatus,
   setVisibility,
   updateNetwork,
+  updateValidatorLink,
   type AccessSettingsResponse,
   type AdminNetwork,
   type AlertRuleDetail,
@@ -129,6 +136,15 @@ import {
   type CreatePersonRequest,
   type EnrollmentTokenResponse,
   type NetworkCreateRequest,
+  type NodeValidatorLink,
+  type Validator,
+  type ValidatorCreateRequest,
+  type ValidatorDetail,
+  type ValidatorLinkCreateRequest,
+  type ValidatorLinkEndRequest,
+  type ValidatorLinkMutationResponse,
+  type ValidatorLinkUpdateRequest,
+  type ValidatorMutationResponse,
   type NetworkResponse,
   type NetworkUpdateRequest,
   type NodeMetadataRequest,
@@ -177,6 +193,10 @@ const adminKeys = {
   nodePeerChurn: (nodeId: string) => ['admin', 'nodes', nodeId, 'peer-churn'] as const,
   nodePeerHistory: (nodeId: string) => ['admin', 'nodes', nodeId, 'peer-history'] as const,
   nodeTransfers: (nodeId: string) => ['admin', 'nodes', nodeId, 'transfers'] as const,
+  nodeValidatorLinks: (nodeId: string) => ['admin', 'nodes', nodeId, 'validator-links'] as const,
+  validators: ['admin', 'validators'] as const,
+  validatorDetail: (validatorId: string) => ['admin', 'validators', validatorId] as const,
+  validatorLinks: ['admin', 'validator-links'] as const,
   networks: ['admin', 'networks'] as const,
   networkDetail: (networkKey: string) => ['admin', 'networks', networkKey] as const,
   people: ['admin', 'people'] as const,
@@ -561,6 +581,132 @@ export function useAdminNetworkDetail(generation: number, networkKey: string) {
     enabled: networkKey.length > 0,
   })
 }
+export async function fetchAdminValidators(
+  networkKey?: string,
+  signal?: AbortSignal,
+): Promise<Validator[]> {
+  return requestAdmin(
+    () => adminValidators({ query: networkKey ? { networkKey } : undefined, signal }),
+    'Unable to load Validators',
+  )
+}
+
+export function useAdminValidators(generation: number, networkKey?: string) {
+  return useQuery({
+    queryKey: [...adminKeys.validators, networkKey ?? null, generation],
+    queryFn: ({ signal }) => fetchAdminValidators(networkKey, signal),
+  })
+}
+
+export async function fetchAdminValidator(
+  validatorId: string,
+  signal?: AbortSignal,
+): Promise<ValidatorDetail> {
+  return requestAdmin(
+    () => adminValidatorDetail({ path: { validator_id: validatorId }, signal }),
+    'Unable to load the Validator',
+  )
+}
+
+export function useAdminValidatorDetail(generation: number, validatorId: string) {
+  return useQuery({
+    queryKey: [...adminKeys.validatorDetail(validatorId), generation],
+    queryFn: ({ signal }) => fetchAdminValidator(validatorId, signal),
+    enabled: validatorId.length > 0,
+  })
+}
+
+export async function fetchAdminValidatorLinks(
+  filters: { networkKey?: string; validatorId?: string; nodeId?: string } = {},
+  signal?: AbortSignal,
+): Promise<NodeValidatorLink[]> {
+  return requestAdmin(
+    () => adminValidatorLinks({ query: filters, signal }),
+    'Unable to load Node Validator Links',
+  )
+}
+
+export function useAdminValidatorLinks(
+  generation: number,
+  filters: { networkKey?: string; validatorId?: string; nodeId?: string } = {},
+) {
+  return useQuery({
+    queryKey: [...adminKeys.validatorLinks, filters, generation],
+    queryFn: ({ signal }) => fetchAdminValidatorLinks(filters, signal),
+  })
+}
+
+export async function registerValidator(
+  networkKey: string,
+  request: ValidatorCreateRequest,
+  csrfToken: string,
+): Promise<ValidatorMutationResponse> {
+  const response = await requestAdmin(
+    () =>
+      createValidator({
+        path: { network_key: networkKey },
+        body: request,
+        headers: { 'X-CSRF-Token': csrfToken },
+      }),
+    'Unable to register the Validator',
+  )
+  void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+  return response
+}
+
+export async function createValidatorLink(
+  nodeId: string,
+  request: ValidatorLinkCreateRequest,
+  csrfToken: string,
+): Promise<ValidatorLinkMutationResponse> {
+  const response = await requestAdmin(
+    () =>
+      createNodeValidatorLink({
+        path: { node_id: nodeId },
+        body: request,
+        headers: { 'X-CSRF-Token': csrfToken },
+      }),
+    'Unable to create the Node Validator Link',
+  )
+  void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+  return response
+}
+
+export async function editValidatorLink(
+  linkId: string,
+  request: ValidatorLinkUpdateRequest,
+  csrfToken: string,
+): Promise<ValidatorLinkMutationResponse> {
+  const response = await requestAdmin(
+    () =>
+      updateValidatorLink({
+        path: { link_id: linkId },
+        body: request,
+        headers: { 'X-CSRF-Token': csrfToken },
+      }),
+    'Unable to update the Node Validator Link',
+  )
+  void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+  return response
+}
+
+export async function endValidator(
+  linkId: string,
+  request: ValidatorLinkEndRequest,
+  csrfToken: string,
+): Promise<ValidatorLinkMutationResponse> {
+  const response = await requestAdmin(
+    () =>
+      endValidatorLink({
+        path: { link_id: linkId },
+        body: request,
+        headers: { 'X-CSRF-Token': csrfToken },
+      }),
+    'Unable to end the Node Validator Link',
+  )
+  void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+  return response
+}
 
 /**
  * Mutation seam: no optimistic state, no automatic retry. Success invalidates
@@ -938,7 +1084,10 @@ function invalidateAdminResource(resource: string, resourceId?: string): void {
       case 'geo':
         return [adminKeys.geo, adminKeys.nodes, adminKeys.networks]
       case 'network':
-        return [adminKeys.networks]
+        return [adminKeys.networks, adminKeys.validators, adminKeys.validatorLinks]
+      case 'validator':
+      case 'validator-link':
+        return [adminKeys.validators, adminKeys.validatorLinks, adminKeys.nodes]
       case 'access':
         return [adminKeys.access, adminKeys.people, adminKeys.sessions]
       case 'alerts':
@@ -967,6 +1116,7 @@ function invalidateAdminResource(resource: string, resourceId?: string): void {
     keys.push(adminKeys.nodeDetail(resourceId), adminKeys.nodePeerChurn(resourceId), adminKeys.nodePeerHistory(resourceId), adminKeys.nodeTransfers(resourceId))
   }
   if (resourceId && resource === 'network') keys.push(adminKeys.networkDetail(resourceId))
+  if (resourceId && resource === 'validator') keys.push(adminKeys.validatorDetail(resourceId))
   void Promise.all(keys.map((queryKey) => adminQueryClient.invalidateQueries({ queryKey })))
 }
 

@@ -20,7 +20,7 @@ use thiserror::Error;
 pub static SERVER_MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 /// The latest migration version compiled into the Server binary.
-pub const SERVER_SCHEMA_VERSION: i64 = 29;
+pub const SERVER_SCHEMA_VERSION: i64 = 30;
 
 /// The Server currently serializes all SQLite operations through one pool
 /// connection. Read scaling can be added with a concrete query need; it is
@@ -67,6 +67,8 @@ const REQUIRED_TABLES: &[&str] = &[
     "network_reference_heads",
     "agent_spool_diagnostics",
     "geo_location_cache",
+    "validators",
+    "node_validator_links",
 ];
 
 /// Connection settings for the Server database.
@@ -696,17 +698,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn phase_one_schema_does_not_precreate_future_table_families() {
+    async fn schema_does_not_precreate_unimplemented_future_table_families() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("server.db");
         let database = ServerDatabase::open(config(&path)).await.unwrap();
-        let forbidden = [
-            "peers",
-            "validators",
-            "node_validator_links",
-            "block_aggregate_1m",
-            "block_aggregate_1h",
-        ];
+        let forbidden = ["peers", "block_aggregate_1m", "block_aggregate_1h"];
 
         for table in forbidden {
             let exists =

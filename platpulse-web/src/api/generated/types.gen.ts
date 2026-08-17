@@ -849,6 +849,20 @@ export type NodeTransferMutationResponse = {
     transfer: NodeTransfer;
 };
 
+export type NodeValidatorLink = {
+    createdAt: string;
+    linkId: string;
+    networkKey: string;
+    nodeDisplayName?: string | null;
+    nodeId: string;
+    role: string;
+    updatedAt: string;
+    validFrom: string;
+    validUntil?: string | null;
+    validatorId: string;
+    validatorNodeId: string;
+};
+
 export type NotificationDeliveriesResponse = {
     items: Array<DeliveryRow>;
     nextBefore?: string | null;
@@ -1612,6 +1626,54 @@ export type SyncDiagnostic = {
 
 export type TokenLifetimeRequest = {
     expiresInHours?: number | null;
+};
+
+export type Validator = {
+    createdAt: string;
+    displayName?: string | null;
+    linkCount: number;
+    networkKey: string;
+    updatedAt: string;
+    validatorId: string;
+    validatorNodeId: string;
+};
+
+export type ValidatorCreateRequest = {
+    displayName?: string | null;
+    validatorNodeId: string;
+};
+
+export type ValidatorDetail = Validator & {
+    links: Array<NodeValidatorLink>;
+};
+
+export type ValidatorLinkCreateRequest = {
+    role: string;
+    validFrom: string;
+    validUntil?: string | null;
+    validatorId: string;
+};
+
+export type ValidatorLinkEndRequest = {
+    validUntil?: string | null;
+};
+
+export type ValidatorLinkMutationResponse = {
+    auditEventId: number;
+    link: NodeValidatorLink;
+    requestId: string;
+};
+
+export type ValidatorLinkUpdateRequest = {
+    role: string;
+    validFrom: string;
+    validUntil?: string | null;
+};
+
+export type ValidatorMutationResponse = {
+    auditEventId: number;
+    requestId: string;
+    validator: Validator;
 };
 
 export type VisibilityRequest = {
@@ -2483,6 +2545,34 @@ export type UpdateNetworkResponses = {
 
 export type UpdateNetworkResponse = UpdateNetworkResponses[keyof UpdateNetworkResponses];
 
+export type CreateValidatorData = {
+    body: ValidatorCreateRequest;
+    path: {
+        /**
+         * Registered Network key
+         */
+        network_key: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/networks/{network_key}/validators';
+};
+
+export type CreateValidatorErrors = {
+    400: ApiErrorBody;
+    401: ApiErrorBody;
+    403: ApiErrorBody;
+    409: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type CreateValidatorError = CreateValidatorErrors[keyof CreateValidatorErrors];
+
+export type CreateValidatorResponses = {
+    200: ValidatorMutationResponse;
+};
+
+export type CreateValidatorResponse = CreateValidatorResponses[keyof CreateValidatorResponses];
+
 export type AdminNodesData = {
     body?: never;
     path?: never;
@@ -2697,6 +2787,60 @@ export type CreateNodeTransferResponses = {
 };
 
 export type CreateNodeTransferResponse = CreateNodeTransferResponses[keyof CreateNodeTransferResponses];
+
+export type AdminNodeValidatorLinksData = {
+    body?: never;
+    path: {
+        /**
+         * Node ID
+         */
+        node_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/nodes/{node_id}/validator-links';
+};
+
+export type AdminNodeValidatorLinksErrors = {
+    401: ApiErrorBody;
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+};
+
+export type AdminNodeValidatorLinksError = AdminNodeValidatorLinksErrors[keyof AdminNodeValidatorLinksErrors];
+
+export type AdminNodeValidatorLinksResponses = {
+    200: Array<NodeValidatorLink>;
+};
+
+export type AdminNodeValidatorLinksResponse = AdminNodeValidatorLinksResponses[keyof AdminNodeValidatorLinksResponses];
+
+export type CreateNodeValidatorLinkData = {
+    body: ValidatorLinkCreateRequest;
+    path: {
+        /**
+         * Node ID
+         */
+        node_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/nodes/{node_id}/validator-links';
+};
+
+export type CreateNodeValidatorLinkErrors = {
+    400: ApiErrorBody;
+    401: ApiErrorBody;
+    403: ApiErrorBody;
+    409: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type CreateNodeValidatorLinkError = CreateNodeValidatorLinkErrors[keyof CreateNodeValidatorLinkErrors];
+
+export type CreateNodeValidatorLinkResponses = {
+    200: ValidatorLinkMutationResponse;
+};
+
+export type CreateNodeValidatorLinkResponse = CreateNodeValidatorLinkResponses[keyof CreateNodeValidatorLinkResponses];
 
 export type SetVisibilityData = {
     body: VisibilityRequest;
@@ -3401,6 +3545,166 @@ export type CancelNodeTransferResponses = {
 };
 
 export type CancelNodeTransferResponse = CancelNodeTransferResponses[keyof CancelNodeTransferResponses];
+
+export type AdminValidatorLinksData = {
+    body?: never;
+    path?: never;
+    query?: {
+        networkKey?: string | null;
+        validatorId?: string | null;
+        nodeId?: string | null;
+    };
+    url: '/api/admin/v1/validator-links';
+};
+
+export type AdminValidatorLinksErrors = {
+    401: ApiErrorBody;
+    403: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type AdminValidatorLinksError = AdminValidatorLinksErrors[keyof AdminValidatorLinksErrors];
+
+export type AdminValidatorLinksResponses = {
+    200: Array<NodeValidatorLink>;
+};
+
+export type AdminValidatorLinksResponse = AdminValidatorLinksResponses[keyof AdminValidatorLinksResponses];
+
+export type AdminValidatorLinkDetailData = {
+    body?: never;
+    path: {
+        /**
+         * Node Validator Link ID
+         */
+        link_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/validator-links/{link_id}';
+};
+
+export type AdminValidatorLinkDetailErrors = {
+    401: ApiErrorBody;
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type AdminValidatorLinkDetailError = AdminValidatorLinkDetailErrors[keyof AdminValidatorLinkDetailErrors];
+
+export type AdminValidatorLinkDetailResponses = {
+    200: NodeValidatorLink;
+};
+
+export type AdminValidatorLinkDetailResponse = AdminValidatorLinkDetailResponses[keyof AdminValidatorLinkDetailResponses];
+
+export type UpdateValidatorLinkData = {
+    body: ValidatorLinkUpdateRequest;
+    path: {
+        /**
+         * Node Validator Link ID
+         */
+        link_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/validator-links/{link_id}';
+};
+
+export type UpdateValidatorLinkErrors = {
+    400: ApiErrorBody;
+    401: ApiErrorBody;
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+    409: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type UpdateValidatorLinkError = UpdateValidatorLinkErrors[keyof UpdateValidatorLinkErrors];
+
+export type UpdateValidatorLinkResponses = {
+    200: ValidatorLinkMutationResponse;
+};
+
+export type UpdateValidatorLinkResponse = UpdateValidatorLinkResponses[keyof UpdateValidatorLinkResponses];
+
+export type EndValidatorLinkData = {
+    body: ValidatorLinkEndRequest;
+    path: {
+        /**
+         * Node Validator Link ID
+         */
+        link_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/validator-links/{link_id}/end';
+};
+
+export type EndValidatorLinkErrors = {
+    400: ApiErrorBody;
+    401: ApiErrorBody;
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+    409: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type EndValidatorLinkError = EndValidatorLinkErrors[keyof EndValidatorLinkErrors];
+
+export type EndValidatorLinkResponses = {
+    200: ValidatorLinkMutationResponse;
+};
+
+export type EndValidatorLinkResponse = EndValidatorLinkResponses[keyof EndValidatorLinkResponses];
+
+export type AdminValidatorsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        networkKey?: string | null;
+    };
+    url: '/api/admin/v1/validators';
+};
+
+export type AdminValidatorsErrors = {
+    401: ApiErrorBody;
+    403: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type AdminValidatorsError = AdminValidatorsErrors[keyof AdminValidatorsErrors];
+
+export type AdminValidatorsResponses = {
+    200: Array<Validator>;
+};
+
+export type AdminValidatorsResponse = AdminValidatorsResponses[keyof AdminValidatorsResponses];
+
+export type AdminValidatorDetailData = {
+    body?: never;
+    path: {
+        /**
+         * Validator ID
+         */
+        validator_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/validators/{validator_id}';
+};
+
+export type AdminValidatorDetailErrors = {
+    401: ApiErrorBody;
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type AdminValidatorDetailError = AdminValidatorDetailErrors[keyof AdminValidatorDetailErrors];
+
+export type AdminValidatorDetailResponses = {
+    200: ValidatorDetail;
+};
+
+export type AdminValidatorDetailResponse = AdminValidatorDetailResponses[keyof AdminValidatorDetailResponses];
 
 export type PublicAccessSettingsData = {
     body?: never;

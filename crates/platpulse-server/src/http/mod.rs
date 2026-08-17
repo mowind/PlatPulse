@@ -20,6 +20,7 @@ pub(crate) mod operations_admin;
 pub(crate) mod public;
 pub(crate) mod realtime;
 pub(crate) mod report_ingestion;
+pub(crate) mod validators_admin;
 
 use ipnet::IpNet;
 use std::path::PathBuf;
@@ -541,6 +542,7 @@ pub fn build_app(state: AppState) -> Router {
         .merge(alerts_admin::router())
         .merge(operations_admin::router())
         .merge(notifications_admin::router())
+        .merge(validators_admin::router())
         .layer(axum::middleware::from_fn(owner_role_guard))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

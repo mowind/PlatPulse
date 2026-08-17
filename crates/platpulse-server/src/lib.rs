@@ -30,6 +30,7 @@ pub mod redaction;
 pub mod restore;
 pub mod retention;
 pub mod secrets;
+pub mod validator;
 
 pub use database::{
     DEFAULT_BUSY_TIMEOUT, JournalMode, SERVER_MIGRATOR, SERVER_SCHEMA_VERSION,

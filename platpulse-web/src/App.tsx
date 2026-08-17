@@ -21,6 +21,7 @@ import AdminNodeTransfer from './pages/AdminNodeTransfer'
 import AdminNetworksList, {
   AdminNetworkDetailPage,
 } from './pages/AdminNetworks'
+import AdminValidators, { AdminValidatorDetailPage } from './pages/AdminValidators'
 import AdminPeople from './pages/AdminPeople'
 import AdminSessions from './pages/AdminSessions'
 import AdminAudit from './pages/AdminAudit'
@@ -179,6 +180,8 @@ const router = createBrowserRouter([
       { path: 'nodes/:nodeId/transfer', element: <AdminNodeTransfer /> },
       { path: 'networks', element: <AdminNetworksList /> },
       { path: 'networks/:networkKey', element: <AdminNetworkDetailPage /> },
+      { path: 'validators', element: <AdminValidators /> },
+      { path: 'validators/:validatorId', element: <AdminValidatorDetailPage /> },
       { path: 'access/people', element: <AdminPeople /> },
       { path: 'access/sessions', element: <AdminSessions /> },
       { path: 'access/audit', element: <AdminAudit /> },
