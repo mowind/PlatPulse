@@ -88,6 +88,8 @@ pub struct ValidatorProviderSectionFile {
     pub base_url: Option<String>,
     pub refresh_seconds: Option<u64>,
     pub timeout_seconds: Option<u64>,
+    /// IANA timezone used for Validator daily and calendar-month buckets.
+    pub timezone: Option<String>,
 }
 
 /// `[notifications.telegram]`: the approved Telegram delivery path. The
@@ -155,6 +157,7 @@ pub struct ValidatorProviderConfig {
     pub base_url: String,
     pub refresh_seconds: u64,
     pub timeout_seconds: u64,
+    pub timezone: String,
 }
 
 /// Resolved Telegram channel policy. Present only when the channel is
@@ -208,6 +211,8 @@ pub enum ConfigError {
     InvalidTrustedProxyCidr(String),
     #[error("invalid trusted proxy scheme: {0}")]
     InvalidTrustedProxyScheme(String),
+    #[error("invalid Validator analytics IANA timezone in {path}: {timezone}")]
+    InvalidValidatorTimezone { path: PathBuf, timezone: String },
     #[error("notifications.telegram.token_file is required in {path}")]
     MissingTelegramTokenFile { path: PathBuf },
     #[error("notifications.telegram.chat_id is required in {path}")]
@@ -364,7 +369,7 @@ impl ServerConfig {
 
         let config_path = config_path.map(Path::to_owned);
         let geo = cli.geo_mmdb.clone().or_else(|| resolve_geo_path(file));
-        let validator_provider = resolve_validator_provider(file);
+        let validator_provider = resolve_validator_provider(file, config_path.as_deref())?;
         let notifications = resolve_notification_channels(file, &config_path)?;
 
         Ok(Self {
@@ -386,13 +391,31 @@ impl ServerConfig {
     }
 }
 
-fn resolve_validator_provider(file: Option<&ServerConfigFile>) -> Option<ValidatorProviderConfig> {
-    let section = file.and_then(|value| value.validator_provider.as_ref())?;
-    Some(ValidatorProviderConfig {
-        base_url: section.base_url.clone()?,
+fn resolve_validator_provider(
+    file: Option<&ServerConfigFile>,
+    config_path: Option<&Path>,
+) -> Result<Option<ValidatorProviderConfig>, ConfigError> {
+    let Some(section) = file.and_then(|value| value.validator_provider.as_ref()) else {
+        return Ok(None);
+    };
+    let Some(base_url) = section.base_url.clone() else {
+        return Ok(None);
+    };
+    let timezone = section.timezone.clone().unwrap_or_else(|| "UTC".to_owned());
+    if timezone.parse::<chrono_tz::Tz>().is_err() {
+        return Err(ConfigError::InvalidValidatorTimezone {
+            path: config_path
+                .map(Path::to_owned)
+                .unwrap_or_else(|| PathBuf::from("<config>")),
+            timezone,
+        });
+    }
+    Ok(Some(ValidatorProviderConfig {
+        base_url,
         refresh_seconds: section.refresh_seconds.unwrap_or(60).clamp(1, 86_400),
         timeout_seconds: section.timeout_seconds.unwrap_or(10).clamp(1, 300),
-    })
+        timezone,
+    }))
 }
 
 fn resolve_geo_path(file: Option<&ServerConfigFile>) -> Option<PathBuf> {

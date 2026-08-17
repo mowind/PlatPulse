@@ -8,6 +8,7 @@ import {
   useAdminNetworks,
   useAdminNodes,
   useAdminValidatorDetail,
+  useAdminValidatorAnalytics,
   useAdminValidatorHistory,
   useAdminValidatorLinks,
   useAdminValidators,
@@ -21,6 +22,7 @@ import type {
 } from '../api/generated'
 import { ValidatorInsight } from '../components/ValidatorInsight'
 import { ValidatorHistory } from '../components/ValidatorHistory'
+import { ValidatorAnalytics } from '../components/ValidatorAnalytics'
 
 const ROLES = ['primary', 'standby', 'observer'] as const
 
@@ -323,6 +325,7 @@ export function AdminValidatorDetailPage() {
   const { generation } = useAuth()
   const query = useAdminValidatorDetail(generation, validatorId)
   const history = useAdminValidatorHistory(generation, validatorId)
+  const analytics = useAdminValidatorAnalytics(generation, validatorId)
   if (query.isPending) return <section className="page"><p role="status">Loading Validator…</p></section>
   if (query.isError || !query.data) return <section className="page"><p className="form-error" role="alert">Unable to load this Validator.</p></section>
   return (
@@ -331,6 +334,9 @@ export function AdminValidatorDetailPage() {
       <h1>{query.data.displayName || query.data.validatorNodeId}</h1>
       <p className="muted">{query.data.networkKey} · {query.data.validatorNodeId}</p>
       {query.data.insight && <ValidatorInsight insight={query.data.insight} />}
+      {analytics.isPending && <p role="status">Loading Validator analytics…</p>}
+      {analytics.isError && <p className="form-error" role="alert">Unable to load Validator analytics.</p>}
+      {analytics.data && <ValidatorAnalytics analytics={analytics.data} />}
       {history.isPending && <p role="status">Loading Validator history…</p>}
       {history.isError && <p className="form-error" role="alert">Unable to load Validator history.</p>}
       {history.data && <ValidatorHistory entries={history.data.entries} />}

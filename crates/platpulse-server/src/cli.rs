@@ -638,10 +638,11 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                 if provider_state.is_shutting_down() {
                     break;
                 }
-                match crate::validator::refresh_all_with_channels(
+                match crate::validator::refresh_all_with_channels_in_timezone(
                     provider_state.db(),
                     &*provider_state.validator_provider(),
                     provider_state.channels(),
+                    &provider_config.timezone,
                 )
                 .await
                 {

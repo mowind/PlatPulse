@@ -97,6 +97,55 @@ pub struct ValidatorHistoryQuery {
     pub limit: Option<i64>,
 }
 
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminValidatorDailySnapshot {
+    pub local_date: String,
+    pub month_key: String,
+    pub timezone: String,
+    pub sample_at: String,
+    pub received_at: String,
+    pub provider_timestamp: Option<String>,
+    pub source: String,
+    pub rank: Option<i64>,
+    pub stake_amount: Option<String>,
+    pub reward_amount: Option<String>,
+    pub reward_rate: Option<String>,
+    pub delegator_count: Option<i64>,
+    pub epoch: Option<i64>,
+    pub block_count: Option<i64>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminValidatorMonthlyAggregate {
+    pub month_key: String,
+    pub timezone: String,
+    pub snapshot_count: i64,
+    pub first_sample_at: String,
+    pub last_sample_at: String,
+    pub rank_min: Option<i64>,
+    pub rank_max: Option<i64>,
+    pub rank_last: Option<i64>,
+    pub stake_last: Option<String>,
+    pub reward_last: Option<String>,
+    pub reward_rate_last: Option<String>,
+    pub delegator_count_last: Option<i64>,
+    pub epoch_last: Option<i64>,
+    pub block_count_last: Option<i64>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminValidatorAnalyticsResponse {
+    pub validator_id: String,
+    pub state: String,
+    pub freshness: String,
+    pub daily: Vec<AdminValidatorDailySnapshot>,
+    pub monthly: Vec<AdminValidatorMonthlyAggregate>,
+}
+
 async fn admin_history_entry_links(
     state: &AppState,
     validator_id: &str,
@@ -285,9 +334,8 @@ fn error_response(request_id: &str, error: ValidatorError) -> Response {
         | ValidatorError::InvalidRole
         | ValidatorError::InvalidTimestamp(_)
         | ValidatorError::InvalidValidity
-        | ValidatorError::InvalidProviderObservation(_) => {
-            (StatusCode::BAD_REQUEST, "invalid_request")
-        }
+        | ValidatorError::InvalidProviderObservation(_)
+        | ValidatorError::InvalidTimezone(_) => (StatusCode::BAD_REQUEST, "invalid_request"),
         ValidatorError::Database(_) | ValidatorError::Alert(_) => {
             (StatusCode::SERVICE_UNAVAILABLE, "unavailable")
         }
@@ -885,10 +933,114 @@ pub(crate) async fn admin_validator_history(
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/admin/v1/validators/{validator_id}/analytics",
+    tag = "admin",
+    params(("validator_id" = String, Path, description = "Validator ID"), ValidatorHistoryQuery),
+    responses((status = 200, body = AdminValidatorAnalyticsResponse), (status = 401, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
+)]
+pub(crate) async fn admin_validator_analytics(
+    State(state): State<AppState>,
+    Path(validator_id): Path<String>,
+    Query(query): Query<ValidatorHistoryQuery>,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    let Some(insight) = (match validator::load_insight(&state.database(), &validator_id).await {
+        Ok(value) => value,
+        Err(error) => return error_response(&request_id.0, error),
+    }) else {
+        if validator::get_validator(&state.database(), &validator_id)
+            .await
+            .ok()
+            .flatten()
+            .is_none()
+        {
+            return error_response(&request_id.0, ValidatorError::ValidatorNotFound);
+        }
+        return Json(AdminValidatorAnalyticsResponse {
+            validator_id,
+            state: "unknown".to_owned(),
+            freshness: "unknown".to_owned(),
+            daily: Vec::new(),
+            monthly: Vec::new(),
+        })
+        .into_response();
+    };
+    let limit = query.limit.unwrap_or(31).clamp(1, 366);
+    let daily = match validator::list_daily_snapshots(&state.database(), &validator_id, limit).await
+    {
+        Ok(rows) => rows
+            .into_iter()
+            .map(|row| AdminValidatorDailySnapshot {
+                local_date: row.local_date,
+                month_key: row.month_key,
+                timezone: row.timezone,
+                sample_at: row.sample_at,
+                received_at: row.received_at,
+                provider_timestamp: row.provider_timestamp,
+                source: row.source,
+                rank: row.rank,
+                stake_amount: row.stake_amount,
+                reward_amount: row.reward_amount,
+                reward_rate: row.reward_rate,
+                delegator_count: row.delegator_count,
+                epoch: row.epoch,
+                block_count: row.block_count,
+            })
+            .collect(),
+        Err(error) => return error_response(&request_id.0, error),
+    };
+    let monthly =
+        match validator::list_monthly_aggregates(&state.database(), &validator_id, limit).await {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|row| AdminValidatorMonthlyAggregate {
+                    month_key: row.month_key,
+                    timezone: row.timezone,
+                    snapshot_count: row.snapshot_count,
+                    first_sample_at: row.first_sample_at,
+                    last_sample_at: row.last_sample_at,
+                    rank_min: row.rank_min,
+                    rank_max: row.rank_max,
+                    rank_last: row.rank_last,
+                    stake_last: row.stake_last,
+                    reward_last: row.reward_last,
+                    reward_rate_last: row.reward_rate_last,
+                    delegator_count_last: row.delegator_count_last,
+                    epoch_last: row.epoch_last,
+                    block_count_last: row.block_count_last,
+                    updated_at: row.updated_at,
+                })
+                .collect(),
+            Err(error) => return error_response(&request_id.0, error),
+        };
+    let freshness = validator::freshness(
+        insight.last_good_received_at.as_deref(),
+        crate::auth::now_utc(),
+    );
+    let state = if insight.outcome == "success" {
+        freshness
+    } else {
+        insight.outcome.as_str()
+    };
+    Json(AdminValidatorAnalyticsResponse {
+        validator_id,
+        state: state.to_owned(),
+        freshness: freshness.to_owned(),
+        daily,
+        monthly,
+    })
+    .into_response()
+}
 pub(crate) fn router() -> Router<AppState> {
     Router::<AppState>::new()
         .route("/validators", get(admin_validators))
         .route("/validators/{validator_id}", get(admin_validator_detail))
+        .route(
+            "/validators/{validator_id}/analytics",
+            get(admin_validator_analytics),
+        )
         .route(
             "/validators/{validator_id}/history",
             get(admin_validator_history),
@@ -914,6 +1066,129 @@ pub(crate) fn router() -> Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::to_bytes;
+    use tempfile::tempdir;
+
+    async fn test_state() -> (tempfile::TempDir, AppState) {
+        let dir = tempdir().unwrap();
+        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let pepper_path = dir.path().join("pepper");
+        crate::secrets::create_pepper_file(&pepper_path).unwrap();
+        let auth = crate::auth::AuthConfig::development(
+            crate::secrets::load_pepper_file(&pepper_path).unwrap(),
+            "http://127.0.0.1:8080".to_owned(),
+        );
+        let state = AppState::new(database, None, auth);
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('mainnet', 'Main Network', '0xgenesis', 1, 1, 'lat', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        (dir, state)
+    }
+
+    async fn seed_admin_analytics_row(state: &AppState, validator_id: &str) {
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        sqlx::query("INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES (?, 'mainnet', ?, ?, ?, ?)")
+            .bind(validator_id)
+            .bind(format!("node-{validator_id}"))
+            .bind(validator_id)
+            .bind(&now)
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, 'explorer', 'success', NULL, ?, ?, ?, ?, 5, '1000', '10', '0.05', 8, 42, 100, 'normal', 'normal', NULL, NULL, 0, NULL, NULL, NULL, ?, ?)")
+            .bind(validator_id)
+            .bind(&now)
+            .bind(&now)
+            .bind(&now)
+            .bind(&now)
+            .bind(&now)
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO validator_daily_snapshots (snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, provider_timestamp, source, observation_key, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count) VALUES (?, ?, 'UTC', '2026-01-01', '2026-01', ?, ?, ?, 'explorer', 'obs-1', 5, '1000', '10', '0.05', 8, 42, 100)")
+            .bind(format!("snap-{validator_id}"))
+            .bind(validator_id)
+            .bind(&now)
+            .bind(&now)
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO validator_monthly_aggregates (aggregate_id, validator_id, timezone, month_key, snapshot_count, first_sample_at, last_sample_at, rank_min, rank_max, rank_last, stake_last, reward_last, reward_rate_last, delegator_count_last, epoch_last, block_count_last, updated_at) VALUES (?, ?, 'UTC', '2026-01', 1, ?, ?, 5, 5, 5, '1000', '10', '0.05', 8, 42, 100, ?)")
+            .bind(format!("agg-{validator_id}"))
+            .bind(validator_id)
+            .bind(&now)
+            .bind(&now)
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn admin_validator_analytics_includes_admin_dto_fields_and_handles_unknown() {
+        let (_dir, state) = test_state().await;
+        seed_admin_analytics_row(&state, "validator-1").await;
+
+        let response = admin_validator_analytics(
+            State(state.clone()),
+            Path("validator-1".to_owned()),
+            Query(ValidatorHistoryQuery { limit: None }),
+            Extension(RequestId(std::sync::Arc::from("test"))),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["validatorId"], "validator-1");
+        assert_eq!(value["daily"][0]["localDate"], "2026-01-01");
+        assert!(value["daily"][0]["receivedAt"].as_str().is_some());
+        assert_eq!(value["daily"][0]["source"], "explorer");
+        assert_eq!(value["monthly"][0]["monthKey"], "2026-01");
+        assert_eq!(value["monthly"][0]["snapshotCount"], 1);
+        assert!(
+            value["monthly"][0]
+                .get("updatedAt")
+                .and_then(serde_json::Value::as_str)
+                .is_some()
+        );
+
+        let missing = admin_validator_analytics(
+            State(state.clone()),
+            Path("validator-missing".to_owned()),
+            Query(ValidatorHistoryQuery { limit: None }),
+            Extension(RequestId(std::sync::Arc::from("test"))),
+        )
+        .await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+        // A registered Validator with no insight is honest "unknown" instead
+        // of pretending the aggregate history is a healthy zero.
+        sqlx::query("INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES ('validator-empty', 'mainnet', 'node-validator-empty', 'Empty', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let empty = admin_validator_analytics(
+            State(state),
+            Path("validator-empty".to_owned()),
+            Query(ValidatorHistoryQuery { limit: None }),
+            Extension(RequestId(std::sync::Arc::from("test"))),
+        )
+        .await;
+        assert_eq!(empty.status(), StatusCode::OK);
+        let body = to_bytes(empty.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["state"], "unknown");
+        assert!(value["daily"].as_array().unwrap().is_empty());
+        assert!(value["monthly"].as_array().unwrap().is_empty());
+    }
 
     #[test]
     fn validator_api_dtos_use_browser_camel_case() {

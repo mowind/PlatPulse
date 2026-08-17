@@ -24,6 +24,7 @@ import {
   adminRecoveryToken,
   adminValidatorDetail,
   adminValidatorHistory,
+  adminValidatorAnalytics,
   adminValidatorLinks,
   adminValidators,
   adminRevokeCredential,
@@ -141,6 +142,7 @@ import {
   type Validator,
   type ValidatorCreateRequest,
   type ValidatorDetail,
+  type AdminValidatorAnalyticsResponse,
   type AdminValidatorHistoryResponse,
   type ValidatorLinkCreateRequest,
   type ValidatorLinkEndRequest,
@@ -633,6 +635,24 @@ export function useAdminValidatorHistory(generation: number, validatorId: string
   return useQuery({
     queryKey: [...adminKeys.validatorDetail(validatorId), 'history', generation],
     queryFn: ({ signal }) => fetchAdminValidatorHistory(validatorId, 50, signal),
+    enabled: validatorId.length > 0,
+  })
+}
+export async function fetchAdminValidatorAnalytics(
+  validatorId: string,
+  limit = 31,
+  signal?: AbortSignal,
+): Promise<AdminValidatorAnalyticsResponse> {
+  return requestAdmin(
+    () => adminValidatorAnalytics({ path: { validator_id: validatorId }, query: { limit }, signal }),
+    'Unable to load Validator analytics',
+  )
+}
+
+export function useAdminValidatorAnalytics(generation: number, validatorId: string) {
+  return useQuery({
+    queryKey: [...adminKeys.validatorDetail(validatorId), 'analytics', generation],
+    queryFn: ({ signal }) => fetchAdminValidatorAnalytics(validatorId, 31, signal),
     enabled: validatorId.length > 0,
   })
 }

@@ -34,6 +34,8 @@ pub const FAMILY_ALERT_NOTIFICATION: &str = "alert_notification";
 pub const FAMILY_PEER_PRESENCE_INTERVAL: &str = "peer_presence_interval";
 pub const FAMILY_PEER_AGGREGATE_5M: &str = "peer_aggregate_5m";
 pub const FAMILY_PEER_AGGREGATE_1H: &str = "peer_aggregate_1h";
+pub const FAMILY_VALIDATOR_DAILY_SNAPSHOT: &str = "validator_daily_snapshot";
+pub const FAMILY_VALIDATOR_MONTHLY_AGGREGATE: &str = "validator_monthly_aggregate";
 
 /// Policy defaults and safety bounds (design §11.3). `max_days = 0` means
 /// no upper bound (long-term family); `retention_days = 0` keeps forever.
@@ -46,7 +48,7 @@ pub struct PolicyDefaults {
     pub supported: bool,
 }
 
-pub const POLICY_CATALOG: [PolicyDefaults; 10] = [
+pub const POLICY_CATALOG: [PolicyDefaults; 12] = [
     PolicyDefaults {
         family: FAMILY_RAW_BLOCK_SUMMARY,
         label: "Raw Block Summaries",
@@ -122,6 +124,27 @@ pub const POLICY_CATALOG: [PolicyDefaults; 10] = [
     PolicyDefaults {
         family: FAMILY_PEER_AGGREGATE_1H,
         label: "Peer 1-Hour Aggregates",
+        default_days: 0,
+        min_days: 0,
+        max_days: 0,
+        supported: true,
+    },
+    PolicyDefaults {
+        family: FAMILY_VALIDATOR_DAILY_SNAPSHOT,
+        label: "Validator Daily Snapshots",
+        // Daily snapshots are the durable source for calendar-month rebuilds.
+        // They are kept forever so delayed retries and restarts can never
+        // re-insert an old day into a partially retained month.
+        default_days: 0,
+        min_days: 0,
+        max_days: 0,
+        supported: true,
+    },
+    PolicyDefaults {
+        family: FAMILY_VALIDATOR_MONTHLY_AGGREGATE,
+        label: "Validator Monthly Aggregates",
+        // Monthly aggregates are derived, long-term reporting state and must
+        // never be removed by a retention run.
         default_days: 0,
         min_days: 0,
         max_days: 0,
@@ -382,6 +405,7 @@ pub fn protected_state_notes() -> Vec<&'static str> {
         "Audit Events referenced by Operations",
         "Rule versions and policy rows",
         "open Peer presence intervals",
+        "Validator daily snapshots and monthly aggregates",
     ]
 }
 

@@ -239,6 +239,31 @@ export type AdminPeerLagSummary = {
     sample_count: number;
 };
 
+export type AdminValidatorAnalyticsResponse = {
+    daily: Array<AdminValidatorDailySnapshot>;
+    freshness: string;
+    monthly: Array<AdminValidatorMonthlyAggregate>;
+    state: string;
+    validatorId: string;
+};
+
+export type AdminValidatorDailySnapshot = {
+    blockCount?: number | null;
+    delegatorCount?: number | null;
+    epoch?: number | null;
+    localDate: string;
+    monthKey: string;
+    providerTimestamp?: string | null;
+    rank?: number | null;
+    receivedAt: string;
+    rewardAmount?: string | null;
+    rewardRate?: string | null;
+    sampleAt: string;
+    source: string;
+    stakeAmount?: string | null;
+    timezone: string;
+};
+
 export type AdminValidatorHistoryEntry = {
     candidateObservedAt?: string | null;
     candidateProviderTimestamp?: string | null;
@@ -289,6 +314,24 @@ export type AdminValidatorInsight = {
     stakeAmount?: string | null;
     state: string;
     validatorNodeId: string;
+};
+
+export type AdminValidatorMonthlyAggregate = {
+    blockCountLast?: number | null;
+    delegatorCountLast?: number | null;
+    epochLast?: number | null;
+    firstSampleAt: string;
+    lastSampleAt: string;
+    monthKey: string;
+    rankLast?: number | null;
+    rankMax?: number | null;
+    rankMin?: number | null;
+    rewardLast?: string | null;
+    rewardRateLast?: string | null;
+    snapshotCount: number;
+    stakeLast?: string | null;
+    timezone: string;
+    updatedAt: string;
 };
 
 /**
@@ -1280,6 +1323,28 @@ export type PublicPeerLagSummary = {
     sampleCount: number;
 };
 
+export type PublicValidatorAnalyticsResponse = {
+    daily: Array<PublicValidatorDailySnapshot>;
+    freshness: string;
+    monthly: Array<PublicValidatorMonthlyAggregate>;
+    state: string;
+    validatorId: string;
+};
+
+export type PublicValidatorDailySnapshot = {
+    blockCount?: number | null;
+    delegatorCount?: number | null;
+    epoch?: number | null;
+    localDate: string;
+    monthKey: string;
+    rank?: number | null;
+    rewardAmount?: string | null;
+    rewardRate?: string | null;
+    sampleAt: string;
+    stakeAmount?: string | null;
+    timezone: string;
+};
+
 /**
  * Public Home projection. The query boundary only selects public, active
  * Nodes and never returns endpoint, Agent, host identity, capacity, or raw
@@ -1321,6 +1386,23 @@ export type PublicValidatorInsight = {
     state: string;
     validatorId: string;
     validatorNodeId: string;
+};
+
+export type PublicValidatorMonthlyAggregate = {
+    blockCountLast?: number | null;
+    delegatorCountLast?: number | null;
+    epochLast?: number | null;
+    firstSampleAt: string;
+    lastSampleAt: string;
+    monthKey: string;
+    rankLast?: number | null;
+    rankMax?: number | null;
+    rankMin?: number | null;
+    rewardLast?: string | null;
+    rewardRateLast?: string | null;
+    snapshotCount: number;
+    stakeLast?: string | null;
+    timezone: string;
 };
 
 export type ReadyComponent = {
@@ -3804,6 +3886,35 @@ export type AdminValidatorDetailResponses = {
 
 export type AdminValidatorDetailResponse = AdminValidatorDetailResponses[keyof AdminValidatorDetailResponses];
 
+export type AdminValidatorAnalyticsData = {
+    body?: never;
+    path: {
+        /**
+         * Validator ID
+         */
+        validator_id: string;
+    };
+    query?: {
+        limit?: number | null;
+    };
+    url: '/api/admin/v1/validators/{validator_id}/analytics';
+};
+
+export type AdminValidatorAnalyticsErrors = {
+    401: ApiErrorBody;
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type AdminValidatorAnalyticsError = AdminValidatorAnalyticsErrors[keyof AdminValidatorAnalyticsErrors];
+
+export type AdminValidatorAnalyticsResponses = {
+    200: AdminValidatorAnalyticsResponse;
+};
+
+export type AdminValidatorAnalyticsResponse2 = AdminValidatorAnalyticsResponses[keyof AdminValidatorAnalyticsResponses];
+
 export type AdminValidatorHistoryData = {
     body?: never;
     path: {
@@ -4090,6 +4201,33 @@ export type SessionHandlerResponses = {
 };
 
 export type SessionHandlerResponse = SessionHandlerResponses[keyof SessionHandlerResponses];
+
+export type PublicValidatorAnalyticsData = {
+    body?: never;
+    path: {
+        /**
+         * Validator ID
+         */
+        validator_id: string;
+    };
+    query?: {
+        limit?: number;
+    };
+    url: '/api/public/v1/validators/{validator_id}/analytics';
+};
+
+export type PublicValidatorAnalyticsErrors = {
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type PublicValidatorAnalyticsError = PublicValidatorAnalyticsErrors[keyof PublicValidatorAnalyticsErrors];
+
+export type PublicValidatorAnalyticsResponses = {
+    200: PublicValidatorAnalyticsResponse;
+};
+
+export type PublicValidatorAnalyticsResponse2 = PublicValidatorAnalyticsResponses[keyof PublicValidatorAnalyticsResponses];
 
 export type PublicValidatorHistoryData = {
     body?: never;

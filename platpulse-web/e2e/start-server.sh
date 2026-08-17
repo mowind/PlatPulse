@@ -388,6 +388,37 @@ with sqlite3.connect(path) as db:
         "INSERT OR IGNORE INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, source, coinbase, seal_signer_match, protocol_proposer_kind, attribution_reason, accepted_at) VALUES (?, 3000, ?, ?, ?, 210425, 210425, 'lat', 3000, ?, 2, 'subscription', ?, 'unknown', 'unknown', 'test', ?)",
         (node_a, "0x" + format(3000, "064x"), "0x" + format(2999, "064x"), network_genesis, fresh_block_time, coinbase, fresh_block_time),
     )
+
+    # Validator analytics fixture (issue #64): one public Validator linked to
+    # Node A with a current success insight and two calendar snapshots plus
+    # monthly aggregates. This lets the Playwright suite exercise the Home and
+    # Admin analytics views without touching the live Explorer provider.
+    validator_id = "0195f2a1-0030-4030-8030-000000000030"
+    validator_link_id = "0195f2a1-0031-4031-8031-000000000031"
+    db.execute(
+        "INSERT OR IGNORE INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES (?, ?, '0xvalidator', 'E2E Validator', ?, ?)",
+        (validator_id, network_key, now, now),
+    )
+    db.execute(
+        "INSERT OR IGNORE INTO node_validator_links (link_id, node_id, validator_id, role, valid_from, valid_until, created_at, updated_at) VALUES (?, ?, ?, 'primary', '2026-01-01T00:00:00Z', NULL, ?, ?)",
+        (validator_link_id, node_a, validator_id, now, now),
+    )
+    db.execute(
+        "INSERT OR IGNORE INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, 'explorer', 'success', NULL, ?, ?, ?, ?, 2, '1000', '10', '0.05', 8, 42, 100, 'normal', 'normal', NULL, NULL, 0, NULL, NULL, NULL, 'obs-1', ?)",
+        (validator_id, fresh, fresh, fresh, fresh, fresh, fresh),
+    )
+    for day, month, sample_at in [
+        ("2026-02-01", "2026-02", "2026-01-31T15:30:00Z"),
+        ("2026-03-01", "2026-03", "2026-02-28T15:30:00Z"),
+    ]:
+        db.execute(
+            "INSERT OR IGNORE INTO validator_daily_snapshots (snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, provider_timestamp, source, observation_key, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count) VALUES (?, ?, 'UTC', ?, ?, ?, ?, ?, 'explorer', 'obs-' || ?, 2, '1000', '10', '0.05', 8, 42, 100)",
+            (f"snap-{day}", validator_id, day, month, sample_at, fresh, sample_at, day),
+        )
+        db.execute(
+            "INSERT OR IGNORE INTO validator_monthly_aggregates (aggregate_id, validator_id, timezone, month_key, snapshot_count, first_sample_at, last_sample_at, rank_min, rank_max, rank_last, stake_last, reward_last, reward_rate_last, delegator_count_last, epoch_last, block_count_last, updated_at) VALUES (?, ?, 'UTC', ?, 1, ?, ?, 2, 2, 2, '1000', '10', '0.05', 8, 42, 100, ?)",
+            (f"agg-{day}", validator_id, month, sample_at, sample_at, fresh),
+        )
 PY
 
 # Keep Node A's seeded observations fresh for the whole suite: the

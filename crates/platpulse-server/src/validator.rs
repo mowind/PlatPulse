@@ -6,6 +6,8 @@
 //! reject every temporal overlap for one Node before inserting or updating.
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use chrono_tz::Tz;
 use reqwest::StatusCode;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -437,6 +439,8 @@ pub enum ValidatorError {
     LinkAlreadyEnded,
     #[error("a link replacement must begin after the existing link")]
     LinkReplacementMustAdvance,
+    #[error("invalid Validator analytics IANA timezone: {0}")]
+    InvalidTimezone(String),
     #[error("provider returned an invalid Validator observation: {0}")]
     InvalidProviderObservation(String),
     #[error("alert evaluation failed: {0}")]
@@ -1003,6 +1007,185 @@ pub struct ValidatorLinkContextRecord {
     pub valid_until: Option<String>,
 }
 
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ValidatorDailySnapshotRecord {
+    pub snapshot_id: String,
+    pub validator_id: String,
+    pub timezone: String,
+    pub local_date: String,
+    pub month_key: String,
+    pub sample_at: String,
+    pub received_at: String,
+    pub provider_timestamp: Option<String>,
+    pub source: String,
+    pub observation_key: String,
+    pub rank: Option<i64>,
+    pub stake_amount: Option<String>,
+    pub reward_amount: Option<String>,
+    pub reward_rate: Option<String>,
+    pub delegator_count: Option<i64>,
+    pub epoch: Option<i64>,
+    pub block_count: Option<i64>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ValidatorMonthlyAggregateRecord {
+    pub aggregate_id: String,
+    pub validator_id: String,
+    pub timezone: String,
+    pub month_key: String,
+    pub snapshot_count: i64,
+    pub first_sample_at: String,
+    pub last_sample_at: String,
+    pub rank_min: Option<i64>,
+    pub rank_max: Option<i64>,
+    pub rank_last: Option<i64>,
+    pub stake_last: Option<String>,
+    pub reward_last: Option<String>,
+    pub reward_rate_last: Option<String>,
+    pub delegator_count_last: Option<i64>,
+    pub epoch_last: Option<i64>,
+    pub block_count_last: Option<i64>,
+    pub updated_at: String,
+}
+
+/// Convert the observation's provider time when available, otherwise the
+/// Server receipt time, into the configured IANA calendar day and month.
+/// Provider time makes delayed observations deterministic across refresh
+/// retries; receipt time remains the honest fallback for providers without it.
+pub fn analytics_period(
+    observation: &ValidatorObservation,
+    received_at: &str,
+    timezone: &str,
+) -> Result<(String, String, String), ValidatorError> {
+    let timezone = timezone
+        .parse::<Tz>()
+        .map_err(|_| ValidatorError::InvalidTimezone(timezone.to_owned()))?;
+    let timestamp = observation
+        .provider_timestamp
+        .as_deref()
+        .unwrap_or(received_at);
+    let parsed = parse_timestamp(timestamp)?;
+    let utc = DateTime::<Utc>::from_timestamp(parsed.unix_timestamp(), parsed.nanosecond())
+        .ok_or_else(|| ValidatorError::InvalidTimezone(timezone.to_string()))?;
+    let local = utc.with_timezone(&timezone);
+    Ok((
+        local.format("%Y-%m-%d").to_string(),
+        local.format("%Y-%m").to_string(),
+        format_rfc3339(parsed),
+    ))
+}
+
+pub async fn list_daily_snapshots(
+    db: &ServerDatabase,
+    validator_id: &str,
+    limit: i64,
+) -> Result<Vec<ValidatorDailySnapshotRecord>, ValidatorError> {
+    Ok(sqlx::query_as::<_, ValidatorDailySnapshotRecord>(
+        "SELECT snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, provider_timestamp, source, observation_key, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count FROM validator_daily_snapshots WHERE validator_id = ? ORDER BY sample_at DESC, local_date DESC LIMIT ?",
+    )
+    .bind(validator_id)
+    .bind(limit)
+    .fetch_all(db.pool())
+    .await?)
+}
+
+pub async fn list_monthly_aggregates(
+    db: &ServerDatabase,
+    validator_id: &str,
+    limit: i64,
+) -> Result<Vec<ValidatorMonthlyAggregateRecord>, ValidatorError> {
+    Ok(sqlx::query_as::<_, ValidatorMonthlyAggregateRecord>(
+        "SELECT aggregate_id, validator_id, timezone, month_key, snapshot_count, first_sample_at, last_sample_at, rank_min, rank_max, rank_last, stake_last, reward_last, reward_rate_last, delegator_count_last, epoch_last, block_count_last, updated_at FROM validator_monthly_aggregates WHERE validator_id = ? ORDER BY month_key DESC, timezone LIMIT ?",
+    )
+    .bind(validator_id)
+    .bind(limit)
+    .fetch_all(db.pool())
+    .await?)
+}
+
+async fn record_daily_snapshot(
+    tx: &mut Transaction<'_, Sqlite>,
+    validator_id: &str,
+    source: &str,
+    observation: &ValidatorObservation,
+    observation_key: &str,
+    received_at: &str,
+    timezone: &str,
+) -> Result<(bool, String), ValidatorError> {
+    let (local_date, month_key, sample_at) = analytics_period(observation, received_at, timezone)?;
+    let result = sqlx::query("INSERT INTO validator_daily_snapshots (snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, provider_timestamp, source, observation_key, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(validator_id, timezone, local_date) DO UPDATE SET snapshot_id=excluded.snapshot_id, month_key=excluded.month_key, sample_at=excluded.sample_at, received_at=excluded.received_at, provider_timestamp=excluded.provider_timestamp, source=excluded.source, observation_key=excluded.observation_key, rank=excluded.rank, stake_amount=excluded.stake_amount, reward_amount=excluded.reward_amount, reward_rate=excluded.reward_rate, delegator_count=excluded.delegator_count, epoch=excluded.epoch, block_count=excluded.block_count WHERE excluded.sample_at > validator_daily_snapshots.sample_at OR (excluded.sample_at = validator_daily_snapshots.sample_at AND excluded.observation_key > validator_daily_snapshots.observation_key)")
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(validator_id)
+        .bind(timezone)
+        .bind(&local_date)
+        .bind(&month_key)
+        .bind(&sample_at)
+        .bind(received_at)
+        .bind(observation.provider_timestamp.as_deref())
+        .bind(bounded_source(source))
+        .bind(observation_key)
+        .bind(observation.rank)
+        .bind(observation.stake_amount.as_deref())
+        .bind(observation.reward_amount.as_deref())
+        .bind(observation.reward_rate.as_deref())
+        .bind(observation.delegator_count)
+        .bind(observation.epoch)
+        .bind(observation.block_count)
+        .execute(&mut **tx)
+        .await?;
+    Ok((result.rows_affected() > 0, month_key))
+}
+
+async fn rebuild_monthly_aggregate(
+    tx: &mut Transaction<'_, Sqlite>,
+    validator_id: &str,
+    timezone: &str,
+    month_key: &str,
+    updated_at: &str,
+) -> Result<(), ValidatorError> {
+    let summary = sqlx::query_as::<_, (i64, String, String, Option<i64>, Option<i64>)>(
+        "SELECT COUNT(*), MIN(sample_at), MAX(sample_at), MIN(rank), MAX(rank) FROM validator_daily_snapshots WHERE validator_id = ? AND timezone = ? AND month_key = ?",
+    )
+    .bind(validator_id)
+    .bind(timezone)
+    .bind(month_key)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((snapshot_count, first_sample_at, last_sample_at, rank_min, rank_max)) = summary
+    else {
+        return Ok(());
+    };
+    let latest = sqlx::query_as::<_, (Option<i64>, Option<String>, Option<String>, Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<i64>)>(
+        "SELECT rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, NULL FROM validator_daily_snapshots WHERE validator_id = ? AND timezone = ? AND month_key = ? ORDER BY sample_at DESC, observation_key DESC LIMIT 1",
+    )
+    .bind(validator_id)
+    .bind(timezone)
+    .bind(month_key)
+    .fetch_one(&mut **tx)
+    .await?;
+    sqlx::query("INSERT INTO validator_monthly_aggregates (aggregate_id, validator_id, timezone, month_key, snapshot_count, first_sample_at, last_sample_at, rank_min, rank_max, rank_last, stake_last, reward_last, reward_rate_last, delegator_count_last, epoch_last, block_count_last, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(validator_id, timezone, month_key) DO UPDATE SET snapshot_count=excluded.snapshot_count, first_sample_at=excluded.first_sample_at, last_sample_at=excluded.last_sample_at, rank_min=excluded.rank_min, rank_max=excluded.rank_max, rank_last=excluded.rank_last, stake_last=excluded.stake_last, reward_last=excluded.reward_last, reward_rate_last=excluded.reward_rate_last, delegator_count_last=excluded.delegator_count_last, epoch_last=excluded.epoch_last, block_count_last=excluded.block_count_last, updated_at=excluded.updated_at")
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(validator_id)
+        .bind(timezone)
+        .bind(month_key)
+        .bind(snapshot_count)
+        .bind(first_sample_at)
+        .bind(last_sample_at)
+        .bind(rank_min)
+        .bind(rank_max)
+        .bind(latest.0)
+        .bind(latest.1)
+        .bind(latest.2)
+        .bind(latest.3)
+        .bind(latest.4)
+        .bind(latest.5)
+        .bind(latest.6)
+        .bind(updated_at)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
 pub async fn list_ranking_history(
     db: &ServerDatabase,
     validator_id: &str,
@@ -1106,10 +1289,11 @@ pub async fn refresh_all(
     db: &ServerDatabase,
     provider: &dyn ValidatorProvider,
 ) -> Result<RefreshSummary, ValidatorError> {
-    refresh_all_with_channels(
+    refresh_all_with_channels_in_timezone(
         db,
         provider,
         &crate::config::NotificationChannels::default(),
+        "UTC",
     )
     .await
 }
@@ -1119,6 +1303,18 @@ pub async fn refresh_all_with_channels(
     provider: &dyn ValidatorProvider,
     channels: &crate::config::NotificationChannels,
 ) -> Result<RefreshSummary, ValidatorError> {
+    refresh_all_with_channels_in_timezone(db, provider, channels, "UTC").await
+}
+
+pub async fn refresh_all_with_channels_in_timezone(
+    db: &ServerDatabase,
+    provider: &dyn ValidatorProvider,
+    channels: &crate::config::NotificationChannels,
+    timezone: &str,
+) -> Result<RefreshSummary, ValidatorError> {
+    timezone
+        .parse::<Tz>()
+        .map_err(|_| ValidatorError::InvalidTimezone(timezone.to_owned()))?;
     let validators = sqlx::query_as::<_, (String, String, String)>(
         "SELECT validator_id, network_key, validator_node_id FROM validators ORDER BY validator_id",
     )
@@ -1130,7 +1326,8 @@ pub async fn refresh_all_with_channels(
     };
     for (validator_id, network_key, validator_node_id) in validators {
         let result = provider.fetch(&network_key, &validator_node_id).await;
-        let changed = apply_provider_result(db, provider.source(), &validator_id, result).await?;
+        let changed =
+            apply_provider_result(db, provider.source(), &validator_id, result, timezone).await?;
         crate::alerts::evaluate_validator(db, &validator_id, channels, crate::auth::now_utc())
             .await
             .map_err(|error| ValidatorError::Alert(error.to_string()))?;
@@ -1152,6 +1349,7 @@ async fn apply_provider_result(
     source: &str,
     validator_id: &str,
     result: ValidatorProviderResult,
+    timezone: &str,
 ) -> Result<(bool, bool, bool), ValidatorError> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     let existing = load_insight(db, validator_id).await?;
@@ -1174,8 +1372,20 @@ async fn apply_provider_result(
                 .bind(validator_id)
                 .execute(&mut *tx)
                 .await?;
+                let (analytics_changed, month_key) = record_daily_snapshot(
+                    &mut tx,
+                    validator_id,
+                    source,
+                    &observation,
+                    &key,
+                    &now,
+                    timezone,
+                )
+                .await?;
+                rebuild_monthly_aggregate(&mut tx, validator_id, timezone, &month_key, &now)
+                    .await?;
                 tx.commit().await?;
-                return Ok((true, false, false));
+                return Ok((true, false, analytics_changed));
             }
 
             // A rank-less success cannot establish ranking evidence. The first
@@ -1301,7 +1511,7 @@ async fn apply_provider_result(
             let source = bounded_source(source);
             sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, ?, 'success', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=NULL, provider_timestamp=excluded.provider_timestamp, last_attempt_received_at=excluded.last_attempt_received_at, last_good_received_at=excluded.last_good_received_at, last_good_provider_timestamp=excluded.last_good_provider_timestamp, rank=excluded.rank, stake_amount=excluded.stake_amount, reward_amount=excluded.reward_amount, reward_rate=excluded.reward_rate, delegator_count=excluded.delegator_count, epoch=excluded.epoch, block_count=excluded.block_count, counter_state=excluded.counter_state, change_state=excluded.change_state, candidate_previous_rank=excluded.candidate_previous_rank, candidate_rank=excluded.candidate_rank, candidate_observations=excluded.candidate_observations, candidate_observed_at=excluded.candidate_observed_at, candidate_provider_timestamp=excluded.candidate_provider_timestamp, candidate_observation_key=excluded.candidate_observation_key, last_observation_key=excluded.last_observation_key, updated_at=excluded.updated_at")
                 .bind(validator_id)
-                .bind(source)
+                .bind(&source)
                 .bind(observation.provider_timestamp.as_deref())
                 .bind(&now)
                 .bind(&now)
@@ -1325,11 +1535,22 @@ async fn apply_provider_result(
                 .bind(&now)
                 .execute(&mut *tx)
                 .await?;
+            let (analytics_changed, month_key) = record_daily_snapshot(
+                &mut tx,
+                validator_id,
+                &source,
+                &observation,
+                &key,
+                &now,
+                timezone,
+            )
+            .await?;
+            rebuild_monthly_aggregate(&mut tx, validator_id, timezone, &month_key, &now).await?;
             tx.commit().await?;
             Ok((
                 true,
                 confirmed_ranking_change,
-                confirmed_ranking_change || counter_changed,
+                confirmed_ranking_change || counter_changed || analytics_changed,
             ))
         }
         outcome => {
@@ -1636,7 +1857,7 @@ mod tests {
         };
         let first = refresh_all(&db, &provider).await.unwrap();
         assert_eq!(first.attempted, 1);
-        assert_eq!(first.invalidations, 0);
+        assert_eq!(first.invalidations, 1);
         let second = refresh_all(&db, &provider).await.unwrap();
         assert_eq!(second.changed, 0);
         assert_eq!(second.invalidations, 1);
@@ -1892,6 +2113,306 @@ mod tests {
                 .unwrap()
                 .len(),
             2
+        );
+    }
+
+    #[test]
+    fn analytics_period_uses_configured_iana_timezone_and_calendar_months() {
+        let observation = ValidatorObservation {
+            provider_timestamp: Some("2025-03-01T00:30:00Z".to_owned()),
+            ..Default::default()
+        };
+        let received_at = "2025-03-02T01:00:00Z";
+        let tokyo = analytics_period(&observation, received_at, "Asia/Tokyo").unwrap();
+        assert_eq!(tokyo.0, "2025-03-01");
+        assert_eq!(tokyo.1, "2025-03");
+        assert_eq!(tokyo.2, "2025-03-01T00:30:00Z");
+        let los_angeles =
+            analytics_period(&observation, received_at, "America/Los_Angeles").unwrap();
+        assert_eq!(los_angeles.0, "2025-02-28");
+        assert_eq!(los_angeles.1, "2025-02");
+        assert_eq!(los_angeles.2, "2025-03-01T00:30:00Z");
+
+        // Without a provider timestamp, the Server receipt time is the honest
+        // fallback and is converted in the same configured timezone.
+        let no_provider_time = ValidatorObservation::default();
+        let fallback =
+            analytics_period(&no_provider_time, "2025-03-02T01:00:00Z", "Asia/Tokyo").unwrap();
+        assert_eq!(fallback.0, "2025-03-02");
+        assert_eq!(fallback.1, "2025-03");
+
+        // Calendar-month rollover is local-time based.
+        let month_end = ValidatorObservation {
+            provider_timestamp: Some("2025-02-28T23:30:00Z".to_owned()),
+            ..Default::default()
+        };
+        let tokyo_month_end = analytics_period(&month_end, received_at, "Asia/Tokyo").unwrap();
+        assert_eq!(tokyo_month_end.0, "2025-03-01");
+        assert_eq!(tokyo_month_end.1, "2025-03");
+
+        // Daylight-saving transitions do not split a local calendar day.
+        let before_dst = ValidatorObservation {
+            provider_timestamp: Some("2025-03-09T06:59:00Z".to_owned()),
+            ..Default::default()
+        };
+        let after_dst = ValidatorObservation {
+            provider_timestamp: Some("2025-03-09T07:01:00Z".to_owned()),
+            ..Default::default()
+        };
+        let before = analytics_period(&before_dst, received_at, "America/New_York").unwrap();
+        let after = analytics_period(&after_dst, received_at, "America/New_York").unwrap();
+        assert_eq!(before.0, "2025-03-09");
+        assert_eq!(after.0, "2025-03-09");
+        assert_eq!(before.1, after.1);
+
+        assert!(matches!(
+            analytics_period(&observation, received_at, "Not/AZone"),
+            Err(ValidatorError::InvalidTimezone(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn analytics_snapshots_are_calendar_scoped_and_not_multiplied_by_linked_nodes() {
+        let (_dir, db) = test_db().await;
+        let owner_id: String =
+            sqlx::query_scalar("SELECT user_id FROM users WHERE username = 'owner'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, lifecycle, visibility, inventory_revision, first_seen_at, updated_at, rpc_endpoint) VALUES ('node-2', 'agent-1', 'platon-mainnet', 'active', 'private', 1, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z', 'http://127.0.0.1:2')")
+            .execute(db.pool())
+            .await
+            .unwrap();
+        let (validator, _) =
+            create_validator(&db, "platon-mainnet", "0xanalytics", None, &owner_id)
+                .await
+                .unwrap();
+        create_link(
+            &db,
+            "node-1",
+            &validator.validator_id,
+            "primary",
+            "2025-01-01T00:00:00Z",
+            None,
+            &owner_id,
+        )
+        .await
+        .unwrap();
+        create_link(
+            &db,
+            "node-2",
+            &validator.validator_id,
+            "standby",
+            "2025-01-01T00:00:00Z",
+            None,
+            &owner_id,
+        )
+        .await
+        .unwrap();
+
+        let provider = FakeProvider {
+            results: std::sync::Mutex::new(vec![
+                ValidatorProviderResult::Success(ValidatorObservation {
+                    provider_timestamp: Some("2025-01-31T15:30:00Z".to_owned()),
+                    rank: Some(1),
+                    stake_amount: Some("10".to_owned()),
+                    ..Default::default()
+                }),
+                ValidatorProviderResult::Success(ValidatorObservation {
+                    provider_timestamp: Some("2025-02-28T15:30:00Z".to_owned()),
+                    rank: Some(2),
+                    stake_amount: Some("20".to_owned()),
+                    ..Default::default()
+                }),
+                ValidatorProviderResult::Success(ValidatorObservation {
+                    provider_timestamp: Some("2025-02-28T15:30:00Z".to_owned()),
+                    rank: Some(2),
+                    stake_amount: Some("20".to_owned()),
+                    ..Default::default()
+                }),
+            ]),
+            ..FakeProvider::default()
+        };
+
+        let channels = crate::config::NotificationChannels::default();
+        for _ in 0..3 {
+            let summary =
+                refresh_all_with_channels_in_timezone(&db, &provider, &channels, "Asia/Tokyo")
+                    .await
+                    .unwrap();
+            assert_eq!(
+                summary.attempted, 1,
+                "one Validator is fetched once per refresh"
+            );
+        }
+        assert_eq!(provider.calls.lock().unwrap().len(), 3);
+
+        let daily = list_daily_snapshots(&db, &validator.validator_id, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            daily.len(),
+            2,
+            "two local calendar days, no per-Node duplication"
+        );
+        assert_eq!(daily[0].local_date, "2025-03-01");
+        assert_eq!(daily[0].month_key, "2025-03");
+        assert_eq!(daily[0].rank, Some(2));
+        assert_eq!(daily[1].local_date, "2025-02-01");
+        assert_eq!(daily[1].month_key, "2025-02");
+        assert_eq!(daily[1].rank, Some(1));
+
+        let monthly = list_monthly_aggregates(&db, &validator.validator_id, 10)
+            .await
+            .unwrap();
+        assert_eq!(monthly.len(), 2);
+        assert_eq!(monthly[0].month_key, "2025-03");
+        assert_eq!(monthly[0].snapshot_count, 1);
+        assert_eq!(monthly[0].rank_last, Some(2));
+        assert_eq!(monthly[1].month_key, "2025-02");
+        assert_eq!(monthly[1].snapshot_count, 1);
+        assert_eq!(monthly[1].rank_last, Some(1));
+    }
+
+    #[tokio::test]
+    async fn delayed_observation_uses_provider_calendar_day_and_replay_is_idempotent() {
+        let (_dir, db) = test_db().await;
+        let owner_id: String =
+            sqlx::query_scalar("SELECT user_id FROM users WHERE username = 'owner'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        let (validator, _) = create_validator(&db, "platon-mainnet", "0xdelayed", None, &owner_id)
+            .await
+            .unwrap();
+        let provider = FakeProvider {
+            results: std::sync::Mutex::new(vec![
+                ValidatorProviderResult::Success(ValidatorObservation {
+                    provider_timestamp: Some("2025-01-01T00:30:00Z".to_owned()),
+                    rank: Some(7),
+                    ..Default::default()
+                }),
+                ValidatorProviderResult::Success(ValidatorObservation {
+                    provider_timestamp: Some("2025-01-01T00:30:00Z".to_owned()),
+                    rank: Some(7),
+                    ..Default::default()
+                }),
+                ValidatorProviderResult::Success(ValidatorObservation {
+                    provider_timestamp: Some("2025-01-01T00:30:00Z".to_owned()),
+                    rank: Some(7),
+                    ..Default::default()
+                }),
+            ]),
+            ..FakeProvider::default()
+        };
+        let channels = crate::config::NotificationChannels::default();
+        refresh_all_with_channels_in_timezone(&db, &provider, &channels, "America/Los_Angeles")
+            .await
+            .unwrap();
+        refresh_all_with_channels_in_timezone(&db, &provider, &channels, "America/Los_Angeles")
+            .await
+            .unwrap();
+
+        let daily = list_daily_snapshots(&db, &validator.validator_id, 10)
+            .await
+            .unwrap();
+        assert_eq!(daily.len(), 1);
+        assert_eq!(daily[0].local_date, "2024-12-31");
+        assert_eq!(daily[0].month_key, "2024-12");
+        assert_eq!(daily[0].rank, Some(7));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM validator_monthly_aggregates WHERE validator_id = ?"
+            )
+            .bind(&validator.validator_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap(),
+            1
+        );
+
+        // A Server restart must not replay or duplicate the accepted sample.
+        db.close().await;
+        let db = initialize(ServerDatabaseConfig::new(_dir.path().join("server.db")))
+            .await
+            .unwrap();
+        refresh_all_with_channels_in_timezone(&db, &provider, &channels, "America/Los_Angeles")
+            .await
+            .unwrap();
+        let daily_after_restart = list_daily_snapshots(&db, &validator.validator_id, 10)
+            .await
+            .unwrap();
+        assert_eq!(daily_after_restart.len(), 1);
+        let monthly_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM validator_monthly_aggregates WHERE validator_id = ?",
+        )
+        .bind(&validator.validator_id)
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(monthly_count, 1);
+    }
+
+    #[tokio::test]
+    async fn provider_failure_keeps_analytics_and_marks_current_state_not_healthy() {
+        let (_dir, db) = test_db().await;
+        let owner_id: String =
+            sqlx::query_scalar("SELECT user_id FROM users WHERE username = 'owner'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        let (validator, _) = create_validator(&db, "platon-mainnet", "0xstate", None, &owner_id)
+            .await
+            .unwrap();
+        let provider = FakeProvider {
+            results: std::sync::Mutex::new(vec![
+                ValidatorProviderResult::Success(ValidatorObservation {
+                    provider_timestamp: Some("2025-01-01T00:00:00Z".to_owned()),
+                    rank: Some(3),
+                    stake_amount: Some("300".to_owned()),
+                    ..Default::default()
+                }),
+                ValidatorProviderResult::Error("provider timeout".to_owned()),
+            ]),
+            ..FakeProvider::default()
+        };
+        let channels = crate::config::NotificationChannels::default();
+        refresh_all_with_channels_in_timezone(&db, &provider, &channels, "UTC")
+            .await
+            .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM validator_daily_snapshots")
+                .fetch_one(db.pool())
+                .await
+                .unwrap(),
+            1
+        );
+        refresh_all_with_channels_in_timezone(&db, &provider, &channels, "UTC")
+            .await
+            .unwrap();
+        let insight = load_insight(&db, &validator.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(insight.outcome, "error");
+        assert_eq!(insight.rank, Some(3));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM validator_daily_snapshots")
+                .fetch_one(db.pool())
+                .await
+                .unwrap(),
+            1,
+            "a failed provider attempt must not add an analytics sample"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM validator_monthly_aggregates WHERE validator_id = ?"
+            )
+            .bind(&validator.validator_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap(),
+            1
         );
     }
 }

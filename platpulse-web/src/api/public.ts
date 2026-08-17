@@ -5,7 +5,9 @@ import {
   publicNetworks,
   publicNodeDetail,
   publicNodePeerHistory,
+  publicValidatorAnalytics,
   publicValidatorHistory,
+  type PublicValidatorAnalyticsResponse,
   type PublicValidatorHistoryResponse,
   type PublicAccessSettings,
   type PublicNetwork,
@@ -97,6 +99,16 @@ export async function fetchValidatorHistory(
 ): Promise<PublicValidatorHistoryResponse> {
   const { data, error } = await publicValidatorHistory({ path: { validator_id: validatorId }, query: { limit }, signal })
   if (error || !data) throw new Error(error?.error?.message ?? 'Unable to load Validator history')
+  return data
+}
+
+export async function fetchValidatorAnalytics(
+  validatorId: string,
+  limit = 31,
+  signal?: AbortSignal,
+): Promise<PublicValidatorAnalyticsResponse> {
+  const { data, error } = await publicValidatorAnalytics({ path: { validator_id: validatorId }, query: { limit }, signal })
+  if (error || !data) throw new Error(error?.error?.message ?? 'Unable to load Validator analytics')
   return data
 }
 
