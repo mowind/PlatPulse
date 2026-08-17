@@ -63,10 +63,12 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
 
     // Owner current Peer diagnostics are available, but raw peer addresses
     // remain outside the Admin DTO as well as the Public projection.
-    await page.getByRole('link', { name: 'Nodes' }).click()
+    const menu = page.getByRole('button', { name: 'Menu' })
+    if (await menu.isVisible()) await menu.click()
+    await page.getByRole('link', { name: 'Nodes', exact: true }).click()
     await page.getByRole('link', { name: 'Node A' }).click()
     await expect(page.getByRole('heading', { level: 2, name: 'Peer snapshot' })).toBeVisible()
-    await expect(page.getByText('3 peers')).toBeVisible()
+    await expect(page.locator('.peer-insight').first()).toContainText('3 peers')
     await expect(page.getByText('203.0.113.9')).toHaveCount(0)
     await expectNoHorizontalOverflow(page)
   })

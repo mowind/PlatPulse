@@ -74,7 +74,7 @@ export default function HomeLayout() {
       .then((enabled) => {
         if (controller.signal.aborted) return
         const current = authRef.current
-        if (current.state === 'guest' && !enabled) {
+        if (!enabled && current.state !== 'authenticated') {
           navigate('/login', { replace: true })
         } else {
           setResetting(false)
