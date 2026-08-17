@@ -8,6 +8,9 @@ import { defineConfig } from '@playwright/test'
  */
 export default defineConfig({
   testDir: './e2e',
+  // The projects boot one shared SQLite Server; desktop-only mutations and
+  // read-only viewport tests must not overlap across workers.
+  workers: 1,
   fullyParallel: true,
   reporter: 'list',
   use: {
