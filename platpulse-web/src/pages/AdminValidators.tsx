@@ -8,6 +8,7 @@ import {
   useAdminNetworks,
   useAdminNodes,
   useAdminValidatorDetail,
+  useAdminValidatorHistory,
   useAdminValidatorLinks,
   useAdminValidators,
 } from '../api/admin'
@@ -19,6 +20,7 @@ import type {
   ValidatorLinkUpdateRequest,
 } from '../api/generated'
 import { ValidatorInsight } from '../components/ValidatorInsight'
+import { ValidatorHistory } from '../components/ValidatorHistory'
 
 const ROLES = ['primary', 'standby', 'observer'] as const
 
@@ -320,6 +322,7 @@ export function AdminValidatorDetailPage() {
   const { validatorId = '' } = useParams()
   const { generation } = useAuth()
   const query = useAdminValidatorDetail(generation, validatorId)
+  const history = useAdminValidatorHistory(generation, validatorId)
   if (query.isPending) return <section className="page"><p role="status">Loading Validator…</p></section>
   if (query.isError || !query.data) return <section className="page"><p className="form-error" role="alert">Unable to load this Validator.</p></section>
   return (
@@ -328,10 +331,11 @@ export function AdminValidatorDetailPage() {
       <h1>{query.data.displayName || query.data.validatorNodeId}</h1>
       <p className="muted">{query.data.networkKey} · {query.data.validatorNodeId}</p>
       {query.data.insight && <ValidatorInsight insight={query.data.insight} />}
-      <section className="panel">
+      {history.isPending && <p role="status">Loading Validator history…</p>}
+      {history.isError && <p className="form-error" role="alert">Unable to load Validator history.</p>}
+      {history.data && <ValidatorHistory entries={history.data.entries} />}
         <h2>Link history</h2>
         {query.data.links.length === 0 ? <p className="muted">No Node Validator Links.</p> : <ul className="compact-list">{query.data.links.map((link) => <li key={link.linkId}><strong>{link.role}</strong> · {link.nodeDisplayName || link.nodeId}<span className="table-secondary">{formatDate(link.validFrom)} → {formatDate(link.validUntil)}</span></li>)}</ul>}
-      </section>
     </section>
   )
 }

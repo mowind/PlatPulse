@@ -638,24 +638,28 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                 if provider_state.is_shutting_down() {
                     break;
                 }
-                if let Err(error) = crate::validator::refresh_all_with_channels(
+                match crate::validator::refresh_all_with_channels(
                     provider_state.db(),
                     &*provider_state.validator_provider(),
                     provider_state.channels(),
                 )
                 .await
                 {
-                    eprintln!(
-                        "Validator Provider refresh deferred: {}",
-                        crate::redaction::redact_sensitive(&error.to_string())
-                    );
-                } else {
-                    provider_state
-                        .admin_realtime()
-                        .publish("validator", None::<String>, 1);
-                    provider_state
-                        .public_realtime()
-                        .publish("validator", None::<String>, 1);
+                    Ok(summary) if summary.invalidations > 0 => {
+                        provider_state
+                            .admin_realtime()
+                            .publish("validator", None::<String>, 1);
+                        provider_state
+                            .public_realtime()
+                            .publish("validator", None::<String>, 1);
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        eprintln!(
+                            "Validator Provider refresh deferred: {}",
+                            crate::redaction::redact_sensitive(&error.to_string())
+                        );
+                    }
                 }
             }
         });

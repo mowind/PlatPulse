@@ -322,16 +322,61 @@ fn decimal_decreased(previous: Option<&str>, current: Option<&str>) -> bool {
         let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
         let whole = whole.trim_start_matches('0');
         let whole = if whole.is_empty() { "0" } else { whole };
-        format!("{whole}.{}", fraction.trim_end_matches('0'))
+        let fraction = fraction.trim_end_matches('0');
+        (whole.to_owned(), fraction.to_owned())
     };
-    let previous = normalize(previous);
-    let current = normalize(current);
-    let (previous_whole, previous_fraction) = previous.split_once('.').unwrap_or((&previous, ""));
-    let (current_whole, current_fraction) = current.split_once('.').unwrap_or((&current, ""));
+    let (previous_whole, previous_fraction) = normalize(previous);
+    let (current_whole, current_fraction) = normalize(current);
     previous_whole.len() > current_whole.len()
         || (previous_whole.len() == current_whole.len()
             && (previous_whole > current_whole
-                || (previous_whole == current_whole && previous_fraction > current_fraction)))
+                || (previous_whole == current_whole && {
+                    let width = previous_fraction.len().max(current_fraction.len());
+                    let previous_fraction = format!("{:0<width$}", previous_fraction);
+                    let current_fraction = format!("{:0<width$}", current_fraction);
+                    previous_fraction > current_fraction
+                })))
+}
+
+fn counter_decreases(
+    existing: Option<&ValidatorInsightRecord>,
+    observation: &ValidatorObservation,
+) -> Vec<(&'static str, String, String)> {
+    let Some(existing) = existing else {
+        return Vec::new();
+    };
+    let mut decreases = Vec::new();
+    if decimal_decreased(
+        existing.stake_amount.as_deref(),
+        observation.stake_amount.as_deref(),
+    ) {
+        decreases.push((
+            "stake_amount",
+            existing.stake_amount.clone().unwrap_or_default(),
+            observation.stake_amount.clone().unwrap_or_default(),
+        ));
+    }
+    if decimal_decreased(
+        existing.reward_amount.as_deref(),
+        observation.reward_amount.as_deref(),
+    ) {
+        decreases.push((
+            "reward_amount",
+            existing.reward_amount.clone().unwrap_or_default(),
+            observation.reward_amount.clone().unwrap_or_default(),
+        ));
+    }
+    if matches!(
+        (existing.block_count, observation.block_count),
+        (Some(previous), Some(current)) if current < previous
+    ) {
+        decreases.push((
+            "block_count",
+            existing.block_count.unwrap_or_default().to_string(),
+            observation.block_count.unwrap_or_default().to_string(),
+        ));
+    }
+    decreases
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -916,15 +961,102 @@ pub struct ValidatorInsightRecord {
     pub candidate_previous_rank: Option<i64>,
     pub candidate_rank: Option<i64>,
     pub candidate_observations: i64,
+    pub candidate_observed_at: Option<String>,
+    pub candidate_provider_timestamp: Option<String>,
+    pub candidate_observation_key: Option<String>,
     pub last_observation_key: Option<String>,
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ValidatorRankingHistoryRecord {
+    pub history_id: String,
+    pub validator_id: String,
+    pub previous_rank: Option<i64>,
+    pub current_rank: i64,
+    pub observed_at: String,
+    pub provider_timestamp: Option<String>,
+    pub observation_key: String,
+    pub candidate_observed_at: Option<String>,
+    pub candidate_provider_timestamp: Option<String>,
+    pub candidate_observation_key: Option<String>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ValidatorCounterHistoryRecord {
+    pub history_id: String,
+    pub validator_id: String,
+    pub counter_name: String,
+    pub previous_value: String,
+    pub current_value: String,
+    pub observed_at: String,
+    pub provider_timestamp: Option<String>,
+    pub observation_key: String,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ValidatorLinkContextRecord {
+    pub link_id: String,
+    pub node_id: String,
+    pub role: String,
+    pub valid_from: String,
+    pub valid_until: Option<String>,
+}
+
+pub async fn list_ranking_history(
+    db: &ServerDatabase,
+    validator_id: &str,
+    limit: i64,
+) -> Result<Vec<ValidatorRankingHistoryRecord>, ValidatorError> {
+    Ok(sqlx::query_as::<_, ValidatorRankingHistoryRecord>(
+        "SELECT history_id, validator_id, previous_rank, current_rank, observed_at, provider_timestamp, observation_key, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key FROM validator_ranking_history WHERE validator_id = ? ORDER BY observed_at DESC, history_id DESC LIMIT ?",
+    )
+    .bind(validator_id)
+    .bind(limit)
+    .fetch_all(db.pool())
+    .await?)
+}
+
+pub async fn list_counter_history(
+    db: &ServerDatabase,
+    validator_id: &str,
+    limit: i64,
+) -> Result<Vec<ValidatorCounterHistoryRecord>, ValidatorError> {
+    Ok(sqlx::query_as::<_, ValidatorCounterHistoryRecord>(
+        "SELECT history_id, validator_id, counter_name, previous_value, current_value, observed_at, provider_timestamp, observation_key FROM validator_counter_history WHERE validator_id = ? ORDER BY observed_at DESC, history_id DESC LIMIT ?",
+    )
+    .bind(validator_id)
+    .bind(limit)
+    .fetch_all(db.pool())
+    .await?)
+}
+
+pub async fn list_link_context_at(
+    db: &ServerDatabase,
+    validator_id: &str,
+    observed_at: &str,
+    public_only: bool,
+) -> Result<Vec<ValidatorLinkContextRecord>, ValidatorError> {
+    let mut sql = String::from(
+        "SELECT l.link_id, l.node_id, l.role, l.valid_from, l.valid_until FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = ? AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?)",
+    );
+    if public_only {
+        sql.push_str(" AND n.visibility = 'public' AND n.lifecycle = 'active'");
+    }
+    sql.push_str(" ORDER BY l.node_id, l.link_id");
+    Ok(sqlx::query_as::<_, ValidatorLinkContextRecord>(&sql)
+        .bind(validator_id)
+        .bind(observed_at)
+        .bind(observed_at)
+        .fetch_all(db.pool())
+        .await?)
+}
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RefreshSummary {
     pub attempted: usize,
     pub successful: usize,
     pub changed: usize,
+    pub invalidations: usize,
 }
 
 pub async fn load_insight(
@@ -932,7 +1064,7 @@ pub async fn load_insight(
     validator_id: &str,
 ) -> Result<Option<ValidatorInsightRecord>, ValidatorError> {
     Ok(sqlx::query_as::<_, ValidatorInsightRecord>(
-        "SELECT validator_id, source, outcome, diagnostic, provider_timestamp, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, last_observation_key, updated_at FROM current_validator_insights WHERE validator_id = ?",
+        "SELECT validator_id, source, outcome, diagnostic, provider_timestamp, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at FROM current_validator_insights WHERE validator_id = ?",
     )
     .bind(validator_id)
     .fetch_optional(db.pool())
@@ -944,7 +1076,7 @@ pub async fn list_insights(
     network_key: Option<&str>,
 ) -> Result<Vec<ValidatorInsightRecord>, ValidatorError> {
     let mut sql = String::from(
-        "SELECT i.validator_id, i.source, i.outcome, i.diagnostic, i.provider_timestamp, i.last_attempt_received_at, i.last_good_received_at, i.last_good_provider_timestamp, i.rank, i.stake_amount, i.reward_amount, i.reward_rate, i.delegator_count, i.epoch, i.block_count, i.counter_state, i.change_state, i.candidate_previous_rank, i.candidate_rank, i.candidate_observations, i.last_observation_key, i.updated_at FROM current_validator_insights i JOIN validators v ON v.validator_id = i.validator_id",
+        "SELECT i.validator_id, i.source, i.outcome, i.diagnostic, i.provider_timestamp, i.last_attempt_received_at, i.last_good_received_at, i.last_good_provider_timestamp, i.rank, i.stake_amount, i.reward_amount, i.reward_rate, i.delegator_count, i.epoch, i.block_count, i.counter_state, i.change_state, i.candidate_previous_rank, i.candidate_rank, i.candidate_observations, i.candidate_observed_at, i.candidate_provider_timestamp, i.candidate_observation_key, i.last_observation_key, i.updated_at FROM current_validator_insights i JOIN validators v ON v.validator_id = i.validator_id",
     );
     if network_key.is_some() {
         sql.push_str(" WHERE v.network_key = ?");
@@ -1008,6 +1140,9 @@ pub async fn refresh_all_with_channels(
         if changed.1 {
             summary.changed += 1;
         }
+        if changed.2 {
+            summary.invalidations += 1;
+        }
     }
     Ok(summary)
 }
@@ -1017,11 +1152,10 @@ async fn apply_provider_result(
     source: &str,
     validator_id: &str,
     result: ValidatorProviderResult,
-) -> Result<(bool, bool), ValidatorError> {
+) -> Result<(bool, bool, bool), ValidatorError> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     let existing = load_insight(db, validator_id).await?;
     let mut tx = db.pool().begin().await?;
-    let mut confirmed_change = false;
     match result {
         ValidatorProviderResult::Success(observation) => {
             validate_observation(&observation)?;
@@ -1030,9 +1164,12 @@ async fn apply_provider_result(
                 .as_ref()
                 .and_then(|row| row.last_observation_key.as_deref())
                 == Some(key.as_str())
+                && existing
+                    .as_ref()
+                    .is_none_or(|row| row.candidate_rank.is_none())
             {
                 sqlx::query(
-                    "UPDATE current_validator_insights SET outcome = 'success', diagnostic = NULL, last_attempt_received_at = ?, last_good_received_at = ?, change_state = current_validator_insights.change_state, updated_at = ? WHERE validator_id = ?",
+                    "UPDATE current_validator_insights SET outcome = 'success', diagnostic = NULL, last_attempt_received_at = ?, last_good_received_at = ?, updated_at = ? WHERE validator_id = ?",
                 )
                 .bind(&now)
                 .bind(&now)
@@ -1041,18 +1178,23 @@ async fn apply_provider_result(
                 .execute(&mut *tx)
                 .await?;
                 tx.commit().await?;
-                return Ok((true, false));
+                return Ok((true, false, false));
             }
+
+            // A rank-less success cannot establish ranking evidence. The first
+            // successful rank establishes the baseline and is never a change.
+            let baseline_exists = existing
+                .as_ref()
+                .is_some_and(|row| row.last_good_received_at.is_some() && row.rank.is_some());
             let previous_rank = existing.as_ref().and_then(|row| row.rank);
-            let counter_state = if existing.as_ref().is_some_and(|row| {
-                decimal_decreased(row.stake_amount.as_deref(), observation.stake_amount.as_deref())
-                    || decimal_decreased(row.reward_amount.as_deref(), observation.reward_amount.as_deref())
-                    || matches!((row.block_count, observation.block_count), (Some(old), Some(new)) if new < old)
-            }) {
+            let decreases = counter_decreases(existing.as_ref(), &observation);
+            let counter_changed = !decreases.is_empty();
+            let counter_state = if counter_changed {
                 "counter_reset"
             } else {
                 "normal"
             };
+
             let mut candidate_previous_rank = existing
                 .as_ref()
                 .and_then(|row| row.candidate_previous_rank);
@@ -1060,50 +1202,114 @@ async fn apply_provider_result(
             let mut candidate_observations = existing
                 .as_ref()
                 .map_or(0, |row| row.candidate_observations);
-            if let Some(candidate) = candidate_rank {
-                if Some(candidate) == observation.rank && candidate_observations > 0 {
-                    if candidate_previous_rank != observation.rank {
-                        sqlx::query("INSERT OR IGNORE INTO validator_ranking_history (history_id, validator_id, previous_rank, current_rank, observed_at, provider_timestamp, observation_key) VALUES (?, ?, ?, ?, ?, ?, ?)")
+            let mut candidate_observed_at = existing
+                .as_ref()
+                .and_then(|row| row.candidate_observed_at.clone());
+            let mut candidate_provider_timestamp = existing
+                .as_ref()
+                .and_then(|row| row.candidate_provider_timestamp.clone());
+            let mut candidate_observation_key = existing
+                .as_ref()
+                .and_then(|row| row.candidate_observation_key.clone());
+            let mut confirmed_ranking_change = false;
+
+            if baseline_exists {
+                match (previous_rank, observation.rank) {
+                    (Some(previous), Some(current)) if previous == current => {
+                        candidate_previous_rank = None;
+                        candidate_rank = None;
+                        candidate_observations = 0;
+                        candidate_observed_at = None;
+                        candidate_provider_timestamp = None;
+                        candidate_observation_key = None;
+                    }
+                    (Some(previous), Some(current))
+                        if candidate_previous_rank == Some(previous)
+                            && candidate_rank == Some(current)
+                            && candidate_observations == 1 =>
+                    {
+                        sqlx::query("INSERT OR IGNORE INTO validator_ranking_history (history_id, validator_id, previous_rank, current_rank, observed_at, provider_timestamp, observation_key, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
                             .bind(uuid::Uuid::new_v4().to_string())
                             .bind(validator_id)
-                            .bind(candidate_previous_rank)
-                            .bind(observation.rank)
+                            .bind(previous)
+                            .bind(current)
                             .bind(&now)
                             .bind(observation.provider_timestamp.as_deref())
                             .bind(&key)
+                            .bind(candidate_observed_at.as_deref())
+                            .bind(candidate_provider_timestamp.as_deref())
+                            .bind(candidate_observation_key.as_deref())
                             .execute(&mut *tx)
                             .await?;
-                        confirmed_change = true;
+                        confirmed_ranking_change = true;
+                        candidate_previous_rank = None;
+                        candidate_rank = None;
+                        candidate_observations = 0;
+                        candidate_observed_at = None;
+                        candidate_provider_timestamp = None;
+                        candidate_observation_key = None;
                     }
-                    candidate_previous_rank = None;
-                    candidate_rank = None;
-                    candidate_observations = 0;
-                } else {
-                    candidate_previous_rank = previous_rank;
-                    candidate_rank = observation.rank;
-                    candidate_observations = if observation.rank.is_some() { 1 } else { 0 };
+                    (Some(previous), Some(current)) => {
+                        candidate_previous_rank = Some(previous);
+                        candidate_rank = Some(current);
+                        candidate_observations = 1;
+                        candidate_observed_at = Some(now.clone());
+                        candidate_provider_timestamp = observation.provider_timestamp.clone();
+                        candidate_observation_key = Some(key.clone());
+                    }
+                    _ => {
+                        candidate_previous_rank = None;
+                        candidate_rank = None;
+                        candidate_observations = 0;
+                        candidate_observed_at = None;
+                        candidate_provider_timestamp = None;
+                        candidate_observation_key = None;
+                    }
                 }
-            } else if previous_rank != observation.rank {
-                candidate_previous_rank = previous_rank;
-                candidate_rank = observation.rank;
-                candidate_observations = if observation.rank.is_some() { 1 } else { 0 };
+            } else {
+                candidate_previous_rank = None;
+                candidate_rank = None;
+                candidate_observations = 0;
+                candidate_observed_at = None;
+                candidate_provider_timestamp = None;
+                candidate_observation_key = None;
             }
+
+            for (counter_name, previous_value, current_value) in decreases {
+                sqlx::query("INSERT OR IGNORE INTO validator_counter_history (history_id, validator_id, counter_name, previous_value, current_value, observed_at, provider_timestamp, observation_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+                    .bind(uuid::Uuid::new_v4().to_string())
+                    .bind(validator_id)
+                    .bind(counter_name)
+                    .bind(previous_value)
+                    .bind(current_value)
+                    .bind(&now)
+                    .bind(observation.provider_timestamp.as_deref())
+                    .bind(&key)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+
+            let stored_rank = if candidate_rank.is_some() && !confirmed_ranking_change {
+                previous_rank
+            } else {
+                observation.rank
+            };
             let change_state = if counter_state == "counter_reset" {
                 "counter_reset"
-            } else if confirmed_change {
+            } else if confirmed_ranking_change {
                 "ranking_changed"
             } else {
                 "normal"
             };
             let source = bounded_source(source);
-            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, last_observation_key, updated_at) VALUES (?, ?, 'success', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=NULL, provider_timestamp=excluded.provider_timestamp, last_attempt_received_at=excluded.last_attempt_received_at, last_good_received_at=excluded.last_good_received_at, last_good_provider_timestamp=excluded.last_good_provider_timestamp, rank=excluded.rank, stake_amount=excluded.stake_amount, reward_amount=excluded.reward_amount, reward_rate=excluded.reward_rate, delegator_count=excluded.delegator_count, epoch=excluded.epoch, block_count=excluded.block_count, counter_state=excluded.counter_state, change_state=excluded.change_state, candidate_previous_rank=excluded.candidate_previous_rank, candidate_rank=excluded.candidate_rank, candidate_observations=excluded.candidate_observations, last_observation_key=excluded.last_observation_key, updated_at=excluded.updated_at")
+            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, ?, 'success', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=NULL, provider_timestamp=excluded.provider_timestamp, last_attempt_received_at=excluded.last_attempt_received_at, last_good_received_at=excluded.last_good_received_at, last_good_provider_timestamp=excluded.last_good_provider_timestamp, rank=excluded.rank, stake_amount=excluded.stake_amount, reward_amount=excluded.reward_amount, reward_rate=excluded.reward_rate, delegator_count=excluded.delegator_count, epoch=excluded.epoch, block_count=excluded.block_count, counter_state=excluded.counter_state, change_state=excluded.change_state, candidate_previous_rank=excluded.candidate_previous_rank, candidate_rank=excluded.candidate_rank, candidate_observations=excluded.candidate_observations, candidate_observed_at=excluded.candidate_observed_at, candidate_provider_timestamp=excluded.candidate_provider_timestamp, candidate_observation_key=excluded.candidate_observation_key, last_observation_key=excluded.last_observation_key, updated_at=excluded.updated_at")
                 .bind(validator_id)
                 .bind(source)
                 .bind(observation.provider_timestamp.as_deref())
                 .bind(&now)
                 .bind(&now)
                 .bind(observation.provider_timestamp.as_deref())
-                .bind(observation.rank)
+                .bind(stored_rank)
                 .bind(observation.stake_amount.as_deref())
                 .bind(observation.reward_amount.as_deref())
                 .bind(observation.reward_rate.as_deref())
@@ -1115,12 +1321,19 @@ async fn apply_provider_result(
                 .bind(candidate_previous_rank)
                 .bind(candidate_rank)
                 .bind(candidate_observations)
+                .bind(candidate_observed_at)
+                .bind(candidate_provider_timestamp)
+                .bind(candidate_observation_key)
                 .bind(&key)
                 .bind(&now)
                 .execute(&mut *tx)
                 .await?;
             tx.commit().await?;
-            Ok((true, confirmed_change))
+            Ok((
+                true,
+                confirmed_ranking_change,
+                confirmed_ranking_change || counter_changed,
+            ))
         }
         outcome => {
             let (name, diagnostic) = match outcome {
@@ -1134,8 +1347,11 @@ async fn apply_provider_result(
                 }
                 ValidatorProviderResult::Success(_) => unreachable!(),
             };
+            let invalidated = existing
+                .as_ref()
+                .is_none_or(|row| row.outcome != name || row.diagnostic != diagnostic);
             let source = bounded_source(source);
-            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, candidate_previous_rank, candidate_rank, candidate_observations, last_observation_key, updated_at) VALUES (?, ?, ?, ?, NULL, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'normal', NULL, NULL, 0, NULL, ?) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=excluded.diagnostic, last_attempt_received_at=excluded.last_attempt_received_at, provider_timestamp=current_validator_insights.provider_timestamp, last_good_received_at=current_validator_insights.last_good_received_at, last_good_provider_timestamp=current_validator_insights.last_good_provider_timestamp, rank=current_validator_insights.rank, stake_amount=current_validator_insights.stake_amount, reward_amount=current_validator_insights.reward_amount, reward_rate=current_validator_insights.reward_rate, delegator_count=current_validator_insights.delegator_count, epoch=current_validator_insights.epoch, block_count=current_validator_insights.block_count, counter_state=current_validator_insights.counter_state, candidate_previous_rank=NULL, candidate_rank=NULL, candidate_observations=0, last_observation_key=NULL, updated_at=excluded.updated_at")
+            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, ?, ?, ?, NULL, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'normal', 'normal', NULL, NULL, 0, NULL, NULL, NULL, NULL, ?) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=excluded.diagnostic, last_attempt_received_at=excluded.last_attempt_received_at, provider_timestamp=current_validator_insights.provider_timestamp, last_good_received_at=current_validator_insights.last_good_received_at, last_good_provider_timestamp=current_validator_insights.last_good_provider_timestamp, rank=current_validator_insights.rank, stake_amount=current_validator_insights.stake_amount, reward_amount=current_validator_insights.reward_amount, reward_rate=current_validator_insights.reward_rate, delegator_count=current_validator_insights.delegator_count, epoch=current_validator_insights.epoch, block_count=current_validator_insights.block_count, counter_state=current_validator_insights.counter_state, change_state='normal', candidate_previous_rank=NULL, candidate_rank=NULL, candidate_observations=0, candidate_observed_at=NULL, candidate_provider_timestamp=NULL, candidate_observation_key=NULL, last_observation_key=NULL, updated_at=excluded.updated_at")
                 .bind(validator_id)
                 .bind(source)
                 .bind(name)
@@ -1145,7 +1361,7 @@ async fn apply_provider_result(
                 .execute(&mut *tx)
                 .await?;
             tx.commit().await?;
-            Ok((false, false))
+            Ok((false, false, invalidated))
         }
     }
 }
@@ -1172,6 +1388,7 @@ fn validate_observation(observation: &ValidatorObservation) -> Result<(), Valida
     .into_iter()
     .flatten()
     {
+        normalize_bounded_text(value).map_err(ValidatorError::InvalidProviderObservation)?;
         validate_nonnegative_decimal(value).map_err(ValidatorError::InvalidProviderObservation)?;
     }
     if let Some(timestamp) = observation.provider_timestamp.as_deref() {
@@ -1422,10 +1639,13 @@ mod tests {
         };
         let first = refresh_all(&db, &provider).await.unwrap();
         assert_eq!(first.attempted, 1);
+        assert_eq!(first.invalidations, 0);
         let second = refresh_all(&db, &provider).await.unwrap();
         assert_eq!(second.changed, 0);
+        assert_eq!(second.invalidations, 1);
         let third = refresh_all(&db, &provider).await.unwrap();
         assert_eq!(third.changed, 1);
+        assert_eq!(third.invalidations, 1);
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM validator_ranking_history")
                 .fetch_one(db.pool())
@@ -1460,6 +1680,142 @@ mod tests {
         assert!(!failed_diagnostic.contains("https://"));
     }
 
+    #[tokio::test]
+    async fn ranking_changes_need_consecutive_successes_and_replay_is_idempotent() {
+        let (_dir, db) = test_db().await;
+        let owner_id: String =
+            sqlx::query_scalar("SELECT user_id FROM users WHERE username = 'owner'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        let (validator, _) = create_validator(&db, "platon-mainnet", "0xrank", None, &owner_id)
+            .await
+            .unwrap();
+        let provider = FakeProvider {
+            results: std::sync::Mutex::new(vec![
+                ValidatorProviderResult::Success(ValidatorObservation {
+                    rank: Some(1),
+                    ..Default::default()
+                }),
+                ValidatorProviderResult::Success(ValidatorObservation {
+                    rank: Some(2),
+                    ..Default::default()
+                }),
+                ValidatorProviderResult::Error("temporary failure".to_owned()),
+                ValidatorProviderResult::Success(ValidatorObservation {
+                    rank: Some(2),
+                    ..Default::default()
+                }),
+                ValidatorProviderResult::Success(ValidatorObservation {
+                    rank: Some(2),
+                    ..Default::default()
+                }),
+                ValidatorProviderResult::Success(ValidatorObservation {
+                    rank: Some(2),
+                    ..Default::default()
+                }),
+            ]),
+            ..FakeProvider::default()
+        };
+
+        refresh_all(&db, &provider).await.unwrap();
+        refresh_all(&db, &provider).await.unwrap();
+        let candidate = load_insight(&db, &validator.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(candidate.rank, Some(1));
+        assert_eq!(candidate.candidate_rank, Some(2));
+        refresh_all(&db, &provider).await.unwrap();
+        let after_failure = load_insight(&db, &validator.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after_failure.outcome, "error");
+        assert_eq!(after_failure.candidate_rank, None);
+        refresh_all(&db, &provider).await.unwrap();
+        refresh_all(&db, &provider).await.unwrap();
+        let confirmed = load_insight(&db, &validator.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(confirmed.rank, Some(2));
+        assert_eq!(confirmed.candidate_rank, None);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM validator_ranking_history WHERE validator_id = ?"
+            )
+            .bind(&validator.validator_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap(),
+            1
+        );
+        refresh_all(&db, &provider).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM validator_ranking_history WHERE validator_id = ?"
+            )
+            .bind(&validator.validator_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn counter_correction_history_keeps_exact_decimal_evidence() {
+        let (_dir, db) = test_db().await;
+        let owner_id: String =
+            sqlx::query_scalar("SELECT user_id FROM users WHERE username = 'owner'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        let (validator, _) = create_validator(&db, "platon-mainnet", "0xcounter", None, &owner_id)
+            .await
+            .unwrap();
+        let provider = FakeProvider {
+            results: std::sync::Mutex::new(vec![
+                ValidatorProviderResult::Success(ValidatorObservation {
+                    stake_amount: Some("100.000000000000000001".to_owned()),
+                    ..Default::default()
+                }),
+                ValidatorProviderResult::Success(ValidatorObservation {
+                    stake_amount: Some("99.999999999999999999".to_owned()),
+                    ..Default::default()
+                }),
+                ValidatorProviderResult::Success(ValidatorObservation {
+                    stake_amount: Some("99.999999999999999999".to_owned()),
+                    ..Default::default()
+                }),
+            ]),
+            ..FakeProvider::default()
+        };
+        refresh_all(&db, &provider).await.unwrap();
+        refresh_all(&db, &provider).await.unwrap();
+        refresh_all(&db, &provider).await.unwrap();
+        let row = sqlx::query_as::<_, ValidatorCounterHistoryRecord>(
+            "SELECT history_id, validator_id, counter_name, previous_value, current_value, observed_at, provider_timestamp, observation_key FROM validator_counter_history WHERE validator_id = ?",
+        )
+        .bind(&validator.validator_id)
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(row.counter_name, "stake_amount");
+        assert_eq!(row.previous_value, "100.000000000000000001");
+        assert_eq!(row.current_value, "99.999999999999999999");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM validator_counter_history WHERE validator_id = ?"
+            )
+            .bind(&validator.validator_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap(),
+            1
+        );
+    }
     #[tokio::test]
     async fn ending_a_link_preserves_history_and_allows_replacement() {
         let (_dir, db) = test_db().await;

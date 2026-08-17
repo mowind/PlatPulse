@@ -1,4 +1,5 @@
-import type { AdminValidatorInsight, PublicValidatorInsight } from '../api/generated'
+import type { AdminValidatorInsight, AdminValidatorHistoryEntry, PublicValidatorInsight, PublicValidatorHistoryEntry } from '../api/generated'
+import { ValidatorHistory } from './ValidatorHistory'
 
 type Insight = PublicValidatorInsight | AdminValidatorInsight
 
@@ -14,7 +15,7 @@ function stateLabel(state: string): string {
   }
 }
 
-export function ValidatorInsight({ insight, compact = false }: { insight: Insight; compact?: boolean }) {
+export function ValidatorInsight({ insight, compact = false, history }: { insight: Insight; compact?: boolean; history?: Array<AdminValidatorHistoryEntry | PublicValidatorHistoryEntry> }) {
   return (
     <section className={`validator-insight${compact ? ' validator-insight-compact' : ''}`} aria-label="Validator insight">
       <p><span className={`status status-${insight.state}`}>{stateLabel(insight.state)}</span> · {insight.freshness === 'unknown' ? 'Never observed' : insight.freshness}</p>
@@ -26,6 +27,7 @@ export function ValidatorInsight({ insight, compact = false }: { insight: Insigh
         <div><dt>Blocks</dt><dd>{insight.blockCount ?? 'Unknown'}</dd></div>
       </dl>
       {insight.counterState === 'counter_reset' && <p className="form-error" role="status">Counter reset or correction observed; prior value was not treated as normal growth.</p>}
+      {history && <ValidatorHistory entries={history} compact={compact} />}
     </section>
   )
 }

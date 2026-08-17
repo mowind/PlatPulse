@@ -5,6 +5,8 @@ import {
   publicNetworks,
   publicNodeDetail,
   publicNodePeerHistory,
+  publicValidatorHistory,
+  type PublicValidatorHistoryResponse,
   type PublicAccessSettings,
   type PublicNetwork,
   type PublicNode,
@@ -87,6 +89,17 @@ export async function fetchNodePeerHistory(nodeId: string, signal?: AbortSignal)
   if (error || !data) throw new Error(error?.error?.message ?? 'Unable to load Peer history')
   return data
 }
+
+export async function fetchValidatorHistory(
+  validatorId: string,
+  limit = 50,
+  signal?: AbortSignal,
+): Promise<PublicValidatorHistoryResponse> {
+  const { data, error } = await publicValidatorHistory({ path: { validator_id: validatorId }, query: { limit }, signal })
+  if (error || !data) throw new Error(error?.error?.message ?? 'Unable to load Validator history')
+  return data
+}
+
 
  export type PublicHistoryItem = { nodeId: string; height: number | null; blockTimeMs: number | null; transactionCount: number | null; source: string | null; coinbase: string | null; sealSignerMatch: string | null; protocolProposer: string | null; observedAt: string | null; freshness: string | null; gapFromHeight: number | null; gapToHeight: number | null; gapKind: string | null; gapReason: string | null; divergenceKind: string | null; divergenceReason: string | null }
 

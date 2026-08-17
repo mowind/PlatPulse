@@ -239,6 +239,36 @@ export type AdminPeerLagSummary = {
     sample_count: number;
 };
 
+export type AdminValidatorHistoryEntry = {
+    candidateObservedAt?: string | null;
+    candidateProviderTimestamp?: string | null;
+    counterName?: string | null;
+    currentRank?: number | null;
+    currentValue?: string | null;
+    historyId: string;
+    kind: string;
+    links: Array<AdminValidatorHistoryLink>;
+    observationKey: string;
+    observedAt: string;
+    previousRank?: number | null;
+    previousValue?: string | null;
+    providerTimestamp?: string | null;
+};
+
+export type AdminValidatorHistoryLink = {
+    linkId: string;
+    nodeId: string;
+    role: string;
+    validFrom: string;
+    validUntil?: string | null;
+};
+
+export type AdminValidatorHistoryResponse = {
+    entries: Array<AdminValidatorHistoryEntry>;
+    networkKey: string;
+    validatorId: string;
+};
+
 export type AdminValidatorInsight = {
     attemptedAt?: string | null;
     blockCount?: number | null;
@@ -1248,6 +1278,28 @@ export type PublicPeerLagSummary = {
     maximum?: number | null;
     minimum?: number | null;
     sampleCount: number;
+};
+
+/**
+ * Public Home projection. The query boundary only selects public, active
+ * Nodes and never returns endpoint, Agent, host identity, capacity, or raw
+ * errors from the Admin projection.
+ */
+export type PublicValidatorHistoryEntry = {
+    counterName?: string | null;
+    currentRank?: number | null;
+    currentValue?: string | null;
+    kind: string;
+    linkRoles: Array<string>;
+    observedAt: string;
+    previousRank?: number | null;
+    previousValue?: string | null;
+    providerTimestamp?: string | null;
+};
+
+export type PublicValidatorHistoryResponse = {
+    entries: Array<PublicValidatorHistoryEntry>;
+    validatorId: string;
 };
 
 export type PublicValidatorInsight = {
@@ -3752,6 +3804,35 @@ export type AdminValidatorDetailResponses = {
 
 export type AdminValidatorDetailResponse = AdminValidatorDetailResponses[keyof AdminValidatorDetailResponses];
 
+export type AdminValidatorHistoryData = {
+    body?: never;
+    path: {
+        /**
+         * Validator ID
+         */
+        validator_id: string;
+    };
+    query?: {
+        limit?: number | null;
+    };
+    url: '/api/admin/v1/validators/{validator_id}/history';
+};
+
+export type AdminValidatorHistoryErrors = {
+    401: ApiErrorBody;
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type AdminValidatorHistoryError = AdminValidatorHistoryErrors[keyof AdminValidatorHistoryErrors];
+
+export type AdminValidatorHistoryResponses = {
+    200: AdminValidatorHistoryResponse;
+};
+
+export type AdminValidatorHistoryResponse2 = AdminValidatorHistoryResponses[keyof AdminValidatorHistoryResponses];
+
 export type PublicAccessSettingsData = {
     body?: never;
     path?: never;
@@ -4009,6 +4090,33 @@ export type SessionHandlerResponses = {
 };
 
 export type SessionHandlerResponse = SessionHandlerResponses[keyof SessionHandlerResponses];
+
+export type PublicValidatorHistoryData = {
+    body?: never;
+    path: {
+        /**
+         * Validator ID
+         */
+        validator_id: string;
+    };
+    query?: {
+        limit?: number;
+    };
+    url: '/api/public/v1/validators/{validator_id}/history';
+};
+
+export type PublicValidatorHistoryErrors = {
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type PublicValidatorHistoryError = PublicValidatorHistoryErrors[keyof PublicValidatorHistoryErrors];
+
+export type PublicValidatorHistoryResponses = {
+    200: PublicValidatorHistoryResponse;
+};
+
+export type PublicValidatorHistoryResponse2 = PublicValidatorHistoryResponses[keyof PublicValidatorHistoryResponses];
 
 export type LiveData = {
     body?: never;

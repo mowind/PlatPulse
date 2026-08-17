@@ -573,8 +573,38 @@ button {
   padding: 0.75rem;
 }
 
-.validator-insight .detail-list {
-  margin: 0;
+.validator-history {
+  margin-top: 1rem;
+}
+
+.validator-history h3 {
+  margin: 0 0 0.625rem;
+}
+
+.validator-history-list {
+  display: grid;
+  gap: 0.625rem;
+}
+
+.validator-history-entry {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 0.75rem;
+}
+
+.validator-history-entry summary {
+  cursor: pointer;
+  font-weight: 750;
+  overflow-wrap: anywhere;
+}
+
+.validator-history-entry .detail-list {
+  margin-top: 0.75rem;
+}
+
+.validator-history-compact {
+  font-size: 0.9rem;
 }
 
 .network-grid,

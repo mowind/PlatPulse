@@ -6,7 +6,10 @@
 
 use super::admin::{mutation_error, mutation_guard_ok};
 use super::{AppState, AuthenticatedSession, RequestId};
-use crate::validator::{self, NodeValidatorLinkRecord, ValidatorError, ValidatorRecord};
+use crate::validator::{
+    self, NodeValidatorLinkRecord, ValidatorCounterHistoryRecord, ValidatorError,
+    ValidatorRankingHistoryRecord, ValidatorRecord,
+};
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -50,6 +53,131 @@ pub struct AdminValidatorInsight {
     pub block_count: Option<i64>,
     pub counter_state: String,
     pub diagnostic: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminValidatorHistoryLink {
+    pub link_id: String,
+    pub node_id: String,
+    pub role: String,
+    pub valid_from: String,
+    pub valid_until: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminValidatorHistoryEntry {
+    pub history_id: String,
+    pub kind: String,
+    pub observed_at: String,
+    pub provider_timestamp: Option<String>,
+    pub previous_rank: Option<i64>,
+    pub current_rank: Option<i64>,
+    pub candidate_observed_at: Option<String>,
+    pub candidate_provider_timestamp: Option<String>,
+    pub counter_name: Option<String>,
+    pub previous_value: Option<String>,
+    pub current_value: Option<String>,
+    pub observation_key: String,
+    pub links: Vec<AdminValidatorHistoryLink>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminValidatorHistoryResponse {
+    pub validator_id: String,
+    pub network_key: String,
+    pub entries: Vec<AdminValidatorHistoryEntry>,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidatorHistoryQuery {
+    pub limit: Option<i64>,
+}
+
+async fn admin_history_entry_links(
+    state: &AppState,
+    validator_id: &str,
+    observed_at: &str,
+) -> Result<Vec<AdminValidatorHistoryLink>, ValidatorError> {
+    Ok(
+        validator::list_link_context_at(state.db(), validator_id, observed_at, false)
+            .await?
+            .into_iter()
+            .map(|link| AdminValidatorHistoryLink {
+                link_id: link.link_id,
+                node_id: link.node_id,
+                role: link.role,
+                valid_from: link.valid_from,
+                valid_until: link.valid_until,
+            })
+            .collect(),
+    )
+}
+
+async fn admin_history_entries(
+    state: &AppState,
+    validator_id: &str,
+    limit: i64,
+) -> Result<Vec<AdminValidatorHistoryEntry>, ValidatorError> {
+    let rankings = validator::list_ranking_history(state.db(), validator_id, limit).await?;
+    let counters = validator::list_counter_history(state.db(), validator_id, limit).await?;
+    let mut entries = Vec::with_capacity(rankings.len() + counters.len());
+    for record in rankings {
+        entries.push(admin_ranking_history_entry(state, record).await?);
+    }
+    for record in counters {
+        entries.push(admin_counter_history_entry(state, record).await?);
+    }
+    entries.sort_by(|left, right| right.observed_at.cmp(&left.observed_at));
+    entries.truncate(limit as usize);
+    Ok(entries)
+}
+
+async fn admin_ranking_history_entry(
+    state: &AppState,
+    record: ValidatorRankingHistoryRecord,
+) -> Result<AdminValidatorHistoryEntry, ValidatorError> {
+    let links = admin_history_entry_links(state, &record.validator_id, &record.observed_at).await?;
+    Ok(AdminValidatorHistoryEntry {
+        history_id: record.history_id,
+        kind: "ranking_changed".to_owned(),
+        observed_at: record.observed_at,
+        provider_timestamp: record.provider_timestamp,
+        previous_rank: record.previous_rank,
+        current_rank: Some(record.current_rank),
+        candidate_observed_at: record.candidate_observed_at,
+        candidate_provider_timestamp: record.candidate_provider_timestamp,
+        counter_name: None,
+        previous_value: None,
+        current_value: None,
+        observation_key: record.observation_key,
+        links,
+    })
+}
+
+async fn admin_counter_history_entry(
+    state: &AppState,
+    record: ValidatorCounterHistoryRecord,
+) -> Result<AdminValidatorHistoryEntry, ValidatorError> {
+    let links = admin_history_entry_links(state, &record.validator_id, &record.observed_at).await?;
+    Ok(AdminValidatorHistoryEntry {
+        history_id: record.history_id,
+        kind: "counter_reset_or_correction".to_owned(),
+        observed_at: record.observed_at,
+        provider_timestamp: record.provider_timestamp,
+        previous_rank: None,
+        current_rank: None,
+        candidate_observed_at: None,
+        candidate_provider_timestamp: None,
+        counter_name: Some(record.counter_name),
+        previous_value: Some(record.previous_value),
+        current_value: Some(record.current_value),
+        observation_key: record.observation_key,
+        links,
+    })
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -726,10 +854,45 @@ pub(crate) async fn end_validator_link(
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/admin/v1/validators/{validator_id}/history",
+    tag = "admin",
+    params(("validator_id" = String, Path, description = "Validator ID"), ValidatorHistoryQuery),
+    responses((status = 200, body = AdminValidatorHistoryResponse), (status = 401, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
+)]
+pub(crate) async fn admin_validator_history(
+    State(state): State<AppState>,
+    Path(validator_id): Path<String>,
+    Query(query): Query<ValidatorHistoryQuery>,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    let Some(record) = (match validator::get_validator(&state.database(), &validator_id).await {
+        Ok(value) => value,
+        Err(error) => return error_response(&request_id.0, error),
+    }) else {
+        return error_response(&request_id.0, ValidatorError::ValidatorNotFound);
+    };
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    match admin_history_entries(&state, &validator_id, limit).await {
+        Ok(entries) => Json(AdminValidatorHistoryResponse {
+            validator_id,
+            network_key: record.network_key,
+            entries,
+        })
+        .into_response(),
+        Err(error) => error_response(&request_id.0, error),
+    }
+}
+
 pub(crate) fn router() -> Router<AppState> {
     Router::<AppState>::new()
         .route("/validators", get(admin_validators))
         .route("/validators/{validator_id}", get(admin_validator_detail))
+        .route(
+            "/validators/{validator_id}/history",
+            get(admin_validator_history),
+        )
         .route("/networks/{network_key}/validators", post(create_validator))
         .route("/validator-links", get(admin_validator_links))
         .route(

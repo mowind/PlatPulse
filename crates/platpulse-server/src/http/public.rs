@@ -1271,6 +1271,175 @@ fn public_node_query(filter: &str, order: &str) -> String {
 /// Public Home projection. The query boundary only selects public, active
 /// Nodes and never returns endpoint, Agent, host identity, capacity, or raw
 /// errors from the Admin projection.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicValidatorHistoryEntry {
+    pub kind: String,
+    pub observed_at: String,
+    pub provider_timestamp: Option<String>,
+    pub previous_rank: Option<i64>,
+    pub current_rank: Option<i64>,
+    pub counter_name: Option<String>,
+    pub previous_value: Option<String>,
+    pub current_value: Option<String>,
+    pub link_roles: Vec<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicValidatorHistoryResponse {
+    pub validator_id: String,
+    pub entries: Vec<PublicValidatorHistoryEntry>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/public/v1/validators/{validator_id}/history",
+    tag = "public",
+    params(("validator_id" = String, Path, description = "Validator ID"), ("limit" = Option<i64>, Query)),
+    responses((status = 200, body = PublicValidatorHistoryResponse), (status = 404, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
+)]
+pub(crate) async fn public_validator_history(
+    State(state): State<AppState>,
+    Path(validator_id): Path<String>,
+    Query(query): Query<HistoryQuery>,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    let Some(validator) = (match validator::get_validator(state.db(), &validator_id).await {
+        Ok(value) => value,
+        Err(_) => {
+            return error_response(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    }) else {
+        return error_response(
+            &request_id.0,
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "resource not found",
+        );
+    };
+    let now = format_rfc3339(crate::auth::now_utc());
+    let visible = sqlx::query_scalar::<_, i64>(
+        "SELECT 1 FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = ? AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.visibility = 'public' AND n.lifecycle = 'active' LIMIT 1",
+    )
+    .bind(&validator_id)
+    .bind(&now)
+    .bind(&now)
+    .fetch_optional(state.db().pool())
+    .await;
+    if !matches!(visible, Ok(Some(_))) {
+        return error_response(
+            &request_id.0,
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "resource not found",
+        );
+    }
+
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let rankings = match validator::list_ranking_history(state.db(), &validator_id, limit).await {
+        Ok(value) => value,
+        Err(_) => {
+            return error_response(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    };
+    let counters = match validator::list_counter_history(state.db(), &validator_id, limit).await {
+        Ok(value) => value,
+        Err(_) => {
+            return error_response(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    };
+    let mut entries = Vec::with_capacity(rankings.len() + counters.len());
+    for record in rankings {
+        let links = match validator::list_link_context_at(
+            state.db(),
+            &validator_id,
+            &record.observed_at,
+            true,
+        )
+        .await
+        {
+            Ok(value) => value,
+            Err(_) => {
+                return error_response(
+                    &request_id.0,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "server database is unavailable",
+                );
+            }
+        };
+        if !links.is_empty() {
+            entries.push(PublicValidatorHistoryEntry {
+                kind: "ranking_changed".to_owned(),
+                observed_at: record.observed_at,
+                provider_timestamp: record.provider_timestamp,
+                previous_rank: record.previous_rank,
+                current_rank: Some(record.current_rank),
+                counter_name: None,
+                previous_value: None,
+                current_value: None,
+                link_roles: links.into_iter().map(|link| link.role).collect(),
+            });
+        }
+    }
+    for record in counters {
+        let links = match validator::list_link_context_at(
+            state.db(),
+            &validator_id,
+            &record.observed_at,
+            true,
+        )
+        .await
+        {
+            Ok(value) => value,
+            Err(_) => {
+                return error_response(
+                    &request_id.0,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "server database is unavailable",
+                );
+            }
+        };
+        if !links.is_empty() {
+            entries.push(PublicValidatorHistoryEntry {
+                kind: "counter_reset_or_correction".to_owned(),
+                observed_at: record.observed_at,
+                provider_timestamp: record.provider_timestamp,
+                previous_rank: None,
+                current_rank: None,
+                counter_name: Some(record.counter_name),
+                previous_value: Some(record.previous_value),
+                current_value: Some(record.current_value),
+                link_roles: links.into_iter().map(|link| link.role).collect(),
+            });
+        }
+    }
+    entries.sort_by(|left, right| right.observed_at.cmp(&left.observed_at));
+    entries.truncate(limit as usize);
+    Json(PublicValidatorHistoryResponse {
+        validator_id: validator.validator_id,
+        entries,
+    })
+    .into_response()
+}
+
 #[utoipa::path(
     get,
     path = "/api/public/v1/networks",
@@ -1509,6 +1678,10 @@ pub fn router() -> Router<AppState> {
         .route("/logout", post(logout_handler))
         .route("/session", get(session_handler))
         .route("/access", get(public_access_settings))
+        .route(
+            "/validators/{validator_id}/history",
+            get(public_validator_history),
+        )
         .route("/networks", get(public_networks))
         .route("/networks/{network_key}", get(public_network))
         .route("/nodes/{node_id}", get(public_node_detail))

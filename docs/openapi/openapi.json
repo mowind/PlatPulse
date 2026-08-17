@@ -4800,6 +4800,89 @@
         }
       }
     },
+    "/api/admin/v1/validators/{validator_id}/history": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "admin_validator_history",
+        "parameters": [
+          {
+            "name": "validator_id",
+            "in": "path",
+            "description": "Validator ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminValidatorHistoryResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/agent/v1/enroll": {
       "post": {
         "tags": [
@@ -5070,7 +5153,6 @@
         "tags": [
           "public"
         ],
-        "summary": "Public Home projection. The query boundary only selects public, active\nNodes and never returns endpoint, Agent, host identity, capacity, or raw\nerrors from the Admin projection.",
         "operationId": "public_networks",
         "responses": {
           "200": {
@@ -5336,6 +5418,66 @@
           },
           "401": {
             "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/public/v1/validators/{validator_id}/history": {
+      "get": {
+        "tags": [
+          "public"
+        ],
+        "operationId": "public_validator_history",
+        "parameters": [
+          {
+            "name": "validator_id",
+            "in": "path",
+            "description": "Validator ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicValidatorHistoryResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
             "content": {
               "application/json": {
                 "schema": {
@@ -6259,6 +6401,137 @@
           "sample_count": {
             "type": "integer",
             "format": "int64"
+          }
+        }
+      },
+      "AdminValidatorHistoryEntry": {
+        "type": "object",
+        "required": [
+          "historyId",
+          "kind",
+          "observedAt",
+          "observationKey",
+          "links"
+        ],
+        "properties": {
+          "candidateObservedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "candidateProviderTimestamp": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "counterName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "currentRank": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "currentValue": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "historyId": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminValidatorHistoryLink"
+            }
+          },
+          "observationKey": {
+            "type": "string"
+          },
+          "observedAt": {
+            "type": "string"
+          },
+          "previousRank": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "previousValue": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "providerTimestamp": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "AdminValidatorHistoryLink": {
+        "type": "object",
+        "required": [
+          "linkId",
+          "nodeId",
+          "role",
+          "validFrom"
+        ],
+        "properties": {
+          "linkId": {
+            "type": "string"
+          },
+          "nodeId": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "validFrom": {
+            "type": "string"
+          },
+          "validUntil": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "AdminValidatorHistoryResponse": {
+        "type": "object",
+        "required": [
+          "validatorId",
+          "networkKey",
+          "entries"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminValidatorHistoryEntry"
+            }
+          },
+          "networkKey": {
+            "type": "string"
+          },
+          "validatorId": {
+            "type": "string"
           }
         }
       },
@@ -10012,6 +10285,85 @@
           "sampleCount": {
             "type": "integer",
             "format": "int64"
+          }
+        }
+      },
+      "PublicValidatorHistoryEntry": {
+        "type": "object",
+        "description": "Public Home projection. The query boundary only selects public, active\nNodes and never returns endpoint, Agent, host identity, capacity, or raw\nerrors from the Admin projection.",
+        "required": [
+          "kind",
+          "observedAt",
+          "linkRoles"
+        ],
+        "properties": {
+          "counterName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "currentRank": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "currentValue": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "linkRoles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "observedAt": {
+            "type": "string"
+          },
+          "previousRank": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "previousValue": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "providerTimestamp": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "PublicValidatorHistoryResponse": {
+        "type": "object",
+        "required": [
+          "validatorId",
+          "entries"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicValidatorHistoryEntry"
+            }
+          },
+          "validatorId": {
+            "type": "string"
           }
         }
       },

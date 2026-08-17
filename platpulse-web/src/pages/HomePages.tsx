@@ -6,8 +6,9 @@ import {
   fetchNodeHistory,
   fetchNodeHistoryExport,
   fetchNodePeerHistory,
+  fetchValidatorHistory,
 } from '../api/public'
-import type { PublicNetwork, PublicNode } from '../api/generated'
+import type { PublicNetwork, PublicNode, PublicValidatorHistoryResponse } from '../api/generated'
 import { useHomeRealtimeContext } from '../layouts/HomeLayout'
 import { PeerInsight } from '../components/PeerInsight'
 import { PeerHistoryInsight, normalizePublicPeerHistory } from '../components/PeerHistoryInsight'
@@ -34,11 +35,29 @@ export function NetworkPage() {
       })
     return () => controller.abort()
   }, [networkKey, reloadKey, resetting])
+  const [validatorHistories, setValidatorHistories] = useState<Record<string, PublicValidatorHistoryResponse>>({})
+
+  useEffect(() => {
+    const controller = new AbortController()
+    setValidatorHistories({})
+    if (!network || resetting) return () => controller.abort()
+    Promise.all(network.validators.map(async (validator) => {
+      try {
+        return [validator.validatorId, await fetchValidatorHistory(validator.validatorId, 20, controller.signal)] as const
+      } catch {
+        return null
+      }
+    })).then((results) => {
+      if (controller.signal.aborted) return
+      setValidatorHistories(Object.fromEntries(results.filter((result): result is readonly [string, PublicValidatorHistoryResponse] => result !== null)))
+    })
+    return () => controller.abort()
+  }, [network, resetting])
 
   if (resetting) return <section className="page"><p role="status">Revalidating Home access…</p></section>
   if (error) return <section className="page"><p role="alert" className="form-error">{error}</p><Link to="/">Back to Home</Link></section>
   if (!network) return <section className="page"><p role="status">Loading Network…</p></section>
-  return <section className="page"><p><Link to="/">← All Networks</Link></p><h1>{network.displayName}</h1><p className="muted">{network.networkKey}</p><PeerInsight insight={network.peers} /><GeoInsight insight={network.geo} />{network.validators.length > 0 && <><h2>Validators</h2><div className="node-grid">{network.validators.map((validator) => <ValidatorInsight key={validator.validatorId} insight={validator} />)}</div></>}<div className="node-grid">{network.nodes.map((node) => <NodeCard node={node} key={node.nodeId} />)}</div></section>
+  return <section className="page"><p><Link to="/">← All Networks</Link></p><h1>{network.displayName}</h1><p className="muted">{network.networkKey}</p><PeerInsight insight={network.peers} /><GeoInsight insight={network.geo} />{network.validators.length > 0 && <><h2>Validators</h2><div className="node-grid">{network.validators.map((validator) => <ValidatorInsight key={validator.validatorId} insight={validator} history={validatorHistories[validator.validatorId]?.entries} />)}</div></>}<div className="node-grid">{network.nodes.map((node) => <NodeCard node={node} key={node.nodeId} />)}</div></section>
 }
 
 export function NodePage() {
