@@ -284,6 +284,14 @@ pub fn rule_schema(rule: &RuleDefinition) -> Vec<ParamSchema> {
         seconds_param(rule.default_condition.for_secs as f64),
         recovery_param(rule.default_condition.recovery_for_secs as f64),
     ];
+    if rule.subject_kind == SubjectKind::Validator {
+        // Validator transitions are provider-confirmed facts. Their catalog
+        // defaults are immediate, while the common rules still require at
+        // least one second of sustained evidence.
+        schema[0].min = 0.0;
+        schema[0].description =
+            "How long the confirmed condition must hold before an Incident opens.";
+    }
     if let Some(param) = &rule.threshold_param {
         schema.push(param.clone());
     }
@@ -297,8 +305,15 @@ pub fn validate_condition(rule_key: &str, condition: &RuleCondition) -> Result<(
     let Some(rule) = catalog_rule(rule_key) else {
         return Err(format!("unknown alert rule `{rule_key}`"));
     };
-    if !(1..=604_800).contains(&condition.for_secs) {
-        return Err("`for_secs` must be between 1 and 604800".to_owned());
+    let min_for_secs = if rule.subject_kind == SubjectKind::Validator {
+        0
+    } else {
+        1
+    };
+    if condition.for_secs < min_for_secs || condition.for_secs > 604_800 {
+        return Err(format!(
+            "`for_secs` must be between {min_for_secs} and 604800"
+        ));
     }
     if !(1..=604_800).contains(&condition.recovery_for_secs) {
         return Err("`recovery_for_secs` must be between 1 and 604800".to_owned());
@@ -379,6 +394,12 @@ pub enum EvalInput {
     Unsupported {
         reason: String,
     },
+    /// A Server-owned provider fact that is unavailable. It is kept distinct
+    /// from generic Unsupported inputs so validator degradation can mark the
+    /// evaluation unavailable without changing unrelated component semantics.
+    ProviderUnavailable {
+        reason: String,
+    },
 }
 
 impl EvalInput {
@@ -387,14 +408,17 @@ impl EvalInput {
             EvalInput::Known { .. } => "known",
             EvalInput::Unknown { .. } => "unknown",
             EvalInput::Stale { .. } => "stale",
-            EvalInput::Unsupported { .. } => "unsupported",
+            EvalInput::Unsupported { .. } | EvalInput::ProviderUnavailable { .. } => "unsupported",
         }
     }
 
     pub fn value(&self) -> Option<f64> {
         match self {
-            EvalInput::Known { value, .. } | EvalInput::Stale { value, .. } => Some(*value),
-            _ => None,
+            EvalInput::Known { value, .. } => Some(*value),
+            EvalInput::Stale { .. }
+            | EvalInput::Unknown { .. }
+            | EvalInput::Unsupported { .. }
+            | EvalInput::ProviderUnavailable { .. } => None,
         }
     }
 
@@ -403,7 +427,7 @@ impl EvalInput {
             EvalInput::Known { detail, .. } => detail,
             EvalInput::Unknown { reason } => reason,
             EvalInput::Stale { detail, .. } => detail,
-            EvalInput::Unsupported { reason } => reason,
+            EvalInput::Unsupported { reason } | EvalInput::ProviderUnavailable { reason } => reason,
         }
     }
 
@@ -504,6 +528,15 @@ pub fn project_transition(
             transition.note = "unsupported input restarts evaluation timers".to_owned();
             return transition;
         }
+        EvalInput::ProviderUnavailable { .. } => {
+            transition.evaluation_unavailable = true;
+            transition.pending_since = None;
+            transition.firing_since = None;
+            transition.recovering_since = None;
+            transition.note =
+                "provider input is unavailable; evaluation timers restarted".to_owned();
+            return transition;
+        }
         EvalInput::Known { .. } => {
             let firing = input.fires(threshold);
             transition.evaluation_unavailable = false;
@@ -561,6 +594,12 @@ pub fn project_transition(
                         // recovery must not create a second open Incident.
                         transition.note =
                             "condition re-fired during recovery; Incident stays open".to_owned();
+                    } else if state.evaluation_unavailable || transition.recovering_since.is_none()
+                    {
+                        transition.recovering_since = Some(now_text.clone());
+                        transition.since = now_text.clone();
+                        transition.note =
+                            "fresh Known recovery started after unavailable evidence".to_owned();
                     } else {
                         let sustained = transition
                             .recovering_since
@@ -879,7 +918,7 @@ pub async fn extract_input(
         }
         (SubjectKind::Node, "node.observation_stale") => {
             let last = sqlx::query_scalar::<_, Option<String>>(
-                "SELECT MAX(received_at) FROM component_status WHERE node_id = ?",
+                "SELECT MAX(value_received_at) FROM component_status WHERE node_id = ?",
             )
             .bind(subject_key)
             .fetch_one(&mut *executor)
@@ -984,26 +1023,61 @@ pub async fn extract_input(
         }
         (SubjectKind::Validator, "validator.ranking_changed")
         | (SubjectKind::Validator, "validator.counter_reset") => {
-            let change_state = sqlx::query_scalar::<_, Option<String>>(
-                "SELECT change_state FROM current_validator_insights WHERE validator_id = ?",
+            let row = sqlx::query_as::<_, (String, Option<String>, String, String)>(
+                "SELECT outcome, last_good_received_at, change_state, counter_state FROM current_validator_insights WHERE validator_id = ?",
             )
             .bind(subject_key)
             .fetch_optional(&mut *executor)
-            .await?
-            .flatten();
-            let Some(change_state) = change_state else {
+            .await?;
+            let Some((outcome, last_good_received_at, change_state, counter_state)) = row else {
                 return Ok(EvalInput::Unknown {
                     reason: "Validator has never been observed".to_owned(),
                 });
             };
-            let expected = if rule_key == "validator.ranking_changed" {
+            if outcome != "success" {
+                return Ok(match outcome.as_str() {
+                    "unsupported" => EvalInput::ProviderUnavailable {
+                        reason: "Validator provider is unsupported".to_owned(),
+                    },
+                    "not_found" => EvalInput::ProviderUnavailable {
+                        reason: "Validator was not found by the provider".to_owned(),
+                    },
+                    "empty" => EvalInput::ProviderUnavailable {
+                        reason: "Validator provider returned no observation".to_owned(),
+                    },
+                    "error" => EvalInput::ProviderUnavailable {
+                        reason: "Validator provider failed".to_owned(),
+                    },
+                    _ => EvalInput::ProviderUnavailable {
+                        reason: "Validator provider outcome is unavailable".to_owned(),
+                    },
+                });
+            }
+            let age = age_secs(last_good_received_at.as_deref(), now).unwrap_or(i64::MAX);
+            if age > stale_after_secs {
+                return Ok(EvalInput::ProviderUnavailable {
+                    reason: format!("Validator observation is stale ({age}s old)"),
+                });
+            }
+            let expected_state = if rule_key == "validator.ranking_changed" {
                 "ranking_changed"
             } else {
                 "counter_reset"
             };
+            let current_state = if rule_key == "validator.ranking_changed" {
+                change_state.as_str()
+            } else {
+                counter_state.as_str()
+            };
+            let detail =
+                validator_alert_detail(executor, rule_key, subject_key, current_state, age).await?;
             Ok(known(
-                if change_state == expected { 1.0 } else { 0.0 },
-                format!("Validator change state: {change_state}"),
+                if current_state == expected_state {
+                    1.0
+                } else {
+                    0.0
+                },
+                detail,
             ))
         }
         (SubjectKind::Host, "host.disk_pressure") => {
@@ -1065,6 +1139,73 @@ pub async fn extract_input(
             reason: format!("rule `{rule_key}` has no v1 input mapping for this subject"),
         }),
     }
+}
+
+async fn validator_alert_detail(
+    executor: &mut sqlx::SqliteConnection,
+    rule_key: &str,
+    validator_id: &str,
+    current_state: &str,
+    age_secs: i64,
+) -> Result<String, sqlx::Error> {
+    let evidence = if rule_key == "validator.ranking_changed" {
+        let latest = sqlx::query_as::<_, (
+            Option<i64>,
+            i64,
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        )>(
+            "SELECT previous_rank, current_rank, observed_at, provider_timestamp, observation_key, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key FROM validator_ranking_history WHERE validator_id = ? ORDER BY observed_at DESC, history_id DESC LIMIT 1",
+        )
+        .bind(validator_id)
+        .fetch_optional(&mut *executor)
+        .await?;
+        serde_json::json!({
+            "classification": current_state,
+            "freshness": "fresh",
+            "age_secs": age_secs,
+            "latest_change": latest.map(|(previous_rank, current_rank, observed_at, provider_timestamp, observation_key, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key)| serde_json::json!({
+                "previous_rank": previous_rank,
+                "current_rank": current_rank,
+                "observed_at": observed_at,
+                "provider_timestamp": provider_timestamp,
+                "observation_key": observation_key,
+                "candidate_observed_at": candidate_observed_at,
+                "candidate_provider_timestamp": candidate_provider_timestamp,
+                "candidate_observation_key": candidate_observation_key,
+            })),
+        })
+    } else {
+        let latest = sqlx::query_as::<_, (
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+        )>(
+            "SELECT counter_name, previous_value, current_value, provider_timestamp, observed_at FROM validator_counter_history WHERE validator_id = ? ORDER BY observed_at DESC, history_id DESC LIMIT 1",
+        )
+        .bind(validator_id)
+        .fetch_optional(&mut *executor)
+        .await?;
+        serde_json::json!({
+            "classification": current_state,
+            "freshness": "fresh",
+            "age_secs": age_secs,
+            "latest_change": latest.map(|(counter_name, previous_value, current_value, provider_timestamp, observed_at)| serde_json::json!({
+                "counter_name": counter_name,
+                "previous_value": previous_value,
+                "current_value": current_value,
+                "provider_timestamp": provider_timestamp,
+                "observed_at": observed_at,
+            })),
+        })
+    };
+    Ok(evidence.to_string())
 }
 
 fn component_input(
@@ -1481,8 +1622,10 @@ pub async fn evaluate_rule(
     let (input_kind, input_value, input_detail) = match &input {
         EvalInput::Known { value, detail } => ("known", Some(*value), Some(detail.clone())),
         EvalInput::Unknown { reason } => ("unknown", None, Some(reason.clone())),
-        EvalInput::Stale { value, detail, .. } => ("stale", Some(*value), Some(detail.clone())),
-        EvalInput::Unsupported { reason } => ("unsupported", None, Some(reason.clone())),
+        EvalInput::Stale { detail, .. } => ("stale", None, Some(detail.clone())),
+        EvalInput::Unsupported { reason } | EvalInput::ProviderUnavailable { reason } => {
+            ("unsupported", None, Some(reason.clone()))
+        }
     };
     let evidence = evidence_json(&input, &effective, &transition, now);
     sqlx::query(
@@ -1593,15 +1736,34 @@ pub async fn evaluate_validator(
     now: OffsetDateTime,
 ) -> Result<usize, AlertError> {
     let mut tx = db.pool().begin().await?;
+    let changes = evaluate_validator_in_transaction(&mut tx, validator_id, channels, now).await?;
+    tx.commit().await?;
+    Ok(changes)
+}
+
+/// Evaluate Validator rules on an existing transaction so provider projection,
+/// Incident transitions, and notification outbox rows commit atomically.
+pub async fn evaluate_validator_in_transaction(
+    executor: &mut sqlx::SqliteConnection,
+    validator_id: &str,
+    channels: &crate::config::NotificationChannels,
+    now: OffsetDateTime,
+) -> Result<usize, AlertError> {
     let mut changes = 0usize;
     for rule in CATALOG
         .iter()
         .filter(|rule| rule.subject_kind == SubjectKind::Validator)
     {
-        let outcome =
-            evaluate_rule(&mut tx, rule.key, SubjectKind::Validator, validator_id, now).await?;
+        let outcome = evaluate_rule(
+            executor,
+            rule.key,
+            SubjectKind::Validator,
+            validator_id,
+            now,
+        )
+        .await?;
         record_transition_events(
-            &mut tx,
+            executor,
             &outcome,
             rule,
             SubjectKind::Validator,
@@ -1612,7 +1774,6 @@ pub async fn evaluate_validator(
         .await?;
         changes += outcome.changed as usize;
     }
-    tx.commit().await?;
     Ok(changes)
 }
 /// Notification Events for Incident transitions, written in the caller's
@@ -1699,6 +1860,9 @@ pub async fn sweep(state: &crate::http::AppState) -> Result<usize, AlertError> {
         sqlx::query_scalar("SELECT node_id FROM nodes WHERE lifecycle = 'active'")
             .fetch_all(&mut *tx)
             .await?;
+    let validators: Vec<String> = sqlx::query_scalar("SELECT validator_id FROM validators")
+        .fetch_all(&mut *tx)
+        .await?;
 
     for rule in CATALOG {
         match rule.subject_kind {
@@ -1729,6 +1893,24 @@ pub async fn sweep(state: &crate::http::AppState) -> Result<usize, AlertError> {
                         rule,
                         SubjectKind::Node,
                         node_id,
+                        state.channels(),
+                        now,
+                    )
+                    .await?;
+                    changes += outcome.changed as usize;
+                }
+            }
+            SubjectKind::Validator => {
+                for validator_id in &validators {
+                    let outcome =
+                        evaluate_rule(&mut tx, rule.key, SubjectKind::Validator, validator_id, now)
+                            .await?;
+                    record_transition_events(
+                        &mut tx,
+                        &outcome,
+                        rule,
+                        SubjectKind::Validator,
+                        validator_id,
                         state.channels(),
                         now,
                     )
@@ -2300,6 +2482,81 @@ mod tests {
         let transition = project_transition(&firing_state, &unsupported, &condition, t);
         assert_eq!(transition.state, "firing");
         assert!(!transition.evaluation_unavailable);
+    }
+
+    #[test]
+    fn provider_unavailable_restarts_fresh_recovery() {
+        let now = base_time();
+        let condition = RuleCondition::boolean(0, 120);
+        let state = RuleState {
+            state: "recovering".to_owned(),
+            since: format_rfc3339(now - time::Duration::seconds(60)),
+            pending_since: None,
+            firing_since: None,
+            recovering_since: Some(format_rfc3339(now - time::Duration::seconds(60))),
+            input_kind: "known".to_owned(),
+            input_value: Some(0.0),
+            input_detail: None,
+            evidence_json: None,
+            evaluation_unavailable: false,
+            last_evaluated_at: format_rfc3339(now - time::Duration::seconds(60)),
+        };
+        let unavailable = EvalInput::ProviderUnavailable {
+            reason: "provider failed".to_owned(),
+        };
+        let unavailable_transition = project_transition(&state, &unavailable, &condition, now);
+        assert_eq!(unavailable_transition.state, "recovering");
+        assert!(unavailable_transition.evaluation_unavailable);
+        assert!(unavailable_transition.recovering_since.is_none());
+
+        let after_unavailable = RuleState {
+            state: unavailable_transition.state,
+            since: unavailable_transition.since,
+            pending_since: unavailable_transition.pending_since,
+            firing_since: unavailable_transition.firing_since,
+            recovering_since: unavailable_transition.recovering_since,
+            input_kind: "unsupported".to_owned(),
+            input_value: None,
+            input_detail: None,
+            evidence_json: None,
+            evaluation_unavailable: unavailable_transition.evaluation_unavailable,
+            last_evaluated_at: format_rfc3339(now),
+        };
+        let fresh = EvalInput::Known {
+            value: 0.0,
+            detail: "fresh recovery".to_owned(),
+        };
+        let started = project_transition(
+            &after_unavailable,
+            &fresh,
+            &condition,
+            now + time::Duration::seconds(1),
+        );
+        assert_eq!(started.state, "recovering");
+        assert!(started.recovering_since.is_some());
+        assert!(!started.resolves_incident);
+
+        let sustained_state = RuleState {
+            state: started.state,
+            since: started.since,
+            pending_since: started.pending_since,
+            firing_since: started.firing_since,
+            recovering_since: started.recovering_since,
+            input_kind: "known".to_owned(),
+            input_value: Some(0.0),
+            input_detail: None,
+            evidence_json: None,
+            evaluation_unavailable: false,
+            last_evaluated_at: format_rfc3339(now + time::Duration::seconds(1)),
+        };
+        let resolved = project_transition(
+            &sustained_state,
+            &fresh,
+            &condition,
+            now + time::Duration::seconds(122),
+        );
+        assert_eq!(resolved.state, "normal");
+        assert!(resolved.resolves_incident);
     }
 
     #[test]

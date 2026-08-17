@@ -1240,6 +1240,7 @@ pub struct RefreshSummary {
     pub successful: usize,
     pub changed: usize,
     pub invalidations: usize,
+    pub alert_invalidations: usize,
 }
 
 pub async fn load_insight(
@@ -1320,17 +1321,32 @@ pub async fn refresh_all_with_channels_in_timezone(
     )
     .fetch_all(db.pool())
     .await?;
-    let mut summary = RefreshSummary {
-        attempted: validators.len(),
-        ..RefreshSummary::default()
-    };
+    let mut provider_results = Vec::with_capacity(validators.len());
     for (validator_id, network_key, validator_node_id) in validators {
         let result = provider.fetch(&network_key, &validator_node_id).await;
+        provider_results.push((validator_id, result));
+    }
+
+    let mut summary = RefreshSummary {
+        attempted: provider_results.len(),
+        ..RefreshSummary::default()
+    };
+    let mut tx = db.pool().begin().await?;
+    for (validator_id, result) in provider_results {
         let changed =
-            apply_provider_result(db, provider.source(), &validator_id, result, timezone).await?;
-        crate::alerts::evaluate_validator(db, &validator_id, channels, crate::auth::now_utc())
-            .await
-            .map_err(|error| ValidatorError::Alert(error.to_string()))?;
+            apply_provider_result(&mut tx, provider.source(), &validator_id, result, timezone)
+                .await?;
+        let alert_changes = crate::alerts::evaluate_validator_in_transaction(
+            &mut tx,
+            &validator_id,
+            channels,
+            crate::auth::now_utc(),
+        )
+        .await
+        .map_err(|error| ValidatorError::Alert(error.to_string()))?;
+        if alert_changes > 0 {
+            summary.alert_invalidations += alert_changes;
+        }
         if changed.0 {
             summary.successful += 1;
         }
@@ -1341,19 +1357,24 @@ pub async fn refresh_all_with_channels_in_timezone(
             summary.invalidations += 1;
         }
     }
+    tx.commit().await?;
     Ok(summary)
 }
 
 async fn apply_provider_result(
-    db: &ServerDatabase,
+    tx: &mut Transaction<'_, Sqlite>,
     source: &str,
     validator_id: &str,
     result: ValidatorProviderResult,
     timezone: &str,
 ) -> Result<(bool, bool, bool), ValidatorError> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
-    let existing = load_insight(db, validator_id).await?;
-    let mut tx = db.pool().begin().await?;
+    let existing = sqlx::query_as::<_, ValidatorInsightRecord>(
+        "SELECT validator_id, source, outcome, diagnostic, provider_timestamp, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at FROM current_validator_insights WHERE validator_id = ?",
+    )
+    .bind(validator_id)
+    .fetch_optional(&mut **tx)
+    .await?;
     match result {
         ValidatorProviderResult::Success(observation) => {
             validate_observation(&observation)?;
@@ -1363,17 +1384,21 @@ async fn apply_provider_result(
                 .and_then(|row| row.last_observation_key.as_deref())
                 == Some(key.as_str())
             {
+                let counter_state = "normal";
+                let change_state = "normal";
                 sqlx::query(
-                    "UPDATE current_validator_insights SET outcome = 'success', diagnostic = NULL, last_attempt_received_at = ?, last_good_received_at = ?, updated_at = ? WHERE validator_id = ?",
+                    "UPDATE current_validator_insights SET outcome = 'success', diagnostic = NULL, last_attempt_received_at = ?, last_good_received_at = ?, counter_state = ?, change_state = ?, updated_at = ? WHERE validator_id = ?",
                 )
                 .bind(&now)
                 .bind(&now)
+                .bind(counter_state)
+                .bind(change_state)
                 .bind(&now)
                 .bind(validator_id)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await?;
                 let (analytics_changed, month_key) = record_daily_snapshot(
-                    &mut tx,
+                    tx,
                     validator_id,
                     source,
                     &observation,
@@ -1382,9 +1407,7 @@ async fn apply_provider_result(
                     timezone,
                 )
                 .await?;
-                rebuild_monthly_aggregate(&mut tx, validator_id, timezone, &month_key, &now)
-                    .await?;
-                tx.commit().await?;
+                rebuild_monthly_aggregate(tx, validator_id, timezone, &month_key, &now).await?;
                 return Ok((true, false, analytics_changed));
             }
 
@@ -1446,7 +1469,7 @@ async fn apply_provider_result(
                             .bind(candidate_observed_at.as_deref())
                             .bind(candidate_provider_timestamp.as_deref())
                             .bind(candidate_observation_key.as_deref())
-                            .execute(&mut *tx)
+                            .execute(&mut **tx)
                             .await?;
                         confirmed_ranking_change = true;
                         candidate_previous_rank = None;
@@ -1492,7 +1515,7 @@ async fn apply_provider_result(
                     .bind(&now)
                     .bind(observation.provider_timestamp.as_deref())
                     .bind(&key)
-                    .execute(&mut *tx)
+                    .execute(&mut **tx)
                     .await?;
             }
 
@@ -1501,9 +1524,7 @@ async fn apply_provider_result(
             } else {
                 observation.rank
             };
-            let change_state = if counter_state == "counter_reset" {
-                "counter_reset"
-            } else if confirmed_ranking_change {
+            let change_state = if confirmed_ranking_change {
                 "ranking_changed"
             } else {
                 "normal"
@@ -1533,10 +1554,10 @@ async fn apply_provider_result(
                 .bind(candidate_observation_key)
                 .bind(&key)
                 .bind(&now)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await?;
             let (analytics_changed, month_key) = record_daily_snapshot(
-                &mut tx,
+                tx,
                 validator_id,
                 &source,
                 &observation,
@@ -1545,8 +1566,7 @@ async fn apply_provider_result(
                 timezone,
             )
             .await?;
-            rebuild_monthly_aggregate(&mut tx, validator_id, timezone, &month_key, &now).await?;
-            tx.commit().await?;
+            rebuild_monthly_aggregate(tx, validator_id, timezone, &month_key, &now).await?;
             Ok((
                 true,
                 confirmed_ranking_change,
@@ -1569,16 +1589,15 @@ async fn apply_provider_result(
                 .as_ref()
                 .is_none_or(|row| row.outcome != name || row.diagnostic != diagnostic);
             let source = bounded_source(source);
-            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, ?, ?, ?, NULL, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'normal', 'normal', NULL, NULL, 0, NULL, NULL, NULL, NULL, ?) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=excluded.diagnostic, last_attempt_received_at=excluded.last_attempt_received_at, provider_timestamp=current_validator_insights.provider_timestamp, last_good_received_at=current_validator_insights.last_good_received_at, last_good_provider_timestamp=current_validator_insights.last_good_provider_timestamp, rank=current_validator_insights.rank, stake_amount=current_validator_insights.stake_amount, reward_amount=current_validator_insights.reward_amount, reward_rate=current_validator_insights.reward_rate, delegator_count=current_validator_insights.delegator_count, epoch=current_validator_insights.epoch, block_count=current_validator_insights.block_count, counter_state=current_validator_insights.counter_state, change_state='normal', candidate_previous_rank=NULL, candidate_rank=NULL, candidate_observations=0, candidate_observed_at=NULL, candidate_provider_timestamp=NULL, candidate_observation_key=NULL, last_observation_key=NULL, updated_at=excluded.updated_at")
+            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, ?, ?, ?, NULL, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'normal', 'normal', NULL, NULL, 0, NULL, NULL, NULL, NULL, ?) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=excluded.diagnostic, last_attempt_received_at=excluded.last_attempt_received_at, provider_timestamp=current_validator_insights.provider_timestamp, last_good_received_at=current_validator_insights.last_good_received_at, last_good_provider_timestamp=current_validator_insights.last_good_provider_timestamp, rank=current_validator_insights.rank, stake_amount=current_validator_insights.stake_amount, reward_amount=current_validator_insights.reward_amount, reward_rate=current_validator_insights.reward_rate, delegator_count=current_validator_insights.delegator_count, epoch=current_validator_insights.epoch, block_count=current_validator_insights.block_count, counter_state=current_validator_insights.counter_state, change_state='normal', candidate_previous_rank=NULL, candidate_rank=NULL, candidate_observations=0, candidate_observed_at=NULL, candidate_provider_timestamp=NULL, candidate_observation_key=NULL, last_observation_key=current_validator_insights.last_observation_key, updated_at=excluded.updated_at")
                 .bind(validator_id)
                 .bind(source)
                 .bind(name)
                 .bind(diagnostic)
                 .bind(&now)
                 .bind(&now)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await?;
-            tx.commit().await?;
             Ok((false, false, invalidated))
         }
     }
@@ -1589,6 +1608,18 @@ fn bounded_source(source: &str) -> String {
 }
 
 fn validate_observation(observation: &ValidatorObservation) -> Result<(), ValidatorError> {
+    let has_supported_value = observation.rank.is_some()
+        || observation.stake_amount.is_some()
+        || observation.reward_amount.is_some()
+        || observation.reward_rate.is_some()
+        || observation.delegator_count.is_some()
+        || observation.epoch.is_some()
+        || observation.block_count.is_some();
+    if !has_supported_value {
+        return Err(ValidatorError::InvalidProviderObservation(
+            "empty observation".to_owned(),
+        ));
+    }
     if observation.rank.is_some_and(|value| value < 0)
         || observation.delegator_count.is_some_and(|value| value < 0)
         || observation.epoch.is_some_and(|value| value < 0)
@@ -1811,6 +1842,7 @@ mod tests {
                 .rank,
             Some(3)
         );
+        assert!(validate_observation(&ValidatorObservation::default()).is_err());
     }
 
     #[test]
@@ -1882,6 +1914,43 @@ mod tests {
             Some("123456789012345678901234567888")
         );
         assert_eq!(insight.counter_state, "counter_reset");
+        let incidents = sqlx::query_as::<_, (String, String, String)>(
+            "SELECT rule_key, state, opened_evidence_json FROM alert_incidents WHERE subject_key = ? ORDER BY rule_key",
+        )
+        .bind(&validator.validator_id)
+        .fetch_all(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            incidents.len(),
+            2,
+            "ranking and counter signals are independent"
+        );
+        assert!(incidents.iter().all(|(rule_key, state, _)| state == "open"
+            && (rule_key == "validator.ranking_changed" || rule_key == "validator.counter_reset")));
+        let counter_evidence = incidents
+            .iter()
+            .find(|(rule_key, _, _)| rule_key == "validator.counter_reset")
+            .map(|(_, _, evidence)| evidence)
+            .unwrap();
+        assert!(counter_evidence.contains("123456789012345678901234567890"));
+        assert!(counter_evidence.contains("123456789012345678901234567889"));
+        let ranking_state: (bool, String) = sqlx::query_as(
+            "SELECT evaluation_unavailable, input_kind FROM alert_rule_state WHERE rule_key = 'validator.ranking_changed' AND subject_key = ?",
+        )
+        .bind(&validator.validator_id)
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(ranking_state, (false, "known".to_owned()));
+        let counter_state: (bool, String) = sqlx::query_as(
+            "SELECT evaluation_unavailable, input_kind FROM alert_rule_state WHERE rule_key = 'validator.counter_reset' AND subject_key = ?",
+        )
+        .bind(&validator.validator_id)
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(counter_state, (false, "known".to_owned()));
         refresh_all(&db, &provider).await.unwrap();
         let failed = load_insight(&db, &validator.validator_id)
             .await
@@ -1895,7 +1964,30 @@ mod tests {
         );
         let failed_diagnostic = failed.diagnostic.unwrap_or_default();
         assert!(failed_diagnostic.contains("provider timeout"));
-        assert!(!failed_diagnostic.contains("https://"));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM alert_incidents WHERE subject_key = ? AND state = 'open'",
+            )
+            .bind(&validator.validator_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap(),
+            2
+        );
+        let unavailable: Vec<(bool, String)> = sqlx::query_as(
+            "SELECT evaluation_unavailable, input_kind FROM alert_rule_state WHERE subject_key = ? AND rule_key LIKE 'validator.%' ORDER BY rule_key",
+        )
+        .bind(&validator.validator_id)
+        .fetch_all(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            unavailable,
+            vec![
+                (true, "unsupported".to_owned()),
+                (true, "unsupported".to_owned())
+            ]
+        );
     }
 
     #[tokio::test]

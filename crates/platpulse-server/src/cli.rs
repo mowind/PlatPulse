@@ -15,10 +15,7 @@ use crate::auth::{
 };
 use crate::config::{CliOverrides, ServerConfig};
 use crate::database::{ServerDatabase, ServerDatabaseConfig, initialize};
-use crate::enrollment::{
-    ENROLLMENT_TOKEN_MAX_LIFETIME, ENROLLMENT_TOKEN_MIN_LIFETIME, EnrollmentError,
-    create_enrollment_token,
-};
+use crate::enrollment::{EnrollmentError, create_enrollment_token};
 use crate::network::{NetworkError, create_network};
 use crate::secrets::load_pepper_file;
 
@@ -324,12 +321,12 @@ pub async fn run_create_enrollment_token(
 ) -> Result<(), EnrollmentError> {
     crate::init::restrict_umask();
     let lifetime_hours = args.expires_in.unwrap_or(24);
-    let lifetime = std::time::Duration::from_secs(lifetime_hours * 3600);
-    if lifetime < ENROLLMENT_TOKEN_MIN_LIFETIME || lifetime > ENROLLMENT_TOKEN_MAX_LIFETIME {
+    if !(1..=168).contains(&lifetime_hours) {
         return Err(EnrollmentError::InvalidLifetime(
             "enrollment token lifetime must be 1..=168 hours",
         ));
     }
+    let lifetime = std::time::Duration::from_secs(lifetime_hours * 3600);
 
     let pepper = load_pepper_file(&config.pepper_file)?;
     let database = initialize(ServerDatabaseConfig::new(&config.db_path)).await?;
@@ -646,13 +643,22 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                 )
                 .await
                 {
-                    Ok(summary) if summary.invalidations > 0 => {
-                        provider_state
-                            .admin_realtime()
-                            .publish("validator", None::<String>, 1);
-                        provider_state
-                            .public_realtime()
-                            .publish("validator", None::<String>, 1);
+                    Ok(summary) if summary.invalidations > 0 || summary.alert_invalidations > 0 => {
+                        if summary.invalidations > 0 {
+                            provider_state
+                                .admin_realtime()
+                                .publish("validator", None::<String>, 1);
+                            provider_state.public_realtime().publish(
+                                "validator",
+                                None::<String>,
+                                1,
+                            );
+                        }
+                        if summary.alert_invalidations > 0 {
+                            provider_state
+                                .admin_realtime()
+                                .publish("alerts", None::<String>, 1);
+                        }
                     }
                     Ok(_) => {}
                     Err(error) => {
