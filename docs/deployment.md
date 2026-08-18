@@ -70,6 +70,9 @@ SQLite files, cookies, headers, and response bodies before preserving the
 artifact, configuration, logs, request IDs, and sanitized diagnostics. Exit 2
 means the environment is unavailable; exit 1 is a harness failure.
 
+For packaged load, fault, and soak evidence, see
+[`docs/release-qualification.md`](release-qualification.md).
+
 ## Configuration
 
 Copy `crates/platpulse-server/server.example.toml` and set an explicit
