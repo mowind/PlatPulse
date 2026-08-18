@@ -655,7 +655,7 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
         fault_stats = {"sent": 0, "failures": 0}
 
         def continue_other_agents() -> None:
-            nonlocal request_total
+            nonlocal request_total, request_failures
             while not fault_stop.is_set():
                 for identity in identities[1:]:
                     if fault_stop.is_set():
@@ -753,10 +753,41 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
         scenarios.append(scenario("partial_receipt", "NOT_RUN", "production artifact exposes no safe external partial-receipt injection hook; covered by workspace AgentStore tests"))
         scenarios.append(scenario("worker_failure", "NOT_RUN", "production artifact exposes no remote worker-failure injection hook; worker heartbeat remained active under load"))
 
+        soak_stop = threading.Event()
+        soak_stats = {"sent": 0, "failures": 0}
+
+        def sustained_reports() -> None:
+            nonlocal request_total, request_failures
+            while not soak_stop.is_set():
+                for identity in identities:
+                    if soak_stop.is_set():
+                        break
+                    sequence = last_sequences[identity["index"]] + 1
+                    report, node_ids = make_report(template, identity, sequence, 180000 + identity["index"] * 1000 + sequence * 10)
+                    status, _, elapsed = send_report(client, identity["credential"], json_bytes(report))
+                    request_total += 1
+                    latencies.append(elapsed)
+                    soak_stats["sent"] += 1
+                    if status != 200:
+                        soak_stats["failures"] += 1
+                        request_failures += 1
+                    else:
+                        last_sequences[identity["index"]] = sequence
+                        for node_index, node_id in enumerate(node_ids):
+                            expected_heads[node_id] = 180000 + identity["index"] * 1000 + sequence * 10 + node_index
+
+        soak_thread = threading.Thread(target=sustained_reports, daemon=True)
+        soak_thread.start()
         end = time.monotonic() + max(0, workload["observation_seconds"] - workload["warmup_seconds"])
         while time.monotonic() < end:
             scrape_metrics(metrics_port, workload["request_timeout_seconds"])
             time.sleep(min(1.0, max(0.05, end - time.monotonic())))
+        soak_stop.set()
+        soak_thread.join(timeout=workload["request_timeout_seconds"] + 1)
+        soak_ok = soak_stats["sent"] > 0 and soak_stats["failures"] == 0
+        scenarios.append(scenario("sustained_report_load", "PASS" if soak_ok else "FAIL", f"submitted {soak_stats['sent']} reports during the observation window"))
+        if not soak_ok:
+            request_failures += 1
         rest_stop.set()
         readers.shutdown(wait=True)
         for future in reader_futures:
@@ -772,7 +803,10 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
         scenarios.append(scenario("metrics_redaction", "PASS" if metrics_safe else "FAIL", "metrics used bounded labels without sensitive identifiers" if metrics_safe else "metrics exposed a forbidden identifier"))
         after = sample_resources(server_process.pid, db_path, metrics_after)
         resources_ok, resource_checks = resource_decision(before, after, thresholds)
-        scenarios.append(scenario("resource_growth", "PASS" if resources_ok else "FAIL", "post-warm-up resource growth stayed within profile thresholds" if resources_ok else "one or more resource thresholds were exceeded"))
+        unavailable_resources = [key for key, check in resource_checks.items() if check["status"] == "NOT_RUN"]
+        resource_status = "NOT_RUN" if unavailable_resources else ("PASS" if resources_ok else "FAIL")
+        resource_detail = "resource counters unavailable: " + ", ".join(unavailable_resources) if unavailable_resources else ("post-warm-up resource growth stayed within profile thresholds" if resources_ok else "one or more resource thresholds were exceeded")
+        scenarios.append(scenario("resource_growth", resource_status, resource_detail))
 
         with sqlite3.connect(db_path) as db:
             receipt_count, distinct_receipts = db.execute("SELECT COUNT(*), COUNT(DISTINCT report_id) FROM agent_report_receipts").fetchone()
