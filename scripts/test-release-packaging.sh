@@ -21,8 +21,8 @@ make_fixture() {
     printf '# compose\n' > "$root/usr/share/doc/platpulse-server/examples/compose.yml"
     printf '# compose config\n' > "$root/usr/share/doc/platpulse-server/examples/compose-server.toml"
     printf '# geo\n' > "$root/usr/share/doc/platpulse-server/examples/geoipupdate.compose.yml"
-    printf '[Service]\nUser=platpulse-server\nReadWritePaths=/var/lib/platpulse /var/backups/platpulse\n' > "$root/usr/lib/systemd/system/platpulse-server.service"
-    printf '[Service]\nUser=platpulse-server\nExecStart=/usr/bin/platpulse-server backup --config /etc/platpulse/server.toml\nReadWritePaths=/var/lib/platpulse /var/backups/platpulse\n' > "$root/usr/lib/systemd/system/platpulse-backup.service"
+    printf '[Service]\nUser=platpulse-server\nGroup=platpulse-server\nReadWritePaths=/var/lib/platpulse /var/backups/platpulse\n' > "$root/usr/lib/systemd/system/platpulse-server.service"
+    printf '[Service]\nUser=platpulse-server\nGroup=platpulse-server\nExecStart=/usr/bin/platpulse-server backup --config /etc/platpulse/server.toml\nReadWritePaths=/var/lib/platpulse /var/backups/platpulse\n' > "$root/usr/lib/systemd/system/platpulse-backup.service"
     printf '[Timer]\n' > "$root/usr/lib/systemd/system/platpulse-backup.timer"
   else
     mkdir -p "$root/etc/platpulse-agent" "$root/usr/share/doc/platpulse-agent"
@@ -30,7 +30,7 @@ make_fixture() {
     chmod 755 "$root/usr/bin/platpulse-agent"
     printf '# config\n' > "$root/etc/platpulse-agent/agent.toml.example"
     printf '# deployment\n' > "$root/usr/share/doc/platpulse-agent/deployment.md"
-    printf '[Service]\nUser=platpulse-agent\n' > "$root/usr/lib/systemd/system/platpulse-agent.service"
+    printf '[Service]\nUser=platpulse-agent\nGroup=platpulse-agent\n' > "$root/usr/lib/systemd/system/platpulse-agent.service"
   fi
 }
 
@@ -41,6 +41,22 @@ make_fixture "$PASS_ROOT" server
 make_fixture "$PASS_AGENT_ROOT" agent
 "$VALIDATOR" --root "$PASS_ROOT" --kind server
 "$VALIDATOR" --root "$PASS_AGENT_ROOT" --kind agent
+
+BAD_SERVER_IDENTITY="$RUN_ROOT/bad-server-identity"
+cp -a "$PASS_ROOT" "$BAD_SERVER_IDENTITY"
+printf 'User=root\n' >> "$BAD_SERVER_IDENTITY/usr/lib/systemd/system/platpulse-server.service"
+if "$VALIDATOR" --root "$BAD_SERVER_IDENTITY" --kind server; then
+  echo 'validator accepted a later root User override' >&2
+  exit 1
+fi
+
+BAD_AGENT_IDENTITY="$RUN_ROOT/bad-agent-identity"
+cp -a "$PASS_AGENT_ROOT" "$BAD_AGENT_IDENTITY"
+printf 'Group=root\n' >> "$BAD_AGENT_IDENTITY/usr/lib/systemd/system/platpulse-agent.service"
+if "$VALIDATOR" --root "$BAD_AGENT_IDENTITY" --kind agent; then
+  echo 'validator accepted a later root Group override' >&2
+  exit 1
+fi
 
 BAD_ROOT="$RUN_ROOT/bad"
 cp -a "$PASS_ROOT" "$BAD_ROOT"

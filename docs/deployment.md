@@ -241,8 +241,10 @@ system users and never enable a service automatically.
 
 ## OCI deployment and mount model
 
-The OCI build definition is `release/oci/server.Dockerfile`. It runs as fixed UID
-and GID `10001`, declares separate volumes for SQLite state, backup artifacts, WebUI
+The OCI build definition is `release/oci/server.Dockerfile`. Its Node, Rust, and
+Debian base images are pinned by manifest digest, and it uses no mutable apt
+repository resolution. Update those pins only as a reviewed release-input change.
+It runs as fixed UID and GID `10001`, declares separate volumes for SQLite state, backup artifacts, WebUI
 assets, secret files, and optional Geo data, and does not contain live state or credentials. The
 Compose example is `release/compose/server.compose.yml`; copy the accompanying
 `release/compose/server.toml` beside it as `server.toml`. It binds inside the

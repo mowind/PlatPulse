@@ -1,21 +1,21 @@
 # syntax=docker/dockerfile:1.7
-FROM node:24-bookworm-slim AS web-build
+FROM node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03 AS web-build
 WORKDIR /src/platpulse-web
 COPY platpulse-web/package.json platpulse-web/package-lock.json ./
 RUN npm ci
 COPY platpulse-web/ ./
 RUN npm run build
 
-FROM rust:1.88-bookworm AS server-build
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
+FROM rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS server-build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
 RUN cargo build --locked --release -p platpulse-server
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241
 ARG VERSION=dev
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=server-build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 LABEL org.opencontainers.image.title="PlatPulse Server" \
       org.opencontainers.image.version="$VERSION" \
       org.opencontainers.image.source="https://github.com/mowind/PlatPulse" \
