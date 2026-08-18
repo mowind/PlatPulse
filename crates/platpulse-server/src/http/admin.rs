@@ -3,7 +3,7 @@ use super::{AppState, ROUTE_GROUP_HEADER, api_not_found};
 use crate::http::AuthenticatedSession;
 use crate::http::realtime;
 use axum::extract::{Extension, Path, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
@@ -44,6 +44,13 @@ pub(crate) fn mutation_error(
 /// all required before any Admin mutation parses its body. A malformed body
 /// must never bypass these checks or produce a framework-generated error
 /// with a different envelope.
+fn no_store(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
 pub(crate) fn mutation_guard_ok(
     headers: &HeaderMap,
     state: &AppState,
@@ -2151,14 +2158,16 @@ pub(crate) async fn admin_enrollment_token(
     )
     .await
     {
-        Ok(record) => Json(EnrollmentTokenResponse {
-            token_id: record.token_id,
-            token: record.token,
-            expires_at: record.expires_at,
-            lifetime_hours,
-            request_id: request_id.0.to_string(),
-        })
-        .into_response(),
+        Ok(record) => no_store(
+            Json(EnrollmentTokenResponse {
+                token_id: record.token_id,
+                token: record.token,
+                expires_at: record.expires_at,
+                lifetime_hours,
+                request_id: request_id.0.to_string(),
+            })
+            .into_response(),
+        ),
         Err(_) => mutation_error(
             &request_id.0,
             StatusCode::SERVICE_UNAVAILABLE,
@@ -2257,15 +2266,17 @@ pub(crate) async fn admin_recovery_token(
     )
     .await
     {
-        Ok(record) => Json(RecoveryTokenResponse {
-            agent_id,
-            agent_epoch,
-            token_id: record.token_id,
-            token: record.token,
-            expires_at: record.expires_at,
-            request_id: request_id.0.to_string(),
-        })
-        .into_response(),
+        Ok(record) => no_store(
+            Json(RecoveryTokenResponse {
+                agent_id,
+                agent_epoch,
+                token_id: record.token_id,
+                token: record.token,
+                expires_at: record.expires_at,
+                request_id: request_id.0.to_string(),
+            })
+            .into_response(),
+        ),
         Err(crate::enrollment::RecoveryError::AgentNotFound) => mutation_error(
             &request_id.0,
             StatusCode::NOT_FOUND,
@@ -2359,18 +2370,20 @@ pub(crate) async fn admin_rotate_credential(
     )
     .await
     {
-        Ok(rotated) => Json(RotationResponse {
-            agent_id: rotated.agent_id,
-            credential_id: rotated.credential_id,
-            credential: rotated.credential,
-            created_at: rotated.created_at,
-            overlap_hours: rotated.overlap_hours,
-            revoke_after: rotated.revoke_after,
-            revoked_previous_ids: rotated.revoked_previous_ids,
-            overlap_credential_ids: rotated.overlap_credential_ids,
-            request_id: request_id.0.to_string(),
-        })
-        .into_response(),
+        Ok(rotated) => no_store(
+            Json(RotationResponse {
+                agent_id: rotated.agent_id,
+                credential_id: rotated.credential_id,
+                credential: rotated.credential,
+                created_at: rotated.created_at,
+                overlap_hours: rotated.overlap_hours,
+                revoke_after: rotated.revoke_after,
+                revoked_previous_ids: rotated.revoked_previous_ids,
+                overlap_credential_ids: rotated.overlap_credential_ids,
+                request_id: request_id.0.to_string(),
+            })
+            .into_response(),
+        ),
         Err(crate::enrollment::RotationError::AgentNotFound) => mutation_error(
             &request_id.0,
             StatusCode::NOT_FOUND,

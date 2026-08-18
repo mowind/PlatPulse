@@ -60,9 +60,11 @@ export async function login(
  * pretends to be signed out while the session is still valid server-side;
  * a missing/expired session (`auth_required`) counts as already logged
  * out. */
-export async function logout(): Promise<void> {
+export async function logout(csrfToken: string): Promise<void> {
   try {
-    const { error } = await logoutHandler()
+    const { error } = await logoutHandler({
+      headers: { 'X-CSRF-Token': csrfToken },
+    })
     // Any 2xx (including the bodyless 204) is success; only error
     // responses are meaningful here.
     if (!error) return

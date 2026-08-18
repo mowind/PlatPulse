@@ -81,6 +81,20 @@ trap cleanup EXIT
 
 fail() { FAILURE_REASON="$1"; printf 'Release-candidate harness: FAIL (%s)\n' "$1" >&2; exit 1; }
 
+# Security assertions intentionally retain only sanitized response bodies on failure.
+expect_security_status() {
+  local name="$1" expected="$2"; shift 2
+  local body="$RUN_ROOT/security-${name}.body" status
+  status="$(curl -sS --connect-timeout 2 --max-time 10 "$@" -o "$body" -w '%{http_code}' 2>/dev/null || true)"
+  [[ "$status" == "$expected" ]] || fail "security matrix ${name}: expected HTTP ${expected}, got ${status}"
+}
+
+expect_security_error() {
+  local name="$1" expected_status="$2" expected_code="$3"; shift 3
+  expect_security_status "$name" "$expected_status" "$@"
+  jq -e --arg code "$expected_code" '.error.code == $code and (.error.message | type == "string") and (.error.message | test("pp_(agent|enroll)_|BEGIN .*PRIVATE KEY|/home/|/tmp/"; "i") | not)' "$RUN_ROOT/security-${name}.body" >/dev/null || fail "security matrix ${name}: error envelope was unstable or leaked sensitive material"
+}
+
 printf 'Release-candidate harness: building packaged artifact\n'
 if ! PLATPULSE_RELEASE_ARCHIVE="$ARCHIVE" "$ROOT/scripts/package-release.sh" "$PACKAGE_DIR" >"$CLI_LOG" 2>&1; then fail 'release artifact build failed; see preserved CLI log'; fi
 [[ -f "$ARCHIVE" ]] || fail 'release artifact was not produced'
@@ -385,8 +399,51 @@ EOF
 curl -sS --connect-timeout 2 --max-time 10 -D "$RUN_ROOT/viewer-login.headers" -c "$VIEWER_COOKIE" -o "$RUN_ROOT/viewer-login.body" -H 'Content-Type: application/json' -H "Origin: $BASE_URL" --data-binary "@$RUN_ROOT/viewer-login.json" "$BASE_URL/api/public/v1/login" -w '%{http_code}' >"$RUN_ROOT/viewer-login.status" || fail 'Viewer login request failed'
 LAST_REQUEST_ID="$(request_id "$RUN_ROOT/viewer-login.headers")"; [[ "$(cat "$RUN_ROOT/viewer-login.status")" == 200 ]] || fail "Viewer login failed (request $LAST_REQUEST_ID)"
 jq -e '.session.role == "viewer"' "$RUN_ROOT/viewer-login.body" >/dev/null || fail "Viewer login response was invalid (request $LAST_REQUEST_ID)"
+OWNER_CSRF="$(jq -r '.csrfToken' "$RUN_ROOT/owner-login.body")"
+VIEWER_CSRF="$(jq -r '.csrfToken' "$RUN_ROOT/viewer-login.body")"
+
+printf 'Release-candidate harness: running packaged security matrix\n'
+grep -qi '^set-cookie: __Host-platpulse_session=' "$RUN_ROOT/owner-login.headers" || fail 'production session cookie was not host-prefixed'
+grep -qi '^set-cookie: __Host-platpulse_session=.*Secure' "$RUN_ROOT/owner-login.headers" || fail 'session cookie was not Secure'
+grep -qi '^set-cookie: __Host-platpulse_session=.*HttpOnly' "$RUN_ROOT/owner-login.headers" || fail 'session cookie was not HttpOnly'
+grep -qi '^set-cookie: __Host-platpulse_session=.*SameSite=Lax' "$RUN_ROOT/owner-login.headers" || fail 'session cookie did not use SameSite=Lax'
+grep -qi '^cache-control: no-store' "$RUN_ROOT/owner-login.headers" || fail 'login response was cacheable'
+expect_security_error guest-public 401 auth_required "$BASE_URL/api/public/v1/networks"
+expect_security_error guest-admin 401 auth_required "$BASE_URL/api/admin/v1/access"
+expect_security_error viewer-admin 403 owner_required -b "$VIEWER_COOKIE" "$BASE_URL/api/admin/v1/access"
+expect_security_error viewer-agent 401 agent_auth_required -b "$VIEWER_COOKIE" "$BASE_URL/api/agent/v1/time"
+expect_security_status owner-admin 200 -b "$OWNER_COOKIE" "$BASE_URL/api/admin/v1/access"
+session_status="$(curl -sS --connect-timeout 2 --max-time 10 -D "$RUN_ROOT/security-session.headers" -b "$OWNER_COOKIE" -o "$RUN_ROOT/security-session.body" -w '%{http_code}' "$BASE_URL/api/public/v1/session" 2>/dev/null || true)"
+[[ "$session_status" == 200 ]] || fail 'packaged session probe failed'
+grep -qi '^cache-control: no-store' "$RUN_ROOT/security-session.headers" || fail 'session response was cacheable'
+expect_security_error wrong-origin-login 403 origin_validation_failed -H 'Content-Type: application/json' -H 'Origin: https://evil.example' --data-binary "@$RUN_ROOT/owner-login.json" "$BASE_URL/api/public/v1/login"
+expect_security_error missing-origin-login 403 origin_validation_failed -H 'Content-Type: application/json' --data-binary "@$RUN_ROOT/owner-login.json" "$BASE_URL/api/public/v1/login"
+printf '{"guestEnabled":false}' > "$RUN_ROOT/security-valid-access.json"
+expect_security_error missing-csrf 403 csrf_validation_failed -b "$OWNER_COOKIE" -H 'Content-Type: application/json' --data-binary "@$RUN_ROOT/security-valid-access.json" -X PUT "$BASE_URL/api/admin/v1/access"
+printf '{not-json' > "$RUN_ROOT/security-malformed.json"
+expect_security_error malformed-human-json 400 invalid_json -b "$OWNER_COOKIE" -H 'Content-Type: application/json' -H "Origin: $BASE_URL" -H "X-CSRF-Token: $OWNER_CSRF" --data-binary "@$RUN_ROOT/security-malformed.json" -X PUT "$BASE_URL/api/admin/v1/access"
+expect_security_status api-not-found 404 "$BASE_URL/api/not-found"
+expect_security_status encoded-traversal 404 --path-as-is "$BASE_URL/assets/%2e%2e/%2e%2e/server.toml"
+expect_security_status external-redirect-probe 200 "$BASE_URL/login?next=https%3A%2F%2Fevil.example"
+! grep -qi '^location: https://evil.example' "$RUN_ROOT/security-external-redirect-probe.body" || fail 'external redirect probe was accepted'
+VIEWER_OLD_COOKIE="$RUN_ROOT/viewer-old.cookies"
+VIEWER_ROTATED_COOKIE="$RUN_ROOT/viewer-rotated.cookies"
+cp "$VIEWER_COOKIE" "$VIEWER_OLD_COOKIE"
+old_session="$(awk '$6 == "__Host-platpulse_session" { print $7; exit }' "$VIEWER_OLD_COOKIE")"
+curl -sS --connect-timeout 2 --max-time 10 -D "$RUN_ROOT/viewer-rotate.headers" -c "$VIEWER_ROTATED_COOKIE" -o "$RUN_ROOT/viewer-rotate.body" -b "$VIEWER_OLD_COOKIE" -H 'Content-Type: application/json' -H "Origin: $BASE_URL" --data-binary "@$RUN_ROOT/viewer-login.json" "$BASE_URL/api/public/v1/login" -w '%{http_code}' >"$RUN_ROOT/viewer-rotate.status" || fail 'session rotation request failed'
+[[ "$(cat "$RUN_ROOT/viewer-rotate.status")" == 200 ]] || fail 'session rotation login was rejected'
+new_session="$(awk '$6 == "__Host-platpulse_session" { print $7; exit }' "$VIEWER_ROTATED_COOKIE")"
+[[ -n "$old_session" && -n "$new_session" && "$old_session" != "$new_session" ]] || fail 'successful login did not rotate the production Session ID'
+expect_security_error rotated-old-session 401 auth_required -b "$VIEWER_OLD_COOKIE" "$BASE_URL/api/public/v1/session"
+mv "$VIEWER_ROTATED_COOKIE" "$VIEWER_COOKIE"
+VIEWER_CSRF="$(jq -r '.csrfToken' "$RUN_ROOT/viewer-rotate.body")"
 request public-networks -b "$VIEWER_COOKIE" "$BASE_URL/api/public/v1/networks"
 jq -e 'type == "array"' "$RUN_ROOT/public-networks.body" >/dev/null || fail "Viewer REST projection was invalid (request $LAST_REQUEST_ID)"
+LOGOUT_COOKIE="$RUN_ROOT/logout.cookies"
+cp "$VIEWER_COOKIE" "$LOGOUT_COOKIE"
+logout_status="$(curl -sS --connect-timeout 2 --max-time 10 -b "$LOGOUT_COOKIE" -H "Origin: $BASE_URL" -H "X-CSRF-Token: $VIEWER_CSRF" -o "$RUN_ROOT/logout.body" -w '%{http_code}' -X POST "$BASE_URL/api/public/v1/logout" 2>/dev/null || true)"
+[[ "$logout_status" == 204 ]] || fail 'logout did not revoke the packaged Session'
+expect_security_error revoked-session 401 auth_required -b "$LOGOUT_COOKIE" "$BASE_URL/api/public/v1/session"
 
 printf 'Release-candidate harness: opening authorized Admin SSE\n'
 curl -sS --connect-timeout 2 -N -D "$SSE_HEADERS" -o "$SSE_OUTPUT" -b "$OWNER_COOKIE" "$BASE_URL/api/admin/v1/events" 2>"$RUN_ROOT/sse.stderr" &
@@ -405,6 +462,7 @@ printf 'Release-candidate harness: enrolling Agent and submitting two-Node repor
 ENROLLMENT_TOKEN="$(tail -n 1 "$RUN_ROOT/enrollment-output")"
 [[ "$ENROLLMENT_TOKEN" == pp_enroll_* ]] || fail 'Enrollment token output was invalid'
 curl -sS --connect-timeout 2 --max-time 10 -D "$RUN_ROOT/enroll.headers" -o "$RUN_ROOT/enroll.body" -H "Authorization: Bearer $ENROLLMENT_TOKEN" -w '%{http_code}' -X POST "$BASE_URL/api/agent/v1/enroll" >"$RUN_ROOT/enroll.status" || fail 'Agent enrollment request failed'
+expect_security_error enrollment-token-reuse 409 enrollment_token_consumed -H "Authorization: Bearer $ENROLLMENT_TOKEN" -X POST "$BASE_URL/api/agent/v1/enroll"
 unset ENROLLMENT_TOKEN
 LAST_REQUEST_ID="$(request_id "$RUN_ROOT/enroll.headers")"; [[ "$(cat "$RUN_ROOT/enroll.status")" == 200 ]] || fail "Agent enrollment failed (request $LAST_REQUEST_ID)"
 AGENT_ID="$(jq -r '.agent_id' "$RUN_ROOT/enroll.body")"
@@ -412,6 +470,8 @@ AGENT_EPOCH="$(jq -r '.agent_epoch' "$RUN_ROOT/enroll.body")"
 AGENT_CREDENTIAL="$(jq -r '.credential' "$RUN_ROOT/enroll.body")"
 [[ "$AGENT_ID" != null && -n "$AGENT_ID" ]] || fail "Enrollment did not return an Agent identity (request $LAST_REQUEST_ID)"
 [[ "$AGENT_CREDENTIAL" == pp_agent_* ]] || fail "Enrollment did not return an Agent Credential (request $LAST_REQUEST_ID)"
+expect_security_error agent-credential-public 401 auth_required -H "Authorization: Bearer $AGENT_CREDENTIAL" "$BASE_URL/api/public/v1/networks"
+expect_security_error agent-credential-admin 401 auth_required -H "Authorization: Bearer $AGENT_CREDENTIAL" "$BASE_URL/api/admin/v1/access"
 REPORT_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 BOOT_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 jq --arg agent_id "$AGENT_ID" --arg epoch "$AGENT_EPOCH" --arg report_id "$REPORT_ID" --arg boot_id "$BOOT_ID" '.agent_id = $agent_id | .agent_epoch = ($epoch | tonumber) | .report_id = $report_id | .boot_id = $boot_id | .report_sequence = 1' "$ROOT/crates/platpulse-core/tests/fixtures/report_v1_canonical.json" > "$RUN_ROOT/report.json"

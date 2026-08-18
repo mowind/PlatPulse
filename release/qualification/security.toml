@@ -1,0 +1,70 @@
+# Checked-in Phase 5 security qualification matrix
+# The packaged harness is the executable evidence. NOT_RUN is never a pass.
+version = 1
+command = "scripts/release-candidate-harness.sh"
+
+[[criterion]]
+id = "AUTH-ROUTES"
+owner = "Server maintainers"
+blocking = true
+disposition = "pass"
+evidence = "packaged HTTP route-group probes and two-Node report"
+
+[[criterion]]
+id = "AUTH-SESSION"
+owner = "Server maintainers"
+blocking = true
+disposition = "pass"
+evidence = "packaged session rotation and logout revocation probes"
+
+[[criterion]]
+id = "AUTH-ROLE-DISABLE"
+owner = "Server maintainers"
+blocking = false
+disposition = "not_run"
+risk = "Role and disable transitions require a second live human identity in the packaged fixture."
+
+[[criterion]]
+id = "CSRF-ORIGIN-COOKIE"
+owner = "Server maintainers"
+blocking = true
+disposition = "pass"
+evidence = "exact-Origin, CSRF, cookie, native TLS, and trusted-proxy probes"
+
+[[criterion]]
+id = "TOKENS-ONE-TIME"
+owner = "Server maintainers"
+blocking = false
+disposition = "partial"
+evidence = "packaged Enrollment token exchange and reuse rejection"
+risk = "Recovery exchange/reuse and old-credential revocation remain to be run."
+
+[[criterion]]
+id = "INPUT-BOUNDARIES"
+owner = "Server maintainers"
+blocking = false
+disposition = "partial"
+evidence = "malformed human JSON, bounded error envelopes, API fallback, traversal, and redirect probes"
+risk = "Unknown-enum, oversized-login, and complete list-limit probes remain NOT_RUN."
+
+[[criterion]]
+id = "OUTPUT-REDACTION"
+owner = "Security owner"
+blocking = false
+disposition = "partial"
+evidence = "metrics, backup artifact mode, recovery rehearsal, and sanitized error probes"
+risk = "A complete recursive scan of logs, Doctor, package metadata, and restore output remains NOT_RUN."
+
+[[criterion]]
+id = "DEPENDENCIES"
+owner = "Release Engineering"
+blocking = false
+disposition = "not_run"
+risk = "cargo-deny, cargo-audit, npm audit, and per-finding disposition must run in the release environment."
+
+[[criterion]]
+id = "OPTIONAL-DEGRADATION"
+owner = "Operations owner"
+blocking = false
+disposition = "not_run"
+risk = "Geo, Validator Provider, notification, and isolated-Agent failure fixtures are environment-dependent."

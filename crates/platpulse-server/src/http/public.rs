@@ -9,6 +9,7 @@
 
 use std::pin::Pin;
 
+use axum::body::Bytes;
 use axum::extract::{Extension, Path, Query, Request, State};
 use axum::http::header::{self, HeaderValue};
 use axum::http::{HeaderMap, StatusCode};
@@ -28,6 +29,7 @@ use crate::auth::{
     LoginError, clear_cookie_header, format_rfc3339, login, session_cookie_header, touch_session,
     write_audit_event,
 };
+use crate::http::admin::mutation_guard;
 use crate::http::{
     AppState, AuthenticatedSession, ClientIp, ROUTE_GROUP_HEADER, RequestId, api_not_found,
 };
@@ -152,10 +154,11 @@ pub(crate) async fn login_handler(
     headers: header::HeaderMap,
     Extension(request_id): Extension<RequestId>,
     Extension(client): Extension<ClientIp>,
-    Json(body): Json<LoginRequest>,
+    body: Bytes,
 ) -> Response {
     // 1. Strict Origin validation (design §12.4): login carries no existing
-    //    session, so the configured origin is the only acceptable one.
+    //    session, so the configured origin is the only acceptable one. Parse
+    //    only after this check so malformed input cannot bypass the boundary.
     if !state.auth().origin_matches(headers.get(header::ORIGIN)) {
         return error_response(
             &request_id.0,
@@ -164,6 +167,17 @@ pub(crate) async fn login_handler(
             "request origin does not match the configured origin",
         );
     }
+    let body: LoginRequest = match serde_json::from_slice(&body) {
+        Ok(body) => body,
+        Err(_) => {
+            return error_response(
+                &request_id.0,
+                StatusCode::BAD_REQUEST,
+                "invalid_json",
+                "request body is invalid",
+            );
+        }
+    };
 
     // 2. Setup gate (design §12.2): no Owner, no login.
     match crate::auth::has_owner(state.db()).await {
@@ -240,10 +254,13 @@ pub(crate) async fn login_handler(
             );
             (
                 StatusCode::OK,
-                [(
-                    header::SET_COOKIE,
-                    HeaderValue::from_str(&cookie).expect("cookie value is a valid header"),
-                )],
+                [
+                    (
+                        header::SET_COOKIE,
+                        HeaderValue::from_str(&cookie).expect("cookie value is a valid header"),
+                    ),
+                    (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
+                ],
                 Json(session_response(&session)),
             )
                 .into_response()
@@ -299,9 +316,13 @@ pub(crate) async fn login_handler(
 )]
 pub(crate) async fn logout_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Extension(principal): Extension<AuthenticatedSession>,
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
+    if let Some(response) = mutation_guard(&headers, &principal, state.auth(), &request_id, false) {
+        return response;
+    }
     let session = principal.0;
     // Revocation and its audit row commit in one transaction; on failure
     // the response fails loudly and the cookie is kept so the client does
@@ -371,7 +392,11 @@ pub(crate) async fn session_handler(
     touch_session(state.db(), &session.session_id, session.last_seen_at)
         .await
         .ok();
-    Json(session_response(&session)).into_response()
+    let mut response = Json(session_response(&session)).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone)]

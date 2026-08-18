@@ -6,6 +6,8 @@ The CI and soak profiles live in release/qualification. Validate them with scrip
 
 The run drives multiple Agents and Nodes through valid and invalid reports, exact retries, body conflicts, stale revisions, REST, SSE, metrics, workers, process restart, transport failure, SQLite busy behavior, realtime reconnect, and packaged Agent Durable Spool checks. Evidence records environment, duration, throughput, latency, failures, resource growth, scenario outcomes, and residual risks without sensitive identifiers or report contents.
 
+The packaged security matrix is documented in [Phase 5 security review](security-review.md) and runs as part of CI through `scripts/release-candidate-harness.sh`. It checks route authorization and credential isolation, Session fixation/revocation, exact Origin and CSRF, cookie/TLS/trusted-proxy policy, one-time enrollment, malformed input, API/SPA routing, and sanitized operational output at the packaged Server boundary.
+
 PlatPulse exposes no production fault-injection or remote-control API. Controlled worker failure and synthetic partial-receipt injection are NOT_RUN, never PASS. A passing result applies only to the recorded artifact, host, profile, duration, and workload.
 
 ## Migration and recovery rehearsal

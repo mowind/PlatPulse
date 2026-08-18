@@ -1731,6 +1731,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn malformed_login_uses_the_stable_error_envelope_after_origin_validation() {
+        let (_, _, state) = test_state().await;
+        seed_owner(&state).await;
+        for (origin, expected_status, expected_code) in [
+            (
+                "http://127.0.0.1:8080",
+                StatusCode::BAD_REQUEST,
+                "invalid_json",
+            ),
+            (
+                "https://evil.example.com",
+                StatusCode::FORBIDDEN,
+                "origin_validation_failed",
+            ),
+        ] {
+            let request = Request::builder()
+                .method("POST")
+                .uri("/api/public/v1/login")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ORIGIN, origin)
+                .body(Body::from("{not-json"))
+                .unwrap();
+            let (status, body) =
+                json(build_app(state.clone()).oneshot(request).await.unwrap()).await;
+            assert_eq!(status, expected_status);
+            assert_eq!(body["error"]["code"], expected_code);
+            if expected_code == "invalid_json" {
+                assert_eq!(body["error"]["message"], "request body is invalid");
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn login_is_refused_until_an_owner_exists() {
         let (_, _, state) = test_state().await;
         let (status, body) = json(build_app(state).oneshot(login_request()).await.unwrap()).await;
@@ -1746,6 +1779,7 @@ mod tests {
 
         let response = app.oneshot(login_request()).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
         let set_cookie = response.headers()[header::SET_COOKIE].to_str().unwrap();
         // Development test policy: separate cookie name, no Secure.
         assert!(
@@ -1844,7 +1878,9 @@ mod tests {
             .header(header::COOKIE, cookie)
             .body(Body::empty())
             .unwrap();
-        let (status, body) = json(app.oneshot(request).await.unwrap()).await;
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let (status, body) = json(response).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["session"]["username"], "admin");
         assert!(!body["csrfToken"].as_str().unwrap().is_empty());
@@ -1912,11 +1948,26 @@ mod tests {
             .to_str()
             .unwrap()
             .to_owned();
+        let (_, login_body) = json(login).await;
+        let csrf = login_body["csrfToken"].as_str().unwrap();
+
+        let missing_csrf = Request::builder()
+            .method("POST")
+            .uri("/api/public/v1/logout")
+            .header(header::COOKIE, &cookie)
+            .header(header::ORIGIN, "http://127.0.0.1:8080")
+            .body(Body::empty())
+            .unwrap();
+        let (status, body) = json(app.clone().oneshot(missing_csrf).await.unwrap()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["error"]["code"], "csrf_validation_failed");
 
         let request = Request::builder()
             .method("POST")
             .uri("/api/public/v1/logout")
             .header(header::COOKIE, &cookie)
+            .header(header::ORIGIN, "http://127.0.0.1:8080")
+            .header("x-csrf-token", csrf)
             .body(Body::empty())
             .unwrap();
         let response = app.clone().oneshot(request).await.unwrap();

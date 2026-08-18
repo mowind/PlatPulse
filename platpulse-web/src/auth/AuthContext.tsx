@@ -110,7 +110,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const logout = useCallback(async () => {
-    await apiLogout()
+    const current = statusRef.current
+    const csrfToken = current.state === 'authenticated' ? current.csrfToken : ''
+    await apiLogout(csrfToken)
     sessionProbeRef.current?.abort()
     sessionProbeRef.current = null
     sessionEpochRef.current += 1
