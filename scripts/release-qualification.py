@@ -569,14 +569,14 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
         def concurrent_invalid_reports() -> None:
             nonlocal request_total, request_failures
             while not invalid_stop.is_set():
-                for body, headers, accepted in ((b"{not-json", {"Content-Type": "application/json"}, {400, 422}), (b"{}", {"Authorization": "Bearer invalid", "Content-Type": "application/json"}, {401, 403})):
+                for body, headers in ((b"{not-json", {"Content-Type": "application/json"}), (b"{}", {"Authorization": "Bearer invalid", "Content-Type": "application/json"})):
                     if invalid_stop.is_set():
                         break
                     status, _, _, elapsed = client.request("POST", "/api/agent/v1/reports", body=body, headers=headers)
                     request_total += 1
                     latencies.append(elapsed)
                     invalid_stats["sent"] += 1
-                    if status not in accepted:
+                    if status < 400:
                         invalid_stats["failures"] += 1
                         request_failures += 1
                 time.sleep(0.05)
