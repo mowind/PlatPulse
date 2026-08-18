@@ -243,7 +243,11 @@ backup timer/service. Agent archives include the Agent unit and configuration
 reference. Packages install dedicated `platpulse-server` and `platpulse-agent`
 system users, create their private state directories plus the Server backup and
 `/etc/platpulse/secrets` directories with runtime-user ownership and mode `0700`,
-and never enable a service automatically.
+and never enable a service automatically. DEB and RPM scriptlets declare their
+`adduser`/`shadow-utils`, `coreutils`, `libc`, and `systemd` runtime dependencies.
+Release builds export `SOURCE_DATE_EPOCH` through tar, package, and SBOM generation;
+Syft is required for a releasable dependency-aware SPDX SBOM. Fixture and harness
+runs may explicitly emit only a non-releasable SBOM-skipped marker.
 
 ## OCI deployment and mount model
 
