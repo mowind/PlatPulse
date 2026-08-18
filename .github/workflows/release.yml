@@ -11,9 +11,20 @@ permissions:
 jobs:
   release-gate:
     name: Mandatory release gate
+    outputs:
+      version: ${{ steps.release-version.outputs.version }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Resolve and validate release version
+        id: release-version
+        run: |
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "platpulse-server") | .version')"
+          if [[ "$GITHUB_REF" == refs/tags/v* && "v$version" != "${GITHUB_REF_NAME}" ]]; then
+            echo "tag ${GITHUB_REF_NAME} does not match workspace version $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@2eae45db285e407f22119950686d47e1101e071b # 1.88.0
         with:
           components: rustfmt, clippy
@@ -99,7 +110,7 @@ jobs:
       - name: Install native package tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y dpkg-dev rpm
+          sudo apt-get install -y cpio dpkg-dev rpm
       - uses: taiki-e/install-action@5b4d68e2e660441203ab128a23676f1e4faf1532 # v2
         with:
           tool: cargo-audit
@@ -110,17 +121,8 @@ jobs:
       - name: Install WebUI dependencies
         working-directory: platpulse-web
         run: npm ci
-      - name: Resolve release version
-        id: version
-        run: |
-          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "platpulse-server") | .version')"
-          if [[ "$GITHUB_REF" == refs/tags/v* && "v$version" != "${GITHUB_REF_NAME}" ]]; then
-            echo "tag ${GITHUB_REF_NAME} does not match workspace version $version" >&2
-            exit 1
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Build release set
-        run: scripts/build-release.sh --target ${{ matrix.target }} --version ${{ steps.version.outputs.version }} --output target/release-artifacts
+        run: scripts/build-release.sh --target ${{ matrix.target }} --version ${{ needs.release-gate.outputs.version }} --output target/release-artifacts
       - name: Validate and smoke native archives
         run: |
           server_archive="$(echo target/release-artifacts/platpulse-server-*-linux-${{ matrix.arch }}.tar.gz)"
@@ -138,6 +140,8 @@ jobs:
           readelf -h /tmp/platpulse-server-archive/usr/bin/platpulse-server | grep -q "$expected_machine"
           test "$(getconf GNU_LIBC_VERSION)" = 'glibc 2.39'
           (cd target/release-artifacts && sha256sum -c SHA256SUMS)
+      - name: Validate final native package payloads and metadata
+        run: scripts/test-release-packages.sh target/release-artifacts
       - name: Run release-candidate harness
         run: scripts/release-candidate-harness.sh
       - name: Install Debian packages and smoke binaries
@@ -146,7 +150,13 @@ jobs:
           getent passwd platpulse-server
           getent passwd platpulse-agent
           /usr/bin/platpulse-server --help >/dev/null
+          /usr/bin/platpulse-server backup --help >/dev/null
           /usr/bin/platpulse-agent --help >/dev/null
+          systemd-analyze verify /usr/lib/systemd/system/platpulse-server.service /usr/lib/systemd/system/platpulse-backup.service /usr/lib/systemd/system/platpulse-agent.service
+          test "$(stat -c '%U:%G:%a' /var/lib/platpulse)" = platpulse-server:platpulse-server:700
+          test "$(stat -c '%U:%G:%a' /var/backups/platpulse)" = platpulse-server:platpulse-server:700
+          test "$(stat -c '%U:%G:%a' /etc/platpulse/secrets)" = platpulse-server:platpulse-server:700
+          test "$(stat -c '%U:%G:%a' /var/lib/platpulse-agent)" = platpulse-agent:platpulse-agent:700
           test "$(stat -c '%a' /usr/bin/platpulse-server)" = 755
           test "$(stat -c '%a' /usr/bin/platpulse-agent)" = 755
       - name: Install RPM packages in disposable Fedora
@@ -158,7 +168,13 @@ jobs:
               getent passwd platpulse-server
               getent passwd platpulse-agent
               /usr/bin/platpulse-server --help >/dev/null
+              /usr/bin/platpulse-server backup --help >/dev/null
               /usr/bin/platpulse-agent --help >/dev/null
+              systemd-analyze verify /usr/lib/systemd/system/platpulse-server.service /usr/lib/systemd/system/platpulse-backup.service /usr/lib/systemd/system/platpulse-agent.service
+              test "$(stat -c %U:%G:%a /var/lib/platpulse)" = platpulse-server:platpulse-server:700
+              test "$(stat -c %U:%G:%a /var/backups/platpulse)" = platpulse-server:platpulse-server:700
+              test "$(stat -c %U:%G:%a /etc/platpulse/secrets)" = platpulse-server:platpulse-server:700
+              test "$(stat -c %U:%G:%a /var/lib/platpulse-agent)" = platpulse-agent:platpulse-agent:700
               test "$(stat -c %a /usr/bin/platpulse-server)" = 755
               test "$(stat -c %a /usr/bin/platpulse-agent)" = 755
             '
@@ -200,9 +216,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@2eae45db285e407f22119950686d47e1101e071b # 1.88.0
       - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-      - name: Resolve release version
-        id: version
-        run: echo "version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "platpulse-server") | .version')" >> "$GITHUB_OUTPUT"
       - name: Log in to GHCR
         if: startsWith(github.ref, 'refs/tags/v')
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -214,7 +227,7 @@ jobs:
         run: |
           for platform in linux/amd64 linux/arm64; do
             arch="${platform#linux/}"
-            docker buildx build --platform "$platform" --load -f release/oci/server.Dockerfile --build-arg VERSION=${{ steps.version.outputs.version }} -t "platpulse-server:rc-$arch" .
+            docker buildx build --platform "$platform" --load -f release/oci/server.Dockerfile --build-arg VERSION=${{ needs.release-gate.outputs.version }} -t "platpulse-server:rc-$arch" .
           done
       - name: Verify non-root images and mount separation
         run: |
@@ -236,14 +249,14 @@ jobs:
           file: release/oci/server.Dockerfile
           platforms: linux/amd64,linux/arm64
           push: ${{ startsWith(github.ref, 'refs/tags/v') }}
-          tags: ghcr.io/${{ github.repository_owner }}/platpulse-server:${{ steps.version.outputs.version }}
-          build-args: VERSION=${{ steps.version.outputs.version }}
+          tags: ghcr.io/${{ github.repository_owner }}/platpulse-server:${{ needs.release-gate.outputs.version }}
+          build-args: VERSION=${{ needs.release-gate.outputs.version }}
           sbom: true
           provenance: true
       - name: Record OCI digest
         run: |
           mkdir -p target/oci-release
-          printf '%s  ghcr.io/${{ github.repository_owner }}/platpulse-server:${{ steps.version.outputs.version }}\n' '${{ steps.image.outputs.digest }}' > target/oci-release/platpulse-server-oci-digest.txt
+          printf '%s  ghcr.io/${{ github.repository_owner }}/platpulse-server:${{ needs.release-gate.outputs.version }}\n' '${{ steps.image.outputs.digest }}' > target/oci-release/platpulse-server-oci-digest.txt
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-oci-metadata
