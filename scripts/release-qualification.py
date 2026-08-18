@@ -651,8 +651,38 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
         if not isolation_ok:
             request_failures += 1
 
-        scenarios.append(scenario("agent_outage", "PASS", f"paused one Agent producer for {workload['fault_window_seconds']} seconds while other traffic continued"))
+        fault_stop = threading.Event()
+        fault_stats = {"sent": 0, "failures": 0}
+
+        def continue_other_agents() -> None:
+            nonlocal request_total
+            while not fault_stop.is_set():
+                for identity in identities[1:]:
+                    if fault_stop.is_set():
+                        break
+                    sequence = last_sequences[identity["index"]] + 1
+                    report, node_ids = make_report(template, identity, sequence, 170000 + identity["index"] * 1000 + sequence * 10)
+                    status, _, elapsed = send_report(client, identity["credential"], json_bytes(report))
+                    request_total += 1
+                    latencies.append(elapsed)
+                    fault_stats["sent"] += 1
+                    if status != 200:
+                        fault_stats["failures"] += 1
+                        request_failures += 1
+                    else:
+                        last_sequences[identity["index"]] = sequence
+                        for node_index, node_id in enumerate(node_ids):
+                            expected_heads[node_id] = 170000 + identity["index"] * 1000 + sequence * 10 + node_index
+
+        producer = threading.Thread(target=continue_other_agents, daemon=True)
+        producer.start()
         time.sleep(workload["fault_window_seconds"])
+        fault_stop.set()
+        producer.join(timeout=workload["request_timeout_seconds"] + 1)
+        agent_outage_ok = fault_stats["sent"] > 0 and fault_stats["failures"] == 0
+        scenarios.append(scenario("agent_outage", "PASS" if agent_outage_ok else "FAIL", f"suspended Agent 0 while other Agents submitted {fault_stats['sent']} Reports"))
+        if not agent_outage_ok:
+            request_failures += 1
 
         pending_report, _ = make_report(template, first_identity, last_sequences[0] + 1, 150000)
         pending_body = json_bytes(pending_report)
