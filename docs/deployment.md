@@ -149,6 +149,29 @@ and pool pressure; in-flight ingestion; and metrics listener state. A failed
 collection is represented by an absent dynamic sample rather than a fabricated
 zero.
 
+| Metric | Type | Fixed labels | Semantics |
+| --- | --- | --- | --- |
+| `platpulse_http_requests_total` | counter | `surface`, `status` | Responses by route group and status class. |
+| `platpulse_agent_reports_total` | counter | `outcome` | AgentReport attempts by Receipt disposition, or `unknown`. |
+| `platpulse_report_receipts_total` | counter | `outcome` | Report Receipts actually returned by disposition. |
+| `platpulse_readiness` | gauge | `component` | Per-component readiness (`1` ready, `0` not ready). |
+| `platpulse_ready` | gauge | none | Whether every required readiness component is ready. |
+| `platpulse_critical_worker_heartbeat_age_seconds` | gauge | none | Critical-worker heartbeat age; absent until first observed. |
+| `platpulse_realtime_connections` | gauge | `surface` | Active Public/Admin realtime streams. |
+| `platpulse_realtime_buffered_events` | gauge | `surface` | Events held in each bounded realtime buffer. |
+| `platpulse_operations` | gauge | `status` | Durable Operation rows by fixed status; absent if unavailable. |
+| `platpulse_notification_deliveries` | gauge | `state` | Delivery rows by fixed state; absent if unavailable. |
+| `platpulse_sqlite_page_count` | gauge | none | Allocated SQLite pages; absent if unavailable. |
+| `platpulse_sqlite_freelist_pages` | gauge | none | SQLite freelist pages; absent if unavailable. |
+| `platpulse_sqlite_wal_bytes` | gauge | none | WAL sidecar bytes. |
+| `platpulse_sqlite_pool_size` | gauge | none | Pool connection capacity. |
+| `platpulse_sqlite_pool_idle` | gauge | none | Idle pool connections. |
+| `platpulse_ingestion_in_flight` | gauge | none | AgentReport ingestions currently executing. |
+| `platpulse_metrics_scrapes_total` | counter | none | Scrapes served by this process. |
+| `platpulse_metrics_listener_failures_total` | counter | none | Redacted listener startup/runtime failures. |
+| `platpulse_metrics_listener_enabled` | gauge | none | Whether the listener is configured. |
+| `platpulse_metrics_listener_ready` | gauge | none | Whether the listener is ready. |
+
 ## Same-origin behavior
 
 - `/` and React Router paths such as `/admin` receive `index.html`;

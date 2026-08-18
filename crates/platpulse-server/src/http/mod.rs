@@ -670,6 +670,8 @@ pub fn build_app_with_native_tls(state: AppState, native_tls: bool) -> Router {
         .nest("/api", api)
         .route("/health/live", get(health::live))
         .route("/health/ready", get(health::ready))
+        .route("/metrics", axum::routing::any(api_not_found))
+        .route("/metrics/{*rest}", axum::routing::any(api_not_found))
         .merge(assets)
         .fallback(spa_index)
         .layer(SetResponseHeaderLayer::overriding(
@@ -1617,6 +1619,22 @@ mod tests {
             );
             let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
             assert_eq!(&body[..], INDEX_HTML.as_bytes());
+        }
+    }
+
+    #[tokio::test]
+    async fn metrics_paths_never_fall_through_to_the_spa() {
+        for uri in ["/metrics", "/metrics/extra"] {
+            let (_, _, state) =
+                test_state_with_files(&[("index.html", INDEX_HTML.as_bytes())]).await;
+
+            let response = get(build_app(state), uri).await;
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
+            assert_eq!(
+                response.headers()[header::CONTENT_TYPE],
+                "application/json",
+                "{uri} must answer JSON, not SPA HTML"
+            );
         }
     }
 

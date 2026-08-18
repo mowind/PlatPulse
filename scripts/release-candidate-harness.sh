@@ -219,6 +219,23 @@ printf 'Release-candidate harness: provisioning isolated identities and Network\
 "$SERVER" network create --config "$CONFIG" --key platon-mainnet --display-name 'PlatON Mainnet' --genesis-hash "0x$(printf 'a%.0s' {1..64})" --chain-id 210425 --p2p-network-id 210425 --address-hrp lat >>"$CLI_LOG" 2>&1 || fail 'Network provisioning failed; see preserved CLI log'
 "$SERVER" network create --config "$CONFIG" --key platon-testnet --display-name 'PlatON Testnet' --genesis-hash "0x$(printf 'b%.0s' {1..64})" --chain-id 2206131 --p2p-network-id 2206131 --address-hrp lat >>"$CLI_LOG" 2>&1 || fail 'Network provisioning failed; see preserved CLI log'
 
+UNSAFE_METRICS_CONFIG="$RUN_ROOT/unsafe-metrics.toml"
+cat > "$UNSAFE_METRICS_CONFIG" <<EOF
+state_dir = "$STATE_DIR"
+db_path = "$STATE_DIR/platpulse.db"
+pepper_file = "$STATE_DIR/server-pepper"
+web_root = "$WEB_ROOT"
+listen = "127.0.0.1:$PORT"
+public_base_url = "http://127.0.0.1:$PORT"
+[metrics]
+enabled = true
+listen = "0.0.0.0:$METRICS_PORT"
+EOF
+if "$SERVER" serve --config "$UNSAFE_METRICS_CONFIG" >"$RUN_ROOT/unsafe-metrics.log" 2>&1; then
+  fail 'non-loopback plaintext metrics listener was accepted'
+fi
+grep -q 'refusing to bind' "$RUN_ROOT/unsafe-metrics.log" || fail 'metrics transport refusal diagnostic was not stable'
+
 printf 'Release-candidate harness: starting packaged Server\n'
 "$SERVER" serve --config "$CONFIG" >"$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
