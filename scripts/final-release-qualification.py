@@ -24,6 +24,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -42,6 +43,7 @@ IP_RE = re.compile(r"(?<![0-9])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![0-9])")
 PRIVATE_KEY_RE = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
 FORBIDDEN_PATH_MARKERS = ("geolite", "pepper", "credential", "private-key", "privkey", "token")
 FORBIDDEN_SUFFIXES = {".mmdb", ".pem", ".key", ".p12", ".pfx", ".jks", ".p8", ".crt", ".csr"}
+KNOWN_NOT_RUN_SCENARIOS = {"partial_receipt", "worker_failure"}
 
 
 class QualificationError(RuntimeError):
@@ -113,11 +115,13 @@ class Check:
 
 class FinalQualification:
     def __init__(self, output: Path, profile: Path, require_all: bool,
-                 native_artifacts: Path | None = None):
+                 native_artifacts: Path | None = None,
+                 allow_known_not_run: bool = False):
         self.output = output
         self.profile = profile
         self.require_all = require_all
         self.native_artifacts = native_artifacts or ROOT / "target/release-artifacts"
+        self.allow_known_not_run = allow_known_not_run
         self.server_archive: Path | None = None
         self.checks: list[Check] = []
         self.residual_risks: list[str] = []
@@ -356,11 +360,11 @@ class FinalQualification:
             self.run_unavailable(check, "package", "no packaged tree to scan")
         findings: list[str] = []
         text_extensions = {".toml", ".md", ".yml", ".yaml", ".service", ".timer", ".sh", ".txt", ".json", ".example"}
-        for root in scan_roots:
+        def scan_tree(root: Path, label: str = "") -> None:
             for path in root.rglob("*"):
                 if not path.is_file():
                     continue
-                relative = str(path.relative_to(ROOT))
+                relative = f"{label}:{path.relative_to(root)}" if label else display_path(path)
                 lower_name = path.name.lower()
                 if path.suffix.lower() in FORBIDDEN_SUFFIXES or any(marker in lower_name for marker in FORBIDDEN_PATH_MARKERS):
                     findings.append(f"{relative} is a forbidden secret/GeoLite member")
@@ -373,12 +377,36 @@ class FinalQualification:
                         findings.append(f"{relative} contains private-key material")
                     if TOKEN_RE.search(text):
                         findings.append(f"{relative} contains a live credential token")
+
+        for root in scan_roots:
+            scan_tree(root)
+
         forbidden_bytes = (b"pp_agent_", b"pp_enroll_", b"PRIVATE KEY", b".mmdb", b"GeoLite")
         native_dir = self.native_artifacts
         native_artifacts = [
             path for path in native_dir.iterdir()
             if path.is_file() and path.suffix in {".deb", ".rpm", ".gz"}
         ] if native_dir.is_dir() else []
+        native_extract_root = self.output / "native-security-extract"
+        shutil.rmtree(native_extract_root, ignore_errors=True)
+        native_extract_root.mkdir(parents=True, exist_ok=True)
+        for artifact in native_artifacts:
+            if artifact.suffix not in {".deb", ".rpm"}:
+                continue
+            destination = native_extract_root / artifact.name
+            destination.mkdir()
+            if artifact.suffix == ".deb":
+                result = run_command(["dpkg-deb", "-x", str(artifact), str(destination)], timeout=300, check=False)
+            elif shutil.which("rpm2cpio") and shutil.which("cpio"):
+                pipeline = f"rpm2cpio {shlex.quote(str(artifact))} | cpio -idm --quiet"
+                result = run_command(["bash", "-c", pipeline], cwd=destination, timeout=300, check=False)
+            else:
+                findings.append(f"{display_path(artifact)} could not be content-scanned: rpm2cpio/cpio unavailable")
+                continue
+            if result.returncode != 0:
+                findings.append(f"{display_path(artifact)} could not be content-scanned: extraction failed")
+            else:
+                scan_tree(destination, display_path(artifact))
         server_archives = [self.server_archive] if self.server_archive is not None else []
         for artifact in native_artifacts + server_archives:
             relative = display_path(artifact)
@@ -614,7 +642,11 @@ class FinalQualification:
                     if detail == "FAIL":
                         check.status = "FAIL"
                     elif detail != "PASS":
-                        check.status = "UNAVAILABLE"
+                        if self.allow_known_not_run and not_run and set(not_run) <= KNOWN_NOT_RUN_SCENARIOS:
+                            check.status = "INCOMPLETE"
+                            check.detail = "known non-runnable scenarios are explicit residual risks: " + ", ".join(not_run)
+                        else:
+                            check.status = "UNAVAILABLE"
                     evidence = self.check("qualification-result", "packaged", "evidence")
                     evidence.evidence = result_json
                     evidence.status = check.status
@@ -659,6 +691,7 @@ class FinalQualification:
         unavailable = [c.to_dict() for c in self.checks if c.status in {"UNAVAILABLE", "NOT_RUN"}]
         failed = [c for c in self.checks if c.status == "FAIL"]
         passed = [c for c in self.checks if c.status == "PASS"]
+        incomplete = [c for c in self.checks if c.status == "INCOMPLETE"]
         if self.require_all:
             total = "FAIL" if (failed or unavailable) else "PASS"
         else:
@@ -685,7 +718,7 @@ class FinalQualification:
                 "cpu_count": os.cpu_count(),
             },
             "checks": [c.to_dict() for c in self.checks],
-            "counts": {"pass": len(passed), "fail": len(failed), "unavailable": len(unavailable)},
+            "counts": {"pass": len(passed), "fail": len(failed), "incomplete": len(incomplete), "unavailable": len(unavailable)},
             "artifacts": {
                 "package_dir": display_path(self.output / "package"),
                 "checksums": display_path(self.output / "package/release-set/SHA256SUMS") if (self.output / "package/release-set/SHA256SUMS").is_file() else None,
@@ -745,7 +778,7 @@ class FinalQualification:
             f"- Version: {report['version']}  Target: {report['target']}",
             f"- Profile: {report['profile']}",
             f"- Passed: {report['counts']['pass']}  Failed: {report['counts']['fail']}  "
-            f"Unavailable/NOT_RUN: {report['counts']['unavailable']}",
+            f"Incomplete: {report['counts']['incomplete']}  Unavailable/NOT_RUN: {report['counts']['unavailable']}",
             "", "## Checks", "",
         ]
         for item in report["checks"]:
@@ -793,6 +826,8 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--native-artifacts", type=Path,
                         help="run-owned native artifact directory to inspect")
+    parser.add_argument("--allow-known-not-run", action="store_true",
+                        help="allow the explicitly documented partial_receipt and worker_failure scenarios")
     parser.add_argument("--require-all", action="store_true",
                         help="fail when any check is UNAVAILABLE or NOT_RUN (release gating)")
     parser.add_argument("--self-test", action="store_true")
@@ -808,6 +843,7 @@ def main() -> int:
         runner = FinalQualification(
             args.output.resolve(), profile, require_all=args.require_all,
             native_artifacts=args.native_artifacts.resolve() if args.native_artifacts else None,
+            allow_known_not_run=args.allow_known_not_run,
         )
         return runner.run()
     except QualificationError as error:

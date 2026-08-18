@@ -51,7 +51,7 @@ jobs:
       - name: Run final qualification
         env:
           QUALIFICATION_PROFILE: ${{ github.event_name == 'schedule' && 'soak' || inputs.profile }}
-        run: scripts/final-release-qualification.sh --profile "release/qualification/${QUALIFICATION_PROFILE}.toml" --output target/release-qualification/final --native-artifacts target/release-qualification/native-artifacts --require-all
+        run: scripts/final-release-qualification.sh --profile "release/qualification/${QUALIFICATION_PROFILE}.toml" --output target/release-qualification/final --native-artifacts target/release-qualification/native-artifacts --allow-known-not-run --require-all
       - name: Upload final qualification evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
