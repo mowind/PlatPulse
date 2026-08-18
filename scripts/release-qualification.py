@@ -748,7 +748,10 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
             receipt_count, distinct_receipts = db.execute("SELECT COUNT(*), COUNT(DISTINCT report_id) FROM agent_report_receipts").fetchone()
             alert_count = db.execute("SELECT COUNT(*) FROM alert_incidents").fetchone()[0]
             delivery_count = db.execute("SELECT COUNT(*) FROM notification_deliveries").fetchone()[0]
+            gap_count, gap_nodes = db.execute("SELECT COUNT(*), COUNT(DISTINCT node_id) FROM block_history_gaps WHERE kind = 'unrecoverable_backfill'").fetchone()
         receipt_unique = receipt_count == distinct_receipts
+        history_gap_ok = gap_count >= workload["agents"] and gap_nodes >= workload["agents"]
+        scenarios.append(scenario("history_gap_restart", "PASS" if history_gap_ok else "FAIL", f"retained {gap_count} unrecoverable History Gaps across {gap_nodes} Nodes after restart" if history_gap_ok else "History Gap rows were not retained per Agent"))
         scenarios.append(scenario("receipt_uniqueness", "PASS" if receipt_unique else "FAIL", f"stored {receipt_count} unique Report Receipts" if receipt_unique else "duplicate Report Receipt rows were stored"))
         scenarios.append(scenario("alert_outbox_restart", "PASS", f"alert and notification state remained readable after restart ({alert_count} incidents, {delivery_count} deliveries)"))
 
