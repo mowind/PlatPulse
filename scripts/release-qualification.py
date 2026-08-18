@@ -491,7 +491,6 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
         command([str(server), "viewer", "create", "--config", str(config), "--username", "qualification-viewer"], input_text=viewer_password + "\n")
         command([str(server), "network", "create", "--config", str(config), "--key", "platon-mainnet", "--display-name", "PlatON Mainnet", "--genesis-hash", "0x" + "a" * 64, "--chain-id", "210425", "--p2p-network-id", "210425", "--address-hrp", "lat"])
         command([str(server), "network", "create", "--config", str(config), "--key", "platon-testnet", "--display-name", "PlatON Testnet", "--genesis-hash", "0x" + "b" * 64, "--chain-id", "2206131", "--p2p-network-id", "2206131", "--address-hrp", "lat"])
-        first_enrollment_token = create_enrollment_token(server, config)
         server_process = ServerProcess(server, config, run_root / "server.raw.log", port, workload["request_timeout_seconds"])
         server_process.start()
         client = Client(port, workload["request_timeout_seconds"])
@@ -499,7 +498,7 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
         viewer_cookie, _ = login(client, "qualification-viewer", viewer_password)
         identities = []
         for agent_index in range(workload["agents"]):
-            token = first_enrollment_token if agent_index == 0 else create_enrollment_token(server, config)
+            token = create_enrollment_token(server, config)
             identity = enroll(token, client)
             identity["node_ids"] = [str(uuid.uuid4()) for _ in range(workload["nodes_per_agent"])]
             identity["inventory_revision"] = 7
