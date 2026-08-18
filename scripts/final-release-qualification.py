@@ -118,6 +118,7 @@ class FinalQualification:
         self.profile = profile
         self.require_all = require_all
         self.native_artifacts = native_artifacts or ROOT / "target/release-artifacts"
+        self.server_archive: Path | None = None
         self.checks: list[Check] = []
         self.residual_risks: list[str] = []
         self.security_dispositions: list[dict] = []
@@ -268,6 +269,7 @@ class FinalQualification:
         if shutil.which("cargo") is None or shutil.which("npm") is None:
             self.run_unavailable(check, "cargo/npm", "package build requires both toolchains")
             return
+        package_started = time.time()
         try:
             result = run_command([str(ROOT / "scripts/package-release.sh"), str(package_root)], timeout=3600)
             self.save_log(check, result.stdout + result.stderr)
@@ -279,8 +281,9 @@ class FinalQualification:
         set_dir = package_root / "release-set"
         server_root = package_root / "root"
         agent_root = set_dir / "staging/agent/root"
-        server_archives = list((ROOT / "target").glob("platpulse-server-*.tar.gz"))
-        archive = max(server_archives, key=lambda path: path.stat().st_mtime) if server_archives else None
+        expected_archive = ROOT / f"target/platpulse-server-{self.version}.tar.gz"
+        archive = expected_archive if expected_archive.is_file() and expected_archive.stat().st_mtime >= package_started else None
+        self.server_archive = archive
         agent_archive = next(set_dir.glob("platpulse-agent-*.tar.gz"), None)
         validate = self.check("package-validate", "artifacts")
         errors: list[str] = []
@@ -376,7 +379,7 @@ class FinalQualification:
             path for path in native_dir.iterdir()
             if path.is_file() and path.suffix in {".deb", ".rpm", ".gz"}
         ] if native_dir.is_dir() else []
-        server_archives = list((ROOT / "target").glob("platpulse-server-*.tar.gz"))
+        server_archives = [self.server_archive] if self.server_archive is not None else []
         for artifact in native_artifacts + server_archives:
             relative = display_path(artifact)
             try:
@@ -520,8 +523,7 @@ class FinalQualification:
         recovery_out = self.output / "recovery-rehearsal"
         shutil.rmtree(recovery_out, ignore_errors=True)
         args = [str(ROOT / "scripts/release-recovery-rehearsal.sh"), "--output", str(recovery_out)]
-        server_archives = list((ROOT / "target").glob("platpulse-server-*.tar.gz"))
-        archive = max(server_archives, key=lambda path: path.stat().st_mtime) if server_archives else None
+        archive = self.server_archive
         if archive is None:
             check.status = "FAIL"
             check.detail = "packaged Server archive is missing; recovery cannot qualify a different build"
