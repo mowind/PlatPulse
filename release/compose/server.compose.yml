@@ -1,0 +1,24 @@
+services:
+  server:
+    image: ghcr.io/mowind/platpulse-server:${PLATPULSE_VERSION:-0.1.0}
+    user: "10001:10001"
+    read_only: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - platpulse-state:/var/lib/platpulse
+      - platpulse-backups:/var/backups/platpulse
+      - ./server.toml:/etc/platpulse/server.toml:ro
+      - ./secrets:/etc/platpulse/secrets:ro
+      - ./geo:/var/lib/platpulse/geo:ro
+      # Optional replacement WebUI tree; omit to use image assets.
+      # - ./web:/usr/share/platpulse/web:ro
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  platpulse-state:
+  platpulse-backups:

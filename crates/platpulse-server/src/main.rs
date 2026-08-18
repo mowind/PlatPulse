@@ -2,8 +2,8 @@ use clap::{CommandFactory, Parser};
 
 use platpulse_server::cli::{
     AgentCommand, Cli, Command, NetworkCommand, OwnerCommand, ViewerCommand, resolve_serve_config,
-    run_create_enrollment_token, run_network_create, run_owner_create, run_restore, run_serve,
-    run_viewer_create,
+    run_backup, run_create_enrollment_token, run_network_create, run_owner_create, run_restore,
+    run_serve, run_viewer_create,
 };
 use platpulse_server::config::ServerConfig;
 use platpulse_server::init::run_init;
@@ -65,6 +65,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Agent(AgentCommand::CreateEnrollmentToken(args)) => {
             let config = ServerConfig::resolve(Some(args.config.as_path()), &Default::default())?;
             run_create_enrollment_token(&config, &args).await?;
+        }
+        Command::Backup(args) => {
+            let config = ServerConfig::resolve(Some(args.config.as_path()), &Default::default())?;
+            let filename = run_backup(&config).await?;
+            println!("Created sanitized backup '{filename}'.");
         }
         Command::Restore(args) => {
             let config = ServerConfig::resolve(Some(args.config.as_path()), &Default::default())?;

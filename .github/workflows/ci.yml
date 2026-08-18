@@ -96,19 +96,18 @@ jobs:
         working-directory: platpulse-web
         run: npm ci
 
+      - name: Test release packaging policy
+        run: scripts/test-release-packaging.sh
+
       - name: Build release package
         run: scripts/package-release.sh
 
       - name: Verify release package layout
         run: |
-          test -x target/release-package/root/usr/bin/platpulse-server
-          test -f target/release-package/root/usr/share/platpulse/web/index.html
-          test -d target/release-package/root/usr/share/platpulse/web/assets
-          test -n "$(find target/release-package/root/usr/share/platpulse/web/assets -type f -print -quit)"
-          tar -tzf target/platpulse-server-*.tar.gz > /tmp/platpulse-release-members.txt
-          grep -Fxq 'usr/bin/platpulse-server' /tmp/platpulse-release-members.txt
-          grep -Fxq 'usr/share/platpulse/web/index.html' /tmp/platpulse-release-members.txt
-          grep -Eq '^usr/share/platpulse/web/assets/[^/]+$' /tmp/platpulse-release-members.txt
+          scripts/validate-release.sh --root target/release-package/root --kind server
+          scripts/validate-release.sh --archive target/platpulse-server-*.tar.gz --kind server
+          scripts/validate-release.sh --archive target/release-package/release-set/platpulse-agent-*.tar.gz --kind agent
+          (cd target/release-package/release-set && sha256sum -c SHA256SUMS)
 
   web-e2e:
     name: WebUI e2e (fixed viewports)

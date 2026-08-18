@@ -3,6 +3,7 @@
 
 state_dir = "/var/lib/platpulse"
 db_path = "/var/lib/platpulse/platpulse.db"
+backup_dir = "/var/backups/platpulse"
 pepper_file = "/etc/platpulse/secrets/server-pepper"
 
 # Optional: omit to use /usr/share/platpulse/web from the release bundle.
@@ -15,7 +16,7 @@ development = false
 # Optional: use an operator-provided GeoLite2 Country database. PlatPulse does
 # not download, bundle, or store MaxMind credentials.
 # [geo]
-# mmdb_path = "/var/lib/platpulse/GeoLite2-Country.mmdb"
+# mmdb_path = "/var/lib/platpulse/geo/GeoLite2-Country.mmdb"
 
 # Direct native Rustls HTTPS (production alternative to a trusted proxy).
 # Both files are required; the private key must be a same-user-owned 0600
@@ -25,7 +26,7 @@ development = false
 # private_key_file = "/etc/platpulse/tls/privkey.pem"
 
 # Or keep TLS at an explicitly trusted HTTPS reverse proxy:
-# trusted_proxy_cidrs = ["10.0.0.0/8"]
+# trusted_proxy_cidrs = ["127.0.0.1/32"]
 # trusted_proxy_scheme = "https"
 
 # Optional internal Prometheus metrics. The section is disabled when absent;

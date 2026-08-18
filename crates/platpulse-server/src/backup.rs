@@ -90,7 +90,7 @@ pub async fn create(state: &AppState, operation_id: &str) -> Result<(), BackupEr
 
     let result = create_snapshot(
         state,
-        operation_id,
+        Some(operation_id),
         &temp_path,
         &final_path,
         &artifact_id,
@@ -163,6 +163,37 @@ pub async fn create(state: &AppState, operation_id: &str) -> Result<(), BackupEr
     Ok(())
 }
 
+/// Create one backup synchronously for the non-root systemd timer. This uses
+/// the same sanitized snapshot path as the Admin Operation surface without
+/// exposing a second raw-SQLite backup implementation.
+pub async fn create_scheduled(state: &AppState) -> Result<String, BackupError> {
+    let backup_dir = state
+        .backup_dir()
+        .cloned()
+        .ok_or_else(|| BackupError::Privacy("backup_dir is not configured".to_owned()))?;
+    prepare_backup_dir(&backup_dir).map_err(BackupError::Privacy)?;
+    let artifact_id = uuid::Uuid::new_v4().to_string();
+    let filename = format!("platpulse-{artifact_id}.db");
+    let final_path = backup_dir.join(&filename);
+    let temp_path = backup_dir.join(format!("{filename}.part"));
+    let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+    let result = create_snapshot(
+        state,
+        None,
+        &temp_path,
+        &final_path,
+        &artifact_id,
+        &filename,
+        &now,
+    )
+    .await;
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp_path);
+    }
+    result?;
+    Ok(filename)
+}
+
 struct Snapshot {
     bytes: i64,
     sha256: String,
@@ -175,7 +206,7 @@ struct Snapshot {
 
 async fn create_snapshot(
     state: &AppState,
-    operation_id: &str,
+    operation_id: Option<&str>,
     temp_path: &Path,
     final_path: &Path,
     artifact_id: &str,

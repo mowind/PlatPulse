@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Reproducibly build and exercise the packaged Server/WebUI artifact.
+# Reproducibly build and exercise packaged Agent/Server/WebUI artifacts.
 set -euo pipefail
 
 ROOT="$(cd "${BASH_SOURCE[0]%/*}/.." && pwd)"
 unavailable() { printf 'Release-candidate harness: UNAVAILABLE (%s)\n' "$1"; exit 2; }
-required_commands=(awk basename cat cargo chmod cp curl find grep head install jq ln mkdir mktemp node npm openssl python3 realpath rm sed seq sleep tail tar)
+required_commands=(awk basename cat cargo chmod cp curl find grep head install jq ln mkdir mktemp node npm openssl python3 realpath rm sed seq sleep stat tail tar)
 for command in "${required_commands[@]}"; do
   command -v "$command" >/dev/null 2>&1 || unavailable "missing required command: $command"
 done
@@ -14,8 +14,11 @@ mkdir -p "$RUNS_ROOT"
 RUN_ROOT="$(mktemp -d "$RUNS_ROOT/run.XXXXXX")"
 PACKAGE_DIR="$RUN_ROOT/package"
 ARCHIVE="$RUN_ROOT/platpulse-server.tar.gz"
+AGENT_ARCHIVE=""
+AGENT_EXTRACTED="$RUN_ROOT/agent-extracted"
 EXTRACTED="$RUN_ROOT/extracted"
 STATE_DIR="$RUN_ROOT/state"
+BACKUP_DIR="$RUN_ROOT/backups"
 CONFIG="$RUN_ROOT/server.toml"
 SERVER_LOG="$RUN_ROOT/server.log"
 CLI_LOG="$RUN_ROOT/cli.log"
@@ -33,6 +36,7 @@ SSE_PID=""
 DEV_SERVER_PID=""
 PROXY_SERVER_PID=""
 
+# shellcheck disable=SC2329
 cleanup() {
   local code=$?
   local server_status=not_started
@@ -78,8 +82,17 @@ fail() { FAILURE_REASON="$1"; printf 'Release-candidate harness: FAIL (%s)\n' "$
 printf 'Release-candidate harness: building packaged artifact\n'
 if ! PLATPULSE_RELEASE_ARCHIVE="$ARCHIVE" "$ROOT/scripts/package-release.sh" "$PACKAGE_DIR" >"$CLI_LOG" 2>&1; then fail 'release artifact build failed; see preserved CLI log'; fi
 [[ -f "$ARCHIVE" ]] || fail 'release artifact was not produced'
-mkdir -p "$EXTRACTED"
+"$ROOT/scripts/validate-release.sh" --archive "$ARCHIVE" --kind server || fail 'Server release archive failed policy validation'
+AGENT_ARCHIVE="$(find "$PACKAGE_DIR/release-set" -maxdepth 1 -type f -name 'platpulse-agent-*.tar.gz' -print -quit)"
+[[ -f "$AGENT_ARCHIVE" ]] || fail 'Agent release artifact was not produced'
+"$ROOT/scripts/validate-release.sh" --archive "$AGENT_ARCHIVE" --kind agent || fail 'Agent release archive failed policy validation'
+mkdir -p "$EXTRACTED" "$AGENT_EXTRACTED"
 tar -xzf "$ARCHIVE" -C "$EXTRACTED" || fail 'release artifact could not be unpacked'
+tar -xzf "$AGENT_ARCHIVE" -C "$AGENT_EXTRACTED" || fail 'Agent release artifact could not be unpacked'
+AGENT="$AGENT_EXTRACTED/usr/bin/platpulse-agent"
+"$AGENT" --help >/dev/null || fail 'packaged Agent --help failed'
+NODE_ID="$($AGENT generate-node-id)"
+[[ "$NODE_ID" =~ ^[0-9a-f-]{36}$ ]] || fail 'packaged Agent generate-node-id smoke failed'
 SERVER="$EXTRACTED/usr/bin/platpulse-server"
 WEB_ROOT="$EXTRACTED/usr/share/platpulse/web"
 [[ -x "$SERVER" ]] || fail 'packaged Server binary is missing'
@@ -193,6 +206,7 @@ mkdir -p "$STATE_DIR"
 cat > "$CONFIG" <<EOF
 state_dir = "$STATE_DIR"
 db_path = "$STATE_DIR/platpulse.db"
+backup_dir = "$BACKUP_DIR"
 pepper_file = "$STATE_DIR/server-pepper"
 web_root = "$WEB_ROOT"
 listen = "0.0.0.0:$PORT"
@@ -263,6 +277,11 @@ grep -q '^# TYPE platpulse_http_requests_total counter$' "$RUN_ROOT/metrics.body
 [[ "$(grep -c '^# HELP platpulse_http_requests_total ' "$RUN_ROOT/metrics.body")" == 1 ]] || fail 'metrics repeated HELP declarations for one family'
 grep -q 'platpulse_readiness{component="critical_workers"} 1' "$RUN_ROOT/metrics.body" || fail 'metrics omitted healthy critical-worker readiness'
 grep -q '^platpulse_liveness 1$' "$RUN_ROOT/metrics.body" || fail 'metrics omitted liveness state'
+# Critical workers heartbeat on their own cadence. Capture readiness immediately
+# after metrics so the smoke does not mistake a later honest stale response for
+# a startup failure.
+ready_status="$(curl -sS --connect-timeout 2 --max-time 5 -D "$RUN_ROOT/ready.headers" -o "$RUN_ROOT/ready.body" -w '%{http_code}' "$BASE_URL/health/ready" 2>/dev/null || true)"
+[[ "$ready_status" == 200 ]] || fail "health/ready did not become ready (status $ready_status)"
 for uri in /api/anything /health/live /; do
   route_status="$(curl -sS --connect-timeout 2 --max-time 5 -o /dev/null -w '%{http_code}' "$METRICS_BASE_URL$uri" 2>/dev/null || true)"
   [[ "$route_status" == 404 ]] || fail "metrics listener exposed non-metrics route: $uri"
@@ -344,7 +363,7 @@ request() {
 }
 
 printf 'Release-candidate harness: checking health and human boundaries\n'
-request ready "$BASE_URL/health/ready"
+LAST_REQUEST_ID="$(request_id "$RUN_ROOT/ready.headers")"; LAST_REQUEST_ID="${LAST_REQUEST_ID:-unknown}"
 jq -e '.status == "ready"' "$RUN_ROOT/ready.body" >/dev/null || fail "health/ready was not ready (request $LAST_REQUEST_ID)"
 grep -qi '^strict-transport-security: max-age=31536000; includeSubDomains' "$RUN_ROOT/ready.headers" || fail 'native TLS response did not include HSTS'
 request web-index "$BASE_URL/"
@@ -412,6 +431,14 @@ for _ in $(seq 1 50); do
   sleep 0.1
 done
 if ! grep -q 'event: invalidation' "$SSE_OUTPUT" || ! grep -q '"resource":"node"' "$SSE_OUTPUT"; then fail "authorized Admin SSE did not observe the Node invalidation (request $LAST_REQUEST_ID)"; fi
+
+printf 'Release-candidate harness: creating sanitized scheduled backup\n'
+"$SERVER" backup --config "$CONFIG" >"$RUN_ROOT/backup-output" 2>>"$CLI_LOG" || fail 'packaged Server backup command failed'
+BACKUP_FILE="$(sed -n "s/^Created sanitized backup '\(.*\)'.$/\1/p" "$RUN_ROOT/backup-output")"
+[[ "$BACKUP_FILE" == platpulse-*.db ]] || fail 'backup command did not report a safe artifact name'
+[[ -f "$BACKUP_DIR/$BACKUP_FILE" ]] || fail 'backup command did not create the reported artifact'
+[[ "$(stat -c '%a' "$BACKUP_DIR/$BACKUP_FILE")" == 600 ]] || fail 'backup artifact mode was not 0600'
+! find "$BACKUP_DIR" -type f -name '*.part' -print -quit | grep -q . || fail 'backup left a partial artifact'
 
 curl -sS --connect-timeout 2 --max-time 5 -o "$RUN_ROOT/metrics-final.body" "$METRICS_BASE_URL/metrics" || fail 'final metrics scrape failed'
 ! grep -Fq "$REPORT_ID" "$RUN_ROOT/metrics-final.body" || fail 'metrics exposed a raw report ID'

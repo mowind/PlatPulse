@@ -1,0 +1,35 @@
+[Unit]
+Description=PlatPulse Agent
+Documentation=https://github.com/mowind/PlatPulse/blob/main/docs/deployment.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=platpulse-agent
+Group=platpulse-agent
+UMask=0077
+ExecStart=/usr/bin/platpulse-agent run --config /etc/platpulse-agent/agent.toml
+Restart=on-failure
+RestartSec=5s
+StateDirectory=platpulse-agent
+StateDirectoryMode=0700
+RuntimeDirectory=platpulse-agent
+RuntimeDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadOnlyPaths=/etc/platpulse-agent
+ReadWritePaths=/var/lib/platpulse-agent
+
+[Install]
+WantedBy=multi-user.target

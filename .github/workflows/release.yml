@@ -1,0 +1,213 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  native-artifacts:
+    name: Native artifacts (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+          - arch: aarch64
+            target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: platpulse-web/package-lock.json
+      - name: Install native package tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev rpm
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - uses: anchore/sbom-action/download-syft@v0.20.5
+      - name: Install WebUI dependencies
+        working-directory: platpulse-web
+        run: npm ci
+      - name: Resolve release version
+        id: version
+        run: |
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "platpulse-server") | .version')"
+          if [[ "$GITHUB_REF" == refs/tags/v* && "v$version" != "${GITHUB_REF_NAME}" ]]; then
+            echo "tag ${GITHUB_REF_NAME} does not match workspace version $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Build release set
+        run: scripts/build-release.sh --target ${{ matrix.target }} --version ${{ steps.version.outputs.version }} --output target/release-artifacts
+      - name: Validate and smoke native archives
+        run: |
+          server_archive="$(echo target/release-artifacts/platpulse-server-*-linux-${{ matrix.arch }}.tar.gz)"
+          agent_archive="$(echo target/release-artifacts/platpulse-agent-*-linux-${{ matrix.arch }}.tar.gz)"
+          scripts/validate-release.sh --archive "$server_archive" --kind server
+          scripts/validate-release.sh --archive "$agent_archive" --kind agent
+          mkdir -p /tmp/platpulse-server-archive /tmp/platpulse-agent-archive
+          tar -xzf "$server_archive" -C /tmp/platpulse-server-archive
+          tar -xzf "$agent_archive" -C /tmp/platpulse-agent-archive
+          /tmp/platpulse-server-archive/usr/bin/platpulse-server --help >/dev/null
+          /tmp/platpulse-agent-archive/usr/bin/platpulse-agent --help >/dev/null
+          /tmp/platpulse-agent-archive/usr/bin/platpulse-agent generate-node-id | grep -Eq '^[0-9a-f-]{36}$'
+          expected_machine='Advanced Micro Devices X86-64'
+          if [[ '${{ matrix.arch }}' == aarch64 ]]; then expected_machine=AArch64; fi
+          readelf -h /tmp/platpulse-server-archive/usr/bin/platpulse-server | grep -q "$expected_machine"
+          (cd target/release-artifacts && sha256sum -c SHA256SUMS)
+      - name: Run release-candidate harness
+        run: scripts/release-candidate-harness.sh
+      - name: Install Debian packages and smoke binaries
+        run: |
+          sudo dpkg -i target/release-artifacts/platpulse-server-*.deb target/release-artifacts/platpulse-agent-*.deb
+          getent passwd platpulse-server
+          getent passwd platpulse-agent
+          /usr/bin/platpulse-server --help >/dev/null
+          /usr/bin/platpulse-agent --help >/dev/null
+          test "$(stat -c '%a' /usr/bin/platpulse-server)" = 755
+          test "$(stat -c '%a' /usr/bin/platpulse-agent)" = 755
+      - name: Install RPM packages in disposable Fedora
+        run: |
+          docker run --rm \
+            -v "$PWD/target/release-artifacts:/artifacts:ro" \
+            fedora:41 bash -euxo pipefail -c '
+              dnf install -y /artifacts/*.rpm
+              getent passwd platpulse-server
+              getent passwd platpulse-agent
+              /usr/bin/platpulse-server --help >/dev/null
+              /usr/bin/platpulse-agent --help >/dev/null
+              test "$(stat -c %a /usr/bin/platpulse-server)" = 755
+              test "$(stat -c %a /usr/bin/platpulse-agent)" = 755
+            '
+      - name: Name architecture-specific release evidence
+        run: |
+          cd target/release-artifacts
+          mv audit-results.txt audit-results-${{ matrix.arch }}.txt
+          mv package-results.txt package-results-${{ matrix.arch }}.txt
+          rm SHA256SUMS
+          shopt -s nullglob
+          release_files=(
+            *.tar.gz *.deb *.rpm *.json
+            audit-results-${{ matrix.arch }}.txt package-results-${{ matrix.arch }}.txt
+          )
+          sha256sum "${release_files[@]}" > SHA256SUMS-${{ matrix.arch }}
+          sha256sum -c SHA256SUMS-${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-native-${{ matrix.arch }}
+          path: |
+            target/release-artifacts/*.tar.gz
+            target/release-artifacts/*.deb
+            target/release-artifacts/*.rpm
+            target/release-artifacts/*.json
+            target/release-artifacts/audit-results-${{ matrix.arch }}.txt
+            target/release-artifacts/package-results-${{ matrix.arch }}.txt
+            target/release-artifacts/SHA256SUMS-${{ matrix.arch }}
+          if-no-files-found: error
+
+  oci:
+    name: Server OCI image
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Resolve release version
+        id: version
+        run: echo "version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "platpulse-server") | .version')" >> "$GITHUB_OUTPUT"
+      - name: Log in to GHCR
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish multi-architecture image
+        id: image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: release/oci/server.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          tags: ghcr.io/${{ github.repository_owner }}/platpulse-server:${{ steps.version.outputs.version }}
+          build-args: VERSION=${{ steps.version.outputs.version }}
+          sbom: true
+          provenance: true
+      - name: Build local image for policy smoke
+        run: docker build -f release/oci/server.Dockerfile --build-arg VERSION=${{ steps.version.outputs.version }} -t platpulse-server:rc .
+      - name: Verify non-root image and mount separation
+        run: |
+          test "$(docker image inspect platpulse-server:rc --format '{{.Config.User}}')" = "10001:10001"
+          test "$(docker run --rm --entrypoint id platpulse-server:rc -u)" = 10001
+          docker image inspect platpulse-server:rc --format '{{json .Config.Volumes}}' | jq -e 'has("/var/lib/platpulse") and has("/var/backups/platpulse") and has("/usr/share/platpulse/web") and has("/etc/platpulse/secrets") and has("/var/lib/platpulse/geo")'
+          docker run --rm --entrypoint test platpulse-server:rc -f /usr/share/platpulse/web/index.html
+          docker run --rm --entrypoint /usr/bin/platpulse-server platpulse-server:rc backup --help >/dev/null
+          docker run --rm --entrypoint sh platpulse-server:rc -c 'test -z "$(find /var/lib/platpulse /var/backups/platpulse /etc/platpulse/secrets /var/lib/platpulse/geo -type f -print -quit)"'
+      - name: Record OCI digest
+        run: |
+          mkdir -p target/oci-release
+          printf '%s  ghcr.io/${{ github.repository_owner }}/platpulse-server:${{ steps.version.outputs.version }}\n' '${{ steps.image.outputs.digest }}' > target/oci-release/platpulse-server-oci-digest.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-oci-metadata
+          path: target/oci-release/platpulse-server-oci-digest.txt
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub release assets
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [native-artifacts, oci]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true
+          body: |
+            ## Compatibility notes
+
+            ### Schema migration
+            Review the generated changes for this release before upgrading. Migrations are forward-only; back up first.
+
+            ### Agent protocol
+            Review AgentReport/protocol changes and upgrade the Server before Agents.
+
+            ### Configuration changes
+            Review `server.example.toml`, `agent.example.toml`, and `docs/deployment.md` before rollout.
+
+            ### Rollback
+            Stop the Server and restore the pre-upgrade backup; do not downgrade a migrated live database in place.
+
+            ### Third-party licenses
+            Review the attached SPDX SBOM for dependency and license changes.
+
+            ## Supply-chain status
+
+            Checksums and SBOMs are integrity and inventory metadata, not artifact signatures.
+            These unsigned artifacts are not a verified supply chain.

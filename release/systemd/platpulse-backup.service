@@ -1,0 +1,17 @@
+[Unit]
+Description=Create a sanitized PlatPulse Server backup
+Documentation=https://github.com/mowind/PlatPulse/blob/main/docs/deployment.md
+ConditionPathExists=/etc/platpulse/server.toml
+
+[Service]
+Type=oneshot
+User=platpulse-server
+Group=platpulse-server
+UMask=0077
+ExecStart=/usr/bin/platpulse-server backup --config /etc/platpulse/server.toml
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/etc/platpulse
+ReadWritePaths=/var/lib/platpulse /var/backups/platpulse

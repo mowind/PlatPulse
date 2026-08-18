@@ -1,0 +1,35 @@
+[Unit]
+Description=PlatPulse Server
+Documentation=https://github.com/mowind/PlatPulse/blob/main/docs/deployment.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=platpulse-server
+Group=platpulse-server
+UMask=0077
+ExecStart=/usr/bin/platpulse-server serve --config /etc/platpulse/server.toml
+Restart=on-failure
+RestartSec=5s
+StateDirectory=platpulse
+StateDirectoryMode=0700
+RuntimeDirectory=platpulse
+RuntimeDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadOnlyPaths=/usr/share/platpulse/web /etc/platpulse
+ReadWritePaths=/var/lib/platpulse /var/backups/platpulse
+
+[Install]
+WantedBy=multi-user.target

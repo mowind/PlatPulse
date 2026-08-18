@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily PlatPulse Server backup
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=15m
+Unit=platpulse-backup.service
+
+[Install]
+WantedBy=timers.target

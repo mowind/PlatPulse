@@ -14,30 +14,41 @@ The WebUI is not compiled into the Rust binary. It is served same-origin by
 
 ## Build a release bundle
 
-From the repository root:
+From the repository root, build a target-aware release set:
 
 ```bash
-scripts/package-release.sh
+scripts/build-release.sh \
+  --target x86_64-unknown-linux-gnu \
+  --output target/release-artifacts
 ```
 
-The script runs the WebUI production build and the Rust release build, then
-writes:
+The set contains separate Agent and Server archives, package-manager artifacts
+when the builders are available, checksums, an SPDX inventory, and dependency
+audit evidence. The staged Server tree includes the same-origin WebUI and
+deployment examples. The staged Agent tree contains the Agent binary, unit, and
+configuration reference. Pepper, TLS private keys, Agent credentials,
+notification tokens, SQLite state/sidecars, MMDB files, and other secrets are
+never included.
 
-```text
-target/platpulse-server-<version>.tar.gz
-target/release-package/root/usr/bin/platpulse-server
-target/release-package/root/usr/share/platpulse/web/
-```
+`scripts/package-release.sh` remains a compatibility wrapper for the
+release-candidate harness and exposes the historical unpacked Server location.
 
-An alternate output staging directory may be passed, but it must remain under
-`target/`:
+Install one matching architecture using the distribution package manager, or
+extract an archive into an empty staging directory before copying its allowlisted
+`usr/` and `etc/` trees:
 
 ```bash
-scripts/package-release.sh target/release-package-aarch64
+sudo dpkg -i platpulse-server-<version>-x86_64.deb
+sudo dpkg -i platpulse-agent-<version>-x86_64.deb
+# or, on RPM-based systems
+sudo rpm -Uvh platpulse-server-<version>-1.x86_64.rpm
+sudo rpm -Uvh platpulse-agent-<version>-1.x86_64.rpm
 ```
 
-The archive contains only the `usr/` installation tree. Pepper, TLS keys,
-Agent credentials, notification tokens, and other secrets are not included.
+Native archives do not create service users. Before enabling the included units,
+create the documented `platpulse-server`/`platpulse-agent` users, install the
+files with root ownership and packaged modes, and create the private state,
+secret, and backup directories with the runtime user's ownership.
 
 ## Release-candidate harness
 
@@ -182,36 +193,88 @@ zero.
 to the SPA;
 - REST, SSE, cookies, and the SPA use the same origin.
 
-## systemd user/service example
+## systemd services and backup timer
 
-Install the binary and WebUI tree using the package manager or release
-archive, then create a dedicated `platpulse` service account and protect the
-state/config/secret files with that account. A minimal system service is:
+Install the binary and WebUI tree using the package manager or release archive.
+The checked-in units under `release/systemd/` run Server and Agent as separate
+dedicated users, apply a strict filesystem sandbox, and leave service enabling
+to the operator. Copy the example configuration, create same-user-owned secret
+files with mode `0600`, initialize the Server, then enable the selected unit.
 
-```ini
-[Unit]
-Description=PlatPulse Server
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=platpulse
-Group=platpulse
-ExecStart=/usr/bin/platpulse-server serve --config /etc/platpulse/server.toml
-Restart=on-failure
-RestartSec=5s
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/lib/platpulse
-
-[Install]
-WantedBy=multi-user.target
-```
+The optional `platpulse-backup.timer` invokes `platpulse-server backup --config
+/etc/platpulse/server.toml`. That command uses the same sanitized `VACUUM INTO`,
+redaction, fsync, atomic-rename, and metadata path as the Admin backup Operation;
+it writes restrictive artifacts to the configured `backup_dir` (the example uses
+`/var/backups/platpulse`), separate from Server state. If `db_path` or `backup_dir` is changed, add the same paths to a systemd drop-in
+for `ReadWritePaths`. Restore remains an explicit,
+stopped-Server operation using the documented `platpulse-server restore` flow;
+never restore by copying a live database or its WAL/SHM sidecars.
 
 For local development, use an explicit `development = true` configuration and
 loopback `listen`; do not reuse the development cookie policy in production.
 Non-loopback plaintext listeners remain refused until TLS or an explicitly
 trusted HTTPS reverse proxy is configured.
+
+## Supported release set
+
+The supported release builder is:
+
+```bash
+scripts/build-release.sh --target x86_64-unknown-linux-gnu --output target/release-artifacts
+```
+
+It produces versioned Server and Agent Linux `x86_64` archives. The release CI runs
+that command for both `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`
+(the package labels are Debian `amd64`/`arm64` and RPM `x86_64`/`aarch64`). The
+artifacts use the target system's glibc baseline; the target toolchain and linker
+must be installed before requesting an architecture build. `dpkg-deb` and
+`rpmbuild` outputs are generated when those builders are available; the build
+reports an explicit unavailable status otherwise.
+
+Each Server archive includes the same-origin WebUI, non-root systemd units, the
+Caddy and Compose examples, the optional MaxMind `geoipupdate` example, and the
+backup timer/service. Agent archives include the Agent unit and configuration
+reference. Packages install dedicated `platpulse-server` and `platpulse-agent`
+system users and never enable a service automatically.
+
+## OCI deployment and mount model
+
+The OCI build definition is `release/oci/server.Dockerfile`. It runs as fixed UID
+and GID `10001`, declares separate volumes for SQLite state, backup artifacts, WebUI
+assets, secret files, and optional Geo data, and does not contain live state or credentials. The
+Compose example is `release/compose/server.compose.yml`; mount a prepared
+`server.toml` and secret directory read-only. Secret files must be regular files owned
+by UID `10001` with mode `0600`; bind mounts do not relax the Server's no-symlink
+or same-user ownership checks. The image's WebUI is used unless an operator
+deliberately mounts a replacement `/usr/share/platpulse/web` tree.
+
+The Geo sidecar example in `release/geo/geoipupdate.compose.yml` uses the official
+MaxMind image and operator-provided secrets. PlatPulse does not distribute a
+GeoLite database, MaxMind credentials, or a downloader configuration as a
+runtime secret. Review MaxMind licensing and provide the resulting MMDB through
+the read-only Geo mount.
+
+## Release validation and metadata
+
+`scripts/validate-release.sh` rejects missing executables/WebUI assets, unexpected
+or non-regular members, empty directory additions, symlinks, unsafe archive paths,
+secret names, SQLite sidecars, MMDB data, Agent state, non-canonical file/directory
+modes, and root-running service units. The release
+candidate harness runs the unpacked Server archive through the external CLI,
+HTTP, WebUI, metrics, AgentReport, and SSE boundaries. Package-manager install
+smoke tests run in the release CI's disposable package environments.
+
+Every release set contains `SHA256SUMS`, an SPDX inventory, and recorded Rust/npm
+audit evidence, including each tool's non-zero status and findings. Audit recording
+does not turn a failed audit into a clean result; release signoff must review and
+resolve or explicitly account for every reported finding. Checksums and SBOMs are
+integrity and inventory metadata only;
+they are not artifact signatures. Until an artifact-signing workflow is added,
+unsigned artifacts must not be described as a verified supply chain.
+
+The checked-in deployment assets are:
+
+- `release/systemd/` — Server, Agent, backup service, and backup timer;
+- `release/examples/Caddyfile` — trusted reverse-proxy example;
+- `release/compose/server.compose.yml` — non-root Server Compose example;
+- `release/geo/geoipupdate.compose.yml` — optional Geo sidecar example.

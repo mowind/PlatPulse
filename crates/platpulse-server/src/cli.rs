@@ -48,6 +48,8 @@ pub enum Command {
     /// Agent administration (design §18.2).
     #[command(subcommand)]
     Agent(AgentCommand),
+    /// Create one sanitized backup artifact using the configured backup_dir.
+    Backup(BackupArgs),
     /// Offline Restore (design §19/§20.2): the only path that may replace
     /// the database. Requires an exclusive stopped-Server condition, the
     /// artifact id, and a typed confirmation phrase (or explicit `--yes`).
@@ -59,6 +61,13 @@ pub enum Command {
 #[derive(Debug, Args)]
 pub struct InitArgs {
     /// `server.toml` with at least `state_dir` (design §18.1).
+    #[arg(long)]
+    pub config: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct BackupArgs {
+    /// `server.toml` containing db_path, pepper_file, and backup_dir.
     #[arg(long)]
     pub config: PathBuf,
 }
@@ -399,6 +408,23 @@ pub async fn run_restore(
         );
     }
     Ok(())
+}
+
+/// Create one sanitized backup using the same implementation as the Admin
+/// backup Operation. The configured backup_dir remains the only destination.
+pub async fn run_backup(config: &ServerConfig) -> Result<String, Box<dyn std::error::Error>> {
+    crate::init::restrict_umask();
+    let pepper = load_pepper_file(&config.pepper_file)?;
+    let auth = if config.development {
+        AuthConfig::development(pepper, config.public_base_url.clone())
+    } else {
+        AuthConfig::production(pepper, config.public_base_url.clone())
+    };
+    let database =
+        ServerDatabase::open_existing(ServerDatabaseConfig::new(&config.db_path)).await?;
+    let state =
+        crate::http::AppState::new(database, None, auth).with_backup_dir(config.backup_dir.clone());
+    Ok(crate::backup::create_scheduled(&state).await?)
 }
 
 /// Run the HTTP Server: validate the listen address, load the pepper and

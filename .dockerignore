@@ -1,0 +1,16 @@
+target
+.git
+.github
+platpulse-web/node_modules
+platpulse-web/dist
+platpulse-web/test-results
+platpulse-web/playwright-report
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/*.db-journal
+**/*.mmdb
+**/server-pepper
+**/agent-credential
+**/.env
+**/secrets/*
