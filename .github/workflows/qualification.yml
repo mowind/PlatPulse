@@ -1,4 +1,5 @@
-name: Release qualification
+name: Final release qualification
+
 on:
   workflow_dispatch:
     inputs:
@@ -9,43 +10,56 @@ on:
         options: [ci, soak]
   schedule:
     - cron: '17 3 * * 1'
+
 permissions:
   contents: read
+
 jobs:
   qualify:
+    name: Final Phase 5 qualification
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88.0
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@2eae45db285e407f22119950686d47e1101e071b # 1.88.0
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: platpulse-web/package-lock.json
-      - run: npm ci
+      - uses: taiki-e/install-action@5b4d68e2e660441203ab128a23676f1e4faf1532 # v2
+        with:
+          tool: cargo-audit
+      - uses: taiki-e/install-action@5b4d68e2e660441203ab128a23676f1e4faf1532 # v2
+        with:
+          tool: cargo-deny
+      - uses: anchore/sbom-action/download-syft@da167eac915b4e86f08b264dbdbc867b61be6f0c # v0.20.5
+      - name: Install native package inspection tools
+        run: sudo apt-get update && sudo apt-get install --yes rpm cpio
+      - name: Install WebUI dependencies
         working-directory: platpulse-web
-      - run: scripts/test-release-qualification.sh
-      - name: Run packaged migration and recovery rehearsal
-        run: scripts/release-recovery-rehearsal.sh --output target/recovery-rehearsal
-      - name: Run packaged security matrix
-        run: scripts/release-candidate-harness.sh
-      - name: Run packaged qualification
+        run: npm ci
+      - name: Install fixed Playwright browser
+        working-directory: platpulse-web
+        run: npx playwright install --with-deps chromium
+      - name: Build release artifacts for package/SBOM evidence
+        continue-on-error: true
+        run: scripts/build-release.sh --target x86_64-unknown-linux-gnu --output target/release-artifacts
+      - name: Run final qualification
         env:
           QUALIFICATION_PROFILE: ${{ github.event_name == 'schedule' && 'soak' || inputs.profile }}
-        run: scripts/release-qualification.sh --profile "release/qualification/${QUALIFICATION_PROFILE}.toml"
-      - name: Upload evidence
+        run: scripts/final-release-qualification.sh --profile "release/qualification/${QUALIFICATION_PROFILE}.toml" --output target/release-qualification/final
+      - name: Upload final qualification evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: release-qualification-${{ github.run_id }}
+          name: final-release-qualification-${{ github.run_id }}
+          if-no-files-found: ignore
           path: |
-            target/release-qualification/**/result.json
-            target/release-qualification/**/summary.md
-            target/release-qualification/**/metrics-*.prom
-            target/release-qualification/**/server.log
-            target/recovery-rehearsal/recovery-rehearsal.json
-            target/recovery-rehearsal/recovery-rehearsal.md
-            target/recovery-rehearsal/**/server.log
-          if-no-files-found: warn
-          retention-days: 30
+            target/release-qualification/final/
+            target/release-artifacts/
+            target/release-candidate-runs/
+            target/recovery-rehearsal/
+            platpulse-web/test-results/

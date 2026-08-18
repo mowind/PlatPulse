@@ -313,3 +313,9 @@ The checked-in deployment assets are:
 - `release/examples/Caddyfile` — trusted reverse-proxy example;
 - `release/compose/server.compose.yml` and `release/compose/server.toml` — non-root Server Compose example and matching container configuration;
 - `release/geo/geoipupdate.compose.yml` — optional Geo sidecar example.
+
+## Upgrade and rollback
+
+Before upgrading, stop the Server, take an online backup with the packaged `backup` command, and copy the backup plus the pepper and TLS secret files to protected storage. Verify the release `SHA256SUMS` file and keep the previous binary/archive available. Start the new Server and confirm `/health/live`, `/health/ready`, migrations, and the Admin audit surface before returning traffic.
+
+If readiness or a post-upgrade smoke check fails, stop the new process, restore the previous matching Server/Agent artifacts, and start the previous version against the unchanged state directory. Do not delete or downgrade the database in place: a schema migration is forward-only. If the new version has already migrated the database, restore the pre-upgrade backup into a fresh state directory, restore the pepper and secret files with their private permissions, and validate the restored instance before switching the service back. Keep the failed release logs and recovery-rehearsal evidence for incident review.

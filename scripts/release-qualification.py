@@ -858,10 +858,11 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
             scenarios.append(scenario("latency", "PASS", f"p95 {p95:.1f} ms"))
 
         failed = [item for item in scenarios if item["status"] == "FAIL"]
+        not_run = [item for item in scenarios if item["status"] in {"NOT_RUN", "UNAVAILABLE"}]
         duration = time.monotonic() - started_at
         result = {
             "schema_version": 1,
-            "status": "FAIL" if failed else "PASS",
+            "status": "FAIL" if failed else ("INCOMPLETE" if not_run else "PASS"),
             "profile": profile,
             "environment": {
                 "os": platform.platform(),
@@ -889,7 +890,7 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
                 "External PlatON RPC latency and real notification providers are not represented by loopback fixtures.",
             ],
         }
-        return_code = 1 if failed else 0
+        return_code = 1 if failed or not_run else 0
     except QualificationError as error:
         scenarios.append(scenario("harness", "FAIL", str(error)))
         result = {
