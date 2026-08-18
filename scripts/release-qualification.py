@@ -35,12 +35,6 @@ class QualificationError(RuntimeError):
     pass
 
 
-class QualificationUnavailable(QualificationError):
-    """The host cannot execute an environment-dependent qualification check."""
-
-    pass
-
-
 def utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -103,18 +97,14 @@ def load_profile(path: Path) -> dict:
 
 
 def command(args: list[str], *, input_text: str | None = None, env: dict | None = None,
-            timeout: int = 600, cwd: Path = ROOT,
-            unavailable_on_status_2: bool = False) -> subprocess.CompletedProcess[str]:
+            timeout: int = 600, cwd: Path = ROOT) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         args, cwd=cwd, env=env, input=input_text, text=True,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, check=False,
     )
     if result.returncode != 0:
         detail = sanitize((result.stderr or result.stdout).strip())
-        message = f"command failed ({' '.join(args[:3])}): {detail[:400]}"
-        if unavailable_on_status_2 and result.returncode == 2:
-            raise QualificationUnavailable(message)
-        raise QualificationError(message)
+        raise QualificationError(f"command failed ({' '.join(args[:3])}): {detail[:400]}")
     return result
 
 
