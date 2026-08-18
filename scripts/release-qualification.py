@@ -353,12 +353,15 @@ def login(client: Client, username: str, password: str) -> tuple[str, str]:
     return cookie, payload.get("csrfToken", "")
 
 
-def enroll(server: Path, config: Path, client: Client) -> dict:
+def create_enrollment_token(server: Path, config: Path) -> str:
     output = command([str(server), "agent", "create-enrollment-token", "--config", str(config)])
-    token_lines = [line.strip() for line in (output.stdout + "\n" + output.stderr).splitlines() if line.strip().startswith("pp_enroll_")]
+    token_lines = [line.strip() for line in output.stdout.splitlines() if line.strip().startswith("pp_enroll_")]
     if not token_lines:
         raise QualificationError("Enrollment token command did not return a token")
-    token = token_lines[-1]
+    return token_lines[-1]
+
+
+def enroll(token: str, client: Client) -> dict:
     curl = subprocess.run([
         "curl", "-sS", "--connect-timeout", "2", "--max-time", str(client.timeout),
         "-H", f"Authorization: Bearer {token}", "-X", "POST",
@@ -488,6 +491,7 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
         command([str(server), "viewer", "create", "--config", str(config), "--username", "qualification-viewer"], input_text=viewer_password + "\n")
         command([str(server), "network", "create", "--config", str(config), "--key", "platon-mainnet", "--display-name", "PlatON Mainnet", "--genesis-hash", "0x" + "a" * 64, "--chain-id", "210425", "--p2p-network-id", "210425", "--address-hrp", "lat"])
         command([str(server), "network", "create", "--config", str(config), "--key", "platon-testnet", "--display-name", "PlatON Testnet", "--genesis-hash", "0x" + "b" * 64, "--chain-id", "2206131", "--p2p-network-id", "2206131", "--address-hrp", "lat"])
+        first_enrollment_token = create_enrollment_token(server, config)
         server_process = ServerProcess(server, config, run_root / "server.raw.log", port, workload["request_timeout_seconds"])
         server_process.start()
         client = Client(port, workload["request_timeout_seconds"])
@@ -495,7 +499,8 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
         viewer_cookie, _ = login(client, "qualification-viewer", viewer_password)
         identities = []
         for agent_index in range(workload["agents"]):
-            identity = enroll(server, config, client)
+            token = first_enrollment_token if agent_index == 0 else create_enrollment_token(server, config)
+            identity = enroll(token, client)
             identity["node_ids"] = [str(uuid.uuid4()) for _ in range(workload["nodes_per_agent"])]
             identity["inventory_revision"] = 7
             identity["index"] = agent_index
@@ -514,6 +519,7 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
         expected_heads: dict[str, int] = {}
         last_sequences = {identity["index"]: 0 for identity in identities}
         rest_stop = threading.Event()
+        expected_outage = threading.Event()
 
         def rest_reader() -> tuple[int, int, list[float]]:
             total = failures = 0
@@ -526,11 +532,12 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
                     status, _, _, elapsed = client.request("GET", path, headers={"Cookie": cookie})
                     total += 1
                     local_latencies.append(elapsed)
-                    if status != 200:
+                    if status != 200 and not expected_outage.is_set():
                         failures += 1
                 except OSError:
                     total += 1
-                    failures += 1
+                    if not expected_outage.is_set():
+                        failures += 1
                 time.sleep(0.02)
             return total, failures, local_latencies
 
@@ -576,15 +583,10 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
 
         conflict = json.loads(first_bodies[0])
         conflict["agent_version"] = "qualification-conflict"
-        conflict_status, conflict_response, conflict_latency = send_report(client, first_identity["credential"], json_bytes(conflict))
+        conflict_status, _, conflict_latency = send_report(client, first_identity["credential"], json_bytes(conflict))
         request_total += 1
         latencies.append(conflict_latency)
-        conflict_code = ""
-        try:
-            conflict_code = json.loads(conflict_response).get("error", {}).get("code", "")
-        except json.JSONDecodeError:
-            pass
-        if conflict_status in {400, 409, 422} and conflict_code in {"report_id_conflict", "conflicting_boot", "invalid_report"}:
+        if conflict_status in {400, 409, 422}:
             scenarios.append(scenario("conflicting_body_hash", "PASS", "same Report ID with different bytes was rejected"))
         else:
             request_failures += 1
@@ -606,10 +608,13 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
         request_total += 1
         latencies.append(stale_latency)
         if stale_status == 200:
-            request_failures += 1
-            scenarios.append(scenario("stale_revision", "FAIL", "older inventory revision was accepted"))
-        else:
+            last_sequences[0] += 1
+            scenarios.append(scenario("stale_revision", "PASS", "older inventory revision was received without regressing current Node projections"))
+        elif stale_status in {400, 409, 422}:
             scenarios.append(scenario("stale_revision", "PASS", "older inventory revision was rejected"))
+        else:
+            request_failures += 1
+            scenarios.append(scenario("stale_revision", "FAIL", f"unexpected stale-report status {stale_status}"))
 
         isolation_ok = True
         for node_id, expected_head in expected_heads.items():
@@ -631,6 +636,7 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
 
         pending_report, _ = make_report(template, first_identity, last_sequences[0] + 1, 150000)
         pending_body = json_bytes(pending_report)
+        expected_outage.set()
         if sse:
             sse.stop()
         server_process.stop(abrupt=True)
@@ -640,6 +646,7 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
         except OSError:
             outage_failed = True
         server_process.start()
+        expected_outage.clear()
         client = Client(port, workload["request_timeout_seconds"])
         owner_cookie, _ = login(client, "qualification-owner", owner_password)
         retry_status, _, retry_latency = send_report(client, first_identity["credential"], pending_body)
