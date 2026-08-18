@@ -39,7 +39,7 @@ cleanup() {
     if kill -0 "$SERVER_PID" 2>/dev/null; then kill -TERM "$SERVER_PID" 2>/dev/null || true; fi
     if wait "$SERVER_PID" 2>/dev/null; then server_status=0; else server_status=$?; fi
   fi
-  rm -f "$RUN_ROOT"/*.cookies "$RUN_ROOT"/*.headers "$RUN_ROOT"/*.json "$RUN_ROOT"/*.body "$RUN_ROOT"/*.status "$RUN_ROOT"/*.txt "$RUN_ROOT"/enrollment-output "$RUN_ROOT"/owner-password "$RUN_ROOT"/viewer-password "$STATE_DIR/server-pepper" "$STATE_DIR"/platpulse.db*
+  rm -f "$RUN_ROOT"/*.cookies "$RUN_ROOT"/*.headers "$RUN_ROOT"/*.json "$RUN_ROOT"/*.body "$RUN_ROOT"/*.sse "$RUN_ROOT"/*.status "$RUN_ROOT"/*.txt "$RUN_ROOT"/enrollment-output "$RUN_ROOT"/owner-password "$RUN_ROOT"/viewer-password "$STATE_DIR/server-pepper" "$STATE_DIR"/platpulse.db*
   if [[ "$code" -eq 0 ]]; then
     rm -rf "$RUN_ROOT"
     printf 'Release-candidate harness: PASS\n'
@@ -187,11 +187,11 @@ AGENT_CREDENTIAL="$(jq -r '.credential' "$RUN_ROOT/enroll.body")"
 REPORT_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 BOOT_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 jq --arg agent_id "$AGENT_ID" --arg epoch "$AGENT_EPOCH" --arg report_id "$REPORT_ID" --arg boot_id "$BOOT_ID" '.agent_id = $agent_id | .agent_epoch = ($epoch | tonumber) | .report_id = $report_id | .boot_id = $boot_id | .report_sequence = 1' "$ROOT/crates/platpulse-core/tests/fixtures/report_v1_canonical.json" > "$RUN_ROOT/report.json"
-jq -e '.inventory.nodes | length >= 2' "$RUN_ROOT/report.json" >/dev/null || fail 'smoke report fixture does not contain two independent Nodes'
+jq -e '(.inventory.nodes | length >= 2) and ([.inventory.nodes[].node_id] | unique | length >= 2)' "$RUN_ROOT/report.json" >/dev/null || fail 'smoke report fixture does not contain two independent Nodes'
 curl -sS --connect-timeout 2 --max-time 10 -D "$RUN_ROOT/report.headers" -o "$RUN_ROOT/report.body" -H "Authorization: Bearer $AGENT_CREDENTIAL" -H 'Content-Type: application/json' --data-binary "@$RUN_ROOT/report.json" -w '%{http_code}' "$BASE_URL/api/agent/v1/reports" >"$RUN_ROOT/report.status" || fail 'AgentReport request failed'
 unset AGENT_CREDENTIAL
 LAST_REQUEST_ID="$(request_id "$RUN_ROOT/report.headers")"; [[ "$(cat "$RUN_ROOT/report.status")" == 200 ]] || fail "AgentReport failed (request $LAST_REQUEST_ID)"
-jq -e --arg report_id "$REPORT_ID" '.receipt.report_id == $report_id and (.receipt.disposition == "accepted" or .receipt.disposition == "partially_accepted") and (.receipt.nodes | length) >= 2 and all(.receipt.nodes[]; .current == "accepted") and any(.receipt.samples[]; .disposition == "accepted")' "$RUN_ROOT/report.body" >/dev/null || fail "Report Receipt did not commit two accepted Nodes (request $LAST_REQUEST_ID)"
+jq -e --arg report_id "$REPORT_ID" '.receipt.report_id == $report_id and (.receipt.disposition == "accepted" or .receipt.disposition == "partially_accepted") and (.receipt.nodes | length) >= 2 and ([.receipt.nodes[].node_id] | unique | length >= 2) and all(.receipt.nodes[]; .current == "accepted") and any(.receipt.samples[]; .disposition == "accepted")' "$RUN_ROOT/report.body" >/dev/null || fail "Report Receipt did not commit two accepted Nodes (request $LAST_REQUEST_ID)"
 
 printf 'Release-candidate harness: verifying projection and invalidation\n'
 request admin-networks -b "$OWNER_COOKIE" "$BASE_URL/api/admin/v1/networks"
