@@ -609,11 +609,7 @@ async fn collect_snapshot(state: &AppState) -> MetricsSnapshot {
             .and_then(|name| name.to_str())
             .unwrap_or("database")
     ));
-    snapshot.sqlite_wal_bytes = Some(
-        std::fs::metadata(wal_path)
-            .map(|value| value.len())
-            .unwrap_or(0),
-    );
+    snapshot.sqlite_wal_bytes = std::fs::metadata(wal_path).ok().map(|value| value.len());
     snapshot.sqlite_pool_size = pool.size() as u64;
     snapshot.sqlite_pool_idle = pool.num_idle() as u64;
 

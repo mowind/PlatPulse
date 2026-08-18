@@ -177,10 +177,7 @@ async fn request_metrics_middleware(
                 platpulse_core::ReceiptDisposition::PartiallyAccepted => "partially_accepted",
                 platpulse_core::ReceiptDisposition::Rejected => "rejected",
             })
-            .unwrap_or(match status {
-                400..=499 => "rejected",
-                _ => "unknown",
-            });
+            .unwrap_or("unknown");
         state.metrics.observe_report(outcome);
         if response
             .extensions()
