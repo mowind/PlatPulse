@@ -156,6 +156,7 @@ zero.
 | `platpulse_report_receipts_total` | counter | `outcome` | Report Receipts actually returned by disposition. |
 | `platpulse_readiness` | gauge | `component` | Per-component readiness (`1` ready, `0` not ready). |
 | `platpulse_ready` | gauge | none | Whether every required readiness component is ready. |
+| `platpulse_liveness` | gauge | none | `1` while this process serves the metrics surface. |
 | `platpulse_critical_worker_heartbeat_age_seconds` | gauge | none | Critical-worker heartbeat age; absent until first observed. |
 | `platpulse_realtime_connections` | gauge | `surface` | Active Public/Admin realtime streams. |
 | `platpulse_realtime_buffered_events` | gauge | `surface` | Events held in each bounded realtime buffer. |

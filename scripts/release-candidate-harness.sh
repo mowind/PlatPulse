@@ -262,6 +262,7 @@ grep -qi 'text/plain; version=0.0.4' "$RUN_ROOT/metrics.headers" || fail 'metric
 grep -q '^# TYPE platpulse_http_requests_total counter$' "$RUN_ROOT/metrics.body" || fail 'metrics exposition omitted request family type'
 [[ "$(grep -c '^# HELP platpulse_http_requests_total ' "$RUN_ROOT/metrics.body")" == 1 ]] || fail 'metrics repeated HELP declarations for one family'
 grep -q 'platpulse_readiness{component="critical_workers"} 1' "$RUN_ROOT/metrics.body" || fail 'metrics omitted healthy critical-worker readiness'
+grep -q '^platpulse_liveness 1$' "$RUN_ROOT/metrics.body" || fail 'metrics omitted liveness state'
 for uri in /api/anything /health/live /; do
   route_status="$(curl -sS --connect-timeout 2 --max-time 5 -o /dev/null -w '%{http_code}' "$METRICS_BASE_URL$uri" 2>/dev/null || true)"
   [[ "$route_status" == 404 ]] || fail "metrics listener exposed non-metrics route: $uri"

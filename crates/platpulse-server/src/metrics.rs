@@ -220,6 +220,19 @@ impl MetricsRegistry {
         );
         metric_header(
             &mut output,
+            "platpulse_liveness",
+            "Whether this process is serving the metrics surface.",
+            "gauge",
+        );
+        metric_gauge(
+            &mut output,
+            "platpulse_liveness",
+            "Whether this process is serving the metrics surface.",
+            &[],
+            1,
+        );
+        metric_header(
+            &mut output,
             "platpulse_realtime_connections",
             "Active realtime connections by bounded surface.",
             "gauge",
@@ -723,6 +736,7 @@ mod tests {
         assert!(text.contains("platpulse_agent_reports_total{outcome=\"accepted\"} 1"));
         assert!(text.contains("platpulse_report_receipts_total{outcome=\"accepted\"} 1"));
         assert!(text.contains("platpulse_readiness{component=\"critical_workers\"} 1"));
+        assert!(text.contains("platpulse_liveness 1"));
         assert!(text.contains("platpulse_realtime_connections{surface=\"admin\"} 3"));
         assert!(!text.contains("secret-node"));
         assert!(!text.contains("report_id"));
