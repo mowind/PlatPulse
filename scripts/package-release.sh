@@ -16,7 +16,7 @@ VERSION="${PLATPULSE_VERSION:-$(cargo metadata --manifest-path "$ROOT/Cargo.toml
 TARGET="$(rustc -vV | awk '/host:/ {print $2}')"
 case "$TARGET" in x86_64-unknown-linux-gnu) ARCH=x86_64 ;; aarch64-unknown-linux-gnu) ARCH=aarch64 ;; *) echo "unsupported host target: $TARGET" >&2; exit 2 ;; esac
 SET_DIR="$OUTPUT_ROOT/release-set"
-PLATPULSE_SKIP_AUDIT=1 "$ROOT/scripts/build-release.sh" --target "$TARGET" --version "$VERSION" --output "$SET_DIR"
+PLATPULSE_SKIP_AUDIT=1 PLATPULSE_SKIP_SBOM=1 "$ROOT/scripts/build-release.sh" --target "$TARGET" --version "$VERSION" --output "$SET_DIR"
 rm -rf "$OUTPUT_ROOT/root"
 cp -a "$SET_DIR/staging/server/root" "$OUTPUT_ROOT/root"
 SOURCE_ARCHIVE="$SET_DIR/platpulse-server-${VERSION}-linux-$ARCH.tar.gz"

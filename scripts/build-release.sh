@@ -95,7 +95,10 @@ install -Dm644 "$ROOT/release/systemd/platpulse-agent.service" "$AGENT_ROOT/usr/
 "$ROOT/scripts/validate-release.sh" --root "$SERVER_ROOT" --kind server
 "$ROOT/scripts/validate-release.sh" --root "$AGENT_ROOT" --kind agent
 
-SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --format=%ct 2>/dev/null || date +%s)}"
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --format=%ct 2>/dev/null || date +%s)}"
+export TZ=UTC
+export LC_ALL=C
+find "$SERVER_ROOT" "$AGENT_ROOT" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
 make_archive() {
   local kind="$1" root="$2"
   local archive="$OUTPUT/platpulse-$kind-$VERSION-linux-$ARCH.tar.gz"
@@ -114,7 +117,7 @@ build_deb() {
   mkdir -p "$package_root/DEBIAN"
   local deb_arch=amd64
   [[ "$ARCH" == aarch64 ]] && deb_arch=arm64
-  local deb_depends="ca-certificates, adduser"
+  local deb_depends="ca-certificates, adduser, coreutils, libc-bin, systemd | systemd-sysv"
   cat > "$package_root/DEBIAN/control" <<EOF
 Package: platpulse-$kind
 Version: $VERSION
@@ -163,7 +166,7 @@ build_rpm() {
   rm -rf "$top" "$package_root"
   mkdir -p "$top/BUILD" "$top/RPMS" "$top/SOURCES" "$top/SPECS" "$top/SRPMS"
   cp -a "$root/." "$package_root"
-  local rpm_requires="ca-certificates, shadow-utils"
+  local rpm_requires="ca-certificates, shadow-utils, coreutils, glibc-common, systemd"
   cat > "$spec" <<EOF
 Name: platpulse-$kind
 Version: $VERSION
@@ -208,7 +211,7 @@ systemctl daemon-reload >/dev/null 2>&1 || true
 /usr/lib/systemd/system/platpulse-agent.service
 EOF
   fi
-  rpmbuild --define "_topdir $top" --define "_builddir $top/BUILD" --define "_rpmdir $top/RPMS" --define "_srcrpmdir $top/SRPMS" --define "_sourcedir $top/SOURCES" --define "_specdir $top/SPECS" --define "_buildrootdir $top/BUILDROOT" -bb "$spec" >/dev/null
+  rpmbuild --define "_topdir $top" --define "_builddir $top/BUILD" --define "_rpmdir $top/RPMS" --define "_srcrpmdir $top/SRPMS" --define "_sourcedir $top/SOURCES" --define "_specdir $top/SPECS" --define "_buildrootdir $top/BUILDROOT" --define "_source_date_epoch $SOURCE_DATE_EPOCH" --define "clamp_mtime_to_source_date_epoch 1" --define "use_source_date_epoch_as_buildtime 1" -bb "$spec" >/dev/null
   find "$top/RPMS" -type f -name '*.rpm' -exec cp {} "$OUTPUT/" \;
 }
 RPM_STATUS=unavailable
@@ -221,20 +224,29 @@ printf 'deb=%s\nrpm=%s\n' "$DEB_STATUS" "$RPM_STATUS" > "$OUTPUT/package-results
 
 SBOM="$OUTPUT/platpulse-release-$VERSION-linux-$ARCH.spdx.json"
 if command -v syft >/dev/null 2>&1; then
-  syft "dir:$OUTPUT/staging" -o spdx-json > "$SBOM"
-else
-  python3 - "$SERVER_ROOT" "$AGENT_ROOT" "$SBOM" "$VERSION" "$ARCH" <<'PY'
-import hashlib, json, pathlib, sys
-server, agent, output = map(pathlib.Path, sys.argv[1:4])
-version, arch = sys.argv[4:6]
-files = []
-for component, root in (("server", server), ("agent", agent)):
-    for path in sorted(p for p in root.rglob('*') if p.is_file()):
-        relative = str(path.relative_to(root))
-        files.append({"SPDXID": "SPDXRef-" + hashlib.sha1(f"{component}/{relative}".encode()).hexdigest()[:16], "fileName": f"/{component}/{relative}", "checksums": [{"algorithm": "SHA256", "checksumValue": hashlib.sha256(path.read_bytes()).hexdigest()}], "licenseConcluded": "NOASSERTION", "copyrightText": "NOASSERTION"})
-doc = {"spdxVersion":"SPDX-2.3", "dataLicense":"CC0-1.0", "SPDXID":"SPDXRef-DOCUMENT", "name":f"platpulse-{version}-linux-{arch}", "documentNamespace":f"https://github.com/mowind/PlatPulse/releases/{version}/{arch}", "creationInfo":{"created":"1970-01-01T00:00:00Z","creators":["Tool: platpulse-release-manifest"]}, "documentDescribes":["SPDXRef-Package"], "files":files, "packages":[{"SPDXID":"SPDXRef-Package","name":"PlatPulse","versionInfo":version,"downloadLocation":"NOASSERTION","filesAnalyzed":True,"hasFiles":[item["SPDXID"] for item in files],"licenseConcluded":"NOASSERTION","licenseDeclared":"NOASSERTION","copyrightText":"NOASSERTION"}]}
-output.write_text(json.dumps(doc, indent=2) + "\n")
+  SBOM_CONTEXT="$OUTPUT/sbom-context"
+  SBOM_RAW="$OUTPUT/.sbom.raw.json"
+  rm -rf "$SBOM_CONTEXT"
+  mkdir -p "$SBOM_CONTEXT/platpulse-web"
+  cp -a "$OUTPUT/staging" "$SBOM_CONTEXT/staging"
+  cp "$ROOT/Cargo.toml" "$ROOT/Cargo.lock" "$SBOM_CONTEXT/"
+  cp "$ROOT/platpulse-web/package.json" "$ROOT/platpulse-web/package-lock.json" "$SBOM_CONTEXT/platpulse-web/"
+  syft "dir:$SBOM_CONTEXT" -o spdx-json > "$SBOM_RAW"
+  python3 - "$SBOM_RAW" "$SBOM" "$VERSION" "$ARCH" "$SOURCE_DATE_EPOCH" <<'PY'
+import datetime, json, pathlib, sys
+source, output = map(pathlib.Path, sys.argv[1:3])
+version, arch, epoch = sys.argv[3:6]
+doc = json.loads(source.read_text())
+doc["creationInfo"]["created"] = datetime.datetime.fromtimestamp(int(epoch), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+doc["documentNamespace"] = f"https://github.com/mowind/PlatPulse/releases/{version}/{arch}/sbom"
+output.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n")
 PY
+  rm -rf "$SBOM_CONTEXT" "$SBOM_RAW"
+elif [[ "${PLATPULSE_SKIP_SBOM:-0}" -eq 1 ]]; then
+  printf 'sbom=skipped-fixture; not releasable\n' > "$OUTPUT/sbom-results.txt"
+else
+  echo 'syft is required for a dependency-aware release SBOM' >&2
+  exit 2
 fi
 
 AUDIT_FAILED=0
@@ -263,7 +275,7 @@ if [[ "$AUDIT_FAILED" -ne 0 ]]; then
   exit 1
 fi
 
-( cd "$OUTPUT" && find . -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.deb' -o -name '*.rpm' -o -name '*.spdx.json' -o -name 'audit-results.txt' -o -name 'package-results.txt' \) -printf '%P\n' | sort | xargs -r sha256sum ) > "$OUTPUT/SHA256SUMS"
+( cd "$OUTPUT" && find . -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.deb' -o -name '*.rpm' -o -name '*.spdx.json' -o -name 'audit-results.txt' -o -name 'package-results.txt' -o -name 'sbom-results.txt' \) -printf '%P\n' | sort | xargs -r sha256sum ) > "$OUTPUT/SHA256SUMS"
 
 printf 'Native package results: deb=%s rpm=%s\n' "$DEB_STATUS" "$RPM_STATUS"
 printf 'Release artifacts: %s\n' "$OUTPUT"
