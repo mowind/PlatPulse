@@ -563,6 +563,26 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
 
         readers = concurrent.futures.ThreadPoolExecutor(max_workers=workload["rest_workers"])
         reader_futures = [readers.submit(rest_reader) for _ in range(workload["rest_workers"])]
+        invalid_stop = threading.Event()
+        invalid_stats = {"sent": 0, "failures": 0}
+
+        def concurrent_invalid_reports() -> None:
+            nonlocal request_total, request_failures
+            while not invalid_stop.is_set():
+                for body, headers, accepted in ((b"{not-json", {"Content-Type": "application/json"}, {400, 422}), (b"{}", {"Authorization": "Bearer invalid", "Content-Type": "application/json"}, {401, 403})):
+                    if invalid_stop.is_set():
+                        break
+                    status, _, _, elapsed = client.request("POST", "/api/agent/v1/reports", body=body, headers=headers)
+                    request_total += 1
+                    latencies.append(elapsed)
+                    invalid_stats["sent"] += 1
+                    if status not in accepted:
+                        invalid_stats["failures"] += 1
+                        request_failures += 1
+                time.sleep(0.05)
+
+        invalid_thread = threading.Thread(target=concurrent_invalid_reports, daemon=True)
+        invalid_thread.start()
         for iteration in range(1, workload["report_iterations"] + 1):
             submissions = []
             with concurrent.futures.ThreadPoolExecutor(max_workers=workload["report_workers"]) as pool:
@@ -585,6 +605,12 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
                         if receipt.get("disposition") not in {"accepted", "partially_accepted"}:
                             request_failures += 1
                         last_sequences[identity["index"]] = iteration
+        invalid_stop.set()
+        invalid_thread.join(timeout=workload["request_timeout_seconds"] + 1)
+        invalid_ok = invalid_stats["sent"] > 0 and invalid_stats["failures"] == 0
+        scenarios.append(scenario("concurrent_invalid_reports", "PASS" if invalid_ok else "FAIL", f"rejected {invalid_stats['sent']} invalid reports concurrently with valid load"))
+        if not invalid_ok:
+            request_failures += 1
         time.sleep(workload["warmup_seconds"])
         metrics_before = scrape_metrics(metrics_port, workload["request_timeout_seconds"])
         (run_root / "metrics-before.prom").write_text(sanitize(metrics_before), encoding="utf-8")
