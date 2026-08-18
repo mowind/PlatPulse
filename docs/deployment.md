@@ -122,9 +122,9 @@ Alternatively, terminate HTTPS at a trusted reverse proxy and keep the Server
 on a private listener:
 
 ```toml
-listen = "0.0.0.0:8080"
+listen = "127.0.0.1:8080"
 public_base_url = "https://monitor.example.com"
-trusted_proxy_cidrs = ["10.0.0.0/8"]
+trusted_proxy_cidrs = ["127.0.0.1/32"]
 trusted_proxy_scheme = "https"
 ```
 

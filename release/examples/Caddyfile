@@ -1,3 +1,6 @@
+# Matching server.toml requirement for this same-host proxy:
+# trusted_proxy_cidrs = ["127.0.0.1/32"]
+# trusted_proxy_scheme = "https"
 monitor.example.com {
 	encode zstd gzip
 	reverse_proxy 127.0.0.1:8080

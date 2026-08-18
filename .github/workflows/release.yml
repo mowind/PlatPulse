@@ -159,12 +159,14 @@ jobs:
           test "$(stat -c '%U:%G:%a' /var/lib/platpulse-agent)" = platpulse-agent:platpulse-agent:700
           test "$(stat -c '%a' /usr/bin/platpulse-server)" = 755
           test "$(stat -c '%a' /usr/bin/platpulse-agent)" = 755
+          sudo -u platpulse-server scripts/smoke-installed-server.sh /usr/bin/platpulse-server
       - name: Install RPM packages in disposable Fedora
         run: |
           docker run --rm \
             -v "$PWD/target/release-artifacts:/artifacts:ro" \
+            -v "$PWD:/repo:ro" \
             fedora:41 bash -euxo pipefail -c '
-              dnf install -y /artifacts/*.rpm
+              dnf install -y curl /artifacts/*.rpm
               getent passwd platpulse-server
               getent passwd platpulse-agent
               /usr/bin/platpulse-server --help >/dev/null
@@ -177,6 +179,7 @@ jobs:
               test "$(stat -c %U:%G:%a /var/lib/platpulse-agent)" = platpulse-agent:platpulse-agent:700
               test "$(stat -c %a /usr/bin/platpulse-server)" = 755
               test "$(stat -c %a /usr/bin/platpulse-agent)" = 755
+              runuser -u platpulse-server -- /repo/scripts/smoke-installed-server.sh /usr/bin/platpulse-server
             '
       - name: Name architecture-specific release evidence
         run: |
