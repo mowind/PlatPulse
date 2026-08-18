@@ -35,6 +35,12 @@ class QualificationError(RuntimeError):
     pass
 
 
+class QualificationUnavailable(QualificationError):
+    """The host cannot execute an environment-dependent qualification check."""
+
+    pass
+
+
 def utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -97,14 +103,18 @@ def load_profile(path: Path) -> dict:
 
 
 def command(args: list[str], *, input_text: str | None = None, env: dict | None = None,
-            timeout: int = 600, cwd: Path = ROOT) -> subprocess.CompletedProcess[str]:
+            timeout: int = 600, cwd: Path = ROOT,
+            unavailable_on_status_2: bool = False) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         args, cwd=cwd, env=env, input=input_text, text=True,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, check=False,
     )
     if result.returncode != 0:
         detail = sanitize((result.stderr or result.stdout).strip())
-        raise QualificationError(f"command failed ({' '.join(args[:3])}): {detail[:400]}")
+        message = f"command failed ({' '.join(args[:3])}): {detail[:400]}"
+        if unavailable_on_status_2 and result.returncode == 2:
+            raise QualificationUnavailable(message)
+        raise QualificationError(message)
     return result
 
 
@@ -217,17 +227,29 @@ class ServerProcess:
             cwd=ROOT, stdout=self.log_handle, stderr=subprocess.STDOUT, text=True,
         )
         client = Client(self.port, self.timeout)
+        live = False
         for _ in range(150):
             if self.process.poll() is not None:
                 raise QualificationError("packaged Server exited during startup")
             try:
                 status, _, _, _ = client.request("GET", "/health/live")
                 if status == 200:
+                    live = True
+                    break
+            except OSError:
+                pass
+            time.sleep(0.1)
+        if not live:
+            raise QualificationError("packaged Server did not become live")
+        for _ in range(150):
+            try:
+                status, _, _, _ = client.request("GET", "/health/ready")
+                if status == 200:
                     return
             except OSError:
                 pass
             time.sleep(0.1)
-        raise QualificationError("packaged Server did not become live")
+        raise QualificationError("packaged Server did not become ready")
 
     def stop(self, abrupt: bool = False) -> None:
         if not self.process:
