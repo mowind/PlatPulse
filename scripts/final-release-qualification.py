@@ -41,9 +41,13 @@ UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3
 TOKEN_RE = re.compile(r"pp_(?:agent|enroll)_[A-Za-z0-9_-]+")
 IP_RE = re.compile(r"(?<![0-9])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![0-9])")
 PRIVATE_KEY_RE = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
+PRIVATE_KEY_BLOCK_RE = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.S)
+AUTH_RE = re.compile(r"(?im)(Authorization\s*:\s*(?:Bearer|Basic)\s+)[^\s]+")
+COOKIE_RE = re.compile(r"(?im)(Cookie\s*:\s*)[^\r\n]+")
+SECRET_ASSIGNMENT_RE = re.compile(r"(?i)((?:password|passwd|secret|token|credential|pepper|private[_ -]?key)\s*[=:]\s*)[^\s,;]+")
 FORBIDDEN_PATH_MARKERS = ("geolite", "pepper", "credential", "private-key", "privkey", "token")
 FORBIDDEN_SUFFIXES = {".mmdb", ".pem", ".key", ".p12", ".pfx", ".jks", ".p8", ".crt", ".csr"}
-KNOWN_NOT_RUN_SCENARIOS = {"partial_receipt", "worker_failure"}
+KNOWN_NOT_RUN_SCENARIOS = {"partial_receipt", "worker_failure", "agent_outage", "transport_timeout"}
 
 
 class QualificationError(RuntimeError):
@@ -330,17 +334,28 @@ class FinalQualification:
             sums.status = "FAIL"
             sums.detail = "release set has no SHA256SUMS"
         else:
-            try:
-                result = run_command(["sha256sum", "-c", "SHA256SUMS"], cwd=set_dir, timeout=300, check=False)
-                self.save_log(sums, result.stdout + result.stderr)
-                if result.returncode != 0:
+            checksum_tool = None
+            checksum_args: list[str] = []
+            if shutil.which("sha256sum"):
+                checksum_tool = "sha256sum"
+                checksum_args = ["sha256sum", "-c", "SHA256SUMS"]
+            elif shutil.which("shasum"):
+                checksum_tool = "shasum"
+                checksum_args = ["shasum", "-a", "256", "-c", "SHA256SUMS"]
+            if checksum_tool is None:
+                self.run_unavailable(sums, "sha256sum/shasum", "no checksum verifier is installed")
+            else:
+                try:
+                    result = run_command(checksum_args, cwd=set_dir, timeout=300, check=False)
+                    self.save_log(sums, result.stdout + result.stderr)
+                    if result.returncode != 0:
+                        sums.status = "FAIL"
+                        sums.detail = "SHA256SUMS verification failed"
+                    else:
+                        sums.detail = f"release set checksums verified with {checksum_tool}"
+                except (OSError, subprocess.TimeoutExpired) as error:
                     sums.status = "FAIL"
-                    sums.detail = "SHA256SUMS verification failed"
-                else:
-                    sums.detail = "release set checksums verified"
-            except (OSError, subprocess.TimeoutExpired) as error:
-                sums.status = "FAIL"
-                sums.detail = f"could not verify checksums: {error}"
+                    sums.detail = f"could not verify checksums: {error}"
 
     def phase_forbidden_scan(self) -> None:
         """Reject secrets and licensed GeoLite data inside packaged artifacts.

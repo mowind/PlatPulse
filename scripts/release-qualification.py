@@ -705,11 +705,15 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
         time.sleep(workload["fault_window_seconds"])
         fault_stop.set()
         producer.join(timeout=workload["request_timeout_seconds"] + 1)
-        agent_outage_ok = fault_stats["sent"] > 0 and fault_stats["failures"] == 0
-        scenarios.append(scenario("agent_outage", "PASS" if agent_outage_ok else "FAIL", f"suspended Agent 0 while other Agents submitted {fault_stats['sent']} Reports"))
-        if not agent_outage_ok:
-            request_failures += 1
+        scenarios.append(scenario(
+            "agent_outage",
+            "NOT_RUN",
+            "Agent 0 suspension is not available in this black-box harness; other-Agent traffic was observed but is not an outage proof",
+        ))
 
+        with sqlite3.connect(db_path) as db:
+            alert_count_before = db.execute("SELECT COUNT(*) FROM alert_incidents").fetchone()[0]
+            delivery_count_before = db.execute("SELECT COUNT(*) FROM notification_deliveries").fetchone()[0]
         pending_report, _ = make_report(template, first_identity, last_sequences[0] + 1, 150000)
         pending_body = json_bytes(pending_report)
         expected_outage.set()
@@ -744,7 +748,11 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
             timeout_ok = False
         except OSError:
             timeout_ok = True
-        scenarios.append(scenario("transport_timeout", "PASS" if timeout_ok else "FAIL", "unavailable transport failed without mutating accepted state"))
+        scenarios.append(scenario(
+            "transport_timeout",
+            "NOT_RUN",
+            "a refused unused port is not a transport-timeout or state-immutability proof",
+        ))
 
         busy_report, _ = make_report(template, identities[1], last_sequences[1] + 1, 160000)
         busy_body = json_bytes(busy_report)
@@ -844,7 +852,12 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
         history_gap_ok = gap_count >= workload["agents"] and gap_nodes >= workload["agents"]
         scenarios.append(scenario("history_gap_restart", "PASS" if history_gap_ok else "FAIL", f"retained {gap_count} unrecoverable History Gaps across {gap_nodes} Nodes after restart" if history_gap_ok else "History Gap rows were not retained per Agent"))
         scenarios.append(scenario("receipt_uniqueness", "PASS" if receipt_unique else "FAIL", f"stored {receipt_count} unique Report Receipts" if receipt_unique else "duplicate Report Receipt rows were stored"))
-        alert_outbox_ok = alert_count > 0 and delivery_count > 0
+        alert_outbox_ok = (
+            alert_count_before == alert_count
+            and delivery_count_before == delivery_count
+            and alert_count > 0
+            and delivery_count > 0
+        )
         scenarios.append(scenario(
             "alert_outbox_restart",
             "PASS" if alert_outbox_ok else "FAIL",
