@@ -501,13 +501,23 @@ class FinalQualification:
         args = [str(ROOT / "scripts/release-recovery-rehearsal.sh"), "--output", str(recovery_out)]
         server_archives = list((ROOT / "target").glob("platpulse-server-*.tar.gz"))
         archive = max(server_archives, key=lambda path: path.stat().st_mtime) if server_archives else None
-        if archive is not None:
-            extracted = self.output / "extracted-server"
-            extracted.mkdir(exist_ok=True)
-            run_command(["tar", "-xzf", str(archive), "-C", str(extracted)], timeout=300, check=False)
-            server_binary = extracted / "usr/bin/platpulse-server"
-            if server_binary.is_file():
-                args += ["--server", str(server_binary), "--skip-package"]
+        if archive is None:
+            check.status = "FAIL"
+            check.detail = "packaged Server archive is missing; recovery cannot qualify a different build"
+            recovery.status = "FAIL"
+            recovery.detail = "packaged Server archive is missing"
+            return
+        extracted = self.output / "extracted-server"
+        extracted.mkdir(exist_ok=True)
+        extraction = run_command(["tar", "-xzf", str(archive), "-C", str(extracted)], timeout=300, check=False)
+        server_binary = extracted / "usr/bin/platpulse-server"
+        if extraction.returncode != 0 or not server_binary.is_file():
+            check.status = "FAIL"
+            check.detail = "could not extract the packaged Server archive for recovery"
+            recovery.status = "FAIL"
+            recovery.detail = "packaged Server binary is missing"
+            return
+        args += ["--server", str(server_binary), "--skip-package"]
         try:
             result = run_command(args, timeout=3600, check=False)
             json_path = recovery_out / "recovery-rehearsal.json"
