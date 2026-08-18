@@ -39,6 +39,25 @@ scripts/package-release.sh target/release-package-aarch64
 The archive contains only the `usr/` installation tree. Pepper, TLS keys,
 Agent credentials, notification tokens, and other secrets are not included.
 
+## Release-candidate harness
+
+Run the packaged artifact through the external CLI, HTTP, and SSE boundaries with:
+
+```bash
+scripts/release-candidate-harness.sh
+```
+
+The harness creates a unique temporary run directory under
+`target/release-candidate-runs/` (override it with
+`PLATPULSE_RC_RUNS_ROOT`), builds the release bundle, initializes real temporary
+SQLite state, provisions controlled Owner/Viewer/Network fixtures, enrolls an
+Agent, submits the canonical two-Node report, and checks the Report Receipt,
+Admin projection, WebUI asset, health endpoints, and authorized Admin SSE.
+Normal completion removes the run directory. A failed run removes credentials,
+SQLite files, cookies, headers, and response bodies before preserving the
+artifact, configuration, logs, request IDs, and sanitized diagnostics. Exit 2
+means the environment is unavailable; exit 1 is a harness failure.
+
 ## Configuration
 
 Copy `crates/platpulse-server/server.example.toml` and set an explicit
