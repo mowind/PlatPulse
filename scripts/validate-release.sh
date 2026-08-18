@@ -130,6 +130,29 @@ require_executable() {
   [[ "$(stat -c '%a' "$path")" == 755 ]] || fail "executable must have mode 0755: $1"
 }
 
+effective_service_value() {
+  local unit="$1" key="$2"
+  awk -v key="$key" '
+    {
+      line = $0
+      sub(/^[[:space:]]*/, "", line)
+      sub(/[[:space:]]*$/, "", line)
+    }
+    line == "[Service]" { in_service = 1; next }
+    substr(line, 1, 1) == "[" { in_service = 0 }
+    in_service && line ~ ("^" key "[[:space:]]*=") {
+      sub("^" key "[[:space:]]*=[[:space:]]*", "", line)
+      value = line
+    }
+    END { print value }
+  ' "$unit"
+}
+require_service_identity() {
+  local unit="$ROOT/$1" expected="$2"
+  [[ "$(effective_service_value "$unit" User)" == "$expected" ]] || fail "$1 has an unsafe effective Service User"
+  [[ "$(effective_service_value "$unit" Group)" == "$expected" ]] || fail "$1 has an unsafe effective Service Group"
+}
+
 case "$KIND" in
   server)
     require_executable usr/bin/platpulse-server
@@ -142,9 +165,9 @@ case "$KIND" in
     require_file usr/lib/systemd/system/platpulse-server.service
     require_file usr/lib/systemd/system/platpulse-backup.service
     require_file usr/lib/systemd/system/platpulse-backup.timer
-    grep -q '^User=platpulse-server$' "$ROOT/usr/lib/systemd/system/platpulse-server.service" || fail 'Server unit is not explicitly non-root'
+    require_service_identity usr/lib/systemd/system/platpulse-server.service platpulse-server
     grep -q '^ReadWritePaths=/var/lib/platpulse /var/backups/platpulse$' "$ROOT/usr/lib/systemd/system/platpulse-server.service" || fail 'Server unit cannot write state and backup artifacts'
-    grep -q '^User=platpulse-server$' "$ROOT/usr/lib/systemd/system/platpulse-backup.service" || fail 'backup unit is not explicitly non-root'
+    require_service_identity usr/lib/systemd/system/platpulse-backup.service platpulse-server
     grep -q '^ExecStart=/usr/bin/platpulse-server backup --config /etc/platpulse/server.toml$' "$ROOT/usr/lib/systemd/system/platpulse-backup.service" || fail 'backup unit does not use the sanitized Server backup command'
     grep -q '^ReadWritePaths=/var/lib/platpulse /var/backups/platpulse$' "$ROOT/usr/lib/systemd/system/platpulse-backup.service" || fail 'backup unit cannot update metadata and write artifacts'
     ;;
@@ -153,7 +176,7 @@ case "$KIND" in
     require_file etc/platpulse-agent/agent.toml.example
     require_file usr/share/doc/platpulse-agent/deployment.md
     require_file usr/lib/systemd/system/platpulse-agent.service
-    grep -q '^User=platpulse-agent$' "$ROOT/usr/lib/systemd/system/platpulse-agent.service" || fail 'Agent unit is not explicitly non-root'
+    require_service_identity usr/lib/systemd/system/platpulse-agent.service platpulse-agent
     ;;
 esac
 printf 'release validation: PASS (%s)\n' "$KIND"
