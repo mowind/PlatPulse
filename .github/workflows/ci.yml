@@ -146,3 +146,43 @@ jobs:
           name: playwright-test-results
           path: platpulse-web/test-results/
           retention-days: 7
+
+  release-candidate-harness:
+    name: Release-candidate harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: platpulse-web/package-lock.json
+
+      - name: Install WebUI dependencies
+        working-directory: platpulse-web
+        run: npm ci
+
+      - name: Run release-candidate harness
+        id: harness
+        run: |
+          set +e
+          scripts/release-candidate-harness.sh
+          status=$?
+          if [ "$status" -eq 2 ]; then
+            echo "The release-candidate harness is unavailable in this environment; checks are distinguished as UNAVAILABLE."
+            exit 0
+          fi
+          exit "$status"
+
+      - name: Upload release-candidate diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-candidate-harness-diagnostics
+          path: target/release-candidate-runs/
+          if-no-files-found: ignore
+          retention-days: 7

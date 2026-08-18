@@ -21,7 +21,7 @@ case "$OUTPUT_ROOT" in
 esac
 
 VERSION="${PLATPULSE_VERSION:-$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; packages = json.load(sys.stdin)["packages"]; print(next(p["version"] for p in packages if p["name"] == "platpulse-server"))')}"
-ARCHIVE="$ROOT/target/platpulse-server-${VERSION}.tar.gz"
+ARCHIVE="${PLATPULSE_RELEASE_ARCHIVE:-$ROOT/target/platpulse-server-${VERSION}.tar.gz}"
 PACKAGE_ROOT="$OUTPUT_ROOT/root"
 
 rm -rf "$OUTPUT_ROOT"
