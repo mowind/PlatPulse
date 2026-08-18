@@ -107,15 +107,17 @@ class Check:
             "kind": self.kind,
             "status": self.status,
             "detail": self.detail,
-            "evidence": str(self.evidence.relative_to(ROOT)) if self.evidence else None,
+            "evidence": display_path(self.evidence) if self.evidence else None,
         }
 
 
 class FinalQualification:
-    def __init__(self, output: Path, profile: Path, require_all: bool):
+    def __init__(self, output: Path, profile: Path, require_all: bool,
+                 native_artifacts: Path | None = None):
         self.output = output
         self.profile = profile
         self.require_all = require_all
+        self.native_artifacts = native_artifacts or ROOT / "target/release-artifacts"
         self.checks: list[Check] = []
         self.residual_risks: list[str] = []
         self.security_dispositions: list[dict] = []
@@ -262,6 +264,7 @@ class FinalQualification:
     def phase_package(self) -> None:
         check = self.check("package-build", "artifacts")
         package_root = self.output / "package"
+        shutil.rmtree(package_root, ignore_errors=True)
         if shutil.which("cargo") is None or shutil.which("npm") is None:
             self.run_unavailable(check, "cargo/npm", "package build requires both toolchains")
             return
@@ -348,7 +351,6 @@ class FinalQualification:
                 scan_roots.append(candidate)
         if not scan_roots:
             self.run_unavailable(check, "package", "no packaged tree to scan")
-            return
         findings: list[str] = []
         text_extensions = {".toml", ".md", ".yml", ".yaml", ".service", ".timer", ".sh", ".txt", ".json", ".example"}
         for root in scan_roots:
@@ -369,7 +371,7 @@ class FinalQualification:
                     if TOKEN_RE.search(text):
                         findings.append(f"{relative} contains a live credential token")
         forbidden_bytes = (b"pp_agent_", b"pp_enroll_", b"PRIVATE KEY", b".mmdb", b"GeoLite")
-        native_dir = ROOT / "target/release-artifacts"
+        native_dir = self.native_artifacts
         native_artifacts = [
             path for path in native_dir.iterdir()
             if path.is_file() and path.suffix in {".deb", ".rpm", ".gz"}
@@ -446,7 +448,7 @@ class FinalQualification:
             ("docker-context-inspection", "scripts/test-docker-context.sh", "Docker is not installed"),
         ):
             check = self.check(name, "package-policy")
-            if name == "native-package-inspection" and not (ROOT / "target/release-artifacts").is_dir():
+            if name == "native-package-inspection" and not (self.native_artifacts).is_dir():
                 self.run_unavailable(check, command, reason)
                 continue
             if name == "docker-context-inspection" and shutil.which("docker") is None:
@@ -454,7 +456,7 @@ class FinalQualification:
                 continue
             args = [str(ROOT / command)]
             if name == "native-package-inspection":
-                args.append(str(ROOT / "target/release-artifacts"))
+                args.append(str(self.native_artifacts))
             result = run_command(args, timeout=1800, check=False)
             self.save_log(check, result.stdout + result.stderr)
             if result.returncode == 2:
@@ -501,7 +503,7 @@ class FinalQualification:
         sbom = self.check("sbom-evidence", "artifacts")
         package_root = self.output / "package"
         sbom_candidates = []
-        for root in (package_root, ROOT / "target/release-artifacts"):
+        for root in (package_root, self.native_artifacts):
             if root.exists():
                 sbom_candidates.extend(root.rglob("*.spdx.json"))
         if sbom_candidates:
@@ -516,6 +518,7 @@ class FinalQualification:
         recovery = self.check("recovery-rehearsal-evidence", "packaged", "evidence")
         package = self.output / "package"
         recovery_out = self.output / "recovery-rehearsal"
+        shutil.rmtree(recovery_out, ignore_errors=True)
         args = [str(ROOT / "scripts/release-recovery-rehearsal.sh"), "--output", str(recovery_out)]
         server_archives = list((ROOT / "target").glob("platpulse-server-*.tar.gz"))
         archive = max(server_archives, key=lambda path: path.stat().st_mtime) if server_archives else None
@@ -580,6 +583,7 @@ class FinalQualification:
     def phase_qualification(self) -> None:
         check = self.check("qualification-profile", "packaged")
         qual_out = self.output / "qualification"
+        shutil.rmtree(qual_out, ignore_errors=True)
         try:
             result = run_command([
                 str(ROOT / "scripts/release-qualification.sh"),
@@ -683,10 +687,15 @@ class FinalQualification:
             "artifacts": {
                 "package_dir": display_path(self.output / "package"),
                 "checksums": display_path(self.output / "package/release-set/SHA256SUMS") if (self.output / "package/release-set/SHA256SUMS").is_file() else None,
-                "native_artifacts_dir": display_path(ROOT / "target/release-artifacts") if (ROOT / "target/release-artifacts").is_dir() else None,
-                "sbom": [display_path(path) for path in (self.output / "package").rglob("*.spdx.json")] if (self.output / "package").is_dir() else [],
-                "audit_results": display_path(ROOT / "target/release-artifacts/audit-results.txt") if (ROOT / "target/release-artifacts/audit-results.txt").is_file() else None,
-                "package_results": display_path(ROOT / "target/release-artifacts/package-results.txt") if (ROOT / "target/release-artifacts/package-results.txt").is_file() else None,
+                "native_artifacts_dir": display_path(self.native_artifacts) if (self.native_artifacts).is_dir() else None,
+                "sbom": [
+                    display_path(path)
+                    for root in (self.output / "package", self.native_artifacts)
+                    if root.is_dir()
+                    for path in root.rglob("*.spdx.json")
+                ],
+                "audit_results": display_path(self.native_artifacts / "audit-results.txt") if (self.native_artifacts / "audit-results.txt").is_file() else None,
+                "package_results": display_path(self.native_artifacts / "package-results.txt") if (self.native_artifacts / "package-results.txt").is_file() else None,
             },
             "audit_results": {item.name: item.status for item in self.checks if item.phase == "dependency-policy"},
             "test_results": {
@@ -780,6 +789,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", type=Path, default=DEFAULT_PROFILE)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--native-artifacts", type=Path,
+                        help="run-owned native artifact directory to inspect")
     parser.add_argument("--require-all", action="store_true",
                         help="fail when any check is UNAVAILABLE or NOT_RUN (release gating)")
     parser.add_argument("--self-test", action="store_true")
@@ -792,7 +803,10 @@ def main() -> int:
         if not profile.is_file():
             print(f"final release qualification: profile not found: {profile}", file=sys.stderr)
             return 2
-        runner = FinalQualification(args.output.resolve(), profile, require_all=args.require_all)
+        runner = FinalQualification(
+            args.output.resolve(), profile, require_all=args.require_all,
+            native_artifacts=args.native_artifacts.resolve() if args.native_artifacts else None,
+        )
         return runner.run()
     except QualificationError as error:
         print(f"final release qualification: FAIL ({error})", file=sys.stderr)

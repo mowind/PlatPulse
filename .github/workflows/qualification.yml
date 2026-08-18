@@ -45,11 +45,13 @@ jobs:
         working-directory: platpulse-web
         run: npx playwright install --with-deps chromium
       - name: Build release artifacts for package/SBOM evidence
-        run: scripts/build-release.sh --target x86_64-unknown-linux-gnu --output target/release-artifacts
+        run: |
+          rm -rf target/release-qualification/native-artifacts
+          scripts/build-release.sh --target x86_64-unknown-linux-gnu --output target/release-qualification/native-artifacts
       - name: Run final qualification
         env:
           QUALIFICATION_PROFILE: ${{ github.event_name == 'schedule' && 'soak' || inputs.profile }}
-        run: scripts/final-release-qualification.sh --profile "release/qualification/${QUALIFICATION_PROFILE}.toml" --output target/release-qualification/final --require-all
+        run: scripts/final-release-qualification.sh --profile "release/qualification/${QUALIFICATION_PROFILE}.toml" --output target/release-qualification/final --native-artifacts target/release-qualification/native-artifacts --require-all
       - name: Upload final qualification evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -58,7 +60,7 @@ jobs:
           if-no-files-found: ignore
           path: |
             target/release-qualification/final/
-            target/release-artifacts/
+            target/release-qualification/native-artifacts/
             target/release-candidate-runs/
             target/recovery-rehearsal/
             platpulse-web/test-results/
