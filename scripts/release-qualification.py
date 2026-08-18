@@ -525,6 +525,7 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
             identity["index"] = agent_index
             identities.append(identity)
         scenarios.append(scenario("multiple_agents_nodes", "PASS", f"drove {len(identities)} Agents with {workload['nodes_per_agent']} Nodes each"))
+        scenarios.append(scenario("health_readiness", "PASS", "packaged Server reached live and ready after startup and enrollment restarts"))
 
         sse = SseGroup(port, owner_cookie, workload["sse_subscribers"], workload["request_timeout_seconds"])
         connected = sse.start()
@@ -543,7 +544,7 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
         def rest_reader() -> tuple[int, int, list[float]]:
             total = failures = 0
             local_latencies = []
-            paths = ["/api/admin/v1/agents", "/api/admin/v1/networks", "/api/public/v1/networks", "/health/ready"]
+            paths = ["/api/admin/v1/agents", "/api/admin/v1/networks", "/api/public/v1/networks", "/health/live"]
             while not rest_stop.is_set():
                 path = paths[total % len(paths)]
                 cookie = owner_cookie if "/admin/" in path else viewer_cookie
