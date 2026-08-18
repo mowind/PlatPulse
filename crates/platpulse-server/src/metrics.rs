@@ -410,6 +410,12 @@ impl MetricsRegistry {
             &[],
             snapshot.ingestion_in_flight,
         );
+        metric_header(
+            &mut output,
+            "platpulse_realtime_buffered_events",
+            "Bounded realtime events currently buffered.",
+            "gauge",
+        );
         metric_gauge(
             &mut output,
             "platpulse_realtime_buffered_events",

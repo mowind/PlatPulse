@@ -213,12 +213,15 @@ async fn request_id_middleware(mut request: Request, next: Next) -> Response {
 #[derive(Clone)]
 pub(crate) struct AuthenticatedSession(pub SessionInfo);
 
+const CRITICAL_WORKER_COUNT: usize = 4;
+
 #[derive(Debug)]
 pub(crate) struct ServerRuntime {
     accepting: AtomicBool,
     shutting_down: AtomicBool,
     corrupt: AtomicBool,
     critical_workers: AtomicBool,
+    critical_worker_heartbeats_ms: [AtomicU64; CRITICAL_WORKER_COUNT],
     critical_worker_heartbeat_ms: AtomicU64,
     critical_worker_enabled: AtomicBool,
     in_flight_ingestion: AtomicUsize,
@@ -232,6 +235,7 @@ impl ServerRuntime {
             shutting_down: AtomicBool::new(false),
             corrupt: AtomicBool::new(false),
             critical_workers: AtomicBool::new(true),
+            critical_worker_heartbeats_ms: std::array::from_fn(|_| AtomicU64::new(0)),
             critical_worker_heartbeat_ms: AtomicU64::new(0),
             critical_worker_enabled: AtomicBool::new(true),
             in_flight_ingestion: AtomicUsize::new(0),
@@ -257,10 +261,21 @@ impl ServerRuntime {
         }
     }
 
+    fn mark_worker_heartbeat_for(&self, worker_index: usize) {
+        let heartbeat = now_millis();
+        if let Some(slot) = self.critical_worker_heartbeats_ms.get(worker_index) {
+            slot.store(heartbeat, Ordering::Release);
+            self.critical_worker_heartbeat_ms
+                .store(heartbeat, Ordering::Release);
+            self.critical_workers.store(true, Ordering::Release);
+        }
+    }
+
+    #[cfg(test)]
     fn mark_worker_heartbeat(&self) {
-        self.critical_worker_heartbeat_ms
-            .store(now_millis(), Ordering::Release);
-        self.critical_workers.store(true, Ordering::Release);
+        for worker_index in 0..CRITICAL_WORKER_COUNT {
+            self.mark_worker_heartbeat_for(worker_index);
+        }
     }
 
     #[cfg(test)]
@@ -278,11 +293,13 @@ impl ServerRuntime {
         if self.shutting_down.load(Ordering::Acquire) {
             return false;
         }
-        let heartbeat = self.critical_worker_heartbeat_ms.load(Ordering::Acquire);
+        let now = now_millis();
         self.critical_workers.load(Ordering::Acquire)
             && self.critical_worker_enabled.load(Ordering::Acquire)
-            && heartbeat != 0
-            && now_millis().saturating_sub(heartbeat) <= 2_000
+            && self.critical_worker_heartbeats_ms.iter().all(|heartbeat| {
+                let heartbeat = heartbeat.load(Ordering::Acquire);
+                heartbeat != 0 && now.saturating_sub(heartbeat) <= 2_000
+            })
     }
 
     fn begin_shutdown(&self) {
@@ -415,29 +432,6 @@ impl AppState {
                 .is_some_and(|dir| dir.join("assets").is_dir());
         let runtime = Arc::new(ServerRuntime::new());
         let shutdown = Arc::new(Notify::new());
-        let worker_runtime = Arc::clone(&runtime);
-        let worker_shutdown = Arc::clone(&shutdown);
-        tokio::spawn(async move {
-            let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));
-            let shutdown_signal = worker_shutdown.notified();
-            tokio::pin!(shutdown_signal);
-            loop {
-                tokio::select! {
-                    _ = &mut shutdown_signal => break,
-                    _ = tick.tick() => {
-                        if worker_runtime.shutting_down.load(Ordering::Acquire) {
-                            break;
-                        }
-                        if worker_runtime
-                            .critical_worker_enabled
-                            .load(Ordering::Acquire)
-                        {
-                            worker_runtime.mark_worker_heartbeat();
-                        }
-                    }
-                }
-            }
-        });
         Self {
             db: Arc::new(db),
             auth: Arc::new(auth),
@@ -509,6 +503,10 @@ impl AppState {
     }
     pub(crate) fn critical_workers_healthy(&self) -> bool {
         self.runtime.critical_workers_healthy()
+    }
+
+    pub(crate) fn mark_critical_worker_heartbeat(&self, worker_index: usize) {
+        self.runtime.mark_worker_heartbeat_for(worker_index);
     }
 
     pub(crate) fn public_realtime(&self) -> RealtimeHub {
@@ -1373,6 +1371,7 @@ mod tests {
         .await;
         let _ = web_dir;
         seed_owner(&state).await;
+        state.runtime.recover_critical_worker();
 
         let (status, value) = json(get(build_app(state), "/health/ready").await).await;
         assert_eq!(status, StatusCode::OK);

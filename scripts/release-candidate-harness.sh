@@ -415,6 +415,10 @@ if ! grep -q 'event: invalidation' "$SSE_OUTPUT" || ! grep -q '"resource":"node"
 curl -sS --connect-timeout 2 --max-time 5 -o "$RUN_ROOT/metrics-final.body" "$METRICS_BASE_URL/metrics" || fail 'final metrics scrape failed'
 ! grep -Fq "$REPORT_ID" "$RUN_ROOT/metrics-final.body" || fail 'metrics exposed a raw report ID'
 ! grep -Fq "$AGENT_ID" "$RUN_ROOT/metrics-final.body" || fail 'metrics exposed a raw Agent ID'
+for forbidden in node_id peer_id user_id agent_id ip_address credential password request_id report_id; do
+  ! grep -Fqi "$forbidden" "$RUN_ROOT/metrics-final.body" || fail "metrics exposed forbidden field name: $forbidden"
+done
+! grep -Eq '([0-9]{1,3}\.){3}[0-9]{1,3}' "$RUN_ROOT/metrics-final.body" || fail 'metrics exposed an IP address'
 
 printf 'Release-candidate harness: PASS (artifact=%s, request_id=%s)\n' "$ARCHIVE" "$LAST_REQUEST_ID"
 exit 0

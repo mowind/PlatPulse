@@ -546,6 +546,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                 if geo_state.is_shutting_down() {
                     break;
                 }
+                geo_state.mark_critical_worker_heartbeat(0);
                 let before_geo = geo_state.geo().status();
                 let geo_loader = std::sync::Arc::clone(geo_state.geo());
                 let reload_changed =
@@ -606,6 +607,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                 if sweep_state.is_shutting_down() {
                     break;
                 }
+                sweep_state.mark_critical_worker_heartbeat(1);
                 match crate::alerts::sweep(&sweep_state).await {
                     Ok(changes) if changes > 0 => {
                         sweep_state
@@ -644,6 +646,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                 if worker_state.is_shutting_down() {
                     break;
                 }
+                worker_state.mark_critical_worker_heartbeat(2);
                 match crate::notifications::process_due_deliveries(
                     &worker_state,
                     &*worker_state.delivery_provider(),
@@ -681,6 +684,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                 if worker_state.is_shutting_down() {
                     break;
                 }
+                worker_state.mark_critical_worker_heartbeat(3);
                 match crate::operations::process_operations(&worker_state).await {
                     Ok(_) => {}
                     Err(error) => {
