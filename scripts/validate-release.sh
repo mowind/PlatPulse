@@ -96,11 +96,11 @@ forbidden="$(find "$ROOT" -type f \( \
 allowed_file() {
   if [[ "$KIND" == server ]]; then
     case "$1" in
-      usr/bin/platpulse-server|usr/share/platpulse/web/*|etc/platpulse/server.example.toml|usr/lib/systemd/system/platpulse-server.service|usr/lib/systemd/system/platpulse-backup.service|usr/lib/systemd/system/platpulse-backup.timer|usr/share/doc/platpulse-server/deployment.md|usr/share/doc/platpulse-server/examples/Caddyfile|usr/share/doc/platpulse-server/examples/compose.yml|usr/share/doc/platpulse-server/examples/compose-server.toml|usr/share/doc/platpulse-server/examples/geoipupdate.compose.yml) return 0 ;;
+      usr/bin/platpulse-server|usr/share/platpulse/web/*|etc/platpulse/server.example.toml|usr/lib/systemd/system/platpulse-server.service|usr/lib/systemd/system/platpulse-backup.service|usr/lib/systemd/system/platpulse-backup.timer|usr/share/doc/platpulse-server/deployment.md|usr/share/doc/platpulse-server/LICENSE|usr/share/doc/platpulse-server/examples/Caddyfile|usr/share/doc/platpulse-server/examples/compose.yml|usr/share/doc/platpulse-server/examples/compose-server.toml|usr/share/doc/platpulse-server/examples/geoipupdate.compose.yml) return 0 ;;
     esac
   else
     case "$1" in
-      usr/bin/platpulse-agent|etc/platpulse-agent/agent.toml.example|usr/lib/systemd/system/platpulse-agent.service|usr/share/doc/platpulse-agent/deployment.md) return 0 ;;
+      usr/bin/platpulse-agent|etc/platpulse-agent/agent.toml.example|usr/lib/systemd/system/platpulse-agent.service|usr/share/doc/platpulse-agent/deployment.md|usr/share/doc/platpulse-agent/LICENSE) return 0 ;;
     esac
   fi
   return 1
@@ -161,6 +161,7 @@ case "$KIND" in
     find "$ROOT/usr/share/platpulse/web/assets" -type f -print -quit | grep -q . || fail 'WebUI assets directory is empty'
     require_file etc/platpulse/server.example.toml
     require_file usr/share/doc/platpulse-server/deployment.md
+    require_file usr/share/doc/platpulse-server/LICENSE
     require_file usr/share/doc/platpulse-server/examples/compose-server.toml
     require_file usr/lib/systemd/system/platpulse-server.service
     require_file usr/lib/systemd/system/platpulse-backup.service
@@ -175,6 +176,7 @@ case "$KIND" in
     require_executable usr/bin/platpulse-agent
     require_file etc/platpulse-agent/agent.toml.example
     require_file usr/share/doc/platpulse-agent/deployment.md
+    require_file usr/share/doc/platpulse-agent/LICENSE
     require_file usr/lib/systemd/system/platpulse-agent.service
     require_service_identity usr/lib/systemd/system/platpulse-agent.service platpulse-agent
     ;;

@@ -233,8 +233,9 @@ linker must be installed before requesting an architecture build. `dpkg-deb` and
 `rpmbuild` outputs are generated when those builders are available; the build
 reports an explicit unavailable status otherwise.
 
-Each Server archive includes the same-origin WebUI, non-root systemd units, the
-Caddy and Compose examples, the optional MaxMind `geoipupdate` example, and the
+Native archives and packages include the repository `LICENSE` in their package-specific
+documentation directories. Each Server archive includes the same-origin WebUI, non-root
+systemd units, the Caddy and Compose examples, the optional MaxMind `geoipupdate` example, and the
 backup timer/service. Agent archives include the Agent unit and configuration
 reference. Packages install dedicated `platpulse-server` and `platpulse-agent`
 system users and never enable a service automatically.
@@ -244,8 +245,11 @@ system users and never enable a service automatically.
 The OCI build definition is `release/oci/server.Dockerfile`. Its Node, Rust, and
 Debian base images are pinned by manifest digest, and it uses no mutable apt
 repository resolution. Update those pins only as a reviewed release-input change.
-It runs as fixed UID and GID `10001`, declares separate volumes for SQLite state, backup artifacts, WebUI
-assets, secret files, and optional Geo data, and does not contain live state or credentials. The
+It runs as fixed UID and GID `10001`, declares separate volumes for SQLite state, backup artifacts, secret
+files, and optional Geo data. WebUI assets remain in the versioned image layer by
+default; operators may explicitly bind-mount a replacement WebUI tree, and the image
+does not create an anonymous WebUI volume that could survive an image upgrade. It does
+not contain live state or credentials. The
 Compose example is `release/compose/server.compose.yml`; copy the accompanying
 `release/compose/server.toml` beside it as `server.toml`. It binds inside the
 container on `0.0.0.0`, trusts only the pinned Compose subnet for the host HTTPS

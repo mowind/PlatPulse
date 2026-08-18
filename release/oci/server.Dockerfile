@@ -28,9 +28,10 @@ RUN groupadd --gid 10001 platpulse-server \
 COPY --from=server-build /src/target/release/platpulse-server /usr/bin/platpulse-server
 COPY --from=web-build /src/platpulse-web/dist/ /usr/share/platpulse/web/
 COPY crates/platpulse-server/server.example.toml /etc/platpulse/server.example.toml
-RUN chmod 0755 /usr/bin/platpulse-server && chmod -R a-w /usr/share/platpulse/web /etc/platpulse/server.example.toml
+COPY LICENSE /usr/share/licenses/platpulse/LICENSE
+RUN chmod 0755 /usr/bin/platpulse-server && chmod -R a-w /usr/share/platpulse/web /usr/share/licenses/platpulse/LICENSE /etc/platpulse/server.example.toml
 USER 10001:10001
-VOLUME ["/var/lib/platpulse", "/var/backups/platpulse", "/etc/platpulse/secrets", "/var/lib/platpulse/geo", "/usr/share/platpulse/web"]
+VOLUME ["/var/lib/platpulse", "/var/backups/platpulse", "/etc/platpulse/secrets", "/var/lib/platpulse/geo"]
 EXPOSE 8080
 ENTRYPOINT ["/usr/bin/platpulse-server"]
 CMD ["serve", "--config", "/etc/platpulse/server.toml"]

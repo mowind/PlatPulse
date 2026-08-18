@@ -17,6 +17,7 @@ make_fixture() {
     printf 'asset\n' > "$root/usr/share/platpulse/web/assets/app.js"
     printf '# config\n' > "$root/etc/platpulse/server.example.toml"
     printf '# deployment\n' > "$root/usr/share/doc/platpulse-server/deployment.md"
+    printf 'MIT License\n' > "$root/usr/share/doc/platpulse-server/LICENSE"
     printf '# caddy\n' > "$root/usr/share/doc/platpulse-server/examples/Caddyfile"
     printf '# compose\n' > "$root/usr/share/doc/platpulse-server/examples/compose.yml"
     printf '# compose config\n' > "$root/usr/share/doc/platpulse-server/examples/compose-server.toml"
@@ -30,6 +31,7 @@ make_fixture() {
     chmod 755 "$root/usr/bin/platpulse-agent"
     printf '# config\n' > "$root/etc/platpulse-agent/agent.toml.example"
     printf '# deployment\n' > "$root/usr/share/doc/platpulse-agent/deployment.md"
+    printf 'MIT License\n' > "$root/usr/share/doc/platpulse-agent/LICENSE"
     printf '[Service]\nUser=platpulse-agent\nGroup=platpulse-agent\n' > "$root/usr/lib/systemd/system/platpulse-agent.service"
   fi
 }
@@ -132,12 +134,14 @@ test -f "$OUTPUT_DIR/platpulse-release-9.8.7-linux-x86_64.spdx.json"
 test -f "$OUTPUT_DIR/audit-results.txt"
 test -f "$OUTPUT_DIR/package-results.txt"
 test -f "$OUTPUT_DIR/staging/server/root/usr/share/doc/platpulse-server/deployment.md"
+test -f "$OUTPUT_DIR/staging/server/root/usr/share/doc/platpulse-server/LICENSE"
 test -f "$OUTPUT_DIR/staging/server/root/usr/share/doc/platpulse-server/examples/Caddyfile"
 test -f "$OUTPUT_DIR/staging/server/root/usr/share/doc/platpulse-server/examples/compose.yml"
 test -f "$OUTPUT_DIR/staging/server/root/usr/share/doc/platpulse-server/examples/compose-server.toml"
 test -f "$OUTPUT_DIR/staging/server/root/usr/share/doc/platpulse-server/examples/geoipupdate.compose.yml"
 test -f "$OUTPUT_DIR/staging/server/root/usr/lib/systemd/system/platpulse-backup.timer"
 test -f "$OUTPUT_DIR/staging/agent/root/usr/share/doc/platpulse-agent/deployment.md"
+test -f "$OUTPUT_DIR/staging/agent/root/usr/share/doc/platpulse-agent/LICENSE"
 OVERLAP="$(comm -12 <(cd "$OUTPUT_DIR/staging/server/root" && find . -type f -printf '%P\n' | sort) <(cd "$OUTPUT_DIR/staging/agent/root" && find . -type f -printf '%P\n' | sort))"
 [[ -z "$OVERLAP" ]] || { printf 'Server/Agent packages overlap regular files:\n%s\n' "$OVERLAP" >&2; exit 1; }
 "$VALIDATOR" --root "$OUTPUT_DIR/staging/server/root" --kind server

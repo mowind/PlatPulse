@@ -6,27 +6,26 @@ on:
     tags: ['v*']
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 jobs:
   release-gate:
     name: Mandatory release gate
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@2eae45db285e407f22119950686d47e1101e071b # 1.88.0
         with:
           components: rustfmt, clippy
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: platpulse-web/package-lock.json
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@5b4d68e2e660441203ab128a23676f1e4faf1532 # v2
         with:
           tool: cargo-audit
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@5b4d68e2e660441203ab128a23676f1e4faf1532 # v2
         with:
           tool: cargo-deny
       - name: Install WebUI dependencies
@@ -61,10 +60,11 @@ jobs:
       - name: Run packaging policy and release-candidate harness
         run: |
           scripts/test-release-packaging.sh
+          scripts/test-docker-context.sh
           scripts/release-candidate-harness.sh
       - name: Upload release-gate diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-gate-diagnostics
           path: |
@@ -87,11 +87,11 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@2eae45db285e407f22119950686d47e1101e071b # 1.88.0
         with:
           targets: ${{ matrix.target }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: npm
@@ -100,13 +100,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y dpkg-dev rpm
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@5b4d68e2e660441203ab128a23676f1e4faf1532 # v2
         with:
           tool: cargo-audit
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@5b4d68e2e660441203ab128a23676f1e4faf1532 # v2
         with:
           tool: cargo-deny
-      - uses: anchore/sbom-action/download-syft@v0.20.5
+      - uses: anchore/sbom-action/download-syft@da167eac915b4e86f08b264dbdbc867b61be6f0c # v0.20.5
       - name: Install WebUI dependencies
         working-directory: platpulse-web
         run: npm ci
@@ -175,7 +175,7 @@ jobs:
           )
           sha256sum "${release_files[@]}" > SHA256SUMS-${{ matrix.arch }}
           sha256sum -c SHA256SUMS-${{ matrix.arch }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-native-${{ matrix.arch }}
           path: |
@@ -191,18 +191,21 @@ jobs:
   oci:
     needs: release-gate
     name: Server OCI image
+    permissions:
+      contents: read
+      packages: write
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88.0
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@2eae45db285e407f22119950686d47e1101e071b # 1.88.0
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Resolve release version
         id: version
         run: echo "version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "platpulse-server") | .version')" >> "$GITHUB_OUTPUT"
       - name: Log in to GHCR
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -219,14 +222,15 @@ jobs:
             image="platpulse-server:rc-$arch"
             test "$(docker image inspect "$image" --format '{{.Config.User}}')" = "10001:10001"
             test "$(docker run --rm --entrypoint id "$image" -u)" = 10001
-            docker image inspect "$image" --format '{{json .Config.Volumes}}' | jq -e 'has("/var/lib/platpulse") and has("/var/backups/platpulse") and has("/usr/share/platpulse/web") and has("/etc/platpulse/secrets") and has("/var/lib/platpulse/geo")'
+            docker image inspect "$image" --format '{{json .Config.Volumes}}' | jq -e 'has("/var/lib/platpulse") and has("/var/backups/platpulse") and (has("/usr/share/platpulse/web") | not) and has("/etc/platpulse/secrets") and has("/var/lib/platpulse/geo")'
             docker run --rm --entrypoint test "$image" -f /usr/share/platpulse/web/index.html
+            docker run --rm --entrypoint test "$image" -f /usr/share/licenses/platpulse/LICENSE
             docker run --rm --entrypoint /usr/bin/platpulse-server "$image" backup --help >/dev/null
             docker run --rm --entrypoint sh "$image" -c 'test -z "$(find /var/lib/platpulse /var/backups/platpulse /etc/platpulse/secrets /var/lib/platpulse/geo -type f -print -quit)"'
           done
       - name: Build and publish validated multi-architecture image
         id: image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: release/oci/server.Dockerfile
@@ -240,24 +244,26 @@ jobs:
         run: |
           mkdir -p target/oci-release
           printf '%s  ghcr.io/${{ github.repository_owner }}/platpulse-server:${{ steps.version.outputs.version }}\n' '${{ steps.image.outputs.digest }}' > target/oci-release/platpulse-server-oci-digest.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-oci-metadata
           path: target/oci-release/platpulse-server-oci-digest.txt
           if-no-files-found: error
 
   publish-release:
-    name: Publish GitHub release assets
+    name: Publish GitHub release
+    permissions:
+      contents: write
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [native-artifacts, oci]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: release-*
           path: release-assets
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: release-assets/*
           generate_release_notes: true
