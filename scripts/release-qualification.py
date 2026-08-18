@@ -285,7 +285,7 @@ class SseGroup:
                         chunk = response.read(1)
                         if not chunk:
                             break
-                    except (OSError, TimeoutError):
+                    except (OSError, TimeoutError, http.client.IncompleteRead):
                         break
         except OSError:
             pass
@@ -775,6 +775,7 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
                         last_sequences[identity["index"]] = sequence
                         for node_index, node_id in enumerate(node_ids):
                             expected_heads[node_id] = 180000 + identity["index"] * 1000 + sequence * 10 + node_index
+                    time.sleep(0.02)
 
         soak_thread = threading.Thread(target=sustained_reports, daemon=True)
         soak_thread.start()
