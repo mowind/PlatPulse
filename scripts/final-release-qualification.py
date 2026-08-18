@@ -216,17 +216,24 @@ class FinalQualification:
             self.run_unavailable(check, "npm", "not installed")
             return
         try:
-            run_command(["npm", "run", "generate:api"], cwd=web, timeout=600)
-            diff = run_command(
-                ["git", "status", "--porcelain", "--", "platpulse-web/src/api/generated"],
-                check=False)
-            self.save_log(check, diff.stdout + diff.stderr)
-            if (diff.stdout + diff.stderr).strip():
-                check.status = "FAIL"
-                check.detail = "generated browser client is stale; regenerate and commit"
-            else:
-                check.detail = "generated browser client matches the committed spec"
-            run_command(["git", "checkout", "--", "platpulse-web/src/api/generated"], check=False)
+            generated = web / "src/api/generated"
+            with tempfile.TemporaryDirectory(prefix="platpulse-generated-client-") as tmp:
+                snapshot = Path(tmp) / "generated"
+                shutil.copytree(generated, snapshot)
+                try:
+                    run_command(["npm", "run", "generate:api"], cwd=web, timeout=600)
+                    diff = run_command(
+                        ["git", "status", "--porcelain", "--", "platpulse-web/src/api/generated"],
+                        check=False)
+                    self.save_log(check, diff.stdout + diff.stderr)
+                    if (diff.stdout + diff.stderr).strip():
+                        check.status = "FAIL"
+                        check.detail = "generated browser client is stale; regenerate and commit"
+                    else:
+                        check.detail = "generated browser client matches the committed spec"
+                finally:
+                    shutil.rmtree(generated)
+                    shutil.copytree(snapshot, generated)
         except (OSError, subprocess.TimeoutExpired) as error:
             check.status = "FAIL"
             check.detail = f"could not regenerate the browser client: {error}"
@@ -268,7 +275,8 @@ class FinalQualification:
         set_dir = package_root / "release-set"
         server_root = package_root / "root"
         agent_root = set_dir / "staging/agent/root"
-        archive = next(package_root.glob("platpulse-server-*.tar.gz"), None)
+        server_archives = list((ROOT / "target").glob("platpulse-server-*.tar.gz"))
+        archive = max(server_archives, key=lambda path: path.stat().st_mtime) if server_archives else None
         agent_archive = next(set_dir.glob("platpulse-agent-*.tar.gz"), None)
         validate = self.check("package-validate", "artifacts")
         errors: list[str] = []
@@ -290,6 +298,8 @@ class FinalQualification:
                     errors.append(f"server archive: {sanitize(result.stdout + result.stderr)[:200]}")
             except (OSError, subprocess.TimeoutExpired) as error:
                 errors.append(f"server archive: {error}")
+        else:
+            errors.append("server archive: packaged Server archive is missing")
         if agent_archive is not None:
             try:
                 result = run_command(["scripts/validate-release.sh", "--archive", str(agent_archive), "--kind", "agent"],
@@ -459,11 +469,14 @@ class FinalQualification:
             check.detail = "unsigned artifacts are not described as a verified supply chain"
         sbom = self.check("sbom-evidence", "artifacts")
         package_root = self.output / "package"
-        spdx = list(package_root.rglob("*.spdx.json")) if package_root.exists() else []
-        if spdx:
-            sbom.detail = f"SPDX SBOM recorded: {spdx[0].name}"
+        sbom_candidates = []
+        for root in (package_root, ROOT / "target/release-artifacts"):
+            if root.exists():
+                sbom_candidates.extend(root.rglob("*.spdx.json"))
+        if sbom_candidates:
+            sbom.detail = f"SPDX SBOM recorded: {display_path(sbom_candidates[0])}"
         else:
-            self.run_unavailable(sbom, "syft", "no SPDX SBOM produced in this fixture build (syft not installed)")
+            self.run_unavailable(sbom, "syft", "no SPDX SBOM was produced")
 
     # ---------------------------------------------------------- packaged runs
 
@@ -473,7 +486,8 @@ class FinalQualification:
         package = self.output / "package"
         recovery_out = self.output / "recovery-rehearsal"
         args = [str(ROOT / "scripts/release-recovery-rehearsal.sh"), "--output", str(recovery_out)]
-        archive = next(package.glob("platpulse-server-*.tar.gz"), None) if package.exists() else None
+        server_archives = list((ROOT / "target").glob("platpulse-server-*.tar.gz"))
+        archive = max(server_archives, key=lambda path: path.stat().st_mtime) if server_archives else None
         if archive is not None:
             extracted = self.output / "extracted-server"
             extracted.mkdir(exist_ok=True)
