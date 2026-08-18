@@ -49,6 +49,9 @@ impl FromStr for Rfc3339 {
     type Err = Rfc3339ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.as_bytes().get(10) != Some(&b'T') {
+            return Err(Rfc3339ParseError::InvalidDateTimeSeparator);
+        }
         let parsed =
             OffsetDateTime::parse(s, &Rfc3339Format).map_err(Rfc3339ParseError::Invalid)?;
         if parsed.offset() != UtcOffset::UTC {
@@ -81,6 +84,8 @@ impl<'de> Deserialize<'de> for Rfc3339 {
 pub enum Rfc3339ParseError {
     /// The string is not a valid RFC 3339 timestamp.
     Invalid(time::error::Parse),
+    /// The date and time are not separated by the canonical `T`.
+    InvalidDateTimeSeparator,
     /// The timestamp is valid RFC 3339 but uses a non-UTC offset.
     NotUtc,
 }
@@ -89,6 +94,9 @@ impl fmt::Display for Rfc3339ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Invalid(inner) => write!(f, "invalid RFC 3339 timestamp: {inner}"),
+            Self::InvalidDateTimeSeparator => {
+                write!(f, "invalid RFC 3339 timestamp: expected `T` separator")
+            }
             Self::NotUtc => {
                 write!(f, "timestamp must be UTC (Z or +00:00 offset)")
             }
@@ -140,6 +148,7 @@ mod tests {
     fn malformed_input_is_rejected() {
         for bad in [
             "2026-08-12 10:00:00Z",
+            "2026-08-12t10:00:00Z",
             "2026-08-12T10:00:00",
             "2026-08-12T10:00:00ZZ",
             "not-a-timestamp",

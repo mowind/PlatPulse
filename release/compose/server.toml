@@ -1,0 +1,14 @@
+# Compose deployment configuration. Copy to ./server.toml beside server.compose.yml.
+# Keep the published port loopback-only and put a trusted HTTPS reverse proxy in front.
+state_dir = "/var/lib/platpulse"
+db_path = "/var/lib/platpulse/platpulse.db"
+backup_dir = "/var/backups/platpulse"
+pepper_file = "/etc/platpulse/secrets/server-pepper"
+listen = "0.0.0.0:8080"
+public_base_url = "https://monitor.example.com"
+development = false
+trusted_proxy_cidrs = ["172.30.0.0/24"]
+trusted_proxy_scheme = "https"
+
+[geo]
+mmdb_path = "/var/lib/platpulse/geo/GeoLite2-Country.mmdb"

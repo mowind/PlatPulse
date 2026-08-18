@@ -83,6 +83,7 @@ install -Dm644 "$ROOT/docs/deployment.md" "$SERVER_ROOT/usr/share/doc/platpulse-
 install -Dm644 "$ROOT/docs/deployment.md" "$AGENT_ROOT/usr/share/doc/platpulse-agent/deployment.md"
 install -Dm644 "$ROOT/release/examples/Caddyfile" "$SERVER_ROOT/usr/share/doc/platpulse-server/examples/Caddyfile"
 install -Dm644 "$ROOT/release/compose/server.compose.yml" "$SERVER_ROOT/usr/share/doc/platpulse-server/examples/compose.yml"
+install -Dm644 "$ROOT/release/compose/server.toml" "$SERVER_ROOT/usr/share/doc/platpulse-server/examples/compose-server.toml"
 install -Dm644 "$ROOT/release/geo/geoipupdate.compose.yml" "$SERVER_ROOT/usr/share/doc/platpulse-server/examples/geoipupdate.compose.yml"
 for unit in platpulse-server.service platpulse-backup.service platpulse-backup.timer; do
   install -Dm644 "$ROOT/release/systemd/$unit" "$SERVER_ROOT/usr/lib/systemd/system/$unit"
@@ -129,7 +130,7 @@ EOF
 set -e
 getent group platpulse-server >/dev/null || addgroup --system platpulse-server
 id -u platpulse-server >/dev/null 2>&1 || adduser --system --ingroup platpulse-server --no-create-home --home /nonexistent --shell /usr/sbin/nologin platpulse-server
-install -d -o platpulse-server -g platpulse-server -m 0700 /var/backups/platpulse
+install -d -o platpulse-server -g platpulse-server -m 0700 /var/lib/platpulse /var/backups/platpulse
 systemctl daemon-reload >/dev/null 2>&1 || true
 EOF
   else
@@ -138,6 +139,7 @@ EOF
 set -e
 getent group platpulse-agent >/dev/null || addgroup --system platpulse-agent
 id -u platpulse-agent >/dev/null 2>&1 || adduser --system --ingroup platpulse-agent --no-create-home --home /nonexistent --shell /usr/sbin/nologin platpulse-agent
+install -d -o platpulse-agent -g platpulse-agent -m 0700 /var/lib/platpulse-agent
 systemctl daemon-reload >/dev/null 2>&1 || true
 EOF
   fi
@@ -179,7 +181,7 @@ EOF
 %post
 getent group platpulse-server >/dev/null || groupadd --system platpulse-server
 id -u platpulse-server >/dev/null 2>&1 || useradd --system --gid platpulse-server --home-dir /nonexistent --shell /sbin/nologin platpulse-server
-install -d -o platpulse-server -g platpulse-server -m 0700 /var/backups/platpulse
+install -d -o platpulse-server -g platpulse-server -m 0700 /var/lib/platpulse /var/backups/platpulse
 systemctl daemon-reload >/dev/null 2>&1 || true
 %files
 /usr/bin/platpulse-server
@@ -195,6 +197,7 @@ EOF
 %post
 getent group platpulse-agent >/dev/null || groupadd --system platpulse-agent
 id -u platpulse-agent >/dev/null 2>&1 || useradd --system --gid platpulse-agent --home-dir /nonexistent --shell /sbin/nologin platpulse-agent
+install -d -o platpulse-agent -g platpulse-agent -m 0700 /var/lib/platpulse-agent
 systemctl daemon-reload >/dev/null 2>&1 || true
 %files
 /usr/bin/platpulse-agent
@@ -232,6 +235,7 @@ output.write_text(json.dumps(doc, indent=2) + "\n")
 PY
 fi
 
+AUDIT_FAILED=0
 {
   printf 'PlatPulse release audit evidence\n'
   printf 'version=%s\narch=%s\ntarget=%s\n' "$VERSION" "$ARCH" "$TARGET"
@@ -241,16 +245,21 @@ fi
     printf 'npm audit: skipped for fixture/harness build\n'
   else
     if command -v cargo-deny >/dev/null 2>&1; then
-      (cd "$ROOT" && cargo deny check) || printf 'cargo deny exited non-zero\n'
-    else printf 'cargo deny: unavailable in build environment\n'; fi
+      if ! (cd "$ROOT" && cargo deny check); then printf 'cargo deny exited non-zero\n'; AUDIT_FAILED=1; fi
+    else printf 'cargo deny: unavailable in build environment\n'; AUDIT_FAILED=1; fi
     if command -v cargo-audit >/dev/null 2>&1; then
-      (cd "$ROOT" && cargo audit --locked) || printf 'cargo audit exited non-zero\n'
-    else printf 'cargo audit: unavailable in build environment\n'; fi
+      if ! (cd "$ROOT" && cargo audit --ignore RUSTSEC-2023-0071); then printf 'cargo audit exited non-zero\n'; AUDIT_FAILED=1; fi
+    else printf 'cargo audit: unavailable in build environment\n'; AUDIT_FAILED=1; fi
     if command -v npm >/dev/null 2>&1; then
-      (cd "$ROOT/platpulse-web" && npm audit --audit-level=critical) || printf 'npm audit exited non-zero\n'
-    else printf 'npm audit: unavailable in build environment\n'; fi
+      if ! (cd "$ROOT/platpulse-web" && npm audit --audit-level=critical); then printf 'npm audit exited non-zero\n'; AUDIT_FAILED=1; fi
+    else printf 'npm audit: unavailable in build environment\n'; AUDIT_FAILED=1; fi
   fi
 } > "$OUTPUT/audit-results.txt" 2>&1
+if [[ "$AUDIT_FAILED" -ne 0 ]]; then
+  cat "$OUTPUT/audit-results.txt" >&2
+  echo 'release dependency audit gate failed' >&2
+  exit 1
+fi
 
 ( cd "$OUTPUT" && find . -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.deb' -o -name '*.rpm' -o -name '*.spdx.json' -o -name 'audit-results.txt' -o -name 'package-results.txt' \) -printf '%P\n' | sort | xargs -r sha256sum ) > "$OUTPUT/SHA256SUMS"
 

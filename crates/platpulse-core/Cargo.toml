@@ -11,7 +11,7 @@ workspace = true
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-time = { version = "=0.3.36", default-features = false, features = ["std", "parsing", "formatting", "macros"] }
+time = { version = "=0.3.47", default-features = false, features = ["std", "parsing", "formatting", "macros"] }
 uuid = { version = "1", features = ["serde"] }
 
 [dev-dependencies]

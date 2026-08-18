@@ -10,7 +10,70 @@ permissions:
   packages: write
 
 jobs:
+  release-gate:
+    name: Mandatory release gate
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: platpulse-web/package-lock.json
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: Install WebUI dependencies
+        working-directory: platpulse-web
+        run: npm ci
+      - name: Run Rust quality gates
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --workspace
+      - name: Run dependency policy gates
+        run: |
+          cargo deny check
+          # rsa is lockfile-only through disabled SQLx features (`cargo tree -i rsa` is empty).
+          cargo audit --ignore RUSTSEC-2023-0071
+          npm --prefix platpulse-web audit --audit-level=critical
+      - name: Run WebUI quality gates
+        working-directory: platpulse-web
+        run: |
+          npm run lint
+          npm run typecheck
+          npm test
+          npm run build
+          npm run generate:api
+          test -z "$(git status --porcelain -- src/api/generated)"
+      - name: Install Playwright browser
+        working-directory: platpulse-web
+        run: npx playwright install --with-deps chromium
+      - name: Run fixed-viewport Playwright projects
+        working-directory: platpulse-web
+        run: npm run e2e
+      - name: Run packaging policy and release-candidate harness
+        run: |
+          scripts/test-release-packaging.sh
+          scripts/release-candidate-harness.sh
+      - name: Upload release-gate diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-gate-diagnostics
+          path: |
+            target/release-candidate-runs/
+            platpulse-web/test-results/
+          if-no-files-found: ignore
+
   native-artifacts:
+    needs: release-gate
     name: Native artifacts (${{ matrix.arch }})
     strategy:
       fail-fast: false
@@ -73,6 +136,7 @@ jobs:
           expected_machine='Advanced Micro Devices X86-64'
           if [[ '${{ matrix.arch }}' == aarch64 ]]; then expected_machine=AArch64; fi
           readelf -h /tmp/platpulse-server-archive/usr/bin/platpulse-server | grep -q "$expected_machine"
+          test "$(getconf GNU_LIBC_VERSION)" = 'glibc 2.39'
           (cd target/release-artifacts && sha256sum -c SHA256SUMS)
       - name: Run release-candidate harness
         run: scripts/release-candidate-harness.sh
@@ -125,6 +189,7 @@ jobs:
           if-no-files-found: error
 
   oci:
+    needs: release-gate
     name: Server OCI image
     runs-on: ubuntu-24.04
     steps:
@@ -142,7 +207,24 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and publish multi-architecture image
+      - name: Build local architecture images for policy smoke
+        run: |
+          for platform in linux/amd64 linux/arm64; do
+            arch="${platform#linux/}"
+            docker buildx build --platform "$platform" --load -f release/oci/server.Dockerfile --build-arg VERSION=${{ steps.version.outputs.version }} -t "platpulse-server:rc-$arch" .
+          done
+      - name: Verify non-root images and mount separation
+        run: |
+          for arch in amd64 arm64; do
+            image="platpulse-server:rc-$arch"
+            test "$(docker image inspect "$image" --format '{{.Config.User}}')" = "10001:10001"
+            test "$(docker run --rm --entrypoint id "$image" -u)" = 10001
+            docker image inspect "$image" --format '{{json .Config.Volumes}}' | jq -e 'has("/var/lib/platpulse") and has("/var/backups/platpulse") and has("/usr/share/platpulse/web") and has("/etc/platpulse/secrets") and has("/var/lib/platpulse/geo")'
+            docker run --rm --entrypoint test "$image" -f /usr/share/platpulse/web/index.html
+            docker run --rm --entrypoint /usr/bin/platpulse-server "$image" backup --help >/dev/null
+            docker run --rm --entrypoint sh "$image" -c 'test -z "$(find /var/lib/platpulse /var/backups/platpulse /etc/platpulse/secrets /var/lib/platpulse/geo -type f -print -quit)"'
+          done
+      - name: Build and publish validated multi-architecture image
         id: image
         uses: docker/build-push-action@v6
         with:
@@ -154,16 +236,6 @@ jobs:
           build-args: VERSION=${{ steps.version.outputs.version }}
           sbom: true
           provenance: true
-      - name: Build local image for policy smoke
-        run: docker build -f release/oci/server.Dockerfile --build-arg VERSION=${{ steps.version.outputs.version }} -t platpulse-server:rc .
-      - name: Verify non-root image and mount separation
-        run: |
-          test "$(docker image inspect platpulse-server:rc --format '{{.Config.User}}')" = "10001:10001"
-          test "$(docker run --rm --entrypoint id platpulse-server:rc -u)" = 10001
-          docker image inspect platpulse-server:rc --format '{{json .Config.Volumes}}' | jq -e 'has("/var/lib/platpulse") and has("/var/backups/platpulse") and has("/usr/share/platpulse/web") and has("/etc/platpulse/secrets") and has("/var/lib/platpulse/geo")'
-          docker run --rm --entrypoint test platpulse-server:rc -f /usr/share/platpulse/web/index.html
-          docker run --rm --entrypoint /usr/bin/platpulse-server platpulse-server:rc backup --help >/dev/null
-          docker run --rm --entrypoint sh platpulse-server:rc -c 'test -z "$(find /var/lib/platpulse /var/backups/platpulse /etc/platpulse/secrets /var/lib/platpulse/geo -type f -print -quit)"'
       - name: Record OCI digest
         run: |
           mkdir -p target/oci-release

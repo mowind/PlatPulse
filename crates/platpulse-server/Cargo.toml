@@ -32,7 +32,7 @@ maxminddb = "0.30"
 sqlx = { version = "0.8.6", default-features = false, features = ["sqlite", "runtime-tokio", "macros", "migrate"] }
 subtle = "2"
 thiserror = "2"
-time = { version = "=0.3.36", default-features = false, features = ["std", "parsing", "formatting", "macros"] }
+time = { version = "=0.3.47", default-features = false, features = ["std", "parsing", "formatting", "macros"] }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "time"] }
 tokio-stream = "0.1"
 toml = "0.8"

@@ -226,8 +226,10 @@ scripts/build-release.sh --target x86_64-unknown-linux-gnu --output target/relea
 It produces versioned Server and Agent Linux `x86_64` archives. The release CI runs
 that command for both `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`
 (the package labels are Debian `amd64`/`arm64` and RPM `x86_64`/`aarch64`). The
-artifacts use the target system's glibc baseline; the target toolchain and linker
-must be installed before requesting an architecture build. `dpkg-deb` and
+artifacts use the Ubuntu 24.04 build baseline and therefore require glibc 2.39 or
+newer. They are tested on Ubuntu 24.04 and Fedora 41; Debian 12 and RHEL 9-class
+systems are not supported by these GNU-linked packages. The target toolchain and
+linker must be installed before requesting an architecture build. `dpkg-deb` and
 `rpmbuild` outputs are generated when those builders are available; the build
 reports an explicit unavailable status otherwise.
 
@@ -242,8 +244,11 @@ system users and never enable a service automatically.
 The OCI build definition is `release/oci/server.Dockerfile`. It runs as fixed UID
 and GID `10001`, declares separate volumes for SQLite state, backup artifacts, WebUI
 assets, secret files, and optional Geo data, and does not contain live state or credentials. The
-Compose example is `release/compose/server.compose.yml`; mount a prepared
-`server.toml` and secret directory read-only. Secret files must be regular files owned
+Compose example is `release/compose/server.compose.yml`; copy the accompanying
+`release/compose/server.toml` beside it as `server.toml`. It binds inside the
+container on `0.0.0.0`, trusts only the pinned Compose subnet for the host HTTPS
+reverse proxy, and mounts the Geo database below `/var/lib/platpulse/geo`. Mount
+the prepared config and secret directory read-only. Secret files must be regular files owned
 by UID `10001` with mode `0600`; bind mounts do not relax the Server's no-symlink
 or same-user ownership checks. The image's WebUI is used unless an operator
 deliberately mounts a replacement `/usr/share/platpulse/web` tree.
@@ -265,9 +270,11 @@ HTTP, WebUI, metrics, AgentReport, and SSE boundaries. Package-manager install
 smoke tests run in the release CI's disposable package environments.
 
 Every release set contains `SHA256SUMS`, an SPDX inventory, and recorded Rust/npm
-audit evidence, including each tool's non-zero status and findings. Audit recording
-does not turn a failed audit into a clean result; release signoff must review and
-resolve or explicitly account for every reported finding. Checksums and SBOMs are
+audit evidence. Normal release builds fail when cargo-deny, cargo-audit, or npm audit
+is unavailable or exits non-zero; only fixture/harness builds use the explicit audit
+skip. `RUSTSEC-2023-0071` is ignored because `rsa` is lockfile-only behind disabled
+SQLx features (`cargo tree -i rsa` is empty), while all audit warnings remain visible
+in the evidence for release signoff. Checksums and SBOMs are
 integrity and inventory metadata only;
 they are not artifact signatures. Until an artifact-signing workflow is added,
 unsigned artifacts must not be described as a verified supply chain.
@@ -276,5 +283,5 @@ The checked-in deployment assets are:
 
 - `release/systemd/` — Server, Agent, backup service, and backup timer;
 - `release/examples/Caddyfile` — trusted reverse-proxy example;
-- `release/compose/server.compose.yml` — non-root Server Compose example;
+- `release/compose/server.compose.yml` and `release/compose/server.toml` — non-root Server Compose example and matching container configuration;
 - `release/geo/geoipupdate.compose.yml` — optional Geo sidecar example.
