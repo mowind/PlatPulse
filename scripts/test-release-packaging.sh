@@ -119,7 +119,7 @@ chmod 755 "$BIN_DIR/platpulse-server" "$BIN_DIR/platpulse-agent"
 printf '<!doctype html><script src="/assets/app.js"></script>\n' > "$WEB_DIR/index.html"
 printf 'asset\n' > "$WEB_DIR/assets/app.js"
 
-"$ROOT/scripts/build-release.sh" \
+SOURCE_DATE_EPOCH=1700000000 PLATPULSE_SKIP_SBOM=1 "$ROOT/scripts/build-release.sh" \
   --skip-build \
   --target x86_64-unknown-linux-gnu \
   --version 9.8.7 \
@@ -130,7 +130,9 @@ printf 'asset\n' > "$WEB_DIR/assets/app.js"
 test -f "$OUTPUT_DIR/platpulse-server-9.8.7-linux-x86_64.tar.gz"
 test -f "$OUTPUT_DIR/platpulse-agent-9.8.7-linux-x86_64.tar.gz"
 test -f "$OUTPUT_DIR/SHA256SUMS"
-test -f "$OUTPUT_DIR/platpulse-release-9.8.7-linux-x86_64.spdx.json"
+test ! -e "$OUTPUT_DIR/platpulse-release-9.8.7-linux-x86_64.spdx.json"
+test -f "$OUTPUT_DIR/sbom-results.txt"
+grep -q 'not releasable' "$OUTPUT_DIR/sbom-results.txt"
 test -f "$OUTPUT_DIR/audit-results.txt"
 test -f "$OUTPUT_DIR/package-results.txt"
 test -f "$OUTPUT_DIR/staging/server/root/usr/share/doc/platpulse-server/deployment.md"
@@ -169,5 +171,23 @@ if "$VALIDATOR" --archive "$RUN_ROOT/bad-mode.tar.gz" --kind server; then
 fi
 
 test "$(grep -c '/var/lib/platpulse /var/backups/platpulse /etc/platpulse/secrets' "$ROOT/scripts/build-release.sh")" -eq 2
+grep -q 'ca-certificates, adduser, coreutils, libc-bin, systemd | systemd-sysv' "$ROOT/scripts/build-release.sh"
+grep -q 'ca-certificates, shadow-utils, coreutils, glibc-common, systemd' "$ROOT/scripts/build-release.sh"
+grep -q 'use_source_date_epoch_as_buildtime 1' "$ROOT/scripts/build-release.sh"
+
+OUTPUT_DIR_2="$RUN_ROOT/output-reproducible"
+SOURCE_DATE_EPOCH=1700000000 PLATPULSE_SKIP_SBOM=1 "$ROOT/scripts/build-release.sh" \
+  --skip-build \
+  --target x86_64-unknown-linux-gnu \
+  --version 9.8.7 \
+  --binary-dir "$BIN_DIR" \
+  --web-dir "$WEB_DIR" \
+  --output "$OUTPUT_DIR_2"
+cmp "$OUTPUT_DIR/platpulse-server-9.8.7-linux-x86_64.tar.gz" "$OUTPUT_DIR_2/platpulse-server-9.8.7-linux-x86_64.tar.gz"
+cmp "$OUTPUT_DIR/platpulse-agent-9.8.7-linux-x86_64.tar.gz" "$OUTPUT_DIR_2/platpulse-agent-9.8.7-linux-x86_64.tar.gz"
+for package in "$OUTPUT_DIR"/*.deb "$OUTPUT_DIR"/*.rpm; do
+  [[ -e "$package" ]] || continue
+  cmp "$package" "$OUTPUT_DIR_2/${package##*/}"
+done
 
 printf 'release packaging seam tests: PASS\n'
