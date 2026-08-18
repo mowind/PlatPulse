@@ -140,6 +140,12 @@ impl MetricsRegistry {
     /// Render the complete exposition with only fixed metric names and labels.
     pub fn render(&self, snapshot: &MetricsSnapshot) -> String {
         let mut output = String::new();
+        metric_header(
+            &mut output,
+            "platpulse_http_requests_total",
+            "HTTP responses by bounded surface and status class.",
+            "counter",
+        );
         for (surface_index, surface) in SURFACES.iter().enumerate() {
             for (status_index, status) in STATUSES.iter().enumerate() {
                 metric_counter(
@@ -151,6 +157,18 @@ impl MetricsRegistry {
                 );
             }
         }
+        metric_header(
+            &mut output,
+            "platpulse_agent_reports_total",
+            "AgentReport requests observed by bounded outcome.",
+            "counter",
+        );
+        metric_header(
+            &mut output,
+            "platpulse_report_receipts_total",
+            "Report Receipts returned by bounded outcome.",
+            "counter",
+        );
         for (index, outcome) in OUTCOMES.iter().enumerate() {
             metric_counter(
                 &mut output,
@@ -167,6 +185,12 @@ impl MetricsRegistry {
                 self.inner.receipts[index].load(Ordering::Relaxed),
             );
         }
+        metric_header(
+            &mut output,
+            "platpulse_readiness",
+            "Readiness state by fixed Server component.",
+            "gauge",
+        );
         for (index, component) in READINESS_COMPONENTS.iter().enumerate() {
             metric_gauge(
                 &mut output,
@@ -181,12 +205,24 @@ impl MetricsRegistry {
             .readiness
             .iter()
             .all(|value| value.load(Ordering::Relaxed) == 1);
+        metric_header(
+            &mut output,
+            "platpulse_ready",
+            "Whether all required Server readiness components are ready.",
+            "gauge",
+        );
         metric_gauge(
             &mut output,
             "platpulse_ready",
             "Whether all required Server readiness components are ready.",
             &[],
             overall_ready as u64,
+        );
+        metric_header(
+            &mut output,
+            "platpulse_realtime_connections",
+            "Active realtime connections by bounded surface.",
+            "gauge",
         );
         for (index, surface) in REALTIME_SURFACES.iter().enumerate() {
             metric_gauge(
@@ -197,12 +233,24 @@ impl MetricsRegistry {
                 self.inner.realtime_connections[index].load(Ordering::Relaxed),
             );
         }
+        metric_header(
+            &mut output,
+            "platpulse_metrics_scrapes_total",
+            "Metrics scrapes served by this process.",
+            "counter",
+        );
         metric_counter(
             &mut output,
             "platpulse_metrics_scrapes_total",
             "Metrics scrapes served by this process.",
             &[],
             self.inner.scrapes.load(Ordering::Relaxed),
+        );
+        metric_header(
+            &mut output,
+            "platpulse_metrics_listener_failures_total",
+            "Metrics listener startup or runtime failures.",
+            "counter",
         );
         metric_counter(
             &mut output,
@@ -211,12 +259,24 @@ impl MetricsRegistry {
             &[],
             self.inner.listener_failures.load(Ordering::Relaxed),
         );
+        metric_header(
+            &mut output,
+            "platpulse_metrics_listener_enabled",
+            "Whether the dedicated metrics listener is configured.",
+            "gauge",
+        );
         metric_gauge(
             &mut output,
             "platpulse_metrics_listener_enabled",
             "Whether the dedicated metrics listener is configured.",
             &[],
             self.inner.listener_enabled.load(Ordering::Relaxed),
+        );
+        metric_header(
+            &mut output,
+            "platpulse_metrics_listener_ready",
+            "Whether the dedicated metrics listener is accepting connections.",
+            "gauge",
         );
         metric_gauge(
             &mut output,
@@ -225,51 +285,97 @@ impl MetricsRegistry {
             &[],
             self.inner.listener_ready.load(Ordering::Relaxed),
         );
-        metric_gauge(
+        metric_header(
+            &mut output,
+            "platpulse_critical_worker_heartbeat_age_seconds",
+            "Age of the critical worker heartbeat in seconds.",
+            "gauge",
+        );
+        metric_optional_gauge(
             &mut output,
             "platpulse_critical_worker_heartbeat_age_seconds",
             "Age of the critical worker heartbeat in seconds.",
             &[],
             snapshot.critical_worker_heartbeat_age_seconds,
         );
+        metric_header(
+            &mut output,
+            "platpulse_operations",
+            "Current operation rows by fixed status.",
+            "gauge",
+        );
         for (index, status) in OPERATION_STATUSES.iter().enumerate() {
-            metric_gauge(
-                &mut output,
-                "platpulse_operations",
-                "Current operation rows by fixed status.",
-                &["status", status],
-                snapshot.operations[index],
-            );
+            if let Some(value) = snapshot.operations[index] {
+                metric_gauge(
+                    &mut output,
+                    "platpulse_operations",
+                    "Current operation rows by fixed status.",
+                    &["status", status],
+                    value,
+                );
+            }
         }
+        metric_header(
+            &mut output,
+            "platpulse_notification_deliveries",
+            "Current notification deliveries by fixed state.",
+            "gauge",
+        );
         for (index, state) in DELIVERY_STATES.iter().enumerate() {
-            metric_gauge(
-                &mut output,
-                "platpulse_notification_deliveries",
-                "Current notification deliveries by fixed state.",
-                &["state", state],
-                snapshot.notification_deliveries[index],
-            );
+            if let Some(value) = snapshot.notification_deliveries[index] {
+                metric_gauge(
+                    &mut output,
+                    "platpulse_notification_deliveries",
+                    "Current notification deliveries by fixed state.",
+                    &["state", state],
+                    value,
+                );
+            }
         }
-        metric_gauge(
+        metric_header(
+            &mut output,
+            "platpulse_sqlite_page_count",
+            "SQLite database pages currently allocated.",
+            "gauge",
+        );
+        metric_optional_gauge(
             &mut output,
             "platpulse_sqlite_page_count",
             "SQLite database pages currently allocated.",
             &[],
             snapshot.sqlite_page_count,
         );
-        metric_gauge(
+        metric_header(
+            &mut output,
+            "platpulse_sqlite_freelist_pages",
+            "SQLite pages currently available on the freelist.",
+            "gauge",
+        );
+        metric_optional_gauge(
             &mut output,
             "platpulse_sqlite_freelist_pages",
             "SQLite pages currently available on the freelist.",
             &[],
             snapshot.sqlite_freelist_pages,
         );
-        metric_gauge(
+        metric_header(
+            &mut output,
+            "platpulse_sqlite_wal_bytes",
+            "SQLite WAL sidecar size in bytes.",
+            "gauge",
+        );
+        metric_optional_gauge(
             &mut output,
             "platpulse_sqlite_wal_bytes",
             "SQLite WAL sidecar size in bytes.",
             &[],
             snapshot.sqlite_wal_bytes,
+        );
+        metric_header(
+            &mut output,
+            "platpulse_sqlite_pool_size",
+            "SQLite connection pool capacity in connections.",
+            "gauge",
         );
         metric_gauge(
             &mut output,
@@ -278,12 +384,24 @@ impl MetricsRegistry {
             &[],
             snapshot.sqlite_pool_size,
         );
+        metric_header(
+            &mut output,
+            "platpulse_sqlite_pool_idle",
+            "SQLite idle connections in the pool.",
+            "gauge",
+        );
         metric_gauge(
             &mut output,
             "platpulse_sqlite_pool_idle",
             "SQLite idle connections in the pool.",
             &[],
             snapshot.sqlite_pool_idle,
+        );
+        metric_header(
+            &mut output,
+            "platpulse_ingestion_in_flight",
+            "AgentReport ingestions currently in flight.",
+            "gauge",
         );
         metric_gauge(
             &mut output,
@@ -312,12 +430,12 @@ impl MetricsRegistry {
 
 #[derive(Debug, Clone, Default)]
 pub struct MetricsSnapshot {
-    pub critical_worker_heartbeat_age_seconds: u64,
-    pub operations: [u64; OPERATION_STATUSES.len()],
-    pub notification_deliveries: [u64; DELIVERY_STATES.len()],
-    pub sqlite_page_count: u64,
-    pub sqlite_freelist_pages: u64,
-    pub sqlite_wal_bytes: u64,
+    pub critical_worker_heartbeat_age_seconds: Option<u64>,
+    pub operations: [Option<u64>; OPERATION_STATUSES.len()],
+    pub notification_deliveries: [Option<u64>; DELIVERY_STATES.len()],
+    pub sqlite_page_count: Option<u64>,
+    pub sqlite_freelist_pages: Option<u64>,
+    pub sqlite_wal_bytes: Option<u64>,
     pub sqlite_pool_size: u64,
     pub sqlite_pool_idle: u64,
     pub ingestion_in_flight: u64,
@@ -357,8 +475,7 @@ fn metric_labels(labels: &[&str]) -> String {
     rendered
 }
 
-fn metric_counter(output: &mut String, name: &str, help: &str, labels: &[&str], value: u64) {
-    metric_header(output, name, help, "counter");
+fn metric_counter(output: &mut String, name: &str, _help: &str, labels: &[&str], value: u64) {
     output.push_str(name);
     output.push_str(&metric_labels(labels));
     output.push(' ');
@@ -366,13 +483,24 @@ fn metric_counter(output: &mut String, name: &str, help: &str, labels: &[&str], 
     output.push('\n');
 }
 
-fn metric_gauge(output: &mut String, name: &str, help: &str, labels: &[&str], value: u64) {
-    metric_header(output, name, help, "gauge");
+fn metric_gauge(output: &mut String, name: &str, _help: &str, labels: &[&str], value: u64) {
     output.push_str(name);
     output.push_str(&metric_labels(labels));
     output.push(' ');
     output.push_str(&value.to_string());
     output.push('\n');
+}
+
+fn metric_optional_gauge(
+    output: &mut String,
+    name: &str,
+    help: &str,
+    labels: &[&str],
+    value: Option<u64>,
+) {
+    if let Some(value) = value {
+        metric_gauge(output, name, help, labels, value);
+    }
 }
 
 fn surface_index(path: &str) -> usize {
@@ -481,30 +609,38 @@ async fn collect_snapshot(state: &AppState) -> MetricsSnapshot {
             .and_then(|name| name.to_str())
             .unwrap_or("database")
     ));
-    snapshot.sqlite_wal_bytes = std::fs::metadata(wal_path)
-        .map(|value| value.len())
-        .unwrap_or(0);
+    snapshot.sqlite_wal_bytes = Some(
+        std::fs::metadata(wal_path)
+            .map(|value| value.len())
+            .unwrap_or(0),
+    );
     snapshot.sqlite_pool_size = pool.size() as u64;
     snapshot.sqlite_pool_idle = pool.num_idle() as u64;
 
-    for (status, count) in grouped_counts(
+    if let Some(counts) = grouped_counts(
         pool,
         "SELECT status, COUNT(*) FROM operations GROUP BY status",
     )
     .await
     {
-        if let Some(index) = OPERATION_STATUSES.iter().position(|value| *value == status) {
-            snapshot.operations[index] = count;
+        snapshot.operations.fill(Some(0));
+        for (status, count) in counts {
+            if let Some(index) = OPERATION_STATUSES.iter().position(|value| *value == status) {
+                snapshot.operations[index] = Some(count);
+            }
         }
     }
-    for (state, count) in grouped_counts(
+    if let Some(counts) = grouped_counts(
         pool,
         "SELECT state, COUNT(*) FROM notification_deliveries GROUP BY state",
     )
     .await
     {
-        if let Some(index) = DELIVERY_STATES.iter().position(|value| *value == state) {
-            snapshot.notification_deliveries[index] = count;
+        snapshot.notification_deliveries.fill(Some(0));
+        for (state, count) in counts {
+            if let Some(index) = DELIVERY_STATES.iter().position(|value| *value == state) {
+                snapshot.notification_deliveries[index] = Some(count);
+            }
         }
     }
     snapshot.ingestion_in_flight = state.in_flight_ingestion();
@@ -517,21 +653,21 @@ async fn collect_snapshot(state: &AppState) -> MetricsSnapshot {
     snapshot
 }
 
-async fn pragma_u64(pool: &SqlitePool, query: &str) -> u64 {
-    sqlx::query_scalar::<_, i64>(query)
+async fn pragma_u64(pool: &SqlitePool, query: &str) -> Option<u64> {
+    let value = sqlx::query_scalar::<_, i64>(query)
         .fetch_one(pool)
         .await
-        .unwrap_or(0)
-        .max(0) as u64
+        .ok()?;
+    u64::try_from(value).ok()
 }
 
-async fn grouped_counts(pool: &SqlitePool, query: &str) -> Vec<(String, u64)> {
-    sqlx::query_as::<_, (String, i64)>(query)
+async fn grouped_counts(pool: &SqlitePool, query: &str) -> Option<Vec<(String, u64)>> {
+    let rows = sqlx::query_as::<_, (String, i64)>(query)
         .fetch_all(pool)
         .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(key, count)| (key, count.max(0) as u64))
+        .ok()?;
+    rows.into_iter()
+        .map(|(key, count)| Some((key, u64::try_from(count).ok()?)))
         .collect()
 }
 
@@ -572,6 +708,16 @@ mod tests {
 
         assert!(text.contains("platpulse_http_requests_total{surface=\"admin\",status=\"2xx\"} 1"));
         assert!(text.contains("platpulse_http_requests_total{surface=\"agent\",status=\"5xx\"} 1"));
+        assert_eq!(
+            text.matches("# HELP platpulse_http_requests_total ")
+                .count(),
+            1
+        );
+        assert_eq!(
+            text.matches("# TYPE platpulse_http_requests_total counter")
+                .count(),
+            1
+        );
         assert!(text.contains("platpulse_agent_reports_total{outcome=\"accepted\"} 1"));
         assert!(text.contains("platpulse_report_receipts_total{outcome=\"accepted\"} 1"));
         assert!(text.contains("platpulse_readiness{component=\"critical_workers\"} 1"));

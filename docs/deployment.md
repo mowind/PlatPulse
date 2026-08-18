@@ -52,7 +52,8 @@ The harness creates a unique temporary run directory under
 `PLATPULSE_RC_RUNS_ROOT`), builds the release bundle, initializes real temporary
 SQLite state, provisions controlled Owner/Viewer/Network fixtures, enrolls an
 Agent, submits the canonical two-Node report, and checks the Report Receipt,
-Admin projection, WebUI asset, health endpoints, and authorized Admin SSE.
+Admin projection, WebUI asset, health endpoints, isolated Prometheus metrics,
+and authorized Admin SSE.
 Normal completion removes the run directory. A failed run removes credentials,
 SQLite files, cookies, headers, and response bodies before preserving the
 artifact, configuration, logs, request IDs, and sanitized diagnostics. Exit 2
@@ -139,6 +140,14 @@ Agent IDs, IP addresses, report IDs, request parameters, credentials, error
 strings, and report bodies are never exposed. Non-loopback metrics binds are
 refused unless native Rustls TLS or the explicit trusted HTTPS proxy policy is
 configured, using the same pre-bind safety checks as the main listener.
+
+The exposition documents these bounded families: HTTP responses by surface and
+status class; AgentReport and Report Receipt outcomes; readiness components and
+critical-worker heartbeat age; realtime connection and bounded-buffer pressure;
+operation and notification-delivery states; SQLite page, freelist, WAL-byte,
+and pool pressure; in-flight ingestion; and metrics listener state. A failed
+collection is represented by an absent dynamic sample rather than a fabricated
+zero.
 
 ## Same-origin behavior
 

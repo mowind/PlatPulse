@@ -169,13 +169,24 @@ async fn request_metrics_middleware(
     let status = response.status().as_u16();
     state.metrics.observe_http_response(&path, status);
     if path == "/api/agent/v1/reports" {
-        let outcome = match status {
-            200..=299 => "accepted",
-            400..=499 => "rejected",
-            _ => "unknown",
-        };
+        let outcome = response
+            .extensions()
+            .get::<platpulse_core::ReceiptDisposition>()
+            .map(|disposition| match disposition {
+                platpulse_core::ReceiptDisposition::Accepted => "accepted",
+                platpulse_core::ReceiptDisposition::PartiallyAccepted => "partially_accepted",
+                platpulse_core::ReceiptDisposition::Rejected => "rejected",
+            })
+            .unwrap_or(match status {
+                400..=499 => "rejected",
+                _ => "unknown",
+            });
         state.metrics.observe_report(outcome);
-        if (200..=299).contains(&status) {
+        if response
+            .extensions()
+            .get::<platpulse_core::ReceiptDisposition>()
+            .is_some()
+        {
             state.metrics.observe_receipt(outcome);
         }
     }
@@ -575,15 +586,15 @@ impl AppState {
         self.runtime.in_flight_ingestion.load(Ordering::Acquire) as u64
     }
 
-    pub(crate) fn critical_worker_heartbeat_age_seconds(&self) -> u64 {
+    pub(crate) fn critical_worker_heartbeat_age_seconds(&self) -> Option<u64> {
         let heartbeat = self
             .runtime
             .critical_worker_heartbeat_ms
             .load(Ordering::Acquire);
         if heartbeat == 0 {
-            return 0;
+            return None;
         }
-        now_millis().saturating_sub(heartbeat) / 1000
+        Some(now_millis().saturating_sub(heartbeat) / 1000)
     }
 }
 

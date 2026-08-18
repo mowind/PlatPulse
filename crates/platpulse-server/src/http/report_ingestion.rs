@@ -102,6 +102,13 @@ fn error(
         .into_response()
 }
 
+fn receipt_response(receipt: ReportReceipt) -> Response {
+    let disposition = receipt.disposition;
+    let mut response = (StatusCode::OK, Json(ReportResponse { receipt })).into_response();
+    response.extensions_mut().insert(disposition);
+    response
+}
+
 async fn store_rejected(
     mut tx: Transaction<'_, Sqlite>,
     report: &AgentReport,
@@ -124,7 +131,7 @@ async fn store_rejected(
             "Server database is unavailable",
         );
     }
-    (StatusCode::OK, Json(ReportResponse { receipt })).into_response()
+    receipt_response(receipt)
 }
 
 async fn record_security_event(
@@ -1323,7 +1330,7 @@ async fn handler(
                 );
             }
         };
-        return (StatusCode::OK, Json(ReportResponse { receipt })).into_response();
+        return receipt_response(receipt);
     }
     let agent = match sqlx::query_as::<_, AgentRow>(
         "SELECT agent_epoch, active_boot_id, active_boot_status, previous_boot_id, close_report_id, last_report_sequence, last_inventory_revision FROM agents WHERE agent_id = ?",
@@ -2277,7 +2284,7 @@ async fn handler(
             .admin_realtime()
             .publish("alerts", None::<String>, parsed.report_sequence);
     }
-    (StatusCode::OK, Json(ReportResponse { receipt })).into_response()
+    receipt_response(receipt)
 }
 
 fn valid_report_content_type(value: Option<&axum::http::HeaderValue>) -> bool {

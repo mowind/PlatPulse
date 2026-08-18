@@ -92,6 +92,13 @@ with socket.socket() as sock:
     print(sock.getsockname()[1])
 PY
 )"
+METRICS_PORT="$(python3 - <<'PY'
+import socket
+with socket.socket() as sock:
+    sock.bind(("127.0.0.1", 0))
+    print(sock.getsockname()[1])
+PY
+)"
 OWNER_PASSWORD="${PLATPULSE_RC_OWNER_PASSWORD:-rc-owner-password-2026}"
 VIEWER_PASSWORD="${PLATPULSE_RC_VIEWER_PASSWORD:-rc-viewer-password-2026}"
 OWNER_PASSWORD_FILE="$RUN_ROOT/owner-password"
@@ -194,6 +201,9 @@ development = false
 [tls]
 cert_chain_file = "$TLS_CERT"
 private_key_file = "$TLS_KEY"
+[metrics]
+enabled = true
+listen = "127.0.0.1:$METRICS_PORT"
 EOF
 
 # The direct-TLS run uses the same external boundary as production. The
@@ -221,6 +231,24 @@ for _ in $(seq 1 100); do
 done
 kill -0 "$SERVER_PID" 2>/dev/null || fail 'packaged Server exited before health check'
 [[ "$live_status" == 200 ]] || fail 'health/live did not become ready'
+
+METRICS_BASE_URL="https://127.0.0.1:$METRICS_PORT"
+printf 'Release-candidate harness: checking isolated Prometheus metrics\n'
+metrics_status=""
+for _ in $(seq 1 50); do
+  metrics_status="$(curl -sS --connect-timeout 2 --max-time 5 -D "$RUN_ROOT/metrics.headers" -o "$RUN_ROOT/metrics.body" -w '%{http_code}' "$METRICS_BASE_URL/metrics" 2>/dev/null || true)"
+  [[ "$metrics_status" == 200 ]] && break
+  sleep 0.1
+done
+[[ "$metrics_status" == 200 ]] || fail 'internal metrics listener did not become ready'
+grep -qi 'text/plain; version=0.0.4' "$RUN_ROOT/metrics.headers" || fail 'metrics content type was not Prometheus-compatible'
+grep -q '^# TYPE platpulse_http_requests_total counter$' "$RUN_ROOT/metrics.body" || fail 'metrics exposition omitted request family type'
+[[ "$(grep -c '^# HELP platpulse_http_requests_total ' "$RUN_ROOT/metrics.body")" == 1 ]] || fail 'metrics repeated HELP declarations for one family'
+grep -q 'platpulse_readiness{component="critical_workers"} 1' "$RUN_ROOT/metrics.body" || fail 'metrics omitted healthy critical-worker readiness'
+for uri in /api/anything /health/live /; do
+  route_status="$(curl -sS --connect-timeout 2 --max-time 5 -o /dev/null -w '%{http_code}' "$METRICS_BASE_URL$uri" 2>/dev/null || true)"
+  [[ "$route_status" == 404 ]] || fail "metrics listener exposed non-metrics route: $uri"
+done
 
 printf 'Release-candidate harness: checking development and trusted-proxy modes\n'
 DEV_PORT="$(python3 - <<'PY'
@@ -366,6 +394,10 @@ for _ in $(seq 1 50); do
   sleep 0.1
 done
 if ! grep -q 'event: invalidation' "$SSE_OUTPUT" || ! grep -q '"resource":"node"' "$SSE_OUTPUT"; then fail "authorized Admin SSE did not observe the Node invalidation (request $LAST_REQUEST_ID)"; fi
+
+curl -sS --connect-timeout 2 --max-time 5 -o "$RUN_ROOT/metrics-final.body" "$METRICS_BASE_URL/metrics" || fail 'final metrics scrape failed'
+! grep -Fq "$REPORT_ID" "$RUN_ROOT/metrics-final.body" || fail 'metrics exposed a raw report ID'
+! grep -Fq "$AGENT_ID" "$RUN_ROOT/metrics-final.body" || fail 'metrics exposed a raw Agent ID'
 
 printf 'Release-candidate harness: PASS (artifact=%s, request_id=%s)\n' "$ARCHIVE" "$LAST_REQUEST_ID"
 exit 0

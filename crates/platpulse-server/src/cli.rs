@@ -507,19 +507,23 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
             } else {
                 &config.trusted_proxy_cidrs
             };
-        crate::validate_listen_address_with_transport(
+        if let Err(error) = crate::validate_listen_address_with_transport(
             config.metrics.listen,
             native_tls.is_some(),
             metrics_proxy_cidrs,
             config.trusted_proxy_scheme.as_deref(),
-        )?;
-        metrics_handle = Some(start_metrics_listener(
-            &state,
-            config.metrics.listen,
-            native_tls.clone(),
-        )?);
+        ) {
+            state.metrics().observe_listener_failure();
+            return Err(Box::new(error));
+        }
+        match start_metrics_listener(&state, config.metrics.listen, native_tls.clone()) {
+            Ok(handle) => metrics_handle = Some(handle),
+            Err(error) => {
+                state.metrics().observe_listener_failure();
+                return Err(error);
+            }
+        }
         state.metrics().set_listener_ready(true);
-        println!("metrics listening on {}", config.metrics.listen);
     }
 
     let mut worker_handles = Vec::new();
