@@ -30,6 +30,7 @@ pub mod redaction;
 pub mod restore;
 pub mod retention;
 pub mod secrets;
+pub mod transport;
 pub mod validator;
 
 pub use database::{
@@ -51,12 +52,18 @@ pub fn startup_version_line() -> String {
 }
 
 /// Refusal to bind a listener outside the loopback interface.
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[derive(thiserror::Error, PartialEq, Eq)]
 pub enum ListenAddressError {
     #[error(
         "refusing to bind {0}: non-loopback binds require TLS or a trusted reverse proxy (design §19.4)"
     )]
     NonLoopback(std::net::SocketAddr),
+}
+
+impl std::fmt::Debug for ListenAddressError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.to_string())
+    }
 }
 
 /// Startup guard from design §19.4: the Server must not expose plaintext
@@ -75,8 +82,21 @@ pub fn validate_listen_address_with_proxy(
     trusted_proxy_cidrs: &[ipnet::IpNet],
     trusted_proxy_scheme: Option<&str>,
 ) -> Result<(), ListenAddressError> {
+    validate_listen_address_with_transport(addr, false, trusted_proxy_cidrs, trusted_proxy_scheme)
+}
+
+/// Validate the listener against the configured production transport. A
+/// non-loopback listener is safe only when native TLS or a configured HTTPS
+/// reverse proxy protects the connection.
+pub fn validate_listen_address_with_transport(
+    addr: std::net::SocketAddr,
+    native_tls: bool,
+    trusted_proxy_cidrs: &[ipnet::IpNet],
+    trusted_proxy_scheme: Option<&str>,
+) -> Result<(), ListenAddressError> {
     if addr.ip().is_loopback()
-        || (!trusted_proxy_cidrs.is_empty() && trusted_proxy_scheme.is_some())
+        || native_tls
+        || (!trusted_proxy_cidrs.is_empty() && trusted_proxy_scheme == Some("https"))
     {
         Ok(())
     } else {
@@ -116,6 +136,19 @@ mod tests {
         assert!(
             validate_listen_address_with_proxy("0.0.0.0:8080".parse().unwrap(), &[], Some("https"))
                 .is_err()
+        );
+    }
+    #[test]
+    fn native_tls_allows_non_loopback_listeners_without_proxy_headers() {
+        let addr = "0.0.0.0:8443".parse().unwrap();
+        assert!(validate_listen_address_with_transport(addr, true, &[], None).is_ok());
+        assert!(validate_listen_address_with_transport(addr, false, &[], None).is_err());
+        let cidr: ipnet::IpNet = "10.0.0.0/8".parse().unwrap();
+        assert!(
+            validate_listen_address_with_transport(addr, false, &[cidr], Some("https")).is_ok()
+        );
+        assert!(
+            validate_listen_address_with_transport(addr, false, &[cidr], Some("http")).is_err()
         );
     }
     #[test]

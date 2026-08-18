@@ -301,6 +301,7 @@ pub struct AppState {
     web_index: Option<Bytes>,
     web_assets_ready: bool,
     runtime: Arc<ServerRuntime>,
+    shutdown: Arc<Notify>,
     proxy_policy: ProxyTrustPolicy,
     channels: crate::config::NotificationChannels,
     delivery_provider: Arc<dyn crate::notifications::DeliveryProvider>,
@@ -381,19 +382,27 @@ impl AppState {
                 .as_deref()
                 .is_some_and(|dir| dir.join("assets").is_dir());
         let runtime = Arc::new(ServerRuntime::new());
+        let shutdown = Arc::new(Notify::new());
         let worker_runtime = Arc::clone(&runtime);
+        let worker_shutdown = Arc::clone(&shutdown);
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));
+            let shutdown_signal = worker_shutdown.notified();
+            tokio::pin!(shutdown_signal);
             loop {
-                tick.tick().await;
-                if worker_runtime.shutting_down.load(Ordering::Acquire) {
-                    break;
-                }
-                if worker_runtime
-                    .critical_worker_enabled
-                    .load(Ordering::Acquire)
-                {
-                    worker_runtime.mark_worker_heartbeat();
+                tokio::select! {
+                    _ = &mut shutdown_signal => break,
+                    _ = tick.tick() => {
+                        if worker_runtime.shutting_down.load(Ordering::Acquire) {
+                            break;
+                        }
+                        if worker_runtime
+                            .critical_worker_enabled
+                            .load(Ordering::Acquire)
+                        {
+                            worker_runtime.mark_worker_heartbeat();
+                        }
+                    }
                 }
             }
         });
@@ -416,6 +425,7 @@ impl AppState {
             web_index,
             web_assets_ready,
             runtime,
+            shutdown,
             proxy_policy: ProxyTrustPolicy {
                 trusted_proxy_cidrs,
                 trusted_proxy_scheme,
@@ -432,8 +442,13 @@ impl AppState {
 
     pub(crate) fn begin_shutdown(&self) {
         self.runtime.begin_shutdown();
+        self.shutdown.notify_waiters();
         self.public_realtime.shutdown("server_shutdown");
         self.admin_realtime.shutdown("server_shutdown");
+    }
+
+    pub(crate) fn shutdown_signal(&self) -> tokio::sync::futures::Notified<'_> {
+        self.shutdown.notified()
     }
 
     pub async fn wait_for_ingestion(&self, deadline: tokio::time::Instant) -> bool {
@@ -533,9 +548,17 @@ impl AppState {
 /// hashed same-origin assets, so `script-src 'self'` holds; style
 /// attributes set through the CSSOM are not blocked by `style-src`.
 const CSP_HEADER_VALUE: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+const HSTS_HEADER_VALUE: &str = "max-age=31536000; includeSubDomains";
 
 /// Assemble the complete HTTP application.
 pub fn build_app(state: AppState) -> Router {
+    build_app_with_native_tls(state, false)
+}
+
+/// Build the application with the listener's actual transport marked for
+/// Agent authentication. The marker is only installed by the direct-TLS
+/// serve path; tests and plaintext listeners retain the default.
+pub fn build_app_with_native_tls(state: AppState, native_tls: bool) -> Router {
     let assets_dir = state
         .web_assets()
         .map(|dir| dir.join("assets"))
@@ -588,7 +611,7 @@ pub fn build_app(state: AppState) -> Router {
             HeaderValue::from_static("public, max-age=31536000, immutable"),
         ));
 
-    Router::<AppState>::new()
+    let app = Router::<AppState>::new()
         .nest("/api", api)
         .route("/health/live", get(health::live))
         .route("/health/ready", get(health::ready))
@@ -598,12 +621,36 @@ pub fn build_app(state: AppState) -> Router {
             header::CONTENT_SECURITY_POLICY,
             HeaderValue::from_static(CSP_HEADER_VALUE),
         ))
+        .layer(axum::middleware::from_fn(transport_security_headers))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             proxy_header_guard,
         ))
         .layer(axum::middleware::from_fn(request_id_middleware))
-        .with_state(state)
+        .with_state(state);
+    if native_tls {
+        app.layer(axum::middleware::from_fn(mark_native_tls_transport))
+    } else {
+        app
+    }
+}
+
+async fn transport_security_headers(request: Request, next: Next) -> Response {
+    let secure = request.extensions().get::<TrustedHttpsProxy>().is_some()
+        || request.extensions().get::<NativeTlsTransport>().is_some();
+    let mut response = next.run(request).await;
+    if secure {
+        response.headers_mut().insert(
+            header::STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static(HSTS_HEADER_VALUE),
+        );
+    }
+    response
+}
+
+async fn mark_native_tls_transport(mut request: Request, next: Next) -> Response {
+    request.extensions_mut().insert(NativeTlsTransport);
+    next.run(request).await
 }
 
 #[derive(Clone)]
@@ -614,6 +661,9 @@ struct ProxyTrustPolicy {
 
 #[derive(Clone, Copy)]
 struct TrustedHttpsProxy;
+
+#[derive(Clone, Copy)]
+struct NativeTlsTransport;
 
 fn request_peer_ip(request: &Request) -> Option<std::net::IpAddr> {
     request
@@ -899,6 +949,7 @@ pub(crate) async fn agent_group_guard(
     let peer = request_peer_ip(&request);
     if peer.is_some_and(|ip| !ip.is_loopback())
         && request.extensions().get::<TrustedHttpsProxy>().is_none()
+        && request.extensions().get::<NativeTlsTransport>().is_none()
     {
         return session_error_response(
             &request,
@@ -1051,6 +1102,23 @@ mod tests {
             test_auth(db_dir.path()),
         );
         (db_dir, web_dir, state)
+    }
+
+    #[tokio::test]
+    async fn native_tls_responses_enable_hsts() {
+        let (_db_dir, _web_dir, state) = test_state().await;
+        let response = get(build_app_with_native_tls(state, true), "/health/live").await;
+        assert_eq!(
+            response.headers()[header::STRICT_TRANSPORT_SECURITY],
+            HSTS_HEADER_VALUE
+        );
+    }
+
+    #[test]
+    fn native_tls_transport_marker_is_secure_for_agent_authentication() {
+        let mut request = Request::new(Body::empty());
+        request.extensions_mut().insert(NativeTlsTransport);
+        assert!(request.extensions().get::<NativeTlsTransport>().is_some());
     }
 
     fn test_auth(dir: &Path) -> AuthConfig {

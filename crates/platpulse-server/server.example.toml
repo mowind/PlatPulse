@@ -17,7 +17,13 @@ development = false
 # [geo]
 # mmdb_path = "/var/lib/platpulse/GeoLite2-Country.mmdb"
 
-# Production deployments should use HTTPS directly or an explicitly trusted
-# HTTPS reverse proxy. Example reverse-proxy settings:
+# Direct native Rustls HTTPS (production alternative to a trusted proxy).
+# Both files are required; the private key must be a same-user-owned 0600
+# regular file. Certificates are replaced by a controlled Server restart.
+# [tls]
+# cert_chain_file = "/etc/platpulse/tls/fullchain.pem"
+# private_key_file = "/etc/platpulse/tls/privkey.pem"
+
+# Or keep TLS at an explicitly trusted HTTPS reverse proxy:
 # trusted_proxy_cidrs = ["10.0.0.0/8"]
 # trusted_proxy_scheme = "https"

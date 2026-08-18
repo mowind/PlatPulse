@@ -195,6 +195,13 @@ pub struct ServeArgs {
     /// `Secure` (design §19.1).
     #[arg(long)]
     pub dev: bool,
+    /// PEM certificate chain for direct native Rustls HTTPS.
+    #[arg(long)]
+    pub tls_cert_chain: Option<PathBuf>,
+    /// PEM private key for direct native Rustls HTTPS. The file must be a
+    /// private regular file owned by the Server user.
+    #[arg(long)]
+    pub tls_private_key: Option<PathBuf>,
 }
 
 #[derive(Debug, Error)]
@@ -229,6 +236,8 @@ pub fn resolve_serve_config(args: &ServeArgs) -> Result<ServerConfig, crate::con
             listen: args.listen,
             base_url: args.base_url.clone(),
             development: args.dev,
+            tls_cert_chain_file: args.tls_cert_chain.clone(),
+            tls_private_key_file: args.tls_private_key.clone(),
         },
     )
 }
@@ -398,9 +407,20 @@ pub async fn run_restore(
 pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::Error>> {
     crate::init::restrict_umask();
     println!("{}", crate::startup_version_line());
-    crate::validate_listen_address_with_proxy(
+    let native_tls = match config.tls.as_ref() {
+        Some(tls) => Some(crate::transport::load_rustls_config(tls).await?),
+        None => None,
+    };
+    let listener_is_loopback = config.listen.ip().is_loopback();
+    let trusted_proxy_cidrs: &[ipnet::IpNet] = if config.development && !listener_is_loopback {
+        &[]
+    } else {
+        &config.trusted_proxy_cidrs
+    };
+    crate::validate_listen_address_with_transport(
         config.listen,
-        &config.trusted_proxy_cidrs,
+        native_tls.is_some(),
+        trusted_proxy_cidrs,
         config.trusted_proxy_scheme.as_deref(),
     )?;
 
@@ -477,17 +497,25 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         state = state
             .with_delivery_provider(std::sync::Arc::new(crate::notifications::DevNullProvider));
     }
-    let app = crate::http::build_app(state.clone());
+    let app = crate::http::build_app_with_native_tls(state.clone(), native_tls.is_some());
+
+    let mut worker_handles = Vec::new();
 
     // Geo database reload and raw-IP cache cleanup are deliberately
     // best-effort. A malformed replacement keeps the last-good reader and
     // never interrupts report ingestion or readiness.
     {
         let geo_state = state.clone();
-        tokio::spawn(async move {
+        worker_handles.push(tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
             loop {
-                tick.tick().await;
+                if geo_state.is_shutting_down() {
+                    break;
+                }
+                tokio::select! {
+                    _ = geo_state.shutdown_signal() => break,
+                    _ = tick.tick() => {}
+                }
                 if geo_state.is_shutting_down() {
                     break;
                 }
@@ -518,7 +546,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                         .publish("geo", None::<String>, 1);
                 }
             }
-        });
+        }));
     }
 
     // Operations left `running` by a crash are honestly failed (issue #50,
@@ -538,10 +566,16 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
     // checkpoint.
     {
         let sweep_state = state.clone();
-        tokio::spawn(async move {
+        worker_handles.push(tokio::spawn(async move {
             let mut tick = tokio::time::interval(crate::alerts::SWEEP_INTERVAL);
             loop {
-                tick.tick().await;
+                if sweep_state.is_shutting_down() {
+                    break;
+                }
+                tokio::select! {
+                    _ = sweep_state.shutdown_signal() => break,
+                    _ = tick.tick() => {}
+                }
                 if sweep_state.is_shutting_down() {
                     break;
                 }
@@ -560,7 +594,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                     }
                 }
             }
-        });
+        }));
     }
 
     // Notification delivery worker (design §17.4): sends due Outbox rows
@@ -570,10 +604,16 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
     // shutdown; the worker publishes Admin invalidations only.
     {
         let worker_state = state.clone();
-        tokio::spawn(async move {
+        worker_handles.push(tokio::spawn(async move {
             let mut tick = tokio::time::interval(crate::notifications::DELIVERY_INTERVAL);
             loop {
-                tick.tick().await;
+                if worker_state.is_shutting_down() {
+                    break;
+                }
+                tokio::select! {
+                    _ = worker_state.shutdown_signal() => break,
+                    _ = tick.tick() => {}
+                }
                 if worker_state.is_shutting_down() {
                     break;
                 }
@@ -592,7 +632,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                     }
                 }
             }
-        });
+        }));
     }
 
     // Operations worker (issue #50, webui.md §5.5): advances one queued
@@ -601,10 +641,16 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
     // loses progress; SSE publishes only accelerate REST refetches.
     {
         let worker_state = state.clone();
-        tokio::spawn(async move {
+        worker_handles.push(tokio::spawn(async move {
             let mut tick = tokio::time::interval(crate::operations::OPERATION_INTERVAL);
             loop {
-                tick.tick().await;
+                if worker_state.is_shutting_down() {
+                    break;
+                }
+                tokio::select! {
+                    _ = worker_state.shutdown_signal() => break,
+                    _ = tick.tick() => {}
+                }
                 if worker_state.is_shutting_down() {
                     break;
                 }
@@ -618,7 +664,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                     }
                 }
             }
-        });
+        }));
     }
 
     // Validator Provider refresh is Server-owned and deduplicated by the
@@ -626,12 +672,18 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
     // persisted as diagnostics but do not enter Node health or readiness.
     if let Some(provider_config) = config.validator_provider.clone() {
         let provider_state = state.clone();
-        tokio::spawn(async move {
+        worker_handles.push(tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(
                 provider_config.refresh_seconds,
             ));
             loop {
-                tick.tick().await;
+                if provider_state.is_shutting_down() {
+                    break;
+                }
+                tokio::select! {
+                    _ = provider_state.shutdown_signal() => break,
+                    _ = tick.tick() => {}
+                }
                 if provider_state.is_shutting_down() {
                     break;
                 }
@@ -669,31 +721,96 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                     }
                 }
             }
-        });
+        }));
     }
 
-    let listener = tokio::net::TcpListener::bind(config.listen).await?;
     println!("listening on {}", config.listen);
-    let server = axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .into_future();
-    tokio::pin!(server);
-    tokio::select! {
-        result = &mut server => result?,
-        _ = wait_for_shutdown_signal() => {
-            state.begin_shutdown();
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-            let drained = state.wait_for_ingestion(deadline).await;
-            let checkpointed = state.checkpoint_wal().await.is_ok();
-            state.db().close().await;
-            if !drained || !checkpointed {
-                return Err(format!("graceful shutdown incomplete (drained={drained}, checkpointed={checkpointed})").into());
+    if let Some(tls_config) = native_tls {
+        let handle = axum_server::Handle::new();
+        let server = axum_server::tls_rustls::bind_rustls(config.listen, tls_config)
+            .handle(handle.clone())
+            .serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>());
+        tokio::pin!(server);
+        tokio::select! {
+            result = &mut server => result?,
+            _ = wait_for_shutdown_signal() => {
+                state.begin_shutdown();
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+                handle.graceful_shutdown(Some(Duration::from_secs(10)));
+                let shutdown_result = tokio::time::timeout_at(deadline, async {
+                    tokio::join!(&mut server, state.wait_for_ingestion(deadline))
+                })
+                .await;
+                let (listener_stopped, drained) = match shutdown_result {
+                    Ok((server_result, drained)) => (server_result.is_ok(), drained),
+                    Err(_) => (false, false),
+                };
+                let workers_drained = drain_workers(&mut worker_handles, deadline).await;
+                let checkpointed = state.checkpoint_wal().await.is_ok();
+                state.db().close().await;
+                if !listener_stopped || !drained || !workers_drained || !checkpointed {
+                    return Err(format!("graceful shutdown incomplete (listener={listener_stopped}, drained={drained}, workers={workers_drained}, checkpointed={checkpointed})").into());
+                }
+            }
+        }
+    } else {
+        let listener = tokio::net::TcpListener::bind(config.listen).await?;
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let server = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move {
+            let _ = shutdown_rx.await;
+        })
+        .into_future();
+        tokio::pin!(server);
+        tokio::select! {
+            result = &mut server => result?,
+            _ = wait_for_shutdown_signal() => {
+                state.begin_shutdown();
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+                let _ = shutdown_tx.send(());
+                let shutdown_result = tokio::time::timeout_at(deadline, async {
+                    tokio::join!(&mut server, state.wait_for_ingestion(deadline))
+                })
+                .await;
+                let (listener_stopped, drained) = match shutdown_result {
+                    Ok((server_result, drained)) => (server_result.is_ok(), drained),
+                    Err(_) => (false, false),
+                };
+                let workers_drained = drain_workers(&mut worker_handles, deadline).await;
+                let checkpointed = state.checkpoint_wal().await.is_ok();
+                state.db().close().await;
+                if !listener_stopped || !drained || !workers_drained || !checkpointed {
+                    return Err(format!("graceful shutdown incomplete (listener={listener_stopped}, drained={drained}, workers={workers_drained}, checkpointed={checkpointed})").into());
+                }
             }
         }
     }
     Ok(())
+}
+
+async fn drain_workers(
+    workers: &mut [tokio::task::JoinHandle<()>],
+    deadline: tokio::time::Instant,
+) -> bool {
+    let mut drained = true;
+    for worker in workers.iter_mut() {
+        match tokio::time::timeout_at(deadline, worker).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) | Err(_) => {
+                drained = false;
+                break;
+            }
+        }
+    }
+    if !drained {
+        for worker in workers.iter() {
+            worker.abort();
+        }
+    }
+    drained
 }
 
 async fn wait_for_shutdown_signal() {

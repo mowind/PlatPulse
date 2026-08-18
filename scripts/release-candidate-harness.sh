@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT="$(cd "${BASH_SOURCE[0]%/*}/.." && pwd)"
 unavailable() { printf 'Release-candidate harness: UNAVAILABLE (%s)\n' "$1"; exit 2; }
-required_commands=(awk basename cat cargo chmod cp curl find grep head install jq mkdir mktemp node npm python3 realpath rm sed seq sleep tail tar)
+required_commands=(awk basename cat cargo chmod cp curl find grep head install jq ln mkdir mktemp node npm openssl python3 realpath rm sed seq sleep tail tar)
 for command in "${required_commands[@]}"; do
   command -v "$command" >/dev/null 2>&1 || unavailable "missing required command: $command"
 done
@@ -30,6 +30,8 @@ LAST_REQUEST_ID=unknown
 FAILURE_REASON=unknown
 SERVER_PID=""
 SSE_PID=""
+DEV_SERVER_PID=""
+PROXY_SERVER_PID=""
 
 cleanup() {
   local code=$?
@@ -39,7 +41,13 @@ cleanup() {
     if kill -0 "$SERVER_PID" 2>/dev/null; then kill -TERM "$SERVER_PID" 2>/dev/null || true; fi
     if wait "$SERVER_PID" 2>/dev/null; then server_status=0; else server_status=$?; fi
   fi
-  rm -f "$RUN_ROOT"/*.cookies "$RUN_ROOT"/*.headers "$RUN_ROOT"/*.json "$RUN_ROOT"/*.body "$RUN_ROOT"/*.sse "$RUN_ROOT"/*.status "$RUN_ROOT"/*.txt "$RUN_ROOT"/enrollment-output "$RUN_ROOT"/owner-password "$RUN_ROOT"/viewer-password "$STATE_DIR/server-pepper" "$STATE_DIR"/platpulse.db*
+  for aux_pid in "$DEV_SERVER_PID" "$PROXY_SERVER_PID"; do
+    if [[ -n "$aux_pid" ]] && kill -0 "$aux_pid" 2>/dev/null; then
+      kill -TERM "$aux_pid" 2>/dev/null || true
+      wait "$aux_pid" 2>/dev/null || true
+    fi
+  done
+  rm -f "$RUN_ROOT"/*.cookies "$RUN_ROOT"/*.headers "$RUN_ROOT"/*.json "$RUN_ROOT"/*.body "$RUN_ROOT"/*.sse "$RUN_ROOT"/*.status "$RUN_ROOT"/*.txt "$RUN_ROOT"/enrollment-output "$RUN_ROOT"/owner-password "$RUN_ROOT"/viewer-password "$RUN_ROOT"/tls-key.pem "$RUN_ROOT"/insecure-key.pem "$RUN_ROOT"/mismatch-key.pem "$STATE_DIR/server-pepper" "$STATE_DIR"/platpulse.db*
   if [[ "$code" -eq 0 ]]; then
     rm -rf "$RUN_ROOT"
     printf 'Release-candidate harness: PASS\n'
@@ -91,17 +99,108 @@ VIEWER_PASSWORD_FILE="$RUN_ROOT/viewer-password"
 printf '%s\n' "$OWNER_PASSWORD" > "$OWNER_PASSWORD_FILE"
 printf '%s\n' "$VIEWER_PASSWORD" > "$VIEWER_PASSWORD_FILE"
 chmod 600 "$OWNER_PASSWORD_FILE" "$VIEWER_PASSWORD_FILE"
-BASE_URL="http://127.0.0.1:$PORT"
+BASE_URL="https://127.0.0.1:$PORT"
+TLS_CERT="$RUN_ROOT/tls-cert.pem"
+TLS_KEY="$RUN_ROOT/tls-key.pem"
+openssl req -x509 -newkey rsa:2048 -nodes -keyout "$TLS_KEY" -out "$TLS_CERT" -days 1 -subj '/CN=127.0.0.1' >/dev/null 2>&1
+chmod 600 "$TLS_KEY"
+
+printf 'Release-candidate harness: checking transport refusal and TLS validation\n'
+PLAINTEXT_CONFIG="$RUN_ROOT/plaintext.toml"
+cat > "$PLAINTEXT_CONFIG" <<EOF
+state_dir = "$RUN_ROOT/plaintext-state"
+listen = "0.0.0.0:8080"
+EOF
+if "$SERVER" serve --config "$PLAINTEXT_CONFIG" >"$RUN_ROOT/plaintext.log" 2>&1; then
+  fail 'non-loopback plaintext production listener was accepted'
+fi
+grep -q 'refusing to bind' "$RUN_ROOT/plaintext.log" || fail 'plaintext refusal diagnostic was not stable'
+INVALID_TLS_CONFIG="$RUN_ROOT/invalid-tls.toml"
+cat > "$INVALID_TLS_CONFIG" <<EOF
+state_dir = "$RUN_ROOT/invalid-tls-state"
+public_base_url = "https://127.0.0.1:8443"
+[tls]
+cert_chain_file = "$TLS_CERT"
+private_key_file = "$RUN_ROOT/missing-key.pem"
+EOF
+if "$SERVER" serve --config "$INVALID_TLS_CONFIG" >"$RUN_ROOT/invalid-tls.log" 2>&1; then
+  fail 'missing native TLS private key was accepted'
+fi
+grep -q 'native TLS private-key material is invalid or insecure' "$RUN_ROOT/invalid-tls.log" || fail 'invalid TLS diagnostic was not stable or redacted'
+INSECURE_TLS_CONFIG="$RUN_ROOT/insecure-tls.toml"
+cp "$TLS_KEY" "$RUN_ROOT/insecure-key.pem"
+chmod 640 "$RUN_ROOT/insecure-key.pem"
+cat > "$INSECURE_TLS_CONFIG" <<EOF
+state_dir = "$RUN_ROOT/insecure-tls-state"
+public_base_url = "https://127.0.0.1:8443"
+[tls]
+cert_chain_file = "$TLS_CERT"
+private_key_file = "$RUN_ROOT/insecure-key.pem"
+EOF
+if "$SERVER" serve --config "$INSECURE_TLS_CONFIG" >"$RUN_ROOT/insecure-tls.log" 2>&1; then
+  fail 'insecure native TLS private key was accepted'
+fi
+grep -q 'native TLS private-key material is invalid or insecure' "$RUN_ROOT/insecure-tls.log" || fail 'insecure TLS diagnostic was not stable or redacted'
+MALFORMED_TLS_CONFIG="$RUN_ROOT/malformed-tls.toml"
+printf 'not a certificate\n' > "$RUN_ROOT/malformed-cert.pem"
+cat > "$MALFORMED_TLS_CONFIG" <<EOF
+state_dir = "$RUN_ROOT/malformed-tls-state"
+public_base_url = "https://127.0.0.1:8443"
+[tls]
+cert_chain_file = "$RUN_ROOT/malformed-cert.pem"
+private_key_file = "$TLS_KEY"
+EOF
+if "$SERVER" serve --config "$MALFORMED_TLS_CONFIG" >"$RUN_ROOT/malformed-tls.log" 2>&1; then
+  fail 'malformed native TLS certificate was accepted'
+fi
+grep -q 'native TLS certificate and private-key material are incompatible' "$RUN_ROOT/malformed-tls.log" || fail 'malformed TLS diagnostic was not stable or redacted'
+MISMATCHED_TLS_CONFIG="$RUN_ROOT/mismatched-tls.toml"
+openssl genrsa -out "$RUN_ROOT/mismatch-key.pem" 2048 >/dev/null 2>&1
+chmod 600 "$RUN_ROOT/mismatch-key.pem"
+cat > "$MISMATCHED_TLS_CONFIG" <<EOF
+state_dir = "$RUN_ROOT/mismatched-tls-state"
+public_base_url = "https://127.0.0.1:8443"
+[tls]
+cert_chain_file = "$TLS_CERT"
+private_key_file = "$RUN_ROOT/mismatch-key.pem"
+EOF
+if "$SERVER" serve --config "$MISMATCHED_TLS_CONFIG" >"$RUN_ROOT/mismatched-tls.log" 2>&1; then
+  fail 'mismatched native TLS key was accepted'
+fi
+grep -q 'native TLS certificate and private-key material are incompatible' "$RUN_ROOT/mismatched-tls.log" || fail 'mismatched TLS diagnostic was not stable or redacted'
+SYMLINKED_TLS_CONFIG="$RUN_ROOT/symlinked-tls.toml"
+ln -s "$TLS_KEY" "$RUN_ROOT/symlink-key.pem"
+cat > "$SYMLINKED_TLS_CONFIG" <<EOF
+state_dir = "$RUN_ROOT/symlinked-tls-state"
+public_base_url = "https://127.0.0.1:8443"
+[tls]
+cert_chain_file = "$TLS_CERT"
+private_key_file = "$RUN_ROOT/symlink-key.pem"
+EOF
+if "$SERVER" serve --config "$SYMLINKED_TLS_CONFIG" >"$RUN_ROOT/symlinked-tls.log" 2>&1; then
+  fail 'symlink-substituted native TLS key was accepted'
+fi
+grep -q 'native TLS private-key material is invalid or insecure' "$RUN_ROOT/symlinked-tls.log" || fail 'symlinked TLS diagnostic was not stable or redacted'
+
 mkdir -p "$STATE_DIR"
 cat > "$CONFIG" <<EOF
 state_dir = "$STATE_DIR"
 db_path = "$STATE_DIR/platpulse.db"
 pepper_file = "$STATE_DIR/server-pepper"
 web_root = "$WEB_ROOT"
-listen = "127.0.0.1:$PORT"
+listen = "0.0.0.0:$PORT"
 public_base_url = "$BASE_URL"
-development = true
+development = false
+[tls]
+cert_chain_file = "$TLS_CERT"
+private_key_file = "$TLS_KEY"
 EOF
+
+# The direct-TLS run uses the same external boundary as production. The
+# harness's other HTTP checks must accept the intentionally self-signed test
+# certificate without ever placing it in the release artifact.
+curl() { command curl --insecure "$@"; }
+
 
 printf 'Release-candidate harness: provisioning isolated identities and Network\n'
 "$SERVER" init --config "$CONFIG" >>"$CLI_LOG" 2>&1 || fail 'isolated Server init failed; see preserved CLI log'
@@ -123,6 +222,67 @@ done
 kill -0 "$SERVER_PID" 2>/dev/null || fail 'packaged Server exited before health check'
 [[ "$live_status" == 200 ]] || fail 'health/live did not become ready'
 
+printf 'Release-candidate harness: checking development and trusted-proxy modes\n'
+DEV_PORT="$(python3 - <<'PY'
+import socket
+with socket.socket() as sock:
+    sock.bind(("127.0.0.1", 0))
+    print(sock.getsockname()[1])
+PY
+)"
+DEV_CONFIG="$RUN_ROOT/development.toml"
+cat > "$DEV_CONFIG" <<EOF
+state_dir = "$RUN_ROOT/development-state"
+listen = "127.0.0.1:$DEV_PORT"
+public_base_url = "http://127.0.0.1:$DEV_PORT"
+development = true
+EOF
+"$SERVER" init --config "$DEV_CONFIG" >>"$CLI_LOG" 2>&1 || fail 'development-mode init failed'
+"$SERVER" serve --config "$DEV_CONFIG" >"$RUN_ROOT/development.log" 2>&1 &
+DEV_SERVER_PID=$!
+for _ in $(seq 1 50); do
+  kill -0 "$DEV_SERVER_PID" 2>/dev/null || fail 'development-mode Server exited before health check'
+  dev_status="$(curl -sS --connect-timeout 2 --max-time 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$DEV_PORT/health/live" 2>/dev/null || true)"
+  [[ "$dev_status" == 200 ]] && break
+  sleep 0.1
+done
+[[ "${dev_status:-}" == 200 ]] || fail 'development-mode HTTP did not become ready'
+kill -TERM "$DEV_SERVER_PID" 2>/dev/null || true
+wait "$DEV_SERVER_PID" 2>/dev/null || true
+DEV_SERVER_PID=""
+
+PROXY_PORT="$(python3 - <<'PY'
+import socket
+with socket.socket() as sock:
+    sock.bind(("127.0.0.1", 0))
+    print(sock.getsockname()[1])
+PY
+)"
+PROXY_CONFIG="$RUN_ROOT/trusted-proxy.toml"
+cat > "$PROXY_CONFIG" <<EOF
+state_dir = "$RUN_ROOT/trusted-proxy-state"
+listen = "0.0.0.0:$PROXY_PORT"
+public_base_url = "https://127.0.0.1:$PROXY_PORT"
+trusted_proxy_cidrs = ["127.0.0.1/32"]
+trusted_proxy_scheme = "https"
+EOF
+"$SERVER" init --config "$PROXY_CONFIG" >>"$CLI_LOG" 2>&1 || fail 'trusted-proxy init failed'
+"$SERVER" serve --config "$PROXY_CONFIG" >"$RUN_ROOT/trusted-proxy.log" 2>&1 &
+PROXY_SERVER_PID=$!
+for _ in $(seq 1 50); do
+  kill -0 "$PROXY_SERVER_PID" 2>/dev/null || fail 'trusted-proxy Server exited before health check'
+  proxy_status="$(curl -sS --connect-timeout 2 --max-time 5 -D "$RUN_ROOT/proxy.headers" -H 'Forwarded: proto=https' -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PROXY_PORT/health/live" 2>/dev/null || true)"
+  [[ "$proxy_status" == 200 ]] && break
+  sleep 0.1
+done
+[[ "${proxy_status:-}" == 200 ]] || fail 'trusted-proxy HTTPS assertion was not accepted'
+grep -qi '^strict-transport-security: max-age=31536000; includeSubDomains' "$RUN_ROOT/proxy.headers" || fail 'trusted-proxy response did not include HSTS'
+proxy_spoofed_status="$(curl -sS --connect-timeout 2 --max-time 5 -H 'Forwarded: proto=http' -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PROXY_PORT/health/live" 2>/dev/null || true)"
+[[ "$proxy_spoofed_status" == 403 ]] || fail 'trusted-proxy HTTP scheme spoof was not rejected'
+kill -TERM "$PROXY_SERVER_PID" 2>/dev/null || true
+wait "$PROXY_SERVER_PID" 2>/dev/null || true
+PROXY_SERVER_PID=""
+
 request_id() {
   local id
   id="$(awk -F': ' 'tolower($1) == "x-request-id" { gsub("\\r", "", $2); print $2; exit }' "$1")"
@@ -140,6 +300,7 @@ request() {
 printf 'Release-candidate harness: checking health and human boundaries\n'
 request ready "$BASE_URL/health/ready"
 jq -e '.status == "ready"' "$RUN_ROOT/ready.body" >/dev/null || fail "health/ready was not ready (request $LAST_REQUEST_ID)"
+grep -qi '^strict-transport-security: max-age=31536000; includeSubDomains' "$RUN_ROOT/ready.headers" || fail 'native TLS response did not include HSTS'
 request web-index "$BASE_URL/"
 grep -q '<div id="root"' "$RUN_ROOT/web-index.body" || fail "packaged WebUI index was not served (request $LAST_REQUEST_ID)"
 WEB_ASSET_PATH="$(grep -oE '/assets/[^" ]+' "$RUN_ROOT/web-index.body" | head -n 1)"

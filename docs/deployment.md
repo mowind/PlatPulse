@@ -83,6 +83,43 @@ development, and custom installations. It has higher precedence than the
 `web_root` value in `server.toml`, which has higher precedence than the
 built-in default.
 
+## Transport modes
+
+Production has two explicit transport choices. For direct HTTPS, configure a
+certificate chain and private key in `server.toml`:
+
+```toml
+listen = "0.0.0.0:8443"
+public_base_url = "https://monitor.example.com:8443"
+[tls]
+cert_chain_file = "/etc/platpulse/tls/fullchain.pem"
+private_key_file = "/etc/platpulse/tls/privkey.pem"
+```
+
+The private-key path must resolve to a same-user-owned private regular file
+with mode `0600`; final symlinks and symlinked ancestors are rejected. The
+Server validates and parses both files before binding. A malformed,
+unreadable, mismatched, or insecure key fails startup with a redacted
+transport diagnostic. PlatPulse does not issue certificates, run ACME, or
+reload certificates in-process: replace the files and restart the Server.
+
+Alternatively, terminate HTTPS at a trusted reverse proxy and keep the Server
+on a private listener:
+
+```toml
+listen = "0.0.0.0:8080"
+public_base_url = "https://monitor.example.com"
+trusted_proxy_cidrs = ["10.0.0.0/8"]
+trusted_proxy_scheme = "https"
+```
+
+Forwarded headers are accepted only from a peer in one of the configured CIDRs
+and only when the configured scheme is `https`. Conflicting or spoofed
+forwarded headers are rejected. A non-loopback production plaintext listener
+without either native TLS or this trusted-proxy policy is refused at startup.
+Development mode is separate and remains loopback-only HTTP with its
+development cookie policy; it cannot be combined with native TLS.
+
 ## Same-origin behavior
 
 - `/` and React Router paths such as `/admin` receive `index.html`;

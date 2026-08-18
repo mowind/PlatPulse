@@ -1182,6 +1182,7 @@ mod tests {
             backup_dir: Some(backup_dir.to_path_buf()),
             listen: "127.0.0.1:0".parse().unwrap(),
             public_base_url: "http://127.0.0.1:8080".to_owned(),
+            tls: None,
             trusted_proxy_cidrs: Vec::new(),
             trusted_proxy_scheme: None,
             geo: None,

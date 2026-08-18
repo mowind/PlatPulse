@@ -61,6 +61,10 @@ pub struct ServerConfigFile {
     pub trusted_proxy_cidrs: Option<Vec<String>>,
     /// Scheme asserted by a configured trusted proxy (`http` or `https`).
     pub trusted_proxy_scheme: Option<String>,
+    /// Explicit native Rustls HTTPS configuration. When present, both files
+    /// are required and the Server starts only after the private key passes
+    /// the strict sensitive-file checks.
+    pub tls: Option<TlsSectionFile>,
     /// Optional GeoLite2 Country database configuration. The Server never
     /// downloads the file or stores MaxMind credentials.
     pub geo: Option<GeoSectionFile>,
@@ -78,6 +82,17 @@ pub struct ServerConfigFile {
 #[serde(deny_unknown_fields, default)]
 pub struct GeoSectionFile {
     pub mmdb_path: Option<PathBuf>,
+}
+
+/// `[tls]` enables direct native Rustls HTTPS. Certificate automation and
+/// in-process reload are intentionally outside the Server configuration.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct TlsSectionFile {
+    /// PEM certificate chain presented by the Server.
+    pub cert_chain_file: Option<PathBuf>,
+    /// PEM private key. This path is validated as a private regular file.
+    pub private_key_file: Option<PathBuf>,
 }
 
 /// `[validator_provider]` configures the Server-side Explorer adapter.
@@ -126,6 +141,8 @@ pub struct CliOverrides {
     pub listen: Option<SocketAddr>,
     pub base_url: Option<String>,
     pub development: bool,
+    pub tls_cert_chain_file: Option<PathBuf>,
+    pub tls_private_key_file: Option<PathBuf>,
 }
 
 /// Fully resolved Server settings.
@@ -142,6 +159,8 @@ pub struct ServerConfig {
     /// Exact origin used for strict login validation and cookie policy.
     pub public_base_url: String,
     pub development: bool,
+    /// Native Rustls HTTPS files, when configured.
+    pub tls: Option<NativeTlsConfig>,
     pub trusted_proxy_cidrs: Vec<IpNet>,
     pub trusted_proxy_scheme: Option<String>,
     /// Resolved optional GeoLite2 Country database path.
@@ -152,6 +171,11 @@ pub struct ServerConfig {
     pub notifications: NotificationChannels,
 }
 
+#[derive(Debug, Clone)]
+pub struct NativeTlsConfig {
+    pub cert_chain_file: PathBuf,
+    pub private_key_file: PathBuf,
+}
 #[derive(Debug, Clone)]
 pub struct ValidatorProviderConfig {
     pub base_url: String,
@@ -211,6 +235,8 @@ pub enum ConfigError {
     InvalidTrustedProxyCidr(String),
     #[error("invalid trusted proxy scheme: {0}")]
     InvalidTrustedProxyScheme(String),
+    #[error("invalid native TLS configuration in {path}: {reason}")]
+    InvalidTlsConfiguration { path: PathBuf, reason: String },
     #[error("invalid Validator analytics IANA timezone in {path}: {timezone}")]
     InvalidValidatorTimezone { path: PathBuf, timezone: String },
     #[error("notifications.telegram.token_file is required in {path}")]
@@ -348,6 +374,7 @@ impl ServerConfig {
 
         let development =
             cli.development || file.and_then(|file| file.development).unwrap_or(false);
+        let tls = resolve_tls(file, cli, config_path, development, &public_base_url)?;
         let trusted_proxy_cidrs = file
             .and_then(|value| value.trusted_proxy_cidrs.clone())
             .unwrap_or_default()
@@ -382,6 +409,7 @@ impl ServerConfig {
             listen,
             public_base_url,
             development,
+            tls,
             trusted_proxy_cidrs,
             trusted_proxy_scheme,
             geo,
@@ -391,6 +419,61 @@ impl ServerConfig {
     }
 }
 
+fn resolve_tls(
+    file: Option<&ServerConfigFile>,
+    cli: &CliOverrides,
+    config_path: Option<&Path>,
+    development: bool,
+    public_base_url: &str,
+) -> Result<Option<NativeTlsConfig>, ConfigError> {
+    let section = file.and_then(|value| value.tls.as_ref());
+    let cert_chain_file = cli
+        .tls_cert_chain_file
+        .clone()
+        .or_else(|| section.and_then(|value| value.cert_chain_file.clone()));
+    let private_key_file = cli
+        .tls_private_key_file
+        .clone()
+        .or_else(|| section.and_then(|value| value.private_key_file.clone()));
+    if cert_chain_file.is_none() && private_key_file.is_none() {
+        if section.is_some() {
+            return Err(ConfigError::InvalidTlsConfiguration {
+                path: config_path
+                    .map(Path::to_owned)
+                    .unwrap_or_else(|| PathBuf::from("<cli>")),
+                reason: "cert_chain_file and private_key_file must be configured together"
+                    .to_owned(),
+            });
+        }
+        return Ok(None);
+    }
+    let path = config_path
+        .map(Path::to_owned)
+        .unwrap_or_else(|| PathBuf::from("<cli>"));
+    if development {
+        return Err(ConfigError::InvalidTlsConfiguration {
+            path,
+            reason: "native TLS cannot be combined with development mode".to_owned(),
+        });
+    }
+    if !public_base_url.starts_with("https://") {
+        return Err(ConfigError::InvalidTlsConfiguration {
+            path,
+            reason: "native TLS requires an https public_base_url".to_owned(),
+        });
+    }
+    let (Some(cert_chain_file), Some(private_key_file)) = (cert_chain_file, private_key_file)
+    else {
+        return Err(ConfigError::InvalidTlsConfiguration {
+            path,
+            reason: "cert_chain_file and private_key_file must be configured together".to_owned(),
+        });
+    };
+    Ok(Some(NativeTlsConfig {
+        cert_chain_file,
+        private_key_file,
+    }))
+}
 fn resolve_validator_provider(
     file: Option<&ServerConfigFile>,
     config_path: Option<&Path>,
@@ -731,6 +814,63 @@ development = false
         ));
     }
 
+    #[test]
+    fn native_tls_config_requires_both_files_and_is_separate_from_development() {
+        let dir = tempdir().unwrap();
+        let path = write_config(
+            dir.path(),
+            "state_dir = \"/srv/platpulse\"\npublic_base_url = \"https://platpulse.example.com\"\n[tls]\ncert_chain_file = \"/etc/platpulse/tls/fullchain.pem\"\nprivate_key_file = \"/etc/platpulse/tls/privkey.pem\"\n",
+        );
+        let config = ServerConfig::resolve(Some(&path), &CliOverrides::default()).unwrap();
+        let tls = config.tls.unwrap();
+        assert_eq!(
+            tls.cert_chain_file,
+            Path::new("/etc/platpulse/tls/fullchain.pem")
+        );
+        assert_eq!(
+            tls.private_key_file,
+            Path::new("/etc/platpulse/tls/privkey.pem")
+        );
+
+        let path = write_config(
+            dir.path(),
+            "state_dir = \"/srv/platpulse\"\npublic_base_url = \"https://platpulse.example.com\"\n[tls]\ncert_chain_file = \"/etc/platpulse/tls/fullchain.pem\"\n",
+        );
+        assert!(matches!(
+            ServerConfig::resolve(Some(&path), &CliOverrides::default()),
+            Err(ConfigError::InvalidTlsConfiguration { .. })
+        ));
+
+        let path = write_config(
+            dir.path(),
+            "state_dir = \"/srv/platpulse\"\ndevelopment = true\n[tls]\ncert_chain_file = \"chain.pem\"\nprivate_key_file = \"key.pem\"\n",
+        );
+        assert!(matches!(
+            ServerConfig::resolve(Some(&path), &CliOverrides::default()),
+            Err(ConfigError::InvalidTlsConfiguration { .. })
+        ));
+    }
+
+    #[test]
+    fn native_tls_cli_overrides_config_files() {
+        let dir = tempdir().unwrap();
+        let path = write_config(
+            dir.path(),
+            "state_dir = \"/srv/platpulse\"\npublic_base_url = \"https://platpulse.example.com\"\n[tls]\ncert_chain_file = \"config-chain.pem\"\nprivate_key_file = \"config-key.pem\"\n",
+        );
+        let config = ServerConfig::resolve(
+            Some(&path),
+            &CliOverrides {
+                tls_cert_chain_file: Some(PathBuf::from("cli-chain.pem")),
+                tls_private_key_file: Some(PathBuf::from("cli-key.pem")),
+                ..CliOverrides::default()
+            },
+        )
+        .unwrap();
+        let tls = config.tls.unwrap();
+        assert_eq!(tls.cert_chain_file, Path::new("cli-chain.pem"));
+        assert_eq!(tls.private_key_file, Path::new("cli-key.pem"));
+    }
     #[test]
     fn unknown_config_fields_are_rejected() {
         let dir = tempdir().unwrap();
