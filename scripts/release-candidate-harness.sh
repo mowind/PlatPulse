@@ -10,8 +10,10 @@ for command in "${required_commands[@]}"; do
 done
 RUNS_ROOT="$ROOT/target/release-candidate-runs"
 if [[ -n "${PLATPULSE_RC_RUNS_ROOT:-}" ]]; then RUNS_ROOT="$PLATPULSE_RC_RUNS_ROOT"; fi
-mkdir -p "$RUNS_ROOT"
+RECOVERY_ROOT="${PLATPULSE_RC_RECOVERY_ROOT:-$ROOT/target/release-candidate-recovery}"
+mkdir -p "$RUNS_ROOT" "$RECOVERY_ROOT"
 RUN_ROOT="$(mktemp -d "$RUNS_ROOT/run.XXXXXX")"
+RECOVERY_OUTPUT="$RECOVERY_ROOT/$(basename "$RUN_ROOT")"
 PACKAGE_DIR="$RUN_ROOT/package"
 ARCHIVE="$RUN_ROOT/platpulse-server.tar.gz"
 AGENT_ARCHIVE=""
@@ -448,5 +450,6 @@ for forbidden in node_id peer_id user_id agent_id ip_address credential password
 done
 ! grep -Eq '([0-9]{1,3}\.){3}[0-9]{1,3}' "$RUN_ROOT/metrics-final.body" || fail 'metrics exposed an IP address'
 
-printf 'Release-candidate harness: PASS (artifact=%s, request_id=%s)\n' "$ARCHIVE" "$LAST_REQUEST_ID"
+python3 "$ROOT/scripts/release-recovery-rehearsal.py" --skip-package --server "$SERVER" --output "$RECOVERY_OUTPUT" || fail "packaged migration and recovery rehearsal failed"
+printf 'Release-candidate harness: PASS (artifact=%s, request_id=%s, recovery_evidence=%s)\n' "$ARCHIVE" "$LAST_REQUEST_ID" "$RECOVERY_OUTPUT"
 exit 0

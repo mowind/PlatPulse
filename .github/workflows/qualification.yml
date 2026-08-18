@@ -26,6 +26,8 @@ jobs:
       - run: npm ci
         working-directory: platpulse-web
       - run: scripts/test-release-qualification.sh
+      - name: Run packaged migration and recovery rehearsal
+        run: scripts/release-recovery-rehearsal.sh --output target/recovery-rehearsal
       - name: Run packaged qualification
         env:
           QUALIFICATION_PROFILE: ${{ github.event_name == 'schedule' && 'soak' || inputs.profile }}
@@ -40,5 +42,8 @@ jobs:
             target/release-qualification/**/summary.md
             target/release-qualification/**/metrics-*.prom
             target/release-qualification/**/server.log
+            target/recovery-rehearsal/recovery-rehearsal.json
+            target/recovery-rehearsal/recovery-rehearsal.md
+            target/recovery-rehearsal/**/server.log
           if-no-files-found: warn
           retention-days: 30

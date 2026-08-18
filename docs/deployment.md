@@ -73,6 +73,19 @@ means the environment is unavailable; exit 1 is a harness failure.
 For packaged load, fault, and soak evidence, see
 [`docs/release-qualification.md`](release-qualification.md).
 
+To rehearse upgrades and recovery against a packaged Server, run:
+
+```bash
+scripts/release-recovery-rehearsal.sh
+```
+
+The command creates private schema fixtures under `target/recovery-rehearsal/`,
+starts each one so the compiled forward migrations run before serving, and records
+sanitized JSON/Markdown evidence. It also verifies the supported online backup path,
+checksum and integrity failures, stopped-Server confirmation, atomic restore and
+safety-copy behavior, secret-file preservation, corrupt input refusal, and higher
+schema refusal. Use `--self-test` for the fast fixture-generation check.
+
 ## Configuration
 
 Copy `crates/platpulse-server/server.example.toml` and set an explicit

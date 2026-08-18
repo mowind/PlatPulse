@@ -2,6 +2,7 @@
 set -euo pipefail
 ROOT="$(cd "${BASH_SOURCE[0]%/*}/.." && pwd)"
 python3 "$ROOT/scripts/release-qualification.py" --self-test
+python3 "$ROOT/scripts/release-recovery-rehearsal.py" --self-test
 python3 "$ROOT/scripts/release-qualification.py" --profile "$ROOT/release/qualification/ci.toml" --check-profile
 invalid="$(mktemp)"
 trap 'rm -f "$invalid"' EXIT
