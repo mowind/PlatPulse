@@ -21,6 +21,7 @@ pub mod file_security;
 pub mod geo;
 pub mod http;
 pub mod init;
+pub mod metrics;
 pub mod network;
 pub mod notifications;
 pub mod openapi;

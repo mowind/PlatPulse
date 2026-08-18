@@ -159,6 +159,29 @@ impl ApiErrorBody {
 #[derive(Clone)]
 pub(crate) struct RequestId(Arc<str>);
 
+async fn request_metrics_middleware(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let path = request.uri().path().to_owned();
+    let response = next.run(request).await;
+    let status = response.status().as_u16();
+    state.metrics.observe_http_response(&path, status);
+    if path == "/api/agent/v1/reports" {
+        let outcome = match status {
+            200..=299 => "accepted",
+            400..=499 => "rejected",
+            _ => "unknown",
+        };
+        state.metrics.observe_report(outcome);
+        if (200..=299).contains(&status) {
+            state.metrics.observe_receipt(outcome);
+        }
+    }
+    response
+}
+
 async fn request_id_middleware(mut request: Request, next: Next) -> Response {
     let id = uuid::Uuid::new_v4().to_string();
     request
@@ -302,7 +325,7 @@ pub struct AppState {
     web_assets_ready: bool,
     runtime: Arc<ServerRuntime>,
     shutdown: Arc<Notify>,
-    proxy_policy: ProxyTrustPolicy,
+    pub(crate) proxy_policy: ProxyTrustPolicy,
     channels: crate::config::NotificationChannels,
     delivery_provider: Arc<dyn crate::notifications::DeliveryProvider>,
     validator_provider: crate::validator::SharedValidatorProvider,
@@ -310,6 +333,7 @@ pub struct AppState {
     geo: Arc<crate::geo::GeoLoader>,
     pub(crate) public_realtime: RealtimeHub,
     pub(crate) admin_realtime: RealtimeHub,
+    metrics: crate::metrics::MetricsRegistry,
 }
 
 impl AppState {
@@ -437,6 +461,7 @@ impl AppState {
             geo: Arc::new(crate::geo::GeoLoader::disabled()),
             public_realtime: RealtimeHub::default(),
             admin_realtime: RealtimeHub::default(),
+            metrics: crate::metrics::MetricsRegistry::new(),
         }
     }
 
@@ -541,6 +566,25 @@ impl AppState {
     pub(crate) fn web_assets_ready(&self) -> bool {
         self.web_assets_ready
     }
+
+    pub(crate) fn metrics(&self) -> crate::metrics::MetricsRegistry {
+        self.metrics.clone()
+    }
+
+    pub(crate) fn in_flight_ingestion(&self) -> u64 {
+        self.runtime.in_flight_ingestion.load(Ordering::Acquire) as u64
+    }
+
+    pub(crate) fn critical_worker_heartbeat_age_seconds(&self) -> u64 {
+        let heartbeat = self
+            .runtime
+            .critical_worker_heartbeat_ms
+            .load(Ordering::Acquire);
+        if heartbeat == 0 {
+            return 0;
+        }
+        now_millis().saturating_sub(heartbeat) / 1000
+    }
 }
 
 /// Content-Security-Policy enforced on every response (design §19.4: no
@@ -627,6 +671,10 @@ pub fn build_app_with_native_tls(state: AppState, native_tls: bool) -> Router {
             proxy_header_guard,
         ))
         .layer(axum::middleware::from_fn(request_id_middleware))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            request_metrics_middleware,
+        ))
         .with_state(state);
     if native_tls {
         app.layer(axum::middleware::from_fn(mark_native_tls_transport))
@@ -654,9 +702,9 @@ async fn mark_native_tls_transport(mut request: Request, next: Next) -> Response
 }
 
 #[derive(Clone)]
-struct ProxyTrustPolicy {
-    trusted_proxy_cidrs: Vec<IpNet>,
-    trusted_proxy_scheme: Option<String>,
+pub(crate) struct ProxyTrustPolicy {
+    pub(crate) trusted_proxy_cidrs: Vec<IpNet>,
+    pub(crate) trusted_proxy_scheme: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -665,7 +713,7 @@ struct TrustedHttpsProxy;
 #[derive(Clone, Copy)]
 struct NativeTlsTransport;
 
-fn request_peer_ip(request: &Request) -> Option<std::net::IpAddr> {
+pub(crate) fn request_peer_ip(request: &Request) -> Option<std::net::IpAddr> {
     request
         .extensions()
         .get::<ConnectInfo<std::net::SocketAddr>>()
@@ -718,12 +766,12 @@ fn forwarded_proto(headers: &HeaderMap) -> Option<Result<&str, ()>> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProxyTrustError {
+pub(crate) enum ProxyTrustError {
     UntrustedHeaders,
     HttpsRequired,
 }
 
-fn evaluate_proxy_request(
+pub(crate) fn evaluate_proxy_request(
     policy: &ProxyTrustPolicy,
     peer: Option<std::net::IpAddr>,
     headers: &HeaderMap,
@@ -1138,6 +1186,65 @@ mod tests {
 
     async fn test_state() -> (TempDir, TempDir, AppState) {
         test_state_with_files(&[]).await
+    }
+
+    #[tokio::test]
+    async fn metrics_surface_is_prometheus_only_and_isolated_from_browser_routes() {
+        let (_db_dir, _web_dir, state) = test_state().await;
+        state
+            .metrics()
+            .observe_http_response("/api/admin/v1/nodes/private-node", 200);
+        let app = crate::metrics::build_app(&state, false);
+        let response = get(app.clone(), "/metrics").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "text/plain; version=0.0.4; charset=utf-8"
+        );
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("# TYPE platpulse_http_requests_total counter"));
+        assert!(!body.contains("private-node"));
+
+        for uri in ["/api/anything", "/health/live", "/", "/metrics/extra"] {
+            assert_eq!(
+                get(app.clone(), uri).await.status(),
+                StatusCode::NOT_FOUND,
+                "{uri}"
+            );
+        }
+
+        let proxy_only = crate::metrics::build_app(&state, true);
+        assert_eq!(
+            get(proxy_only, "/metrics").await.status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn metrics_readiness_tracks_critical_worker_transition() {
+        let (_db_dir, _web_dir, state) = test_state().await;
+        state.runtime.fail_critical_worker();
+        let response = get(crate::metrics::build_app(&state, false), "/metrics").await;
+        let body = String::from_utf8(
+            to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(body.contains("platpulse_readiness{component=\"critical_workers\"} 0"));
+
+        state.runtime.recover_critical_worker();
+        let response = get(crate::metrics::build_app(&state, false), "/metrics").await;
+        let body = String::from_utf8(
+            to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(body.contains("platpulse_readiness{component=\"critical_workers\"} 1"));
     }
 
     async fn get(app: Router, uri: &str) -> axum::response::Response {

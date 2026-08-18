@@ -17,6 +17,10 @@ use thiserror::Error;
 pub const DEFAULT_LISTEN: SocketAddr =
     SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 8080);
 
+/// Default loopback address for the disabled-by-default metrics listener.
+pub const DEFAULT_METRICS_LISTEN: SocketAddr =
+    SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 9090);
+
 /// SQLite file name relative to the state directory.
 pub const DEFAULT_DB_FILE: &str = "platpulse.db";
 
@@ -74,6 +78,17 @@ pub struct ServerConfigFile {
     /// only the token file reference and the destination, never token
     /// contents.
     pub notifications: Option<NotificationsSectionFile>,
+    /// Optional dedicated internal Prometheus metrics listener.
+    pub metrics: Option<MetricsSectionFile>,
+}
+
+/// The optional `[metrics]` section. Presence enables metrics unless
+/// explicitly disabled; its default address is loopback-only.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct MetricsSectionFile {
+    pub enabled: Option<bool>,
+    pub listen: Option<SocketAddr>,
 }
 
 /// The optional `[geo]` section. Only an operator-provided database path is
@@ -169,6 +184,14 @@ pub struct ServerConfig {
     pub validator_provider: Option<ValidatorProviderConfig>,
     /// Resolved notification channels (design §17.4).
     pub notifications: NotificationChannels,
+    /// Dedicated internal metrics listener policy.
+    pub metrics: MetricsConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MetricsConfig {
+    pub enabled: bool,
+    pub listen: SocketAddr,
 }
 
 #[derive(Debug, Clone)]
@@ -398,6 +421,15 @@ impl ServerConfig {
         let geo = cli.geo_mmdb.clone().or_else(|| resolve_geo_path(file));
         let validator_provider = resolve_validator_provider(file, config_path.as_deref())?;
         let notifications = resolve_notification_channels(file, &config_path)?;
+        let metrics_section = file.and_then(|value| value.metrics.as_ref());
+        let metrics = MetricsConfig {
+            enabled: metrics_section
+                .and_then(|section| section.enabled)
+                .unwrap_or(metrics_section.is_some()),
+            listen: metrics_section
+                .and_then(|section| section.listen)
+                .unwrap_or(DEFAULT_METRICS_LISTEN),
+        };
 
         Ok(Self {
             config_path,
@@ -415,6 +447,7 @@ impl ServerConfig {
             geo,
             validator_provider,
             notifications,
+            metrics,
         })
     }
 }
@@ -595,6 +628,34 @@ mod tests {
         .unwrap();
         assert_eq!(config.geo, Some(PathBuf::from("/tmp/test.mmdb")));
     }
+    #[test]
+    fn metrics_are_disabled_without_a_metrics_section() {
+        let dir = tempdir().unwrap();
+        let path = write_config(dir.path(), "state_dir = \"/srv/platpulse\"\n");
+        let config = ServerConfig::resolve(Some(&path), &CliOverrides::default()).unwrap();
+        assert!(!config.metrics.enabled);
+        assert_eq!(config.metrics.listen, DEFAULT_METRICS_LISTEN);
+    }
+
+    #[test]
+    fn metrics_section_defaults_to_loopback_and_can_be_enabled() {
+        let dir = tempdir().unwrap();
+        let path = write_config(
+            dir.path(),
+            "state_dir = \"/srv/platpulse\"\n[metrics]\nenabled = true\n",
+        );
+        let config = ServerConfig::resolve(Some(&path), &CliOverrides::default()).unwrap();
+        assert!(config.metrics.enabled);
+        assert!(config.metrics.listen.ip().is_loopback());
+    }
+
+    #[test]
+    fn metrics_non_loopback_requires_transport_policy() {
+        let addr = "0.0.0.0:9090".parse().unwrap();
+        assert!(crate::validate_listen_address_with_transport(addr, false, &[], None).is_err());
+        assert!(crate::validate_listen_address_with_transport(addr, true, &[], None).is_ok());
+    }
+
     #[test]
     fn full_config_resolves_with_cli_override() {
         let dir = tempdir().unwrap();

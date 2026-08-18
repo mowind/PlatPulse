@@ -27,3 +27,12 @@ development = false
 # Or keep TLS at an explicitly trusted HTTPS reverse proxy:
 # trusted_proxy_cidrs = ["10.0.0.0/8"]
 # trusted_proxy_scheme = "https"
+
+# Optional internal Prometheus metrics. The section is disabled when absent;
+# when enabled without `listen`, it binds only to 127.0.0.1:9090. The metrics
+# listener is separate from the browser/API routes and is never in OpenAPI.
+# [metrics]
+# enabled = true
+# listen = "127.0.0.1:9090"
+# Non-loopback metrics uses the same explicit native-TLS or trusted-HTTPS
+# proxy policy above; plaintext non-loopback exposure is rejected.

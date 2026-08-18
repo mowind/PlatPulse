@@ -7,6 +7,7 @@
 
 use std::collections::VecDeque;
 use std::convert::Infallible;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -51,12 +52,23 @@ struct HubInner {
     capacity: usize,
     state: Mutex<HubState>,
     notify: Notify,
+    connections: AtomicU64,
 }
 
 /// A bounded invalidation stream. Cloning it shares the sequence and buffer.
 #[derive(Clone, Debug)]
 pub(crate) struct RealtimeHub {
     inner: Arc<HubInner>,
+}
+
+struct ConnectionGuard {
+    inner: Arc<HubInner>,
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.inner.connections.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 impl Default for RealtimeHub {
@@ -78,7 +90,28 @@ impl RealtimeHub {
                     closed: false,
                 }),
                 notify: Notify::new(),
+                connections: AtomicU64::new(0),
             }),
+        }
+    }
+
+    pub(crate) fn active_connections(&self) -> u64 {
+        self.inner.connections.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn buffered_event_count(&self) -> u64 {
+        self.inner
+            .state
+            .lock()
+            .expect("SSE hub mutex poisoned")
+            .events
+            .len() as u64
+    }
+
+    fn connection_guard(&self) -> ConnectionGuard {
+        self.inner.connections.fetch_add(1, Ordering::Relaxed);
+        ConnectionGuard {
+            inner: Arc::clone(&self.inner),
         }
     }
 
@@ -215,6 +248,7 @@ impl RealtimeHub {
         let hub = self.clone();
         let mut cursor = last_event_id.unwrap_or(0);
         tokio::spawn(async move {
+            let _connection = hub.connection_guard();
             loop {
                 if let Some(invalidation) = hub.next_after(&mut cursor) {
                     let closing = invalidation.resource == "server_shutdown";
@@ -282,6 +316,7 @@ impl RealtimeHub {
         let hub = self.clone();
         let mut cursor = last_event_id.unwrap_or(0);
         tokio::spawn(async move {
+            let _connection = hub.connection_guard();
             let mut check = tokio::time::interval(Duration::from_secs(1));
             loop {
                 tokio::select! {
@@ -325,6 +360,7 @@ impl RealtimeHub {
         let hub = self.clone();
         let mut cursor = last_event_id.unwrap_or(0);
         tokio::spawn(async move {
+            let _connection = hub.connection_guard();
             let mut check = tokio::time::interval(Duration::from_secs(1));
             loop {
                 tokio::select! {

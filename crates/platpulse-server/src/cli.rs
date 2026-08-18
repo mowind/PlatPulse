@@ -498,6 +498,29 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
             .with_delivery_provider(std::sync::Arc::new(crate::notifications::DevNullProvider));
     }
     let app = crate::http::build_app_with_native_tls(state.clone(), native_tls.is_some());
+    state.metrics().set_listener_enabled(config.metrics.enabled);
+    let mut metrics_handle = None;
+    if config.metrics.enabled {
+        let metrics_proxy_cidrs: &[ipnet::IpNet] =
+            if config.development && !config.metrics.listen.ip().is_loopback() {
+                &[]
+            } else {
+                &config.trusted_proxy_cidrs
+            };
+        crate::validate_listen_address_with_transport(
+            config.metrics.listen,
+            native_tls.is_some(),
+            metrics_proxy_cidrs,
+            config.trusted_proxy_scheme.as_deref(),
+        )?;
+        metrics_handle = Some(start_metrics_listener(
+            &state,
+            config.metrics.listen,
+            native_tls.clone(),
+        )?);
+        state.metrics().set_listener_ready(true);
+        println!("metrics listening on {}", config.metrics.listen);
+    }
 
     let mut worker_handles = Vec::new();
 
@@ -746,10 +769,11 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                     Err(_) => (false, false),
                 };
                 let workers_drained = drain_workers(&mut worker_handles, deadline).await;
+                let metrics_drained = drain_metrics_listener(&mut metrics_handle, deadline).await;
                 let checkpointed = state.checkpoint_wal().await.is_ok();
                 state.db().close().await;
-                if !listener_stopped || !drained || !workers_drained || !checkpointed {
-                    return Err(format!("graceful shutdown incomplete (listener={listener_stopped}, drained={drained}, workers={workers_drained}, checkpointed={checkpointed})").into());
+                if !listener_stopped || !drained || !workers_drained || !metrics_drained || !checkpointed {
+                    return Err(format!("graceful shutdown incomplete (listener={listener_stopped}, drained={drained}, workers={workers_drained}, metrics={metrics_drained}, checkpointed={checkpointed})").into());
                 }
             }
         }
@@ -780,15 +804,90 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                     Err(_) => (false, false),
                 };
                 let workers_drained = drain_workers(&mut worker_handles, deadline).await;
+                let metrics_drained = drain_metrics_listener(&mut metrics_handle, deadline).await;
                 let checkpointed = state.checkpoint_wal().await.is_ok();
                 state.db().close().await;
-                if !listener_stopped || !drained || !workers_drained || !checkpointed {
-                    return Err(format!("graceful shutdown incomplete (listener={listener_stopped}, drained={drained}, workers={workers_drained}, checkpointed={checkpointed})").into());
+                if !listener_stopped || !drained || !workers_drained || !metrics_drained || !checkpointed {
+                    return Err(format!("graceful shutdown incomplete (listener={listener_stopped}, drained={drained}, workers={workers_drained}, metrics={metrics_drained}, checkpointed={checkpointed})").into());
                 }
             }
         }
     }
     Ok(())
+}
+
+fn start_metrics_listener(
+    state: &crate::AppState,
+    listen: SocketAddr,
+    tls: Option<axum_server::tls_rustls::RustlsConfig>,
+) -> Result<tokio::task::JoinHandle<Result<(), String>>, Box<dyn std::error::Error>> {
+    let listener =
+        std::net::TcpListener::bind(listen).map_err(|_| "metrics listener bind failed")?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|_| "metrics listener setup failed")?;
+    let require_trusted_proxy = !listen.ip().is_loopback() && tls.is_none();
+    let app = crate::metrics::build_app(state, require_trusted_proxy);
+    if let Some(tls_config) = tls {
+        let server = axum_server::from_tcp_rustls(listener, tls_config)
+            .map_err(|_| "metrics TLS listener could not be prepared")?;
+        let handle = axum_server::Handle::new();
+        let server = server
+            .handle(handle.clone())
+            .serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>());
+        let shutdown_state = state.clone();
+        let metrics_state = state.clone();
+        Ok(tokio::spawn(async move {
+            tokio::pin!(server);
+            let result = tokio::select! {
+                result = &mut server => result.map_err(|_| "metrics TLS listener failed".to_owned()),
+                _ = shutdown_state.shutdown_signal() => {
+                    handle.graceful_shutdown(Some(Duration::from_secs(10)));
+                    server.await.map_err(|_| "metrics TLS listener failed during shutdown".to_owned())
+                }
+            };
+            if result.is_err() {
+                metrics_state.metrics().observe_listener_failure();
+                metrics_state.metrics().set_listener_ready(false);
+            }
+            result
+        }))
+    } else {
+        let listener = tokio::net::TcpListener::from_std(listener)?;
+        let shutdown_state = state.clone();
+        let metrics_state = state.clone();
+        let server = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move {
+            shutdown_state.shutdown_signal().await;
+        })
+        .into_future();
+        Ok(tokio::spawn(async move {
+            let result = server
+                .await
+                .map_err(|_| "metrics listener failed".to_owned());
+            if result.is_err() {
+                metrics_state.metrics().observe_listener_failure();
+                metrics_state.metrics().set_listener_ready(false);
+            }
+            result
+        }))
+    }
+}
+
+async fn drain_metrics_listener(
+    handle: &mut Option<tokio::task::JoinHandle<Result<(), String>>>,
+    deadline: tokio::time::Instant,
+) -> bool {
+    let Some(handle) = handle.take() else {
+        return true;
+    };
+    match tokio::time::timeout_at(deadline, handle).await {
+        Ok(Ok(Ok(()))) => true,
+        Ok(Ok(Err(_))) | Ok(Err(_)) | Err(_) => false,
+    }
 }
 
 async fn drain_workers(

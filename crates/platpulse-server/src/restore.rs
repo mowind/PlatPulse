@@ -1189,6 +1189,10 @@ mod tests {
             validator_provider: None,
             development: false,
             notifications: crate::config::NotificationChannels::default(),
+            metrics: crate::config::MetricsConfig {
+                enabled: false,
+                listen: crate::config::DEFAULT_METRICS_LISTEN,
+            },
         }
     }
 

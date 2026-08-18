@@ -120,6 +120,26 @@ without either native TLS or this trusted-proxy policy is refused at startup.
 Development mode is separate and remains loopback-only HTTP with its
 development cookie policy; it cannot be combined with native TLS.
 
+## Internal operational metrics
+
+The optional `[metrics]` section exposes only `GET /metrics` on a dedicated
+management listener. It is disabled when the section is absent and defaults to
+`127.0.0.1:9090` when enabled without an explicit address:
+
+```toml
+[metrics]
+enabled = true
+listen = "127.0.0.1:9090"
+```
+
+The metrics router has no Public, Admin, Agent, health, authentication, or SPA
+routes and is not included in OpenAPI or the generated browser client. Its
+labels are fixed low-cardinality dimensions; Node IDs, Peer IDs, User IDs,
+Agent IDs, IP addresses, report IDs, request parameters, credentials, error
+strings, and report bodies are never exposed. Non-loopback metrics binds are
+refused unless native Rustls TLS or the explicit trusted HTTPS proxy policy is
+configured, using the same pre-bind safety checks as the main listener.
+
 ## Same-origin behavior
 
 - `/` and React Router paths such as `/admin` receive `index.html`;
