@@ -367,6 +367,19 @@ class FinalQualification:
                         findings.append(f"{relative} contains private-key material")
                     if TOKEN_RE.search(text):
                         findings.append(f"{relative} contains a live credential token")
+        native_dir = ROOT / "target/release-artifacts"
+        if native_dir.is_dir():
+            for artifact in native_dir.iterdir():
+                if artifact.suffix in {".deb", ".rpm", ".gz"} and artifact.is_file():
+                    try:
+                        payload = artifact.read_bytes()
+                    except OSError as error:
+                        findings.append(f"{artifact.name} could not be scanned: {error}")
+                        continue
+                    for marker in (b"pp_agent_", b"pp_enroll_", b"PRIVATE KEY", b".mmdb", b"GeoLite"):
+                        if marker in payload:
+                            findings.append(f"{artifact.name} contains forbidden marker {marker.decode(errors='replace')}")
+
         try:
             research = ROOT / "docs/research/geolite2-country-acquisition.md"
             if not research.is_file() or "Commercial Redistribution License" not in research.read_text(encoding="utf-8"):
@@ -510,6 +523,12 @@ class FinalQualification:
                 recovery.detail = recovery_out.name
             if md_path.exists():
                 check.evidence = md_path
+            missing = [str(path.name) for path in (json_path, md_path) if not path.exists()]
+            if missing:
+                recovery.status = "FAIL"
+                recovery.detail = "missing recovery evidence: " + ", ".join(missing)
+                check.status = "FAIL"
+                check.detail = "recovery rehearsal did not produce complete evidence"
         except (OSError, subprocess.TimeoutExpired) as error:
             check.status = "FAIL"
             check.detail = f"rehearsal could not run: {error}"
@@ -549,9 +568,8 @@ class FinalQualification:
             check.status = "FAIL"
             check.detail = f"qualification could not run: {error}"
         run_dirs = sorted(qual_out.glob("20*"), reverse=True) if qual_out.exists() else []
-        if run_dirs:
-            result_json = run_dirs[0] / "result.json"
-            if result_json.exists():
+        result_json = run_dirs[0] / "result.json" if run_dirs else None
+        if result_json is not None and result_json.exists():
                 try:
                     data = json.loads(result_json.read_text(encoding="utf-8"))
                     not_run = [s["name"] for s in data.get("scenarios", []) if s["status"] == "NOT_RUN"]
@@ -567,8 +585,15 @@ class FinalQualification:
                     evidence.evidence = result_json
                     evidence.status = check.status
                     evidence.detail = f"{detail}; NOT_RUN scenarios: {', '.join(not_run)}" if not_run else f"{detail}; all scenarios present"
-                except (OSError, json.JSONDecodeError):
-                    pass
+                except (OSError, json.JSONDecodeError) as error:
+                    check.status = "FAIL"
+                    check.detail = f"qualification result is unreadable: {error}"
+        else:
+            check.status = "FAIL"
+            check.detail = "qualification result.json is missing"
+            evidence = self.check("qualification-result", "packaged", "evidence")
+            evidence.status = "FAIL"
+            evidence.detail = "qualification result.json is missing"
 
     def collect_residual_risks(self) -> None:
         security = ROOT / "release/qualification/security.toml"
