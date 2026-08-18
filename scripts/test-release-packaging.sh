@@ -168,4 +168,6 @@ if "$VALIDATOR" --archive "$RUN_ROOT/bad-mode.tar.gz" --kind server; then
   exit 1
 fi
 
+test "$(grep -c '/var/lib/platpulse /var/backups/platpulse /etc/platpulse/secrets' "$ROOT/scripts/build-release.sh")" -eq 2
+
 printf 'release packaging seam tests: PASS\n'

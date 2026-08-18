@@ -132,7 +132,7 @@ EOF
 set -e
 getent group platpulse-server >/dev/null || addgroup --system platpulse-server
 id -u platpulse-server >/dev/null 2>&1 || adduser --system --ingroup platpulse-server --no-create-home --home /nonexistent --shell /usr/sbin/nologin platpulse-server
-install -d -o platpulse-server -g platpulse-server -m 0700 /var/lib/platpulse /var/backups/platpulse
+install -d -o platpulse-server -g platpulse-server -m 0700 /var/lib/platpulse /var/backups/platpulse /etc/platpulse/secrets
 systemctl daemon-reload >/dev/null 2>&1 || true
 EOF
   else
@@ -183,7 +183,7 @@ EOF
 %post
 getent group platpulse-server >/dev/null || groupadd --system platpulse-server
 id -u platpulse-server >/dev/null 2>&1 || useradd --system --gid platpulse-server --home-dir /nonexistent --shell /sbin/nologin platpulse-server
-install -d -o platpulse-server -g platpulse-server -m 0700 /var/lib/platpulse /var/backups/platpulse
+install -d -o platpulse-server -g platpulse-server -m 0700 /var/lib/platpulse /var/backups/platpulse /etc/platpulse/secrets
 systemctl daemon-reload >/dev/null 2>&1 || true
 %files
 /usr/bin/platpulse-server

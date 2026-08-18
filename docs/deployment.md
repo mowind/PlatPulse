@@ -238,7 +238,9 @@ documentation directories. Each Server archive includes the same-origin WebUI, n
 systemd units, the Caddy and Compose examples, the optional MaxMind `geoipupdate` example, and the
 backup timer/service. Agent archives include the Agent unit and configuration
 reference. Packages install dedicated `platpulse-server` and `platpulse-agent`
-system users and never enable a service automatically.
+system users, create their private state directories plus the Server backup and
+`/etc/platpulse/secrets` directories with runtime-user ownership and mode `0700`,
+and never enable a service automatically.
 
 ## OCI deployment and mount model
 
