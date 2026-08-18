@@ -28,6 +28,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tarfile
 import time
 import tomllib
 from pathlib import Path
@@ -367,18 +368,35 @@ class FinalQualification:
                         findings.append(f"{relative} contains private-key material")
                     if TOKEN_RE.search(text):
                         findings.append(f"{relative} contains a live credential token")
+        forbidden_bytes = (b"pp_agent_", b"pp_enroll_", b"PRIVATE KEY", b".mmdb", b"GeoLite")
         native_dir = ROOT / "target/release-artifacts"
-        if native_dir.is_dir():
-            for artifact in native_dir.iterdir():
-                if artifact.suffix in {".deb", ".rpm", ".gz"} and artifact.is_file():
-                    try:
-                        payload = artifact.read_bytes()
-                    except OSError as error:
-                        findings.append(f"{artifact.name} could not be scanned: {error}")
-                        continue
-                    for marker in (b"pp_agent_", b"pp_enroll_", b"PRIVATE KEY", b".mmdb", b"GeoLite"):
+        native_artifacts = [
+            path for path in native_dir.iterdir()
+            if path.is_file() and path.suffix in {".deb", ".rpm", ".gz"}
+        ] if native_dir.is_dir() else []
+        server_archives = list((ROOT / "target").glob("platpulse-server-*.tar.gz"))
+        for artifact in native_artifacts + server_archives:
+            relative = display_path(artifact)
+            try:
+                if artifact.name.endswith(".tar.gz"):
+                    with tarfile.open(artifact, "r:gz") as bundle:
+                        for member in bundle.getmembers():
+                            member_name = member.name.lower()
+                            if Path(member_name).suffix in FORBIDDEN_SUFFIXES or any(marker in member_name for marker in FORBIDDEN_PATH_MARKERS):
+                                findings.append(f"{relative}:{member.name} is a forbidden secret/GeoLite member")
+                            if member.isfile() and member.size < 4 * 1024 * 1024:
+                                stream = bundle.extractfile(member)
+                                payload = stream.read() if stream is not None else b""
+                                for marker in forbidden_bytes:
+                                    if marker in payload:
+                                        findings.append(f"{relative}:{member.name} contains forbidden marker {marker.decode(errors='replace')}")
+                else:
+                    payload = artifact.read_bytes()
+                    for marker in forbidden_bytes:
                         if marker in payload:
-                            findings.append(f"{artifact.name} contains forbidden marker {marker.decode(errors='replace')}")
+                            findings.append(f"{relative} contains forbidden marker {marker.decode(errors='replace')}")
+            except (OSError, tarfile.TarError) as error:
+                findings.append(f"{relative} could not be scanned: {error}")
 
         try:
             research = ROOT / "docs/research/geolite2-country-acquisition.md"
