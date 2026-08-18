@@ -1,0 +1,20 @@
+name = "ci"
+[workload]
+agents = 3
+nodes_per_agent = 2
+report_iterations = 6
+report_workers = 3
+rest_workers = 2
+sse_subscribers = 2
+warmup_seconds = 2
+observation_seconds = 12
+fault_window_seconds = 2
+request_timeout_seconds = 4
+[thresholds]
+max_rss_growth_bytes = 67108864
+max_fd_growth = 24
+max_task_growth = 24
+max_wal_growth_bytes = 33554432
+max_realtime_growth = 2
+max_error_rate = 0.10
+p95_latency_ms = 2000

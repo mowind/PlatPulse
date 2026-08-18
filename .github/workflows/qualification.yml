@@ -1,0 +1,40 @@
+name: Release qualification
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        required: true
+        default: ci
+        type: choice
+        options: [ci, soak]
+  schedule:
+    - cron: '17 3 * * 1'
+permissions:
+  contents: read
+jobs:
+  qualify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: platpulse-web/package-lock.json
+      - run: npm ci
+        working-directory: platpulse-web
+      - run: scripts/test-release-qualification.sh
+      - name: Run packaged qualification
+        env:
+          QUALIFICATION_PROFILE: ${{ github.event_name == 'schedule' && 'soak' || inputs.profile }}
+        run: scripts/release-qualification.sh --profile "release/qualification/${QUALIFICATION_PROFILE}.toml"
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-qualification-${{ github.run_id }}
+          path: target/release-qualification/
+          if-no-files-found: warn
+          retention-days: 30
