@@ -353,15 +353,19 @@ def login(client: Client, username: str, password: str) -> tuple[str, str]:
     return cookie, payload.get("csrfToken", "")
 
 
-def enroll(server: Path, config: Path, client: Client) -> dict:
-    script = r'''set -euo pipefail
-        token="$($1 agent create-enrollment-token --config "$2" | tail -n 1)"
-        exec curl -sS --connect-timeout 2 --max-time "$4" \
-          -H "Authorization: Bearer $token" -X POST "$3" -w '\n%{http_code}'
-    '''
+def create_enrollment_token(server: Path, config: Path) -> str:
+    output = command([str(server), "agent", "create-enrollment-token", "--config", str(config)])
+    tokens = [line.strip() for line in output.stdout.splitlines() if line.strip().startswith("pp_enroll_")]
+    if not tokens:
+        raise QualificationError("Enrollment token command did not return a token")
+    return tokens[-1]
+
+
+def enroll_token(token: str, client: Client) -> dict:
     curl = subprocess.run([
-        "bash", "-c", script, "qualification-enroll", str(server), str(config),
-        f"http://127.0.0.1:{client.port}/api/agent/v1/enroll", str(client.timeout),
+        "curl", "-sS", "--connect-timeout", "2", "--max-time", str(client.timeout),
+        "-H", f"Authorization: Bearer {token}", "-X", "POST",
+        f"http://127.0.0.1:{client.port}/api/agent/v1/enroll", "-w", "\n%{http_code}",
     ], capture_output=True, text=True, check=False)
     if curl.returncode != 0:
         raise QualificationError("Agent Enrollment transport failed")
@@ -494,7 +498,16 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
         viewer_cookie, _ = login(client, "qualification-viewer", viewer_password)
         identities = []
         for agent_index in range(workload["agents"]):
-            identity = enroll(server, config, client)
+            if agent_index > 0:
+                server_process.stop()
+                token = create_enrollment_token(server, config)
+                server_process.start()
+                client = Client(port, workload["request_timeout_seconds"])
+                owner_cookie, _ = login(client, "qualification-owner", owner_password)
+                viewer_cookie, _ = login(client, "qualification-viewer", viewer_password)
+            else:
+                token = create_enrollment_token(server, config)
+            identity = enroll_token(token, client)
             identity["node_ids"] = [str(uuid.uuid4()) for _ in range(workload["nodes_per_agent"])]
             identity["inventory_revision"] = 7
             identity["index"] = agent_index
