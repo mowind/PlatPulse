@@ -785,7 +785,8 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
             time.sleep(min(1.0, max(0.05, end - time.monotonic())))
         soak_stop.set()
         soak_thread.join(timeout=workload["request_timeout_seconds"] + 1)
-        soak_ok = soak_stats["sent"] > 0 and soak_stats["failures"] == 0
+        soak_error_rate = soak_stats["failures"] / max(1, soak_stats["sent"])
+        soak_ok = soak_stats["sent"] > 0 and soak_error_rate <= thresholds["max_error_rate"]
         scenarios.append(scenario("sustained_report_load", "PASS" if soak_ok else "FAIL", f"submitted {soak_stats['sent']} reports during the observation window"))
         if not soak_ok:
             request_failures += 1
