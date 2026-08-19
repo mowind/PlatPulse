@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router'
+import { Link, useParams, useSearchParams } from 'react-router'
 import {
   fetchNetwork,
   fetchNode,
@@ -16,6 +16,7 @@ import type {
   PublicValidatorHistoryResponse,
 } from '../api/generated'
 import { useHomeRealtimeContext } from '../layouts/HomeLayout'
+import HomeNodeDetailPrototype from '../components/HomeNodeDetailPrototype'
 import { PeerInsight } from '../components/PeerInsight'
 import { PeerHistoryInsight, normalizePublicPeerHistory } from '../components/PeerHistoryInsight'
 import { GeoInsight } from '../components/GeoInsight'
@@ -81,6 +82,7 @@ export function NetworkPage() {
 
 export function NodePage() {
   const { nodeId = '' } = useParams()
+  const [searchParams] = useSearchParams()
   const { reloadKey, resetting } = useHomeRealtimeContext()
   const [node, setNode] = useState<PublicNode | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -140,6 +142,7 @@ export function NodePage() {
     return () => controller.abort()
   }, [node?.validator?.validatorId, reloadKey, resetting])
 
+  if (import.meta.env.DEV && searchParams.get('variant') && node) return <HomeNodeDetailPrototype node={node} history={history} />
   if (resetting) return <section className="page"><p role="status">Revalidating Node access…</p></section>
   if (error) return <section className="page"><p role="alert" className="form-error">{error}</p><Link to="/">Back to Home</Link></section>
   if (!node) return <section className="page"><p role="status">Loading Node…</p></section>
