@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 import {
   fetchNetwork,
@@ -90,13 +90,18 @@ export function NodePage() {
   const [peerHistory, setPeerHistory] = useState<Awaited<ReturnType<typeof fetchNodePeerHistory>> | null>(null)
   const [peerHistoryError, setPeerHistoryError] = useState(false)
   const [validatorAnalytics, setValidatorAnalytics] = useState<PublicValidatorAnalyticsResponse | null>(null)
+  const previousNodeId = useRef<string | null>(null)
 
   useEffect(() => {
     const controller = new AbortController()
-    setNode(null)
-    setHistory([])
-    setPeerHistory(null)
-    setPeerHistoryError(false)
+    const nodeChanged = previousNodeId.current !== nodeId
+    previousNodeId.current = nodeId
+    if (nodeChanged || resetting) {
+      setNode(null)
+      setHistory([])
+      setPeerHistory(null)
+      setPeerHistoryError(false)
+    }
     setError(null)
     if (resetting) return () => controller.abort()
 

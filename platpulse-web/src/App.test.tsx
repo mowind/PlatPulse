@@ -246,6 +246,94 @@ describe('App shell with private Home', () => {
     expect(screen.getByText('healthy')).toBeTruthy()
   })
 
+  it('keeps Node Detail mounted during an SSE invalidation refetch', async () => {
+    let nodeCalls = 0
+    let resolveSecondNode: (value: Response) => void = (value: Response) => {
+      void value
+      throw new Error('second Node response was not requested')
+    }
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/public/v1/access': () => jsonResponse({ guestEnabled: false }, 200),
+      '/api/public/v1/networks': () => jsonResponse([], 200),
+      '/api/public/v1/nodes/node-1': () => {
+        nodeCalls += 1
+        if (nodeCalls === 2) {
+          return new Promise<Response>((resolve) => {
+            resolveSecondNode = resolve
+          })
+        }
+        return jsonResponse({
+          nodeId: 'node-1',
+          displayName: 'Validator A',
+          networkKey: 'mainnet',
+          health: 'healthy',
+          healthReason: 'rpc reachable',
+          freshness: '2026-08-12T00:00:00Z',
+          rpcState: 'ok',
+          syncState: 'synced',
+          consensusState: 'current',
+          processState: 'running',
+          currentHead: 123,
+          networkReferenceHead: 123,
+          networkReferenceConfidence: 'high',
+          historicalHighWatermark: 120,
+          resyncState: 'idle',
+          resyncProgress: null,
+          hostCpuPercent: 42.5,
+          peers: { peerCount: 5, freshness: 'fresh', state: 'fresh' },
+        }, 200)
+      },
+      '/api/public/v1/nodes/node-1/*': () => jsonResponse([], 200),
+    })
+    vi.stubGlobal('EventSource', FakeEventSource)
+    window.history.replaceState({}, '', '/nodes/node-1?variant=A')
+
+    render(<App />)
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+    expect(await screen.findByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
+    await waitFor(() => expect(nodeCalls).toBe(1))
+
+    await act(async () => {
+      FakeEventSource.latest?.emit(
+        'invalidation',
+        JSON.stringify({ version: 1, eventId: 2, resource: 'node', revision: 2 }),
+      )
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect(nodeCalls).toBe(2))
+    expect(screen.queryByText('Loading Node…')).toBeNull()
+    resolveSecondNode(
+      jsonResponse({
+        nodeId: 'node-1',
+        displayName: 'Validator A',
+        networkKey: 'mainnet',
+        health: 'healthy',
+        healthReason: 'rpc reachable',
+        freshness: '2026-08-12T00:00:00Z',
+        rpcState: 'ok',
+        syncState: 'synced',
+        consensusState: 'current',
+        processState: 'running',
+        currentHead: 123,
+        networkReferenceHead: 123,
+        networkReferenceConfidence: 'high',
+        historicalHighWatermark: 120,
+        resyncState: 'idle',
+        resyncProgress: null,
+        hostCpuPercent: 42.5,
+        peers: { peerCount: 5, freshness: 'fresh', state: 'fresh' },
+      },
+      200,
+    ),
+    )
+    expect(await screen.findByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
+  })
+
   it('submits the Owner visibility mutation from Admin', async () => {
     const fetchMock = mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
