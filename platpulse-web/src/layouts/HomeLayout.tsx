@@ -27,6 +27,7 @@ export default function HomeLayout() {
   const { status, recheckSession } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
+  const shellClass = location.pathname === '/' ? ' home-shell' : location.pathname.startsWith('/nodes/') ? ' node-shell' : ''
   const [networks, setNetworks] = useState<PublicNetwork[]>([])
   const [error, setError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
@@ -91,7 +92,7 @@ export default function HomeLayout() {
   }, handleReset)
 
   return (
-    <div className={'app-shell' + (location.pathname === '/' ? ' home-shell' : '')}>
+    <div className={'app-shell' + shellClass}>
       <header className="app-header">
         <Link to="/" className="app-brand">PlatPulse</Link>
         <Link to="/admin" className="header-icon-button" aria-label="Open Admin login" title="Open Admin login">
