@@ -1,4 +1,4 @@
-import { Link, NavLink, Outlet, useNavigate, useOutletContext } from 'react-router'
+import { Link, NavLink, Outlet, useLocation, useNavigate, useOutletContext } from 'react-router'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import SignOutButton from '../components/SignOutButton'
 import { useAuth } from '../auth/AuthContext'
@@ -8,9 +8,7 @@ import {
   usePublicRealtime,
 } from '../api/public'
 import type { PublicNetwork } from '../api/generated'
-import { ServerStatusNotice } from '../components/ServerStatusNotice'
-import { PeerInsight } from '../components/PeerInsight'
-import { GeoInsight } from '../components/GeoInsight'
+import HomeDashboard from '../components/HomeDashboard'
 
 /**
  * Home shell: reads only the Public Projection. Anonymous Guests may use
@@ -29,6 +27,7 @@ export function useHomeRealtimeContext(): HomeRealtimeContext {
 export default function HomeLayout() {
   const { status, recheckSession } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
   const isAuthenticated = status.state === 'authenticated'
   const isOwner = status.state === 'authenticated' && status.session.role === 'owner'
   const [networks, setNetworks] = useState<PublicNetwork[]>([])
@@ -95,7 +94,7 @@ export default function HomeLayout() {
   }, handleReset)
 
   return (
-    <div className="app-shell">
+    <div className={'app-shell' + (location.pathname === '/' ? ' home-shell' : '')}>
       <header className="app-header">
         <Link to="/" className="app-brand">PlatPulse</Link>
         <nav className="app-nav" aria-label="Primary">
@@ -105,30 +104,7 @@ export default function HomeLayout() {
         {isAuthenticated && <SignOutButton />}
       </header>
       <main className="app-main">
-        <section className="page home-page">
-          <ServerStatusNotice />
-          <h1>Home</h1>
-          <h2>Network overview</h2>
-          <p>Published Nodes grouped by Network. Private and retired Nodes are not listed.</p>
-          <p className="realtime-notice" role="status" data-live={realtimeStatus === 'connected'}>
-            {realtimeStatus === 'connected'
-              ? 'Connected'
-              : realtimeStatus === 'connecting'
-                ? 'Starting'
-                : 'Live updates paused'}
-          </p>
-          {error && <p role="status" className="form-error">{error}</p>}
-          {networks.length === 0 && !error && <p role="status">No published Nodes yet.</p>}
-          <div className="network-grid">
-            {networks.map((network) => <section className="network-card" key={network.networkKey}>
-              <h2><Link to={`/networks/${network.networkKey}`}>{network.displayName}</Link></h2>
-              <p className="muted">{network.networkKey}</p>
-              <PeerInsight insight={network.peers} compact />
-              <GeoInsight insight={network.geo} />
-              <ul className="node-list">{network.nodes.map((node) => <li key={node.nodeId}><Link to={`/nodes/${node.nodeId}`}>{node.displayName ?? node.nodeId}</Link><span className={`status status-${node.health}`}>{node.health}</span></li>)}</ul>
-            </section>)}
-          </div>
-        </section>
+        {location.pathname === '/' && <HomeDashboard networks={networks} realtimeStatus={realtimeStatus} error={error} />}
         <Outlet context={{ reloadKey, resetting }} />
       </main>
     </div>
