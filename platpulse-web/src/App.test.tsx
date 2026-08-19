@@ -111,6 +111,8 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  window.history.replaceState({}, '', '/')
+  window.dispatchEvent(new PopStateEvent('popstate'))
   vi.unstubAllGlobals()
   // The Admin QueryClient lives at module scope (like the router); drop its
   // values between tests so no cached REST data crosses test boundaries.
@@ -132,7 +134,9 @@ describe('App shell with private Home', () => {
 
     render(<App />)
     expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeTruthy()
-    expect(screen.getByRole('link', { name: 'Admin' })).toBeTruthy()
+    expect(screen.getByRole('link', { name: 'Open Admin login' })).toBeTruthy()
+    expect(screen.queryByRole('link', { name: 'Admin' })).toBeNull()
+    expect(screen.queryByRole('link', { name: 'Home' })).toBeNull()
   })
 
   it('signs in and returns to Home', async () => {
@@ -144,7 +148,7 @@ describe('App shell with private Home', () => {
     render(<App />)
     await screen.findByRole('heading', { level: 1, name: 'Sign in to PlatPulse' })
     await signIn()
-    expect(screen.getByRole('button', { name: 'Sign out' })).toBeTruthy()
+    expect(screen.getByRole('link', { name: 'Open Admin login' })).toBeTruthy()
   })
 
   it('shows the invalid-credentials error without navigating', async () => {
@@ -172,6 +176,7 @@ describe('App shell with private Home', () => {
 
     render(<App />)
     await screen.findByRole('heading', { level: 1, name: 'Home' })
+    await goToAdmin()
     fireEvent.click(screen.getByRole('button', { name: 'Sign out' }))
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Sign in to PlatPulse' }),
@@ -197,10 +202,11 @@ describe('App shell with private Home', () => {
 
     render(<App />)
     await screen.findByRole('heading', { level: 1, name: 'Home' })
+    await goToAdmin()
     fireEvent.click(screen.getByRole('button', { name: 'Sign out' }))
-    const alert = await screen.findByRole('alert')
-    expect(alert.textContent).toContain('Could not sign out. Try again.')
-    expect(screen.getByRole('heading', { level: 1, name: 'Home' })).toBeTruthy()
+    const alert = await screen.findByText('Could not sign out. Try again.', { exact: true })
+    expect(alert).toBeTruthy()
+    expect(screen.getByRole('heading', { level: 1, name: 'Overview' })).toBeTruthy()
   })
 
   it('allows a Viewer into Home, hides Admin, and refuses the Admin shell', async () => {
@@ -208,11 +214,10 @@ describe('App shell with private Home', () => {
 
     render(<App />)
     await screen.findByRole('heading', { level: 1, name: 'Home' })
-    // Viewers are not offered an Admin entry point; the Server remains the
-    // enforcement boundary for anyone who navigates there anyway.
-    expect(screen.queryByRole('link', { name: 'Admin' })).toBeNull()
-    window.history.pushState({}, '', '/admin')
-    window.dispatchEvent(new PopStateEvent('popstate'))
+    // The Admin entry point is available as an icon; the Server remains the
+    // enforcement boundary for viewers who navigate there.
+    expect(screen.getByRole('link', { name: 'Open Admin login' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('link', { name: 'Open Admin login' }))
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Owner access required' }),
     ).toBeTruthy()
@@ -238,8 +243,8 @@ describe('App shell with private Home', () => {
     })
 
     render(<App />)
-    const homeLink = await screen.findByRole('link', { name: 'Home' })
-    fireEvent.click(homeLink)
+    const homeLogo = await screen.findByRole('link', { name: 'PlatPulse' })
+    fireEvent.click(homeLogo)
     expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeTruthy()
     expect(await screen.findByRole('link', { name: 'Mainnet' })).toBeTruthy()
     expect(screen.getByRole('link', { name: 'Validator A' })).toBeTruthy()
@@ -339,11 +344,9 @@ describe('App shell with private Home', () => {
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       '/api/admin/v1/nodes/node-1/visibility': () => jsonResponse({ nodeId: 'node-1', visibility: 'public' }, 200),
     })
-    window.history.replaceState({}, '', '/admin')
-
     render(<App />)
-    const adminLink = await screen.findByRole('link', { name: 'Admin' })
-    fireEvent.click(adminLink)
+    await screen.findByRole('heading', { level: 1, name: 'Home' })
+    fireEvent.click(screen.getByRole('link', { name: 'Open Admin login' }))
     await screen.findByRole('heading', { level: 1, name: 'Overview' })
     fireEvent.change(screen.getByLabelText('Node ID'), { target: { value: 'node-1' } })
     fireEvent.click(screen.getByRole('button', { name: 'Update visibility' }))

@@ -1859,6 +1859,9 @@ button {
 .home-shell .app-brand::before { color: #171522; background: #f0d7ff; }
 .home-shell .app-nav a:hover, .home-shell .app-nav a[aria-current='page'] { color: #fff; background: rgba(255, 255, 255, .12); }
 .home-shell .sign-out { color: #f7f6fb; background: rgba(0, 0, 0, .36); border-color: rgba(255, 255, 255, .12); }
+.home-shell .header-icon-button { display: grid; width: 3rem; height: 3rem; place-items: center; color: #fff; background: rgba(0, 0, 0, .42); border: 1px solid rgba(255, 255, 255, .13); border-radius: 50%; transition: background .2s ease, transform .2s ease; }
+.home-shell .header-icon-button:hover, .home-shell .header-icon-button:focus-visible { color: #fff; background: rgba(255, 255, 255, .16); transform: translateY(-1px); }
+.home-shell .header-icon-button svg { width: 1.25rem; height: 1.25rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.6; }
 .home-shell .app-main { padding: 2.1rem clamp(1rem, 3vw, 3rem) 4rem; background: transparent; }
 .home-dashboard { max-width: 118rem; }
 .dashboard-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 1rem; margin: 2.5rem 0 3rem; }

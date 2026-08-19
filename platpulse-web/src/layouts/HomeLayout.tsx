@@ -1,6 +1,5 @@
-import { Link, NavLink, Outlet, useLocation, useNavigate, useOutletContext } from 'react-router'
+import { Link, Outlet, useLocation, useNavigate, useOutletContext } from 'react-router'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import SignOutButton from '../components/SignOutButton'
 import { useAuth } from '../auth/AuthContext'
 import {
   fetchNetworks,
@@ -28,8 +27,6 @@ export default function HomeLayout() {
   const { status, recheckSession } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
-  const isAuthenticated = status.state === 'authenticated'
-  const isOwner = status.state === 'authenticated' && status.session.role === 'owner'
   const [networks, setNetworks] = useState<PublicNetwork[]>([])
   const [error, setError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
@@ -97,11 +94,12 @@ export default function HomeLayout() {
     <div className={'app-shell' + (location.pathname === '/' ? ' home-shell' : '')}>
       <header className="app-header">
         <Link to="/" className="app-brand">PlatPulse</Link>
-        <nav className="app-nav" aria-label="Primary">
-          <NavLink to="/" end>Home</NavLink>
-          {isOwner && <NavLink to="/admin">Admin</NavLink>}
-        </nav>
-        {isAuthenticated && <SignOutButton />}
+        <Link to="/admin" className="header-icon-button" aria-label="Open Admin login" title="Open Admin login">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5z" />
+            <path d="M8 8h8M8 12h5M8 16h3" />
+          </svg>
+        </Link>
       </header>
       <main className="app-main">
         {location.pathname === '/' && <HomeDashboard networks={networks} realtimeStatus={realtimeStatus} error={error} />}
