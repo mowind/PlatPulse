@@ -150,6 +150,8 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
     await page.keyboard.press('Tab')
     await expect(page.getByRole('link', { name: 'Networks' })).toBeFocused()
     await page.keyboard.press('Tab')
+    await expect(page.getByRole('link', { name: 'Validators' })).toBeFocused()
+    await page.keyboard.press('Tab')
     await expect(page.getByRole('link', { name: 'Alert Rules' })).toBeFocused()
     await page.keyboard.press('Tab')
     await expect(page.getByRole('link', { name: 'Incidents' })).toBeFocused()

@@ -637,7 +637,7 @@ async fn public_validator_insights(
 ) -> Result<Vec<PublicValidatorInsight>, sqlx::Error> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     let rows = sqlx::query_as::<_, PublicValidatorRow>(
-        "SELECT v.validator_id, v.validator_node_id, v.display_name, (SELECT n2.node_id FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.visibility = 'public' AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1), (SELECT l2.role FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.visibility = 'public' AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1), i.source, i.outcome, i.provider_timestamp, i.last_good_received_at, i.rank, i.stake_amount, i.reward_amount, i.reward_rate, i.delegator_count, i.epoch, i.block_count, i.counter_state FROM validators v LEFT JOIN current_validator_insights i ON i.validator_id = v.validator_id WHERE v.network_key = ? AND EXISTS (SELECT 1 FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = v.validator_id AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.visibility = 'public' AND n.lifecycle = 'active') ORDER BY v.validator_node_id, v.validator_id",
+        "SELECT v.validator_id, v.validator_node_id, v.display_name, (SELECT n2.node_id FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.visibility = 'public' AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1) AS node_id, (SELECT l2.role FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.visibility = 'public' AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1) AS link_role, i.source, i.outcome, i.provider_timestamp, i.last_good_received_at, i.rank, i.stake_amount, i.reward_amount, i.reward_rate, i.delegator_count, i.epoch, i.block_count, i.counter_state FROM validators v LEFT JOIN current_validator_insights i ON i.validator_id = v.validator_id WHERE v.network_key = ? AND EXISTS (SELECT 1 FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = v.validator_id AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.visibility = 'public' AND n.lifecycle = 'active') ORDER BY v.validator_node_id, v.validator_id",
     )
     .bind(&now)
     .bind(&now)
@@ -2391,6 +2391,15 @@ mod tests {
         seed_public_data(&state).await;
         seed_public_analytics_row(&state, "validator-public", "node-public").await;
         seed_public_analytics_row(&state, "validator-private", "node-private").await;
+
+        // The network projection consumes the same validator row shape; this
+        // guards the aliased subqueries used by its sqlx::FromRow mapping.
+        let network = public_networks(State(state.clone())).await;
+        assert_eq!(network.status(), StatusCode::OK);
+        let network_body = to_bytes(network.into_body(), usize::MAX).await.unwrap();
+        let network_value: serde_json::Value = serde_json::from_slice(&network_body).unwrap();
+        assert_eq!(network_value[0]["validators"][0]["nodeId"], "node-public");
+        assert_eq!(network_value[0]["validators"][0]["linkRole"], "primary");
 
         let response = public_validator_analytics(
             State(state.clone()),
