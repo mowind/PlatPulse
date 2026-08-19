@@ -1,56 +1,53 @@
 # PlatPulse WebUI Design and Implementation Handoff
 
-**Status:** Accepted design contract; production implementation follows this document.
+**Status:** Accepted MVP design contract; production implementation follows this document.
 
-**Scope:** PlatPulse Home Dashboard and Admin Dashboard before Phase 2 implementation.
+**Scope:** PlatPulse Home Dashboard and Admin Dashboard for the MVP surface described in `docs/design/platpulse.md`.
 
 **Primary sources:**
 
 - `CONTEXT.md` for domain vocabulary;
 - `docs/design/platpulse.md` for Server, Agent, API, security, and deployment boundaries;
-- generated OpenAPI artifacts for DTOs, operations, error envelopes, and client behavior;
-- resolved Wayfinder issues #34–#40 for user-confirmed decisions;
-- prototype reference branch `prototype/phase2-operations-loop`, commit `58d6f9c`, for visual/state review only.
+- generated OpenAPI artifacts for DTOs, operations, error envelopes, and client behavior.
 
-This document is the WebUI UX and interaction authority. It does not replace OpenAPI, does not define Server policy, and does not turn the throwaway prototype into production code.
+This document is the WebUI UX and interaction authority for the MVP. It does not replace OpenAPI and does not define Server policy. Deferred surfaces (Validator, Geo, Alerts, Notifications, Retention, Backup/Restore, Doctor, Node Transfer, Agent Recovery/Rotation) have no MVP page contracts; earlier drafts that covered them are superseded. Code comments referencing older section numbers of this document will be reconciled during the implementation-migration pass.
 
 ## 1. Purpose and non-goals
 
-PlatPulse WebUI presents operational truth from the Server and gives authorized Owners safe, auditable workflows. It is a monitoring and administration surface, not a remote-control terminal.
+PlatPulse WebUI presents operational truth from the Server and gives the Owner safe, audited configuration. Home is the read-only, Node-first monitoring surface — readable by everyone when Site Access Mode is Public and login-required when Private; Admin is the authenticated overview and configuration surface. It is a monitoring and administration surface, not a remote-control terminal.
 
 ### 1.1 In scope
 
-- Home Dashboard: read-only Public Projections for Networks and PlatON Nodes;
-- Admin Dashboard: Owner-first operations workbench;
+- Home Dashboard: read-only Public Projections, Network → Node → Node Detail, including recent Server-side Block History;
+- Admin Dashboard: Agent/Node/Network configuration, global history window, Site Access Mode, Sessions, and Audit;
 - responsive behavior at 360×800, 390×844, 768×1024, and 1280×800;
-- Peer summaries, bounded Peer history, and privacy-preserving Geo aggregates;
-- independent collection, freshness, value, authorization, and operation states;
+- current Peer Count display (Peer Snapshots and Peer Presence Intervals are deferred);
+- independent collection, freshness, value, and authorization states;
 - REST-authoritative data loading and SSE invalidation;
-- identity, lifecycle, access, alert, maintenance, retention, backup/restore, and Doctor workflows;
 - accessible forms, tables/cards, confirmations, errors, conflicts, audit links, and session transitions;
 - deterministic Playwright-oriented acceptance scenarios.
 
 ### 1.2 Out of scope
 
-- Agent, Server, SQLite, alert evaluator, notification provider, backup, or Doctor implementation;
-- endpoint editing, endpoint failover, remote commands, restart, upgrade, Docker control, or terminal access;
-- TUI, arbitrary scripts, SQL/DSL alert rules, network actions, or remote-control UI;
-- Validator, multi-tenant, HA, PostgreSQL, SSO/OIDC/TOTP/WebAuthn unless represented as an explicit Later/Unsupported state;
+- Agent, Server, SQLite, or evaluation implementation;
+- a duplicated full Node Detail inside Admin;
+- RPC Endpoint editing, RPC Endpoint failover, remote commands, restart, upgrade, Docker control, or terminal access;
+- TUI, arbitrary scripts, SQL/DSL alert rules, or remote-control UI;
+- Validator, Geo, Alerts/Incidents/Silences/Maintenance, Notifications, Retention, Backup/Restore, Doctor, Node Transfer, Recovery/Rotation, multi-tenant, HA, PostgreSQL, SSO/OIDC/TOTP/WebAuthn;
 - runtime theme/script injection or a second frontend framework.
 
 ## 2. Authorities and vocabulary
 
-Use the exact domain terms in `CONTEXT.md`: Host, Agent, PlatON Node, Network, Alert Rule, Alert Incident, Notification Event, Notification Delivery, Silence, Maintenance Window, Owner, Viewer, and Guest.
+Use the exact domain terms in `CONTEXT.md`. MVP-relevant terms include: Host, Agent, PlatON Node, Node ID, RPC Endpoint, Network, Network Identity, Network Registry, Node Inventory, Active Node, Retired Node, Component Observation, Agent Report, Report Receipt, Current Projection, Block Summary, Peer Count Observation, Host Observation, Node Process Observation, Node Chain Observation, Node Observation, Node Health Summary, Public Projection, Site Access Mode, Invalidation Event, Home Dashboard, Admin Dashboard, Audit Event, and Owner.
 
 The WebUI must not invent synonyms that blur boundaries. In particular:
 
 - Home is not “public admin”;
 - Node Health Summary is not a WebUI-computed health color;
-- Silence is not disabling a Rule or resolving an Incident;
-- Maintenance Window is not a Health override;
-- Notification Delivery is not an exactly-once message;
-- Agent Offline is not Node Retired;
-- an Agent-level page must not merge independent Node chain observations.
+- an Agent that stops reporting does not retire its Nodes;
+- an Agent-level page must not merge independent Node chain observations;
+- a successful Peer Count Observation of zero is authoritative, not Unknown;
+- recent Block History is bounded by the Server window and is best-effort: missing blocks are simply absent, never synthesized as zeroes or filled with gap fabrications.
 
 ### 2.1 Fixed status vocabulary
 
@@ -84,21 +81,22 @@ Home
 │   └── Node list/cards
 └── Node Detail
     ├── Health and freshness
-    ├── Block and transactions
-    ├── Sync and consensus
+    ├── Current head, sync, consensus
+    ├── Recent Block History (Server window)
     ├── Process summary
     ├── Sanitized Host percentages
-    ├── Peer summaries
-    └── Validator summary
+    └── Peer Count
 ```
 
 Home is organized Network → PlatON Node, never Agent → Node. Agent and Host topology belongs to Admin.
 
-For private, retired, deleted, forbidden, or unknown Nodes, Public routes use non-leaking unavailable semantics such as “This Node is no longer available.” Admin routes may distinguish forbidden from not-found.
+When Site Access Mode is Public, everyone can read Home without logging in; when Private, Home routes require Owner login. Every Active Node appears on Home; there is no per-Node visibility control.
+
+For retired, deleted, forbidden, or unknown Nodes, Public routes use non-leaking unavailable semantics such as “This Node is no longer available.” Admin routes may distinguish forbidden from not-found.
 
 ### 3.2 Admin Dashboard
 
-Admin is authenticated and Owner-authorized for management actions. Viewer may use authorized read-only surfaces where explicitly permitted, but cannot mutate users or security state. Guest never accesses Admin.
+Admin is authenticated and Owner-authorized for management actions. Owner is the only human principal; there are no Viewer or Guest roles.
 
 Admin groups:
 
@@ -106,9 +104,10 @@ Admin groups:
 2. Agents;
 3. Nodes;
 4. Networks;
-5. Alerts and Operations;
-6. Access, Sessions, and Audit;
-7. Data and Maintenance.
+5. History Window;
+6. Site Access, Sessions, and Audit.
+
+Admin covers configuration and diagnostics; it must not duplicate Home's full Node Detail. The Admin Node page shows Server-owned administrative fields (display name, redacted RPC Endpoint diagnostics, Node Inventory/lifecycle, freshness summary) instead of the full Home observation cards.
 
 Every Admin render begins with `Checking access…` when authorization is unresolved. It never flashes data from a previous session.
 
@@ -122,7 +121,7 @@ Authorization changes create a new access generation:
 4. discard responses from older generations;
 5. reload authoritative REST state under the new authorization.
 
-Session revoke, expiry, role change, Guest disable, and Public-to-private transitions all use this sequence. Tokens and business DTOs are never transferred between tabs; tabs synchronize only an access-generation signal.
+Session revoke, expiry, and Site Access Mode changes (Public ↔ Private) all use this sequence. Tokens and business DTOs are never transferred between tabs; tabs synchronize only an access-generation signal.
 
 ## 4. Route and page inventory
 
@@ -132,71 +131,36 @@ Each page has a stable ID. IDs are semantic and do not prescribe React filenames
 
 | Page ID | Route | Purpose | Actors |
 |---|---|---|---|
-| `PAGE-HOME-NETWORKS` | `/` | Network list and public availability | Guest, Viewer, Owner |
-| `PAGE-HOME-NETWORK` | `/networks/:networkKey` | Network overview and Node list/cards | Guest, Viewer, Owner |
-| `PAGE-HOME-NODE` | `/nodes/:nodeId` | Public Node detail and independent observation dimensions | Guest, Viewer, Owner |
-| `PAGE-HOME-UNAVAILABLE` | public fallback route/state | Non-leaking private/retired/deleted/unknown response | Guest, Viewer, Owner |
+| `PAGE-HOME-NETWORKS` | `/` | Network list and public availability | Everyone (Public mode); Owner (Private mode) |
+| `PAGE-HOME-NETWORK` | `/networks/:networkKey` | Network overview and Node list/cards | Everyone (Public mode); Owner (Private mode) |
+| `PAGE-HOME-NODE` | `/nodes/:nodeId` | Public Node detail and independent observation dimensions | Everyone (Public mode); Owner (Private mode) |
+| `PAGE-HOME-UNAVAILABLE` | public fallback route/state | Non-leaking retired/deleted/unknown response | Everyone (Public mode); Owner (Private mode) |
 
 ### 4.2 Authentication and access pages
 
 | Page ID | Route | Purpose | Actors |
 |---|---|---|---|
-| `PAGE-AUTH-LOGIN` | `/login` | Human login with safe `returnTo` | Guest |
+| `PAGE-AUTH-LOGIN` | `/login` | Human login with safe `returnTo` | Owner |
 | `PAGE-ACCESS-SESSIONS` | `/admin/access/sessions` | Coarse session review and revoke | Owner |
-| `PAGE-ACCESS-PEOPLE` | `/admin/access/people` | People and role management | Owner |
-| `PAGE-ACCESS-AUDIT` | `/admin/access/audit` | Immutable redacted Audit review | Owner, permitted Viewer read |
-| `PAGE-AUTH-REVOKED` | `/session-revoked` or route-preserving state | Explain access generation transition | authenticated/expired |
-| `PAGE-AUTH-FORBIDDEN` | protected route state | Explain insufficient role without leaking data | authenticated |
+| `PAGE-ACCESS-AUDIT` | `/admin/access/audit` | Immutable redacted Audit review | Owner |
+| `PAGE-AUTH-REVOKED` | `/session-revoked` or route-preserving state | Explain access generation transition | Owner/expired |
+| `PAGE-AUTH-FORBIDDEN` | protected route state | Explain insufficient access without leaking data | Owner |
 
-### 4.3 Agent and Node pages
+### 4.3 Admin pages
 
 | Page ID | Route | Purpose | Actors |
 |---|---|---|---|
 | `PAGE-ADMIN-OVERVIEW` | `/admin` | Owner attention queue and operational overview | Owner |
-| `PAGE-ADMIN-AGENTS` | `/admin/agents` | Agent inventory, liveness, boot/report/spool diagnostics | Owner |
-| `PAGE-ADMIN-AGENT-DETAIL` | `/admin/agents/:agentId` | Identity, credentials, liveness, inventory, diagnostics, audit | Owner |
-| `PAGE-ADMIN-ENROLL` | `/admin/agents/enroll` | One-time enrollment workflow | Owner |
-| `PAGE-ADMIN-AGENT-RECOVER` | `/admin/agents/:agentId/recover` | One-time recovery and epoch advancement | Owner |
-| `PAGE-ADMIN-AGENT-ROTATE` | `/admin/agents/:agentId/rotate` | Credential rotation and overlap/revocation | Owner |
-| `PAGE-ADMIN-NODES` | `/admin/nodes` | Node list, visibility, health summary, freshness | Owner |
-| `PAGE-ADMIN-NODE-DETAIL` | `/admin/nodes/:nodeId` | Server-owned Node detail and diagnostics | Owner |
-| `PAGE-ADMIN-NODE-TRANSFER` | `/admin/nodes/:nodeId/transfer` | Two-phase transfer workflow | Owner |
-| `PAGE-ADMIN-NODE-VISIBILITY` | `/admin/nodes/:nodeId/visibility` | Public/private publication workflow | Owner |
+| `PAGE-ADMIN-AGENTS` | `/admin/agents` | Agent inventory, liveness, spool diagnostics | Owner |
+| `PAGE-ADMIN-AGENT-DETAIL` | `/admin/agents/:agentId` | Identity, credential status, liveness, inventory, diagnostics | Owner |
+| `PAGE-ADMIN-NODES` | `/admin/nodes` | Node list, health summary, freshness | Owner |
+| `PAGE-ADMIN-NODE-DETAIL` | `/admin/nodes/:nodeId` | Administrative detail and diagnostics (never a duplicate of Home's Node Detail) | Owner |
 | `PAGE-ADMIN-NETWORKS` | `/admin/networks` | Network Registry metadata and Nodes | Owner |
 | `PAGE-ADMIN-NETWORK-DETAIL` | `/admin/networks/:networkKey` | Expected identity, metadata, mismatch diagnostics | Owner |
+| `PAGE-ADMIN-HISTORY-WINDOW` | `/admin/history-window` | Global Block History window with safe bounds | Owner |
+| `PAGE-ADMIN-SITE-ACCESS` | `/admin/site-access` | Site Access Mode (Public/Private) with confirmation and Audit | Owner |
 
-### 4.4 Alert and operations pages
-
-| Page ID | Route | Purpose | Actors |
-|---|---|---|---|
-| `PAGE-ADMIN-ALERT-RULES` | `/admin/alerts/rules` | Typed Rule list, evaluation state, overrides | Owner |
-| `PAGE-ADMIN-ALERT-RULE` | `/admin/alerts/rules/:ruleId` | Rule version, input, subjects, incidents, audit | Owner |
-| `PAGE-ADMIN-ALERT-RULE-EDIT` | `/admin/alerts/rules/:ruleId/edit` | Structured Rule mutation | Owner |
-| `PAGE-ADMIN-INCIDENTS` | `/admin/alerts/incidents` | Incident list and filters | Owner |
-| `PAGE-ADMIN-INCIDENT` | `/admin/alerts/incidents/:incidentId` | Evaluation/Incident/Suppression/Delivery timeline | Owner |
-| `PAGE-ADMIN-SILENCES` | `/admin/alerts/silences` | Active, expired, cancelled Silence policies | Owner |
-| `PAGE-ADMIN-SILENCE` | `/admin/alerts/silences/:silenceId` | Matcher, scope, impact, expiry | Owner |
-| `PAGE-ADMIN-MAINTENANCE` | `/admin/alerts/maintenance` | Maintenance Window list | Owner |
-| `PAGE-ADMIN-MAINTENANCE-DETAIL` | `/admin/alerts/maintenance/:windowId` | Scope, expected conditions, expiry, reevaluation | Owner |
-| `PAGE-ADMIN-DELIVERIES` | `/admin/alerts/deliveries` | Outbox rows, retry/dead-letter filters | Owner |
-| `PAGE-ADMIN-DELIVERY` | `/admin/alerts/deliveries/:deliveryId` | Destination redaction, attempts, retry | Owner |
-| `PAGE-ADMIN-CHANNELS` | `/admin/alerts/channels` | Supported notification channels and policy | Owner |
-| `PAGE-ADMIN-CHANNEL` | `/admin/alerts/channels/:channelId` | Channel policy and test action | Owner |
-| `PAGE-ADMIN-OPERATIONS` | `/admin/operations` | Long-running Operation history | Owner |
-| `PAGE-ADMIN-OPERATION` | `/admin/operations/:operationId` | Progress, warnings, result, Audit link | Owner |
-
-### 4.5 Data and maintenance pages
-
-| Page ID | Route | Purpose | Actors |
-|---|---|---|---|
-| `PAGE-ADMIN-DATA` | `/admin/data` | DB, worker, retention, backup, Doctor summary | Owner |
-| `PAGE-ADMIN-RETENTION` | `/admin/data/retention` | Per-family policies and execution state | Owner |
-| `PAGE-ADMIN-RETENTION-EDIT` | `/admin/data/retention/edit` | Safety-bounded retention mutation | Owner |
-| `PAGE-ADMIN-BACKUPS` | `/admin/data/backups` | Artifact list and integrity state | Owner |
-| `PAGE-ADMIN-BACKUP-CREATE` | `/admin/data/backups/create` | Backup Operation submission | Owner |
-| `PAGE-ADMIN-BACKUP` | `/admin/data/backups/:backupId` | Artifact detail and verify action | Owner |
-| `PAGE-ADMIN-RESTORE` | `/admin/data/restore` | Highest-risk restore flow | Owner |
-| `PAGE-ADMIN-DOCTOR` | `/admin/data/doctor` | Read-only diagnostic checks and reports | Owner |
+Deferred groups (later phases only, no MVP page contracts): Agent enrollment/recovery/rotation, Node Transfer, Alerts and Operations, Data and Maintenance.
 
 All mutation routes preserve a safe `returnTo` only after validation: same-origin, expected path, no credentials/secrets, and no external URL. Invalid or absent `returnTo` falls back to the owning list page.
 
@@ -233,22 +197,16 @@ Current | LastGood | AuthoritativeEmpty | None
 - Error + LastGood remains visible with explicit error and age;
 - Unknown, stale, never-observed, disabled, and unsupported never render as `0`, `false`, or Healthy;
 - authoritative empty is not Unknown;
-- history gaps are rendered as gaps, never synthetic zeroes;
+- recent Block History is bounded by the Server window and best-effort: absent blocks stay absent, never synthetic zeroes;
 - host observation is collected once per Agent and referenced by Node views.
 
 ### 5.4 Node Health Summary
 
 Severity and primary reasons are Server-owned. The WebUI presents the Summary and dimension reasons; it does not reimplement health policy or merge Node observations at Agent level.
 
-### 5.5 Operation state
+### 5.5 Deferred state machines
 
-Long-running retention, backup, restore, Doctor, and similar actions use:
-
-```text
-Queued | Running | Succeeded | SucceededWithWarnings | Failed | Cancelled
-```
-
-A browser closing does not cancel an Operation. Progress is shown only when Server can compute it reliably. `SucceededWithWarnings` is not displayed as plain Success.
+Alert evaluation/Incident state machines and long-running Operation states belong to later phases and have no MVP page contracts.
 
 ## 6. REST, query cache, and SSE
 
@@ -281,7 +239,7 @@ public:<resource>:<scope>
 admin:<resource>:<scope>
 ```
 
-The exact implementation key format may vary, but the namespace boundary is mandatory. Public-to-private and role transitions clear affected keys before new responses are rendered.
+The exact implementation key format may vary, but the namespace boundary is mandatory. Site Access Mode and session transitions clear affected keys before new responses are rendered.
 
 ### 6.3 Realtime flow
 
@@ -308,7 +266,6 @@ SSE updates must preserve filters, sorting, scroll, expansion, and ordinary draf
 - success immediately invalidates and refetches authoritative REST;
 - failure preserves drafts and shows field/page errors;
 - conflicts refetch current authoritative state without overwriting drafts;
-- partial failures show per-object outcomes;
 - access changes abort old requests and discard old responses.
 
 ## 7. Shared patterns
@@ -320,13 +277,11 @@ Stable semantic pattern references:
 | `PATTERN-STATUS-DIMENSIONS` | Collection, freshness, and value are displayed independently. |
 | `PATTERN-ACCESS-CHECK` | First protected render is `Checking access…`; no old-data flash. |
 | `PATTERN-AUTH-GENERATION` | Close old streams, abort requests, clear cache, discard old generation. |
-| `PATTERN-OPERATION-DETAIL` | Technical progress and warnings are REST-authoritative and linked to Audit. |
 | `PATTERN-CONFIRMATION` | High-risk actions use explicit confirmation, typed phrases where required, and no optimistic result. |
 | `PATTERN-RESPONSIVE-TABLE` | Desktop table becomes priority cards; detail remains available without primary horizontal scroll. |
 | `PATTERN-LIVE-REGION` | Announce meaningful transitions only; do not announce high-frequency SSE. |
-| `PATTERN-SECRET-ONCE` | One-time secrets appear only in success response, never URL/history/log/Audit body. |
 | `PATTERN-CONFLICT-RELOAD` | Show current server state and preserve user draft. |
-| `PATTERN-REDACTED-DETAIL` | Destinations, endpoints, credentials, raw peer IPs, tokens, and complete bodies remain redacted. |
+| `PATTERN-REDACTED-DETAIL` | RPC Endpoints, credentials, raw Peer addresses, tokens, and complete bodies remain redacted. |
 
 ## 8. Page contract requirements
 
@@ -339,46 +294,57 @@ Every `PAGE-*` entry must specify the following before production coding:
 5. query-key namespace and URL state;
 6. SSE invalidations and reset behavior;
 7. loading, empty, stale, error, Unknown, Disabled, Unsupported, forbidden, expired, conflict, and partial states;
-8. mutation confirmation, Operation, refetch, and Audit behavior;
+8. mutation confirmation, refetch, and Audit behavior;
 9. redaction and non-leaking copy;
 10. desktop/tablet/mobile transformation;
 11. heading, form, table, focus, live-region, zoom, and reduced-motion requirements;
 12. Playwright scenario IDs.
 
-### 8.1 Overview
+### 8.1 Home Node Detail (`PAGE-HOME-NODE`)
 
-`PAGE-ADMIN-OVERVIEW` prioritizes an attention queue, Server-owned Node Health Summary, freshness, and next actions. Independent panels may fail independently. An Agent monitoring multiple Nodes shows separate Node rows/cards; Host metrics are not duplicated.
+- shows independent collection/freshness/value states per component, plus the Server-owned Node Health Summary and its dimension reasons;
+- Block History is bounded by the Server window: missing blocks are absence, not zero; the window boundary is visible when relevant;
+- the Peer section shows the Peer Count Observation only (count, freshness, and last-good age on error); no peer list and no Peer Presence;
+- Host percentages are sanitized and shared, never duplicated per Node;
+- retired/deleted/unknown Nodes use the non-leaking unavailable semantics.
 
-### 8.2 Identity and lifecycle
+### 8.2 Admin Node Detail (`PAGE-ADMIN-NODE-DETAIL`)
 
-Enrollment/recovery success displays a one-time secret exactly once. Rotation has an explicit overlap window and optional old-credential revocation. Node Retired/Active follows latest valid Agent Inventory; Admin guidance does not remotely force lifecycle. Node Transfer is two-phase: source remains authoritative until valid target declaration with matching Network Identity, then Server atomically switches ownership.
+- administrative fields only: display name, redacted RPC Endpoint diagnostics, Node Inventory/lifecycle (Active/Retired), freshness summary, and Audit links;
+- must not reproduce Home's full observation cards;
+- every mutation is audited.
 
-### 8.3 Alert operations
+### 8.3 History Window (`PAGE-ADMIN-HISTORY-WINDOW`)
 
-Alert Rules are typed and Server-owned. The first catalog is the one in `docs/design/platpulse.md` §17.1. Evaluation states are separate from Incident state:
+- shows the current window, its default, and its min/max bounds;
+- mutation requires confirmation, and the Server records old/new values plus actor in Audit;
+- copy states the consequences: changes apply immediately; shortening asynchronously deletes expired history; lengthening cannot recover already deleted or missed data;
+- out-of-bounds values are rejected by the Server and shown as field errors, never clamped silently.
 
-```text
-Normal → Pending → Firing → Recovering → Normal
-Open → Resolved
-```
+### 8.4 Overview (`PAGE-ADMIN-OVERVIEW`)
 
-Unknown/Stale cannot silently resolve an Incident. Silence suppresses Delivery only. Maintenance suppresses expected delivery for an explicit Agent/Node/Network scope without changing facts or Node Health Summary. Notification Events and per-channel Deliveries remain separate and at-least-once. Manual retry never creates a duplicate Event.
+- prioritizes an attention queue, Server-owned Node Health Summary, freshness, and next actions;
+- independent panels may fail independently;
+- an Agent monitoring multiple Nodes shows separate Node rows/cards; Host metrics are not duplicated.
 
-### 8.4 Data and recovery
+### 8.5 Site Access Mode (`PAGE-ADMIN-SITE-ACCESS`)
 
-Retention is safety-bounded and batched. It cannot delete protected history state, coverage/gap/divergence state, cumulative counters, or Audit constraints. Backup results include artifact, checksum, schema, and integrity but never secrets. Restore requires an exclusive stopped Server and typed confirmation; failed integrity or readiness preserves the current DB. Doctor is read-only, sanitized, and never auto-fixes, migrates, deletes, or rotates secrets.
+- shows the current mode and its consequences: Public lets everyone read Home without login; Private requires Owner login;
+- switching requires confirmation, and the Server records old/new values plus actor in Audit;
+- a mode change is an access-generation transition: close old streams, abort requests, clear affected caches, reload under the new mode;
+- Admin is never anonymous; the mode gates Home only.
 
 ## 9. Content, privacy, and redaction
 
 The WebUI must not display or store in browser state:
 
-- Agent credentials, enrollment/recovery secrets after their one-time success view;
+- Agent credentials or any one-time provisioning material;
 - session tokens or CSRF values in URLs;
-- passwords, pepper, TLS private keys, notification tokens, MaxMind keys;
-- raw peer IPs, complete endpoints, complete enodes, raw provider responses, or complete request bodies;
-- sensitive destination values beyond an approved redacted summary.
+- passwords, TLS private keys, or pepper values;
+- raw Peer addresses (Peer Snapshots are deferred; no peer identity data exists in MVP);
+- complete RPC Endpoints, complete request bodies, stack traces, or internal paths.
 
-Errors name the failed user task and next safe action. They do not expose stack traces, secret contents, or internal paths. Confirmation copy states what will and will not change.
+Errors name the failed user task and next safe action. They do not expose stack traces, secret contents, or internal paths. Confirmation copy states what will and will not change — in particular for the history window: shortening deletes data; lengthening cannot recover it.
 
 Relative times can expand to absolute UTC or selected timezone. Server timestamps remain authoritative.
 
@@ -398,7 +364,7 @@ Relative times can expand to absolute UTC or selected timezone. Server timestamp
 - forms are single-column at narrow widths;
 - 44×44 CSS pixel target is the baseline for touch controls;
 - tables become priority cards/rows on narrow screens;
-- critical fields remain visible: status, subject/Node, head/sync, freshness, primary reason, risk, next action;
+- critical fields remain visible: status, subject/Node, head/sync, freshness, primary reason, next action;
 - detail/evidence uses expansion or a dedicated route;
 - sticky action areas never cover errors, fields, or keyboard focus;
 - 200% zoom, landscape, and portrait remain functional.
@@ -416,10 +382,10 @@ Relative times can expand to absolute UTC or selected timezone. Server timestamp
 
 ## 11. Mock and prototype contract
 
-The accepted prototype is a visual/state primary source, not a production dependency:
+The accepted shell prototype is a visual/state primary source, not a production dependency:
 
 ```text
-prototype/phase2-operations-loop @ 58d6f9c
+prototype/ui-shell-variants  (see the change log in §14)
 ```
 
 A production mock adapter, if needed for component tests or development, must match the typed API adapter:
@@ -433,23 +399,19 @@ Scenario IDs:
 ```text
 SCN-AUTH-OWNER-LOGIN
 SCN-AUTH-SESSION-REVOKED
+SCN-SITE-ACCESS-PRIVATE
+SCN-HOME-NETWORK-LIST
+SCN-HOME-NODE-DETAIL
+SCN-HOME-UNAVAILABLE-NODE
 SCN-OVERVIEW-FRESH
 SCN-OVERVIEW-STALE-LAST-GOOD
 SCN-OVERVIEW-UNKNOWN-UNSUPPORTED
-SCN-NODE-TRANSFER-PENDING
-SCN-NODE-TRANSFER-IDENTITY-MISMATCH
-SCN-NODE-TRANSFER-COMPLETED
-SCN-ALERT-UNKNOWN-NOT-RESOLVED
-SCN-ALERT-SILENCE-DELIVERY
-SCN-ALERT-MAINTENANCE-EXPIRY
-SCN-DELIVERY-RETRY-DEAD-LETTER
-SCN-DATA-BACKUP-VERIFIED
-SCN-DATA-RESTORE-SERVER-RUNNING
-SCN-DATA-DOCTOR-WARNINGS
-SCN-ACCESS-ROLE-CHANGE
+SCN-SITE-ACCESS-PUBLIC
+SCN-HISTORY-WINDOW-SHORTEN
+SCN-HISTORY-WINDOW-BOUNDS
 ```
 
-Scenario state is memory-only. No credentials, secrets, production endpoints, local persistence, or prototype-only branches are allowed in production pages.
+Scenario state is memory-only. No credentials, secrets, production API origins, local persistence, or prototype-only branches are allowed in production pages.
 
 ## 12. Playwright-oriented acceptance matrix
 
@@ -466,20 +428,16 @@ desktop-1280
 |---|---|
 | `SCN-AUTH-OWNER-LOGIN` | safe return, checking state, success, no password in URL/history |
 | `SCN-AUTH-SESSION-REVOKED` | old stream closes, Admin data clears, no stale flash, login/revalidation path |
+| `SCN-SITE-ACCESS-PRIVATE` | switch to Private closes public streams, Home requires login, old public cache cleared, audit row |
+| `SCN-HOME-NETWORK-LIST` | network list from Public Projection, all Active Nodes visible, anonymous access follows Site Access Mode |
+| `SCN-HOME-NODE-DETAIL` | independent dimensions, bounded Block History, Peer Count only, sanitized Host percentages |
+| `SCN-HOME-UNAVAILABLE-NODE` | non-leaking unavailable copy for retired/unknown; no internal detail |
 | `SCN-OVERVIEW-FRESH` | independent Node rows, Server Health Summary, current timestamps |
 | `SCN-OVERVIEW-STALE-LAST-GOOD` | last-good remains, Error/Stale reason and age visible, no zero substitution |
 | `SCN-OVERVIEW-UNKNOWN-UNSUPPORTED` | Unknown/Unsupported/Disabled/Empty remain distinct |
-| `SCN-NODE-TRANSFER-PENDING` | source remains authoritative, target declaration pending, expiry visible |
-| `SCN-NODE-TRANSFER-IDENTITY-MISMATCH` | blocking diagnostic, no ownership switch, conflict/audit result |
-| `SCN-NODE-TRANSFER-COMPLETED` | authoritative refetch after atomic switch, history not merged incorrectly |
-| `SCN-ALERT-UNKNOWN-NOT-RESOLVED` | Open Incident remains open, Evaluation unavailable is explicit |
-| `SCN-ALERT-SILENCE-DELIVERY` | Delivery suppressed, evaluation and Incident unchanged |
-| `SCN-ALERT-MAINTENANCE-EXPIRY` | scope/reason/expiry, current firing reevaluated once, no historical backfill |
-| `SCN-DELIVERY-RETRY-DEAD-LETTER` | per-channel state, bounded retry, manual retry without duplicate Event |
-| `SCN-DATA-BACKUP-VERIFIED` | Operation state, checksum/integrity, latest-success preservation |
-| `SCN-DATA-RESTORE-SERVER-RUNNING` | refused before mutation, current DB remains authoritative |
-| `SCN-DATA-DOCTOR-WARNINGS` | mixed check states, sanitized detail, no auto-fix |
-| `SCN-ACCESS-ROLE-CHANGE` | generation change, old response discarded, correct route/permission state |
+| `SCN-SITE-ACCESS-PUBLIC` | switch to Public allows anonymous Home reads, Admin still requires Owner login, no admin data leaks, audit row |
+| `SCN-HISTORY-WINDOW-SHORTEN` | confirmation, old/new shown, expired history removed asynchronously, audit row |
+| `SCN-HISTORY-WINDOW-BOUNDS` | out-of-bounds values rejected with field errors, bounds shown |
 
 For each core scenario, test semantic content rather than screenshot alone, and verify no horizontal overflow at all four viewports. Test keyboard navigation, focus return, Escape, mobile drawer behavior, 200% zoom, reduced motion, accessible names, and preservation of URL/filter/scroll/expanded/draft state after refetch.
 
@@ -493,7 +451,7 @@ A page is ready for production implementation only when:
 - [ ] Public/Admin query namespace is assigned;
 - [ ] SSE invalidations and reset behavior are specified;
 - [ ] all required loading/empty/stale/error/Unknown/Disabled/Unsupported/access states are specified;
-- [ ] mutation, confirmation, conflict, partial success, Operation, refetch, and Audit behavior is specified;
+- [ ] mutation, confirmation, conflict, refetch, and Audit behavior is specified;
 - [ ] redaction and non-leaking copy is specified;
 - [ ] desktop/tablet/mobile transformation is specified;
 - [ ] keyboard, focus, touch, zoom, reduced motion, and live-region behavior is specified;
@@ -508,9 +466,11 @@ A page is ready for production implementation only when:
 | Admin visual shell and responsive baseline | Issue #35, accepted prototype branch `prototype/ui-shell-variants` |
 | Home/Admin route and scope boundaries | Issue #34 |
 | Shared freshness, realtime, and authorization | Issue #36 |
-| Identity, lifecycle, access, and workflow contracts | Issue #37 |
-| Alert, maintenance, retention, backup/restore, Doctor | Issue #38 |
-| Representative operations-loop prototype | Issue #39, branch `prototype/phase2-operations-loop` @ `58d6f9c` |
+| Identity, lifecycle, access, and workflow contracts | Issue #37 — MVP subset retained (preconfigured credentials); Recovery/Rotation deferred |
+| Alert, maintenance, retention, backup/restore, Doctor | Issue #38 — superseded for MVP: deferred to later phases |
+| Representative operations-loop prototype | Issue #39, branch `prototype/phase2-operations-loop` @ `58d6f9c` — deferred |
 | Implementation handoff and acceptance contract | Issue #40 |
+| MVP scope convergence: Komari-like Home/Admin separation, no Admin duplicate Node Detail, Server-only bounded Block History, no History Gap/Backfill, report-level Receipt, Peer Count only | Confirmed design review; see `docs/design/platpulse.md` |
+| Site-level access mode (Komari-like), Owner-only principals, per-Node visibility removed | Confirmed design review; see `docs/design/platpulse.md` |
 
 Changes to a settled contract require a new decision record and must update the affected `PAGE-*`, `PATTERN-*`, and `SCN-*` references together. OpenAPI or Server policy changes do not silently change WebUI semantics; they require an explicit design review when the user-visible contract changes.

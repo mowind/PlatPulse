@@ -109,15 +109,15 @@ The status and latest successful value for one independently collected component
 _Avoid_: Latest attempt result, Nullable metric
 
 **Agent Report**:
-An immutable report containing an Agent's complete current observation view together with newly collected bounded samples. Retries preserve the same report identity and content.
+An immutable report containing an Agent's complete current observation view. Retries preserve the same report identity and content; the Server derives its current projection and recent block history from accepted reports.
 _Avoid_: Mutable heartbeat, Partial state patch
 
 **Report Receipt**:
-The Server's durable idempotency record for one Agent Report, including its content hash and exact acceptance result. It does not retain the complete report body indefinitely.
+The Server's durable idempotency record for one Agent Report, including its content hash and exact acceptance result. The result is report-level — accepted or rejected with a stable rejection code — with no per-Node partial result matrix. It does not retain the complete report body indefinitely.
 _Avoid_: Raw report archive, Access log
 
 **Report Ingestion**:
-The Server's atomic acceptance of one authenticated Agent Report, including idempotency, invariants, per-Node results, projection updates, history, Alert input, invalidation, and its exact Report Receipt.
+The Server's atomic acceptance of one authenticated Agent Report, including idempotency, invariants, projection updates, recent block history, invalidation, and its exact Report Receipt.
 _Avoid_: HTTP handler update, Partial projection write
 
 **Current Projection**:
@@ -125,11 +125,11 @@ A typed Server-side representation of the latest accepted state and each compone
 _Avoid_: Agent report cache, Generic JSON metric
 
 **Durable Spool**:
-The Agent's bounded persistent queue of immutable reports awaiting Server acknowledgement. Overflow may create a History Gap but must preserve recoverable current state.
+The Agent's bounded persistent queue of immutable reports awaiting Server acknowledgement. On overflow the Agent drops the oldest unconfirmed historical reports, logs a diagnostic, and preserves current-state collection. The Spool is a delivery mechanism, not user-visible history.
 _Avoid_: In-memory retry queue, History database
 
 **Agent Store**:
-The Agent's local durable module that owns identity sequence, pending Block Summaries, immutable report planning, acknowledgement, spool limits, and History Gap accounting behind one transactional interface.
+The Agent's local durable module that owns identity sequence, immutable report planning, acknowledgement, and spool limits behind one transactional interface.
 _Avoid_: SQLite helper, Collector database
 
 **Head Subscription**:
@@ -180,6 +180,10 @@ _Avoid_: Host observation
 The chain-facing operational state observed from one PlatON Node, including block, transaction, synchronization, consensus, and peer information.
 _Avoid_: Agent chain snapshot, Network observation
 
+**Peer Count Observation**:
+The current number of connected Peers observed from one PlatON Node, collected as part of its chain observation. A successful collection may be authoritatively zero, while a collection failure preserves the last successful count and its age.
+_Avoid_: Peer Snapshot, Peer history, IP-deduplicated count
+
 **Peer Snapshot**:
 A complete successful per-Node view of currently connected Peers, keyed by Peer ID. A successful empty snapshot clears the prior set, while collection failure preserves the last successful set and its age.
 _Avoid_: Agent-wide peer set, IP-deduplicated peer count
@@ -212,10 +216,6 @@ _Avoid_: Miner, Seal signer, Current validator
 The combined process and chain observations belonging to one PlatON Node. Observations from different Nodes remain separate and are never merged into one Agent-level chain observation.
 _Avoid_: Agent observation
 
-**Node Visibility**:
-Whether a PlatON Node is eligible to appear through the Home Dashboard and its read APIs. Visibility is enforced across every public representation rather than only in the browser.
-_Avoid_: Hidden card
-
 **Node Health Summary**:
 A display-oriented severity derived from independent liveness, lifecycle, process, reachability, freshness, synchronization, consensus, and Host pressure dimensions. It never replaces those dimensions, and unknown data is not healthy data.
 _Avoid_: Online flag, Authoritative health state
@@ -223,6 +223,10 @@ _Avoid_: Online flag, Authoritative health state
 **Clock Unreliable**:
 A diagnostic state indicating that an Agent's wall clock differs enough from Server time that cross-host chronology or age calculations cannot be trusted. It does not invalidate unrelated observations or Agent liveness based on Server receipt time.
 _Avoid_: Agent offline, Invalid report
+
+**Site Access Mode**:
+The Server-wide Home access policy with two states: Public (unauthenticated visitors may read Home projections) or Private (login is required). It applies to the whole site rather than to individual Nodes; every Active Node appears on Home under both states. Changing the mode is an Owner action recorded in Audit and starts a new access generation.
+_Avoid_: Per-Node visibility, Guest switch
 
 **Public Projection**:
 The fixed, sanitized representation consumed by the Home Dashboard. It excludes connection details, credentials, raw addresses, internal errors, and other administrative data regardless of who views it.
@@ -272,10 +276,3 @@ _Avoid_: Silence without scope, Health override
 A human principal allowed to access the Admin Dashboard and manage PlatPulse.
 _Avoid_: Super viewer, Shared admin
 
-**Viewer**:
-An authenticated human principal allowed to use the Home Dashboard without administrative authority.
-_Avoid_: Read-only admin
-
-**Guest**:
-An unauthenticated principal allowed to read Public Projections only when anonymous Home access is explicitly enabled.
-_Avoid_: Anonymous admin, Public user
