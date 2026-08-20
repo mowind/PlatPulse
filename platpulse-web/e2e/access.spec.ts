@@ -300,7 +300,7 @@ test.describe('Anonymous Home (Guest) toggle', () => {
       await guestPage2.goto('/')
       await expect(guestPage2.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible()
       await expect(guestPage2.getByText('Node A')).toBeVisible()
-      await expect(guestPage2.getByText('Connected', { exact: true })).toBeVisible({ timeout: 15_000 })
+      await expect(guestPage2.getByText('Current', { exact: true })).toBeVisible({ timeout: 15_000 })
       await expectNoHorizontalOverflow(guestPage2)
       // Guests never see Admin or Sign out.
       await expect(guestPage2.getByRole('link', { name: 'Admin' })).toHaveCount(0)

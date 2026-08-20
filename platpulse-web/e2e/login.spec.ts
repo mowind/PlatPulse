@@ -40,6 +40,7 @@ test.describe('Private Home login', () => {
     await expect(page).toHaveURL(/\/$/)
     await expect(page.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible()
 
+    await page.getByRole('link', { name: 'Admin', exact: true }).click()
     await page.getByRole('button', { name: 'Sign out' }).click()
     await expect(page).toHaveURL(/\/login$/)
     await expect(

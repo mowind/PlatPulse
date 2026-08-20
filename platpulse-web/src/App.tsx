@@ -46,6 +46,8 @@ import AdminBackupDetail from './pages/AdminBackup'
 import AdminDoctor from './pages/AdminDoctor'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import { ensureSiteAccessModeKnown, subscribeSiteAccessMode } from './api/public'
+import HomeDashboard from './components/HomeDashboard'
+import { useHomeRealtimeContext } from './layouts/HomeLayout'
 
 /**
  * Route gates (design §3.2, §3.3): Home and Admin are private by default.
@@ -222,7 +224,18 @@ export default function App() {
 }
 
 function HomeIndex() {
-  return null
+  const { networks, realtime, resetting } = useHomeRealtimeContext()
+  return (
+    <HomeDashboard
+      networks={networks.data ?? []}
+      realtimeStatus={realtime.status}
+      online={realtime.online}
+      resetting={resetting}
+      error={networks.error ? 'Unable to load published Nodes' : null}
+      hasLastGood={networks.data !== undefined}
+      loading={networks.isPending}
+    />
+  )
 }
 
 function AdminComingSoon() {

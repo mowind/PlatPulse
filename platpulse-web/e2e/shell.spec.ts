@@ -16,6 +16,33 @@ test.describe('Authenticated shell', () => {
     await expectShellFitsViewport(page, 'Home')
   })
 
+  test('Home dashboard exposes the public scan controls at every fixed viewport', async ({ page }) => {
+    await loginAs(page)
+    await expect(page.getByText('Published Nodes', { exact: true })).toBeVisible()
+    await expect(page.getByText('Healthy Nodes', { exact: true })).toBeVisible()
+    await expect(page.getByText('Attention', { exact: true })).toBeVisible()
+    await expect(page.getByText('Networks', { exact: true })).toBeVisible()
+    await expect(page.getByRole('group', { name: 'Network filter' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'All Networks' })).toHaveAttribute('aria-pressed', 'true')
+    await expect(page.getByRole('combobox', { name: 'Sort' })).toBeVisible()
+    await expect(page.getByRole('link', { name: 'Admin', exact: true })).toHaveAttribute('href', '/admin')
+    await expectNoHorizontalOverflow(page)
+  })
+
+  test('Home controls remain semantic and touch-sized', async ({ page }) => {
+    await loginAs(page)
+    const home = page.getByRole('region', { name: 'Home' })
+    await expect(home.getByRole('button', { name: 'All Networks' })).toHaveAttribute('aria-pressed', 'true')
+    await home.getByRole('combobox', { name: 'Sort' }).selectOption('head')
+
+    const undersized = await home.locator('button, a').evaluateAll((elements) => elements.flatMap((element) => {
+      const rect = element.getBoundingClientRect()
+      return rect.width < 44 || rect.height < 44 ? [element.textContent?.trim() || element.getAttribute('aria-label') || element.tagName] : []
+    }))
+    expect(undersized, 'Home interactive targets must be at least 44px').toEqual([])
+    await expectNoHorizontalOverflow(page)
+  })
+
   test('Admin shell fits the viewport without horizontal overflow', async ({ page }) => {
     await loginAs(page)
     await page.getByRole('link', { name: 'Admin', exact: true }).click()
@@ -28,7 +55,7 @@ test.describe('Authenticated shell', () => {
     await expect(page).toHaveURL(/\/admin$/)
     await expectShellFitsViewport(page, 'Overview')
 
-    await page.getByRole('link', { name: 'Home', exact: true }).click()
+    await page.getByRole('link', { name: 'PlatPulse', exact: true }).click()
     await expect(page).toHaveURL(/\/$/)
     await expectShellFitsViewport(page, 'Home')
   })
@@ -36,21 +63,14 @@ test.describe('Authenticated shell', () => {
   test('shell navigation is keyboard-operable with a visible focus ring', async ({ page }) => {
     await loginAs(page)
 
-    // Tab from the brand to the Home link (focus order: brand, Home,
-    // Admin, Sign out) and verify the focus ring is visible.
+    // Tab from the brand to the Admin icon and verify the focus ring is visible.
     await page.keyboard.press('Tab')
     await expect(page.getByRole('link', { name: 'PlatPulse' })).toBeFocused()
     await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: 'Home', exact: true })).toBeFocused()
+    await expect(page.getByRole('link', { name: 'Admin', exact: true })).toBeFocused()
     await expectFocusedElementHasVisibleFocus(page)
 
     // Enter activates the focused link without a pointer.
-    await page.keyboard.press('Enter')
-    await expect(page.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible()
-
-    await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: 'Admin', exact: true })).toBeFocused()
-    await expectFocusedElementHasVisibleFocus(page)
     await page.keyboard.press('Enter')
     await expect(page).toHaveURL(/\/admin$/)
     await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()

@@ -144,7 +144,7 @@ describe('App shell with private Home', () => {
     render(<App />)
     await screen.findByRole('heading', { level: 1, name: 'Sign in to PlatPulse' })
     await signIn()
-    expect(screen.getByRole('button', { name: 'Sign out' })).toBeTruthy()
+    expect(screen.getByRole('link', { name: 'Admin' })).toBeTruthy()
   })
 
   it('shows the invalid-credentials error without navigating', async () => {
@@ -172,6 +172,8 @@ describe('App shell with private Home', () => {
 
     render(<App />)
     await screen.findByRole('heading', { level: 1, name: 'Home' })
+    await goToAdmin()
+    await screen.findByRole('heading', { level: 1, name: 'Overview' })
     fireEvent.click(screen.getByRole('button', { name: 'Sign out' }))
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Sign in to PlatPulse' }),
@@ -197,16 +199,22 @@ describe('App shell with private Home', () => {
 
     render(<App />)
     await screen.findByRole('heading', { level: 1, name: 'Home' })
+    await goToAdmin()
+    await screen.findByRole('heading', { level: 1, name: 'Overview' })
     fireEvent.click(screen.getByRole('button', { name: 'Sign out' }))
-    const alert = await screen.findByRole('alert')
-    expect(alert.textContent).toContain('Could not sign out. Try again.')
-    expect(screen.getByRole('heading', { level: 1, name: 'Home' })).toBeTruthy()
+    expect(await screen.findByText('Could not sign out. Try again.')).toBeTruthy()
+    expect(screen.getByRole('heading', { level: 1, name: 'Overview' })).toBeTruthy()
   })
 
   it('allows a Viewer into Home, hides Admin, and refuses the Admin shell', async () => {
     mockFetch({ '/api/public/v1/session': () => jsonResponse(VIEWER_SESSION, 200) })
 
     render(<App />)
+    await act(async () => {
+      window.history.pushState({}, '', '/')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
     await screen.findByRole('heading', { level: 1, name: 'Home' })
     // Viewers are not offered an Admin entry point; the Server remains the
     // enforcement boundary for anyone who navigates there anyway.

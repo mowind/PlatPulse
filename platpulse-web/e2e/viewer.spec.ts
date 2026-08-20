@@ -46,28 +46,13 @@ test.describe('Viewer role boundary', () => {
   test('Viewer navigation is keyboard-operable with a visible focus ring', async ({ page }) => {
     await loginAs(page, E2E_VIEWER_USERNAME, E2E_VIEWER_PASSWORD)
 
-    // Focus order for a Viewer: brand, Home, Sign out (no Admin link).
+    // Focus order for a Viewer starts with the brand and the Home scan controls.
     await page.keyboard.press('Tab')
     await expect(page.getByRole('link', { name: 'PlatPulse' })).toBeFocused()
     await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: 'Home', exact: true })).toBeFocused()
+    await expect(page.getByRole('button', { name: 'All Networks' })).toBeFocused()
     await expectFocusedElementHasVisibleFocus(page)
     await page.keyboard.press('Enter')
     await expect(page.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible()
-
-    const signOut = page.getByRole('button', { name: 'Sign out' })
-    for (let tab = 0; tab < 4; tab += 1) {
-      await page.keyboard.press('Tab')
-      if (await signOut.evaluate((element) => element === document.activeElement)) {
-        break
-      }
-    }
-    await expect(signOut).toBeFocused()
-    await expectFocusedElementHasVisibleFocus(page)
-    await page.keyboard.press('Enter')
-    await expect(page).toHaveURL(/\/login$/)
-    await expect(
-      page.getByRole('heading', { level: 1, name: 'Sign in to PlatPulse' }),
-    ).toBeVisible()
   })
 })
