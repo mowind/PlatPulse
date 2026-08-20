@@ -750,6 +750,13 @@ pub async fn collect_and_persist<A: RpcAdapter>(
     sqlx::query("UPDATE agent_state SET agent_id=?, agent_epoch=?, boot_id=?, report_sequence=?, inventory_revision=?, boot_state=CASE WHEN ?='drained_previous' THEN 'active' ELSE boot_state END, pending_transition=CASE WHEN ?='drained_previous' THEN NULL ELSE pending_transition END, pending_previous_boot_id=CASE WHEN ?='drained_previous' THEN NULL ELSE pending_previous_boot_id END, updated_at=? WHERE singleton=1")
         .bind(report.agent_id.to_string()).bind(report.agent_epoch as i64).bind(report.boot_id.to_string()).bind(report.report_sequence as i64).bind(report.inventory.revision as i64).bind(transition).bind(transition).bind(transition).bind(&now).execute(&mut *tx).await?;
     tx.commit().await?;
+    crate::reporting::enforce_spool_policy(
+        &mut store,
+        &crate::collector::SpoolPolicy::default(),
+        &now,
+    )
+    .await
+    .map_err(CollectionError::Report)?;
     store.close().await?;
     Ok(digest)
 }
@@ -1105,11 +1112,7 @@ pub async fn apply_receipt(
     receipt
         .validate()
         .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
-    let expected_disposition = match receipt.disposition {
-        ReceiptDisposition::Accepted => "accepted",
-        ReceiptDisposition::PartiallyAccepted => "partially_accepted",
-        ReceiptDisposition::Rejected => "rejected",
-    };
+    let expected_disposition = receipt_disposition_name(receipt.disposition);
     if receipt.report_id.to_string() != report_id
         || receipt.report_body_sha256.to_string() != body_sha256
         || expected_disposition != disposition
@@ -1120,25 +1123,54 @@ pub async fn apply_receipt(
     }
 
     let mut tx = store.connection().begin().await?;
-    let raw_report =
-        sqlx::query_scalar::<_, Vec<u8>>("SELECT body FROM reports WHERE report_id = ?")
+    let existing_receipt: Option<(String, String, Vec<u8>)> = sqlx::query_as(
+        "SELECT report_body_sha256, disposition, receipt_body FROM report_receipts WHERE report_id = ?",
+    )
+    .bind(report_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if existing_receipt.is_some() {
+        sqlx::query(
+            "UPDATE spool_state SET store_fatal = 1, store_error = ?, updated_at = ? WHERE singleton = 1",
+        )
+        .bind("pending report has a pre-existing receipt")
+        .bind(applied_at)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        return Err(sqlx::Error::Protocol(
+            "pending report has a pre-existing receipt".to_owned(),
+        ));
+    }
+    let (raw_report, stored_body_sha256, stored_body_bytes): (Vec<u8>, String, i64) =
+        sqlx::query_as("SELECT body, body_sha256, body_bytes FROM reports WHERE report_id = ?")
             .bind(report_id)
             .fetch_optional(&mut *tx)
             .await?
             .ok_or_else(|| sqlx::Error::Protocol("report is not in the Agent spool".to_owned()))?;
-    let parsed_report: Option<AgentReport> = serde_json::from_slice(&raw_report).ok();
-    if let Some(parsed_report) = parsed_report.as_ref() {
-        if parsed_report.report_id.to_string() != report_id {
-            return Err(sqlx::Error::Protocol(
-                "stored report id mismatch".to_owned(),
-            ));
-        }
+    let actual_hash = format!("0x{}", hex::encode(sha2::Sha256::digest(&raw_report)));
+    if stored_body_bytes < 0
+        || stored_body_bytes as usize != raw_report.len()
+        || stored_body_sha256 != actual_hash
+        || body_sha256 != actual_hash
+    {
+        return Err(sqlx::Error::Protocol(
+            "stored report failed integrity validation".to_owned(),
+        ));
+    }
+    let parsed_report: AgentReport = serde_json::from_slice(&raw_report)
+        .map_err(|error| sqlx::Error::Protocol(format!("stored report is invalid: {error}")))?;
+    parsed_report
+        .validate()
+        .map_err(|error| sqlx::Error::Protocol(format!("stored report is invalid: {error}")))?;
+    if parsed_report.report_id.to_string() != report_id {
+        return Err(sqlx::Error::Protocol(
+            "stored report id mismatch".to_owned(),
+        ));
     }
     let mut expected_nodes = std::collections::HashSet::new();
-    if let Some(parsed_report) = parsed_report.as_ref() {
-        for node in &parsed_report.inventory.nodes {
-            expected_nodes.insert(node.node_id);
-        }
+    for node in &parsed_report.inventory.nodes {
+        expected_nodes.insert(node.node_id);
     }
     let mut seen_nodes = std::collections::HashSet::new();
     for node in &receipt.nodes {
@@ -1155,29 +1187,28 @@ pub async fn apply_receipt(
             ));
         }
     }
+    if receipt.disposition != ReceiptDisposition::Rejected
+        && seen_nodes.len() != expected_nodes.len()
+    {
+        return Err(sqlx::Error::Protocol(
+            "receipt does not cover every Node in the stored report".to_owned(),
+        ));
+    }
     let mut expected_samples = std::collections::HashSet::new();
-    if let Some(parsed_report) = parsed_report.as_ref() {
-        for sample in &parsed_report.block_summaries {
-            expected_samples.insert((
-                sample.node_id,
-                "block",
-                sample.block_number,
-                sample.block_number,
-            ));
-        }
-        for gap in &parsed_report.history_gaps {
-            expected_samples.insert((gap.node_id, "gap", gap.from_height, gap.to_height));
-        }
+    for sample in &parsed_report.block_summaries {
+        expected_samples.insert((
+            sample.node_id,
+            "block",
+            sample.block_number,
+            sample.block_number,
+        ));
+    }
+    for gap in &parsed_report.history_gaps {
+        expected_samples.insert((gap.node_id, "gap", gap.from_height, gap.to_height));
     }
     let mut seen_samples = std::collections::HashSet::new();
     for sample in &receipt.samples {
-        let (kind, from, to) = match sample.sample {
-            SampleRef::Block { height } => ("block", height, height),
-            SampleRef::Gap {
-                from_height,
-                to_height,
-            } => ("gap", from_height, to_height),
-        };
+        let (kind, from, to) = sample_reference(sample.sample);
         if !expected_samples.contains(&(sample.node_id, kind, from, to))
             || !seen_samples.insert((sample.node_id, kind, from, to))
         {
@@ -1186,18 +1217,19 @@ pub async fn apply_receipt(
             ));
         }
     }
+    if receipt.disposition != ReceiptDisposition::Rejected
+        && seen_samples.len() != expected_samples.len()
+    {
+        return Err(sqlx::Error::Protocol(
+            "receipt does not cover every sample in the stored report".to_owned(),
+        ));
+    }
 
     // The immutable report has already been parsed and all receipt references
     // validated above. Current observations are not copied into retry state.
 
     for sample in &receipt.samples {
-        let (kind, from_height, to_height) = match sample.sample {
-            SampleRef::Block { height } => ("block", height, height),
-            SampleRef::Gap {
-                from_height,
-                to_height,
-            } => ("gap", from_height, to_height),
-        };
+        let (kind, from_height, to_height) = sample_reference(sample.sample);
         sqlx::query("DELETE FROM report_sample_assignments WHERE report_id = ? AND node_id = ? AND sample_kind = ? AND from_height = ? AND to_height = ?")
             .bind(report_id).bind(sample.node_id.to_string()).bind(kind)
             .bind(from_height as i64).bind(to_height as i64)
@@ -1263,6 +1295,24 @@ pub async fn apply_receipt(
         .execute(&mut *tx)
         .await?;
     tx.commit().await
+}
+
+fn sample_reference(sample: SampleRef) -> (&'static str, u64, u64) {
+    match sample {
+        SampleRef::Block { height } => ("block", height, height),
+        SampleRef::Gap {
+            from_height,
+            to_height,
+        } => ("gap", from_height, to_height),
+    }
+}
+
+pub(crate) fn receipt_disposition_name(disposition: ReceiptDisposition) -> &'static str {
+    match disposition {
+        ReceiptDisposition::Accepted => "accepted",
+        ReceiptDisposition::PartiallyAccepted => "partially_accepted",
+        ReceiptDisposition::Rejected => "rejected",
+    }
 }
 
 #[cfg(test)]
@@ -1656,23 +1706,27 @@ mod tests {
         let mut store = AgentStore::open(AgentDatabaseConfig::new(dir.path().join("agent.db")))
             .await
             .unwrap();
-        let report_id = "0195f2a1-0001-4001-8001-000000000001";
-        let body = br#"{}"#;
-        let hash = "0x0000000000000000000000000000000000000000000000000000000000000000";
+        let report_id = "0195f2a1-0013-4013-8013-000000000013";
+        let body = include_bytes!("../../platpulse-core/tests/fixtures/report_v1_minimal.json");
+        let hash = format!("0x{}", hex::encode(sha2::Sha256::digest(body)));
         let receipt_body = format!(
             r#"{{"receipt":{{"report_id":"{report_id}","disposition":"rejected","report_body_sha256":"{hash}","server_version":"test","supported_protocol_majors":[1],"server_time":"2026-01-01T00:00:00Z","inventory":"rejected","rejections":[{{"code":"invalid_envelope","retryable":false,"reason":"test"}}],"nodes":[],"samples":[]}}}}"#
         );
-        sqlx::query("INSERT INTO reports (report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes, created_at) VALUES (?,1,'b',1,'now',?, ?,2,'now')")
+        sqlx::query("INSERT INTO reports (report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes, created_at) VALUES (?,1,?,1,?, ?, ?, ?, ?)")
             .bind(report_id)
+            .bind("0195f2a1-0012-4012-8012-000000000012")
+            .bind("2026-08-12T09:00:00Z")
             .bind(&body[..])
-            .bind(hash)
+            .bind(&hash)
+            .bind(body.len() as i64)
+            .bind("2026-08-12T09:00:00Z")
             .execute(store.connection())
             .await
             .unwrap();
         apply_receipt(
             &mut store,
             report_id,
-            hash,
+            &hash,
             "rejected",
             receipt_body.as_bytes(),
             "now",
