@@ -58,7 +58,7 @@ pub(crate) async fn public_events(
     let cursor = parse_last_event_id(headers.get("last-event-id").and_then(|v| v.to_str().ok()));
     // Human sessions bind the stream to the connected role so revoke,
     // expiry, disable, and role change all close it; anonymous Guests are
-    // bound to the `anonymous_home` setting (design §13.5).
+    // bound to the Site Access Mode (design §13.5).
     let stream: Pin<
         Box<dyn Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>> + Send>,
     > = match session {
@@ -340,6 +340,7 @@ pub(crate) async fn logout_handler(
             // The session disappeared between the guard and here.
             return Err(sqlx::Error::RowNotFound);
         }
+        crate::auth::bump_authorization_generation(&mut transaction).await?;
         crate::auth::insert_audit_event(
             &mut *transaction,
             Some(&session.user_id),
@@ -1840,26 +1841,34 @@ pub(crate) async fn public_node_detail(
         ),
     }
 }
-/// Non-sensitive Public access projection: whether anonymous Home (Guest
-/// access) is currently enabled (design §12.1). This is the only public
+/// Non-sensitive Public access projection: the Site Access Mode and durable
+/// authorization generation. This is the only public
 /// route reachable without a Session in both modes: the WebUI needs it to
 /// decide whether an anonymous visitor may render Home or must sign in. It
 /// carries no DTO from any other namespace and no session material.
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PublicAccessSettings {
-    pub guest_enabled: bool,
+    pub mode: String,
+    pub authorization_generation: i64,
 }
 
 #[utoipa::path(
     get,
     path = "/api/public/v1/access",
     tag = "public",
-    responses((status = 200, description = "Whether anonymous Home access is enabled", body = PublicAccessSettings))
+    responses((status = 200, description = "The current Site Access Mode and authorization generation", body = PublicAccessSettings))
 )]
 pub(crate) async fn public_access_settings(State(state): State<AppState>) -> Response {
-    match crate::auth::anonymous_home_enabled(state.db()).await {
-        Ok(guest_enabled) => Json(PublicAccessSettings { guest_enabled }).into_response(),
+    match tokio::try_join!(
+        crate::auth::site_access_mode(state.db()),
+        crate::auth::authorization_generation(state.db()),
+    ) {
+        Ok((mode, generation)) => Json(PublicAccessSettings {
+            mode: mode.as_str().to_owned(),
+            authorization_generation: generation,
+        })
+        .into_response(),
         Err(_) => error_response(
             "unknown",
             StatusCode::SERVICE_UNAVAILABLE,

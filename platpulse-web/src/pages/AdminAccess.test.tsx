@@ -151,7 +151,7 @@ describe('PAGE-ACCESS-PEOPLE (People and roles)', () => {
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       '/api/admin/v1/people': () => jsonResponse(PEOPLE, 200),
-      '/api/admin/v1/access': () => jsonResponse({ guestEnabled: false }, 200),
+      '/api/admin/v1/access-mode': () => jsonResponse({ mode: 'private', authorizationGeneration: 0 }, 200),
     })
     renderAt('/admin/access/people')
 
@@ -173,7 +173,7 @@ describe('PAGE-ACCESS-PEOPLE (People and roles)', () => {
     let created = false
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
-      '/api/admin/v1/access': () => jsonResponse({ guestEnabled: false }, 200),
+      '/api/admin/v1/access-mode': () => jsonResponse({ mode: 'private', authorizationGeneration: 0 }, 200),
       '/api/admin/v1/people': ({ method }) => {
         if (method === 'POST') {
           created = true
@@ -199,7 +199,7 @@ describe('PAGE-ACCESS-PEOPLE (People and roles)', () => {
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       '/api/admin/v1/people': () => jsonResponse(PEOPLE, 200),
-      '/api/admin/v1/access': () => jsonResponse({ guestEnabled: false }, 200),
+      '/api/admin/v1/access-mode': () => jsonResponse({ mode: 'private', authorizationGeneration: 0 }, 200),
       '/api/admin/v1/people/u-admin/role': () => errorBody('final_owner_protected'),
     })
     renderAt('/admin/access/people')
@@ -214,24 +214,25 @@ describe('PAGE-ACCESS-PEOPLE (People and roles)', () => {
   })
 
   it('toggles anonymous Home through the authoritative mutation', async () => {
-    let enabled = false
+    let mode = 'private'
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       '/api/admin/v1/people': () => jsonResponse(PEOPLE, 200),
-      '/api/admin/v1/access': ({ method }) => {
+      '/api/admin/v1/access-mode': ({ method }) => {
         if (method === 'PUT') {
-          enabled = true
-          return jsonResponse({ guestEnabled: true }, 200)
+          mode = 'public'
+          return jsonResponse({ mode, authorizationGeneration: 1 }, 200)
         }
-        return jsonResponse({ guestEnabled: enabled }, 200)
+        return jsonResponse({ mode, authorizationGeneration: mode === 'public' ? 1 : 0 }, 200)
       },
     })
     renderAt('/admin/access/people')
     await screen.findByRole('heading', { level: 1, name: 'People' })
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Enable anonymous Home' }))
-    await screen.findByText(/Anonymous Home access is now enabled/)
-    expect(await screen.findByRole('button', { name: 'Disable anonymous Home' })).toBeTruthy()
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    fireEvent.click(await screen.findByRole('button', { name: 'Make Home Public' }))
+    await screen.findByText(/Site Access Mode is now Public/)
+    expect(await screen.findByRole('button', { name: 'Make Home Private' })).toBeTruthy()
   })
 })
 

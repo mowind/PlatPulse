@@ -331,18 +331,18 @@ test.describe('Anonymous Home (Guest) toggle', () => {
       await expect(page.getByRole('heading', { level: 1, name: 'People' })).toBeVisible()
     } finally {
       // Always restore the default so parallel suites keep their contract.
-      const access = await page.request.get('/api/admin/v1/access')
+      const access = await page.request.get('/api/admin/v1/access-mode')
       if (access.ok()) {
-        const settings = (await access.json()) as { guestEnabled: boolean }
-        if (settings.guestEnabled) {
+        const settings = (await access.json()) as { mode: 'public' | 'private' }
+        if (settings.mode === 'public') {
           const csrf = await page.evaluate(async () => {
             const response = await fetch('/api/public/v1/session')
             const body = (await response.json()) as { csrfToken: string }
             return body.csrfToken
           })
-          await page.request.put('/api/admin/v1/access', {
+          await page.request.put('/api/admin/v1/access-mode', {
             headers: { 'X-CSRF-Token': csrf },
-            data: { guestEnabled: false },
+            data: { mode: 'private', confirmed: true },
           })
         }
       }

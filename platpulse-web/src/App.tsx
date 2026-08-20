@@ -45,7 +45,7 @@ import AdminBackupCreate from './pages/AdminBackupCreate'
 import AdminBackupDetail from './pages/AdminBackup'
 import AdminDoctor from './pages/AdminDoctor'
 import { AuthProvider, useAuth } from './auth/AuthContext'
-import { ensureGuestEnabledKnown, subscribeGuestEnabled } from './api/public'
+import { ensureSiteAccessModeKnown, subscribeSiteAccessMode } from './api/public'
 
 /**
  * Route gates (design §3.2, §3.3): Home and Admin are private by default.
@@ -68,22 +68,22 @@ function RequireSession({ children }: { children: ReactNode }) {
   // Anonymous Home (Guest) is allowed only when the Owner explicitly
   // enabled it (design §12.1); the Server still enforces every read. The
   // setting is cached and re-checked on Public resets by the Home layout.
-  const [guestEnabled, setGuestEnabled] = useState<boolean | null>(null)
+  const [siteAccessMode, setSiteAccessMode] = useState<'public' | 'private' | null>(null)
 
   useEffect(() => {
-    void ensureGuestEnabledKnown().then(setGuestEnabled)
-    return subscribeGuestEnabled(setGuestEnabled)
+    void ensureSiteAccessModeKnown().then(setSiteAccessMode)
+    return subscribeSiteAccessMode(setSiteAccessMode)
   }, [])
 
   if (status.state === 'loading') {
     return <CheckingAccess />
   }
   if (status.state === 'guest') {
-    if (guestEnabled === null) {
+    if (siteAccessMode === null) {
       // Authorization is still resolving; never flash prior data.
       return <CheckingAccess />
     }
-    if (guestEnabled) {
+    if (siteAccessMode === 'public') {
       return children
     }
     return (

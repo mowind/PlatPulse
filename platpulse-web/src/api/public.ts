@@ -9,11 +9,16 @@ import {
   publicValidatorHistory,
   type PublicValidatorAnalyticsResponse,
   type PublicValidatorHistoryResponse,
-  type PublicAccessSettings,
   type PublicNetwork,
   type PublicNode,
   type PublicPeerHistory,
 } from './generated'
+
+export type SiteAccessMode = 'public' | 'private'
+export type SiteAccessSettings = {
+  mode: SiteAccessMode
+  authorizationGeneration: number
+}
 
 export async function fetchNetworks(signal?: AbortSignal): Promise<PublicNetwork[]> {
   const { data, error } = await publicNetworks({ signal })
@@ -34,11 +39,11 @@ export async function fetchNode(nodeId: string, signal?: AbortSignal): Promise<P
 }
 
 /**
- * Non-sensitive Public access probe: whether anonymous Home (Guest access)
- * is enabled (design §12.1). Reachable without a Session in both modes so
- * the WebUI can decide whether a Guest may render Home or must sign in.
+ * Non-sensitive Public access probe for the Server-wide Site Access Mode.
+ * Reachable without a Session in both modes so the WebUI can decide whether
+ * an anonymous visitor may render Home or must sign in.
  */
-export async function fetchAccessSettings(signal?: AbortSignal): Promise<PublicAccessSettings> {
+export async function fetchAccessSettings(signal?: AbortSignal): Promise<SiteAccessSettings> {
   const { data, error } = await publicAccessSettings({ signal })
   if (error || !data) {
     throw new Error(
@@ -46,44 +51,46 @@ export async function fetchAccessSettings(signal?: AbortSignal): Promise<PublicA
         'Unable to load access settings',
     )
   }
-  return data
+  return {
+    mode: data.mode === 'public' || data.mode === 'private' ? data.mode : 'private',
+    authorizationGeneration: data.authorizationGeneration,
+  }
 }
 
 /**
- * Cached anonymous-Home setting with a tiny subscriber set. The value is
- * public and non-sensitive; it only decides whether Guests may render Home
- * (the Server still enforces every read). A failed refresh keeps the last
- * value; the initial safe default is `false` (Home is private by default).
+ * Cached Site Access Mode with a tiny subscriber set. The value is
+ * public and non-sensitive; it only decides whether anonymous visitors may
+ * render Home (the Server still enforces every read). A failed refresh keeps
+ * the last value; the initial safe default is Private.
  */
-let guestEnabledCache: boolean | null = null
-const guestEnabledListeners = new Set<(enabled: boolean) => void>()
+let siteAccessModeCache: SiteAccessMode | null = null
+const siteAccessModeListeners = new Set<(mode: SiteAccessMode) => void>()
 
-export function getGuestEnabled(): boolean | null {
-  return guestEnabledCache
+export function getSiteAccessMode(): SiteAccessMode | null {
+  return siteAccessModeCache
 }
 
-export function subscribeGuestEnabled(listener: (enabled: boolean) => void): () => void {
-  guestEnabledListeners.add(listener)
-  return () => guestEnabledListeners.delete(listener)
+export function subscribeSiteAccessMode(listener: (mode: SiteAccessMode) => void): () => void {
+  siteAccessModeListeners.add(listener)
+  return () => siteAccessModeListeners.delete(listener)
 }
 
-/** Re-read the anonymous-Home setting and notify subscribers. Returns the
- * new value, or `false` when the probe fails (private-by-default fallback). */
-export async function refreshGuestEnabled(signal?: AbortSignal): Promise<boolean> {
+/** Re-read the Site Access Mode and notify subscribers. */
+export async function refreshSiteAccessMode(signal?: AbortSignal): Promise<SiteAccessMode> {
   try {
     const settings = await fetchAccessSettings(signal)
-    guestEnabledCache = settings.guestEnabled
+    siteAccessModeCache = settings.mode
   } catch (caught) {
     if (caught instanceof DOMException && caught.name === 'AbortError') throw caught
-    guestEnabledCache = false
+    siteAccessModeCache = 'private'
   }
-  for (const listener of guestEnabledListeners) listener(guestEnabledCache)
-  return guestEnabledCache
+  for (const listener of siteAccessModeListeners) listener(siteAccessModeCache)
+  return siteAccessModeCache
 }
 
-export async function ensureGuestEnabledKnown(): Promise<boolean> {
-  if (guestEnabledCache === null) await refreshGuestEnabled()
-  return guestEnabledCache ?? false
+export async function ensureSiteAccessModeKnown(): Promise<SiteAccessMode> {
+  if (siteAccessModeCache === null) await refreshSiteAccessMode()
+  return siteAccessModeCache ?? 'private'
 }
 
 export async function fetchNodePeerHistory(nodeId: string, signal?: AbortSignal): Promise<PublicPeerHistory> {

@@ -4,7 +4,7 @@ import SignOutButton from '../components/SignOutButton'
 import { useAuth } from '../auth/AuthContext'
 import {
   fetchNetworks,
-  refreshGuestEnabled,
+  refreshSiteAccessMode,
   usePublicRealtime,
 } from '../api/public'
 import type { PublicNetwork } from '../api/generated'
@@ -70,11 +70,11 @@ export default function HomeLayout() {
     const controller = new AbortController()
     accessController.current = controller
     void recheckSession()
-    void refreshGuestEnabled(controller.signal)
-      .then((enabled) => {
+    void refreshSiteAccessMode(controller.signal)
+      .then((mode) => {
         if (controller.signal.aborted) return
         const current = authRef.current
-        if (!enabled && current.state !== 'authenticated') {
+        if (mode !== 'public' && current.state !== 'authenticated') {
           navigate('/login', { replace: true })
         } else {
           setResetting(false)

@@ -10,16 +10,16 @@
     "version": "0.1.0"
   },
   "paths": {
-    "/api/admin/v1/access": {
+    "/api/admin/v1/access-mode": {
       "get": {
         "tags": [
           "admin"
         ],
-        "summary": "Owner-only read of the anonymous Home (Guest) setting.",
+        "summary": "Owner-only read of the Server-wide Site Access Mode.",
         "operationId": "get_access_settings",
         "responses": {
           "200": {
-            "description": "",
+            "description": "The current Site Access Mode and authorization generation",
             "content": {
               "application/json": {
                 "schema": {
@@ -54,7 +54,7 @@
         "tags": [
           "admin"
         ],
-        "summary": "Owner-only toggle of anonymous Home (Guest) access (design §12.1).\nDisabling closes every open Guest stream (their bound check sees the\nsetting change) and publishes a collection-level Public reset so open\npages clear cached projections and re-resolve authorization; enabling\npublishes the same reset so anonymous visitors can render Home.",
+        "summary": "Owner-only Site Access Mode transition. It requires explicit confirmation,\nrecords old/new values in one Audit transaction, advances the durable\nauthorization generation, and publishes a Public reset.",
         "operationId": "set_access_settings",
         "requestBody": {
           "content": {
@@ -5101,7 +5101,7 @@
         "operationId": "public_access_settings",
         "responses": {
           "200": {
-            "description": "Whether anonymous Home access is enabled",
+            "description": "The current Site Access Mode and authorization generation",
             "content": {
               "application/json": {
                 "schema": {
@@ -5688,22 +5688,31 @@
       "AccessSettingsRequest": {
         "type": "object",
         "required": [
-          "guestEnabled"
+          "mode",
+          "confirmed"
         ],
         "properties": {
-          "guestEnabled": {
+          "confirmed": {
             "type": "boolean"
+          },
+          "mode": {
+            "type": "string"
           }
         }
       },
       "AccessSettingsResponse": {
         "type": "object",
         "required": [
-          "guestEnabled"
+          "mode",
+          "authorizationGeneration"
         ],
         "properties": {
-          "guestEnabled": {
-            "type": "boolean"
+          "authorizationGeneration": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "mode": {
+            "type": "string"
           }
         }
       },
@@ -10064,13 +10073,18 @@
       },
       "PublicAccessSettings": {
         "type": "object",
-        "description": "Non-sensitive Public access projection: whether anonymous Home (Guest\naccess) is currently enabled (design §12.1). This is the only public\nroute reachable without a Session in both modes: the WebUI needs it to\ndecide whether an anonymous visitor may render Home or must sign in. It\ncarries no DTO from any other namespace and no session material.",
+        "description": "Non-sensitive Public access projection: the Site Access Mode and durable\nauthorization generation. This is the only public\nroute reachable without a Session in both modes: the WebUI needs it to\ndecide whether an anonymous visitor may render Home or must sign in. It\ncarries no DTO from any other namespace and no session material.",
         "required": [
-          "guestEnabled"
+          "mode",
+          "authorizationGeneration"
         ],
         "properties": {
-          "guestEnabled": {
-            "type": "boolean"
+          "authorizationGeneration": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "mode": {
+            "type": "string"
           }
         }
       },

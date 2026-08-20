@@ -365,13 +365,17 @@ impl RealtimeHub {
             loop {
                 tokio::select! {
                     _ = check.tick() => {
-                        if !crate::auth::anonymous_home_enabled(&db).await.unwrap_or(false) {
+                        if crate::auth::site_access_mode(&db).await.ok()
+                            != Some(crate::auth::SiteAccessMode::Public)
+                        {
                             let _ = sender.send(Self::reset_event()).await;
                             break;
                         }
                     }
                     result = async {
-                        if !crate::auth::anonymous_home_enabled(&db).await.unwrap_or(false) {
+                        if crate::auth::site_access_mode(&db).await.ok()
+                            != Some(crate::auth::SiteAccessMode::Public)
+                        {
                             let _ = sender.send(Self::reset_event()).await;
                             return true;
                         }
@@ -607,7 +611,7 @@ mod tests {
     async fn guest_stream_closes_when_anonymous_home_is_disabled() {
         let (_dir, db, _config) = stream_db().await;
         sqlx::query(
-            "INSERT INTO server_settings (setting_key, setting_value, updated_at) VALUES ('anonymous_home', '1', '2026-01-01T00:00:00Z')",
+            "UPDATE server_settings SET setting_value = 'public' WHERE setting_key = 'site_access_mode'",
         )
         .execute(db.pool())
         .await
@@ -615,7 +619,7 @@ mod tests {
         let hub = RealtimeHub::new(8);
         let mut stream = Box::pin(hub.stream_with_guest(None, Arc::clone(&db)));
         sqlx::query(
-            "UPDATE server_settings SET setting_value = '0' WHERE setting_key = 'anonymous_home'",
+            "UPDATE server_settings SET setting_value = 'private' WHERE setting_key = 'site_access_mode'",
         )
         .execute(db.pool())
         .await
@@ -626,7 +630,8 @@ mod tests {
             .expect("stream must stay open");
         assert!(item.is_ok(), "the reset event must not be an error");
         assert!(
-            !crate::auth::anonymous_home_enabled(&db).await.unwrap(),
+            crate::auth::site_access_mode(&db).await.unwrap()
+                == crate::auth::SiteAccessMode::Private,
             "anonymous Home must be disabled again"
         );
     }

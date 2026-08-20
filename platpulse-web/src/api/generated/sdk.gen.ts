@@ -19,19 +19,17 @@ export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends 
 };
 
 /**
- * Owner-only read of the anonymous Home (Guest) setting.
+ * Owner-only read of the Server-wide Site Access Mode.
  */
-export const getAccessSettings = <ThrowOnError extends boolean = false>(options?: Options<GetAccessSettingsData, ThrowOnError>): RequestResult<GetAccessSettingsResponses, GetAccessSettingsErrors, ThrowOnError> => (options?.client ?? client).get<GetAccessSettingsResponses, GetAccessSettingsErrors, ThrowOnError>({ url: '/api/admin/v1/access', ...options });
+export const getAccessSettings = <ThrowOnError extends boolean = false>(options?: Options<GetAccessSettingsData, ThrowOnError>): RequestResult<GetAccessSettingsResponses, GetAccessSettingsErrors, ThrowOnError> => (options?.client ?? client).get<GetAccessSettingsResponses, GetAccessSettingsErrors, ThrowOnError>({ url: '/api/admin/v1/access-mode', ...options });
 
 /**
- * Owner-only toggle of anonymous Home (Guest) access (design §12.1).
- * Disabling closes every open Guest stream (their bound check sees the
- * setting change) and publishes a collection-level Public reset so open
- * pages clear cached projections and re-resolve authorization; enabling
- * publishes the same reset so anonymous visitors can render Home.
+ * Owner-only Site Access Mode transition. It requires explicit confirmation,
+ * records old/new values in one Audit transaction, advances the durable
+ * authorization generation, and publishes a Public reset.
  */
 export const setAccessSettings = <ThrowOnError extends boolean = false>(options: Options<SetAccessSettingsData, ThrowOnError>): RequestResult<SetAccessSettingsResponses, SetAccessSettingsErrors, ThrowOnError> => (options.client ?? client).put<SetAccessSettingsResponses, SetAccessSettingsErrors, ThrowOnError>({
-    url: '/api/admin/v1/access',
+    url: '/api/admin/v1/access-mode',
     ...options,
     headers: {
         'Content-Type': 'application/json',

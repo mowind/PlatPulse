@@ -80,7 +80,7 @@ function mockFetch(routes: Record<string, () => Response | Promise<Response>>) {
     const request = input instanceof Request ? input : new Request(String(input), init)
     const url = request.url.replace(TEST_ORIGIN, '')
     if (url === '/api/public/v1/access') {
-      return jsonResponse({ guestEnabled: false }, 200)
+      return jsonResponse({ mode: 'private', authorizationGeneration: 0 }, 200)
     }
     for (const [pattern, handler] of Object.entries(routes)) {
       if (pattern.endsWith('*')) {

@@ -5,11 +5,13 @@ export type ClientOptions = {
 };
 
 export type AccessSettingsRequest = {
-    guestEnabled: boolean;
+    confirmed: boolean;
+    mode: string;
 };
 
 export type AccessSettingsResponse = {
-    guestEnabled: boolean;
+    authorizationGeneration: number;
+    mode: string;
 };
 
 export type AdminBlockHistoryItem = {
@@ -1170,14 +1172,15 @@ export type ProcessDiagnostic = {
 };
 
 /**
- * Non-sensitive Public access projection: whether anonymous Home (Guest
- * access) is currently enabled (design §12.1). This is the only public
+ * Non-sensitive Public access projection: the Site Access Mode and durable
+ * authorization generation. This is the only public
  * route reachable without a Session in both modes: the WebUI needs it to
  * decide whether an anonymous visitor may render Home or must sign in. It
  * carries no DTO from any other namespace and no session material.
  */
 export type PublicAccessSettings = {
-    guestEnabled: boolean;
+    authorizationGeneration: number;
+    mode: string;
 };
 
 export type PublicBlockHistoryItem = {
@@ -1869,7 +1872,7 @@ export type GetAccessSettingsData = {
     body?: never;
     path?: never;
     query?: never;
-    url: '/api/admin/v1/access';
+    url: '/api/admin/v1/access-mode';
 };
 
 export type GetAccessSettingsErrors = {
@@ -1880,6 +1883,9 @@ export type GetAccessSettingsErrors = {
 export type GetAccessSettingsError = GetAccessSettingsErrors[keyof GetAccessSettingsErrors];
 
 export type GetAccessSettingsResponses = {
+    /**
+     * The current Site Access Mode and authorization generation
+     */
     200: AccessSettingsResponse;
 };
 
@@ -1889,7 +1895,7 @@ export type SetAccessSettingsData = {
     body: AccessSettingsRequest;
     path?: never;
     query?: never;
-    url: '/api/admin/v1/access';
+    url: '/api/admin/v1/access-mode';
 };
 
 export type SetAccessSettingsErrors = {
@@ -3953,7 +3959,7 @@ export type PublicAccessSettingsData = {
 
 export type PublicAccessSettingsResponses = {
     /**
-     * Whether anonymous Home access is enabled
+     * The current Site Access Mode and authorization generation
      */
     200: PublicAccessSettings;
 };

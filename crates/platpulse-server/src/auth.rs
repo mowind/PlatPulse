@@ -58,22 +58,59 @@ pub const LOGIN_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(15 * 60);
 /// `last_seen_at` is written at most this often (design §12.3).
 pub const SESSION_ACTIVITY_THROTTLE: Duration = Duration::from_secs(60);
 
-/// `server_settings` key controlling anonymous Home access (design §12.1:
-/// Guest may use Public Projections only when anonymous Home is explicitly
-/// enabled; §13.1: Guest disabled means Public API requires a Session).
-pub const SETTING_ANONYMOUS_HOME: &str = "anonymous_home";
+/// `server_settings` key controlling the Server-wide Site Access Mode.
+pub const SETTING_SITE_ACCESS_MODE: &str = "site_access_mode";
+/// Durable authorization generation for site-wide authorization transitions.
+pub const SETTING_AUTHORIZATION_GENERATION: &str = "authorization_generation";
 
-/// Read whether anonymous Home (Guest access) is currently enabled. The
-/// setting lives in `server_settings` so it survives restarts and is
-/// mutated only through the Owner Admin mutation, never by Agents.
-pub async fn anonymous_home_enabled(db: &ServerDatabase) -> Result<bool, sqlx::Error> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SiteAccessMode {
+    Public,
+    Private,
+}
+
+impl SiteAccessMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Public => "public",
+            Self::Private => "private",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "public" => Some(Self::Public),
+            "private" => Some(Self::Private),
+            _ => None,
+        }
+    }
+}
+
+/// Read the Server-wide Home policy. Missing or malformed values fail closed.
+pub async fn site_access_mode(db: &ServerDatabase) -> Result<SiteAccessMode, sqlx::Error> {
     let value = sqlx::query_scalar::<_, String>(
         "SELECT setting_value FROM server_settings WHERE setting_key = ?",
     )
-    .bind(SETTING_ANONYMOUS_HOME)
+    .bind(SETTING_SITE_ACCESS_MODE)
     .fetch_optional(db.pool())
     .await?;
-    Ok(value.as_deref() == Some("1"))
+    Ok(value
+        .as_deref()
+        .and_then(SiteAccessMode::parse)
+        .unwrap_or(SiteAccessMode::Private))
+}
+
+/// Read the durable authorization generation, failing closed to generation 0.
+pub async fn authorization_generation(db: &ServerDatabase) -> Result<i64, sqlx::Error> {
+    let value = sqlx::query_scalar::<_, String>(
+        "SELECT setting_value FROM server_settings WHERE setting_key = ?",
+    )
+    .bind(SETTING_AUTHORIZATION_GENERATION)
+    .fetch_optional(db.pool())
+    .await?;
+    Ok(value
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(0))
 }
 
 /// Whether at least one enabled Owner exists (design §12.2).
@@ -183,10 +220,13 @@ pub async fn session_is_current(
     let now = now_utc();
     let expires_at = parse_rfc3339(&expires).unwrap_or(now);
     let last_seen_at = parse_rfc3339(&last_seen).unwrap_or(now);
-    now <= expires_at
-        && now
-            <= last_seen_at
-                + time::Duration::try_from(config.idle_timeout).expect("idle timeout fits")
+    let idle_cutoff =
+        last_seen_at + time::Duration::try_from(config.idle_timeout).expect("idle timeout fits");
+    if now > expires_at || now > idle_cutoff {
+        let _ = expire_session(db, session_id).await;
+        return false;
+    }
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -434,17 +474,43 @@ async fn find_user_by_username(
 /// Revoke every active Session of one user (design §12.1/§12.3: password,
 /// role, and disabled changes invalidate the related Sessions immediately).
 /// Returns the number of Sessions actually revoked.
-pub async fn revoke_user_sessions<'e, E>(executor: E, user_id: &str) -> Result<u64, sqlx::Error>
-where
-    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
-{
+pub async fn revoke_user_sessions(
+    executor: &mut sqlx::SqliteConnection,
+    user_id: &str,
+) -> Result<u64, sqlx::Error> {
     let result =
         sqlx::query("UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL")
             .bind(format_rfc3339(now_utc()))
             .bind(user_id)
-            .execute(executor)
+            .execute(&mut *executor)
             .await?;
+    if result.rows_affected() > 0 {
+        bump_authorization_generation(&mut *executor).await?;
+    }
     Ok(result.rows_affected())
+}
+
+/// Advance the durable authorization generation inside the caller's
+/// transaction. The generation is a transition signal, never a bearer token.
+pub async fn bump_authorization_generation(
+    executor: &mut sqlx::SqliteConnection,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar::<_, String>(
+        "UPDATE server_settings
+            SET setting_value = CAST(CAST(setting_value AS INTEGER) + 1 AS TEXT),
+                updated_at = ?
+          WHERE setting_key = ?
+        RETURNING setting_value",
+    )
+    .bind(format_rfc3339(now_utc()))
+    .bind(SETTING_AUTHORIZATION_GENERATION)
+    .fetch_one(&mut *executor)
+    .await
+    .and_then(|value| {
+        value
+            .parse::<i64>()
+            .map_err(|error| sqlx::Error::Protocol(error.to_string()))
+    })
 }
 
 /// Insert an identity mutation into the bounded audit sink (design §18.2).
@@ -462,16 +528,45 @@ pub async fn insert_audit_event<'e, E>(
 where
     E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
 {
+    insert_audit_change(
+        executor,
+        actor_user_id,
+        event_kind,
+        target_kind,
+        target_id,
+        None,
+        after_json,
+    )
+    .await
+}
+
+/// Insert an Audit Event with explicit before/after values. Both sides are
+/// redacted before persistence so configuration transitions cannot retain
+/// sensitive input by accident.
+pub async fn insert_audit_change<'e, E>(
+    executor: E,
+    actor_user_id: Option<&str>,
+    event_kind: &str,
+    target_kind: &str,
+    target_id: &str,
+    before_json: Option<&serde_json::Value>,
+    after_json: Option<&serde_json::Value>,
+) -> Result<(), sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
     let created_at = format_rfc3339(now_utc());
+    let before_json = before_json.map(crate::redaction::redact_json_value);
     let after_json = after_json.map(crate::redaction::redact_json_value);
     let target_id = crate::redaction::redact_sensitive(target_id);
     sqlx::query(
-        "INSERT INTO audit_events (actor_user_id, event_kind, target_kind, target_id, before_json, after_json, created_at) VALUES (?, ?, ?, ?, NULL, ?, ?)",
+        "INSERT INTO audit_events (actor_user_id, event_kind, target_kind, target_id, before_json, after_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(actor_user_id)
     .bind(event_kind)
     .bind(target_kind)
     .bind(target_id)
+    .bind(before_json.as_ref().map(serde_json::Value::to_string))
     .bind(after_json.as_ref().map(serde_json::Value::to_string))
     .bind(created_at)
     .execute(executor)
@@ -754,16 +849,9 @@ pub async fn authenticate_token(
     let now = now_utc();
     let expires_at = parse_rfc3339(&row.expires_at).unwrap_or(now);
     let last_seen_at = parse_rfc3339(&row.last_seen_at).unwrap_or(now);
-    if now > expires_at {
-        return Err(SessionError::Expired);
-    }
     let idle_cutoff = last_seen_at
         + time::Duration::try_from(config.idle_timeout)
             .expect("idle timeout fits in time::Duration");
-    if now > idle_cutoff {
-        return Err(SessionError::Expired);
-    }
-
     let expected_digest = config.pepper.hmac_digest(full_token.as_bytes());
     if !bool::from(expected_digest.ct_eq(&row.token_digest)) {
         return Err(SessionError::Invalid);
@@ -774,6 +862,12 @@ pub async fn authenticate_token(
         return Err(SessionError::Invalid);
     }
 
+    if now > expires_at || now > idle_cutoff {
+        expire_session(db, &row.session_id)
+            .await
+            .map_err(|_| SessionError::Invalid)?;
+        return Err(SessionError::Expired);
+    }
     Ok(SessionInfo {
         session_id: row.session_id,
         user_id: row.user_id,
@@ -784,6 +878,24 @@ pub async fn authenticate_token(
         expires_at,
         csrf_token,
     })
+}
+
+/// Mark one expired session revoked and advance authorization generation once.
+/// Expiry is lazy: the first request that presents an otherwise valid expired
+/// token performs the durable transition; later requests observe the revoke.
+async fn expire_session(db: &ServerDatabase, session_id: &str) -> Result<(), sqlx::Error> {
+    let mut transaction = db.pool().begin().await?;
+    let result = sqlx::query(
+        "UPDATE sessions SET revoked_at = ? WHERE session_id = ? AND revoked_at IS NULL",
+    )
+    .bind(format_rfc3339(now_utc()))
+    .bind(session_id)
+    .execute(&mut *transaction)
+    .await?;
+    if result.rows_affected() > 0 {
+        bump_authorization_generation(&mut transaction).await?;
+    }
+    transaction.commit().await
 }
 
 /// Login: verify credentials and create a fresh session. Returns the new
@@ -839,6 +951,9 @@ pub async fn login(
         .execute(&mut *transaction)
         .await
         .map_err(LoginError::Database)?;
+        bump_authorization_generation(&mut transaction)
+            .await
+            .map_err(LoginError::Database)?;
     }
 
     let (session, full_token) = insert_session(
@@ -869,13 +984,18 @@ pub async fn login(
 
 /// Revoke one session by id; the owning user stays intact.
 pub async fn revoke_session(db: &ServerDatabase, session_id: &str) -> Result<bool, sqlx::Error> {
+    let mut transaction = db.pool().begin().await?;
     let result = sqlx::query(
         "UPDATE sessions SET revoked_at = ? WHERE session_id = ? AND revoked_at IS NULL",
     )
     .bind(format_rfc3339(now_utc()))
     .bind(session_id)
-    .execute(db.pool())
+    .execute(&mut *transaction)
     .await?;
+    if result.rows_affected() > 0 {
+        bump_authorization_generation(&mut transaction).await?;
+    }
+    transaction.commit().await?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -1308,11 +1428,27 @@ mod tests {
         .await
         .unwrap();
 
+        let before_generation = authorization_generation(&db).await.unwrap();
+
         assert_eq!(
             authenticate_token(&db, &config, &full_token)
                 .await
                 .unwrap_err(),
             SessionError::Expired
+        );
+        assert_eq!(
+            authorization_generation(&db).await.unwrap(),
+            before_generation + 1
+        );
+        assert!(
+            sqlx::query_scalar::<_, Option<String>>(
+                "SELECT revoked_at FROM sessions WHERE session_id = ?",
+            )
+            .bind(&token_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap()
+            .is_some()
         );
     }
 

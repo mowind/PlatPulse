@@ -21,8 +21,9 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::auth::{
-    IdentityError, count_enabled_owners, format_rfc3339, hash_password, now_utc,
-    revoke_user_sessions, validate_password, validate_username,
+    IdentityError, SiteAccessMode, authorization_generation, count_enabled_owners, format_rfc3339,
+    hash_password, now_utc, revoke_user_sessions, site_access_mode, validate_password,
+    validate_username,
 };
 use crate::http::admin::{mutation_error, mutation_guard_ok};
 use crate::http::{AppState, AuthenticatedSession, ROUTE_GROUP_HEADER, RequestId};
@@ -153,13 +154,15 @@ pub struct AuditQuery {
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AccessSettingsResponse {
-    pub guest_enabled: bool,
+    pub mode: String,
+    pub authorization_generation: i64,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AccessSettingsRequest {
-    pub guest_enabled: bool,
+    pub mode: String,
+    pub confirmed: bool,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -454,7 +457,7 @@ pub(crate) async fn set_person_role(
             .bind(&user_id)
             .execute(&mut *tx)
             .await?;
-        revoke_user_sessions(&mut *tx, &user_id).await?;
+        revoke_user_sessions(&mut tx, &user_id).await?;
         let after = serde_json::json!({ "username": username, "role": body.role });
         crate::auth::insert_audit_event(
             &mut *tx,
@@ -587,7 +590,7 @@ pub(crate) async fn set_person_status(
             .execute(&mut *tx)
             .await?;
         if body.disabled {
-            revoke_user_sessions(&mut *tx, &user_id).await?;
+            revoke_user_sessions(&mut tx, &user_id).await?;
         }
         let after = serde_json::json!({ "username": username, "disabled": body.disabled });
         crate::auth::insert_audit_event(
@@ -724,7 +727,7 @@ pub(crate) async fn reset_person_password(
             .bind(&user_id)
             .execute(&mut *tx)
             .await?;
-        revoke_user_sessions(&mut *tx, &user_id).await?;
+        revoke_user_sessions(&mut tx, &user_id).await?;
         let after = serde_json::json!({ "username": username });
         crate::auth::insert_audit_event(
             &mut *tx,
@@ -907,6 +910,7 @@ pub(crate) async fn revoke_session(
         if result.rows_affected() == 0 {
             return Ok(RevokeOutcome::AlreadyRevoked);
         }
+        crate::auth::bump_authorization_generation(&mut tx).await?;
         let after = serde_json::json!({ "username": username, "sessionId": session_id });
         crate::auth::insert_audit_event(
             &mut *tx,
@@ -1002,6 +1006,9 @@ pub(crate) async fn revoke_other_sessions(
         .execute(&mut *tx)
         .await?;
         let count = result.rows_affected();
+        if count > 0 {
+            crate::auth::bump_authorization_generation(&mut tx).await?;
+        }
         let after =
             serde_json::json!({ "username": principal.0.username, "revokedCount": count });
         crate::auth::insert_audit_event(
@@ -1120,20 +1127,27 @@ pub(crate) async fn audit_list(
     }
 }
 
-/// Owner-only read of the anonymous Home (Guest) setting.
+/// Owner-only read of the Server-wide Site Access Mode.
 #[utoipa::path(
     get,
-    path = "/api/admin/v1/access",
+    path = "/api/admin/v1/access-mode",
     tag = "admin",
-    responses((status = 200, body = AccessSettingsResponse), (status = 403, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
+    responses((status = 200, description = "The current Site Access Mode and authorization generation", body = AccessSettingsResponse), (status = 403, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
 )]
 pub(crate) async fn get_access_settings(
     State(state): State<AppState>,
     Extension(_session): Extension<AuthenticatedSession>,
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
-    match crate::auth::anonymous_home_enabled(state.db()).await {
-        Ok(guest_enabled) => Json(AccessSettingsResponse { guest_enabled }).into_response(),
+    match tokio::try_join!(
+        site_access_mode(state.db()),
+        authorization_generation(state.db())
+    ) {
+        Ok((mode, generation)) => Json(AccessSettingsResponse {
+            mode: mode.as_str().to_owned(),
+            authorization_generation: generation,
+        })
+        .into_response(),
         Err(_) => mutation_error(
             &request_id.0,
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1143,14 +1157,12 @@ pub(crate) async fn get_access_settings(
     }
 }
 
-/// Owner-only toggle of anonymous Home (Guest) access (design §12.1).
-/// Disabling closes every open Guest stream (their bound check sees the
-/// setting change) and publishes a collection-level Public reset so open
-/// pages clear cached projections and re-resolve authorization; enabling
-/// publishes the same reset so anonymous visitors can render Home.
+/// Owner-only Site Access Mode transition. It requires explicit confirmation,
+/// records old/new values in one Audit transaction, advances the durable
+/// authorization generation, and publishes a Public reset.
 #[utoipa::path(
     put,
-    path = "/api/admin/v1/access",
+    path = "/api/admin/v1/access-mode",
     tag = "admin",
     request_body = AccessSettingsRequest,
     responses((status = 200, body = AccessSettingsResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
@@ -1181,7 +1193,22 @@ pub(crate) async fn set_access_settings(
             );
         }
     };
-    let value = if body.guest_enabled { "1" } else { "0" };
+    let Some(mode) = SiteAccessMode::parse(&body.mode) else {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::BAD_REQUEST,
+            "invalid_site_access_mode",
+            "mode must be public or private",
+        );
+    };
+    if !body.confirmed {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::BAD_REQUEST,
+            "confirmation_required",
+            "changing Site Access Mode requires confirmation",
+        );
+    }
     let mut tx = match state.db().pool().begin().await {
         Ok(tx) => tx,
         Err(_) => {
@@ -1193,37 +1220,68 @@ pub(crate) async fn set_access_settings(
             );
         }
     };
-    let outcome: Result<(), sqlx::Error> = async {
-        sqlx::query(
-            "INSERT INTO server_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?)
-             ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = excluded.updated_at",
+    let outcome: Result<Option<i64>, sqlx::Error> = async {
+        let current = sqlx::query_scalar::<_, String>(
+            "SELECT setting_value FROM server_settings WHERE setting_key = ?",
         )
-        .bind(crate::auth::SETTING_ANONYMOUS_HOME)
-        .bind(value)
-        .bind(format_rfc3339(now_utc()))
+        .bind(crate::auth::SETTING_SITE_ACCESS_MODE)
+        .fetch_one(&mut *tx)
+        .await?;
+        let current = SiteAccessMode::parse(&current).unwrap_or(SiteAccessMode::Private);
+        let generation = sqlx::query_scalar::<_, String>(
+            "SELECT setting_value FROM server_settings WHERE setting_key = ?",
+        )
+        .bind(crate::auth::SETTING_AUTHORIZATION_GENERATION)
+        .fetch_one(&mut *tx)
+        .await?
+        .parse::<i64>()
+        .unwrap_or(0);
+        if current == mode {
+            return Ok(Some(generation));
+        }
+        let now = format_rfc3339(now_utc());
+        sqlx::query(
+            "UPDATE server_settings SET setting_value = ?, updated_at = ? WHERE setting_key = ?",
+        )
+        .bind(mode.as_str())
+        .bind(&now)
+        .bind(crate::auth::SETTING_SITE_ACCESS_MODE)
         .execute(&mut *tx)
         .await?;
-        let after = serde_json::json!({ "guestEnabled": body.guest_enabled });
-        crate::auth::insert_audit_event(
+        let next_generation = crate::auth::bump_authorization_generation(&mut tx).await?;
+        let before = serde_json::json!({
+            "mode": current.as_str(),
+            "authorizationGeneration": generation,
+        });
+        let after = serde_json::json!({
+            "mode": mode.as_str(),
+            "authorizationGeneration": next_generation,
+        });
+        crate::auth::insert_audit_change(
             &mut *tx,
             Some(&principal.0.user_id),
-            "guest_access_changed",
+            "site_access_mode_changed",
             "access",
-            crate::auth::SETTING_ANONYMOUS_HOME,
+            crate::auth::SETTING_SITE_ACCESS_MODE,
+            Some(&before),
             Some(&after),
         )
         .await?;
-        Ok(())
+        Ok(Some(next_generation))
     }
     .await;
-    if outcome.is_err() {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        );
-    }
+    let generation = match outcome {
+        Ok(Some(generation)) => generation,
+        Ok(None) => unreachable!("access transition always returns a generation"),
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    };
     if tx.commit().await.is_err() {
         return mutation_error(
             &request_id.0,
@@ -1232,10 +1290,15 @@ pub(crate) async fn set_access_settings(
             "server database is unavailable",
         );
     }
-    state.admin_realtime().publish("access", None::<String>, 0);
-    state.public_realtime().publish_reset("guest_access", 0);
+    state
+        .admin_realtime()
+        .publish("access", None::<String>, generation as u64);
+    state
+        .public_realtime()
+        .publish_reset("site_access_mode", generation as u64);
     Json(AccessSettingsResponse {
-        guest_enabled: body.guest_enabled,
+        mode: mode.as_str().to_owned(),
+        authorization_generation: generation,
     })
     .into_response()
 }
@@ -1275,8 +1338,8 @@ pub fn router() -> Router<AppState> {
         .route("/sessions/{session_id}/revoke", post(revoke_session))
         .route("/sessions/revoke-others", post(revoke_other_sessions))
         .route("/audit", get(audit_list))
-        .route("/access", get(get_access_settings))
-        .route("/access", put(set_access_settings))
+        .route("/access-mode", get(get_access_settings))
+        .route("/access-mode", put(set_access_settings))
         .layer(axum::middleware::from_fn(group_middleware))
 }
 
@@ -1744,13 +1807,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn guest_toggle_persists_and_is_audited() {
+    async fn site_access_mode_requires_confirmation_and_audits_generation_transition() {
         let (_dir, state) = test_state().await;
         let (user_id, _) = seed_owner_with_session(&state).await;
         assert!(
-            !crate::auth::anonymous_home_enabled(state.db())
-                .await
-                .unwrap(),
+            crate::auth::site_access_mode(state.db()).await.unwrap() == SiteAccessMode::Private,
             "Guest access must be disabled by default"
         );
 
@@ -1759,38 +1820,60 @@ mod tests {
             mutation_headers(),
             Extension(session(&user_id, "admin", "owner")),
             Extension(RequestId(std::sync::Arc::from("test"))),
-            axum::body::Bytes::from_static(br#"{"guestEnabled":true}"#),
+            axum::body::Bytes::from_static(br#"{"mode":"public","confirmed":false}"#),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        assert!(
-            crate::auth::anonymous_home_enabled(state.db())
-                .await
-                .unwrap()
-        );
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"]["code"], "confirmation_required");
 
         let response = set_access_settings(
             State(state.clone()),
             mutation_headers(),
             Extension(session(&user_id, "admin", "owner")),
             Extension(RequestId(std::sync::Arc::from("test"))),
-            axum::body::Bytes::from_static(br#"{"guestEnabled":false}"#),
+            axum::body::Bytes::from_static(br#"{"mode":"public","confirmed":true}"#),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(crate::auth::site_access_mode(state.db()).await.unwrap() == SiteAccessMode::Public);
+
+        let response = set_access_settings(
+            State(state.clone()),
+            mutation_headers(),
+            Extension(session(&user_id, "admin", "owner")),
+            Extension(RequestId(std::sync::Arc::from("test"))),
+            axum::body::Bytes::from_static(br#"{"mode":"private","confirmed":true}"#),
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
         assert!(
-            !crate::auth::anonymous_home_enabled(state.db())
-                .await
-                .unwrap()
+            crate::auth::site_access_mode(state.db()).await.unwrap() == SiteAccessMode::Private
         );
 
         let audit: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM audit_events WHERE event_kind = 'guest_access_changed'",
+            "SELECT COUNT(*) FROM audit_events WHERE event_kind = 'site_access_mode_changed'",
         )
         .fetch_one(state.db().pool())
         .await
         .unwrap();
         assert_eq!(audit, 2);
+        let (before, after): (String, String) = sqlx::query_as(
+            "SELECT before_json, after_json FROM audit_events
+             WHERE event_kind = 'site_access_mode_changed' ORDER BY audit_event_id LIMIT 1",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert!(before.contains("private"));
+        assert!(after.contains("public"));
+        assert_eq!(
+            crate::auth::authorization_generation(state.db())
+                .await
+                .unwrap(),
+            2
+        );
     }
 
     #[tokio::test]

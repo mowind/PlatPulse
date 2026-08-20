@@ -15,7 +15,7 @@ import type { Person } from '../api/generated'
 
 /**
  * PAGE-ACCESS-PEOPLE (design §12.1, issue #47): People and role management
- * plus the anonymous Home (Guest) toggle. Rows show role, disabled state,
+ * plus the Site Access Mode control. Rows show role, disabled state,
  * and active Session count — never passwords or credential material. All
  * mutations are authoritative (no optimistic state); the Server protects
  * the final valid Owner and revokes the affected user's Sessions on role,
@@ -47,14 +47,14 @@ export default function AdminPeople() {
           {error}
         </p>
       )}
-      <GuestAccessPanel query={access} csrfToken={csrfToken} />
+      <SiteAccessModePanel query={access} csrfToken={csrfToken} />
       <PeoplePanel query={people} csrfToken={csrfToken} onMessage={setMessage} onError={setError} />
       <CreatePersonForm csrfToken={csrfToken} onMessage={setMessage} onError={setError} />
     </section>
   )
 }
 
-function GuestAccessPanel({
+function SiteAccessModePanel({
   query,
   csrfToken,
 }: {
@@ -64,19 +64,27 @@ function GuestAccessPanel({
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const enabled = query.data?.guestEnabled
+  const mode = query.data?.mode
 
   async function toggle() {
-    if (enabled === undefined || busy) return
+    if (mode === undefined || busy) return
+    const nextMode = mode === 'public' ? 'private' : 'public'
+    if (!window.confirm(
+      nextMode === 'public'
+        ? 'Make Home Public? Unauthenticated visitors will be able to read Home projections.'
+        : 'Make Home Private? Unauthenticated visitors will lose access to Home projections.',
+    )) {
+      return
+    }
     setBusy(true)
     setMessage(null)
     setError(null)
     try {
-      const result = await updateAccessSettings(!enabled, csrfToken)
+      const result = await updateAccessSettings(nextMode, csrfToken)
       setMessage(
-        result.guestEnabled
-          ? 'Anonymous Home access is now enabled. Visitors can view published Nodes without signing in.'
-          : 'Anonymous Home access is now disabled. Visitors must sign in.',
+        result.mode === 'public'
+          ? 'Site Access Mode is now Public. Visitors can view Home without signing in.'
+          : 'Site Access Mode is now Private. Visitors must sign in.',
       )
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to update access')
@@ -88,18 +96,18 @@ function GuestAccessPanel({
   return (
     <article className="panel">
       <div className="panel-heading">
-        <h2>Anonymous Home access</h2>
-        {enabled === true && (
+        <h2>Site Access Mode</h2>
+        {mode === 'public' && (
           <span className="account-state account-state-enabled">
-            <span aria-hidden="true">✓</span> Enabled
+            <span aria-hidden="true">✓</span> Public
           </span>
         )}
-        {enabled === false && <StatusBadge status="Disabled" tone="neutral" />}
+        {mode === 'private' && <StatusBadge status="Private" tone="neutral" />}
       </div>
       <p className="muted">
-        When enabled, Guests can read the Home Public Projection without a
-        Session. Only explicitly published Nodes appear. Disabling closes all
-        open Guest streams immediately.
+        Public lets unauthenticated visitors read the Home Public Projection;
+        Private requires a Human Session. Every transition closes affected
+        streams and starts a new authorization generation.
       </p>
       {!query.data && query.isPending && (
         <p className="panel-state" role="status">
@@ -118,7 +126,7 @@ function GuestAccessPanel({
           disabled={busy}
           onClick={() => void toggle()}
         >
-          {busy ? 'Updating…' : enabled ? 'Disable anonymous Home' : 'Enable anonymous Home'}
+          {busy ? 'Updating…' : mode === 'public' ? 'Make Home Private' : 'Make Home Public'}
         </button>
       )}
       {message && (

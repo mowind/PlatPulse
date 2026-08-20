@@ -9,6 +9,7 @@
 
 import { QueryClient, useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
+import type { SiteAccessMode } from './public'
 import {
   adminAgentAudit,
   adminGeoStatus,
@@ -1080,9 +1081,22 @@ export function useAdminAudit(generation: number, filters: AuditFilters) {
   })
 }
 
-/** Owner-only read of the anonymous Home (Guest) setting. */
+/** Owner-only read of the Server-wide Site Access Mode. */
 export async function fetchAdminAccess(signal?: AbortSignal): Promise<AccessSettingsResponse> {
-  return requestAdmin(() => getAccessSettings({ signal }), 'Unable to load access settings')
+  const response = await requestAdmin(
+    () => getAccessSettings({ signal }),
+    'Unable to load Site Access Mode',
+  )
+  return normalizeAccessSettings(response)
+}
+
+function normalizeAccessSettings(
+  response: AccessSettingsResponse,
+): AccessSettingsResponse {
+  return {
+    mode: response.mode === 'public' || response.mode === 'private' ? response.mode : 'private',
+    authorizationGeneration: response.authorizationGeneration ?? 0,
+  }
 }
 
 export function useAdminAccess(generation: number) {
@@ -1092,23 +1106,23 @@ export function useAdminAccess(generation: number) {
   })
 }
 
-/** Toggle anonymous Home (Guest) access. The Server closes open Guest
- * streams on disable and publishes a Public collection reset in both
- * directions. */
+/** Change Site Access Mode. The Server requires explicit confirmation,
+ * audits old/new values, advances authorization generation, and resets
+ * affected Public streams. */
 export async function updateAccessSettings(
-  guestEnabled: boolean,
+  mode: SiteAccessMode,
   csrfToken: string,
 ): Promise<AccessSettingsResponse> {
   const response = await requestAdmin(
     () =>
       setAccessSettings({
-        body: { guestEnabled },
+        body: { mode, confirmed: true },
         headers: { 'X-CSRF-Token': csrfToken },
       }),
-    guestEnabled ? 'Unable to enable anonymous Home' : 'Unable to disable anonymous Home',
+    mode === 'public' ? 'Unable to make Home Public' : 'Unable to make Home Private',
   )
   void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
-  return response
+  return normalizeAccessSettings(response)
 }
 
 export type RealtimeStatus = 'connecting' | 'connected' | 'disconnected'

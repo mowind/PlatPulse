@@ -916,9 +916,8 @@ async fn session_guard(
             return next.run(request).await;
         }
         if guest_readable_path(&path)
-            && crate::auth::anonymous_home_enabled(state.db())
-                .await
-                .unwrap_or(false)
+            && crate::auth::site_access_mode(state.db()).await.ok()
+                == Some(crate::auth::SiteAccessMode::Public)
         {
             return next.run(request).await;
         }
@@ -2723,10 +2722,10 @@ mod tests {
         let (status, body) =
             json(get(build_app(state.clone()), "/api/public/v1/access").await).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["guestEnabled"], false);
+        assert_eq!(body["mode"], "private");
 
         sqlx::query(
-            "INSERT INTO server_settings (setting_key, setting_value, updated_at) VALUES ('anonymous_home', '1', '2026-01-01T00:00:00Z')",
+            "UPDATE server_settings SET setting_value = 'public' WHERE setting_key = 'site_access_mode'",
         )
         .execute(state.db().pool())
         .await
@@ -2746,7 +2745,7 @@ mod tests {
 
         // Disabling restores the session requirement immediately.
         sqlx::query(
-            "UPDATE server_settings SET setting_value = '0' WHERE setting_key = 'anonymous_home'",
+            "UPDATE server_settings SET setting_value = 'private' WHERE setting_key = 'site_access_mode'",
         )
         .execute(state.db().pool())
         .await
