@@ -524,6 +524,8 @@ pub struct PublicGeoInsight {
     pub attribution: Option<String>,
 }
 
+const PUBLIC_GEO_ERROR: &str = "Country data is currently unavailable";
+
 fn unknown_public_geo_insight() -> PublicGeoInsight {
     PublicGeoInsight {
         state: "disabled".to_owned(),
@@ -705,46 +707,48 @@ pub(crate) struct PublicBlockHistoryItem {
     pub protocol_proposer: Option<String>,
 }
 #[derive(Debug, sqlx::FromRow)]
-pub(crate) struct HistoryRow {
+struct PublicHistoryRow {
     pub block_number: Option<i64>,
     pub block_timestamp_ms: Option<i64>,
     pub transaction_count: Option<i64>,
     pub source: Option<String>,
     pub coinbase: Option<String>,
     pub seal_signer_match: Option<String>,
-    pub seal_signer_key_fingerprint: Option<String>,
-    pub node_key_fingerprint: Option<String>,
-    pub node_key_valid_from: Option<String>,
-    pub node_key_valid_until: Option<String>,
-    pub seal_recovery_rule: Option<String>,
-    pub seal_evidence: Option<String>,
     pub protocol_proposer: Option<String>,
-    pub attribution_reason: Option<String>,
     pub observed_at: Option<String>,
     pub from_height: Option<i64>,
     pub to_height: Option<i64>,
     pub gap_kind: Option<String>,
-    pub gap_reason: Option<String>,
     pub divergence_kind: Option<String>,
-    pub divergence_reason: Option<String>,
-    pub divergence_retained_hash: Option<String>,
-    pub divergence_observed_hash: Option<String>,
-    pub divergence_observed_at: Option<String>,
 }
 
 #[utoipa::path(
     get,
     path = "/api/public/v1/nodes/{node_id}/history",
     tag = "public",
-    params(("node_id" = String, Path), ("limit" = Option<i64>, Query)),
-    responses((status = 200, body = [PublicBlockHistoryItem]), (status = 404, body = crate::http::ApiErrorBody))
+    params(
+        ("node_id" = String, Path),
+        ("from" = Option<i64>, Query, minimum = 0, description = "First block height"),
+        ("to" = Option<i64>, Query, minimum = 0, description = "Last block height"),
+        ("limit" = Option<i64>, Query, minimum = 1, maximum = 200, description = "Maximum rows")
+    ),
+    responses(
+        (status = 200, body = [PublicBlockHistoryItem]),
+        (status = 400, body = crate::http::ApiErrorBody),
+        (status = 404, body = crate::http::ApiErrorBody),
+        (status = 503, body = crate::http::ApiErrorBody)
+    )
 )]
 pub(crate) async fn public_node_history(
     State(state): State<AppState>,
     Path(node_id): Path<String>,
-    Query(params): Query<HistoryQuery>,
+    Query(params): Query<PublicBlockHistoryQuery>,
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
+    let (from, to) = match history_bounds(&params, &request_id.0) {
+        Ok(bounds) => bounds,
+        Err(response) => return *response,
+    };
     let limit = params.limit.unwrap_or(50).clamp(1, 200);
     // Check visibility before reading history so a guessed private/retired
     // Node ID is indistinguishable from a missing representation.
@@ -773,8 +777,10 @@ pub(crate) async fn public_node_history(
             );
         }
     }
-    let rows = sqlx::query_as::<_, HistoryRow>("SELECT block_number, block_timestamp_ms, transaction_count, source, coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, CASE WHEN protocol_proposer_kind = 'verified' THEN protocol_proposer_identity ELSE NULL END, attribution_reason, observed_at, from_height, to_height, gap_kind, gap_reason, divergence_kind, divergence_reason, divergence_retained_hash, divergence_observed_hash, divergence_observed_at FROM (SELECT block_number, block_timestamp_ms, transaction_count, source, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, observed_at, NULL AS from_height, NULL AS to_height, NULL AS gap_kind, NULL AS gap_reason, NULL AS divergence_kind, NULL AS divergence_reason, NULL AS divergence_retained_hash, NULL AS divergence_observed_hash, NULL AS divergence_observed_at, node_id FROM block_summaries WHERE node_id = ? AND EXISTS (SELECT 1 FROM nodes WHERE node_id = block_summaries.node_id AND visibility = 'public' AND lifecycle = 'active') UNION ALL SELECT NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, created_at, from_height, to_height, kind, reason, NULL, NULL, NULL, NULL, NULL, node_id FROM block_history_gaps WHERE node_id = ? AND EXISTS (SELECT 1 FROM nodes WHERE node_id = block_history_gaps.node_id AND visibility = 'public' AND lifecycle = 'active') UNION ALL SELECT NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, retained_observed_at, height, height, NULL, NULL, 'chain_divergence', 'A recent block identity divergence was observed', NULL, NULL, NULL, node_id FROM chain_divergence_observations WHERE node_id = ? AND EXISTS (SELECT 1 FROM nodes WHERE node_id = chain_divergence_observations.node_id AND visibility = 'public' AND lifecycle = 'active')) ORDER BY COALESCE(block_number, from_height) DESC LIMIT ?")
-        .bind(&node_id).bind(&node_id).bind(&node_id).bind(limit).fetch_all(state.db().pool()).await;
+    let rows = sqlx::query_as::<_, PublicHistoryRow>("SELECT block_number, block_timestamp_ms, transaction_count, source, coinbase, seal_signer_match, protocol_proposer, observed_at, from_height, to_height, gap_kind, divergence_kind FROM (SELECT block_number, block_timestamp_ms, transaction_count, source, coinbase, seal_signer_match, CASE WHEN protocol_proposer_kind = 'verified' THEN protocol_proposer_identity ELSE NULL END AS protocol_proposer, observed_at, NULL AS from_height, NULL AS to_height, NULL AS gap_kind, NULL AS divergence_kind FROM block_summaries WHERE node_id = ? AND EXISTS (SELECT 1 FROM nodes WHERE node_id = block_summaries.node_id AND visibility = 'public' AND lifecycle = 'active') UNION ALL SELECT NULL AS block_number, NULL AS block_timestamp_ms, NULL AS transaction_count, NULL AS source, NULL AS coinbase, NULL AS seal_signer_match, NULL AS protocol_proposer, created_at AS observed_at, from_height, to_height, kind AS gap_kind, NULL AS divergence_kind FROM block_history_gaps WHERE node_id = ? AND EXISTS (SELECT 1 FROM nodes WHERE node_id = block_history_gaps.node_id AND visibility = 'public' AND lifecycle = 'active') UNION ALL SELECT NULL AS block_number, NULL AS block_timestamp_ms, NULL AS transaction_count, NULL AS source, NULL AS coinbase, NULL AS seal_signer_match, NULL AS protocol_proposer, retained_observed_at AS observed_at, height AS from_height, height AS to_height, NULL AS gap_kind, 'chain_divergence' AS divergence_kind FROM chain_divergence_observations WHERE node_id = ? AND EXISTS (SELECT 1 FROM nodes WHERE node_id = chain_divergence_observations.node_id AND visibility = 'public' AND lifecycle = 'active')) WHERE (? IS NULL OR COALESCE(block_number, to_height) >= ?) AND (? IS NULL OR COALESCE(block_number, from_height) <= ?) ORDER BY COALESCE(block_number, from_height) DESC LIMIT ?")
+        .bind(&node_id).bind(&node_id).bind(&node_id)
+        .bind(from).bind(from).bind(to).bind(to).bind(limit)
+        .fetch_all(state.db().pool()).await;
     match rows {
         Ok(rows) => Json(
             rows.into_iter()
@@ -875,13 +881,23 @@ pub(crate) async fn public_node_peer_history(
     get,
     path = "/api/public/v1/nodes/{node_id}/history/export",
     tag = "public",
-    params(("node_id" = String, Path), ("limit" = Option<i64>, Query)),
-    responses((status = 200, body = [PublicBlockHistoryItem]), (status = 404, body = crate::http::ApiErrorBody))
+    params(
+        ("node_id" = String, Path),
+        ("from" = Option<i64>, Query, minimum = 0, description = "First block height"),
+        ("to" = Option<i64>, Query, minimum = 0, description = "Last block height"),
+        ("limit" = Option<i64>, Query, minimum = 1, maximum = 200, description = "Maximum rows")
+    ),
+    responses(
+        (status = 200, body = [PublicBlockHistoryItem]),
+        (status = 400, body = crate::http::ApiErrorBody),
+        (status = 404, body = crate::http::ApiErrorBody),
+        (status = 503, body = crate::http::ApiErrorBody)
+    )
 )]
 pub(crate) async fn public_node_history_export(
     State(state): State<AppState>,
     Path(node_id): Path<String>,
-    Query(params): Query<HistoryQuery>,
+    Query(params): Query<PublicBlockHistoryQuery>,
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
     let mut response = public_node_history(
@@ -901,8 +917,36 @@ pub(crate) async fn public_node_history_export(
 }
 
 #[derive(Debug, Deserialize)]
-pub struct HistoryQuery {
+pub struct PublicBlockHistoryQuery {
     pub limit: Option<i64>,
+    pub from: Option<i64>,
+    pub to: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ValidatorHistoryQuery {
+    limit: Option<i64>,
+}
+
+pub(super) fn history_bounds(
+    params: &PublicBlockHistoryQuery,
+    request_id: &str,
+) -> Result<(Option<i64>, Option<i64>), Box<Response>> {
+    if params.from.is_some_and(|value| value < 0)
+        || params.to.is_some_and(|value| value < 0)
+        || params
+            .from
+            .zip(params.to)
+            .is_some_and(|(from, to)| from > to)
+    {
+        return Err(Box::new(error_response(
+            request_id,
+            StatusCode::BAD_REQUEST,
+            "invalid_history_range",
+            "history range is invalid",
+        )));
+    }
+    Ok((params.from, params.to))
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone)]
@@ -1173,10 +1217,9 @@ async fn public_country_distribution(state: &AppState, network_key: &str) -> Pub
             last_good_at: geo_status.loaded_at.clone(),
             database_age_seconds,
             stale_since,
-            error_reason: geo_status
-                .last_error
-                .clone()
-                .or_else(|| Some("Country distribution could not be loaded".to_owned())),
+            // Loader errors can contain filesystem/parser details. Public
+            // responses expose only a stable, non-sensitive explanation.
+            error_reason: Some(PUBLIC_GEO_ERROR.to_owned()),
             countries: None,
             attribution: None,
         };
@@ -1193,12 +1236,13 @@ async fn public_country_distribution(state: &AppState, network_key: &str) -> Pub
             }
         })
         .collect::<Vec<_>>();
+    let geo_error = geo_status.state == "error";
     PublicGeoInsight {
         state: geo_status.state,
         last_good_at: geo_status.loaded_at,
         database_age_seconds,
         stale_since,
-        error_reason: geo_status.last_error,
+        error_reason: geo_error.then(|| PUBLIC_GEO_ERROR.to_owned()),
         countries: Some(countries),
         attribution: Some(crate::geo::MAXMIND_ATTRIBUTION.to_owned()),
     }
@@ -1366,13 +1410,13 @@ pub struct PublicValidatorAnalyticsResponse {
     get,
     path = "/api/public/v1/validators/{validator_id}/analytics",
     tag = "public",
-    params(("validator_id" = String, Path, description = "Validator ID"), ("limit" = Option<i64>, Query)),
+    params(("validator_id" = String, Path, description = "Validator ID"), ("limit" = Option<i64>, Query, minimum = 1, maximum = 366)),
     responses((status = 200, body = PublicValidatorAnalyticsResponse), (status = 404, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
 )]
 pub(crate) async fn public_validator_analytics(
     State(state): State<AppState>,
     Path(validator_id): Path<String>,
-    Query(query): Query<HistoryQuery>,
+    Query(query): Query<ValidatorHistoryQuery>,
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
     let Some(_validator) = (match validator::get_validator(state.db(), &validator_id).await {
@@ -1507,13 +1551,13 @@ pub(crate) async fn public_validator_analytics(
     get,
     path = "/api/public/v1/validators/{validator_id}/history",
     tag = "public",
-    params(("validator_id" = String, Path, description = "Validator ID"), ("limit" = Option<i64>, Query)),
+    params(("validator_id" = String, Path, description = "Validator ID"), ("limit" = Option<i64>, Query, minimum = 1, maximum = 200)),
     responses((status = 200, body = PublicValidatorHistoryResponse), (status = 404, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
 )]
 pub(crate) async fn public_validator_history(
     State(state): State<AppState>,
     Path(validator_id): Path<String>,
-    Query(query): Query<HistoryQuery>,
+    Query(query): Query<ValidatorHistoryQuery>,
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
     let Some(validator) = (match validator::get_validator(state.db(), &validator_id).await {
@@ -1968,6 +2012,68 @@ mod tests {
         );
     }
 
+    #[test]
+    fn history_bounds_reject_invalid_ranges() {
+        let request_id = "test";
+        assert_eq!(
+            history_bounds(
+                &PublicBlockHistoryQuery {
+                    limit: Some(10),
+                    from: Some(20),
+                    to: Some(10),
+                },
+                request_id,
+            )
+            .unwrap_err()
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            history_bounds(
+                &PublicBlockHistoryQuery {
+                    limit: Some(10),
+                    from: Some(-1),
+                    to: None,
+                },
+                request_id,
+            )
+            .unwrap_err()
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            history_bounds(
+                &PublicBlockHistoryQuery {
+                    limit: Some(10),
+                    from: Some(10),
+                    to: Some(20),
+                },
+                request_id,
+            )
+            .unwrap(),
+            (Some(10), Some(20))
+        );
+    }
+
+    #[tokio::test]
+    async fn public_geo_error_is_stable_and_non_sensitive() {
+        let (dir, state) = test_state().await;
+        let loader = std::sync::Arc::new(crate::geo::GeoLoader::new(Some(
+            dir.path().join("missing-geolite.mmdb"),
+        )));
+        let state = state.with_geo_loader(loader);
+        let insight = public_country_distribution(&state, "mainnet").await;
+        assert_eq!(insight.state, "error");
+        assert_eq!(insight.error_reason.as_deref(), Some(PUBLIC_GEO_ERROR));
+        assert!(
+            !insight
+                .error_reason
+                .as_deref()
+                .unwrap()
+                .contains("missing-geolite")
+        );
+    }
+
     async fn seed_public_data(state: &AppState) {
         sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('agent-public-test', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
             .execute(state.db().pool()).await.unwrap();
@@ -2142,7 +2248,11 @@ mod tests {
             let history = public_node_history(
                 State(state.clone()),
                 Path(node_id.to_owned()),
-                Query(HistoryQuery { limit: None }),
+                Query(PublicBlockHistoryQuery {
+                    limit: None,
+                    from: None,
+                    to: None,
+                }),
                 Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
             )
             .await;
@@ -2155,7 +2265,11 @@ mod tests {
             let export = public_node_history_export(
                 State(state.clone()),
                 Path(node_id.to_owned()),
-                Query(HistoryQuery { limit: None }),
+                Query(PublicBlockHistoryQuery {
+                    limit: None,
+                    from: None,
+                    to: None,
+                }),
                 Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
             )
             .await;
@@ -2404,7 +2518,7 @@ mod tests {
         let response = public_validator_analytics(
             State(state.clone()),
             Path("validator-public".to_owned()),
-            Query(HistoryQuery { limit: None }),
+            Query(ValidatorHistoryQuery { limit: None }),
             Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
         )
         .await;
@@ -2425,7 +2539,7 @@ mod tests {
             let response = public_validator_analytics(
                 State(state.clone()),
                 Path(hidden.to_owned()),
-                Query(HistoryQuery { limit: None }),
+                Query(ValidatorHistoryQuery { limit: None }),
                 Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
             )
             .await;

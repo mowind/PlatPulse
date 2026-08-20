@@ -2957,25 +2957,115 @@ pub struct AdminBlockHistoryResponse {
     pub raw_retention_days: i64,
 }
 
+#[derive(Debug, Deserialize)]
+struct AdminHistoryQuery {
+    limit: Option<i64>,
+    from: Option<i64>,
+    to: Option<i64>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct AdminHistoryRow {
+    block_number: Option<i64>,
+    block_timestamp_ms: Option<i64>,
+    transaction_count: Option<i64>,
+    coinbase: Option<String>,
+    seal_signer_match: Option<String>,
+    seal_signer_key_fingerprint: Option<String>,
+    node_key_fingerprint: Option<String>,
+    node_key_valid_from: Option<String>,
+    node_key_valid_until: Option<String>,
+    seal_recovery_rule: Option<String>,
+    seal_evidence: Option<String>,
+    protocol_proposer: Option<String>,
+    attribution_reason: Option<String>,
+    observed_at: Option<String>,
+    from_height: Option<i64>,
+    to_height: Option<i64>,
+    gap_kind: Option<String>,
+    gap_reason: Option<String>,
+    divergence_kind: Option<String>,
+    divergence_reason: Option<String>,
+    divergence_retained_hash: Option<String>,
+    divergence_observed_hash: Option<String>,
+    divergence_observed_at: Option<String>,
+}
+
+fn admin_history_bounds(
+    params: &AdminHistoryQuery,
+    request_id: &str,
+) -> Result<(Option<i64>, Option<i64>), Box<Response>> {
+    if params.from.is_some_and(|value| value < 0)
+        || params.to.is_some_and(|value| value < 0)
+        || params
+            .from
+            .zip(params.to)
+            .is_some_and(|(from, to)| from > to)
+    {
+        return Err(Box::new(mutation_error(
+            request_id,
+            StatusCode::BAD_REQUEST,
+            "invalid_history_range",
+            "history range is invalid",
+        )));
+    }
+    Ok((params.from, params.to))
+}
+
 #[utoipa::path(
     get,
     path = "/api/admin/v1/nodes/{node_id}/history",
     tag = "admin",
     params(
         ("node_id" = String, Path, description = "Node ID"),
-        ("from" = Option<u64>, Query, description = "First block height"),
-        ("to" = Option<u64>, Query, description = "Last block height"),
-        ("limit" = Option<u16>, Query, description = "Maximum rows")
+        ("from" = Option<i64>, Query, minimum = 0, description = "First block height"),
+        ("to" = Option<i64>, Query, minimum = 0, description = "Last block height"),
+        ("limit" = Option<i64>, Query, minimum = 1, maximum = 200, description = "Maximum rows")
     ),
-    responses((status = 200, body = AdminBlockHistoryResponse), (status = 401, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody))
+    responses(
+        (status = 200, body = AdminBlockHistoryResponse),
+        (status = 400, body = crate::http::ApiErrorBody),
+        (status = 401, body = crate::http::ApiErrorBody),
+        (status = 403, body = crate::http::ApiErrorBody),
+        (status = 404, body = crate::http::ApiErrorBody),
+        (status = 503, body = crate::http::ApiErrorBody)
+    )
 )]
 async fn admin_node_history(
     State(state): State<AppState>,
     Extension(_session): Extension<super::AuthenticatedSession>,
-    axum::extract::Query(params): axum::extract::Query<super::public::HistoryQuery>,
+    Extension(request_id): Extension<super::RequestId>,
+    axum::extract::Query(params): axum::extract::Query<AdminHistoryQuery>,
     Path(node_id): Path<String>,
-) -> impl IntoResponse {
+) -> Response {
+    let (from, to) = match admin_history_bounds(&params, &request_id.0) {
+        Ok(bounds) => bounds,
+        Err(response) => return *response,
+    };
     let limit = params.limit.unwrap_or(50).clamp(1, 200);
+    match sqlx::query_scalar::<_, i64>("SELECT 1 FROM nodes WHERE node_id=?")
+        .bind(&node_id)
+        .fetch_optional(state.db().pool())
+        .await
+    {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "resource not found",
+            );
+        }
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    }
     let cutoff = crate::auth::format_rfc3339(crate::retention::raw_block_summary_cutoff(
         crate::auth::now_utc(),
     ));
@@ -2984,21 +3074,68 @@ async fn admin_node_history(
     )
     .bind(&node_id)
     .fetch_one(state.db().pool())
-    .await
-    .unwrap_or(None);
+    .await;
+    let oldest_raw = match oldest_raw {
+        Ok(value) => value,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    };
     let has_history = sqlx::query_scalar::<_, Option<i64>>(
         "SELECT historical_high_watermark FROM block_history_state WHERE node_id=?",
     )
     .bind(&node_id)
-    .fetch_one(state.db().pool())
-    .await
-    .unwrap_or(None)
-    .is_some_and(|height| height > 0);
+    .fetch_optional(state.db().pool())
+    .await;
+    let has_history = match has_history {
+        Ok(value) => value.flatten().is_some_and(|height| height > 0),
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    };
     let has_expired_raw = oldest_raw.as_ref().is_some_and(|value| value < &cutoff);
     let availability = (has_expired_raw || (oldest_raw.is_none() && has_history))
         .then(|| "unavailable".to_owned());
-    let rows = sqlx::query_as::<_, super::public::HistoryRow>("SELECT block_number, block_timestamp_ms, transaction_count, source, coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, CASE WHEN protocol_proposer_kind = 'verified' THEN protocol_proposer_identity ELSE NULL END, attribution_reason, observed_at, from_height, to_height, gap_kind, gap_reason, divergence_kind, divergence_reason, divergence_retained_hash, divergence_observed_hash, divergence_observed_at FROM (SELECT block_number, block_timestamp_ms, transaction_count, 'summary', coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, protocol_proposer_kind, protocol_proposer_identity, attribution_reason, observed_at, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL FROM block_summaries WHERE node_id = ? UNION ALL SELECT NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, created_at, from_height, to_height, kind, reason, NULL, NULL, NULL, NULL, NULL FROM block_history_gaps WHERE node_id = ? UNION ALL SELECT NULL, NULL, NULL, 'divergence', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, retained_observed_at, height, height, NULL, NULL, 'chain_divergence', reason, retained_block_hash, observed_block_hash, observed_at FROM chain_divergence_observations WHERE node_id = ?) ORDER BY COALESCE(block_number, from_height) DESC LIMIT ?")
-        .bind(&node_id).bind(&node_id).bind(&node_id).bind(limit).fetch_all(state.db().pool()).await.unwrap_or_default();
+    let rows = sqlx::query_as::<_, AdminHistoryRow>("SELECT block_number, block_timestamp_ms, transaction_count, source, coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, CASE WHEN protocol_proposer_kind = 'verified' THEN protocol_proposer_identity ELSE NULL END, attribution_reason, observed_at, from_height, to_height, gap_kind, gap_reason, divergence_kind, divergence_reason, divergence_retained_hash, divergence_observed_hash, divergence_observed_at FROM (SELECT block_number, block_timestamp_ms, transaction_count, 'summary', coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, protocol_proposer_kind, protocol_proposer_identity, attribution_reason, observed_at, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL FROM block_summaries WHERE node_id = ? UNION ALL SELECT NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, created_at, from_height, to_height, kind, reason, NULL, NULL, NULL, NULL, NULL FROM block_history_gaps WHERE node_id = ? UNION ALL SELECT NULL, NULL, NULL, 'divergence', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, retained_observed_at, height, height, NULL, NULL, 'chain_divergence', reason, retained_block_hash, observed_block_hash, observed_at FROM chain_divergence_observations WHERE node_id = ?) WHERE (? IS NULL OR COALESCE(block_number, to_height) >= ?) AND (? IS NULL OR COALESCE(block_number, from_height) <= ?) ORDER BY COALESCE(block_number, from_height) DESC LIMIT ?")
+        .bind(&node_id)
+        .bind(&node_id)
+        .bind(&node_id)
+        .bind(from)
+        .bind(from)
+        .bind(to)
+        .bind(to)
+        .bind(200_i64)
+        .fetch_all(state.db().pool())
+        .await;
+    let rows = match rows {
+        Ok(rows) => rows,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    };
+    let mut rows = rows;
+    rows.retain(|row| {
+        let first_height = row.block_number.or(row.from_height);
+        let last_height = row.block_number.or(row.to_height);
+        from.is_none_or(|minimum| last_height.is_some_and(|height| height >= minimum))
+            && to.is_none_or(|maximum| first_height.is_some_and(|height| height <= maximum))
+    });
+    rows.truncate(limit as usize);
     Json(AdminBlockHistoryResponse {
         items: rows
             .into_iter()
@@ -3042,6 +3179,7 @@ async fn admin_node_history(
         aggregate_supported: crate::retention::RAW_BLOCK_HISTORY_AGGREGATES_SUPPORTED,
         raw_retention_days: crate::retention::RAW_BLOCK_SUMMARY_RETENTION_DAYS,
     })
+    .into_response()
 }
 /// Owner-only Network Registry projection (design §7.1). The complete
 /// validated identity tuple is presented as Server-owned expected identity;

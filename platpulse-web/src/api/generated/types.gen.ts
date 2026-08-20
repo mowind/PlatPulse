@@ -2828,8 +2828,11 @@ export type AdminNodeHistoryData = {
 };
 
 export type AdminNodeHistoryErrors = {
+    400: ApiErrorBody;
     401: ApiErrorBody;
     403: ApiErrorBody;
+    404: ApiErrorBody;
+    503: ApiErrorBody;
 };
 
 export type AdminNodeHistoryError = AdminNodeHistoryErrors[keyof AdminNodeHistoryErrors];
@@ -4122,13 +4125,26 @@ export type PublicNodeHistoryData = {
         node_id: string;
     };
     query?: {
+        /**
+         * First block height
+         */
+        from?: number;
+        /**
+         * Last block height
+         */
+        to?: number;
+        /**
+         * Maximum rows
+         */
         limit?: number;
     };
     url: '/api/public/v1/nodes/{node_id}/history';
 };
 
 export type PublicNodeHistoryErrors = {
+    400: ApiErrorBody;
     404: ApiErrorBody;
+    503: ApiErrorBody;
 };
 
 export type PublicNodeHistoryError = PublicNodeHistoryErrors[keyof PublicNodeHistoryErrors];
@@ -4145,13 +4161,26 @@ export type PublicNodeHistoryExportData = {
         node_id: string;
     };
     query?: {
+        /**
+         * First block height
+         */
+        from?: number;
+        /**
+         * Last block height
+         */
+        to?: number;
+        /**
+         * Maximum rows
+         */
         limit?: number;
     };
     url: '/api/public/v1/nodes/{node_id}/history/export';
 };
 
 export type PublicNodeHistoryExportErrors = {
+    400: ApiErrorBody;
     404: ApiErrorBody;
+    503: ApiErrorBody;
 };
 
 export type PublicNodeHistoryExportError = PublicNodeHistoryExportErrors[keyof PublicNodeHistoryExportErrors];
