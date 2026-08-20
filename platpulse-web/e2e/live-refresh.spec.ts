@@ -115,11 +115,12 @@ test.describe('SCN-HOME-RESPONSIVE-ACCESSIBILITY / live refresh transport state'
     await expect(page).toHaveURL(/\/admin\/nodes\?visibility=all&health=all/)
     await expect(page.getByRole('heading', { level: 1, name: 'Nodes' })).toBeVisible()
 
+    const closedBeforeReset = await page.evaluate(() => (window as typeof window & { __realtimeClosed: number }).__realtimeClosed)
     await page.evaluate(() => {
       const browserWindow = window as typeof window & { __emitRealtime: (type: string, data?: string) => void }
       browserWindow.__emitRealtime('reset', JSON.stringify({ reset: true }))
     })
-    await expect(page.getByText('Revalidating Admin access…')).toBeVisible()
+    await expect.poll(async () => page.evaluate(() => (window as typeof window & { __realtimeClosed: number }).__realtimeClosed)).toBeGreaterThan(closedBeforeReset)
     await expect.poll(async () => page.url()).toMatch(/\/admin\/nodes\?visibility=all&health=all/)
     await expect(page.getByRole('heading', { level: 1, name: 'Nodes' })).toBeVisible()
   })
