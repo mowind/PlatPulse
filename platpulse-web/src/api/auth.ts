@@ -5,19 +5,18 @@
 
 import { loginHandler, logoutHandler, sessionHandler } from './generated'
 import type { ApiErrorBody, SessionResponse } from './generated'
+import { requestGenerated, TransportError } from './transport'
 
 /** A failed auth call, keyed by the Server's stable error code. */
-export class AuthApiError extends Error {
-  readonly code: string
-
+export class AuthApiError extends TransportError {
   constructor(code: string, message: string) {
-    super(message)
+    super('domain', code, message)
     this.name = 'AuthApiError'
-    this.code = code
   }
 }
 
 function toAuthError(error: unknown, fallbackCode: string): AuthApiError {
+  if (error instanceof TransportError) return new AuthApiError(error.code, error.message)
   const apiError = error as ApiErrorBody | undefined
   if (apiError?.error?.code && apiError.error.message) {
     return new AuthApiError(apiError.error.code, apiError.error.message)
@@ -28,13 +27,14 @@ function toAuthError(error: unknown, fallbackCode: string): AuthApiError {
 /** Current session and CSRF token, or null when unauthenticated. */
 export async function fetchSession(signal?: AbortSignal): Promise<SessionResponse | null> {
   try {
-    const { data } = await sessionHandler({ signal })
-    if (data) return data
-    return null
+    return await requestGenerated(
+      () => sessionHandler({ signal }),
+      'Unable to check the current session',
+    )
   } catch (caught) {
     if (caught instanceof DOMException && caught.name === 'AbortError') throw caught
-    // Network failure: treat as unauthenticated; the login page will
-    // surface a readable error if the Server is actually unreachable.
+    // Session probes fail closed. The route gate will show the safe Guest
+    // path while login still gets the normalized transport error.
     return null
   }
 }
@@ -45,11 +45,10 @@ export async function login(
   password: string,
 ): Promise<SessionResponse> {
   try {
-    const { data, error } = await loginHandler({
-      body: { username, password },
-    })
-    if (data) return data
-    throw toAuthError(error, 'login_failed')
+    return await requestGenerated(
+      () => loginHandler({ body: { username, password } }),
+      'Unable to sign in',
+    )
   } catch (caught) {
     if (caught instanceof AuthApiError) throw caught
     throw toAuthError(caught, 'login_failed')
@@ -62,17 +61,14 @@ export async function login(
  * out. */
 export async function logout(csrfToken: string): Promise<void> {
   try {
-    const { error } = await logoutHandler({
-      headers: { 'X-CSRF-Token': csrfToken },
-    })
-    // Any 2xx (including the bodyless 204) is success; only error
-    // responses are meaningful here.
-    if (!error) return
-    const apiError = error as ApiErrorBody | undefined
-    if (apiError?.error?.code === 'auth_required') return
-    throw toAuthError(error, 'logout_failed')
+    await requestGenerated(
+      () => logoutHandler({ headers: { 'X-CSRF-Token': csrfToken } }),
+      'Unable to sign out',
+      { allowEmpty: true },
+    )
   } catch (caught) {
     if (caught instanceof AuthApiError) throw caught
+    if (caught instanceof TransportError && caught.code === 'auth_required') return
     throw toAuthError(caught, 'logout_failed')
   }
 }

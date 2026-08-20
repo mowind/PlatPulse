@@ -1,18 +1,23 @@
+import { QueryClient, useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import {
   publicAccessSettings,
   publicNetwork,
   publicNetworks,
   publicNodeDetail,
+  publicNodeHistory,
+  publicNodeHistoryExport,
   publicNodePeerHistory,
   publicValidatorAnalytics,
   publicValidatorHistory,
+  type PublicBlockHistoryItem,
   type PublicValidatorAnalyticsResponse,
   type PublicValidatorHistoryResponse,
   type PublicNetwork,
   type PublicNode,
   type PublicPeerHistory,
 } from './generated'
+import { requestGenerated, requestHeaders, setActiveAccessGeneration } from './transport'
 
 export type SiteAccessMode = 'public' | 'private'
 export type SiteAccessSettings = {
@@ -20,54 +25,100 @@ export type SiteAccessSettings = {
   authorizationGeneration: number
 }
 
-export async function fetchNetworks(signal?: AbortSignal): Promise<PublicNetwork[]> {
-  const { data, error } = await publicNetworks({ signal })
-  if (error || !data) throw new Error((error as { error?: { message?: string } } | undefined)?.error?.message ?? 'Unable to load published Nodes')
-  return data
+export type PublicRequestContext = {
+  signal?: AbortSignal
+  generation?: number
+  revision?: number
 }
 
-export async function fetchNetwork(networkKey: string, signal?: AbortSignal): Promise<PublicNetwork> {
-  const { data, error } = await publicNetwork({ path: { network_key: networkKey }, signal })
-  if (error || !data) throw new Error(error?.error?.message ?? 'Unable to load Network')
-  return data
+const DEFAULT_GENERATION = 0
+
+/** Public cache is intentionally a different object from Admin's cache. */
+export const publicQueryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      retry: 0,
+      refetchOnWindowFocus: false,
+      staleTime: 30_000,
+    },
+  },
+})
+
+export const publicKeys = {
+  all: ['public'] as const,
+  networks: ['public', 'networks'] as const,
+  network: (networkKey: string) => ['public', 'network', networkKey] as const,
+  node: (nodeId: string) => ['public', 'node', nodeId] as const,
+  history: (nodeId: string) => ['public', 'node', nodeId, 'history'] as const,
+  peerHistory: (nodeId: string) => ['public', 'node', nodeId, 'peer-history'] as const,
+  validatorHistory: (validatorId: string, limit: number) =>
+    ['public', 'validator', validatorId, 'history', limit] as const,
+  validatorAnalytics: (validatorId: string, limit: number) =>
+    ['public', 'validator', validatorId, 'analytics', limit] as const,
+} as const
+
+function contextOf(
+  contextOrSignal?: PublicRequestContext | AbortSignal,
+  generation?: number,
+): PublicRequestContext {
+  if (contextOrSignal instanceof AbortSignal) return { signal: contextOrSignal, generation }
+  return { ...contextOrSignal, generation: contextOrSignal?.generation ?? generation }
 }
 
-export async function fetchNode(nodeId: string, signal?: AbortSignal): Promise<PublicNode> {
-  const { data, error } = await publicNodeDetail({ path: { node_id: nodeId }, signal })
-  if (error || !data) throw new Error(error?.error?.message ?? 'Unable to load Node')
-  return data
+function generationOf(context?: PublicRequestContext): number {
+  return context?.generation ?? getSiteAccessGeneration() ?? DEFAULT_GENERATION
 }
 
-/**
- * Non-sensitive Public access probe for the Server-wide Site Access Mode.
- * Reachable without a Session in both modes so the WebUI can decide whether
- * an anonymous visitor may render Home or must sign in.
- */
+function headersOf(context?: PublicRequestContext): Record<string, string> {
+  return requestHeaders(generationOf(context), context?.revision)
+}
+
+export async function fetchNetworks(signal?: AbortSignal, generation?: number): Promise<PublicNetwork[]> {
+  const context = contextOf(signal, generation)
+  return requestGenerated(
+    () => publicNetworks({ signal: context.signal, headers: headersOf(context) }),
+    'Unable to load published Nodes',
+  )
+}
+
+export async function fetchNetwork(networkKey: string, signal?: AbortSignal, generation?: number): Promise<PublicNetwork> {
+  const context = contextOf(signal, generation)
+  return requestGenerated(
+    () => publicNetwork({ path: { network_key: networkKey }, signal: context.signal, headers: headersOf(context) }),
+    'Unable to load Network',
+  )
+}
+
+export async function fetchNode(nodeId: string, signal?: AbortSignal, generation?: number): Promise<PublicNode> {
+  const context = contextOf(signal, generation)
+  return requestGenerated(
+    () => publicNodeDetail({ path: { node_id: nodeId }, signal: context.signal, headers: headersOf(context) }),
+    'Unable to load Node',
+  )
+}
+
 export async function fetchAccessSettings(signal?: AbortSignal): Promise<SiteAccessSettings> {
-  const { data, error } = await publicAccessSettings({ signal })
-  if (error || !data) {
-    throw new Error(
-      (error as { error?: { message?: string } } | undefined)?.error?.message ??
-        'Unable to load access settings',
-    )
-  }
+  const data = await requestGenerated(
+    () => publicAccessSettings({ signal, headers: requestHeaders(DEFAULT_GENERATION) }),
+    'Unable to load access settings',
+  )
   return {
     mode: data.mode === 'public' || data.mode === 'private' ? data.mode : 'private',
     authorizationGeneration: data.authorizationGeneration,
   }
 }
 
-/**
- * Cached Site Access Mode with a tiny subscriber set. The value is
- * public and non-sensitive; it only decides whether anonymous visitors may
- * render Home (the Server still enforces every read). A failed refresh keeps
- * the last value; the initial safe default is Private.
- */
 let siteAccessModeCache: SiteAccessMode | null = null
+let siteAccessGenerationCache: number | null = null
 const siteAccessModeListeners = new Set<(mode: SiteAccessMode) => void>()
+const siteAccessGenerationListeners = new Set<(generation: number) => void>()
 
 export function getSiteAccessMode(): SiteAccessMode | null {
   return siteAccessModeCache
+}
+
+export function getSiteAccessGeneration(): number | null {
+  return siteAccessGenerationCache
 }
 
 export function subscribeSiteAccessMode(listener: (mode: SiteAccessMode) => void): () => void {
@@ -75,111 +126,219 @@ export function subscribeSiteAccessMode(listener: (mode: SiteAccessMode) => void
   return () => siteAccessModeListeners.delete(listener)
 }
 
-/** Re-read the Site Access Mode and notify subscribers. */
-export async function refreshSiteAccessMode(signal?: AbortSignal): Promise<SiteAccessMode> {
+export function subscribeSiteAccessGeneration(listener: (generation: number) => void): () => void {
+  siteAccessGenerationListeners.add(listener)
+  return () => siteAccessGenerationListeners.delete(listener)
+}
+
+export async function refreshSiteAccessSettings(signal?: AbortSignal): Promise<SiteAccessSettings> {
   try {
     const settings = await fetchAccessSettings(signal)
     siteAccessModeCache = settings.mode
+    siteAccessGenerationCache = settings.authorizationGeneration
+    setActiveAccessGeneration(settings.authorizationGeneration)
+    for (const listener of siteAccessModeListeners) listener(settings.mode)
+    for (const listener of siteAccessGenerationListeners) listener(settings.authorizationGeneration)
+    return settings
   } catch (caught) {
     if (caught instanceof DOMException && caught.name === 'AbortError') throw caught
     siteAccessModeCache = 'private'
+    for (const listener of siteAccessModeListeners) listener(siteAccessModeCache)
+    return { mode: siteAccessModeCache, authorizationGeneration: siteAccessGenerationCache ?? DEFAULT_GENERATION }
   }
-  for (const listener of siteAccessModeListeners) listener(siteAccessModeCache)
-  return siteAccessModeCache
+}
+
+export async function refreshSiteAccessMode(signal?: AbortSignal): Promise<SiteAccessMode> {
+  return (await refreshSiteAccessSettings(signal)).mode
 }
 
 export async function ensureSiteAccessModeKnown(): Promise<SiteAccessMode> {
-  if (siteAccessModeCache === null) await refreshSiteAccessMode()
+  if (siteAccessModeCache === null) await refreshSiteAccessSettings()
   return siteAccessModeCache ?? 'private'
 }
 
-export async function fetchNodePeerHistory(nodeId: string, signal?: AbortSignal): Promise<PublicPeerHistory> {
-  const { data, error } = await publicNodePeerHistory({ path: { node_id: nodeId }, signal })
-  if (error || !data) throw new Error(error?.error?.message ?? 'Unable to load Peer history')
-  return data
+export async function fetchNodePeerHistory(nodeId: string, signal?: AbortSignal, generation?: number): Promise<PublicPeerHistory> {
+  const context = contextOf(signal, generation)
+  return requestGenerated(
+    () => publicNodePeerHistory({ path: { node_id: nodeId }, signal: context.signal, headers: headersOf(context) }),
+    'Unable to load Peer history',
+  )
 }
 
-export async function fetchValidatorHistory(
-  validatorId: string,
-  limit = 50,
-  signal?: AbortSignal,
-): Promise<PublicValidatorHistoryResponse> {
-  const { data, error } = await publicValidatorHistory({ path: { validator_id: validatorId }, query: { limit }, signal })
-  if (error || !data) throw new Error(error?.error?.message ?? 'Unable to load Validator history')
-  return data
+export async function fetchValidatorHistory(validatorId: string, limit = 50, signal?: AbortSignal, generation?: number): Promise<PublicValidatorHistoryResponse> {
+  const context = contextOf(signal, generation)
+  return requestGenerated(
+    () => publicValidatorHistory({ path: { validator_id: validatorId }, query: { limit }, signal: context.signal, headers: headersOf(context) }),
+    'Unable to load Validator history',
+  )
 }
 
-export async function fetchValidatorAnalytics(
-  validatorId: string,
-  limit = 31,
-  signal?: AbortSignal,
-): Promise<PublicValidatorAnalyticsResponse> {
-  const { data, error } = await publicValidatorAnalytics({ path: { validator_id: validatorId }, query: { limit }, signal })
-  if (error || !data) throw new Error(error?.error?.message ?? 'Unable to load Validator analytics')
-  return data
+export async function fetchValidatorAnalytics(validatorId: string, limit = 31, signal?: AbortSignal, generation?: number): Promise<PublicValidatorAnalyticsResponse> {
+  const context = contextOf(signal, generation)
+  return requestGenerated(
+    () => publicValidatorAnalytics({ path: { validator_id: validatorId }, query: { limit }, signal: context.signal, headers: headersOf(context) }),
+    'Unable to load Validator analytics',
+  )
 }
 
-
- export type PublicHistoryItem = { nodeId: string; height: number | null; blockTimeMs: number | null; transactionCount: number | null; source: string | null; coinbase: string | null; sealSignerMatch: string | null; protocolProposer: string | null; observedAt: string | null; freshness: string | null; gapFromHeight: number | null; gapToHeight: number | null; gapKind: string | null; gapReason: string | null; divergenceKind: string | null; divergenceReason: string | null }
-
-export async function fetchNodeHistory(nodeId: string, signal?: AbortSignal): Promise<PublicHistoryItem[]> {
-  const response = await fetch(`/api/public/v1/nodes/${encodeURIComponent(nodeId)}/history`, { signal })
-  if (!response.ok) throw new Error('Unable to load block history')
-  return response.json() as Promise<PublicHistoryItem[]>
+export async function fetchNodeHistory(nodeId: string, signal?: AbortSignal, generation?: number): Promise<PublicBlockHistoryItem[]> {
+  const context = contextOf(signal, generation)
+  return requestGenerated(
+    () => publicNodeHistory({ path: { node_id: nodeId }, signal: context.signal, headers: headersOf(context) }),
+    'Unable to load block history',
+  )
 }
 
-export async function fetchNodeHistoryExport(nodeId: string, signal?: AbortSignal): Promise<PublicHistoryItem[]> {
-  const response = await fetch(`/api/public/v1/nodes/${encodeURIComponent(nodeId)}/history/export`, { signal })
-  if (!response.ok) throw new Error('Unable to export block history')
-  return response.json() as Promise<PublicHistoryItem[]>
+export async function fetchNodeHistoryExport(nodeId: string, signal?: AbortSignal, generation?: number): Promise<PublicBlockHistoryItem[]> {
+  const context = contextOf(signal, generation)
+  return requestGenerated(
+    () => publicNodeHistoryExport({ path: { node_id: nodeId }, signal: context.signal, headers: headersOf(context) }),
+    'Unable to export block history',
+  )
+}
+
+export function usePublicNetworks(generation: number) {
+  return useQuery({ queryKey: [...publicKeys.networks, generation], queryFn: ({ signal }) => fetchNetworks(signal, generation) })
+}
+
+export function usePublicNetwork(networkKey: string, generation: number) {
+  return useQuery({
+    queryKey: [...publicKeys.network(networkKey), generation],
+    queryFn: ({ signal }) => fetchNetwork(networkKey, signal, generation),
+    enabled: networkKey.length > 0,
+  })
+}
+
+export function usePublicNode(nodeId: string, generation: number) {
+  return useQuery({
+    queryKey: [...publicKeys.node(nodeId), generation],
+    queryFn: ({ signal }) => fetchNode(nodeId, signal, generation),
+    enabled: nodeId.length > 0,
+  })
+}
+
+export function usePublicNodeHistory(nodeId: string, generation: number) {
+  return useQuery({
+    queryKey: [...publicKeys.history(nodeId), generation],
+    queryFn: ({ signal }) => fetchNodeHistory(nodeId, signal, generation),
+    enabled: nodeId.length > 0,
+  })
+}
+
+export function usePublicNodePeerHistory(nodeId: string, generation: number) {
+  return useQuery({
+    queryKey: [...publicKeys.peerHistory(nodeId), generation],
+    queryFn: ({ signal }) => fetchNodePeerHistory(nodeId, signal, generation),
+    enabled: nodeId.length > 0,
+  })
+}
+
+export function usePublicValidatorHistory(validatorId: string, limit: number, generation: number) {
+  return useQuery({
+    queryKey: [...publicKeys.validatorHistory(validatorId, limit), generation],
+    queryFn: ({ signal }) => fetchValidatorHistory(validatorId, limit, signal, generation),
+    enabled: validatorId.length > 0,
+  })
+}
+
+export function usePublicValidatorAnalytics(validatorId: string, limit: number, generation: number) {
+  return useQuery({
+    queryKey: [...publicKeys.validatorAnalytics(validatorId, limit), generation],
+    queryFn: ({ signal }) => fetchValidatorAnalytics(validatorId, limit, signal, generation),
+    enabled: validatorId.length > 0,
+  })
+}
+
+let publicCacheGeneration: number | null = null
+const publicRevisions = new Map<string, number>()
+
+export function resetPublicCache(generation: number): void {
+  publicCacheGeneration = generation
+  setActiveAccessGeneration(generation)
+  void publicQueryClient.cancelQueries({ queryKey: publicKeys.all })
+  publicQueryClient.clear()
+  publicRevisions.clear()
+}
+
+function acceptRevision(resource: string, resourceId: string | undefined, revision: number | undefined): boolean {
+  if (revision === undefined) return true
+  const key = `${resource}:${resourceId ?? ''}`
+  const previous = publicRevisions.get(key) ?? -1
+  if (revision <= previous) return false
+  publicRevisions.set(key, revision)
+  return true
+}
+
+export function invalidatePublicResource(resource: string, resourceId?: string, revision?: number): void {
+  if (!acceptRevision(resource, resourceId, revision)) return
+  const keys: Array<readonly unknown[]> = (() => {
+    switch (resource) {
+      case 'node':
+        return [publicKeys.networks, ['public', 'network'], ...(resourceId ? [publicKeys.node(resourceId), publicKeys.history(resourceId), publicKeys.peerHistory(resourceId)] : [])]
+      case 'network':
+        return [publicKeys.networks, ...(resourceId ? [publicKeys.network(resourceId)] : [])]
+      case 'validator':
+        return [['public', 'network'], ...(resourceId ? [publicKeys.validatorHistory(resourceId, 20), publicKeys.validatorAnalytics(resourceId, 31)] : [])]
+      case 'collection':
+        return [publicKeys.all]
+      default:
+        return [publicKeys.all]
+    }
+  })()
+  void Promise.all(keys.map((queryKey) => publicQueryClient.invalidateQueries({ queryKey, refetchType: 'active' })))
 }
 
 export type RealtimeStatus = 'connecting' | 'connected' | 'disconnected'
+export type RealtimeState = { status: RealtimeStatus; online: boolean }
 
-export function usePublicRealtime(
-  onInvalidate: () => void,
-  onReset?: () => void,
-): RealtimeStatus {
+type PublicInvalidation = { resource?: unknown; resourceId?: unknown; revision?: unknown; reset?: unknown }
+
+export function usePublicRealtime(onReset?: () => void): RealtimeState {
   const [status, setStatus] = useState<RealtimeStatus>('connecting')
+  const [online, setOnline] = useState(() => typeof navigator === 'undefined' ? true : navigator.onLine)
   const [streamKey, setStreamKey] = useState(0)
-  const callback = useRef(onInvalidate)
-  callback.current = onInvalidate
   const resetCallback = useRef(onReset)
   resetCallback.current = onReset
+
+  useEffect(() => {
+    const handleOnline = () => setOnline(true)
+    const handleOffline = () => setOnline(false)
+    window.addEventListener('online', handleOnline)
+    window.addEventListener('offline', handleOffline)
+    return () => {
+      window.removeEventListener('online', handleOnline)
+      window.removeEventListener('offline', handleOffline)
+    }
+  }, [])
+
   useEffect(() => {
     if (typeof EventSource === 'undefined') return
     const events = new EventSource('/api/public/v1/events')
-    const restartAfterReset = () => {
-      // Do not let the browser keep an old authorization-bound connection
-      // alive while the shell rechecks access. A new stream is opened only
-      // after this hook has rendered its next generation.
+    const reset = () => {
       events.close()
+      resetPublicCache((publicCacheGeneration ?? DEFAULT_GENERATION) + 1)
       setStreamKey((value) => value + 1)
       resetCallback.current?.()
     }
     const invalidate = (event: Event) => {
       try {
-        const data = JSON.parse((event as MessageEvent<string>).data) as { reset?: unknown }
+        const data = JSON.parse((event as MessageEvent<string>).data) as PublicInvalidation
         if (data.reset === true) {
-          restartAfterReset()
+          reset()
           return
         }
+        invalidatePublicResource(
+          typeof data.resource === 'string' ? data.resource : 'collection',
+          typeof data.resourceId === 'string' ? data.resourceId : undefined,
+          typeof data.revision === 'number' ? data.revision : undefined,
+        )
       } catch {
-        // A malformed invalidation cannot be trusted; clear and re-resolve
-        // authorization before allowing the old Public projection to render.
-        restartAfterReset()
-        return
+        reset()
       }
-      callback.current()
     }
-    const reset = () => restartAfterReset()
     events.onopen = () => setStatus('connected')
     events.onerror = () => setStatus('disconnected')
     events.addEventListener('invalidation', invalidate)
-    // The Server sends `event: reset` on authorization transitions: Guest
-    // access disabled, Session revoked/expired/role-changed. Collection
-    // privacy resets arrive as an `invalidation` with reset=true and take the
-    // same clear/recheck path above.
     events.addEventListener('reset', reset)
     return () => {
       events.removeEventListener('invalidation', invalidate)
@@ -187,5 +346,6 @@ export function usePublicRealtime(
       events.close()
     }
   }, [streamKey])
-  return status
+
+  return { status, online }
 }

@@ -9,6 +9,7 @@
 
 import { QueryClient, useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
+import { requestGenerated, setActiveAccessGeneration, TransportError } from './transport'
 import type { SiteAccessMode } from './public'
 import {
   adminAgentAudit,
@@ -134,7 +135,6 @@ import {
   type AgentAuditResponse,
   type GeoStatusDiagnostic,
   type AgentDiagnostic,
-  type ApiErrorBody,
   type AuditResponse,
   type CreatePersonRequest,
   type EnrollmentTokenResponse,
@@ -253,27 +253,21 @@ export type AuditFilters = {
  * whether cached values may come from an older session.
  */
 let adminCacheGeneration: number | null = null
+const adminRevisions = new Map<string, number>()
 
 /** A failed Admin call, keyed by the Server's stable error `code`, with the
  * request and Audit references an operator can use to look the failure up
  * (issue #46: confirmation and mutation errors expose references, never
  * sensitive details). */
-export class AdminApiError extends Error {
-  readonly code: string
-  readonly requestId: string | null
-  readonly fields: string[]
-
+export class AdminApiError extends TransportError {
   constructor(
     code: string,
     message: string,
     requestId: string | null = null,
     fields: string[] = [],
   ) {
-    super(message)
+    super('domain', code, message, { requestId, fields })
     this.name = 'AdminApiError'
-    this.code = code
-    this.requestId = requestId
-    this.fields = fields
   }
 }
 
@@ -301,18 +295,16 @@ async function requestAdmin<T>(
   run: () => Promise<{ data?: T; error?: unknown }>,
   fallbackMessage: string,
 ): Promise<T> {
-  const { data, error } = await run()
-  if (error || !data) {
-    const body = error as ApiErrorBody | undefined
-    if (body?.error?.code === 'auth_required') notifyAdminAccessReset()
-    throw new AdminApiError(
-      body?.error?.code ?? 'unavailable',
-      body?.error?.message ?? fallbackMessage,
-      body?.error?.requestId ?? null,
-      body?.error?.fields ?? [],
-    )
+  try {
+    return await requestGenerated(run, fallbackMessage)
+  } catch (caught) {
+    if (caught instanceof TransportError) {
+      if (caught.code === 'auth_required') notifyAdminAccessReset()
+      if (caught instanceof AdminApiError) throw caught
+      throw new AdminApiError(caught.code, caught.message, caught.requestId, caught.fields)
+    }
+    throw new AdminApiError('unavailable', fallbackMessage)
   }
-  return data
 }
 
 /** Server-owned attention overview (REST-authoritative). */
@@ -912,8 +904,10 @@ export async function revokeAgentCredential(
 export function resetAdminCache(generation: number): void {
   if (adminCacheGeneration === generation) return
   adminCacheGeneration = generation
+  setActiveAccessGeneration(generation)
   void adminQueryClient.cancelQueries({ queryKey: adminKeys.all })
   adminQueryClient.clear()
+  adminRevisions.clear()
 }
 
 /** Owner-only People listing (issue #47): allowlisted rows with role,
@@ -1174,15 +1168,28 @@ function invalidateAdminResource(resource: string, resourceId?: string): void {
   void Promise.all(keys.map((queryKey) => adminQueryClient.invalidateQueries({ queryKey })))
 }
 
+function acceptAdminRevision(resource: string, resourceId: string | undefined, revision: number | undefined): boolean {
+  if (revision === undefined) return true
+  const key = `${resource}:${resourceId ?? ''}`
+  const previous = adminRevisions.get(key) ?? -1
+  if (revision <= previous) return false
+  adminRevisions.set(key, revision)
+  return true
+}
+
 function handleAdminInvalidation(data: string): void {
   try {
-    const event = JSON.parse(data) as { resource?: unknown; resourceId?: unknown; reset?: unknown }
+    const event = JSON.parse(data) as { resource?: unknown; resourceId?: unknown; revision?: unknown; reset?: unknown }
     if (event.reset === true) {
-      void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+      void adminQueryClient.cancelQueries({ queryKey: adminKeys.all })
+      adminQueryClient.clear()
+      adminRevisions.clear()
       return
     }
     const resource = typeof event.resource === 'string' ? event.resource : 'collection'
     const resourceId = typeof event.resourceId === 'string' ? event.resourceId : undefined
+    const revision = typeof event.revision === 'number' ? event.revision : undefined
+    if (!acceptAdminRevision(resource, resourceId, revision)) return
     invalidateAdminResource(resource, resourceId)
   } catch {
     // A malformed signal is never trusted as data; refetch the bounded Admin
@@ -1204,6 +1211,7 @@ export function useAdminRealtime(
   generation: number,
   onAccessReset: () => void,
 ): RealtimeState {
+  setActiveAccessGeneration(generation)
   const [status, setStatus] = useState<RealtimeStatus>('connecting')
   const [online, setOnline] = useState(() =>
     typeof navigator === 'undefined' ? true : navigator.onLine,

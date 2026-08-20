@@ -11,6 +11,7 @@ import {
 import type { SessionProjection } from '../api/generated'
 import { fetchSession, login as apiLogin, logout as apiLogout } from '../api/auth'
 import { resetAdminCache } from '../api/admin'
+import { resetPublicCache } from '../api/public'
 
 /** Auth state machine: loading → guest, or authenticated with a session. */
 export type AuthStatus =
@@ -98,6 +99,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // before the new session can render (design §3.3).
     setGeneration((value) => {
       resetAdminCache(value + 1)
+      resetPublicCache(value + 1)
       return value + 1
     })
     setAccessLost(false)
@@ -118,6 +120,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     sessionEpochRef.current += 1
     setGeneration((value) => {
       resetAdminCache(value + 1)
+      resetPublicCache(value + 1)
       return value + 1
     })
     setStatus({ state: 'guest' })
@@ -145,6 +148,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setAccessLost(true)
       setGeneration((value) => {
         resetAdminCache(value + 1)
+        resetPublicCache(value + 1)
         return value + 1
       })
       setStatus({ state: 'guest' })
@@ -158,6 +162,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setAccessLost(false)
       setGeneration((value) => {
         resetAdminCache(value + 1)
+        resetPublicCache(value + 1)
         return value + 1
       })
       setStatus({

@@ -1,16 +1,21 @@
 import { Link, NavLink, Outlet, useNavigate, useOutletContext } from 'react-router'
+import { QueryClientProvider } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import SignOutButton from '../components/SignOutButton'
 import { useAuth } from '../auth/AuthContext'
 import {
-  fetchNetworks,
-  refreshSiteAccessMode,
+  getSiteAccessGeneration,
+  publicQueryClient,
+  refreshSiteAccessSettings,
+  resetPublicCache,
+  subscribeSiteAccessGeneration,
+  usePublicNetworks,
   usePublicRealtime,
 } from '../api/public'
-import type { PublicNetwork } from '../api/generated'
 import { ServerStatusNotice } from '../components/ServerStatusNotice'
 import { PeerInsight } from '../components/PeerInsight'
 import { GeoInsight } from '../components/GeoInsight'
+import { TransportError } from '../api/transport'
 
 /**
  * Home shell: reads only the Public Projection. Anonymous Guests may use
@@ -20,79 +25,62 @@ import { GeoInsight } from '../components/GeoInsight'
  * events: the shell re-checks the session and the Guest setting before any
  * cached projection can re-render (design §3.3, §6.3).
  */
-export type HomeRealtimeContext = { reloadKey: number; resetting: boolean }
+export type HomeRealtimeContext = { resetting: boolean; generation: number }
 
 export function useHomeRealtimeContext(): HomeRealtimeContext {
   return useOutletContext<HomeRealtimeContext>()
 }
 
 export default function HomeLayout() {
+  return (
+    <QueryClientProvider client={publicQueryClient}>
+      <HomeLayoutContent />
+    </QueryClientProvider>
+  )
+}
+
+function HomeLayoutContent() {
   const { status, recheckSession } = useAuth()
   const navigate = useNavigate()
   const isAuthenticated = status.state === 'authenticated'
   const isOwner = status.state === 'authenticated' && status.session.role === 'owner'
-  const [networks, setNetworks] = useState<PublicNetwork[]>([])
-  const [error, setError] = useState<string | null>(null)
-  const [reloadKey, setReloadKey] = useState(0)
+  const [generation, setGeneration] = useState(getSiteAccessGeneration() ?? 0)
   const [resetting, setResetting] = useState(false)
-  const requestController = useRef<AbortController | null>(null)
-  const accessController = useRef<AbortController | null>(null)
   const authRef = useRef(status)
   authRef.current = status
 
-  useEffect(() => {
-    requestController.current?.abort()
-    const controller = new AbortController()
-    requestController.current = controller
-    fetchNetworks(controller.signal)
-      .then((data) => {
-        if (!controller.signal.aborted) setNetworks(data)
-      })
-      .catch((caught: Error) => {
-        if (!controller.signal.aborted && caught.name !== 'AbortError') setError(caught.message)
-      })
-    return () => {
-      controller.abort()
-      if (requestController.current === controller) requestController.current = null
-    }
-  }, [reloadKey])
+  useEffect(() => subscribeSiteAccessGeneration(setGeneration), [])
+
+  const networksQuery = usePublicNetworks(generation)
 
   const handleReset = useCallback(() => {
     // A Public reset means an authorization transition: revoke, expiry,
     // role change, Guest disable, or a Public privacy reset. The current
     // projection is cleared BEFORE any recheck so prior data can never
     // flash while the new authorization resolves (design §3.3).
-    setNetworks([])
-    setError(null)
     setResetting(true)
-    requestController.current?.abort()
-    accessController.current?.abort()
-    const controller = new AbortController()
-    accessController.current = controller
+    resetPublicCache(generation + 1)
     void recheckSession()
-    void refreshSiteAccessMode(controller.signal)
-      .then((mode) => {
-        if (controller.signal.aborted) return
+    void refreshSiteAccessSettings()
+      .then(({ mode, authorizationGeneration }) => {
         const current = authRef.current
         if (mode !== 'public' && current.state !== 'authenticated') {
           navigate('/login', { replace: true })
         } else {
           setResetting(false)
-          setReloadKey((value) => value + 1)
+          setGeneration(authorizationGeneration)
         }
       })
       .catch((caught: Error) => {
-        if (caught.name !== 'AbortError') {
-          setResetting(false)
-          setError(caught.message)
-        }
+        setResetting(false)
+        if (caught.name !== 'AbortError') setGeneration(generation + 1)
       })
-  }, [navigate, recheckSession])
+  }, [generation, navigate, recheckSession])
 
-  const realtimeStatus = usePublicRealtime(() => {
-    setError(null)
-    setReloadKey((value) => value + 1)
-  }, handleReset)
+  const realtime = usePublicRealtime(handleReset)
+  const error = networksQuery.error instanceof Error ? networksQuery.error.message : null
+  const forbidden = networksQuery.error instanceof TransportError &&
+    (networksQuery.error.code === 'forbidden' || networksQuery.error.code === 'owner_required')
 
   return (
     <div className="app-shell">
@@ -110,17 +98,24 @@ export default function HomeLayout() {
           <h1>Home</h1>
           <h2>Network overview</h2>
           <p>Published Nodes grouped by Network. Private and retired Nodes are not listed.</p>
-          <p className="realtime-notice" role="status" data-live={realtimeStatus === 'connected'}>
-            {realtimeStatus === 'connected'
+          <p className="realtime-notice" role="status" data-live={realtime.status === 'connected'}>
+            {resetting
+              ? 'Revalidating Home access…'
+              : !realtime.online
+              ? 'You are offline'
+              : realtime.status === 'connected'
               ? 'Connected'
-              : realtimeStatus === 'connecting'
+              : realtime.status === 'connecting'
                 ? 'Starting'
                 : 'Live updates paused'}
           </p>
-          {error && <p role="status" className="form-error">{error}</p>}
-          {networks.length === 0 && !error && <p role="status">No published Nodes yet.</p>}
+          {forbidden && <p role="alert" className="form-error">Forbidden: Home data is unavailable for this account.</p>}
+          {error && !forbidden && <p role="status" className="form-error">{error}</p>}
+          {networksQuery.data && networksQuery.isRefetchError && <p role="status" className="form-error">Partial: showing the last successful Home data while refresh is unavailable.</p>}
+          {networksQuery.isPending && <p role="status">Loading published Nodes…</p>}
+          {networksQuery.isSuccess && networksQuery.data.length === 0 && <p role="status">No published Nodes yet.</p>}
           <div className="network-grid">
-            {networks.map((network) => <section className="network-card" key={network.networkKey}>
+            {networksQuery.data?.map((network) => <section className="network-card" key={network.networkKey}>
               <h2><Link to={`/networks/${network.networkKey}`}>{network.displayName}</Link></h2>
               <p className="muted">{network.networkKey}</p>
               <PeerInsight insight={network.peers} compact />
@@ -129,7 +124,7 @@ export default function HomeLayout() {
             </section>)}
           </div>
         </section>
-        <Outlet context={{ reloadKey, resetting }} />
+        <Outlet context={{ resetting, generation }} />
       </main>
     </div>
   )
