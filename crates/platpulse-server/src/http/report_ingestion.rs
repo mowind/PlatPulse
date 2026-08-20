@@ -3535,14 +3535,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(lifecycle, "retired");
-        assert_eq!(
+        assert!(
             state
                 .public_realtime()
                 .pending_events()
                 .iter()
                 .find(|event| event.resource == "node" && event.resource_id.is_none())
-                .map(|event| event.revision),
-            Some(2)
+                .is_some_and(|event| event.revision == event.event_id && event.revision > 0)
         );
 
         let mut stale = empty.clone();

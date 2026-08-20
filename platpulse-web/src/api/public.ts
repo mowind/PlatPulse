@@ -276,17 +276,42 @@ export function resetPublicCache(generation: number): void {
   publicRevisions.clear()
 }
 
-function acceptRevision(resource: string, resourceId: string | undefined, revision: number | undefined): boolean {
-  if (revision === undefined) return true
+function acceptEvent(resource: string, resourceId: string | undefined, eventId: number | undefined): boolean {
+  if (eventId === undefined) return true
   const key = `${resource}:${resourceId ?? ''}`
   const previous = publicRevisions.get(key) ?? -1
-  if (revision <= previous) return false
-  publicRevisions.set(key, revision)
+  if (eventId <= previous) return false
+  publicRevisions.set(key, eventId)
   return true
 }
 
-export function invalidatePublicResource(resource: string, resourceId?: string, revision?: number): void {
-  if (!acceptRevision(resource, resourceId, revision)) return
+function activePublicGeneration(): number {
+  return publicCacheGeneration ?? getSiteAccessGeneration() ?? DEFAULT_GENERATION
+}
+
+function samePrefix(queryKey: readonly unknown[], prefix: readonly unknown[]): boolean {
+  return prefix.every((part, index) => queryKey[index] === part)
+}
+
+function invalidatePublicNamespace(namespace: readonly unknown[], generation: number): void {
+  void publicQueryClient.invalidateQueries({
+    predicate: ({ queryKey }) =>
+      samePrefix(queryKey, namespace) && queryKey.at(-1) === generation,
+    refetchType: 'active',
+  })
+}
+
+function invalidatePublicExact(queryKey: readonly unknown[], generation: number): void {
+  void publicQueryClient.invalidateQueries({
+    queryKey: [...queryKey, generation],
+    exact: true,
+    refetchType: 'active',
+  })
+}
+
+export function invalidatePublicResource(resource: string, resourceId?: string, eventId?: number): void {
+  if (!acceptEvent(resource, resourceId, eventId)) return
+  const generation = activePublicGeneration()
   const keys: Array<readonly unknown[]> = (() => {
     switch (resource) {
       case 'node':
@@ -305,13 +330,19 @@ export function invalidatePublicResource(resource: string, resourceId?: string, 
         return [publicKeys.all]
     }
   })()
-  void Promise.all(keys.map((queryKey) => publicQueryClient.invalidateQueries({ queryKey, refetchType: 'active' })))
+  for (const queryKey of keys) {
+    if (resourceId !== undefined || queryKey === publicKeys.networks || queryKey === publicKeys.network(resourceId ?? '')) {
+      invalidatePublicExact(queryKey, generation)
+    } else {
+      invalidatePublicNamespace(queryKey, generation)
+    }
+  }
 }
 
 export type RealtimeStatus = 'connecting' | 'connected' | 'disconnected'
 export type RealtimeState = { status: RealtimeStatus; online: boolean }
 
-type PublicInvalidation = { resource?: unknown; resourceId?: unknown; revision?: unknown; reset?: unknown }
+type PublicInvalidation = { eventId?: unknown; resource?: unknown; resourceId?: unknown; revision?: unknown; reset?: unknown }
 
 export function usePublicRealtime(onReset?: () => void, enabled = true, accessGeneration?: number): RealtimeState {
   const [status, setStatus] = useState<RealtimeStatus>('connecting')
@@ -351,7 +382,11 @@ export function usePublicRealtime(onReset?: () => void, enabled = true, accessGe
         invalidatePublicResource(
           typeof data.resource === 'string' ? data.resource : 'collection',
           typeof data.resourceId === 'string' ? data.resourceId : undefined,
-          typeof data.revision === 'number' ? data.revision : undefined,
+          typeof data.eventId === 'number'
+            ? data.eventId
+            : typeof data.revision === 'number'
+              ? data.revision
+              : undefined,
         )
       } catch {
         reset()

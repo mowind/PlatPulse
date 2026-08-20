@@ -1193,7 +1193,11 @@ export async function updateAccessSettings(
 export type RealtimeStatus = 'connecting' | 'connected' | 'disconnected'
 export type RealtimeState = { status: RealtimeStatus; online: boolean }
 
-function invalidateAdminResource(resource: string, resourceId?: string): void {
+function samePrefix(queryKey: readonly unknown[], prefix: readonly unknown[]): boolean {
+  return prefix.every((part, index) => queryKey[index] === part)
+}
+
+function invalidateAdminResource(resource: string, resourceId: string | undefined, generation: number): void {
   const keys: Array<readonly unknown[]> = (() => {
     switch (resource) {
       case 'node':
@@ -1239,34 +1243,49 @@ function invalidateAdminResource(resource: string, resourceId?: string): void {
   }
   if (resourceId && resource === 'network') keys.push(adminKeys.networkDetail(resourceId))
   if (resourceId && resource === 'validator') keys.push(adminKeys.validatorDetail(resourceId))
-  void Promise.all(keys.map((queryKey) => adminQueryClient.invalidateQueries({ queryKey })))
+  const matchingKeys = adminQueryClient
+    .getQueryCache()
+    .findAll({
+      predicate: ({ queryKey }) =>
+        keys.some((prefix) => samePrefix(queryKey, prefix)) && queryKey.at(-1) === generation,
+    })
+    .map(({ queryKey }) => queryKey)
+  void Promise.all(
+    matchingKeys.map((queryKey) =>
+      adminQueryClient.invalidateQueries({ queryKey, exact: true, refetchType: 'active' }),
+    ),
+  )
 }
 
-function acceptAdminRevision(resource: string, resourceId: string | undefined, revision: number | undefined): boolean {
-  if (revision === undefined) return true
+function acceptAdminEvent(resource: string, resourceId: string | undefined, eventId: number | undefined): boolean {
+  if (eventId === undefined) return true
   const key = `${resource}:${resourceId ?? ''}`
   const previous = adminRevisions.get(key) ?? -1
-  if (revision <= previous) return false
-  adminRevisions.set(key, revision)
+  if (eventId <= previous) return false
+  adminRevisions.set(key, eventId)
   return true
 }
 
-function handleAdminInvalidation(data: string): boolean {
+function handleAdminInvalidation(data: string, generation: number): boolean {
   try {
-    const event = JSON.parse(data) as { resource?: unknown; resourceId?: unknown; revision?: unknown; reset?: unknown }
+    const event = JSON.parse(data) as { eventId?: unknown; resource?: unknown; resourceId?: unknown; revision?: unknown; reset?: unknown }
     if (event.reset === true) {
       return true
     }
     const resource = typeof event.resource === 'string' ? event.resource : 'collection'
     const resourceId = typeof event.resourceId === 'string' ? event.resourceId : undefined
-    const revision = typeof event.revision === 'number' ? event.revision : undefined
-    if (!acceptAdminRevision(resource, resourceId, revision)) return false
-    invalidateAdminResource(resource, resourceId)
+    const eventId = typeof event.eventId === 'number'
+      ? event.eventId
+      : typeof event.revision === 'number'
+        ? event.revision
+        : undefined
+    if (!acceptAdminEvent(resource, resourceId, eventId)) return false
+    invalidateAdminResource(resource, resourceId, generation)
     return false
   } catch {
     // A malformed signal is never trusted as data; refetch the bounded Admin
     // namespace instead of allowing a stale sensitive panel to persist.
-    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+      invalidateAdminResource('collection', undefined, generation)
     return false
   }
 }
@@ -1327,7 +1346,7 @@ export function useAdminRealtime(
     }
     const onInvalidation = (event: Event) => {
       const message = event as MessageEvent<string>
-      if (handleAdminInvalidation(message.data)) onReset()
+      if (handleAdminInvalidation(message.data, accessGeneration)) onReset()
     }
     events.onopen = () => setStatus('connected')
     events.onerror = () => setStatus('disconnected')

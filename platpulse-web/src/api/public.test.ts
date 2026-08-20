@@ -53,7 +53,8 @@ describe('Public adapter and query namespace', () => {
 
     expect(invalidate).toHaveBeenCalledTimes(3)
     expect(invalidate.mock.calls[0]?.[0]).toEqual({
-      queryKey: publicKeys.node('node-1'),
+      queryKey: [...publicKeys.node('node-1'), 0],
+      exact: true,
       refetchType: 'active',
     })
   })
@@ -65,8 +66,8 @@ describe('Public adapter and query namespace', () => {
 
     expect(invalidate).toHaveBeenCalledTimes(2)
     expect(invalidate.mock.calls.map(([options]) => options)).toEqual([
-      { queryKey: publicKeys.networks, refetchType: 'active' },
-      { queryKey: publicKeys.network('network-a'), refetchType: 'active' },
+      { queryKey: [...publicKeys.networks, 0], exact: true, refetchType: 'active' },
+      { queryKey: [...publicKeys.network('network-a'), 0], exact: true, refetchType: 'active' },
     ])
   })
 })

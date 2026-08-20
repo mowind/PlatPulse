@@ -122,28 +122,17 @@ impl RealtimeHub {
         &self,
         resource: impl Into<String>,
         resource_id: Option<impl Into<String>>,
-        revision: u64,
+        _revision: u64,
     ) -> u64 {
-        self.publish_inner(
-            resource.into(),
-            resource_id.map(Into::into),
-            revision,
-            false,
-        )
+        self.publish_inner(resource.into(), resource_id.map(Into::into), false)
     }
 
     /// Publish a collection-level reset. It never carries a private Node ID.
-    pub(crate) fn publish_reset(&self, resource: impl Into<String>, revision: u64) -> u64 {
-        self.publish_inner(resource.into(), None, revision, true)
+    pub(crate) fn publish_reset(&self, resource: impl Into<String>, _revision: u64) -> u64 {
+        self.publish_inner(resource.into(), None, true)
     }
 
-    fn publish_inner(
-        &self,
-        resource: String,
-        resource_id: Option<String>,
-        revision: u64,
-        reset: bool,
-    ) -> u64 {
+    fn publish_inner(&self, resource: String, resource_id: Option<String>, reset: bool) -> u64 {
         let mut state = self.inner.state.lock().expect("SSE hub mutex poisoned");
         if state.closed {
             return state.next_id;
@@ -155,7 +144,10 @@ impl RealtimeHub {
             event_id,
             resource,
             resource_id,
-            revision,
+            // Event IDs are the single monotonic revision for this hub. The
+            // caller's domain revision is useful for its own persistence but
+            // can regress or collide across Agents and mutation sources.
+            revision: event_id,
             reset: reset.then_some(true),
         };
         // Keep only the newest notification for a key. This bounds both the
