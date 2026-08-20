@@ -10,7 +10,24 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await page.getByRole('link', { name: 'Node A' }).click()
     await expect(page).toHaveURL(/\/nodes\/0195f2a1-0014-4014-8014-000000000014$/)
     await expect(page.getByRole('heading', { level: 1, name: 'Node A' })).toBeVisible({ timeout: 15_000 })
-    await expect(page.getByText('Current head')).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText('Current Head', { exact: true }).first()).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByRole('heading', { level: 2, name: 'Node Health Summary' })).toBeVisible()
+    await expect(page.getByText('Reference Confidence', { exact: true })).toBeVisible()
+    await expect(page.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true')
+    await page.getByRole('tab', { name: 'Details' }).focus()
+    await page.keyboard.press('ArrowRight')
+    await expect(page.getByRole('tab', { name: 'Network' })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByRole('tabpanel', { name: 'Network' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Peer history' })).toBeVisible()
+    await page.getByRole('tab', { name: 'Network' }).press('ArrowLeft')
+    await expect(page.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByRole('tabpanel', { name: 'Details' })).toBeVisible()
+    const undersized = await page.getByRole('tablist').locator('button').evaluateAll((elements) => elements.flatMap((element) => {
+      const rect = element.getBoundingClientRect()
+      return rect.width < 44 || rect.height < 44 ? [element.textContent?.trim() || 'tab'] : []
+    }))
+    expect(undersized, 'Node tabs must be at least 44px').toEqual([])
+    await setPageZoom(page, 2)
     await expectNoHorizontalOverflow(page)
 
     // A guessed private Node URL must be indistinguishable from a missing

@@ -78,7 +78,7 @@ describe('PeerInsight', () => {
     expect(screen.getByText(/last-good snapshot is shown/i)).toBeTruthy()
   })
 
-  it('does not render zero for a stale empty snapshot', () => {
+  it('keeps an authoritative last-good zero visible while stale', () => {
     render(<PeerInsight insight={{
       state: 'ok',
       freshness: 'stale',
@@ -93,7 +93,7 @@ describe('PeerInsight', () => {
       consensusCount: 0,
     }} />)
     expect(screen.getByText('Stale')).toBeTruthy()
-    expect(screen.queryByText('0')).toBeNull()
+    expect(screen.getAllByText('0')).toHaveLength(6)
     expect(screen.getByText(/last-good snapshot is shown/i)).toBeTruthy()
     expect(screen.getByText(/Stale since 2026-08-16 00:02:00 UTC/i)).toBeTruthy()
   })

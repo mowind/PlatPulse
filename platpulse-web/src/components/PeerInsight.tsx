@@ -18,9 +18,9 @@ export function peerInsightFreshnessStatus(insight: PublicPeerInsight | undefine
 
 export function peerInsightValueStatus(insight: PublicPeerInsight | undefined): string {
   if (!insight || insight.peerCount == null) return 'Unknown'
-  // A stale or failed empty snapshot is not an authoritative Empty value and
-  // must not make the UI render zero as if it were current.
-  if (insight.peerCount === 0 && (insight.state !== 'ok' || insight.freshness !== 'current')) {
+  // Starting/Disabled/Unsupported do not provide a usable value. Error and
+  // Stale retain the last successful value, including an authoritative zero.
+  if (insight.peerCount === 0 && ['starting', 'disabled', 'unsupported'].includes(insight.state)) {
     return 'Unknown'
   }
   if (insight.peerCount === 0) return 'Empty'
@@ -32,7 +32,7 @@ export function peerInsightStatus(insight: PublicPeerInsight | undefined): strin
   if (collection !== 'Current') return collection
   const freshness = peerInsightFreshnessStatus(insight)
   const value = peerInsightValueStatus(insight)
-  if (value === 'Empty') return 'Empty'
+  if (value === 'Empty' && freshness === 'Current') return 'Empty'
   if (value === 'Unknown') return 'Unknown'
   return freshness
 }
@@ -69,7 +69,7 @@ function note(insight: PublicPeerInsight | undefined, valueStatus: string): stri
   const collection = peerInsightCollectionStatus(insight)
   const freshness = peerInsightFreshnessStatus(insight)
   if (collection === 'Error') {
-    return insight?.peerCount != null && valueStatus === 'Current'
+    return insight?.peerCount != null
       ? 'Collection Error; the last-good snapshot remains visible.'
       : 'Collection Error; no successful Peer snapshot is available.'
   }

@@ -16,6 +16,7 @@ import { PeerHistoryInsight, normalizePublicPeerHistory } from '../components/Pe
 import { GeoInsight } from '../components/GeoInsight'
 import { ValidatorInsight } from '../components/ValidatorInsight'
 import { ValidatorAnalytics } from '../components/ValidatorAnalytics'
+import { formatObservedAt, StatusBadge } from '../components/StatusBadge'
 
 export function NetworkPage() {
   const { networkKey = '' } = useParams()
@@ -58,6 +59,7 @@ export function NodePage() {
   const nodeQuery = usePublicNode(nodeId, generation)
   const historyQuery = usePublicNodeHistory(nodeId, generation)
   const peerHistoryQuery = usePublicNodePeerHistory(nodeId, generation)
+  const [activeTab, setActiveTab] = useState<'details' | 'network'>('details')
   const [exportError, setExportError] = useState<string | null>(null)
 
   if (resetting) return <section className="page"><p role="status">Revalidating Node access…</p></section>
@@ -82,39 +84,219 @@ export function NodePage() {
     }
   }
 
-  return <section className="page">
-    <p><Link to={`/networks/${node.networkKey}`}>← {node.networkKey}</Link></p>
-    <h1>{node.displayName ?? 'Node detail'}</h1>
-    <p><button type="button" onClick={() => void exportHistory()}>Export public history</button></p>
-    {exportError && <p role="alert" className="form-error">{exportError}</p>}
-    <PeerInsight insight={node.peers} />
-    {node.validator && <ValidatorDetails validator={node.validator} generation={generation} />}
-    <PeerHistoryInsight
-      history={peerHistoryQuery.data ? normalizePublicPeerHistory(peerHistoryQuery.data) : undefined}
-      error={Boolean(peerHistoryQuery.error)}
-      loading={peerHistoryQuery.isPending}
-    />
-    <dl className="detail-list">
-      <dt>Node ID</dt><dd>{node.nodeId}</dd>
-      <dt>Health</dt><dd><Status value={node.health} /> — {node.healthReason}</dd>
-      <dt>RPC state</dt><dd>{node.rpcState}</dd>
-      <dt>Sync state</dt><dd>{node.syncState}</dd>
-      <dt>Consensus state</dt><dd>{node.consensusState}</dd>
-      <dt>Current head</dt><dd>{node.currentHead ?? 'Unknown'}</dd>
-      <dt>Historical high-water mark</dt><dd>{node.historicalHighWatermark ?? 'Unknown'}</dd>
-      <dt>Resync state</dt><dd>{node.resyncState}{node.resyncProgress ? ` — ${node.resyncProgress}` : ''}</dd>
-      <dt>Network reference</dt><dd>{node.networkReferenceHead ?? 'Unknown'} ({node.networkReferenceConfidence})</dd>
-      <dt>Freshness</dt><dd>{node.freshness ?? 'Never observed'}</dd>
-      <dt>Host CPU</dt><dd>{node.hostCpuPercent == null ? 'Unknown' : `${node.hostCpuPercent.toFixed(1)}%`}</dd>
-    </dl>
-    <h2>Block history</h2>
-    {historyQuery.error && <p role="status" className="form-error">Block history unavailable.</p>}
-    {historyQuery.isPending && <p role="status">Loading block history…</p>}
-    <div className="history-list">
-      {historyQuery.data?.length === 0 && <p className="muted">No block history observed yet.</p>}
-      {historyQuery.data?.map((block) => <HistoryCard block={block} key={`${block.height ?? 'gap'}-${block.observedAt ?? ''}`} />)}
+  return <section className="page node-detail-page">
+    <div className="node-detail-breadcrumb">
+      <Link to={`/networks/${node.networkKey}`}>← {node.networkKey}</Link>
+      <span aria-hidden="true">/</span>
+      <span>Public Node Detail</span>
     </div>
+    <header className="node-detail-heading">
+      <div>
+        <p className="dashboard-kicker">PLATPULSE / NODE DETAIL</p>
+        <h1>{node.displayName ?? 'Node detail'}</h1>
+        <p className="node-id-line">Node ID <code>{node.nodeId}</code></p>
+        <p className="node-id-line">Network key <code>{node.networkKey}</code></p>
+      </div>
+      <div className="node-detail-actions">
+        <StatusBadge status={nodeHealthLabel(node.health)} tone={nodeHealthTone(node.health)} />
+        <button className="secondary-action" type="button" onClick={() => void exportHistory()}>Export public history</button>
+      </div>
+    </header>
+    {exportError && <p role="alert" className="form-error">{exportError}</p>}
+
+    <section className="node-summary-panel panel" aria-labelledby="node-summary-title">
+      <div className="panel-heading">
+        <div>
+          <h2 id="node-summary-title">Node Health Summary</h2>
+          <p className="health-reason">{node.healthReason}</p>
+        </div>
+        <StatusBadge status={freshnessLabel(node.freshness)} tone={statusTone(freshnessLabel(node.freshness))} />
+        <p className="muted node-freshness-detail">{freshnessDetail(node.freshness)}</p>
+      </div>
+      <div className="node-fact-grid" aria-label="Node independent facts">
+        <NodeFact label="Health" value={nodeHealthLabel(node.health)} tone={nodeHealthTone(node.health)} />
+        <NodeFact label="RPC" value={nodeComponentStateLabel(node.rpcState)} tone={stateTone(node.rpcState)} />
+        <NodeFact label="Sync" value={nodeComponentStateLabel(node.syncState)} tone={stateTone(node.syncState)} />
+        <NodeFact label="Consensus" value={nodeComponentStateLabel(node.consensusState)} tone={stateTone(node.consensusState)} />
+        <NodeFact label="Process" value={nodeComponentStateLabel(node.processState)} tone={stateTone(node.processState)} />
+        <NodeFact label="Resync" value={nodeComponentStateLabel(node.resyncState)} tone={stateTone(node.resyncState)} detail={node.resyncProgress ?? undefined} />
+      </div>
+      <dl className="node-observation-grid" aria-label="Node independent observations">
+        <Observation label="Current Head" value={formatNumber(node.currentHead)} />
+        <Observation label="History Boundary" value={formatNumber(node.historicalHighWatermark)} />
+        <Observation label="Network Reference" value={formatNumber(node.networkReferenceHead)} />
+        <Observation label="Reference Confidence" value={confidenceLabel(node.networkReferenceConfidence)} />
+        <Observation label="Host CPU" value={formatPercent(node.hostCpuPercent)} detail="Sanitized Host observation" />
+        <Observation label="Peer Count" value={peerCount(node.peers)} detail={peerCountDetail(node.peers)} />
+      </dl>
+    </section>
+
+    <div className="node-tabs" role="tablist" aria-label="Node detail views">
+      <TabButton id="node-details-tab" panelId="node-details-panel" selected={activeTab === 'details'} onSelect={() => setActiveTab('details')} onNavigate={(tab) => { setActiveTab(tab); document.getElementById(`node-${tab}-tab`)?.focus() }}>Details</TabButton>
+      <TabButton id="node-network-tab" panelId="node-network-panel" selected={activeTab === 'network'} onSelect={() => setActiveTab('network')} onNavigate={(tab) => { setActiveTab(tab); document.getElementById(`node-${tab}-tab`)?.focus() }}>Network</TabButton>
+    </div>
+
+    <section id="node-details-panel" className="node-tabpanel" role="tabpanel" aria-labelledby="node-details-tab" aria-label="Details" hidden={activeTab !== 'details'}>
+      <h2 className="sr-only">Details</h2>
+      <div className="node-signal-grid" aria-label="Current observation signals">
+        <SignalCard label="Host CPU" value={formatPercent(node.hostCpuPercent)} detail="Shared Host observation" />
+        <SignalCard label="Current Head" value={formatNumber(node.currentHead)} detail="Latest accepted Node observation" />
+        <SignalCard label="History Boundary" value={formatNumber(node.historicalHighWatermark)} detail="Historical high-water mark" />
+        <SignalCard label="Peers" value={peerCount(node.peers)} detail={peerCountDetail(node.peers)} />
+        <SignalCard label="RPC" value={nodeComponentStateLabel(node.rpcState)} detail="Independent RPC observation" status={nodeComponentStateLabel(node.rpcState)} />
+        <SignalCard label="Consensus" value={nodeComponentStateLabel(node.consensusState)} detail="Independent consensus observation" status={nodeComponentStateLabel(node.consensusState)} />
+      </div>
+      <section className="panel node-history-panel" aria-labelledby="node-history-title">
+        <div className="panel-heading">
+          <div>
+            <h2 id="node-history-title">Bounded Block History</h2>
+          <p className="muted">Server-configured history window; absent blocks are not zero. The exact bound is not part of the Public Projection.</p>
+          </div>
+          <span className="history-window-label">Best effort</span>
+        </div>
+        {historyQuery.error && <p role="status" className="form-error">Block History is Error; retained history is unavailable. <Link to={`/networks/${node.networkKey}`}>Return to Network</Link> and try again.</p>}
+        {historyQuery.isPending && <p role="status">Block History is Starting; loading the Server window…</p>}
+        {!historyQuery.isPending && !historyQuery.error && (historyQuery.data?.filter((block) => block.height != null).length ?? 0) === 0 && <p className="panel-state">Block History is Empty; no retained Block Summary is available in the Server window.</p>}
+        <div className="history-list">
+          {historyQuery.data?.filter((block) => block.height != null).map((block) => <HistoryCard block={block} key={`${block.height}-${block.observedAt ?? ''}`} />)}
+        </div>
+      </section>
+      {node.validator && <ValidatorDetails validator={node.validator} generation={generation} />}
+    </section>
+
+    <section id="node-network-panel" className="node-tabpanel" role="tabpanel" aria-labelledby="node-network-tab" aria-label="Network" hidden={activeTab !== 'network'}>
+      <h2 className="sr-only">Network</h2>
+      <PeerInsight insight={node.peers} />
+      <PeerHistoryInsight
+        history={peerHistoryQuery.data ? normalizePublicPeerHistory(peerHistoryQuery.data) : undefined}
+        error={Boolean(peerHistoryQuery.error)}
+        loading={peerHistoryQuery.isPending}
+      />
+      <p className="redaction-note">Network insight is public and redacted: peer addresses and identity lists are never displayed.</p>
+    </section>
   </section>
+}
+
+function TabButton({ id, panelId, selected, onSelect, onNavigate, children }: { id: string; panelId: string; selected: boolean; onSelect: () => void; onNavigate: (tab: 'details' | 'network') => void; children: string }) {
+  return <button
+    id={id}
+    className="node-tab"
+    type="button"
+    role="tab"
+    aria-controls={panelId}
+    aria-selected={selected}
+    tabIndex={selected ? 0 : -1}
+    onClick={onSelect}
+    onKeyDown={(event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault()
+        onSelect()
+      } else if (event.key === 'ArrowRight' || event.key === 'ArrowDown' || event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+        event.preventDefault()
+        onNavigate(id === 'node-details-tab' ? 'network' : 'details')
+      }
+    }}
+  >{children}</button>
+}
+
+function NodeFact({ label, value, tone, detail }: { label: string; value: string; tone: 'ok' | 'warning' | 'error' | 'neutral'; detail?: string }) {
+  return <article className="node-fact"><span>{label}</span><StatusBadge status={value} tone={tone} />{detail && <small>{detail}</small>}</article>
+}
+
+function Observation({ label, value, detail }: { label: string; value: string; detail?: string }) {
+  return <div><dt>{label}</dt><dd>{value}</dd>{detail && <small>{detail}</small>}</div>
+}
+
+function SignalCard({ label, value, detail, status }: { label: string; value: string; detail: string; status?: string }) {
+  return <article className="node-signal-card"><span className="node-signal-label">{label}</span><strong>{status ? <StatusBadge status={status} tone={stateTone(status)} /> : value}</strong><small>{detail}</small></article>
+}
+
+function nodeComponentStateLabel(value: string | null | undefined): string {
+  switch (value) {
+    case 'ok':
+    case 'healthy':
+    case 'normal':
+    case 'current': return 'Current'
+    case 'stale': return 'Stale'
+    case 'error':
+    case 'unhealthy': return 'Error'
+    case 'stopped': return 'Stopped'
+    case 'resyncing': return 'Resyncing'
+    case 'disabled': return 'Disabled'
+    case 'unsupported': return 'Unsupported'
+    case 'empty': return 'Empty'
+    case 'Current': return 'Current'
+    case 'Error': return 'Error'
+    case 'Stale': return 'Stale'
+    case 'Unsupported': return 'Unsupported'
+    case 'Stopped': return 'Stopped'
+    case 'Resyncing': return 'Resyncing'
+    default: return 'Unknown'
+  }
+}
+
+function nodeHealthLabel(value: string): string {
+  if (value === 'healthy') return 'Healthy'
+  if (value === 'unhealthy') return 'Unhealthy'
+  return 'Unknown'
+}
+
+function nodeHealthTone(value: string): 'ok' | 'warning' | 'error' | 'neutral' {
+  if (value === 'healthy') return 'ok'
+  if (value === 'unhealthy') return 'error'
+  return 'neutral'
+}
+
+function stateTone(value: string | null | undefined): 'ok' | 'warning' | 'error' | 'neutral' {
+  const label = nodeComponentStateLabel(value)
+  if (label === 'Current') return 'ok'
+  if (label === 'Error' || label === 'Stopped') return 'error'
+  if (label === 'Stale' || label === 'Unsupported' || label === 'Resyncing') return 'warning'
+  return 'neutral'
+}
+
+function statusTone(value: string): 'ok' | 'warning' | 'error' | 'neutral' {
+  return stateTone(value)
+}
+
+function freshnessLabel(value: string | null | undefined): string {
+  if (value === 'current') return 'Current'
+  if (value === 'stale') return 'Stale'
+  if (!value || value === 'unknown') return 'Unknown'
+  return 'Unknown'
+}
+
+function freshnessDetail(value: string | null | undefined): string {
+  if (!value || value === 'unknown') return 'Freshness Unknown; no Server timestamp is available.'
+  if (value === 'current' || value === 'stale') return `Freshness ${freshnessLabel(value)}; Server-provided state.`
+  return `Last observed ${formatObservedAt(value)}.`
+}
+
+function confidenceLabel(value: string | null | undefined): string {
+  if (!value || value === 'unknown') return 'Unknown'
+  return value.charAt(0).toUpperCase() + value.slice(1)
+}
+
+function formatNumber(value: number | null | undefined): string {
+  return value == null ? 'Unknown' : value.toLocaleString()
+}
+
+function formatPercent(value: number | null | undefined): string {
+  return value == null ? 'Unknown' : `${value.toFixed(1)}%`
+}
+
+function peerCount(insight: PublicNode['peers']): string {
+  if (insight.peerCount == null) return 'Unknown'
+  if (insight.peerCount === 0 && ['starting', 'disabled', 'unsupported'].includes(insight.state)) return 'Unknown'
+  return insight.peerCount.toLocaleString()
+}
+
+function peerCountDetail(insight: PublicNode['peers']): string {
+  if (insight.state === 'error') return insight.peerCount == null ? 'Error; no last-good value' : `Error; last-good value received ${formatObservedAt(insight.receivedAt)}`
+  if (insight.freshness === 'stale') return `Stale; last-good value received ${formatObservedAt(insight.receivedAt)}`
+  if (insight.peerCount === 0) return 'Empty; authoritative successful zero'
+  if (insight.peerCount == null) return 'Unknown; never observed'
+  return `Current; observed ${formatObservedAt(insight.observedAt)}`
 }
 
 function ValidatorDetails({ validator, generation }: { validator: PublicValidatorInsight; generation: number }) {
@@ -122,21 +304,14 @@ function ValidatorDetails({ validator, generation }: { validator: PublicValidato
   return <>
     <ValidatorInsight insight={validator} />
     {analytics.data && <ValidatorAnalytics analytics={analytics.data} compact />}
+    {analytics.error && <p role="status" className="muted">Validator analytics unavailable; the core Node view remains available.</p>}
   </>
 }
 
 function HistoryCard({ block }: { block: NonNullable<ReturnType<typeof usePublicNodeHistory>['data']>[number] }) {
-  const title = block.height == null
-    ? block.divergenceKind
-      ? `Chain divergence at height ${block.gapFromHeight ?? '?'} · ${block.divergenceReason ?? 'recent identity mismatch observed'}`
-      : `History gap ${block.gapFromHeight ?? '?'}–${block.gapToHeight ?? '?'}`
-    : `Height ${block.height}`
-  const detail = block.height == null
-    ? block.divergenceKind
-      ? `${block.divergenceReason ?? 'Recent chain divergence observed'}; raw evidence is withheld from Public.`
-      : `${block.gapKind ?? 'gap'}: ${block.gapReason ?? 'bounded recovery did not recover this interval'}`
-    : `Freshness: ${block.freshness ?? 'unknown'} · Coinbase: ${block.coinbase ?? 'unknown'} · Seal signer: ${block.sealSignerMatch ?? 'unknown'} · Protocol proposer: ${block.protocolProposer ?? 'unknown'}`
-  return <article className="node-card"><strong>{title}</strong><span> · {block.height == null ? 'No sample available; chart disconnected' : `${block.blockTimeMs == null ? 'time unknown' : new Date(block.blockTimeMs).toISOString()} · ${block.transactionCount == null ? 'transactions unknown' : `${block.transactionCount} transactions`}`}</span><p className="muted">{detail}</p></article>
+  if (block.height == null) return null
+  const detail = `Freshness: ${block.freshness ?? 'unknown'} · Coinbase: ${block.coinbase ?? 'unknown'} · Seal signer: ${block.sealSignerMatch ?? 'unknown'} · Protocol proposer: ${block.protocolProposer ?? 'unknown'}`
+  return <article className="node-card"><strong>Height {block.height}</strong><span> · {block.blockTimeMs == null ? 'time unknown' : new Date(block.blockTimeMs).toISOString()} · {block.transactionCount == null ? 'transactions unknown' : `${block.transactionCount} transactions`}</span><p className="muted">{detail}</p></article>
 }
 
 function Status({ value }: { value: string }) {

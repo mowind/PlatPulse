@@ -20,6 +20,8 @@ const STATUS_ICONS: Record<string, string> = {
   // the attention severity, Operation states (§5.5), and Doctor check
   // states are not WebUI dimensions.
   Connected: '✓',
+  Healthy: '✓',
+  Unhealthy: '✕',
   Critical: '✕',
   Warning: '⚠',
   healthy: '✓',

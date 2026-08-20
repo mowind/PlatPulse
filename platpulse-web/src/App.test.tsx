@@ -118,6 +118,104 @@ afterEach(() => {
 })
 
 describe('App shell with private Home', () => {
+  it('renders the production public Node Detail contract and switches tabs by keyboard', async () => {
+    window.history.replaceState({}, '', '/')
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/public/v1/networks': () => jsonResponse([], 200),
+      '/api/public/v1/nodes/node-1': () => jsonResponse({
+        nodeId: 'node-1',
+        displayName: 'Validator A',
+        networkKey: 'mainnet',
+        health: 'unhealthy',
+        healthReason: 'RPC observation failed',
+        freshness: 'stale',
+        rpcState: 'error',
+        syncState: 'unknown',
+        consensusState: 'unsupported',
+        processState: 'disabled',
+        resyncState: 'normal',
+        networkReferenceConfidence: 'unknown',
+        currentHead: 123,
+        historicalHighWatermark: 128,
+        networkReferenceHead: null,
+        hostCpuPercent: 42.5,
+        peers: {
+          state: 'error',
+          freshness: 'stale',
+          peerCount: 12,
+          inboundCount: 8,
+          outboundCount: 4,
+          receivedAt: '2026-08-20T00:00:00Z',
+          staleSince: '2026-08-20T00:05:00Z',
+        },
+      }, 200),
+      '/api/public/v1/nodes/node-1/history': () => jsonResponse([{
+        nodeId: 'node-1',
+        height: 123,
+        blockTimeMs: 1_755_638_400_000,
+        transactionCount: 4,
+        observedAt: '2026-08-20T00:00:00Z',
+      }], 200),
+      '/api/public/v1/nodes/node-1/history/export': () => jsonResponse([{
+        nodeId: 'node-1',
+        height: 123,
+        observedAt: '2026-08-20T00:00:00Z',
+      }], 200),
+      '/api/public/v1/nodes/node-1/peer-history': () => jsonResponse({
+        state: 'ok',
+        freshness: 'current',
+        fiveMinute: [],
+        hourly: [],
+      }, 200),
+    })
+
+    render(<App />)
+    await screen.findByRole('heading', { level: 1, name: 'Home' })
+    await act(async () => {
+      window.history.pushState({}, '', '/nodes/node-1')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
+    expect(screen.getByText('Node Health Summary')).toBeTruthy()
+    expect(screen.getAllByText('RPC').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Sync').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Consensus').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Process').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Resync').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Current Head').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('History Boundary').length).toBeGreaterThan(0)
+    expect(screen.getByText('Bounded Block History')).toBeTruthy()
+    expect(screen.getByText(/Server-configured history window; absent blocks are not zero/)).toBeTruthy()
+    expect(screen.getByText('Last-good peers')).toBeTruthy()
+    expect(screen.getAllByText('12').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Error').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Unknown').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Unsupported').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Disabled').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Stale').length).toBeGreaterThan(0)
+
+    const createObjectUrl = vi.fn(() => 'blob:public-history')
+    const revokeObjectUrl = vi.fn()
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectUrl })
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectUrl })
+    fireEvent.click(screen.getByRole('button', { name: 'Export public history' }))
+    await waitFor(() => expect(createObjectUrl).toHaveBeenCalled())
+
+    const detailsTab = screen.getByRole('tab', { name: 'Details' })
+    const networkTab = screen.getByRole('tab', { name: 'Network' })
+    expect(detailsTab.getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByRole('tabpanel', { name: 'Details' })).toBeTruthy()
+
+    networkTab.focus()
+    fireEvent.keyDown(networkTab, { key: 'Enter' })
+    expect(networkTab.getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByRole('tabpanel', { name: 'Network' })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'Peer history' })).toBeTruthy()
+  })
+
   it('guides an unauthenticated visitor to the login page', async () => {
     mockFetch({ '/api/public/v1/session': () => errorBody('auth_required') })
 
