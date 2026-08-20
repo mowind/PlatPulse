@@ -3579,6 +3579,9 @@ pub(crate) async fn create_network(
     state
         .admin_realtime()
         .publish("network", Some(key.clone()), revision);
+    state
+        .public_realtime()
+        .publish("network", Some(key.clone()), revision);
     Json(NetworkResponse {
         network_key: key,
         display_name: body.display_name,
@@ -3781,6 +3784,9 @@ pub(crate) async fn update_network(
     });
     state
         .admin_realtime()
+        .publish("network", Some(network_key.clone()), revision);
+    state
+        .public_realtime()
         .publish("network", Some(network_key.clone()), revision);
     Json(NetworkResponse {
         network_key,

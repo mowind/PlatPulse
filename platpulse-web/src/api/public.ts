@@ -265,11 +265,9 @@ export function usePublicValidatorAnalytics(validatorId: string, limit: number, 
   })
 }
 
-let publicCacheGeneration: number | null = null
 const publicRevisions = new Map<string, number>()
 
 export function resetPublicCache(generation: number): void {
-  publicCacheGeneration = generation
   setActiveAccessGeneration(generation)
   void publicQueryClient.cancelQueries({ queryKey: publicKeys.all })
   publicQueryClient.clear()
@@ -286,7 +284,10 @@ function acceptEvent(resource: string, resourceId: string | undefined, eventId: 
 }
 
 function activePublicGeneration(): number {
-  return publicCacheGeneration ?? getSiteAccessGeneration() ?? DEFAULT_GENERATION
+  // Query keys use the Server's Site Access generation. AuthContext's local
+  // session generation is intentionally separate and must never select which
+  // Public query generation receives an SSE refetch.
+  return getSiteAccessGeneration() ?? DEFAULT_GENERATION
 }
 
 function samePrefix(queryKey: readonly unknown[], prefix: readonly unknown[]): boolean {
@@ -368,7 +369,7 @@ export function usePublicRealtime(onReset?: () => void, enabled = true, accessGe
     const reset = () => {
       events.close()
       setStatus('connecting')
-      resetPublicCache((publicCacheGeneration ?? DEFAULT_GENERATION) + 1)
+      resetPublicCache((getSiteAccessGeneration() ?? DEFAULT_GENERATION) + 1)
       setStreamKey((value) => value + 1)
       resetCallback.current?.()
     }

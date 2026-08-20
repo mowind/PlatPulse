@@ -2,10 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { adminQueryClient } from './admin'
 import { client } from './generated/client.gen'
 import {
+  applySiteAccessSettings,
   fetchNetworks,
   invalidatePublicResource,
   publicKeys,
   publicQueryClient,
+  resetPublicCache,
 } from './public'
 
 function response(body: unknown): Response {
@@ -69,5 +71,19 @@ describe('Public adapter and query namespace', () => {
       { queryKey: [...publicKeys.networks, 0], exact: true, refetchType: 'active' },
       { queryKey: [...publicKeys.network('network-a'), 0], exact: true, refetchType: 'active' },
     ])
+  })
+
+  it('targets the authoritative Site Access generation after a reset', () => {
+    applySiteAccessSettings({ mode: 'public', authorizationGeneration: 42 })
+    resetPublicCache(99)
+    applySiteAccessSettings({ mode: 'public', authorizationGeneration: 42 })
+    const invalidate = vi.spyOn(publicQueryClient, 'invalidateQueries')
+
+    invalidatePublicResource('network', 'network-a', 12)
+
+    expect(invalidate.mock.calls[1]?.[0]).toMatchObject({
+      queryKey: [...publicKeys.network('network-a'), 42],
+      exact: true,
+    })
   })
 })

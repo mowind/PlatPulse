@@ -1208,7 +1208,7 @@ function invalidateAdminResource(resource: string, resourceId: string | undefine
       case 'geo':
         return [adminKeys.geo, adminKeys.nodes, adminKeys.networks]
       case 'network':
-        return [adminKeys.networks, adminKeys.validators, adminKeys.validatorLinks]
+        return [adminKeys.networks, adminKeys.validators, adminKeys.validatorLinks, adminKeys.nodes]
       case 'validator':
       case 'validator-link':
         return [adminKeys.validators, adminKeys.validatorLinks, adminKeys.nodes]
