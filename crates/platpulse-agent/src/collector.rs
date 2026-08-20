@@ -14,7 +14,7 @@ use platpulse_core::identity::{AgentId, BootId, ReportId};
 use platpulse_core::inventory::NodeInventory;
 use platpulse_core::network::{NetworkIdentity, RpcEndpoint};
 use platpulse_core::observation::{
-    ConsensusCurrent, DiskCurrent, HostObservation, LoadCurrent, MemoryCurrent, NetworkThroughput,
+    ConsensusCurrent, DiskCurrent, HostObservation, LoadCurrent, MemoryCurrent,
     NodeChainObservation, NodeObservation, NodeStaticMetadata, PeerSnapshot, RpcCurrent,
     SpoolDiagnostics, SyncCurrent,
 };
@@ -251,8 +251,8 @@ pub(crate) fn clock_skew_error(at: Rfc3339, message: &str) -> ComponentObservati
 }
 
 /// Collect Host metrics once for this Agent. Disk/network structures are
-/// intentionally bounded; empty disk and zero throughput are authoritative
-/// snapshots from this minimal collector, not duplicated per Node.
+/// intentionally bounded; empty disk is an authoritative snapshot, while
+/// throughput remains explicitly Unsupported until a prior sample exists.
 pub fn collect_host(
     system: &mut System,
     disks: &mut Disks,
@@ -301,13 +301,10 @@ pub fn collect_host(
             },
             at,
         ),
-        network_throughput: ok(
-            NetworkThroughput {
-                rx_bytes_per_sec: 0,
-                tx_bytes_per_sec: 0,
-            },
-            at,
-        ),
+        // A rate requires a prior Host sample. This collector does not have
+        // that interval, so report explicit Unsupported rather than an
+        // invented zero/rate.
+        network_throughput: unsupported(),
         monotonic_elapsed_ms: Some(started.elapsed().as_millis() as u64),
         clock_skew,
         spool: ok(
@@ -341,6 +338,96 @@ pub fn collect_host(
             at,
         ),
     }
+}
+
+/// Carry a component's last successful value through a failed attempt while
+/// retaining the current attempt state and error. This is the Agent-side
+/// half of the Observation Envelope last-good contract; the Server applies
+/// the same rule again at its Current Projection boundary.
+fn preserve_last_good<T: Clone>(
+    current: &mut ComponentObservation<T>,
+    previous: &ComponentObservation<T>,
+) {
+    if current.status == ComponentStatus::Error
+        && current.latest.is_none()
+        && previous.latest.is_some()
+    {
+        current.latest = previous.latest.clone();
+        current.latest_observed_at = previous.latest_observed_at;
+        current.value_revision = previous.value_revision;
+    }
+}
+
+fn preserve_last_good_values(current: &mut AgentReport, previous: &AgentReport) {
+    preserve_last_good(&mut current.host.cpu_percent, &previous.host.cpu_percent);
+    preserve_last_good(&mut current.host.memory, &previous.host.memory);
+    preserve_last_good(&mut current.host.load, &previous.host.load);
+    preserve_last_good(&mut current.host.disk, &previous.host.disk);
+    preserve_last_good(
+        &mut current.host.network_throughput,
+        &previous.host.network_throughput,
+    );
+    preserve_last_good(&mut current.host.clock_skew, &previous.host.clock_skew);
+    preserve_last_good(&mut current.host.spool, &previous.host.spool);
+
+    for node in &mut current.nodes {
+        let Some(previous_node) = previous
+            .nodes
+            .iter()
+            .find(|candidate| candidate.node_id == node.node_id)
+        else {
+            continue;
+        };
+        preserve_last_good(&mut node.process, &previous_node.process);
+        preserve_last_good(&mut node.chain.rpc, &previous_node.chain.rpc);
+        preserve_last_good(&mut node.chain.sync, &previous_node.chain.sync);
+        preserve_last_good(&mut node.chain.consensus, &previous_node.chain.consensus);
+        preserve_last_good(
+            &mut node.chain.network_identity,
+            &previous_node.chain.network_identity,
+        );
+        preserve_last_good(
+            &mut node.chain.static_metadata,
+            &previous_node.chain.static_metadata,
+        );
+        if let (Some(current_peers), Some(previous_peers)) =
+            (&mut node.chain.peers, &previous_node.chain.peers)
+        {
+            preserve_last_good(current_peers, previous_peers);
+        }
+    }
+}
+
+fn add_sample_capabilities(report: &mut AgentReport) {
+    if !report.block_summaries.is_empty()
+        && !report
+            .agent_capabilities
+            .contains(&AgentCapability::BlockSummary)
+    {
+        report
+            .agent_capabilities
+            .push(AgentCapability::BlockSummary);
+    }
+}
+
+pub(crate) async fn load_last_report(
+    store: &mut AgentStore,
+) -> Result<Option<AgentReport>, sqlx::Error> {
+    let body: Option<Option<Vec<u8>>> = sqlx::query_scalar::<_, Option<Vec<u8>>>(
+        "SELECT last_report_body FROM agent_state WHERE singleton=1",
+    )
+    .fetch_optional(store.connection())
+    .await?;
+    let Some(body) = body.flatten() else {
+        return Ok(None);
+    };
+    let report = serde_json::from_slice::<AgentReport>(&body).map_err(|error| {
+        sqlx::Error::Protocol(format!("last report snapshot is invalid: {error}"))
+    })?;
+    report.validate().map_err(|error| {
+        sqlx::Error::Protocol(format!("last report snapshot failed validation: {error}"))
+    })?;
+    Ok(Some(report))
 }
 
 fn error<T>(at: Rfc3339, code: &str, message: &str) -> ComponentObservation<T> {
@@ -622,6 +709,7 @@ pub async fn recover_previous_boot<A: RpcAdapter>(
         .validated_inventory()
         .map_err(|error| CollectionError::Identity(error.to_string()))?
         .inventory;
+    let previous = load_last_report(&mut store).await?;
     let at = timestamp();
     let mut closing = collect_report_with_clock_skew(
         config,
@@ -633,6 +721,9 @@ pub async fn recover_previous_boot<A: RpcAdapter>(
         adapter,
         clock_skew_error(at, "Server time exchange was unavailable during recovery"),
     )?;
+    if let Some(previous) = previous.as_ref() {
+        preserve_last_good_values(&mut closing, previous);
+    }
     closing.boot_transition = BootTransition::Closing;
     closing.previous_boot_id = None;
     closing.block_summaries.clear();
@@ -703,6 +794,7 @@ pub async fn collect_and_persist<A: RpcAdapter>(
     let validated = config
         .validated_inventory()
         .map_err(|error| CollectionError::Identity(error.to_string()))?;
+    let previous = load_last_report(&mut store).await?;
     let clock_at = timestamp();
     let clock_skew = match crate::time_exchange::exchange_server_time(config).await {
         Ok(estimate) => ok(estimate.offset_ms, clock_at),
@@ -718,6 +810,9 @@ pub async fn collect_and_persist<A: RpcAdapter>(
         adapter,
         clock_skew,
     )?;
+    if let Some(previous) = previous.as_ref() {
+        preserve_last_good_values(&mut report, previous);
+    }
     if pending_transition.as_deref() == Some("drained_previous") {
         report.boot_transition = BootTransition::DrainedPrevious;
         report.previous_boot_id = pending_previous_boot_id
@@ -728,6 +823,7 @@ pub async fn collect_and_persist<A: RpcAdapter>(
     }
     report.block_summaries = load_block_summaries(&mut store).await?;
     report.history_gaps = crate::block::load_history_gaps(&mut store).await?;
+    add_sample_capabilities(&mut report);
     report.host.spool = ok(
         current_spool_diagnostics(&mut store).await?,
         report.generated_at,
@@ -741,6 +837,14 @@ pub async fn collect_and_persist<A: RpcAdapter>(
     let mut tx = store.connection().begin().await?;
     sqlx::query("INSERT INTO reports (report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes, in_flight, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)")
         .bind(report.report_id.to_string()).bind(report.agent_epoch as i64).bind(report.boot_id.to_string()).bind(report.report_sequence as i64).bind(report.generated_at.to_string()).bind(&body).bind(&digest).bind(body.len() as i64).bind(&now).execute(&mut *tx).await?;
+    crate::reporting::persist_last_report_snapshot(
+        &mut tx,
+        report.agent_epoch,
+        &report.boot_id.to_string(),
+        report.report_sequence,
+        &body,
+    )
+    .await?;
     let transition = match report.boot_transition {
         BootTransition::Continuing => "continuing",
         BootTransition::Closing => "closing",
@@ -807,6 +911,7 @@ pub async fn collect_and_persist_with_blocks<A: RpcAdapter>(
         Err(error) => clock_skew_error(clock_at, &error.to_string()),
     };
     let inventory = validated.inventory;
+    let previous = load_last_report(&mut store).await?;
     let mut report = collect_report_with_clock_skew(
         config,
         agent_id,
@@ -817,6 +922,9 @@ pub async fn collect_and_persist_with_blocks<A: RpcAdapter>(
         adapter,
         clock_skew,
     )?;
+    if let Some(previous) = previous.as_ref() {
+        preserve_last_good_values(&mut report, previous);
+    }
     for node in &inventory.nodes {
         let Some(identity) = report
             .nodes
@@ -943,6 +1051,7 @@ pub async fn collect_and_persist_with_blocks<A: RpcAdapter>(
     }
     report.block_summaries = load_block_summaries(&mut store).await?;
     report.history_gaps = crate::block::load_history_gaps(&mut store).await?;
+    add_sample_capabilities(&mut report);
     report.host.spool = ok(
         current_spool_diagnostics(&mut store).await?,
         report.generated_at,
@@ -956,6 +1065,14 @@ pub async fn collect_and_persist_with_blocks<A: RpcAdapter>(
     let mut tx = store.connection().begin().await?;
     sqlx::query("INSERT INTO reports (report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes, in_flight, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)")
         .bind(report.report_id.to_string()).bind(report.agent_epoch as i64).bind(report.boot_id.to_string()).bind(report.report_sequence as i64).bind(report.generated_at.to_string()).bind(&body).bind(&digest).bind(body.len() as i64).bind(&now).execute(&mut *tx).await?;
+    crate::reporting::persist_last_report_snapshot(
+        &mut tx,
+        report.agent_epoch,
+        &report.boot_id.to_string(),
+        report.report_sequence,
+        &body,
+    )
+    .await?;
     let transition = match report.boot_transition {
         BootTransition::Continuing => "continuing",
         BootTransition::Closing => "closing",
@@ -1594,6 +1711,32 @@ mod tests {
     }
 
     #[test]
+    fn failed_component_keeps_last_good_value_and_current_error() {
+        let at = "2026-08-20T00:00:00Z".parse().unwrap();
+        let previous = ok(42_u64, at);
+        let mut current = error(at, "rpc_unreachable", "RPC probe failed");
+
+        preserve_last_good(&mut current, &previous);
+
+        assert_eq!(current.status, ComponentStatus::Error);
+        assert_eq!(current.error.as_ref().unwrap().code, "rpc_unreachable");
+        assert_eq!(current.latest, Some(42));
+        assert_eq!(current.latest_observed_at, Some(at));
+        assert_eq!(current.value_revision, 1);
+    }
+
+    #[test]
+    fn authoritative_empty_success_is_not_replaced_by_last_good() {
+        let at = "2026-08-20T00:00:00Z".parse().unwrap();
+        let previous = ok(vec![1_u64], at);
+        let mut current = ok(Vec::<u64>::new(), at);
+
+        preserve_last_good(&mut current, &previous);
+
+        assert_eq!(current.latest, Some(Vec::<u64>::new()));
+    }
+
+    #[test]
     fn fail_closed_adapter_never_fabricates_rpc_data() {
         let endpoint: RpcEndpoint = "ws://127.0.0.1:6790".parse().unwrap();
         let error = FailClosedRpcAdapter.collect(&endpoint).unwrap_err();
@@ -1629,6 +1772,13 @@ mod tests {
         collect_and_persist(&config, &ScriptedRpcAdapter::new(snapshot()))
             .await
             .unwrap();
+        let endpoint: RpcEndpoint = "ws://127.0.0.1:6790".parse().unwrap();
+        collect_and_persist(
+            &config,
+            &ScriptedRpcAdapter::new(snapshot()).fail_endpoint(&endpoint),
+        )
+        .await
+        .unwrap();
         let mut reopened = AgentStore::open(AgentDatabaseConfig::new(&db_path))
             .await
             .unwrap();
@@ -1638,12 +1788,24 @@ mod tests {
         .fetch_one(reopened.connection())
         .await
         .unwrap();
-        assert_eq!(state, (3, 5));
+        assert_eq!(state, (3, 6));
         let reports: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM reports")
             .fetch_one(reopened.connection())
             .await
             .unwrap();
-        assert_eq!(reports, 1);
+        assert_eq!(reports, 2);
+        let body: Vec<u8> =
+            sqlx::query_scalar("SELECT body FROM reports ORDER BY report_sequence DESC LIMIT 1")
+                .fetch_one(reopened.connection())
+                .await
+                .unwrap();
+        let report: AgentReport = serde_json::from_slice(&body).unwrap();
+        let node = &report.nodes[0];
+        assert_eq!(node.chain.rpc.status, ComponentStatus::Error);
+        assert_eq!(
+            node.chain.rpc.latest.as_ref().unwrap().client_version,
+            "fake-platon/1.0"
+        );
         reopened.close().await.unwrap();
     }
 

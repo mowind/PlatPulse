@@ -1,5 +1,5 @@
 use sha2::{Digest, Sha256};
-use sqlx::Connection;
+use sqlx::{Connection, Sqlite, Transaction};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -293,6 +293,7 @@ pub async fn persist_immutable_report(
     .bind(generated_at)
     .execute(&mut *tx)
     .await?;
+    persist_last_report_snapshot(&mut tx, agent_epoch, boot_id, report_sequence, body).await?;
     if let Ok(report) = serde_json::from_slice::<AgentReport>(body) {
         for sample in &report.block_summaries {
             sqlx::query("INSERT OR IGNORE INTO report_sample_assignments (report_id,node_id,sample_kind,from_height,to_height) VALUES (?,?,?,?,?)")
@@ -310,6 +311,39 @@ pub async fn persist_immutable_report(
     tx.commit().await?;
     enforce_spool_policy(store, &SpoolPolicy::default(), generated_at).await?;
     Ok(digest)
+}
+
+/// Persist the latest complete observation view independently of the
+/// delivery queue. The snapshot survives receipt application and is used as
+/// the last-good baseline for the next collection cycle.
+pub(crate) async fn persist_last_report_snapshot(
+    tx: &mut Transaction<'_, Sqlite>,
+    agent_epoch: u64,
+    boot_id: &str,
+    report_sequence: u64,
+    body: &[u8],
+) -> Result<(), sqlx::Error> {
+    let agent_id = serde_json::from_slice::<AgentReport>(body)
+        .map_err(|error| sqlx::Error::Protocol(format!("snapshot report is invalid: {error}")))?
+        .agent_id
+        .to_string();
+    sqlx::query(
+        "UPDATE agent_state
+         SET last_report_body=?
+         WHERE singleton=1
+           AND agent_id=?
+           AND agent_epoch=?
+           AND (boot_id IS NULL OR boot_id=?)
+           AND report_sequence <= ?",
+    )
+    .bind(body)
+    .bind(agent_id)
+    .bind(agent_epoch as i64)
+    .bind(boot_id)
+    .bind(report_sequence as i64)
+    .execute(&mut **tx)
+    .await
+    .map(|_| ())
 }
 
 /// Deliver a bounded amount of oldest-first work. Once the durable spool
@@ -774,6 +808,44 @@ mod delivery_tests {
         AgentStore::open(AgentDatabaseConfig::new(dir.keep().join("agent.db")))
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn older_report_cannot_replace_current_last_report_snapshot() {
+        let mut store = test_store().await;
+        let boot_id = "0195f2a1-0012-4012-8012-000000000012";
+        sqlx::query("INSERT INTO agent_state (singleton, agent_id, agent_epoch, boot_id, report_sequence, inventory_revision, updated_at) VALUES (1, ?, 1, ?, 2, 1, ?)")
+            .bind("0195f2a1-0011-4011-8011-000000000011")
+            .bind(boot_id)
+            .bind("2026-08-12T09:00:00Z")
+            .execute(store.connection())
+            .await
+            .unwrap();
+        let current = report_body(2);
+        sqlx::query("UPDATE agent_state SET last_report_body=? WHERE singleton=1")
+            .bind(&current)
+            .execute(store.connection())
+            .await
+            .unwrap();
+
+        persist_immutable_report(
+            &mut store,
+            &report_id(1),
+            1,
+            boot_id,
+            1,
+            "2026-08-12T09:00:00Z",
+            &report_body(1),
+        )
+        .await
+        .unwrap();
+
+        let snapshot: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT last_report_body FROM agent_state WHERE singleton=1")
+                .fetch_one(store.connection())
+                .await
+                .unwrap();
+        assert_eq!(snapshot, Some(current));
     }
 
     #[tokio::test]

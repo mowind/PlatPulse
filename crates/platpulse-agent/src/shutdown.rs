@@ -631,15 +631,7 @@ pub async fn graceful_shutdown_with_subscriptions<A: crate::collector::RpcAdapte
         .validated_inventory()
         .map_err(|error| crate::collector::CollectionError::Identity(error.to_string()))?
         .inventory;
-    let last_good_body: Option<Vec<u8>> = sqlx::query_scalar(
-        "SELECT body FROM reports WHERE boot_id=? ORDER BY report_sequence DESC LIMIT 1",
-    )
-    .bind(boot_id.to_string())
-    .fetch_optional(store.connection())
-    .await?;
-    let last_good = last_good_body
-        .as_deref()
-        .and_then(|body| serde_json::from_slice::<AgentReport>(body).ok());
+    let last_good = crate::collector::load_last_report(&mut store).await?;
     let drain_until = Instant::now() + drain_deadline;
     let transport = WebSocketBlockTransport::default();
     for subscription in subscriptions.iter_mut() {
