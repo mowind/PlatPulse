@@ -1401,13 +1401,61 @@ async fn handler(
         .await;
     }
 
+    let inventory_bytes = serde_json::to_vec(&parsed.inventory).expect("inventory serializes");
+    let inventory_hash = format!("0x{:x}", Sha256::digest(&inventory_bytes));
+    let prior_inventory_hash: Option<String> =
+        match sqlx::query_scalar("SELECT inventory_sha256 FROM agents WHERE agent_id=?")
+            .bind(&auth.agent_id)
+            .fetch_optional(&mut *tx)
+            .await
+        {
+            Ok(hash) => hash,
+            Err(_) => {
+                return error(
+                    &request_id.0,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "Server database is unavailable",
+                );
+            }
+        };
+    if parsed.inventory.revision == agent.last_inventory_revision as u64
+        && prior_inventory_hash.is_some()
+        && prior_inventory_hash.as_deref() != Some(inventory_hash.as_str())
+    {
+        return store_rejected(
+            tx,
+            &parsed,
+            hash.clone(),
+            rejected(
+                parsed.report_id,
+                hash,
+                platpulse_core::RejectionCode::InventoryRevisionConflict,
+                "Inventory content conflicts at the accepted revision",
+            ),
+            &request_id.0,
+        )
+        .await;
+    }
+
     // A sequence is unique within one boot. Never silently accept a competing body.
     let sequence_conflict = match sqlx::query_scalar::<_, String>("SELECT report_id FROM agent_report_receipts WHERE agent_id = ? AND agent_epoch = ? AND boot_id = ? AND report_sequence = ?")
         .bind(&auth.agent_id).bind(parsed.agent_epoch as i64).bind(parsed.boot_id.to_string()).bind(parsed.report_sequence as i64).fetch_optional(&mut *tx).await {
             Ok(v) => v, Err(_) => return error(&request_id.0, StatusCode::SERVICE_UNAVAILABLE, "unavailable", "Server database is unavailable")
-        };
+    };
     if sequence_conflict.is_some() {
-        let _ = record_security_event(&mut tx, &auth.agent_id).await;
+        if record_security_event(&mut tx, &auth.agent_id)
+            .await
+            .is_err()
+            || tx.commit().await.is_err()
+        {
+            return error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Server database is unavailable",
+            );
+        }
         return error(
             &request_id.0,
             StatusCode::CONFLICT,
@@ -1845,15 +1893,21 @@ async fn handler(
     }
     for sample in &parsed.block_summaries {
         if ownership_mismatches.contains(&sample.node_id) {
-            sqlx::query("INSERT OR IGNORE INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at) VALUES (?, ?, ?, 'server_rejected', 'Node ownership mismatch', ?)")
+            let inserted = sqlx::query("INSERT OR IGNORE INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at) VALUES (?, ?, ?, 'server_rejected', 'Node ownership mismatch', ?)")
                 .bind(sample.node_id.to_string())
                 .bind(sample.block_number as i64)
                 .bind(sample.block_number as i64)
                 .bind(&now_text)
                 .execute(&mut *tx)
-                .await
-                .map_err(|_| ())
-                .ok();
+                .await;
+            if inserted.is_err() {
+                return error(
+                    &request_id.0,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "Server database is unavailable",
+                );
+            }
         }
     }
     for gap in &parsed.history_gaps {
@@ -1865,26 +1919,40 @@ async fn handler(
             platpulse_core::gap::GapKind::SpoolOverflow => "spool_overflow",
             platpulse_core::gap::GapKind::ServerRejected => "server_rejected",
         };
-        sqlx::query("INSERT OR IGNORE INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+        let inserted = sqlx::query("INSERT OR IGNORE INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)")
             .bind(gap.node_id.to_string()).bind(gap.from_height as i64).bind(gap.to_height as i64)
             .bind(kind)
             .bind(crate::redaction::redact_sensitive(&gap.reason))
             .bind(gap.recorded_at.to_string())
-            .execute(&mut *tx).await.map_err(|_| ()).ok();
+            .execute(&mut *tx)
+            .await;
+        if inserted.is_err() {
+            return error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Server database is unavailable",
+            );
+        }
         if matches!(
             gap.kind,
             platpulse_core::gap::GapKind::UnrecoverableBackfill
-        ) {
-            open_coverage_gap(
-                &mut tx,
-                &gap.node_id.to_string(),
-                gap.from_height,
-                gap.to_height,
-                &now_text,
-            )
-            .await
-            .map_err(|_| ())
-            .ok();
+        ) && open_coverage_gap(
+            &mut tx,
+            &gap.node_id.to_string(),
+            gap.from_height,
+            gap.to_height,
+            &now_text,
+        )
+        .await
+        .is_err()
+        {
+            return error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Server database is unavailable",
+            );
         }
     }
     let nodes: Vec<NodeReceipt> = parsed
@@ -2029,34 +2097,9 @@ async fn handler(
             }
         }))
         .collect::<Vec<_>>();
-    let inventory_bytes = serde_json::to_vec(&parsed.inventory).expect("inventory serializes");
-    let inventory_hash = format!("0x{:x}", Sha256::digest(&inventory_bytes));
-    let prior_inventory_hash: Option<String> =
-        sqlx::query_scalar("SELECT inventory_sha256 FROM agents WHERE agent_id=?")
-            .bind(&auth.agent_id)
-            .fetch_optional(&mut *tx)
-            .await
-            .unwrap_or(None);
     let inventory_unchanged = parsed.inventory.revision == agent.last_inventory_revision as u64
         && prior_inventory_hash.as_deref() == Some(inventory_hash.as_str());
-    if parsed.inventory.revision == agent.last_inventory_revision as u64
-        && prior_inventory_hash.is_some()
-        && !inventory_unchanged
-    {
-        return store_rejected(
-            tx,
-            &parsed,
-            hash.clone(),
-            rejected(
-                parsed.report_id,
-                hash,
-                platpulse_core::RejectionCode::InventoryRevisionConflict,
-                "Inventory content conflicts at the accepted revision",
-            ),
-            &request_id.0,
-        )
-        .await;
-    }
+    let inventory_changed = !inventory_unchanged;
     let inventory_disposition = if inventory_unchanged {
         InventoryDisposition::Unchanged
     } else {
@@ -2089,6 +2132,24 @@ async fn handler(
     let stored = serde_json::to_vec(&receipt).expect("receipt serializes");
     let inserted = sqlx::query("INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(parsed.report_id.to_string()).bind(&auth.agent_id).bind(parsed.agent_epoch as i64).bind(parsed.boot_id.to_string()).bind(parsed.report_sequence as i64).bind(hash.to_string()).bind(disposition_name(receipt.disposition)).bind(&stored).bind(&now_text).execute(&mut *tx).await;
     if inserted.is_err() {
+        let concurrent = sqlx::query_as::<_, ReceiptRow>(
+            "SELECT report_body_sha256, receipt_body FROM agent_report_receipts WHERE report_id=?",
+        )
+        .bind(parsed.report_id.to_string())
+        .fetch_optional(&mut *tx)
+        .await
+        .ok()
+        .flatten();
+        if let Some(concurrent) = concurrent {
+            if concurrent.report_body_sha256 == hash.to_string() {
+                if let Ok(receipt) =
+                    serde_json::from_slice::<ReportReceipt>(&concurrent.receipt_body)
+                {
+                    let _ = tx.rollback().await;
+                    return receipt_response(receipt);
+                }
+            }
+        }
         return error(
             &request_id.0,
             StatusCode::SERVICE_UNAVAILABLE,
@@ -2260,7 +2321,7 @@ async fn handler(
     state
         .admin_realtime()
         .publish("node", None::<String>, parsed.report_sequence);
-    if !parsed.nodes.is_empty() {
+    if inventory_changed || !parsed.nodes.is_empty() {
         state
             .public_realtime()
             .publish("node", None::<String>, parsed.report_sequence);
@@ -2529,6 +2590,42 @@ mod tests {
             platpulse_core::RejectionCode::ConflictingBoot
         );
         assert_ne!(old_boot, report.boot_id);
+    }
+
+    #[tokio::test]
+    async fn conflicting_report_sequence_records_one_security_event() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let original: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        submit(&state, &agent_id, serde_json::to_vec(&original).unwrap()).await;
+
+        let mut conflict = original;
+        conflict.report_id = "0195f2a1-0034-4034-8034-000000000034".parse().unwrap();
+        conflict.host.cpu_percent.latest = Some(42.0);
+        let response = handler(
+            State(state.clone()),
+            Extension(AgentAuthInfo {
+                agent_id: agent_id.clone(),
+                credential_id: "test".into(),
+            }),
+            Extension(RequestId(Arc::from("sequence-conflict"))),
+            Bytes::from(serde_json::to_vec(&conflict).unwrap()),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT security_event_count FROM agents WHERE agent_id=?",
+            )
+            .bind(&agent_id)
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            1
+        );
     }
     #[tokio::test]
     async fn closing_then_drained_previous_atomically_rotates_boot_and_rejects_old_reports() {
@@ -3412,6 +3509,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(lifecycle, "retired");
+        assert_eq!(
+            state
+                .public_realtime()
+                .pending_events()
+                .iter()
+                .find(|event| event.resource == "node")
+                .map(|event| event.revision),
+            Some(2)
+        );
 
         let mut stale = empty.clone();
         stale.report_sequence = 3;
@@ -3438,6 +3544,68 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(lifecycle, "active");
+    }
+
+    #[tokio::test]
+    async fn equal_revision_inventory_conflict_does_not_mutate_node_projection() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let original: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        submit(&state, &agent_id, serde_json::to_vec(&original).unwrap()).await;
+
+        let mut conflict = original;
+        conflict.report_sequence = 2;
+        conflict.report_id = "0195f2a1-0013-4013-8013-000000000106".parse().unwrap();
+        conflict.inventory.nodes[0].rpc_endpoint = "ws://127.0.0.1:6799".parse().unwrap();
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&conflict).unwrap()).await;
+        assert_eq!(receipt.disposition, ReceiptDisposition::Rejected);
+        assert_eq!(
+            receipt.rejections[0].code,
+            platpulse_core::RejectionCode::InventoryRevisionConflict
+        );
+
+        let endpoint: String = sqlx::query_scalar("SELECT rpc_endpoint FROM nodes WHERE node_id=?")
+            .bind("0195f2a1-0014-4014-8014-000000000014")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap();
+        assert_eq!(endpoint, "ws://127.0.0.1:6790");
+    }
+
+    #[tokio::test]
+    async fn repeated_history_gap_declarations_are_deduplicated() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let mut first: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        first.history_gaps.push(platpulse_core::HistoryGap {
+            node_id: first.inventory.nodes[0].node_id,
+            kind: platpulse_core::GapKind::UnrecoverableBackfill,
+            from_height: 8,
+            to_height: 9,
+            reason: "bounded recovery exceeded".to_owned(),
+            recorded_at: first.generated_at,
+        });
+        first.report_id = "0195f2a1-0013-4013-8013-000000000107".parse().unwrap();
+        first.validate().unwrap();
+        submit(&state, &agent_id, serde_json::to_vec(&first).unwrap()).await;
+
+        let mut replay = first;
+        replay.report_sequence = 2;
+        replay.report_id = "0195f2a1-0013-4013-8013-000000000108".parse().unwrap();
+        submit(&state, &agent_id, serde_json::to_vec(&replay).unwrap()).await;
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM block_history_gaps WHERE node_id=? AND from_height=8 AND to_height=9",
+        )
+        .bind("0195f2a1-0014-4014-8014-000000000014")
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[tokio::test]

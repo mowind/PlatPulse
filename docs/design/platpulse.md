@@ -204,9 +204,9 @@ MVP 不包含 Validator 成员管理。
 ### 6.2 归属与放置
 
 - Agent 把最新 Block Summary 放进 Node Observation（AgentReport 的 nodes[] 字段）。
-- Agent 端没有 Block History、Gap Backfill、History Gap、Historical High-Water Mark 或 resync 历史逻辑。
-- Server 从 accepted reports 追加近期 Block History。
-- History 是 best-effort：Agent 或网络故障期间错过的区块不追溯，不产生 History Gap 记录。
+- Agent 端只保留有界的 Block Summary 与显式 History Gap 待上报项，不拥有 Server 的历史高水位或网络级历史。
+- Server 从 accepted reports 追加近期 Block History，并以 Node 为范围维护 Historical High-Water Mark、可恢复 Gap coverage 和 resync replay 诊断。
+- History 是 best-effort：Agent 或网络故障期间错过的区块不追溯；Agent 声明的显式 History Gap 可被 Server 有界记录并去重。
 
 ### 6.3 全局历史窗口
 
@@ -217,7 +217,7 @@ MVP 不包含 Validator 成员管理。
 
 ### 6.4 明确排除
 
-MVP 没有 History Gap 记录、Gap Backfill、Historical High-Water Mark、Resync Episode 处理，也没有 Block Explorer。这些术语保留在 `CONTEXT.md` 作为未来领域概念。
+MVP 没有 Block Explorer，也不保存完整交易 Body。这些能力保留在 `CONTEXT.md` 作为未来领域概念；History Gap、Gap Backfill、Historical High-Water Mark 与 Resync Episode 仅限于本节定义的 Agent 有界待上报项和 Server 有界 ingestion 处理。
 
 ---
 
@@ -486,7 +486,7 @@ Current Projection   最新已接受状态（含 LastGood）
 Block History        全局窗口约束的近期 Block Summary（best-effort）
 ~~~
 
-没有 History Gap 记录，缺失区间不做零值填充。
+Server 可以保留有界、去重的 History Gap 记录表达缺失区间；缺失区间不做零值填充。
 
 ---
 
@@ -513,7 +513,7 @@ Block History        全局窗口约束的近期 Block Summary（best-effort）
 
 - 最新 Block Summary 随 Node Observation（AgentReport 的 nodes[] 字段）上报，含高度、Hash、时间、交易数量与 Block Production Attribution；
 - Server 从 accepted reports 追加 Block History；
-- 历史窗口缩短后过期历史被异步删除，不产生 History Gap 记录；
+- 历史窗口缩短后过期历史被异步删除；显式 History Gap 记录保持有界且去重；
 - Network Identity Mismatch 时历史不并入注册 Network。
 
 ### 13.3 Server 与权限

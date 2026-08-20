@@ -327,6 +327,24 @@ impl AgentReport {
                     node_id: block.node_id,
                 });
             }
+            if block.block_number > i64::MAX as u64 {
+                return Err(WireError::ValueOutOfRange {
+                    field: "block.block_number",
+                });
+            }
+            if block.transaction_count > i64::MAX as u64 {
+                return Err(WireError::ValueOutOfRange {
+                    field: "block.transaction_count",
+                });
+            }
+            if block
+                .block_interval_ms
+                .is_some_and(|value| value > i64::MAX as u64)
+            {
+                return Err(WireError::ValueOutOfRange {
+                    field: "block.block_interval_ms",
+                });
+            }
             check_timestamp("block.observed_at", block.observed_at)?;
             if block.block_timestamp_ms
                 > (crate::protocol::MAX_TIMESTAMP_UNIX_SECONDS as u64) * 1000
@@ -382,6 +400,21 @@ impl AgentReport {
                     node_id: gap.node_id,
                     from_height: gap.from_height,
                     to_height: gap.to_height,
+                });
+            }
+            if gap.from_height > i64::MAX as u64 || gap.to_height > i64::MAX as u64 {
+                return Err(WireError::ValueOutOfRange {
+                    field: "history_gap.height",
+                });
+            }
+            if gap
+                .to_height
+                .saturating_sub(gap.from_height)
+                .saturating_add(1)
+                > crate::protocol::MAX_HISTORY_GAP_HEIGHT_SPAN
+            {
+                return Err(WireError::ValueOutOfRange {
+                    field: "history_gap.height_span",
                 });
             }
             check_len("history_gap.reason", &gap.reason, 512)?;
@@ -754,6 +787,22 @@ mod tests {
     }
 
     #[test]
+    fn block_quantities_fit_the_sqlite_projection() {
+        let mut report: AgentReport = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/report_v1_canonical.json"
+        )))
+        .unwrap();
+        report.block_summaries[0].transaction_count = i64::MAX as u64 + 1;
+        assert_eq!(
+            report.validate(),
+            Err(WireError::ValueOutOfRange {
+                field: "block.transaction_count"
+            })
+        );
+    }
+
+    #[test]
     fn duplicate_history_gap_is_rejected() {
         let mut report = minimal_report();
         let gap = crate::gap::HistoryGap {
@@ -772,6 +821,44 @@ mod tests {
                 node_id: gap.node_id,
                 from_height: gap.from_height,
                 to_height: gap.to_height,
+            })
+        );
+    }
+
+    #[test]
+    fn history_gap_span_is_bounded() {
+        let mut report = minimal_report();
+        report.history_gaps.push(crate::gap::HistoryGap {
+            node_id: report.inventory.nodes[0].node_id,
+            kind: crate::gap::GapKind::SpoolOverflow,
+            from_height: 1,
+            to_height: crate::protocol::MAX_HISTORY_GAP_HEIGHT_SPAN + 1,
+            reason: "too broad".into(),
+            recorded_at: report.generated_at,
+        });
+        assert_eq!(
+            report.validate(),
+            Err(WireError::ValueOutOfRange {
+                field: "history_gap.height_span"
+            })
+        );
+    }
+
+    #[test]
+    fn history_gap_heights_fit_the_sqlite_projection() {
+        let mut report = minimal_report();
+        report.history_gaps.push(crate::gap::HistoryGap {
+            node_id: report.inventory.nodes[0].node_id,
+            kind: crate::gap::GapKind::SpoolOverflow,
+            from_height: i64::MAX as u64 + 1,
+            to_height: i64::MAX as u64 + 1,
+            reason: "outside sqlite range".into(),
+            recorded_at: report.generated_at,
+        });
+        assert_eq!(
+            report.validate(),
+            Err(WireError::ValueOutOfRange {
+                field: "history_gap.height"
             })
         );
     }

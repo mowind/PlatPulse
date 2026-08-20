@@ -27,6 +27,8 @@ pub const MAX_NODE_OBSERVATIONS: usize = 256;
 pub const MAX_BLOCK_SUMMARIES: usize = 512;
 /// Maximum declared history gaps in one report.
 pub const MAX_HISTORY_GAPS: usize = 256;
+/// Maximum inclusive height span represented by one History Gap.
+pub const MAX_HISTORY_GAP_HEIGHT_SPAN: u64 = 1_000_000;
 /// Maximum capabilities advertised by one Agent.
 pub const MAX_AGENT_CAPABILITIES: usize = 32;
 /// Earliest and latest representable protocol wall-clock years.
