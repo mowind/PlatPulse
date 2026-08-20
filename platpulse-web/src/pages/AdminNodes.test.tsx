@@ -280,74 +280,19 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     expect(screen.getByText('Network identity')).toBeTruthy()
     expect(screen.getByText('Observed chain ID / P2P network')).toBeTruthy()
     expect(screen.getByText(/210425 \/ 1/)).toBeTruthy()
-    // Per-Node observation dimensions with last-good context.
-    expect(screen.getByText('Per-Node observations')).toBeTruthy()
-    expect(screen.getByText(/platon\/1\.5\.1 · 3 namespaces/)).toBeTruthy()
-    expect(screen.getByText(/last-good head 12842019/)).toBeTruthy()
-    expect(screen.getByText(/last-good commit 12842019/)).toBeTruthy()
-    expect(screen.getByText('Peer snapshot')).toBeTruthy()
-    expect(screen.getByText(/1 peer · 1 inbound · 0 outbound/)).toBeTruthy()
-    expect(screen.getByText('peer-a')).toBeTruthy()
-    expect(screen.getByText('PlatON/v1.5.1')).toBeTruthy()
+    // Administrative RPC diagnostics stay separate from Home's full
+    // observation view and retain the redacted endpoint.
+    expect(screen.getByText('RPC diagnostics')).toBeTruthy()
+    expect(screen.getByText('Redacted RPC Endpoint')).toBeTruthy()
+    expect(screen.getByText('platon/1.5.1')).toBeTruthy()
+    expect(screen.getByText('admin, net, platon')).toBeTruthy()
+    expect(screen.getByText('Last-good head')).toBeTruthy()
+    expect(screen.getAllByText('12842019').length).toBeGreaterThan(0)
+    expect(screen.queryByText('Per-Node observations')).toBeNull()
+    expect(screen.queryByText('Peer snapshot')).toBeNull()
+    expect(screen.queryByText('peer-a')).toBeNull()
+    expect(screen.queryByText('PlatON/v1.5.1')).toBeNull()
     expect(screen.queryByText('203.0.113.4')).toBeNull()
-  })
-
-  it('shows retained churn with Error when the latest Peer collection failed', async () => {
-    mockFetch({
-      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
-      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
-        jsonResponse(NODE_A_DETAIL, 200),
-      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014/peer-churn': () =>
-        jsonResponse({
-          state: 'error',
-          freshness: 'current',
-          window_start: '2026-08-11T08:00:00Z',
-          total_open_intervals: 1,
-          recent_arrivals: [],
-          recent_departures: [],
-        }, 200),
-    })
-    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
-
-    await screen.findByRole('heading', { level: 1, name: /Node A/ })
-    expect(await screen.findByText(/The latest Peer collection failed/)).toBeTruthy()
-    expect(screen.getAllByText('Error').length).toBeGreaterThan(0)
-  })
-
-  it('deduplicates churn intervals and labels their mobile table cells', async () => {
-    const interval = {
-      peer_id: 'peer-churn',
-      opened_at: '2026-08-12T09:00:00Z',
-      closed_at: '2026-08-12T09:30:00Z',
-      duration_seconds: 1800,
-      direction: 'inbound',
-      trusted: true,
-      static_peer: false,
-      consensus_peer: true,
-      client_name: 'PlatON/v1.5.1',
-    }
-    mockFetch({
-      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
-      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
-        jsonResponse(NODE_A_DETAIL, 200),
-      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014/peer-churn': () =>
-        jsonResponse({
-          state: 'ok',
-          freshness: 'current',
-          window_start: '2026-08-11T08:00:00Z',
-          total_open_intervals: 0,
-          recent_arrivals: [interval],
-          recent_departures: [interval],
-        }, 200),
-    })
-    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
-
-    await screen.findByRole('heading', { level: 1, name: /Node A/ })
-    expect(await screen.findByText('peer-churn')).toBeTruthy()
-    expect(screen.getAllByText('peer-churn')).toHaveLength(1)
-    expect(document.querySelector('th[data-label="Peer ID"]')).toBeTruthy()
-    expect(document.querySelector('td[data-label="Arrival"]')).toBeTruthy()
-    expect(document.querySelector('td[data-label="Departure"]')).toBeTruthy()
   })
 
   it('shows the mismatch as a blocking diagnostic distinct from health', async () => {

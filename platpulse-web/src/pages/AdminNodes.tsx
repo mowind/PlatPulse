@@ -5,8 +5,6 @@ import {
   updateNodeMetadata,
   updateNodeVisibility,
   useAdminNodeDetail,
-  useAdminNodePeerChurn,
-  useAdminNodePeerHistory,
   useAdminNodes,
 } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
@@ -21,7 +19,6 @@ import type {
   AdminNodeListItem,
   NodeIdentityStatus,
 } from '../api/generated'
-import { PeerHistoryInsight, normalizeAdminPeerHistory } from '../components/PeerHistoryInsight'
 import { transferBadge } from './AdminNodeTransfer'
 
 /**
@@ -36,16 +33,6 @@ import { transferBadge } from './AdminNodeTransfer'
 
 function shortId(value: string): string {
   return value.length > 12 ? `${value.slice(0, 8)}…${value.slice(-4)}` : value
-}
-
-function formatDuration(seconds: number | null | undefined): string {
-  if (seconds == null) return 'Open'
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.floor(seconds / 60)
-  const remainingSeconds = seconds % 60
-  if (minutes < 60) return `${minutes}m ${remainingSeconds}s`
-  const hours = Math.floor(minutes / 60)
-  return `${hours}h ${minutes % 60}m`
 }
 
 function healthTone(health: string): 'ok' | 'error' | 'neutral' {
@@ -520,10 +507,7 @@ export function AdminNodeDetail() {
           <HealthPanel node={query.data} />
           <IdentityPanel node={query.data} />
           <TransferPanel node={query.data} />
-          <ObservationsPanel node={query.data} />
-          <PeerSnapshotPanel node={query.data} />
-          <PeerChurnPanel nodeId={query.data.node_id} />
-          <PeerHistoryPanel nodeId={query.data.node_id} />
+          <RpcDiagnosticsPanel node={query.data} />
         </>
       )}
     </section>
@@ -776,6 +760,14 @@ function HealthPanel({ node }: { node: AdminNodeDetailDto }) {
           <dd>{node.current_head ?? 'Unknown'}</dd>
         </div>
         <div>
+          <dt>Last-good head</dt>
+          <dd>
+            {node.sync?.current_block != null
+              ? `last-good head ${node.sync.current_block}`
+              : 'Unknown'}
+          </dd>
+        </div>
+        <div>
           <dt>Historical high watermark</dt>
           <dd>{node.historical_high_watermark ?? 'Unknown'}</dd>
         </div>
@@ -859,335 +851,51 @@ function IdentityPanel({ node }: { node: AdminNodeDetailDto }) {
   )
 }
 
-function ObservationsPanel({ node }: { node: AdminNodeDetailDto }) {
+function RpcDiagnosticsPanel({ node }: { node: AdminNodeDetailDto }) {
+  const rpc = node.rpc
+  const state = componentStateLabel(rpc?.state)
+  const tone = state === 'Current' ? 'ok' : state === 'Error' ? 'error' : 'neutral'
   return (
     <article className="panel">
       <div className="panel-heading">
-        <h2>Per-Node observations</h2>
-        <span className="panel-count">5 dimensions</span>
-      </div>
-      <dl className="detail-list">
-        <ObservationRow
-          label="Process"
-          state={node.process?.state}
-          errorMessage={node.process?.error_message}
-          observedAt={node.process?.observed_at}
-          receivedAt={node.process?.received_at}
-          detail={node.process?.pid != null ? `pid ${node.process.pid}` : undefined}
-        />
-        <ObservationRow
-          label="RPC"
-          state={node.rpc?.state}
-          errorMessage={node.rpc?.error_message}
-          observedAt={node.rpc?.observed_at}
-          receivedAt={node.rpc?.received_at}
-          detail={
-            node.rpc?.client_version
-              ? `${node.rpc.client_version} · ${node.rpc.namespaces.length} namespaces`
-              : undefined
-          }
-        />
-        <ObservationRow
-          label="Sync"
-          state={node.sync?.state}
-          errorMessage={node.sync?.error_message}
-          observedAt={node.sync?.observed_at}
-          receivedAt={node.sync?.received_at}
-          detail={
-            node.sync?.current_block != null
-              ? `last-good head ${node.sync.current_block}${
-                  node.sync.highest_block != null ? ` · highest ${node.sync.highest_block}` : ''
-                }`
-              : undefined
-          }
-        />
-        <ObservationRow
-          label="Consensus"
-          state={node.consensus?.state}
-          errorMessage={node.consensus?.error_message}
-          observedAt={node.consensus?.observed_at}
-          receivedAt={node.consensus?.received_at}
-          detail={
-            node.consensus?.highest_commit_block != null
-              ? `last-good commit ${node.consensus.highest_commit_block} · validator ${
-                  node.consensus.validator === true ? 'yes' : 'no'
-                }`
-              : undefined
-          }
-        />
-        <ObservationRow
-          label="Peers"
-          state={node.peers?.state}
-          errorMessage={node.peers?.error_message}
-          observedAt={node.peers?.observed_at}
-          receivedAt={node.peers?.received_at}
-          detail={
-            node.peers?.peer_count != null
-              ? `${node.peers.peer_count} peers · ${node.peers.freshness}`
-              : undefined
-          }
-        />
-      </dl>
-    </article>
-  )
-}
-
-function PeerSnapshotPanel({ node }: { node: AdminNodeDetailDto }) {
-  const peers = node.peers
-  if (!peers) {
-    return (
-      <article className="panel">
-        <div className="panel-heading">
-          <h2>Peer snapshot</h2>
-          <StatusBadge status="Unknown" tone="neutral" />
-        </div>
-        <p className="panel-state">This Node has not reported a Peer Snapshot yet.</p>
-      </article>
-    )
-  }
-  const tone = peers.state === 'error' ? 'error' : peers.state === 'ok' ? 'ok' : 'neutral'
-  return (
-    <article className="panel">
-      <div className="panel-heading">
-        <h2>Peer snapshot</h2>
-        <StatusBadge status={componentStateLabel(peers.state)} tone={tone} />
+        <h2>RPC diagnostics</h2>
+        <StatusBadge status={state} tone={tone} />
       </div>
       <p className="panel-copy">
-        {peers.peer_count == null
-          ? 'No successful Peer Snapshot is retained.'
-          : `${peers.peer_count} peer${peers.peer_count === 1 ? '' : 's'} · ${peers.inbound_count ?? 0} inbound · ${peers.outbound_count ?? 0} outbound · freshness ${peers.freshness}.`}
-        {peers.state === 'error' && peers.error_message ? ` Last collection failed: ${peers.error_message}` : ''}
+        Administrative connection diagnostics only. The complete Node observation view remains
+        on Home; the RPC Endpoint is always redacted.
       </p>
-      {peers.peer_count === 0 ? (
-        <p className="panel-state">
-          <StatusBadge status="Empty" tone="ok" /> The Agent reported an authoritative empty Peer Snapshot.
-        </p>
-      ) : peers.peers.length > 0 ? (
-        <div className="table-wrap">
-          <table className="node-table">
-            <caption className="sr-only">Current Peer Snapshot</caption>
-            <thead>
-              <tr>
-                <th scope="col">Peer ID</th>
-                <th scope="col">Direction</th>
-                <th scope="col">Flags</th>
-                <th scope="col">Client</th>
-                <th scope="col">Capabilities</th>
-                <th scope="col">CBFT</th>
-              </tr>
-            </thead>
-            <tbody>
-              {peers.peers.map((peer) => (
-                <tr key={peer.peer_id}>
-                  <th scope="row"><code>{peer.peer_id}</code></th>
-                  <td>{peer.direction}</td>
-                  <td>
-                    {[peer.trusted && 'trusted', peer.static_peer && 'static', peer.consensus_peer && 'consensus']
-                      .filter((value): value is string => Boolean(value))
-                      .join(', ') || 'none'}
-                  </td>
-                  <td>{peer.client_name ?? 'Unknown'}</td>
-                  <td>{peer.capabilities.length > 0 ? peer.capabilities.join(', ') : 'None'}</td>
-                  <td>
-                    {peer.cbft_commit_block != null
-                      ? `commit ${peer.cbft_commit_block}`
-                      : peer.cbft_protocol_version != null
-                        ? `protocol ${peer.cbft_protocol_version}`
-                        : 'Unknown'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <dl className="detail-list">
+        <div>
+          <dt>Redacted RPC Endpoint</dt>
+          <dd><code>{node.rpc_endpoint}</code></dd>
         </div>
-      ) : null}
-    </article>
-  )
-}
-
-function PeerHistoryPanel({ nodeId }: { nodeId: string }) {
-  const { generation } = useAuth()
-  const query = useAdminNodePeerHistory(generation, nodeId)
-  if (query.isPending && !query.data) {
-    return (
-      <article className="panel">
-        <div className="panel-heading"><h2>Peer history</h2><StatusBadge status="Starting" tone="neutral" /></div>
-        <p className="panel-state">Loading retained Peer aggregates…</p>
-      </article>
-    )
-  }
-  if (query.isError && !query.data) {
-    return (
-      <article className="panel">
-        <div className="panel-heading"><h2>Peer history</h2><StatusBadge status="Error" tone="error" /></div>
-        <p className="panel-state" role="alert">{query.error instanceof Error ? query.error.message : 'Unable to load Peer history'} <button type="button" className="text-action" onClick={() => void query.refetch()}>Try again</button></p>
-      </article>
-    )
-  }
-  return <PeerHistoryInsight history={query.data ? normalizeAdminPeerHistory(query.data) : undefined} admin error={query.isError} />
-}
-
-function PeerChurnPanel({ nodeId }: { nodeId: string }) {
-  const { generation } = useAuth()
-  const query = useAdminNodePeerChurn(generation, nodeId)
-  const churn = query.data
-  if (query.isPending) {
-    return (
-      <article className="panel">
-        <div className="panel-heading">
-          <h2>Peer churn</h2>
-          <StatusBadge status="Starting" tone="neutral" />
+        <div>
+          <dt>Client version</dt>
+          <dd>{rpc?.client_version ?? 'Unknown'}</dd>
         </div>
-        <p className="panel-state">Loading recent Peer arrivals and departures…</p>
-      </article>
-    )
-  }
-  if (query.isError && !churn) {
-    return (
-      <article className="panel">
-        <div className="panel-heading">
-          <h2>Peer churn</h2>
-          <StatusBadge status="Error" tone="error" />
+        <div>
+          <dt>RPC namespaces</dt>
+          <dd>{rpc?.namespaces.length ? rpc.namespaces.join(', ') : 'Unknown'}</dd>
         </div>
-        <p className="panel-state">Recent Peer churn is unavailable. The last-good Peer Snapshot remains authoritative.</p>
-      </article>
-    )
-  }
-  if (!churn || churn.state === 'unknown') {
-    return (
-      <article className="panel">
-        <div className="panel-heading">
-          <h2>Peer churn</h2>
-          <StatusBadge status="Unknown" tone="neutral" />
+        <div>
+          <dt>Probed methods</dt>
+          <dd>{rpc?.methods.length ? rpc.methods.join(', ') : 'Unknown'}</dd>
         </div>
-        <p className="panel-state">
-          No successful Peer Snapshot is available for churn history.
-        </p>
-      </article>
-    )
-  }
-  const refetchError = query.isError
-  const status = refetchError
-    ? 'Error'
-    : churn.state === 'empty'
-      ? 'Empty'
-      : churn.state === 'error'
-        ? 'Error'
-        : churn.state === 'unsupported'
-          ? 'Unsupported'
-          : churn.state === 'disabled'
-            ? 'Disabled'
-            : churn.state === 'starting'
-              ? 'Starting'
-              : freshnessLabel(churn.freshness)
-  const tone = refetchError || churn.state === 'error'
-    ? 'error'
-    : churn.state === 'ok' && churn.freshness === 'current'
-      ? 'ok'
-      : churn.state === 'ok' && churn.freshness === 'stale'
-        ? 'warning'
-        : 'neutral'
-  const intervals = [...churn.recent_arrivals, ...churn.recent_departures].filter(
-    (interval, index, all) =>
-      all.findIndex(
-        (candidate) =>
-          candidate.peer_id === interval.peer_id &&
-          candidate.opened_at === interval.opened_at &&
-          candidate.closed_at === interval.closed_at,
-      ) === index,
-  )
-  return (
-    <article className="panel">
-      <div className="panel-heading">
-        <h2>Peer churn</h2>
-        <StatusBadge status={status} tone={tone} />
-      </div>
-      {churn.state === 'empty' ? (
-        <p className="panel-state">
-          <StatusBadge status="Empty" tone="ok" /> No Peer presence interval has been retained for this Node yet.
-        </p>
-      ) : (
-        <>
-          <p className="panel-copy">
-            {refetchError
-              ? 'Refresh failed; showing retained intervals from the last successful response. '
-              : churn.state === 'error'
-                ? 'The latest Peer collection failed; retained intervals remain available. '
-                : churn.state === 'unsupported'
-                  ? 'Peer collection is unsupported; retained intervals remain available. '
-                  : churn.state === 'disabled'
-                    ? 'Peer collection is disabled; retained intervals remain available. '
-                    : ''}
-            Freshness: {freshnessLabel(churn.freshness)}. {churn.total_open_intervals} interval{churn.total_open_intervals === 1 ? '' : 's'} currently open; arrivals and departures are bounded to the last 24 hours. Raw addresses are never retained.
-          </p>
-          <div className="table-wrap">
-            <table className="node-table">
-              <caption className="sr-only">Recent Peer arrivals and departures</caption>
-              <thead>
-                <tr>
-                  <th scope="col">Peer ID</th>
-                  <th scope="col">Arrival</th>
-                  <th scope="col">Departure</th>
-                  <th scope="col">Duration</th>
-                  <th scope="col">Direction</th>
-                  <th scope="col">Flags</th>
-                  <th scope="col">Client</th>
-                </tr>
-              </thead>
-              <tbody>
-                {intervals.map((interval) => (
-                  <tr key={`${interval.peer_id}-${interval.opened_at}-${interval.closed_at ?? 'open'}`}>
-                    <th scope="row" data-label="Peer ID"><code>{interval.peer_id}</code></th>
-                    <td data-label="Arrival">{formatObservedAt(interval.opened_at)}</td>
-                    <td data-label="Departure">{interval.closed_at ? formatObservedAt(interval.closed_at) : 'Current'}</td>
-                    <td data-label="Duration">{formatDuration(interval.duration_seconds)}</td>
-                    <td data-label="Direction">{interval.direction}</td>
-                    <td data-label="Flags">
-                      {[interval.trusted && 'trusted', interval.static_peer && 'static', interval.consensus_peer && 'consensus']
-                        .filter((value): value is string => Boolean(value))
-                        .join(', ') || 'none'}
-                    </td>
-                    <td data-label="Client">{interval.client_name ?? 'Unknown'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        <div>
+          <dt>Observed / received</dt>
+          <dd>
+            {formatObservedAt(rpc?.observed_at)} · {formatObservedAt(rpc?.received_at)}
+          </dd>
+        </div>
+        {rpc?.error_message && (
+          <div>
+            <dt>Last RPC error</dt>
+            <dd><span className="component-error">{rpc.error_message}</span></dd>
           </div>
-        </>
-      )}
-    </article>
-  )
-}
-
-function ObservationRow({
-  label,
-  state,
-  errorMessage,
-  observedAt,
-  receivedAt,
-  detail,
-}: {
-  label: string
-  state: string | null | undefined
-  errorMessage?: string | null
-  observedAt?: string | null
-  receivedAt?: string | null
-  detail?: string
-}) {
-  const tone = state === 'error' ? 'error' : state === 'ok' ? 'ok' : 'neutral'
-  return (
-    <div className="component-row">
-      <dt>{label}</dt>
-      <dd>
-        <StatusBadge status={componentStateLabel(state)} tone={tone} />
-        {state === 'error' && errorMessage && (
-          <span className="component-error"> {errorMessage}</span>
         )}
-        {detail && <span className="muted"> {detail}</span>}
-        {observedAt && <small className="muted"> · observed {formatObservedAt(observedAt)}</small>}
-        {receivedAt && <small className="muted"> · received {formatObservedAt(receivedAt)}</small>}
-      </dd>
-    </div>
+      </dl>
+    </article>
   )
 }
 

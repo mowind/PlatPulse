@@ -20,6 +20,7 @@ import type {
   AgentAuditItem,
   AgentCredentialSummary,
   AgentDiagnostic,
+  HostDiagnostic,
   NodeDiagnostic,
 } from '../api/generated'
 
@@ -55,6 +56,40 @@ function credentialSummaryText(credentials: AgentCredentialSummary[]): string {
   const revoked = credentials.filter((credential) => credential.revoked_at).length
   if (credentials.length === 0) return 'None issued'
   return `${active} active · ${revoked} revoked · ${credentials.length} total`
+}
+
+function spoolDiagnosticText(spool: HostDiagnostic | null | undefined): string {
+  if (!spool) return 'No host observation yet'
+  const hasSpoolObservation = [
+    spool.spool_store_fatal,
+    spool.spool_queued_reports,
+    spool.spool_in_flight,
+    spool.spool_dropped_sequence_from,
+    spool.spool_dropped_sequence_to,
+    spool.spool_last_delivery_error,
+    spool.spool_store_error,
+    spool.spool_report_too_large,
+    spool.spool_pending_history_gaps,
+  ].some((value) => value != null)
+  if (!hasSpoolObservation) return 'Unknown'
+  const parts: string[] = []
+  if (spool.spool_store_fatal) parts.push('store fatal')
+  if (spool.spool_queued_reports != null) parts.push(`${spool.spool_queued_reports} queued`)
+  if (spool.spool_in_flight) parts.push('delivery in flight')
+  if (spool.spool_dropped_sequence_from != null && spool.spool_dropped_sequence_to != null) {
+    parts.push(`dropped reports #${spool.spool_dropped_sequence_from}–#${spool.spool_dropped_sequence_to}`)
+  }
+  if (spool.spool_last_delivery_error) {
+    parts.push(`last delivery error: ${spool.spool_last_delivery_error}`)
+  }
+  if (spool.spool_store_error) parts.push(`store error: ${spool.spool_store_error}`)
+  if (spool.spool_report_too_large) parts.push('report too large')
+  if (spool.spool_pending_history_gaps != null) {
+    parts.push(
+      `${spool.spool_pending_history_gaps} pending history gap${spool.spool_pending_history_gaps === 1 ? '' : 's'}`,
+    )
+  }
+  return parts.length > 0 ? parts.join(' · ') : 'No queued reports'
 }
 
 /** PAGE-ADMIN-AGENTS: Agent inventory with independent dimensions. */
@@ -175,6 +210,7 @@ function AgentListRow({ agent }: { agent: AgentDiagnostic }) {
         {agent.sequence_gap_count} gap{agent.sequence_gap_count === 1 ? '' : 's'} ·{' '}
         {agent.security_event_count} security event{agent.security_event_count === 1 ? '' : 's'}
         {spoolFatal ? ' · spool store fatal' : ''}
+        <small className="muted">Spool: {spoolDiagnosticText(agent.host)}</small>
       </td>
     </tr>
   )
@@ -510,13 +546,7 @@ function DiagnosticsPanel({ agent }: { agent: AgentDiagnostic }) {
         </div>
         <div>
           <dt>Spool</dt>
-          <dd>
-            {agent.host?.spool_store_fatal
-              ? 'store fatal'
-              : agent.host?.spool_queued_reports != null
-                ? `${agent.host.spool_queued_reports} queued`
-                : 'No host observation yet'}
-          </dd>
+          <dd>{spoolDiagnosticText(agent.host)}</dd>
         </div>
       </dl>
     </article>

@@ -97,10 +97,13 @@ test.describe('Owner Node inventory (PAGE-ADMIN-NODES)', () => {
     await expect(page.getByText('Matched', { exact: true })).toBeVisible()
     await expect(page.getByText(/210425 \/ 210425/)).toBeVisible()
 
-    // Per-Node observation dimensions keep their own values.
-    await expect(page.getByRole('heading', { level: 2, name: 'Per-Node observations' })).toBeVisible()
-    await expect(page.getByText(/platon\/1\.5\.1 · 3 namespaces/)).toBeVisible()
-    await expect(page.getByText(/last-good head 12842019/)).toBeVisible()
+    // Admin keeps its detail administrative and leaves Home's full
+    // observation cards on the public Node detail route.
+    await expect(page.getByRole('heading', { level: 2, name: 'RPC diagnostics' })).toBeVisible()
+    await expect(page.getByText('platon/1.5.1')).toBeVisible()
+    await expect(page.getByText('admin, net, platon')).toBeVisible()
+    await expect(page.getByText('Redacted RPC Endpoint')).toBeVisible()
+    await expect(page.getByRole('heading', { level: 2, name: 'Per-Node observations' })).toHaveCount(0)
     await expectNoHorizontalOverflow(page)
   })
 

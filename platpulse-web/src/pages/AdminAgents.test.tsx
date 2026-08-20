@@ -53,7 +53,16 @@ const AGENT_DIAGNOSTIC = {
       active: true,
     },
   ],
-  host: null,
+  host: {
+    components: [],
+    updated_at: '2026-08-12T08:00:00Z',
+    spool_queued_reports: 3,
+    spool_in_flight: true,
+    spool_dropped_sequence_from: 7,
+    spool_dropped_sequence_to: 9,
+    spool_last_delivery_error: 'server unavailable',
+    spool_store_fatal: false,
+  },
   nodes: [
     {
       node_id: 'node-1',
@@ -152,6 +161,9 @@ describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
     expect(row.textContent).toContain('1 Node') // inventory
     expect(row.textContent).toContain('1 active · 0 revoked · 1 total') // credentials
     expect(row.textContent).toContain('0 gaps · 0 security events') // diagnostics
+    expect(row.textContent).toContain('Spool: 3 queued · delivery in flight')
+    expect(row.textContent).toContain('dropped reports #7–#9')
+    expect(row.textContent).toContain('last delivery error: server unavailable')
     expect(screen.getByRole('link', { name: 'Enroll a new Agent' })).toBeTruthy()
   })
 

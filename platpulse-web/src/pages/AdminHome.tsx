@@ -3,6 +3,7 @@ import {
   updateNodeVisibility,
   useAdminGeoStatus,
   useAdminDiagnostics,
+  useAdminNodes,
   useAdminOverview,
   type RealtimeState,
 } from '../api/admin'
@@ -19,6 +20,7 @@ import type {
   AdminOverview,
   AgentDiagnostic,
   AttentionItem,
+  AdminNodeListItem,
   NodeDiagnostic,
 } from '../api/generated'
 
@@ -34,6 +36,7 @@ export default function AdminHome() {
   const { realtime } = useAdminRealtimeContext()
   const overview = useAdminOverview(generation)
   const diagnostics = useAdminDiagnostics(generation)
+  const nodes = useAdminNodes(generation)
   const geo = useAdminGeoStatus(generation)
 
   return (
@@ -46,7 +49,7 @@ export default function AdminHome() {
       <RealtimeNotice realtime={realtime} />
       <GeoStatusPanel query={geo} />
       <AttentionPanel query={overview} />
-      <NodePanel query={diagnostics} />
+      <NodePanel nodeQuery={nodes} diagnosticsQuery={diagnostics} />
       <AgentPanel query={diagnostics} />
       <OperationsPanel
         csrfToken={status.state === 'authenticated' ? status.csrfToken : ''}
@@ -213,11 +216,22 @@ function AttentionRow({ item }: { item: AttentionItem }) {
 }
 
 type DiagnosticsQuery = ReturnType<typeof useAdminDiagnostics>
+type NodesQuery = ReturnType<typeof useAdminNodes>
 
-function NodePanel({ query }: { query: DiagnosticsQuery }) {
+function NodePanel({
+  nodeQuery,
+  diagnosticsQuery,
+}: {
+  nodeQuery: NodesQuery
+  diagnosticsQuery: DiagnosticsQuery
+}) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
-  const agents = query.data ?? []
-  const nodes = agents.flatMap((agent) => agent.nodes)
+  const nodes = nodeQuery.data ?? []
+  const diagnosticsByNode = new Map(
+    (diagnosticsQuery.data ?? [])
+      .flatMap((agent) => agent.nodes)
+      .map((node) => [node.node_id, node] as const),
+  )
 
   const toggle = (nodeId: string) => {
     setExpanded((current) => {
@@ -237,33 +251,33 @@ function NodePanel({ query }: { query: DiagnosticsQuery }) {
         <h2>Node health</h2>
         {nodes.length > 0 && <span className="panel-count">{nodes.length}</span>}
       </div>
-      {!query.data && query.isPending && (
+      {!nodeQuery.data && nodeQuery.isPending && (
         <p className="panel-state" role="status">
           <StatusBadge status="Starting" tone="neutral" /> Loading the Node Health
           Summary…
         </p>
       )}
-      {!query.data && query.isError && (
+      {!nodeQuery.data && nodeQuery.isError && (
         <p className="panel-state" role="alert">
           <StatusBadge status="Error" tone="error" />{' '}
-          {query.error instanceof Error ? query.error.message : 'Unable to load Nodes'}
-          <button type="button" className="text-action" onClick={() => void query.refetch()}>
+          {nodeQuery.error instanceof Error ? nodeQuery.error.message : 'Unable to load Nodes'}
+          <button type="button" className="text-action" onClick={() => void nodeQuery.refetch()}>
             Try again
           </button>
         </p>
       )}
-      {query.data && query.isRefetchError && (
+      {nodeQuery.data && nodeQuery.isRefetchError && (
         <p className="panel-state" role="alert">
           <StatusBadge status="Error" tone="error" /> Failed to refresh; showing the last
           successful Node values.
         </p>
       )}
-      {query.data && nodes.length === 0 && (
+      {nodeQuery.data && nodes.length === 0 && (
         <p className="panel-state">
           <StatusBadge status="Empty" tone="ok" /> No Nodes observed yet.
         </p>
       )}
-      {query.data && nodes.length > 0 && (
+      {nodeQuery.data && nodes.length > 0 && (
         <div className="table-wrap">
           <table className="node-table">
             <caption className="sr-only">PlatON Node health, freshness, and sync</caption>
@@ -282,6 +296,8 @@ function NodePanel({ query }: { query: DiagnosticsQuery }) {
                 <NodeRows
                   key={node.node_id}
                   node={node}
+                  diagnostic={diagnosticsByNode.get(node.node_id)}
+                  diagnosticsQuery={diagnosticsQuery}
                   expanded={expanded.has(node.node_id)}
                   onToggle={() => toggle(node.node_id)}
                 />
@@ -296,10 +312,14 @@ function NodePanel({ query }: { query: DiagnosticsQuery }) {
 
 function NodeRows({
   node,
+  diagnostic,
+  diagnosticsQuery,
   expanded,
   onToggle,
 }: {
-  node: NodeDiagnostic
+  node: AdminNodeListItem
+  diagnostic: NodeDiagnostic | undefined
+  diagnosticsQuery: DiagnosticsQuery
   expanded: boolean
   onToggle: () => void
 }) {
@@ -336,15 +356,19 @@ function NodeRows({
         </td>
         <td data-label="Freshness">
           <StatusBadge status={freshnessLabel(node.freshness)} tone={freshnessTone} />
-          <small className="muted">{formatObservedAt(latestReceivedAt(node))}</small>
+          <small className="muted">Server-owned freshness</small>
         </td>
         <td data-label="Head / Sync">
           {node.current_head ?? 'Unknown'}
-          <small className="muted">Sync {componentStateLabel(node.sync?.state)}</small>
+          <small className="muted">
+            Sync {componentStateLabel(diagnostic?.sync?.state)}
+          </small>
         </td>
         <td data-label="Resync">
           {node.resync_state}
-          {node.resync_progress ? <small className="muted">{node.resync_progress}</small> : null}
+          {diagnostic?.resync_progress ? (
+            <small className="muted">{diagnostic.resync_progress}</small>
+          ) : null}
         </td>
       </tr>
       {expanded && (
@@ -354,65 +378,87 @@ function NodeRows({
               <button type="button" className="text-action" onClick={onToggle}>
                 Collapse details <span aria-hidden="true">▴</span>
               </button>
-              <dl className="detail-list">
-                <ComponentRow
-                  label="RPC"
-                  state={node.rpc?.state}
-                  errorMessage={node.rpc?.error_message}
-                  observedAt={node.rpc?.received_at}
-                  detail={
-                    node.rpc?.client_version
-                      ? `${node.rpc.client_version} · ${node.rpc.namespaces.length} namespaces`
-                      : undefined
-                  }
-                />
-                <ComponentRow
-                  label="Sync"
-                  state={node.sync?.state}
-                  errorMessage={node.sync?.error_message}
-                  observedAt={node.sync?.received_at}
-                  detail={
-                    node.sync?.current_block != null
-                      ? `last-good head ${node.sync.current_block}${
-                          node.sync.highest_block != null
-                            ? ` · highest ${node.sync.highest_block}`
-                            : ''
-                        }`
-                      : undefined
-                  }
-                />
-                <ComponentRow
-                  label="Consensus"
-                  state={node.consensus?.state}
-                  errorMessage={node.consensus?.error_message}
-                  observedAt={node.consensus?.received_at}
-                  detail={
-                    node.consensus?.highest_commit_block != null
-                      ? `last-good commit ${node.consensus.highest_commit_block}`
-                      : undefined
-                  }
-                />
-                <ComponentRow
-                  label="Peers"
-                  state={node.peers?.state}
-                  errorMessage={node.peers?.error_message}
-                  observedAt={node.peers?.received_at}
-                  detail={
-                    node.peers?.peer_count != null
-                      ? `${node.peers.peer_count} peers · ${node.peers.freshness}`
-                      : undefined
-                  }
-                />
-                <ComponentRow
-                  label="Process"
-                  state={node.process?.state}
-                  errorMessage={node.process?.error_message}
-                  observedAt={node.process?.received_at}
-                  detail={
-                    node.process?.pid != null ? `pid ${node.process.pid}` : undefined
-                  }
-                />
-              </dl>
+              {!diagnostic && diagnosticsQuery.isPending && (
+                <p className="panel-state" role="status">
+                  <StatusBadge status="Starting" tone="neutral" /> Loading Node diagnostics…
+                </p>
+              )}
+              {!diagnostic && diagnosticsQuery.isError && (
+                <p className="panel-state" role="alert">
+                  <StatusBadge status="Error" tone="error" /> Node diagnostics are unavailable;
+                  the summary above remains available.
+                  <button type="button" className="text-action" onClick={() => void diagnosticsQuery.refetch()}>
+                    Try again
+                  </button>
+                </p>
+              )}
+              {diagnostic && (
+                <dl className="detail-list">
+                  <ComponentRow
+                    label="RPC"
+                    state={diagnostic.rpc?.state}
+                    errorMessage={diagnostic.rpc?.error_message}
+                    observedAt={diagnostic.rpc?.received_at}
+                    detail={
+                      diagnostic.rpc?.client_version
+                        ? `${diagnostic.rpc.client_version} · ${diagnostic.rpc.namespaces.length} namespaces`
+                        : undefined
+                    }
+                  />
+                  <ComponentRow
+                    label="Sync"
+                    state={diagnostic.sync?.state}
+                    errorMessage={diagnostic.sync?.error_message}
+                    observedAt={diagnostic.sync?.received_at}
+                    detail={
+                      diagnostic.sync?.current_block != null
+                        ? `last-good head ${diagnostic.sync.current_block}${
+                            diagnostic.sync.highest_block != null
+                              ? ` · highest ${diagnostic.sync.highest_block}`
+                              : ''
+                          }`
+                        : undefined
+                    }
+                  />
+                  <ComponentRow
+                    label="Consensus"
+                    state={diagnostic.consensus?.state}
+                    errorMessage={diagnostic.consensus?.error_message}
+                    observedAt={diagnostic.consensus?.received_at}
+                    detail={
+                      diagnostic.consensus?.highest_commit_block != null
+                        ? `last-good commit ${diagnostic.consensus.highest_commit_block}`
+                        : undefined
+                    }
+                  />
+                  <ComponentRow
+                    label="Peers"
+                    state={diagnostic.peers?.state}
+                    errorMessage={diagnostic.peers?.error_message}
+                    observedAt={diagnostic.peers?.received_at}
+                    detail={
+                      diagnostic.peers?.peer_count != null
+                        ? `${diagnostic.peers.peer_count} peers · ${diagnostic.peers.freshness}`
+                        : undefined
+                    }
+                  />
+                  <ComponentRow
+                    label="Process"
+                    state={diagnostic.process?.state}
+                    errorMessage={diagnostic.process?.error_message}
+                    observedAt={diagnostic.process?.received_at}
+                    detail={
+                      diagnostic.process?.pid != null ? `pid ${diagnostic.process.pid}` : undefined
+                    }
+                  />
+                </dl>
+              )}
+              {!diagnostic && diagnosticsQuery.data && (
+                <p className="panel-state">
+                  <StatusBadge status="Unknown" tone="neutral" /> No current Agent diagnostic
+                  is available for this Node; the Server-owned summary remains authoritative.
+                </p>
+              )}
             </div>
           </td>
         </tr>
@@ -449,18 +495,6 @@ function ComponentRow({
       </dd>
     </div>
   )
-}
-
-function latestReceivedAt(node: NodeDiagnostic): string | null | undefined {
-  const candidates = [
-    node.rpc?.received_at,
-    node.sync?.received_at,
-    node.consensus?.received_at,
-    node.peers?.received_at,
-  ]
-    .filter((value): value is string => typeof value === 'string')
-    .sort()
-  return candidates.at(-1)
 }
 
 function AgentPanel({ query }: { query: DiagnosticsQuery }) {
