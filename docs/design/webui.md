@@ -413,6 +413,88 @@ SCN-HISTORY-WINDOW-BOUNDS
 
 Scenario state is memory-only. No credentials, secrets, production API origins, local persistence, or prototype-only branches are allowed in production pages.
 
+## 11.1 Accepted Home and Node Detail visual contract (Issue #75)
+
+The accepted direction from Issue #75 and the prototype/home-node-detail branch is the production visual baseline for the public Home surface. It borrows the supplied Nezha references' operational hierarchy and dark glass treatment without importing their server, resource, pricing, or remote-control data model.
+
+### Visual language
+
+- Home and public Node Detail use a dark, immersive shell with near-black translucent panels, soft borders, rounded corners, restrained blur, and indigo/violet accents.
+- The visual treatment is subordinate to operational truth. Decorative artwork or gradients may sit behind the shell, but the interface remains readable when the artwork is absent, blocked, or reduced.
+- Primary numbers and page titles use high contrast and strong weight. Secondary labels, timestamps, identifiers, and explanatory copy are visibly quieter.
+- Green, amber, red, violet/indigo, and neutral tones communicate good, attention, error, contextual accent, and unavailable/unknown states respectively. Every status also has text or an equivalent accessible explanation; color is never the sole signal.
+- Cards, pills, separators, progress bars, and focus states share one spacing and radius system. Hover elevation is optional decoration and must not be required to discover an action.
+- The visual contract does not authorize fields that are absent from the Public Projection. In particular, it does not add memory, disk, bandwidth, traffic, uptime, pricing, geography, raw Peer identity, or RPC Endpoint text.
+
+### Home composition (PAGE-HOME-NETWORKS and PAGE-HOME-NETWORK)
+
+The Home route is a read-only operational overview composed in this order:
+
+1. A compact header with the PlatPulse brand link at left and one circular Admin icon link at right. The brand returns to Home; the Admin icon enters the Admin route and does not expose Admin data inside Home.
+2. A page kicker, the Home heading, a server-authoritative live/realtime indicator, and a current-clock presentation that is decorative context rather than domain freshness.
+3. Four summary cards for published Node count, Server-owned healthy Node count, Nodes needing attention, and published Network count. These are projections of already-loaded Public data; they are not new health policy.
+4. A toolbar containing the supported card view, Network filter pills, and a clearly labelled sort control. Unsupported future views are not rendered as usable production actions.
+5. A responsive collection of Active Node cards. Each card links to Node Detail and may link back to its Network. Cards show only the Public Node fields needed for Network, identity, Node Health Summary, RPC/Sync/Consensus/Process/Resync state, Current Head, history boundary, Peer Count Observation, freshness/value cues, and sanitized Host CPU percentage.
+6. An explicit empty state when the selected Network has no published Nodes, without implying that missing data is zero or healthy.
+
+Network hierarchy remains Network -> PlatON Node -> Node Detail. Home never reorganizes the view around Agent or Host topology.
+
+### Node Detail composition (PAGE-HOME-NODE)
+
+Node Detail freezes the accepted reference-inspired hierarchy:
+
+1. The page heading identifies the PlatON Node, shows the Server-owned health state, and shows freshness/live context without replacing the health contract.
+2. A summary panel provides a Network back link, Network identity, display name/Node ID, public-history export, six independent facts (Health, RPC, Sync, Consensus, Process, Resync), six independent observations (Current Head, History Boundary, Network Reference, Reference Confidence, sanitized Host CPU, Peer Count), and the Server-owned health reason.
+3. A centred two-tab control defaults to Details and switches to Network without replacing the heading or summary panel. The selected tab is exposed semantically and visually.
+4. Details presents current-observation signal cards for Host CPU, Current Head, History Boundary, Peers, RPC, and Consensus, followed by bounded Server-side Block History and any available Public Validator insight/analytics.
+5. Network presents the Public Peer Insight and Public Peer History modules. It never exposes peer addresses or a peer identity list.
+6. Block History shows the Server window's published rows, its best-effort nature, an explicit empty state, and public export. Missing blocks remain absent; the WebUI never synthesizes zero rows or gap evidence.
+
+The dashboard presents independent observation dimensions. One failed collection must not hide or rewrite another dimension, and one Agent's Nodes must never be merged into an Agent-level chain view.
+
+### Responsive acceptance baseline
+
+The fixed acceptance viewports are 360x800, 390x844, 768x1024, and 1280x800.
+
+- At 1280x800, Home uses four summary columns and a two-column Node grid. Node Detail uses six-column facts/observations and a three-column signal grid.
+- At 768x1024, Home uses two summary columns and a single-column Node grid when the content width requires it. Node Detail uses three-column facts/observations and a two-column signal grid.
+- At 360x800 and 390x844, Home keeps a compact two-column summary where it remains legible, uses a single-column Node grid, and allows filter pills to scroll within their own control rather than causing page overflow. Node Detail stacks the heading, summary actions, facts, observations, signal cards, and secondary panels; the two tabs remain full-width touch controls.
+- At every viewport, long Node names, Node IDs, Network keys, status reasons, and values wrap or truncate with an accessible full value. No critical state requires primary horizontal page scrolling.
+- The Block History table becomes priority rows/cards on phone widths. If a table representation is retained at a larger width, it must not force the phone page wider than the viewport.
+- Touch targets are at least 44x44 CSS pixels. Portrait, landscape, 200% zoom, and reduced-motion settings remain usable.
+
+### State and realtime acceptance
+
+The UI keeps collection state, freshness state, value state, and authorization state independent. It renders the fixed user-facing vocabulary from this document: Starting, Current, Stale, Error, Unknown, Disabled, Unsupported, Empty, Live updates paused, and You are offline.
+
+- Initial route loads show a meaningful Starting/loading state and do not fabricate values.
+- A successful observation may show Current or an authoritative empty value. A successful Peer Count Observation of zero is displayed as zero, not Unknown.
+- An Error or Stale observation may retain LastGood data, but the UI must show the error/stale reason and age/freshness supplied by the Server. It must never convert Unknown, stale, never-observed, Disabled, or Unsupported into 0, false, or Healthy.
+- Node, history, peer-history, and validator requests fail independently. A failed optional module does not erase the Node summary or unrelated successful modules.
+- A normal SSE invalidation preserves the currently displayed Node and view context while the exact Public resource is refetched. A reset, authorization transition, Node ID change, or access recheck clears affected sensitive projection state before the next render and may show a revalidation state.
+- SSE carries invalidation/reset signals only. REST remains authoritative for all displayed business values. A disconnected stream announces Live updates paused; browser-offline state may additionally announce You are offline.
+- Retired, deleted, forbidden, or unknown public Nodes use non-leaking unavailable copy and never reveal whether a protected record exists.
+
+### Navigation and accessibility acceptance
+
+- The PlatPulse brand is a keyboard-focusable link to `/`. Its accessible name identifies PlatPulse and its destination is stable from Home and Node Detail.
+- The circular Admin icon is a keyboard-focusable link to /admin with an explicit accessible name such as Open Admin login. Home does not show text navigation or a Home logout action in this header.
+- Node cards, Network links, the Network back link, history export, and Details/Network tabs are reachable by keyboard in a predictable order. Browser back/forward preserves route context.
+- Tabs use tab/list semantics with a single selected tab, a labelled panel, visible focus, and keyboard activation. Switching tabs preserves Node identity and summary state.
+- Pages expose one logical h1, ordered headings, semantic lists/tables where appropriate, meaningful empty/error regions, and polite live regions only for meaningful transitions.
+- Status uses text plus icon, shape, or an equivalent explanation. Focus rings remain visible against the dark shell. Reduced motion removes non-essential transitions and does not remove state information.
+- Export reports success through the browser download flow and reports a safe task-level error without leaking internal paths or response bodies.
+
+### Prototype disposition
+
+The three throwaway variants (Signal stack, Mission control, Evidence ledger) are exploration evidence only. Once the production contract and focused acceptance coverage are merged, the development-only variant switcher and prototype route branch should be removed in a separate cleanup change. Production modules must not import or depend on prototype modules, query parameters, or reference images.
+
+### Production seam and test intent
+
+The highest-value external seam is the routed public Home shell and its child page modules, exercised through the typed Public API adapter and a controllable realtime invalidation source. Tests cross this seam with real Public DTO-shaped responses and explicit transport/error transitions; they do not reach into CSS selectors, private helpers, or implementation-only state. The same seam covers Home filtering/sorting, Node Detail tabs, bounded history and export, Logo/Admin navigation, independent module failures, reset behavior, and last-good refresh preservation.
+
+SCN-HOME-NODE-DETAIL is expanded with the visual and state assertions above. Add focused scenarios for SCN-HOME-FILTER-SORT, SCN-HOME-NAVIGATION, SCN-NODE-TABS, SCN-NODE-HISTORY-EXPORT, SCN-NODE-INDEPENDENT-STATES, SCN-NODE-LAST-GOOD-REFRESH, and SCN-HOME-RESPONSIVE-ACCESSIBILITY. Each scenario must assert semantic content at all four fixed viewports; screenshots may supplement but cannot replace those assertions.
+
 ## 12. Playwright-oriented acceptance matrix
 
 Use the existing `platpulse-web/playwright.config.ts` projects:
@@ -472,5 +554,6 @@ A page is ready for production implementation only when:
 | Implementation handoff and acceptance contract | Issue #40 |
 | MVP scope convergence: Komari-like Home/Admin separation, no Admin duplicate Node Detail, Server-only bounded Block History, no History Gap/Backfill, report-level Receipt, Peer Count only | Confirmed design review; see `docs/design/platpulse.md` |
 | Site-level access mode (Komari-like), Owner-only principals, per-Node visibility removed | Confirmed design review; see `docs/design/platpulse.md` |
+| Accepted Home / Node Detail visual direction, responsive baseline, public-data contract, and production test seam | Issue #75 and accepted branch `prototype/home-node-detail` |
 
 Changes to a settled contract require a new decision record and must update the affected `PAGE-*`, `PATTERN-*`, and `SCN-*` references together. OpenAPI or Server policy changes do not silently change WebUI semantics; they require an explicit design review when the user-visible contract changes.
