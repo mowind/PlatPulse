@@ -2298,6 +2298,17 @@ async fn handler(
         }
     };
     let peer_component_present = parsed.nodes.iter().any(|node| node.chain.peers.is_some());
+    let public_node_ids = projection_report
+        .nodes
+        .iter()
+        .map(|node| node.node_id.to_string())
+        .collect::<Vec<_>>();
+    let public_network_keys = projection_report
+        .inventory
+        .nodes
+        .iter()
+        .map(|node| node.network_key.to_string())
+        .collect::<HashSet<_>>();
     if tx.commit().await.is_err() {
         return error(
             &request_id.0,
@@ -2321,10 +2332,24 @@ async fn handler(
     state
         .admin_realtime()
         .publish("node", None::<String>, parsed.report_sequence);
-    if inventory_changed || !parsed.nodes.is_empty() {
+    if inventory_changed || parsed.inventory.nodes.is_empty() {
         state
             .public_realtime()
             .publish("node", None::<String>, parsed.report_sequence);
+    }
+    if !inventory_changed && !public_node_ids.is_empty() {
+        for node_id in &public_node_ids {
+            state
+                .public_realtime()
+                .publish("node", Some(node_id.clone()), parsed.report_sequence);
+        }
+    }
+    for network_key in &public_network_keys {
+        state.public_realtime().publish(
+            "network",
+            Some(network_key.clone()),
+            parsed.report_sequence,
+        );
     }
     if peer_component_present {
         state
@@ -2333,12 +2358,13 @@ async fn handler(
         state
             .admin_realtime()
             .publish("geo", None::<String>, parsed.report_sequence);
-        state
-            .public_realtime()
-            .publish("peer", None::<String>, parsed.report_sequence);
-        state
-            .public_realtime()
-            .publish("geo", None::<String>, parsed.report_sequence);
+        for network_key in &public_network_keys {
+            state.public_realtime().publish(
+                "network",
+                Some(network_key.clone()),
+                parsed.report_sequence,
+            );
+        }
     }
     if alert_changes > 0 {
         state
@@ -2764,7 +2790,7 @@ mod tests {
                 .iter()
                 .map(|event| event.resource.as_str())
                 .collect::<Vec<_>>(),
-            vec!["node", "peer", "geo"]
+            vec!["node", "network"]
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
@@ -3514,7 +3540,7 @@ mod tests {
                 .public_realtime()
                 .pending_events()
                 .iter()
-                .find(|event| event.resource == "node")
+                .find(|event| event.resource == "node" && event.resource_id.is_none())
                 .map(|event| event.revision),
             Some(2)
         );

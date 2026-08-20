@@ -1286,13 +1286,19 @@ export function useAdminRealtime(
   onAccessReset: () => void,
   enabled = true,
 ): RealtimeState {
-  setActiveAccessGeneration(accessGeneration)
   const [status, setStatus] = useState<RealtimeStatus>('connecting')
   const [online, setOnline] = useState(() =>
     typeof navigator === 'undefined' ? true : navigator.onLine,
   )
   const accessReset = useRef(onAccessReset)
   accessReset.current = onAccessReset
+
+  // Keep transport mutation out of render. During a reset this hook can
+  // still receive the retired AuthContext generation while the shell has
+  // already installed the provisional generation and closed the stream.
+  useEffect(() => {
+    setActiveAccessGeneration(accessGeneration)
+  }, [accessGeneration])
 
   useEffect(() => {
     const handleOnline = () => setOnline(true)

@@ -156,11 +156,13 @@ pub(crate) async fn set_visibility(
             );
         }
     };
-    let before = sqlx::query_scalar::<_, String>("SELECT visibility FROM nodes WHERE node_id = ?")
-        .bind(&node_id)
-        .fetch_optional(&mut *tx)
-        .await;
-    let Some(previous) = (match before {
+    let before = sqlx::query_as::<_, (String, String)>(
+        "SELECT visibility, network_key FROM nodes WHERE node_id = ?",
+    )
+    .bind(&node_id)
+    .fetch_optional(&mut *tx)
+    .await;
+    let Some((previous, network_key)) = (match before {
         Ok(value) => value,
         Err(_) => {
             return mutation_error(
@@ -223,6 +225,9 @@ pub(crate) async fn set_visibility(
         state
             .public_realtime()
             .publish("node", Some(node_id.clone()), revision);
+        state
+            .public_realtime()
+            .publish("network", Some(network_key), revision);
     } else {
         state
             .public_realtime()

@@ -17,6 +17,7 @@ function response(body: unknown): Response {
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
   publicQueryClient.clear()
   adminQueryClient.clear()
 })
@@ -50,6 +51,22 @@ describe('Public adapter and query namespace', () => {
     invalidatePublicResource('node', 'node-1', 9)
     invalidatePublicResource('node', 'node-1', 8)
 
-    expect(invalidate).toHaveBeenCalledTimes(4)
+    expect(invalidate).toHaveBeenCalledTimes(3)
+    expect(invalidate.mock.calls[0]?.[0]).toEqual({
+      queryKey: publicKeys.node('node-1'),
+      refetchType: 'active',
+    })
+  })
+
+  it('invalidates only the addressed Network query', () => {
+    const invalidate = vi.spyOn(publicQueryClient, 'invalidateQueries')
+
+    invalidatePublicResource('network', 'network-a', 11)
+
+    expect(invalidate).toHaveBeenCalledTimes(2)
+    expect(invalidate.mock.calls.map(([options]) => options)).toEqual([
+      { queryKey: publicKeys.networks, refetchType: 'active' },
+      { queryKey: publicKeys.network('network-a'), refetchType: 'active' },
+    ])
   })
 })

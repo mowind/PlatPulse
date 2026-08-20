@@ -48,9 +48,11 @@ export const publicKeys = {
   all: ['public'] as const,
   networks: ['public', 'networks'] as const,
   network: (networkKey: string) => ['public', 'network', networkKey] as const,
+  nodes: ['public', 'node'] as const,
   node: (nodeId: string) => ['public', 'node', nodeId] as const,
   history: (nodeId: string) => ['public', 'node', nodeId, 'history'] as const,
   peerHistory: (nodeId: string) => ['public', 'node', nodeId, 'peer-history'] as const,
+  validators: ['public', 'validator'] as const,
   validatorHistory: (validatorId: string, limit: number) =>
     ['public', 'validator', validatorId, 'history', limit] as const,
   validatorAnalytics: (validatorId: string, limit: number) =>
@@ -216,13 +218,6 @@ export function usePublicNetworks(generation: number, enabled = true) {
 
 export function usePublicNetwork(networkKey: string, generation: number) {
   const queryKey = [...publicKeys.network(networkKey), generation] as const
-  useEffect(() => {
-    const routeKey = [...publicKeys.network(networkKey), generation] as const
-    activeNetworkRouteKey = routeKey
-    return () => {
-      if (activeNetworkRouteKey === routeKey) activeNetworkRouteKey = null
-    }
-  }, [networkKey, generation])
   return useQuery({
     queryKey,
     queryFn: ({ signal }) => fetchNetwork(networkKey, signal, generation),
@@ -272,7 +267,6 @@ export function usePublicValidatorAnalytics(validatorId: string, limit: number, 
 
 let publicCacheGeneration: number | null = null
 const publicRevisions = new Map<string, number>()
-let activeNetworkRouteKey: readonly unknown[] | null = null
 
 export function resetPublicCache(generation: number): void {
   publicCacheGeneration = generation
@@ -291,24 +285,20 @@ function acceptRevision(resource: string, resourceId: string | undefined, revisi
   return true
 }
 
-function activeNetworkKeys(): Array<readonly unknown[]> {
-  return activeNetworkRouteKey ? [activeNetworkRouteKey] : []
-}
-
 export function invalidatePublicResource(resource: string, resourceId?: string, revision?: number): void {
   if (!acceptRevision(resource, resourceId, revision)) return
-  if (resourceId === undefined && resource !== 'collection') {
-    void publicQueryClient.invalidateQueries({ queryKey: publicKeys.all, refetchType: 'active' })
-    return
-  }
   const keys: Array<readonly unknown[]> = (() => {
     switch (resource) {
       case 'node':
-        return [publicKeys.networks, ...activeNetworkKeys(), ...(resourceId ? [publicKeys.node(resourceId), publicKeys.history(resourceId), publicKeys.peerHistory(resourceId)] : [])]
+        return resourceId
+          ? [publicKeys.node(resourceId), publicKeys.history(resourceId), publicKeys.peerHistory(resourceId)]
+          : [publicKeys.nodes, publicKeys.networks]
       case 'network':
         return [publicKeys.networks, ...(resourceId ? [publicKeys.network(resourceId)] : [])]
       case 'validator':
-        return [publicKeys.networks, ...activeNetworkKeys(), ...(resourceId ? [publicKeys.validatorHistory(resourceId, 20), publicKeys.validatorAnalytics(resourceId, 31)] : [])]
+        return resourceId
+          ? [publicKeys.validatorHistory(resourceId, 20), publicKeys.validatorAnalytics(resourceId, 31)]
+          : [publicKeys.validators, publicKeys.networks]
       case 'collection':
         return [publicKeys.all]
       default:
@@ -346,7 +336,6 @@ export function usePublicRealtime(onReset?: () => void, enabled = true, accessGe
     const events = new EventSource('/api/public/v1/events')
     const reset = () => {
       events.close()
-      setStatus('connecting')
       setStatus('connecting')
       resetPublicCache((publicCacheGeneration ?? DEFAULT_GENERATION) + 1)
       setStreamKey((value) => value + 1)

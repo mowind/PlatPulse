@@ -99,4 +99,28 @@ test.describe('SCN-HOME-RESPONSIVE-ACCESSIBILITY / live refresh transport state'
     await expect.poll(async () => page.evaluate(() => (window as typeof window & { __realtimeClosed: number }).__realtimeClosed)).toBeGreaterThan(closedBefore)
     await expect(page.getByRole('heading', { level: 1, name: 'Node A' })).toBeVisible()
   })
+
+  test('preserves an Admin route through exact-key invalidation and reset', async ({ page }) => {
+    await installControlledRealtime(page)
+    await loginAs(page)
+    await page.getByRole('link', { name: 'Admin', exact: true }).click()
+    await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
+    await page.goto('/admin/nodes?visibility=all&health=all')
+    await expect(page.getByRole('heading', { level: 1, name: 'Nodes' })).toBeVisible()
+
+    await page.evaluate(({ nodeId }) => {
+      const browserWindow = window as typeof window & { __emitRealtime: (type: string, data?: string) => void }
+      browserWindow.__emitRealtime('invalidation', JSON.stringify({ resource: 'node', resourceId: nodeId, revision: 2 }))
+    }, { nodeId: PUBLIC_NODE_ID })
+    await expect(page).toHaveURL(/\/admin\/nodes\?visibility=all&health=all/)
+    await expect(page.getByRole('heading', { level: 1, name: 'Nodes' })).toBeVisible()
+
+    await page.evaluate(() => {
+      const browserWindow = window as typeof window & { __emitRealtime: (type: string, data?: string) => void }
+      browserWindow.__emitRealtime('reset', JSON.stringify({ reset: true }))
+    })
+    await expect(page.getByText('Revalidating Admin access…')).toBeVisible()
+    await expect.poll(async () => page.url()).toMatch(/\/admin\/nodes\?visibility=all&health=all/)
+    await expect(page.getByRole('heading', { level: 1, name: 'Nodes' })).toBeVisible()
+  })
 })

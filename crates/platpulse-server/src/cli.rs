@@ -754,14 +754,30 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                 {
                     Ok(summary) if summary.invalidations > 0 || summary.alert_invalidations > 0 => {
                         if summary.invalidations > 0 {
-                            provider_state
-                                .admin_realtime()
-                                .publish("validator", None::<String>, 1);
-                            provider_state.public_realtime().publish(
-                                "validator",
-                                None::<String>,
-                                1,
-                            );
+                            for validator_id in &summary.invalidated_validator_ids {
+                                provider_state.admin_realtime().publish(
+                                    "validator",
+                                    Some(validator_id.clone()),
+                                    1,
+                                );
+                                provider_state.public_realtime().publish(
+                                    "validator",
+                                    Some(validator_id.clone()),
+                                    1,
+                                );
+                            }
+                            for network_key in &summary.invalidated_network_keys {
+                                provider_state.admin_realtime().publish(
+                                    "network",
+                                    Some(network_key.clone()),
+                                    1,
+                                );
+                                provider_state.public_realtime().publish(
+                                    "network",
+                                    Some(network_key.clone()),
+                                    1,
+                                );
+                            }
                         }
                         if summary.alert_invalidations > 0 {
                             provider_state

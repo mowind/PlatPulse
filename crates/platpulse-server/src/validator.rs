@@ -1234,13 +1234,15 @@ pub async fn list_link_context_at(
         .fetch_all(db.pool())
         .await?)
 }
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RefreshSummary {
     pub attempted: usize,
     pub successful: usize,
     pub changed: usize,
     pub invalidations: usize,
     pub alert_invalidations: usize,
+    pub invalidated_network_keys: Vec<String>,
+    pub invalidated_validator_ids: Vec<String>,
 }
 
 pub async fn load_insight(
@@ -1324,7 +1326,7 @@ pub async fn refresh_all_with_channels_in_timezone(
     let mut provider_results = Vec::with_capacity(validators.len());
     for (validator_id, network_key, validator_node_id) in validators {
         let result = provider.fetch(&network_key, &validator_node_id).await;
-        provider_results.push((validator_id, result));
+        provider_results.push((validator_id, network_key, result));
     }
 
     let mut summary = RefreshSummary {
@@ -1332,7 +1334,7 @@ pub async fn refresh_all_with_channels_in_timezone(
         ..RefreshSummary::default()
     };
     let mut tx = db.pool().begin().await?;
-    for (validator_id, result) in provider_results {
+    for (validator_id, network_key, result) in provider_results {
         let changed =
             apply_provider_result(&mut tx, provider.source(), &validator_id, result, timezone)
                 .await?;
@@ -1355,6 +1357,8 @@ pub async fn refresh_all_with_channels_in_timezone(
         }
         if changed.2 {
             summary.invalidations += 1;
+            summary.invalidated_network_keys.push(network_key);
+            summary.invalidated_validator_ids.push(validator_id);
         }
     }
     tx.commit().await?;
