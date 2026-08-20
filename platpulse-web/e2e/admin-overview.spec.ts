@@ -107,13 +107,13 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
 
   test('browser offline is reported as You are offline and recovers', async ({ page }) => {
     await openOverview(page)
-    await expect(page.getByText('Connected')).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText('Current')).toBeVisible({ timeout: 15_000 })
 
     await page.context().setOffline(true)
     await expect(page.getByText('You are offline')).toBeVisible()
 
     await page.context().setOffline(false)
-    await expect(page.getByText('Connected')).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText('Current')).toBeVisible({ timeout: 15_000 })
     await expectNoHorizontalOverflow(page)
   })
 

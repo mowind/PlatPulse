@@ -83,10 +83,11 @@ export async function fetchNetworks(signal?: AbortSignal, generation?: number): 
 
 export async function fetchNetwork(networkKey: string, signal?: AbortSignal, generation?: number): Promise<PublicNetwork> {
   const context = contextOf(signal, generation)
-  return requestGenerated(
+  const network = await requestGenerated(
     () => publicNetwork({ path: { network_key: networkKey }, signal: context.signal, headers: headersOf(context) }),
     'Unable to load Network',
   )
+  return network
 }
 
 export async function fetchNode(nodeId: string, signal?: AbortSignal, generation?: number): Promise<PublicNode> {
@@ -143,15 +144,21 @@ export function applySiteAccessSettings(settings: SiteAccessSettings): void {
 
 export async function refreshSiteAccessSettings(signal?: AbortSignal): Promise<SiteAccessSettings> {
   try {
-    const settings = await fetchAccessSettings(signal)
-    applySiteAccessSettings(settings)
-    return settings
+    return await revalidateSiteAccessSettings(signal)
   } catch (caught) {
     if (caught instanceof DOMException && caught.name === 'AbortError') throw caught
     siteAccessModeCache = 'private'
     for (const listener of siteAccessModeListeners) listener(siteAccessModeCache)
     return { mode: siteAccessModeCache, authorizationGeneration: siteAccessGenerationCache ?? DEFAULT_GENERATION }
   }
+}
+
+/** Strict access revalidation used by reset transitions. A transport failure
+ * must keep the old stream closed rather than becoming synthetic authority. */
+export async function revalidateSiteAccessSettings(signal?: AbortSignal): Promise<SiteAccessSettings> {
+  const settings = await fetchAccessSettings(signal)
+  applySiteAccessSettings(settings)
+  return settings
 }
 
 export async function refreshSiteAccessMode(signal?: AbortSignal): Promise<SiteAccessMode> {
@@ -203,13 +210,21 @@ export async function fetchNodeHistoryExport(nodeId: string, signal?: AbortSigna
   )
 }
 
-export function usePublicNetworks(generation: number) {
-  return useQuery({ queryKey: [...publicKeys.networks, generation], queryFn: ({ signal }) => fetchNetworks(signal, generation) })
+export function usePublicNetworks(generation: number, enabled = true) {
+  return useQuery({ queryKey: [...publicKeys.networks, generation], queryFn: ({ signal }) => fetchNetworks(signal, generation), enabled })
 }
 
 export function usePublicNetwork(networkKey: string, generation: number) {
+  const queryKey = [...publicKeys.network(networkKey), generation] as const
+  useEffect(() => {
+    const routeKey = [...publicKeys.network(networkKey), generation] as const
+    activeNetworkRouteKey = routeKey
+    return () => {
+      if (activeNetworkRouteKey === routeKey) activeNetworkRouteKey = null
+    }
+  }, [networkKey, generation])
   return useQuery({
-    queryKey: [...publicKeys.network(networkKey), generation],
+    queryKey,
     queryFn: ({ signal }) => fetchNetwork(networkKey, signal, generation),
     enabled: networkKey.length > 0,
   })
@@ -257,6 +272,7 @@ export function usePublicValidatorAnalytics(validatorId: string, limit: number, 
 
 let publicCacheGeneration: number | null = null
 const publicRevisions = new Map<string, number>()
+let activeNetworkRouteKey: readonly unknown[] | null = null
 
 export function resetPublicCache(generation: number): void {
   publicCacheGeneration = generation
@@ -275,16 +291,24 @@ function acceptRevision(resource: string, resourceId: string | undefined, revisi
   return true
 }
 
+function activeNetworkKeys(): Array<readonly unknown[]> {
+  return activeNetworkRouteKey ? [activeNetworkRouteKey] : []
+}
+
 export function invalidatePublicResource(resource: string, resourceId?: string, revision?: number): void {
   if (!acceptRevision(resource, resourceId, revision)) return
+  if (resourceId === undefined && resource !== 'collection') {
+    void publicQueryClient.invalidateQueries({ queryKey: publicKeys.all, refetchType: 'active' })
+    return
+  }
   const keys: Array<readonly unknown[]> = (() => {
     switch (resource) {
       case 'node':
-        return [publicKeys.networks, ['public', 'network'], ...(resourceId ? [publicKeys.node(resourceId), publicKeys.history(resourceId), publicKeys.peerHistory(resourceId)] : [])]
+        return [publicKeys.networks, ...activeNetworkKeys(), ...(resourceId ? [publicKeys.node(resourceId), publicKeys.history(resourceId), publicKeys.peerHistory(resourceId)] : [])]
       case 'network':
         return [publicKeys.networks, ...(resourceId ? [publicKeys.network(resourceId)] : [])]
       case 'validator':
-        return [['public', 'network'], ...(resourceId ? [publicKeys.validatorHistory(resourceId, 20), publicKeys.validatorAnalytics(resourceId, 31)] : [])]
+        return [publicKeys.networks, ...activeNetworkKeys(), ...(resourceId ? [publicKeys.validatorHistory(resourceId, 20), publicKeys.validatorAnalytics(resourceId, 31)] : [])]
       case 'collection':
         return [publicKeys.all]
       default:
@@ -299,7 +323,7 @@ export type RealtimeState = { status: RealtimeStatus; online: boolean }
 
 type PublicInvalidation = { resource?: unknown; resourceId?: unknown; revision?: unknown; reset?: unknown }
 
-export function usePublicRealtime(onReset?: () => void): RealtimeState {
+export function usePublicRealtime(onReset?: () => void, enabled = true, accessGeneration?: number): RealtimeState {
   const [status, setStatus] = useState<RealtimeStatus>('connecting')
   const [online, setOnline] = useState(() => typeof navigator === 'undefined' ? true : navigator.onLine)
   const [streamKey, setStreamKey] = useState(0)
@@ -318,10 +342,12 @@ export function usePublicRealtime(onReset?: () => void): RealtimeState {
   }, [])
 
   useEffect(() => {
-    if (typeof EventSource === 'undefined') return
+    if (!enabled || typeof EventSource === 'undefined') return
     const events = new EventSource('/api/public/v1/events')
     const reset = () => {
       events.close()
+      setStatus('connecting')
+      setStatus('connecting')
       resetPublicCache((publicCacheGeneration ?? DEFAULT_GENERATION) + 1)
       setStreamKey((value) => value + 1)
       resetCallback.current?.()
@@ -351,7 +377,7 @@ export function usePublicRealtime(onReset?: () => void): RealtimeState {
       events.removeEventListener('reset', reset)
       events.close()
     }
-  }, [streamKey])
+  }, [accessGeneration, enabled, streamKey])
 
   return { status, online }
 }

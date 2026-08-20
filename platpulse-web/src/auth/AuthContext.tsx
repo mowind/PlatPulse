@@ -44,7 +44,7 @@ interface AuthContextValue {
   login: (username: string, password: string) => Promise<void>
   logout: () => Promise<void>
   /** Re-check the session after an access reset signal (SSE or 401). */
-  recheckSession: () => Promise<void>
+  recheckSession: () => Promise<boolean>
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -128,7 +128,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const recheckSession = useCallback(async () => {
     const current = statusRef.current
-    if (current.state !== 'authenticated') return
+    if (current.state !== 'authenticated') return true
     sessionProbeRef.current?.abort()
     const controller = new AbortController()
     const epoch = sessionEpochRef.current + 1
@@ -138,10 +138,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       response = await fetchSession(controller.signal)
     } catch {
-      return
+      return false
     }
     if (sessionProbeRef.current === controller) sessionProbeRef.current = null
-    if (controller.signal.aborted || sessionEpochRef.current !== epoch) return
+    if (controller.signal.aborted || sessionEpochRef.current !== epoch) return false
     if (!response) {
       // Expired or revoked while the surface was open: the old session's
       // data must never flash again.
@@ -152,25 +152,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return value + 1
       })
       setStatus({ state: 'guest' })
-      return
+      return true
     }
-    if (
+    const identityChanged =
       response.session.role !== current.session.role ||
       response.session.userId !== current.session.userId
-    ) {
-      // Role/user changed: new access generation, old data discarded.
-      setAccessLost(false)
-      setGeneration((value) => {
-        resetAdminCache(value + 1)
-        resetPublicCache(value + 1)
-        return value + 1
-      })
+    // Any successful access re-check establishes a new authorization
+    // generation. The reset signal already retired the old stream/cache;
+    // bumping even for the same session prevents a restarted stream or an
+    // in-flight response from being associated with the old generation.
+    setAccessLost(false)
+    setGeneration((value) => {
+      resetAdminCache(value + 1)
+      resetPublicCache(value + 1)
+      return value + 1
+    })
+    if (identityChanged) {
       setStatus({
         state: 'authenticated',
         session: response.session,
         csrfToken: response.csrfToken,
       })
     }
+    return true
   }, [])
 
   const value = useMemo(

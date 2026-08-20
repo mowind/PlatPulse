@@ -235,7 +235,11 @@ function HomeIndex() {
       realtimeStatus={realtime.status}
       online={realtime.online}
       resetting={resetting}
-      error={networks.error ? 'Unable to load published Nodes' : null}
+      error={networks.error
+        ? networks.data
+          ? 'Home refresh failed; showing the last successful Home data.'
+          : 'Unable to load published Nodes'
+        : null}
       hasLastGood={networks.data !== undefined}
       loading={networks.isPending}
     />

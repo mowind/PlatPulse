@@ -17,19 +17,22 @@ import { GeoInsight } from '../components/GeoInsight'
 import { ValidatorInsight } from '../components/ValidatorInsight'
 import { ValidatorAnalytics } from '../components/ValidatorAnalytics'
 import { formatObservedAt, StatusBadge } from '../components/StatusBadge'
+import { RealtimeNotice } from '../components/RealtimeNotice'
 
 export function NetworkPage() {
   const { networkKey = '' } = useParams()
-  const { generation, resetting } = useHomeRealtimeContext()
+  const { generation, resetting, realtime } = useHomeRealtimeContext()
   const query = usePublicNetwork(networkKey, generation)
 
   if (resetting) return <section className="page"><p role="status">Revalidating Home access…</p></section>
   if (query.isPending) return <section className="page"><p role="status">Loading Network…</p></section>
-  if (query.error) return <section className="page"><p role="alert" className="form-error">{query.error instanceof Error ? query.error.message : 'Unable to load Network'}</p><Link to="/">Back to Home</Link></section>
+  if (query.error && !query.data) return <section className="page"><p role="alert" className="form-error">{query.error instanceof Error ? query.error.message : 'Unable to load Network'}</p><Link to="/">Back to Home</Link></section>
   if (!query.data) return <section className="page"><p role="status">Network unavailable.</p><Link to="/">Back to Home</Link></section>
 
   const network = query.data
   return <section className="page">
+    <RealtimeNotice realtime={realtime} />
+    {query.isRefetchError && <p role="status" className="form-error">Network refresh failed; showing the last successful Network data.</p>}
     <p><Link to="/">← All Networks</Link></p>
     <h1>{network.displayName}</h1>
     <p className="muted">{network.networkKey}</p>
@@ -55,7 +58,7 @@ function ValidatorCard({ validator, generation }: { validator: PublicValidatorIn
 
 export function NodePage() {
   const { nodeId = '' } = useParams()
-  const { generation, resetting } = useHomeRealtimeContext()
+  const { generation, resetting, realtime } = useHomeRealtimeContext()
   const nodeQuery = usePublicNode(nodeId, generation)
   const historyQuery = usePublicNodeHistory(nodeId, generation)
   const peerHistoryQuery = usePublicNodePeerHistory(nodeId, generation)
@@ -64,7 +67,7 @@ export function NodePage() {
 
   if (resetting) return <section className="page"><p role="status">Revalidating Node access…</p></section>
   if (nodeQuery.isPending) return <section className="page"><p role="status">Loading Node…</p></section>
-  if (nodeQuery.error) return <section className="page"><p role="alert" className="form-error">{nodeQuery.error instanceof Error ? nodeQuery.error.message : 'Unable to load Node'}</p><Link to="/">Back to Home</Link></section>
+  if (nodeQuery.error && !nodeQuery.data) return <section className="page"><p role="alert" className="form-error">{nodeQuery.error instanceof Error ? nodeQuery.error.message : 'Unable to load Node'}</p><Link to="/">Back to Home</Link></section>
   if (!nodeQuery.data) return <section className="page"><p role="status">Node unavailable.</p><Link to="/">Back to Home</Link></section>
 
   const node = nodeQuery.data
@@ -85,6 +88,8 @@ export function NodePage() {
   }
 
   return <section className="page node-detail-page">
+    <RealtimeNotice realtime={realtime} />
+    {nodeQuery.isRefetchError && <p role="status" className="form-error">Node refresh failed; showing the last successful Node data.</p>}
     <div className="node-detail-breadcrumb">
       <Link to={`/networks/${node.networkKey}`}>← {node.networkKey}</Link>
       <span aria-hidden="true">/</span>

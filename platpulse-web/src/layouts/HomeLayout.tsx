@@ -5,7 +5,7 @@ import { useAuth } from '../auth/AuthContext'
 import {
   getSiteAccessGeneration,
   publicQueryClient,
-  refreshSiteAccessSettings,
+  revalidateSiteAccessSettings,
   resetPublicCache,
   subscribeSiteAccessGeneration,
   usePublicNetworks,
@@ -51,7 +51,7 @@ function HomeLayoutContent() {
 
   useEffect(() => subscribeSiteAccessGeneration(setGeneration), [])
 
-  const networksQuery = usePublicNetworks(generation)
+  const networksQuery = usePublicNetworks(generation, !resetting)
 
   const handleReset = useCallback(() => {
     // A Public reset means an authorization transition: revoke, expiry,
@@ -60,9 +60,9 @@ function HomeLayoutContent() {
     // flash while the new authorization resolves (design §3.3).
     setResetting(true)
     resetPublicCache(generation + 1)
-    void recheckSession()
-    void refreshSiteAccessSettings()
-      .then(({ mode, authorizationGeneration }) => {
+    void Promise.all([recheckSession(), revalidateSiteAccessSettings()])
+      .then(([confirmed, { mode, authorizationGeneration }]) => {
+        if (!confirmed) return
         const current = authRef.current
         if (mode !== 'public' && current.state !== 'authenticated') {
           navigate('/login', { replace: true })
@@ -71,13 +71,10 @@ function HomeLayoutContent() {
           setGeneration(authorizationGeneration)
         }
       })
-      .catch((caught: Error) => {
-        setResetting(false)
-        if (caught.name !== 'AbortError') setGeneration(generation + 1)
-      })
+      .catch(() => {})
   }, [generation, navigate, recheckSession])
 
-  const realtime = usePublicRealtime(handleReset)
+  const realtime = usePublicRealtime(handleReset, !resetting, generation)
   return (
     <div className="app-shell home-shell">
       <header className="app-header">
@@ -87,7 +84,7 @@ function HomeLayoutContent() {
       <main className="app-main">
         <ServerStatusNotice />
         {networksQuery.data && networksQuery.isRefetchError && <p role="status" className="form-error">Partial: showing the last successful Home data while refresh is unavailable.</p>}
-        <Outlet context={{ resetting, generation, networks: networksQuery, realtime }} />
+        {resetting ? <p role="status">Revalidating Home access…</p> : <Outlet context={{ resetting, generation, networks: networksQuery, realtime }} />}
       </main>
     </div>
   )

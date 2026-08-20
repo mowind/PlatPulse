@@ -1,7 +1,9 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { onlineManager } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
-import { adminQueryClient } from './api/admin'
+import { adminQueryClient, resetAdminCache } from './api/admin'
+import { resetPublicCache } from './api/public'
 import { client } from './api/generated/client.gen'
 
 const OWNER_SESSION = {
@@ -104,6 +106,8 @@ class FakeEventSource {
 
 beforeEach(() => {
   window.history.replaceState({}, '', '/')
+  Object.defineProperty(window.navigator, 'onLine', { configurable: true, value: true })
+  onlineManager.setOnline(true)
   // The generated fetch client builds `new Request(url)`; Node's undici
   // rejects relative URLs, so tests run against an absolute test origin.
   client.setConfig({ baseUrl: TEST_ORIGIN })
@@ -111,10 +115,15 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  Object.defineProperty(window.navigator, 'onLine', { configurable: true, value: true })
+  onlineManager.setOnline(true)
+  window.dispatchEvent(new Event('online'))
   vi.unstubAllGlobals()
   // The Admin QueryClient lives at module scope (like the router); drop its
   // values between tests so no cached REST data crosses test boundaries.
   adminQueryClient.clear()
+  resetAdminCache(0)
+  resetPublicCache(0)
 })
 
 describe('App shell with private Home', () => {
@@ -352,6 +361,56 @@ describe('App shell with private Home', () => {
     expect(screen.getByText('healthy')).toBeTruthy()
   })
 
+  it('keeps the Public Node route and last-good detail during a failed live refresh', async () => {
+    let nodeCalls = 0
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/public/v1/networks': () => jsonResponse([], 200),
+      '/api/public/v1/nodes/node-1': () => {
+        nodeCalls += 1
+        return nodeCalls === 1
+          ? jsonResponse({
+              nodeId: 'node-1', displayName: 'Validator A', networkKey: 'mainnet',
+              health: 'healthy', healthReason: 'rpc reachable', freshness: 'current',
+              rpcState: 'ok', syncState: 'synced', consensusState: 'current', processState: 'running',
+              currentHead: 123, historicalHighWatermark: 120, networkReferenceHead: 123,
+              networkReferenceConfidence: 'high', resyncState: 'idle', resyncProgress: null,
+              hostCpuPercent: 42.5, peers: { peerCount: 5, freshness: 'fresh', state: 'fresh' },
+            }, 200)
+          : jsonResponse({ error: { code: 'unavailable', message: 'refresh failed' } }, 503)
+      },
+      '/api/public/v1/nodes/node-1/history': () => jsonResponse([], 200),
+      '/api/public/v1/nodes/node-1/peer-history': () => jsonResponse({ state: 'ok', freshness: 'current', fiveMinute: [], hourly: [] }, 200),
+    })
+    vi.stubGlobal('EventSource', FakeEventSource)
+    window.history.replaceState({}, '', '/nodes/node-1')
+
+    render(<App />)
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+    expect(await screen.findByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('tab', { name: 'Network' }))
+    expect(screen.getByRole('tab', { name: 'Network' }).getAttribute('aria-selected')).toBe('true')
+
+    await act(async () => {
+      expect(FakeEventSource.latest).toBeTruthy()
+      FakeEventSource.latest?.emit(
+        'invalidation',
+        JSON.stringify({ version: 1, eventId: 3, resource: 'collection', revision: 3 }),
+      )
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect(nodeCalls).toBe(2))
+    window.dispatchEvent(new Event('offline'))
+    expect(await screen.findByText('You are offline')).toBeTruthy()
+    expect(screen.getByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: 'Network' }).getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByText(/last successful Node data/i)).toBeTruthy()
+  })
+
   it('submits the Owner visibility mutation from Admin', async () => {
     const fetchMock = mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
@@ -393,7 +452,7 @@ describe('App shell with private Home', () => {
 
   it('refetches Admin REST after an SSE invalidation without remounting the page', async () => {
     let overviewCalls = 0
-    mockFetch({
+    const fetchMock = mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       '/api/admin/v1/overview': () => {
         overviewCalls += 1
@@ -417,6 +476,10 @@ describe('App shell with private Home', () => {
     await goToAdmin()
     await screen.findByRole('heading', { level: 1, name: 'Overview' })
     await waitFor(() => expect(overviewCalls).toBe(1))
+    const overviewRequest = fetchMock.mock.calls
+      .map(([input]) => input)
+      .find((input): input is Request => input instanceof Request && input.url.includes('/api/admin/v1/overview'))
+    expect(overviewRequest?.headers.get('X-PlatPulse-Access-Generation')).toBe('1')
 
     await act(async () => {
       FakeEventSource.latest?.emit(
@@ -467,7 +530,7 @@ describe('App shell with private Home', () => {
     sessionActive = false
     await act(async () => {
       FakeEventSource.latest?.emit(
-        'reset',
+        'invalidation',
         JSON.stringify({ version: 1, eventId: 0, resource: 'collection', reset: true }),
       )
       await Promise.resolve()

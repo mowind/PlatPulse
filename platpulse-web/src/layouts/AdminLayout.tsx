@@ -3,6 +3,7 @@ import { Link, NavLink, Outlet, useOutletContext } from 'react-router'
 import { QueryClientProvider } from '@tanstack/react-query'
 import SignOutButton from '../components/SignOutButton'
 import { ServerStatusNotice } from '../components/ServerStatusNotice'
+import { RealtimeNotice } from '../components/RealtimeNotice'
 import {
   adminQueryClient,
   resetAdminCache,
@@ -27,6 +28,7 @@ import { useAuth } from '../auth/AuthContext'
 export default function AdminLayout() {
   const { generation, recheckSession } = useAuth()
   const [streamKey, setStreamKey] = useState(0)
+  const [resetting, setResetting] = useState(false)
   const [navOpen, setNavOpen] = useState(false)
   const previousGeneration = useRef(generation)
   const streamKeyRef = useRef(0)
@@ -50,18 +52,24 @@ export default function AdminLayout() {
   const handleAccessReset = useCallback(() => {
     // Close the current stream and clear sensitive query data before the
     // session probe starts; the next stream opens only under a fresh key.
-    accessGenerationRef.current += 1
+    setResetting(true)
+    accessGenerationRef.current = Math.max(accessGenerationRef.current, generation) + 1
     resetAdminCache(accessGenerationRef.current)
-    streamKeyRef.current += 1
-    setStreamKey(streamKeyRef.current)
-    void recheckSession()
-  }, [recheckSession])
+    void recheckSession().then((confirmed) => {
+      if (confirmed) setResetting(false)
+    })
+  }, [generation, recheckSession])
 
   // Server-driven access resets (SSE `reset`, REST `auth_required`): the
   // reset handler performs close -> cancel/clear -> recheck synchronously.
   useEffect(() => subscribeAdminAccessReset(handleAccessReset), [handleAccessReset])
 
-  const realtime = useAdminRealtime(streamKey, handleAccessReset)
+  const realtime = useAdminRealtime(
+    generation,
+    streamKey,
+    handleAccessReset,
+    !resetting && accessGenerationRef.current === generation,
+  )
 
   const closeNav = useCallback(() => setNavOpen(false), [])
 
@@ -220,7 +228,8 @@ export default function AdminLayout() {
         <QueryClientProvider client={adminQueryClient}>
           <main className="app-main">
             <ServerStatusNotice />
-            <Outlet context={{ realtime }} />
+            {!resetting && <RealtimeNotice realtime={realtime} />}
+            {resetting ? <p role="status">Revalidating Admin access…</p> : <Outlet context={{ realtime }} />}
           </main>
         </QueryClientProvider>
       </div>

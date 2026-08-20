@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router'
 import type { PublicNetwork, PublicNode } from '../api/generated'
+import { realtimeStreamLabel } from './RealtimeNotice'
 
 type HomeDashboardProps = {
   networks: PublicNetwork[]
@@ -51,13 +52,7 @@ export default function HomeDashboard({
   const healthyCount = hasProjection ? records.filter(({ node }) => isHealthy(node.health)).length : null
   const liveMessage = resetting
     ? 'Revalidating Home access…'
-    : !online
-      ? 'You are offline'
-        : realtimeStatus === 'connected'
-        ? 'Current'
-        : realtimeStatus === 'connecting'
-          ? 'Starting'
-          : 'Live updates paused'
+    : realtimeStreamLabel(realtimeStatus)
 
   return (
     <section className="page home-dashboard" aria-labelledby="home-dashboard-title">
@@ -70,6 +65,7 @@ export default function HomeDashboard({
         <p className={`dashboard-live dashboard-live-${toneFor(liveMessage)}`} role="status" aria-live="polite">
           <span aria-hidden="true" /> {liveMessage}
         </p>
+        {!online && <p className="dashboard-live dashboard-live-warning" role="status" aria-live="polite"><span aria-hidden="true" /> You are offline</p>}
       </header>
 
       {error && <p className="dashboard-error" role="alert">{error}</p>}

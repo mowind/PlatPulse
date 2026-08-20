@@ -5,10 +5,8 @@ import {
   useAdminDiagnostics,
   useAdminNodes,
   useAdminOverview,
-  type RealtimeState,
 } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
-import { useAdminRealtimeContext } from '../layouts/AdminLayout'
 import {
   StatusBadge,
   componentStateLabel,
@@ -33,7 +31,6 @@ import type {
  */
 export default function AdminHome() {
   const { status, generation } = useAuth()
-  const { realtime } = useAdminRealtimeContext()
   const overview = useAdminOverview(generation)
   const diagnostics = useAdminDiagnostics(generation)
   const nodes = useAdminNodes(generation)
@@ -46,7 +43,6 @@ export default function AdminHome() {
         Server-owned attention queue and Node Health Summary. The Server
         decides health and attention; this page only presents them.
       </p>
-      <RealtimeNotice realtime={realtime} />
       <GeoStatusPanel query={geo} />
       <AttentionPanel query={overview} />
       <NodePanel nodeQuery={nodes} diagnosticsQuery={diagnostics} />
@@ -55,23 +51,6 @@ export default function AdminHome() {
         csrfToken={status.state === 'authenticated' ? status.csrfToken : ''}
       />
     </section>
-  )
-}
-
-function RealtimeNotice({ realtime }: { realtime: RealtimeState }) {
-  const label = !realtime.online
-    ? 'You are offline'
-    : realtime.status === 'connected'
-      ? 'Connected'
-      : realtime.status === 'connecting'
-        ? 'Starting'
-        : 'Live updates paused'
-  const tone = !realtime.online || realtime.status === 'disconnected' ? 'warning' : 'ok'
-  return (
-    <p className="realtime-notice" role="status">
-      <StatusBadge status={label} tone={tone} />
-      <span className="muted"> Server updates arrive as invalidations; REST data stays authoritative.</span>
-    </p>
   )
 }
 

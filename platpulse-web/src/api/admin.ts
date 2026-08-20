@@ -1197,6 +1197,7 @@ function invalidateAdminResource(resource: string, resourceId?: string): void {
   const keys: Array<readonly unknown[]> = (() => {
     switch (resource) {
       case 'node':
+        if (!resourceId) return [adminKeys.all]
         return [adminKeys.overview, adminKeys.diagnostics, adminKeys.nodes, adminKeys.networks]
       case 'peer':
         return [adminKeys.overview, adminKeys.nodes, adminKeys.networks]
@@ -1250,24 +1251,23 @@ function acceptAdminRevision(resource: string, resourceId: string | undefined, r
   return true
 }
 
-function handleAdminInvalidation(data: string): void {
+function handleAdminInvalidation(data: string): boolean {
   try {
     const event = JSON.parse(data) as { resource?: unknown; resourceId?: unknown; revision?: unknown; reset?: unknown }
     if (event.reset === true) {
-      void adminQueryClient.cancelQueries({ queryKey: adminKeys.all })
-      adminQueryClient.clear()
-      adminRevisions.clear()
-      return
+      return true
     }
     const resource = typeof event.resource === 'string' ? event.resource : 'collection'
     const resourceId = typeof event.resourceId === 'string' ? event.resourceId : undefined
     const revision = typeof event.revision === 'number' ? event.revision : undefined
-    if (!acceptAdminRevision(resource, resourceId, revision)) return
+    if (!acceptAdminRevision(resource, resourceId, revision)) return false
     invalidateAdminResource(resource, resourceId)
+    return false
   } catch {
     // A malformed signal is never trusted as data; refetch the bounded Admin
     // namespace instead of allowing a stale sensitive panel to persist.
     void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    return false
   }
 }
 
@@ -1281,10 +1281,12 @@ function handleAdminInvalidation(data: string): void {
  * instead. Reconnects re-open the stream under the current generation.
  */
 export function useAdminRealtime(
-  generation: number,
+  accessGeneration: number,
+  streamKey: number,
   onAccessReset: () => void,
+  enabled = true,
 ): RealtimeState {
-  setActiveAccessGeneration(generation)
+  setActiveAccessGeneration(accessGeneration)
   const [status, setStatus] = useState<RealtimeStatus>('connecting')
   const [online, setOnline] = useState(() =>
     typeof navigator === 'undefined' ? true : navigator.onLine,
@@ -1304,7 +1306,7 @@ export function useAdminRealtime(
   }, [])
 
   useEffect(() => {
-    if (typeof EventSource === 'undefined') return
+    if (!enabled || typeof EventSource === 'undefined') return
     const events = new EventSource('/api/admin/v1/events')
     const closeStream = () => events.close()
     adminRealtimeClosers.add(closeStream)
@@ -1314,11 +1316,12 @@ export function useAdminRealtime(
     // only refetches the authoritative Admin REST namespace.
     const onReset = () => {
       events.close()
+      setStatus('connecting')
       accessReset.current()
     }
     const onInvalidation = (event: Event) => {
       const message = event as MessageEvent<string>
-      handleAdminInvalidation(message.data)
+      if (handleAdminInvalidation(message.data)) onReset()
     }
     events.onopen = () => setStatus('connected')
     events.onerror = () => setStatus('disconnected')
@@ -1330,7 +1333,7 @@ export function useAdminRealtime(
       events.removeEventListener('reset', onReset)
       events.close()
     }
-  }, [generation])
+  }, [accessGeneration, enabled, streamKey])
 
   return { status, online }
 }

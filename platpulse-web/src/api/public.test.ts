@@ -50,6 +50,6 @@ describe('Public adapter and query namespace', () => {
     invalidatePublicResource('node', 'node-1', 9)
     invalidatePublicResource('node', 'node-1', 8)
 
-    expect(invalidate).toHaveBeenCalledTimes(5)
+    expect(invalidate).toHaveBeenCalledTimes(4)
   })
 })
