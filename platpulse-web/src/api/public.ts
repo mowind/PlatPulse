@@ -131,14 +131,20 @@ export function subscribeSiteAccessGeneration(listener: (generation: number) => 
   return () => siteAccessGenerationListeners.delete(listener)
 }
 
+/** Apply an authoritative Site Access response received through another
+ * surface, such as the Owner Admin mutation. */
+export function applySiteAccessSettings(settings: SiteAccessSettings): void {
+  siteAccessModeCache = settings.mode
+  siteAccessGenerationCache = settings.authorizationGeneration
+  setActiveAccessGeneration(settings.authorizationGeneration)
+  for (const listener of siteAccessModeListeners) listener(settings.mode)
+  for (const listener of siteAccessGenerationListeners) listener(settings.authorizationGeneration)
+}
+
 export async function refreshSiteAccessSettings(signal?: AbortSignal): Promise<SiteAccessSettings> {
   try {
     const settings = await fetchAccessSettings(signal)
-    siteAccessModeCache = settings.mode
-    siteAccessGenerationCache = settings.authorizationGeneration
-    setActiveAccessGeneration(settings.authorizationGeneration)
-    for (const listener of siteAccessModeListeners) listener(settings.mode)
-    for (const listener of siteAccessGenerationListeners) listener(settings.authorizationGeneration)
+    applySiteAccessSettings(settings)
     return settings
   } catch (caught) {
     if (caught instanceof DOMException && caught.name === 'AbortError') throw caught

@@ -10,7 +10,12 @@
 import { QueryClient, useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { requestGenerated, setActiveAccessGeneration, TransportError } from './transport'
-import type { SiteAccessMode } from './public'
+import {
+  applySiteAccessSettings,
+  resetPublicCache,
+  type SiteAccessMode,
+  type SiteAccessSettings,
+} from './public'
 import {
   adminAgentAudit,
   adminGeoStatus,
@@ -57,6 +62,8 @@ import {
   createPerson,
   diagnostics,
   getAccessSettings,
+  historyWindow,
+  historyWindowImpact,
   overview,
   peopleList,
   resetPersonPassword,
@@ -69,8 +76,10 @@ import {
   setPersonStatus,
   setVisibility,
   updateNetwork,
+  updateHistoryWindow,
   updateValidatorLink,
   type AccessSettingsResponse,
+  type HistoryWindowResponse,
   type AdminNetwork,
   type AlertRuleDetail,
   type AlertRuleSummary,
@@ -208,6 +217,8 @@ const adminKeys = {
   sessions: ['admin', 'sessions'] as const,
   audit: (filters: AuditFilters) => ['admin', 'audit', filters] as const,
   access: ['admin', 'access'] as const,
+  historyWindow: ['admin', 'history-window'] as const,
+  historyWindowImpact: (days: number) => ['admin', 'history-window', 'impact', days] as const,
   alertRules: ['admin', 'alerts', 'rules'] as const,
   alertRuleDetail: (ruleKey: string) => ['admin', 'alerts', 'rules', ruleKey] as const,
   alertIncidents: ['admin', 'alerts', 'incidents'] as const,
@@ -1076,7 +1087,7 @@ export function useAdminAudit(generation: number, filters: AuditFilters) {
 }
 
 /** Owner-only read of the Server-wide Site Access Mode. */
-export async function fetchAdminAccess(signal?: AbortSignal): Promise<AccessSettingsResponse> {
+export async function fetchAdminAccess(signal?: AbortSignal): Promise<SiteAccessSettings> {
   const response = await requestAdmin(
     () => getAccessSettings({ signal }),
     'Unable to load Site Access Mode',
@@ -1086,7 +1097,7 @@ export async function fetchAdminAccess(signal?: AbortSignal): Promise<AccessSett
 
 function normalizeAccessSettings(
   response: AccessSettingsResponse,
-): AccessSettingsResponse {
+): SiteAccessSettings {
   return {
     mode: response.mode === 'public' || response.mode === 'private' ? response.mode : 'private',
     authorizationGeneration: response.authorizationGeneration ?? 0,
@@ -1098,6 +1109,63 @@ export function useAdminAccess(generation: number) {
     queryKey: [...adminKeys.access, generation],
     queryFn: ({ signal }) => fetchAdminAccess(signal),
   })
+}
+
+/** Owner-only global Block History window. */
+export async function fetchAdminHistoryWindow(
+  signal?: AbortSignal,
+): Promise<HistoryWindowResponse> {
+  return requestAdmin(
+    () => historyWindow({ signal }),
+    'Unable to load the History Window',
+  )
+}
+
+export function useAdminHistoryWindow(generation: number) {
+  return useQuery({
+    queryKey: [...adminKeys.historyWindow, generation],
+    queryFn: ({ signal }) => fetchAdminHistoryWindow(signal),
+  })
+}
+
+/** Read-only impact preview for the global Block History window. */
+export function useHistoryWindowImpact(generation: number, days: number, csrfToken: string) {
+  return useQuery({
+    queryKey: [...adminKeys.historyWindowImpact(days), generation],
+    queryFn: ({ signal }) =>
+      requestAdmin(
+        () =>
+          historyWindowImpact({
+            body: { windowDays: days },
+            headers: { 'X-CSRF-Token': csrfToken },
+            signal,
+          }),
+        'Unable to preview the History Window consequences',
+      ),
+    enabled: days >= 0 && csrfToken.length > 0,
+  })
+}
+
+/** Update the global History Window after an explicit UI confirmation. */
+export async function updateHistoryWindowEntry(
+  windowDays: number,
+  csrfToken: string,
+): Promise<{ window: HistoryWindowResponse; auditEventId: number }> {
+  try {
+    const response = await requestAdmin(
+      () =>
+        updateHistoryWindow({
+          body: { windowDays, confirmed: true },
+          headers: { 'X-CSRF-Token': csrfToken },
+        }),
+      'Unable to update the History Window',
+    )
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    return response
+  } catch (error) {
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    throw error
+  }
 }
 
 /** Change Site Access Mode. The Server requires explicit confirmation,
@@ -1116,7 +1184,10 @@ export async function updateAccessSettings(
     mode === 'public' ? 'Unable to make Home Public' : 'Unable to make Home Private',
   )
   void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
-  return normalizeAccessSettings(response)
+  const settings = normalizeAccessSettings(response)
+  applySiteAccessSettings(settings)
+  resetPublicCache(settings.authorizationGeneration)
+  return settings
 }
 
 export type RealtimeStatus = 'connecting' | 'connected' | 'disconnected'
@@ -1151,7 +1222,9 @@ function invalidateAdminResource(resource: string, resourceId?: string): void {
       case 'operations':
         return [adminKeys.overview, adminKeys.operationsRoot]
       case 'retention':
-        return [adminKeys.retention]
+        return [adminKeys.retention, adminKeys.historyWindow]
+      case 'history-window':
+        return [adminKeys.historyWindow, adminKeys.retention]
       case 'backups':
         return [adminKeys.backups]
       case 'doctor':

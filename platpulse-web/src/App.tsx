@@ -44,6 +44,8 @@ import AdminRestore from './pages/AdminRestore'
 import AdminBackupCreate from './pages/AdminBackupCreate'
 import AdminBackupDetail from './pages/AdminBackup'
 import AdminDoctor from './pages/AdminDoctor'
+import AdminHistoryWindow from './pages/AdminHistoryWindow'
+import AdminSiteAccess from './pages/AdminSiteAccess'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import { ensureSiteAccessModeKnown, subscribeSiteAccessMode } from './api/public'
 import HomeDashboard from './components/HomeDashboard'
@@ -185,6 +187,8 @@ const router = createBrowserRouter([
       { path: 'validators', element: <AdminValidators /> },
       { path: 'validators/:validatorId', element: <AdminValidatorDetailPage /> },
       { path: 'access/people', element: <AdminPeople /> },
+      { path: 'site-access', element: <AdminSiteAccess /> },
+      { path: 'history-window', element: <AdminHistoryWindow /> },
       { path: 'access/sessions', element: <AdminSessions /> },
       { path: 'access/audit', element: <AdminAudit /> },
       { path: 'alerts/rules', element: <AdminAlertRulesList /> },

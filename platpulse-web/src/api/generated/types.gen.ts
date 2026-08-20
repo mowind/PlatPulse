@@ -675,6 +675,42 @@ export type GeoStatusDiagnostic = {
     state: string;
 };
 
+export type HistoryWindowImpact = {
+    estimatedRows?: number | null;
+    maxDays: number;
+    minDays: number;
+    notes: Array<string>;
+    windowDays: number;
+};
+
+export type HistoryWindowImpactRequest = {
+    windowDays: number;
+};
+
+export type HistoryWindowMutationResponse = {
+    auditEventId: number;
+    window: HistoryWindowResponse;
+};
+
+/**
+ * The MVP global Block History window. This is backed by the raw Block
+ * Summary retention policy; the dedicated DTO keeps the public Admin seam
+ * aligned with the product contract instead of exposing retention families.
+ */
+export type HistoryWindowResponse = {
+    defaultDays: number;
+    maxDays: number;
+    minDays: number;
+    updatedAt: string;
+    updatedBy?: string | null;
+    windowDays: number;
+};
+
+export type HistoryWindowUpdateRequest = {
+    confirmed: boolean;
+    windowDays: number;
+};
+
 export type HostComponentDiagnostic = {
     attempted_at?: string | null;
     component: string;
@@ -2640,6 +2676,68 @@ export type AdminGeoStatusResponses = {
 };
 
 export type AdminGeoStatusResponse = AdminGeoStatusResponses[keyof AdminGeoStatusResponses];
+
+export type HistoryWindowData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/history-window';
+};
+
+export type HistoryWindowErrors = {
+    403: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type HistoryWindowError = HistoryWindowErrors[keyof HistoryWindowErrors];
+
+export type HistoryWindowResponses = {
+    200: HistoryWindowResponse;
+};
+
+export type HistoryWindowResponse2 = HistoryWindowResponses[keyof HistoryWindowResponses];
+
+export type UpdateHistoryWindowData = {
+    body: HistoryWindowUpdateRequest;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/history-window';
+};
+
+export type UpdateHistoryWindowErrors = {
+    400: ApiErrorBody;
+    403: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type UpdateHistoryWindowError = UpdateHistoryWindowErrors[keyof UpdateHistoryWindowErrors];
+
+export type UpdateHistoryWindowResponses = {
+    200: HistoryWindowMutationResponse;
+};
+
+export type UpdateHistoryWindowResponse = UpdateHistoryWindowResponses[keyof UpdateHistoryWindowResponses];
+
+export type HistoryWindowImpactData = {
+    body: HistoryWindowImpactRequest;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/history-window/impact';
+};
+
+export type HistoryWindowImpactErrors = {
+    400: ApiErrorBody;
+    403: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type HistoryWindowImpactError = HistoryWindowImpactErrors[keyof HistoryWindowImpactErrors];
+
+export type HistoryWindowImpactResponses = {
+    200: HistoryWindowImpact;
+};
+
+export type HistoryWindowImpactResponse = HistoryWindowImpactResponses[keyof HistoryWindowImpactResponses];
 
 export type AdminNetworksData = {
     body?: never;

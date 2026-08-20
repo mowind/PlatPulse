@@ -194,14 +194,16 @@ pub(crate) async fn set_visibility(
             "server database is unavailable",
         );
     }
-    let audit = serde_json::json!({"visibility": body.visibility});
-    if crate::auth::insert_audit_event(
+    let before_audit = serde_json::json!({ "visibility": previous });
+    let after_audit = serde_json::json!({ "visibility": body.visibility });
+    if crate::auth::insert_audit_change(
         &mut *tx,
         Some(&principal.0.user_id),
         "node_visibility_changed",
         "node",
         &node_id,
-        Some(&audit),
+        Some(&before_audit),
+        Some(&after_audit),
     )
     .await
     .is_err()
@@ -214,7 +216,6 @@ pub(crate) async fn set_visibility(
             "server database is unavailable",
         );
     }
-    let _ = previous;
     let revision = changed_at.bytes().fold(0_u64, |acc, byte| {
         acc.wrapping_mul(31).wrapping_add(byte as u64)
     });
@@ -360,17 +361,16 @@ pub(crate) async fn set_node_metadata(
             "server database is unavailable",
         );
     }
-    let audit = serde_json::json!({
-        "display_name": body.display_name,
-        "previous_display_name": previous,
-    });
-    if crate::auth::insert_audit_event(
+    let before_audit = serde_json::json!({ "display_name": previous });
+    let after_audit = serde_json::json!({ "display_name": body.display_name });
+    if crate::auth::insert_audit_change(
         &mut *tx,
         Some(&principal.0.user_id),
         "node_metadata_changed",
         "node",
         &node_id,
-        Some(&audit),
+        Some(&before_audit),
+        Some(&after_audit),
     )
     .await
     .is_err()
@@ -3066,8 +3066,21 @@ async fn admin_node_history(
             );
         }
     }
-    let cutoff = crate::auth::format_rfc3339(crate::retention::raw_block_summary_cutoff(
+    let raw_retention_days =
+        match crate::retention::raw_block_summary_retention_days(state.db().pool()).await {
+            Ok(days) => days,
+            Err(_) => {
+                return mutation_error(
+                    &request_id.0,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "server database is unavailable",
+                );
+            }
+        };
+    let cutoff = crate::auth::format_rfc3339(crate::retention::family_cutoff(
         crate::auth::now_utc(),
+        raw_retention_days,
     ));
     let oldest_raw = sqlx::query_scalar::<_, Option<String>>(
         "SELECT MIN(accepted_at) FROM block_summaries WHERE node_id=?",
@@ -3106,8 +3119,9 @@ async fn admin_node_history(
     let has_expired_raw = oldest_raw.as_ref().is_some_and(|value| value < &cutoff);
     let availability = (has_expired_raw || (oldest_raw.is_none() && has_history))
         .then(|| "unavailable".to_owned());
-    let rows = sqlx::query_as::<_, AdminHistoryRow>("SELECT block_number, block_timestamp_ms, transaction_count, source, coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, CASE WHEN protocol_proposer_kind = 'verified' THEN protocol_proposer_identity ELSE NULL END, attribution_reason, observed_at, from_height, to_height, gap_kind, gap_reason, divergence_kind, divergence_reason, divergence_retained_hash, divergence_observed_hash, divergence_observed_at FROM (SELECT block_number, block_timestamp_ms, transaction_count, 'summary', coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, protocol_proposer_kind, protocol_proposer_identity, attribution_reason, observed_at, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL FROM block_summaries WHERE node_id = ? UNION ALL SELECT NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, created_at, from_height, to_height, kind, reason, NULL, NULL, NULL, NULL, NULL FROM block_history_gaps WHERE node_id = ? UNION ALL SELECT NULL, NULL, NULL, 'divergence', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, retained_observed_at, height, height, NULL, NULL, 'chain_divergence', reason, retained_block_hash, observed_block_hash, observed_at FROM chain_divergence_observations WHERE node_id = ?) WHERE (? IS NULL OR COALESCE(block_number, to_height) >= ?) AND (? IS NULL OR COALESCE(block_number, from_height) <= ?) ORDER BY COALESCE(block_number, from_height) DESC LIMIT ?")
+    let rows = sqlx::query_as::<_, AdminHistoryRow>("SELECT block_number, block_timestamp_ms, transaction_count, source, coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, CASE WHEN protocol_proposer_kind = 'verified' THEN protocol_proposer_identity ELSE NULL END, attribution_reason, observed_at, from_height, to_height, gap_kind, gap_reason, divergence_kind, divergence_reason, divergence_retained_hash, divergence_observed_hash, divergence_observed_at FROM (SELECT block_number, block_timestamp_ms, transaction_count, 'summary', coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, protocol_proposer_kind, protocol_proposer_identity, attribution_reason, observed_at, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL FROM block_summaries WHERE node_id = ? AND accepted_at >= ? UNION ALL SELECT NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, created_at, from_height, to_height, kind, reason, NULL, NULL, NULL, NULL, NULL FROM block_history_gaps WHERE node_id = ? UNION ALL SELECT NULL, NULL, NULL, 'divergence', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, retained_observed_at, height, height, NULL, NULL, 'chain_divergence', reason, retained_block_hash, observed_block_hash, observed_at FROM chain_divergence_observations WHERE node_id = ?) WHERE (? IS NULL OR COALESCE(block_number, to_height) >= ?) AND (? IS NULL OR COALESCE(block_number, from_height) <= ?) ORDER BY COALESCE(block_number, from_height) DESC LIMIT ?")
         .bind(&node_id)
+        .bind(&cutoff)
         .bind(&node_id)
         .bind(&node_id)
         .bind(from)
@@ -3177,7 +3191,7 @@ async fn admin_node_history(
             .collect::<Vec<_>>(),
         availability,
         aggregate_supported: crate::retention::RAW_BLOCK_HISTORY_AGGREGATES_SUPPORTED,
-        raw_retention_days: crate::retention::RAW_BLOCK_SUMMARY_RETENTION_DAYS,
+        raw_retention_days,
     })
     .into_response()
 }
@@ -3723,29 +3737,28 @@ pub(crate) async fn update_network(
             "server database is unavailable",
         );
     }
-    let audit = serde_json::json!({
-        "before": {
-            "display_name": current_name,
-            "genesis_hash": current_genesis,
-            "chain_id": current_chain,
-            "p2p_network_id": current_p2p,
-            "address_hrp": current_hrp,
-        },
-        "after": {
-            "display_name": next_name,
-            "genesis_hash": next_genesis,
-            "chain_id": next_chain,
-            "p2p_network_id": next_p2p,
-            "address_hrp": next_hrp,
-        },
+    let before_audit = serde_json::json!({
+        "display_name": current_name,
+        "genesis_hash": current_genesis,
+        "chain_id": current_chain,
+        "p2p_network_id": current_p2p,
+        "address_hrp": current_hrp,
     });
-    if crate::auth::insert_audit_event(
+    let after_audit = serde_json::json!({
+        "display_name": next_name,
+        "genesis_hash": next_genesis,
+        "chain_id": next_chain,
+        "p2p_network_id": next_p2p,
+        "address_hrp": next_hrp,
+    });
+    if crate::auth::insert_audit_change(
         &mut *tx,
         Some(&principal.0.user_id),
         "network_updated",
         "network",
         &network_key,
-        Some(&audit),
+        Some(&before_audit),
+        Some(&after_audit),
     )
     .await
     .is_err()
@@ -4811,6 +4824,15 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(visibility, "public");
+        let (before, after, actor): (String, String, String) = sqlx::query_as(
+            "SELECT before_json, after_json, actor_user_id FROM audit_events WHERE event_kind = 'node_visibility_changed'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert!(before.contains("private"));
+        assert!(after.contains("public"));
+        assert_eq!(actor, "owner");
     }
 
     #[tokio::test]
@@ -6202,14 +6224,11 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(audit.0, "network_updated");
-        assert!(
-            audit.1.is_empty(),
-            "before_json stays unused by the audit helper"
-        );
+        assert!(audit.1.contains("PlatON Mainnet"));
+        assert!(audit.1.contains("210425"));
         assert!(audit.2.contains("PlatON Mainnet"));
         assert!(audit.2.contains("PlatON Mainnet v2"));
-        assert!(audit.2.contains("\"before\""));
-        assert!(audit.2.contains("\"after\""));
+        assert!(audit.2.contains("210425"));
         // The registered Node list is unchanged by a Registry edit.
         let count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE network_key = 'mainnet'")

@@ -124,6 +124,363 @@ pub struct RetentionPolicyMutationResponse {
     pub audit_event_id: i64,
 }
 
+/// The MVP global Block History window. This is backed by the raw Block
+/// Summary retention policy; the dedicated DTO keeps the public Admin seam
+/// aligned with the product contract instead of exposing retention families.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryWindowResponse {
+    pub window_days: i64,
+    pub default_days: i64,
+    pub min_days: i64,
+    pub max_days: i64,
+    pub updated_at: String,
+    pub updated_by: Option<String>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryWindowUpdateRequest {
+    pub window_days: i64,
+    pub confirmed: bool,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryWindowImpactRequest {
+    pub window_days: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryWindowImpact {
+    pub window_days: i64,
+    pub estimated_rows: Option<i64>,
+    pub min_days: i64,
+    pub max_days: i64,
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryWindowMutationResponse {
+    pub window: HistoryWindowResponse,
+    pub audit_event_id: i64,
+}
+
+fn history_window_response(policy: crate::retention::PolicyRow) -> HistoryWindowResponse {
+    let catalog = crate::retention::catalog_family(crate::retention::FAMILY_RAW_BLOCK_SUMMARY)
+        .expect("raw Block Summary retention policy is catalogued");
+    HistoryWindowResponse {
+        window_days: policy.retention_days,
+        default_days: catalog.default_days,
+        min_days: policy.min_days,
+        max_days: policy.max_days,
+        updated_at: policy.updated_at,
+        updated_by: policy.updated_by,
+    }
+}
+
+/// Read the single global Block History window used by Home and Admin.
+#[utoipa::path(
+    get,
+    path = "/api/admin/v1/history-window",
+    tag = "admin",
+    responses((status = 200, body = HistoryWindowResponse), (status = 403, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
+)]
+pub(crate) async fn history_window(
+    State(state): State<AppState>,
+    Extension(_principal): Extension<AuthenticatedSession>,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    if crate::retention::ensure_seeded(state.db().pool())
+        .await
+        .is_err()
+    {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "Server database is unavailable",
+        );
+    }
+    match crate::retention::list_policies(state.db().pool()).await {
+        Ok(policies) => policies
+            .into_iter()
+            .find(|policy| policy.family == crate::retention::FAMILY_RAW_BLOCK_SUMMARY)
+            .map(history_window_response)
+            .map(|window| Json(window).into_response())
+            .unwrap_or_else(|| {
+                mutation_error(
+                    &request_id.0,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "history window is not configured",
+                )
+            }),
+        Err(_) => mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "Server database is unavailable",
+        ),
+    }
+}
+
+/// Preview the bounded cleanup consequence for a proposed global window.
+#[utoipa::path(
+    post,
+    path = "/api/admin/v1/history-window/impact",
+    tag = "admin",
+    request_body = HistoryWindowImpactRequest,
+    responses((status = 200, body = HistoryWindowImpact), (status = 400, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
+)]
+pub(crate) async fn history_window_impact(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Extension(principal): Extension<AuthenticatedSession>,
+    Extension(request_id): Extension<RequestId>,
+    Json(request): Json<HistoryWindowImpactRequest>,
+) -> Response {
+    if let Some(response) = mutation_guard(&headers, &principal, state.auth(), &request_id, true) {
+        return response;
+    }
+    let family = crate::retention::FAMILY_RAW_BLOCK_SUMMARY;
+    if let Err(message) = crate::retention::validate_policy_days(family, request.window_days) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiErrorBody::with_fields_message(
+                "history_window_out_of_bounds",
+                message,
+                &request_id.0,
+                vec!["windowDays".to_owned()],
+            )),
+        )
+            .into_response();
+    }
+    let estimated_rows = match crate::retention::estimate_impact(
+        state.db().pool(),
+        family,
+        request.window_days,
+        crate::auth::now_utc(),
+    )
+    .await
+    {
+        Ok((rows, unsupported)) => (!unsupported).then_some(rows),
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Server database is unavailable",
+            );
+        }
+    };
+    let catalog =
+        crate::retention::catalog_family(family).expect("raw Block Summary is catalogued");
+    Json(HistoryWindowImpact {
+        window_days: request.window_days,
+        estimated_rows,
+        min_days: catalog.min_days,
+        max_days: catalog.max_days,
+        notes: vec![
+            "shortening removes expired Block Summaries asynchronously".to_owned(),
+            "lengthening cannot recover deleted or missed history".to_owned(),
+        ],
+    })
+    .into_response()
+}
+
+/// Update the global Block History window. Confirmation is explicit and the
+/// existing retention transaction supplies atomic old/new Audit state.
+#[utoipa::path(
+    put,
+    path = "/api/admin/v1/history-window",
+    tag = "admin",
+    request_body = HistoryWindowUpdateRequest,
+    responses((status = 200, body = HistoryWindowMutationResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
+)]
+pub(crate) async fn update_history_window(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Extension(principal): Extension<AuthenticatedSession>,
+    Extension(request_id): Extension<RequestId>,
+    Json(request): Json<HistoryWindowUpdateRequest>,
+) -> Response {
+    if let Some(response) = mutation_guard(&headers, &principal, state.auth(), &request_id, true) {
+        return response;
+    }
+    if crate::retention::ensure_seeded(state.db().pool())
+        .await
+        .is_err()
+    {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "Server database is unavailable",
+        );
+    }
+    if !request.confirmed {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiErrorBody::with_fields(
+                "confirmation_required",
+                "changing the history window requires confirmation",
+                &request_id.0,
+                vec!["confirmed".to_owned()],
+            )),
+        )
+            .into_response();
+    }
+    let family = crate::retention::FAMILY_RAW_BLOCK_SUMMARY;
+    if let Err(message) = crate::retention::validate_policy_days(family, request.window_days) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiErrorBody::with_fields_message(
+                "history_window_out_of_bounds",
+                message,
+                &request_id.0,
+                vec!["windowDays".to_owned()],
+            )),
+        )
+            .into_response();
+    }
+    let mut tx = match state.db().pool().begin().await {
+        Ok(tx) => tx,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Server database is unavailable",
+            );
+        }
+    };
+    let before_days = match sqlx::query_scalar::<_, i64>(
+        "SELECT retention_days FROM retention_policies WHERE family = ?",
+    )
+    .bind(family)
+    .fetch_optional(&mut *tx)
+    .await
+    {
+        Ok(Some(days)) => days,
+        Ok(None) => {
+            let _ = tx.rollback().await;
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "history window is not configured",
+            );
+        }
+        Err(_) => {
+            let _ = tx.rollback().await;
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Server database is unavailable",
+            );
+        }
+    };
+    let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+    if sqlx::query(
+        "UPDATE retention_policies SET retention_days = ?, enabled = 1, updated_at = ?, updated_by = ? WHERE family = ?",
+    )
+    .bind(request.window_days)
+    .bind(&now)
+    .bind(&principal.0.user_id)
+    .bind(family)
+    .execute(&mut *tx)
+    .await
+    .is_err()
+    {
+        let _ = tx.rollback().await;
+        return mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "Server database is unavailable",
+        );
+    }
+    if crate::auth::insert_audit_change(
+        &mut *tx,
+        Some(&principal.0.user_id),
+        "history_window_updated",
+        "history_window",
+        "global",
+        Some(&serde_json::json!({ "windowDays": before_days })),
+        Some(&serde_json::json!({ "windowDays": request.window_days })),
+    )
+    .await
+    .is_err()
+    {
+        let _ = tx.rollback().await;
+        return mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "Server database is unavailable",
+        );
+    }
+    let audit_event_id = match sqlx::query_scalar::<_, i64>("SELECT last_insert_rowid()")
+        .fetch_one(&mut *tx)
+        .await
+    {
+        Ok(value) => value,
+        Err(_) => {
+            let _ = tx.rollback().await;
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Server database is unavailable",
+            );
+        }
+    };
+    if tx.commit().await.is_err() {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "Server database is unavailable",
+        );
+    }
+    state
+        .admin_realtime()
+        .publish("retention", None::<String>, audit_event_id as u64);
+    state
+        .public_realtime()
+        .publish("collection", None::<String>, audit_event_id as u64);
+    match crate::retention::list_policies(state.db().pool()).await {
+        Ok(policies) => policies
+            .into_iter()
+            .find(|policy| policy.family == family)
+            .map(|policy| {
+                Json(HistoryWindowMutationResponse {
+                    window: history_window_response(policy),
+                    audit_event_id,
+                })
+                .into_response()
+            })
+            .unwrap_or_else(|| {
+                mutation_error(
+                    &request_id.0,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "history window is not configured",
+                )
+            }),
+        Err(_) => mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "Server database is unavailable",
+        ),
+    }
+}
+
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RetentionRunRequest {
@@ -1556,6 +1913,14 @@ pub fn router() -> Router<AppState> {
             "/operations/{operation_id}/cancel",
             axum::routing::post(cancel_operation),
         )
+        .route(
+            "/history-window",
+            get(history_window).put(update_history_window),
+        )
+        .route(
+            "/history-window/impact",
+            axum::routing::post(history_window_impact),
+        )
         .route("/retention", get(retention_overview))
         .route("/retention/impact", axum::routing::post(retention_impact))
         .route(
@@ -1753,6 +2118,80 @@ mod tests {
             Extension(request_id()),
             Json(RetentionPolicyUpdateRequest {
                 retention_days: 999,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn history_window_is_bounded_confirmed_and_audited() {
+        let (_dir, state) = test_state().await;
+        let response = history_window(
+            State(state.clone()),
+            Extension(session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["windowDays"], 7);
+        assert_eq!(body["defaultDays"], 7);
+        assert_eq!(body["minDays"], 1);
+        assert_eq!(body["maxDays"], 30);
+
+        let response = update_history_window(
+            State(state.clone()),
+            mutation_headers(),
+            Extension(session()),
+            Extension(request_id()),
+            Json(HistoryWindowUpdateRequest {
+                window_days: 14,
+                confirmed: true,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["window"]["windowDays"], 14);
+        assert!(body["auditEventId"].as_i64().unwrap() > 0);
+
+        let stored: i64 = sqlx::query_scalar(
+            "SELECT retention_days FROM retention_policies WHERE family = 'raw_block_summary'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(stored, 14);
+        let audit: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM audit_events WHERE event_kind = 'history_window_updated' AND target_id = 'global'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(audit, 1);
+
+        let response = update_history_window(
+            State(state.clone()),
+            mutation_headers(),
+            Extension(session()),
+            Extension(request_id()),
+            Json(HistoryWindowUpdateRequest {
+                window_days: 31,
+                confirmed: true,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let response = update_history_window(
+            State(state),
+            mutation_headers(),
+            Extension(session()),
+            Extension(request_id()),
+            Json(HistoryWindowUpdateRequest {
+                window_days: 15,
+                confirmed: false,
             }),
         )
         .await;

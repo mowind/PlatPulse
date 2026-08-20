@@ -26,7 +26,9 @@ use sqlx::FromRow;
 use subtle::ConstantTimeEq;
 use thiserror::Error;
 
-use crate::auth::{format_rfc3339, insert_audit_event, now_utc, parse_rfc3339};
+use crate::auth::{
+    format_rfc3339, insert_audit_change, insert_audit_event, now_utc, parse_rfc3339,
+};
 use crate::database::ServerDatabase;
 use crate::secrets::Pepper;
 
@@ -758,18 +760,23 @@ pub async fn rotate_agent_credential(
     .await?;
 
     let overlap_hours = (overlap.as_secs() / 3600) as i64;
+    let before = serde_json::json!({
+        "active_credential_ids": valid.clone(),
+        "revoke_previous": revoke_previous,
+    });
     let after = serde_json::json!({
         "credential_id": credential_id,
         "overlap_hours": overlap_hours,
-        "revoked_previous_ids": revoked_previous_ids,
-        "overlap_credential_ids": overlap_credential_ids,
+        "revoked_previous_ids": revoked_previous_ids.clone(),
+        "overlap_credential_ids": overlap_credential_ids.clone(),
     });
-    insert_audit_event(
+    insert_audit_change(
         &mut *transaction,
         actor,
         "agent_credential_rotated",
         "agent",
         agent_id,
+        Some(&before),
         Some(&after),
     )
     .await?;
@@ -847,16 +854,18 @@ pub async fn revoke_agent_credential(
             RevokeError::NotFound
         });
     }
+    let before = serde_json::json!({ "revoked_at": null });
     let after = serde_json::json!({
         "credential_id": credential_id,
         "revoked_at": now_text,
     });
-    insert_audit_event(
+    insert_audit_change(
         &mut *transaction,
         actor,
         "agent_credential_revoked",
         "agent",
         agent_id,
+        Some(&before),
         Some(&after),
     )
     .await?;
@@ -1440,14 +1449,17 @@ mod tests {
         );
 
         // Audit carries only ids and instants, never secret material.
-        let audit: Vec<Option<String>> = sqlx::query_scalar(
-            "SELECT after_json FROM audit_events WHERE event_kind = 'agent_credential_rotated'",
+        let audit: Vec<(Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT before_json, after_json FROM audit_events WHERE event_kind = 'agent_credential_rotated'",
         )
         .fetch_all(db.pool())
         .await
         .unwrap();
-        for after in audit {
+        for (before, after) in audit {
+            let before = before.unwrap_or_default();
             let body = after.unwrap_or_default();
+            assert!(before.contains("active_credential_ids"));
+            assert!(body.contains("credential_id"));
             assert!(
                 !body.contains(AGENT_CREDENTIAL_PREFIX) && !body.contains(&enrolled.credential),
                 "rotation audit must be redacted"
@@ -1506,14 +1518,16 @@ mod tests {
             RevokeError::NotFound
         );
 
-        let audit: Vec<Option<String>> = sqlx::query_scalar(
-            "SELECT after_json FROM audit_events WHERE event_kind = 'agent_credential_revoked'",
+        let audit: Vec<(Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT before_json, after_json FROM audit_events WHERE event_kind = 'agent_credential_revoked'",
         )
         .fetch_all(db.pool())
         .await
         .unwrap();
         assert_eq!(audit.len(), 1);
-        let body = audit[0].clone().unwrap_or_default();
+        let before = audit[0].0.clone().unwrap_or_default();
+        let body = audit[0].1.clone().unwrap_or_default();
+        assert!(before.contains("revoked_at"));
         assert!(
             !body.contains(AGENT_CREDENTIAL_PREFIX),
             "revoke audit must be redacted"

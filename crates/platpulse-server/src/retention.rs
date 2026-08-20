@@ -178,6 +178,19 @@ pub fn raw_block_summary_cutoff(now: time::OffsetDateTime) -> time::OffsetDateTi
     family_cutoff(now, RAW_BLOCK_SUMMARY_RETENTION_DAYS)
 }
 
+/// Read the current global Block History window. The constant remains the
+/// bootstrap/default fallback for pre-policy fixtures; live Server cleanup
+/// always uses the persisted Owner setting.
+pub async fn raw_block_summary_retention_days(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT retention_days FROM retention_policies WHERE family = ?",
+    )
+    .bind(FAMILY_RAW_BLOCK_SUMMARY)
+    .fetch_optional(pool)
+    .await?
+    .unwrap_or(RAW_BLOCK_SUMMARY_RETENTION_DAYS))
+}
+
 /// Delete at most one bounded batch of expired raw summaries.
 ///
 /// The query is intentionally one short SQLite statement: repeated startup or
@@ -188,7 +201,8 @@ pub async fn cleanup_raw_block_summaries(
     pool: &SqlitePool,
     now: time::OffsetDateTime,
 ) -> Result<u64, sqlx::Error> {
-    let cutoff = crate::auth::format_rfc3339(raw_block_summary_cutoff(now));
+    let retention_days = raw_block_summary_retention_days(pool).await?;
+    let cutoff = crate::auth::format_rfc3339(family_cutoff(now, retention_days));
     let result = sqlx::query(
         "DELETE FROM block_summaries WHERE rowid IN (SELECT rowid FROM block_summaries WHERE accepted_at < ? ORDER BY accepted_at, node_id, block_number LIMIT ?)",
     )

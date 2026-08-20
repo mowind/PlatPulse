@@ -185,6 +185,9 @@ export default function AdminLayout() {
           <NavLink to="/admin/data/retention" end onClick={closeNav}>
             Retention
           </NavLink>
+          <NavLink to="/admin/history-window" end onClick={closeNav}>
+            History Window
+          </NavLink>
           <NavLink to="/admin/data/backups" end onClick={closeNav}>
             Backups
           </NavLink>
@@ -197,6 +200,9 @@ export default function AdminLayout() {
           <p className="admin-nav-label">Access</p>
           <NavLink to="/admin/access/people" end onClick={closeNav}>
             People
+          </NavLink>
+          <NavLink to="/admin/site-access" end onClick={closeNav}>
+            Site Access
           </NavLink>
           <NavLink to="/admin/access/sessions" end onClick={closeNav}>
             Sessions

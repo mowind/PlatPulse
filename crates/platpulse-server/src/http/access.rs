@@ -911,13 +911,19 @@ pub(crate) async fn revoke_session(
             return Ok(RevokeOutcome::AlreadyRevoked);
         }
         crate::auth::bump_authorization_generation(&mut tx).await?;
-        let after = serde_json::json!({ "username": username, "sessionId": session_id });
-        crate::auth::insert_audit_event(
+        let before = serde_json::json!({ "revokedAt": null });
+        let after = serde_json::json!({
+            "username": username,
+            "sessionId": session_id,
+            "revokedAt": revoked_at,
+        });
+        crate::auth::insert_audit_change(
             &mut *tx,
             Some(&principal.0.user_id),
             "session_revoked",
             "session",
             &session_id,
+            Some(&before),
             Some(&after),
         )
         .await?;
@@ -1009,14 +1015,19 @@ pub(crate) async fn revoke_other_sessions(
         if count > 0 {
             crate::auth::bump_authorization_generation(&mut tx).await?;
         }
-        let after =
-            serde_json::json!({ "username": principal.0.username, "revokedCount": count });
-        crate::auth::insert_audit_event(
+        let before = serde_json::json!({ "activeOtherSessionCount": count });
+        let after = serde_json::json!({
+            "username": principal.0.username,
+            "revokedCount": count,
+            "activeOtherSessionCount": 0,
+        });
+        crate::auth::insert_audit_change(
             &mut *tx,
             Some(&principal.0.user_id),
             "sessions_revoked",
             "session",
             &principal.0.session_id,
+            Some(&before),
             Some(&after),
         )
         .await?;
@@ -1718,6 +1729,16 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(audit, 1, "only the successful revoke is audited");
+        let (before, after, actor): (String, String, String) = sqlx::query_as(
+            "SELECT before_json, after_json, actor_user_id FROM audit_events WHERE event_kind = 'session_revoked'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert!(before.contains("revokedAt"));
+        assert!(after.contains("revokedAt"));
+        assert!(after.contains("victim-session"));
+        assert_eq!(actor, user_id);
     }
 
     #[tokio::test]
