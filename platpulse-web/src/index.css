@@ -1,11 +1,11 @@
-/* PlatPulse WebUI design system — production port of the accepted
- * prototype look (prototype/phase2-operations-loop @ 58d6f9c, design
- * authority docs/design/webui.md §11 and decision log).
+/* PlatPulse WebUI design system — production visual language derived from
+ * the accepted design direction (design authority docs/design/webui.md §11
+ * and decision log; exploratory branches are evidence only).
  *
  * All page/component class names are production contracts; this sheet
- * styles them with the prototype palette, typography, shell, and shared
- * component vocabulary. Behavior (mobile-first, responsive tables, admin
- * drawer, focus, reduced motion, overflow guards) is preserved.
+ * defines the palette, typography, shell, and shared component vocabulary.
+ * Behavior (mobile-first, responsive tables, admin drawer, focus, reduced
+ * motion, overflow guards) is preserved.
  */
 
 /* ---------------------------------------------------------------------------

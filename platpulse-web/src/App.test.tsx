@@ -213,8 +213,20 @@ describe('App shell with private Home', () => {
 
     render(<App />)
     await screen.findByRole('heading', { level: 1, name: 'Home' })
+    expect(screen.queryByRole('navigation', { name: 'Prototype variants' })).toBeNull()
+
+    for (const variant of ['signal-stack', 'mission-control', 'evidence-ledger']) {
+      await act(async () => {
+        window.history.pushState({}, '', `/?variant=${variant}`)
+        window.dispatchEvent(new PopStateEvent('popstate'))
+        await Promise.resolve()
+      })
+      expect(screen.getByRole('heading', { level: 1, name: 'Home' })).toBeTruthy()
+      expect(screen.queryByRole('navigation', { name: 'Prototype variants' })).toBeNull()
+    }
+
     await act(async () => {
-      window.history.pushState({}, '', '/nodes/node-1')
+      window.history.pushState({}, '', '/nodes/node-1?variant=signal-stack')
       window.dispatchEvent(new PopStateEvent('popstate'))
       await Promise.resolve()
     })
@@ -237,6 +249,17 @@ describe('App shell with private Home', () => {
     expect(screen.getAllByText('Unsupported').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Disabled').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Stale').length).toBeGreaterThan(0)
+    expect(screen.queryByRole('navigation', { name: 'Prototype variants' })).toBeNull()
+
+    for (const variant of ['mission-control', 'evidence-ledger']) {
+      await act(async () => {
+        window.history.pushState({}, '', `/nodes/node-1?variant=${variant}`)
+        window.dispatchEvent(new PopStateEvent('popstate'))
+        await Promise.resolve()
+      })
+      expect(screen.getByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
+      expect(screen.queryByRole('navigation', { name: 'Prototype variants' })).toBeNull()
+    }
 
     const createObjectUrl = vi.fn(() => 'blob:public-history')
     const revokeObjectUrl = vi.fn()

@@ -485,9 +485,16 @@ The UI keeps collection state, freshness state, value state, and authorization s
 - Status uses text plus icon, shape, or an equivalent explanation. Focus rings remain visible against the dark shell. Reduced motion removes non-essential transitions and does not remove state information.
 - Export reports success through the browser download flow and reports a safe task-level error without leaking internal paths or response bodies.
 
-### Prototype disposition
+### Exploration disposition and production boundary
 
-The three throwaway variants (Signal stack, Mission control, Evidence ledger) are exploration evidence only. Once the production contract and focused acceptance coverage are merged, the development-only variant switcher and prototype route branch should be removed in a separate cleanup change. Production modules must not import or depend on prototype modules, query parameters, or reference images.
+The three throwaway variants (Signal stack, Mission control, Evidence ledger)
+remain historical exploration evidence only. Issue #89 completed the cleanup:
+the production WebUI contains no variant switcher, prototype route branch, or
+prototype-only module, and historical `variant` query parameters do not alter
+the production Home or Node Detail routes. The untracked Nezha reference
+images remain local evidence and are not bundled, imported, or referenced by
+runtime code. The accepted production contract and its routed regression
+coverage are the only supported Home and Node Detail implementation.
 
 ### Production seam and test intent
 
@@ -555,5 +562,6 @@ A page is ready for production implementation only when:
 | MVP scope convergence: Komari-like Home/Admin separation, no Admin duplicate Node Detail, Server-only bounded Block History, no History Gap/Backfill, report-level Receipt, Peer Count only | Confirmed design review; see `docs/design/platpulse.md` |
 | Site-level access mode (Komari-like), Owner-only principals, per-Node visibility removed | Confirmed design review; see `docs/design/platpulse.md` |
 | Accepted Home / Node Detail visual direction, responsive baseline, public-data contract, and production test seam | Issue #75 and accepted branch `prototype/home-node-detail` |
+| Prototype cleanup and production-only route boundary | Issue #89 |
 
 Changes to a settled contract require a new decision record and must update the affected `PAGE-*`, `PATTERN-*`, and `SCN-*` references together. OpenAPI or Server policy changes do not silently change WebUI semantics; they require an explicit design review when the user-visible contract changes.
