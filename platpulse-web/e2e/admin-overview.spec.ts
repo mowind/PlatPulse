@@ -107,13 +107,13 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
 
   test('browser offline is reported as You are offline and recovers', async ({ page }) => {
     await openOverview(page)
-    await expect(page.getByText('Current')).toBeVisible({ timeout: 15_000 })
+    await expect(page.locator('.realtime-notice').getByText('Current', { exact: true })).toBeVisible({ timeout: 15_000 })
 
     await page.context().setOffline(true)
     await expect(page.getByText('You are offline')).toBeVisible()
 
     await page.context().setOffline(false)
-    await expect(page.getByText('Current')).toBeVisible({ timeout: 15_000 })
+    await expect(page.locator('.realtime-notice').getByText('Current', { exact: true })).toBeVisible({ timeout: 15_000 })
     await expectNoHorizontalOverflow(page)
   })
 
@@ -150,6 +150,8 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
     await page.keyboard.press('Tab')
     await expect(page.getByRole('link', { name: 'Networks' })).toBeFocused()
     await page.keyboard.press('Tab')
+    await expect(page.getByRole('link', { name: 'Validators' })).toBeFocused()
+    await page.keyboard.press('Tab')
     await expect(page.getByRole('link', { name: 'Alert Rules' })).toBeFocused()
     await page.keyboard.press('Tab')
     await expect(page.getByRole('link', { name: 'Incidents' })).toBeFocused()
@@ -168,6 +170,8 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
     await page.keyboard.press('Tab')
     await expect(page.getByRole('link', { name: 'Retention' })).toBeFocused()
     await page.keyboard.press('Tab')
+    await expect(page.getByRole('link', { name: 'History Window' })).toBeFocused()
+    await page.keyboard.press('Tab')
     await expect(page.getByRole('link', { name: 'Backups' })).toBeFocused()
     await page.keyboard.press('Tab')
     await expect(page.getByRole('link', { name: 'Restore' })).toBeFocused()
@@ -175,6 +179,8 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
     await expect(page.getByRole('link', { name: 'Doctor' })).toBeFocused()
     await page.keyboard.press('Tab')
     await expect(page.getByRole('link', { name: 'People' })).toBeFocused()
+    await page.keyboard.press('Tab')
+    await expect(page.getByRole('link', { name: 'Site Access' })).toBeFocused()
     await page.keyboard.press('Tab')
     await expect(page.getByRole('link', { name: 'Sessions' })).toBeFocused()
     await page.keyboard.press('Tab')

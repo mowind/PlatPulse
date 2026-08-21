@@ -640,7 +640,7 @@ async fn public_validator_insights(
 ) -> Result<Vec<PublicValidatorInsight>, sqlx::Error> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     let rows = sqlx::query_as::<_, PublicValidatorRow>(
-        "SELECT v.validator_id, v.validator_node_id, v.display_name, (SELECT n2.node_id FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.visibility = 'public' AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1), (SELECT l2.role FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.visibility = 'public' AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1), i.source, i.outcome, i.provider_timestamp, i.last_good_received_at, i.rank, i.stake_amount, i.reward_amount, i.reward_rate, i.delegator_count, i.epoch, i.block_count, i.counter_state FROM validators v LEFT JOIN current_validator_insights i ON i.validator_id = v.validator_id WHERE v.network_key = ? AND EXISTS (SELECT 1 FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = v.validator_id AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.visibility = 'public' AND n.lifecycle = 'active') ORDER BY v.validator_node_id, v.validator_id",
+        "SELECT v.validator_id, v.validator_node_id, v.display_name, (SELECT n2.node_id FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.visibility = 'public' AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1) AS node_id, (SELECT l2.role FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.visibility = 'public' AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1) AS link_role, i.source, i.outcome, i.provider_timestamp, i.last_good_received_at, i.rank, i.stake_amount, i.reward_amount, i.reward_rate, i.delegator_count, i.epoch, i.block_count, i.counter_state FROM validators v LEFT JOIN current_validator_insights i ON i.validator_id = v.validator_id WHERE v.network_key = ? AND EXISTS (SELECT 1 FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = v.validator_id AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.visibility = 'public' AND n.lifecycle = 'active') ORDER BY v.validator_node_id, v.validator_id",
     )
     .bind(&now)
     .bind(&now)
@@ -2413,6 +2413,42 @@ mod tests {
         )
         .await;
         assert_eq!(retired.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn public_validator_projection_maps_link_columns_by_name() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        sqlx::query("INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES ('validator-public-test', 'mainnet', 'validator-node', 'Public Validator', ?, ?)")
+            .bind(&now)
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, valid_from, created_at, updated_at) VALUES ('link-public-test', 'node-public', 'validator-public-test', 'primary', '2026-01-01T00:00:00Z', ?, ?)")
+            .bind(&now)
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, provider_timestamp, last_attempt_received_at, last_good_received_at, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, updated_at) VALUES ('validator-public-test', 'fixture', 'success', ?, ?, ?, 1, '100', '2', '0.1', 3, 4, 5, ?)")
+            .bind(&now)
+            .bind(&now)
+            .bind(&now)
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let response = public_networks(State(state)).await;
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let validator = &value[0]["validators"][0];
+        assert_eq!(validator["nodeId"], "node-public");
+        assert_eq!(validator["linkRole"], "primary");
     }
 
     #[test]

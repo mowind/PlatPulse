@@ -122,7 +122,7 @@ export default function AdminLayout() {
   return (
     <div className="app-shell admin-shell">
       <header className="app-header admin-header">
-        <Link to="/" className="app-brand">
+        <Link to="/" className="app-brand" aria-label="PlatPulse">
           PlatPulse
         </Link>
         <nav className="app-nav" aria-label="Global">

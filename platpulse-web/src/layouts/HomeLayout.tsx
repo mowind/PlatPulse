@@ -51,6 +51,14 @@ function HomeLayoutContent() {
 
   useEffect(() => subscribeSiteAccessGeneration(setGeneration), [])
 
+  useEffect(() => {
+    // A fresh Home shell must fetch an authoritative Public Projection after
+    // returning from Admin. The Public SSE stream intentionally starts after
+    // its buffered events, so retaining this cache across the shell boundary
+    // could otherwise preserve a pre-mutation snapshot indefinitely.
+    return () => resetPublicCache(getSiteAccessGeneration() ?? 0)
+  }, [])
+
   const networksQuery = usePublicNetworks(generation, !resetting)
 
   const handleReset = useCallback(() => {
@@ -78,7 +86,7 @@ function HomeLayoutContent() {
   return (
     <div className="app-shell home-shell">
       <header className="app-header">
-        <Link to="/" className="app-brand">PlatPulse</Link>
+        <Link to="/" className="app-brand" aria-label="PlatPulse">PlatPulse</Link>
         {isOwner && <Link to="/admin" className="admin-icon-link" aria-label="Admin" title="Open Admin dashboard"><span aria-hidden="true">⚙</span></Link>}
       </header>
       <main className="app-main">

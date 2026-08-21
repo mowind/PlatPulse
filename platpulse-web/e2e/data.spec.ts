@@ -282,22 +282,23 @@ test.describe.serial('Data mutations (one run on desktop-1280)', () => {
     await page.getByLabel(/Type the confirmation phrase/).fill('create backup')
     await page.getByRole('button', { name: 'Queue backup' }).click()
     await expect(page.getByText('Succeeded').first()).toBeVisible({ timeout: 90_000 })
+    const result = await page.locator('.result-summary').textContent()
+    const filename = result?.match(/"filename"\s*:\s*"([^"]+)"/)?.[1]
+    expect(filename).toMatch(/^platpulse-[0-9a-f-]+\.db$/)
     // The dedicated high-risk route is reached through the Admin sidebar,
     // never from a generic Operation row.
     await page.getByRole('link', { name: 'Restore' }).click()
     await expect(page.getByRole('heading', { level: 1, name: 'Restore a backup' })).toBeVisible({
       timeout: 15_000,
     })
-    const artifactRow = page.getByRole('row', { name: /platpulse-.*\.db/ }).first()
-    const filename = (await artifactRow.getByText(/platpulse-.*\.db/).textContent())!
-    await page.getByLabel(filename).click()
+    await page.getByLabel(filename!).click()
     const start = page.getByRole('button', { name: 'Start Restore' })
     await expect(start).toBeDisabled()
 
     // Checksum, integrity, and schema validation are Server-computed and
     // read-only.
     await page.getByRole('button', { name: 'Validate this backup' }).click()
-    await expect(page.getByText('Pass').first()).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText('Pass', { exact: true })).toHaveCount(3, { timeout: 15_000 })
     await expect(page.getByText(/backup (\d+) \/ Server \1/)).toBeVisible()
     // A wrong typed confirmation is not enough.
     await page.getByLabel(/Type the backup file name/).fill('wrong-name.db')

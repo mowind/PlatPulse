@@ -291,8 +291,9 @@ test.describe('Anonymous Home (Guest) toggle', () => {
     await expect(page.getByRole('heading', { level: 1, name: 'People' })).toBeVisible()
 
     try {
-      await page.getByRole('button', { name: 'Enable anonymous Home' }).click()
-      await expect(page.getByText('Anonymous Home access is now enabled.')).toBeVisible()
+      page.on('dialog', (dialog) => void dialog.accept())
+      await page.getByRole('button', { name: 'Make Home Public' }).click()
+      await expect(page.getByText('Site Access Mode is now Public. Visitors can view Home without signing in.')).toBeVisible()
 
       // A fresh anonymous context can read the Public projection.
       const guest2 = await browser.newContext()
@@ -314,11 +315,14 @@ test.describe('Anonymous Home (Guest) toggle', () => {
       await expect(guestPage2.getByRole('navigation', { name: 'Admin' })).toHaveCount(0)
       await expectNoHorizontalOverflow(guestPage2)
       await guestPage2.goto('/')
+      await expect(
+        guestPage2.locator('.dashboard-live').getByText('Current', { exact: true }),
+      ).toBeVisible({ timeout: 15_000 })
 
       // Disabling closes the open Guest stream: the anonymous tab lands on
       // the login page without flashing prior data.
-      await page.getByRole('button', { name: 'Disable anonymous Home' }).click()
-      await expect(page.getByText('Anonymous Home access is now disabled.')).toBeVisible()
+      await page.getByRole('button', { name: 'Make Home Private' }).click()
+      await expect(page.getByText('Site Access Mode is now Private. Visitors must sign in.')).toBeVisible()
       await expect(guestPage2).toHaveURL(/\/login$/, { timeout: 10_000 })
       await expect(
         guestPage2.getByRole('heading', { level: 1, name: 'Sign in to PlatPulse' }),

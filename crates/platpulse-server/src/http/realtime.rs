@@ -115,6 +115,19 @@ impl RealtimeHub {
         }
     }
 
+    /// A newly opened stream has already fetched its authoritative REST
+    /// state, so it must not replay stale buffered invalidations. Only an
+    /// explicit Last-Event-ID asks for replay after a reconnect.
+    fn initial_cursor(&self, last_event_id: Option<u64>) -> u64 {
+        last_event_id.unwrap_or_else(|| {
+            self.inner
+                .state
+                .lock()
+                .expect("SSE hub mutex poisoned")
+                .next_id
+        })
+    }
+
     /// Publish an invalidation, coalescing the most recent event for the same
     /// `(resource, resource_id)` key. `resource_id = None` is a collection
     /// event and is intentionally used for Public privacy resets.
@@ -238,7 +251,7 @@ impl RealtimeHub {
     ) -> impl Stream<Item = Result<Event, Infallible>> + Send + 'static + use<> {
         let (sender, receiver) = tokio::sync::mpsc::channel(16);
         let hub = self.clone();
-        let mut cursor = last_event_id.unwrap_or(0);
+        let mut cursor = hub.initial_cursor(last_event_id);
         tokio::spawn(async move {
             let _connection = hub.connection_guard();
             loop {
@@ -306,7 +319,7 @@ impl RealtimeHub {
     ) -> impl Stream<Item = Result<Event, Infallible>> + Send + 'static + use<> {
         let (sender, receiver) = tokio::sync::mpsc::channel(16);
         let hub = self.clone();
-        let mut cursor = last_event_id.unwrap_or(0);
+        let mut cursor = hub.initial_cursor(last_event_id);
         tokio::spawn(async move {
             let _connection = hub.connection_guard();
             let mut check = tokio::time::interval(Duration::from_secs(1));
@@ -350,7 +363,7 @@ impl RealtimeHub {
     ) -> impl Stream<Item = Result<Event, Infallible>> + Send + 'static + use<> {
         let (sender, receiver) = tokio::sync::mpsc::channel(16);
         let hub = self.clone();
-        let mut cursor = last_event_id.unwrap_or(0);
+        let mut cursor = hub.initial_cursor(last_event_id);
         tokio::spawn(async move {
             let _connection = hub.connection_guard();
             let mut check = tokio::time::interval(Duration::from_secs(1));
@@ -458,7 +471,7 @@ mod tests {
     async fn shutdown_emits_reset_and_closes_stream() {
         let hub = RealtimeHub::new(4);
         hub.shutdown("server_shutdown");
-        let mut stream = Box::pin(hub.stream(None));
+        let mut stream = Box::pin(hub.stream(Some(0)));
         let item = tokio::time::timeout(Duration::from_secs(1), stream.next())
             .await
             .unwrap()
@@ -471,6 +484,29 @@ mod tests {
                 .is_none()
         );
     }
+
+    #[tokio::test]
+    async fn a_new_stream_skips_buffered_events_until_a_new_invalidation() {
+        let hub = RealtimeHub::new(4);
+        hub.publish_reset("site_access_mode", 1);
+        let mut stream = Box::pin(hub.stream(None));
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), stream.next())
+                .await
+                .is_err(),
+            "a fresh stream must not replay an old reset"
+        );
+
+        hub.publish("network", Some("mainnet"), 2);
+        let item = tokio::time::timeout(Duration::from_secs(1), stream.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let _ = item;
+    }
+
     #[test]
     fn reset_never_contains_a_resource_id() {
         let hub = RealtimeHub::new(4);

@@ -1177,6 +1177,15 @@ button {
 
 .node-history-panel .node-card {
   margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.node-history-panel .node-card > span,
+.node-history-panel .node-card > p {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .redaction-note {

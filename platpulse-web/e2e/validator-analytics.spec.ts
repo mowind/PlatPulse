@@ -8,8 +8,8 @@ test('Home and Admin show validator analytics with chart and table alternatives'
   await page.goto('/networks/platon-e2e')
   await expect(page.getByRole('heading', { level: 1, name: 'PlatON E2E Network' })).toBeVisible()
   await expect(page.getByRole('img', { name: /Daily validator rank trend/ }).first()).toBeVisible()
-  await expect(page.getByText('2026-02-01').first()).toBeVisible()
-  await expect(page.getByText('2026-03').first()).toBeVisible()
+  await expect(page.locator('.validator-daily-table td[data-label="Local date"]', { hasText: '2026-02-01' })).toBeVisible()
+  await expect(page.locator('.validator-monthly-table td[data-label="Month"]', { hasText: '2026-03' })).toBeVisible()
   await expectNoHorizontalOverflow(page)
 
   await page.goto(`/admin/validators/${VALIDATOR_ID}`)
