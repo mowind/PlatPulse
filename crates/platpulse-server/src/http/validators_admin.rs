@@ -607,6 +607,11 @@ pub(crate) async fn create_validator(
                 Some(value.validator_id.clone()),
                 revision(&value.updated_at),
             );
+            state.public_realtime().publish(
+                "network",
+                Some(value.network_key.clone()),
+                revision(&value.updated_at),
+            );
             Json(ValidatorMutationResponse {
                 validator: value,
                 request_id: request_id.0.to_string(),
@@ -751,6 +756,16 @@ pub(crate) async fn create_node_validator_link(
                 Some(value.node_id.clone()),
                 revision(&value.updated_at),
             );
+            state.public_realtime().publish(
+                "node",
+                Some(value.node_id.clone()),
+                revision(&value.updated_at),
+            );
+            state.public_realtime().publish(
+                "network",
+                Some(value.network_key.clone()),
+                revision(&value.updated_at),
+            );
             Json(ValidatorLinkMutationResponse {
                 link: value,
                 request_id: request_id.0.to_string(),
@@ -822,6 +837,16 @@ pub(crate) async fn update_validator_link(
                 Some(value.node_id.clone()),
                 revision(&value.updated_at),
             );
+            state.public_realtime().publish(
+                "node",
+                Some(value.node_id.clone()),
+                revision(&value.updated_at),
+            );
+            state.public_realtime().publish(
+                "network",
+                Some(value.network_key.clone()),
+                revision(&value.updated_at),
+            );
             Json(ValidatorLinkMutationResponse {
                 link: value,
                 request_id: request_id.0.to_string(),
@@ -889,6 +914,16 @@ pub(crate) async fn end_validator_link(
             state.admin_realtime().publish(
                 "node",
                 Some(value.node_id.clone()),
+                revision(&value.updated_at),
+            );
+            state.public_realtime().publish(
+                "node",
+                Some(value.node_id.clone()),
+                revision(&value.updated_at),
+            );
+            state.public_realtime().publish(
+                "network",
+                Some(value.network_key.clone()),
                 revision(&value.updated_at),
             );
             Json(ValidatorLinkMutationResponse {

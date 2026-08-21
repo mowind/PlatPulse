@@ -320,12 +320,13 @@ pub(crate) async fn set_node_metadata(
     };
     // `display_name` is nullable: a Node without a Server-owned name must
     // still be renameable, so the previous value is decoded as Option.
-    let before =
-        sqlx::query_scalar::<_, Option<String>>("SELECT display_name FROM nodes WHERE node_id = ?")
-            .bind(&node_id)
-            .fetch_optional(&mut *tx)
-            .await;
-    let Some(previous) = (match before {
+    let before = sqlx::query_as::<_, (Option<String>, String)>(
+        "SELECT display_name, network_key FROM nodes WHERE node_id = ?",
+    )
+    .bind(&node_id)
+    .fetch_optional(&mut *tx)
+    .await;
+    let Some((previous, network_key)) = (match before {
         Ok(value) => value,
         Err(_) => {
             return mutation_error(
@@ -394,6 +395,12 @@ pub(crate) async fn set_node_metadata(
     state
         .admin_realtime()
         .publish("node", Some(node_id.clone()), revision);
+    state
+        .public_realtime()
+        .publish("node", Some(node_id.clone()), revision);
+    state
+        .public_realtime()
+        .publish("network", Some(network_key), revision);
     Json(NodeMetadataResponse {
         node_id,
         display_name: body.display_name,
