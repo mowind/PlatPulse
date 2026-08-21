@@ -33,7 +33,7 @@ pub enum EnrollError {
     Config {
         path: PathBuf,
         #[source]
-        source: AgentConfigError,
+        source: Box<AgentConfigError>,
     },
     #[error("failed to open the agent store: {0}")]
     Store(#[from] AgentDatabaseError),

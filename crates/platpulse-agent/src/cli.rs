@@ -88,13 +88,25 @@ pub struct PersistReportArgs {
 #[derive(Debug, Error)]
 pub enum AgentCliError {
     #[error(transparent)]
-    Config(#[from] crate::config::AgentConfigError),
+    Config(#[from] Box<crate::config::AgentConfigError>),
     #[error(transparent)]
-    Enroll(#[from] EnrollError),
+    Enroll(#[from] Box<EnrollError>),
     #[error("failed to read the enrollment token from the TTY or stdin: {0}")]
     TokenInput(std::io::Error),
     #[error("collection failed: {0}")]
     Collection(String),
+}
+
+impl From<crate::config::AgentConfigError> for AgentCliError {
+    fn from(error: crate::config::AgentConfigError) -> Self {
+        Self::Config(Box::new(error))
+    }
+}
+
+impl From<EnrollError> for AgentCliError {
+    fn from(error: EnrollError) -> Self {
+        Self::Enroll(Box::new(error))
+    }
 }
 
 pub fn run_generate_node_id() {
@@ -102,11 +114,10 @@ pub fn run_generate_node_id() {
 }
 
 pub fn run_validate_config(args: &ValidateConfigArgs) -> Result<(), Box<AgentCliError>> {
-    let file =
-        AgentConfigFile::load(&args.config).map_err(|e| Box::new(AgentCliError::Config(e)))?;
+    let file = AgentConfigFile::load(&args.config).map_err(|e| Box::new(AgentCliError::from(e)))?;
     let validated = file
         .validate()
-        .map_err(|e| Box::new(AgentCliError::Config(e)))?;
+        .map_err(|e| Box::new(AgentCliError::from(e)))?;
     println!(
         "Validated {} Node(s), inventory revision {}.",
         validated.inventory.nodes.len(),
@@ -265,8 +276,8 @@ pub async fn run_enroll(args: &EnrollArgs) -> Result<(), AgentCliError> {
     let config = AgentConfig::resolve(&args.config)?;
     let token = read_enrollment_token().map_err(AgentCliError::TokenInput)?;
     if token.is_empty() {
-        return Err(AgentCliError::Enroll(EnrollError::ServerRejected(
-            "an enrollment token is required".to_owned(),
+        return Err(AgentCliError::Enroll(Box::new(
+            EnrollError::ServerRejected("an enrollment token is required".to_owned()),
         )));
     }
     let enrolled = enroll_agent(&config, &token).await?;
