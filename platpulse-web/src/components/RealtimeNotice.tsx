@@ -24,7 +24,12 @@ export function RealtimeNotice({ realtime }: { realtime: RealtimeState }) {
 
   return (
     <div className="realtime-notices" aria-live="polite">
-      <p className="realtime-notice" data-live={realtime.status === 'connected'}>
+      <p
+        className="realtime-notice"
+        data-live={realtime.status === 'connected'}
+        role="status"
+        aria-label={streamLabel}
+      >
         <StatusBadge status={streamLabel} tone={streamTone} />
         <span className="muted"> Server updates arrive as invalidations; REST data stays authoritative.</span>
       </p>

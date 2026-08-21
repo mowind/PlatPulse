@@ -315,9 +315,7 @@ test.describe('Anonymous Home (Guest) toggle', () => {
       await expect(guestPage2.getByRole('navigation', { name: 'Admin' })).toHaveCount(0)
       await expectNoHorizontalOverflow(guestPage2)
       await guestPage2.goto('/')
-      await expect(
-        guestPage2.locator('.dashboard-live').getByText('Current', { exact: true }),
-      ).toBeVisible({ timeout: 15_000 })
+      await expect(guestPage2.getByText('Current', { exact: true }).first()).toBeVisible({ timeout: 15_000 })
 
       // Disabling closes the open Guest stream: the anonymous tab lands on
       // the login page without flashing prior data.

@@ -22,6 +22,24 @@ test.describe('Admin configuration workflows (issue #86)', () => {
     await expectNoHorizontalOverflow(page)
   })
 
+  test('History Window rejects values outside the Server safety bounds', async ({ page }) => {
+    await openAdmin(page, 'History Window')
+    await expect(page.getByRole('heading', { level: 1, name: 'History Window' })).toBeVisible({ timeout: 15_000 })
+    const days = page.getByLabel('New window (days)')
+    const save = page.getByRole('button', { name: 'Save History Window' })
+    const minimum = Number(await days.getAttribute('min'))
+    const maximum = Number(await days.getAttribute('max'))
+
+    await days.fill(String(minimum - 1))
+    await expect(page.getByRole('alert')).toContainText(`Must be between ${minimum} and ${maximum} days.`)
+    await expect(save).toBeDisabled()
+
+    await days.fill(String(maximum + 1))
+    await expect(page.getByRole('alert')).toContainText(`Must be between ${minimum} and ${maximum} days.`)
+    await expect(save).toBeDisabled()
+    await expectNoHorizontalOverflow(page)
+  })
+
   test('Site Access shows the global mode and safe transition copy', async ({ page }) => {
     await openAdmin(page, 'Site Access')
     await expect(page.getByRole('heading', { level: 1, name: 'Site Access' })).toBeVisible({ timeout: 15_000 })

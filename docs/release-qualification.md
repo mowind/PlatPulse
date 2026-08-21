@@ -12,7 +12,7 @@ PlatPulse exposes no production fault-injection or remote-control API. Controlle
 
 ## Migration and recovery rehearsal
 
-Run `scripts/release-recovery-rehearsal.sh` to build the packaged Server and exercise representative schema checkpoints (1, 9, 23, 29, and 35). The rehearsal starts each fixture through the supported Server startup path, verifies forward migration and preservation of projections, Report Receipts, block history, Peer/Geo data, Validator data, Alerts/Notifications, Operations, Audit Events, and human identity/session state, then exercises online backup, checksum failure, stopped-Server restore, secret-file preservation, corrupt input, and higher-schema refusal.
+Run `scripts/release-recovery-rehearsal.sh` to build the packaged Server and exercise representative schema checkpoints (1, 9, 23, 29, 35, 36, and 37). The rehearsal starts each fixture through the supported Server startup path, verifies forward migration and preservation of projections, Report Receipts, block history, Peer/Geo data, Validator data, Site Access settings, Alerts/Notifications, Operations, Audit Events, and human identity/session state, then exercises online backup, checksum failure, stopped-Server restore, secret-file preservation, corrupt input, and higher-schema refusal.
 
 Evidence is written to `target/recovery-rehearsal/recovery-rehearsal.json` and `.md`; the fixture-only seam test is `scripts/release-recovery-rehearsal.sh --self-test`.
 

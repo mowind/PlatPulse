@@ -19,7 +19,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use tokio_stream::Stream;
 
-use crate::http::realtime::{keepalive_interval, parse_last_event_id};
+use crate::http::realtime;
 
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
@@ -44,6 +44,7 @@ use crate::validator;
 pub(crate) async fn public_events(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(query): Query<realtime::CursorQuery>,
     session: Option<Extension<AuthenticatedSession>>,
 ) -> Sse<
     axum::response::sse::KeepAliveStream<
@@ -55,7 +56,10 @@ pub(crate) async fn public_events(
         >,
     >,
 > {
-    let cursor = parse_last_event_id(headers.get("last-event-id").and_then(|v| v.to_str().ok()));
+    let cursor = realtime::parse_cursor(
+        headers.get("last-event-id").and_then(|v| v.to_str().ok()),
+        query.after.as_deref(),
+    );
     // Human sessions bind the stream to the connected role so revoke,
     // expiry, disable, and role change all close it; anonymous Guests are
     // bound to the Site Access Mode (design §13.5).
@@ -77,7 +81,7 @@ pub(crate) async fn public_events(
     };
     Sse::new(stream).keep_alive(
         KeepAlive::new()
-            .interval(keepalive_interval())
+            .interval(realtime::keepalive_interval())
             .text("keepalive"),
     )
 }

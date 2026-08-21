@@ -53,9 +53,9 @@ function HomeLayoutContent() {
 
   useEffect(() => {
     // A fresh Home shell must fetch an authoritative Public Projection after
-    // returning from Admin. The Public SSE stream intentionally starts after
-    // its buffered events, so retaining this cache across the shell boundary
-    // could otherwise preserve a pre-mutation snapshot indefinitely.
+    // returning from Admin. The first Public SSE stream starts from the REST
+    // cursor captured for that projection, so retaining this cache across the
+    // shell boundary could otherwise preserve a pre-mutation snapshot.
     return () => resetPublicCache(getSiteAccessGeneration() ?? 0)
   }, [])
 

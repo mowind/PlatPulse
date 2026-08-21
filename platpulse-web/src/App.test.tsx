@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import { adminQueryClient, resetAdminCache } from './api/admin'
 import { resetPublicCache } from './api/public'
+import { resetRealtimeCursors } from './api/transport'
 import { client } from './api/generated/client.gen'
 
 const OWNER_SESSION = {
@@ -26,7 +27,11 @@ const VIEWER_SESSION = {
 function jsonResponse(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'X-PlatPulse-Public-Realtime-Cursor': '0',
+      'X-PlatPulse-Admin-Realtime-Cursor': '0',
+    },
   })
 }
 
@@ -124,9 +129,36 @@ afterEach(() => {
   adminQueryClient.clear()
   resetAdminCache(0)
   resetPublicCache(0)
+  resetRealtimeCursors()
 })
 
 describe('App shell with private Home', () => {
+  it('hands each first SSE stream the cursor captured by its REST surface', async () => {
+    vi.stubGlobal('EventSource', FakeEventSource)
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/public/v1/access': () => jsonResponse({ mode: 'private', authorizationGeneration: 0 }, 200),
+      '/api/public/v1/networks': () => jsonResponse([], 200),
+    })
+
+    render(<App />)
+    await screen.findByRole('heading', { level: 1, name: 'Home' })
+    await waitFor(() => expect(FakeEventSource.latest?.url).toBe('/api/public/v1/events?after=0'))
+
+    await goToAdmin()
+    await screen.findByRole('heading', { level: 1, name: 'Overview' })
+    await waitFor(() => expect(FakeEventSource.latest?.url).toBe('/api/admin/v1/events?after=0'))
+
+    // Leave the module-level browser router at Home for the following shell
+    // tests; unmounting RouterProvider alone does not reset its location.
+    await act(async () => {
+      window.history.pushState({}, '', '/')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+    await screen.findByRole('heading', { level: 1, name: 'Home' })
+  })
+
   it('renders the production public Node Detail contract and switches tabs by keyboard', async () => {
     window.history.replaceState({}, '', '/')
     mockFetch({
@@ -443,7 +475,7 @@ describe('App shell with private Home', () => {
 
     render(<App />)
     await goToAdmin()
-    expect((await screen.findByRole('status')).textContent).toContain('Checking access')
+    expect(await screen.findByText(/Checking access/)).toBeTruthy()
     expect(screen.queryByRole('heading', { level: 1, name: 'Overview' })).toBeNull()
 
     resolveSession!(jsonResponse(OWNER_SESSION, 200))
@@ -537,7 +569,7 @@ describe('App shell with private Home', () => {
     })
 
     await screen.findByRole('heading', { level: 1, name: 'Sign in to PlatPulse' }, { timeout: 3000 })
-    expect(screen.getByRole('status').textContent).toContain('expired or was revoked')
+    expect(screen.getByText(/expired or was revoked/)).toBeTruthy()
     expect(screen.queryByRole('heading', { level: 1, name: 'Overview' })).toBeNull()
   })
 

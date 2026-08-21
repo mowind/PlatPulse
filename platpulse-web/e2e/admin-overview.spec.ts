@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test'
 import {
   expectNoHorizontalOverflow,
+  expectVisibleInteractiveTargets,
   loginAs,
   setPageZoom,
 } from './helpers'
@@ -107,19 +108,20 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
 
   test('browser offline is reported as You are offline and recovers', async ({ page }) => {
     await openOverview(page)
-    await expect(page.locator('.realtime-notice').getByText('Current', { exact: true })).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByRole('status', { name: /^Current/ })).toBeVisible({ timeout: 15_000 })
 
     await page.context().setOffline(true)
     await expect(page.getByText('You are offline')).toBeVisible()
 
     await page.context().setOffline(false)
-    await expect(page.locator('.realtime-notice').getByText('Current', { exact: true })).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByRole('status', { name: /^Current/ })).toBeVisible({ timeout: 15_000 })
     await expectNoHorizontalOverflow(page)
   })
 
   test('overview remains usable at 200% zoom', async ({ page }) => {
     await openOverview(page)
     await expect(page.locator('.attention-list')).toBeVisible({ timeout: 15_000 })
+    await expectVisibleInteractiveTargets(page)
 
     await setPageZoom(page, 2)
     await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()

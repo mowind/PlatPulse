@@ -1,5 +1,11 @@
 import { expect, test } from '@playwright/test'
-import { E2E_PASSWORD, expectNoHorizontalOverflow, loginAs, setPageZoom } from './helpers'
+import {
+  E2E_PASSWORD,
+  expectNoHorizontalOverflow,
+  expectVisibleInteractiveTargets,
+  loginAs,
+  setPageZoom,
+} from './helpers'
 
 test.describe('Phase 1 release-candidate vertical slice', () => {
   test('public projection isolates a private Node and Node detail works at fixed viewports', async ({ page }) => {
@@ -27,6 +33,7 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
       return rect.width < 44 || rect.height < 44 ? [element.textContent?.trim() || 'tab'] : []
     }))
     expect(undersized, 'Node tabs must be at least 44px').toEqual([])
+    await expectVisibleInteractiveTargets(page)
     await setPageZoom(page, 2)
     await expectNoHorizontalOverflow(page)
 
@@ -41,7 +48,7 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await loginAs(page)
     await page.getByRole('link', { name: 'PlatON E2E Network' }).click()
     await expect(page.getByRole('heading', { level: 1, name: 'PlatON E2E Network' })).toBeVisible()
-    const networkPeer = page.locator('.peer-insight').first()
+    const networkPeer = page.getByRole('region', { name: 'Peer insight' }).first()
     await expect(networkPeer).toContainText('Peer insight')
     await expect(networkPeer).toContainText('Current')
     await expect(networkPeer).toContainText('3')
@@ -50,10 +57,13 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expect(page.getByText('203.0.113.9')).toHaveCount(0)
     await expect(page.getByText('peer-a-inbound')).toHaveCount(0)
 
-    await page.getByRole('link', { name: 'Node A' }).click()
+    const nodeLink = page.getByRole('link', { name: 'Node A' })
+    await nodeLink.focus()
+    await expect(nodeLink).toBeFocused()
+    await page.keyboard.press('Enter')
     await expect(page.getByRole('heading', { level: 1, name: 'Node A' })).toBeVisible()
     await page.getByRole('tab', { name: 'Network' }).click()
-    const detailPeer = page.locator('.peer-insight').last()
+    const detailPeer = page.getByRole('region', { name: 'Peer insight' }).last()
     await expect(detailPeer).toContainText('Current')
     await expect(detailPeer).toContainText('Consensus')
     await expect(detailPeer).toContainText('3')
@@ -65,11 +75,11 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await loginAs(page)
     await page.getByRole('link', { name: 'PlatON E2E Network' }).click()
     await expect(page.getByRole('heading', { level: 1, name: 'PlatON E2E Network' })).toBeVisible()
-    const publicGeo = page.locator('.geo-insight').first()
+    const publicGeo = page.getByRole('region', { name: 'Peer countries' }).first()
     await expect(publicGeo).toContainText('Peer countries')
     await expect(publicGeo).toContainText('Disabled')
     await expect(publicGeo).toContainText('Country insight is Disabled by the Server')
-    await expect(page.locator('.geo-attribution')).toHaveCount(0)
+    await expect(page.getByText(/GeoLite|MaxMind/i)).toHaveCount(0)
 
     await page.getByRole('link', { name: 'Admin', exact: true }).click()
     await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
@@ -91,6 +101,7 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expect(page.getByText('platon/1.5.1')).toBeVisible()
     await expect(page.getByText('203.0.113.9')).toHaveCount(0)
     await expect(page.getByText('peer-a-inbound')).toHaveCount(0)
+    await expectVisibleInteractiveTargets(page)
     await expectNoHorizontalOverflow(page)
   })
   test('Owner diagnostics and SSE reconnect do not disturb an active form field', async ({ page }) => {
@@ -105,6 +116,41 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await page.waitForTimeout(1_100)
     await expect(nodeId).toHaveValue('0195f2a1-0014-4014-8014-000000000014')
     await expectNoHorizontalOverflow(page)
+  })
+
+  test('public history export downloads the bounded JSON representation', async ({ page }) => {
+    await loginAs(page)
+    await page.getByRole('link', { name: 'Node A' }).click()
+    await expect(page.getByRole('heading', { level: 1, name: 'Node A' })).toBeVisible({ timeout: 15_000 })
+
+    const downloadPromise = page.waitForEvent('download')
+    await page.getByRole('button', { name: 'Export public history' }).click()
+    const download = await downloadPromise
+    expect(download.suggestedFilename()).toBe('public-history.json')
+    const json = JSON.parse(await download.createReadStream().then(async (stream) => {
+      if (!stream) throw new Error('history export stream was unavailable')
+      const chunks: Buffer[] = []
+      for await (const chunk of stream) chunks.push(Buffer.from(chunk))
+      return Buffer.concat(chunks).toString('utf8')
+    })) as Array<{ nodeId?: string; height?: number }>
+    expect(json.length).toBeGreaterThan(0)
+    expect(json.every((entry) => entry.nodeId === '0195f2a1-0014-4014-8014-000000000014')).toBe(true)
+    expect(json.every((entry) => typeof entry.height === 'number')).toBe(true)
+  })
+
+  test('public history export reports a safe partial-failure state', async ({ page }) => {
+    await loginAs(page)
+    await page.goto('/nodes/0195f2a1-0014-4014-8014-000000000014')
+    await expect(page.getByRole('heading', { level: 1, name: 'Node A' })).toBeVisible({ timeout: 15_000 })
+    await page.route('**/api/public/v1/nodes/*/history/export**', (route) => route.fulfill({
+      status: 503,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: { code: 'unavailable', message: 'history export unavailable' } }),
+    }))
+
+    await page.getByRole('button', { name: 'Export public history' }).click()
+    await expect(page.getByRole('alert')).toContainText('Unable to export block history')
+    await expect(page.getByRole('button', { name: 'Export public history' })).toBeEnabled()
   })
 
   test('reduced-motion preference and keyboard login remain honored', async ({ page }) => {

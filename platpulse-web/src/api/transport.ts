@@ -1,5 +1,6 @@
 import type { ApiErrorBody } from './generated'
 import { client } from './generated/client.gen'
+import { useEffect, useState } from 'react'
 
 export type ApiErrorKind = 'domain' | 'transport'
 
@@ -29,6 +30,56 @@ export class TransportError extends Error {
 let activeAccessGeneration = 0
 let interceptorInstalled = false
 
+export type RealtimeSurface = 'public' | 'admin'
+
+const realtimeCursorHeaders: Record<RealtimeSurface, string> = {
+  public: 'X-PlatPulse-Public-Realtime-Cursor',
+  admin: 'X-PlatPulse-Admin-Realtime-Cursor',
+}
+const realtimeCursors: Record<RealtimeSurface, number | null> = {
+  public: null,
+  admin: null,
+}
+const realtimeCursorListeners: Record<RealtimeSurface, Set<(cursor: number) => void>> = {
+  public: new Set(),
+  admin: new Set(),
+}
+
+function captureRealtimeCursor(response: Response): void {
+  for (const surface of ['public', 'admin'] as const) {
+    const raw = response.headers.get(realtimeCursorHeaders[surface])
+    const cursor = raw === null ? null : Number.parseInt(raw, 10)
+    if (cursor === null || !Number.isSafeInteger(cursor) || cursor < 0) continue
+    const previous = realtimeCursors[surface]
+    if (previous !== null && cursor <= previous) continue
+    realtimeCursors[surface] = cursor
+    for (const listener of realtimeCursorListeners[surface]) listener(cursor)
+  }
+}
+
+export function getRealtimeCursor(surface: RealtimeSurface): number | null {
+  return realtimeCursors[surface]
+}
+
+export function useRealtimeCursor(surface: RealtimeSurface): number | null {
+  const [cursor, setCursor] = useState(() => getRealtimeCursor(surface))
+  useEffect(() => {
+    setCursor(getRealtimeCursor(surface))
+    const listener = (next: number) => setCursor(next)
+    realtimeCursorListeners[surface].add(listener)
+    return () => {
+      realtimeCursorListeners[surface].delete(listener)
+    }
+  }, [surface])
+  return cursor
+}
+
+/** Test seam for isolating transport state between in-process UI tests. */
+export function resetRealtimeCursors(): void {
+  realtimeCursors.public = null
+  realtimeCursors.admin = null
+}
+
 function installGenerationInterceptor(): void {
   if (interceptorInstalled) return
   interceptorInstalled = true
@@ -37,6 +88,10 @@ function installGenerationInterceptor(): void {
     const headers = new Headers(request.headers)
     headers.set('X-PlatPulse-Access-Generation', String(activeAccessGeneration))
     return new Request(request, { headers })
+  })
+  client.interceptors.response.use((response) => {
+    captureRealtimeCursor(response)
+    return response
   })
 }
 

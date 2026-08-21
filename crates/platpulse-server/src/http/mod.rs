@@ -52,6 +52,11 @@ use crate::enrollment::{
 };
 use crate::http::realtime::RealtimeHub;
 
+pub(crate) const PUBLIC_REALTIME_CURSOR_HEADER: HeaderName =
+    HeaderName::from_static("x-platpulse-public-realtime-cursor");
+pub(crate) const ADMIN_REALTIME_CURSOR_HEADER: HeaderName =
+    HeaderName::from_static("x-platpulse-admin-realtime-cursor");
+
 /// Response header every route group middleware sets so the group namespace
 /// is observable on the wire.
 pub(crate) const ROUTE_GROUP_HEADER: HeaderName =
@@ -204,6 +209,35 @@ async fn request_id_middleware(mut request: Request, next: Next) -> Response {
                 HeaderValue::from_str(&id).expect("uuid is a valid header value"),
             );
         }
+    }
+    response
+}
+
+/// Capture the route group's realtime cursor before a REST handler reads its
+/// projection. The browser uses the response cursor as the lower bound for
+/// its first SSE connection, closing the REST/SSE interleaving gap.
+async fn realtime_cursor_middleware(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let (header_name, cursor) = match request.uri().path() {
+        path if path.starts_with("/api/public/v1/") => (
+            Some(PUBLIC_REALTIME_CURSOR_HEADER),
+            Some(state.public_realtime().current_id()),
+        ),
+        path if path.starts_with("/api/admin/v1/") => (
+            Some(ADMIN_REALTIME_CURSOR_HEADER),
+            Some(state.admin_realtime().current_id()),
+        ),
+        _ => (None, None),
+    };
+    let mut response = next.run(request).await;
+    if let (Some(header_name), Some(cursor)) = (header_name, cursor) {
+        response.headers_mut().insert(
+            header_name,
+            HeaderValue::from_str(&cursor.to_string()).expect("cursor is a valid header"),
+        );
     }
     response
 }
@@ -682,6 +716,10 @@ pub fn build_app_with_native_tls(state: AppState, native_tls: bool) -> Router {
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             request_metrics_middleware,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            realtime_cursor_middleware,
         ))
         .with_state(state);
     if native_tls {
@@ -2708,6 +2746,39 @@ mod tests {
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert_eq!(body["error"]["code"], "auth_required");
         assert_eq!(body["error"]["message"], json!("authentication required"));
+    }
+
+    #[tokio::test]
+    async fn projection_responses_capture_the_route_group_realtime_cursor() {
+        let (_, _, state) = test_state().await;
+        seed_owner(&state).await;
+        state
+            .public_realtime()
+            .publish("networks", None::<String>, 0);
+        state
+            .admin_realtime()
+            .publish("overview", None::<String>, 0);
+
+        let app = build_app(state);
+        let cookie = login_cookie(app.clone())
+            .await
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        for (uri, header_name) in [
+            ("/api/public/v1/networks", &PUBLIC_REALTIME_CURSOR_HEADER),
+            ("/api/admin/v1/overview", &ADMIN_REALTIME_CURSOR_HEADER),
+        ] {
+            let request = Request::builder()
+                .uri(uri)
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap();
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{uri}");
+            assert_eq!(response.headers()[header_name], "1", "{uri}");
+        }
     }
 
     /// Enabling anonymous Home must allow anonymous GETs of the read

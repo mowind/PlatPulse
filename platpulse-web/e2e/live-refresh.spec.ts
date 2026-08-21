@@ -9,12 +9,16 @@ async function installControlledRealtime(page: Parameters<typeof loginAs>[0]) {
     class ControlledEventSource {
       static instances: ControlledEventSource[] = []
       static closed = 0
+      static opened = 0
       handlers = new Map<string, Handler[]>()
       onopen: (() => void) | null = null
       onerror: (() => void) | null = null
       constructor() {
         ControlledEventSource.instances.push(this)
-        queueMicrotask(() => this.onopen?.())
+        queueMicrotask(() => {
+          this.onopen?.()
+          ControlledEventSource.opened += 1
+        })
       }
       addEventListener(type: string, handler: Handler) {
         this.handlers.set(type, [...(this.handlers.get(type) ?? []), handler])
@@ -35,22 +39,25 @@ async function installControlledRealtime(page: Parameters<typeof loginAs>[0]) {
       for (const source of ControlledEventSource.instances) source.emit(type, data)
     }
     Object.defineProperty(browserWindow, '__realtimeClosed', { get: () => ControlledEventSource.closed })
+    Object.defineProperty(browserWindow, '__realtimeOpened', { get: () => ControlledEventSource.opened })
   })
 }
 
 test.describe('SCN-HOME-RESPONSIVE-ACCESSIBILITY / live refresh transport state', () => {
   test('announces SSE pause and browser offline separately on Home and Admin', async ({ page }) => {
-    await page.route('**/api/public/v1/events', (route) => route.abort())
-    await page.route('**/api/admin/v1/events', (route) => route.abort())
+    await page.route('**/api/public/v1/events**', (route) => route.abort())
+    await page.route('**/api/admin/v1/events**', (route) => route.abort())
     await loginAs(page)
     await expect(page.getByText('Live updates paused', { exact: true })).toBeVisible()
     await page.context().setOffline(true)
     await expect(page.getByText('You are offline', { exact: true })).toBeVisible()
     await expectNoHorizontalOverflow(page)
 
+    await page.context().setOffline(false)
     await page.getByRole('link', { name: 'Admin', exact: true }).click()
     await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
     await expect(page.getByText('Live updates paused', { exact: true })).toBeVisible()
+    await page.context().setOffline(true)
     await expect(page.getByText('You are offline', { exact: true })).toBeVisible()
     await expectNoHorizontalOverflow(page)
   })
@@ -107,6 +114,7 @@ test.describe('SCN-HOME-RESPONSIVE-ACCESSIBILITY / live refresh transport state'
     await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
     await page.goto('/admin/nodes?visibility=all&health=all')
     await expect(page.getByRole('heading', { level: 1, name: 'Nodes' })).toBeVisible()
+    await expect.poll(async () => page.evaluate(() => (window as typeof window & { __realtimeOpened: number }).__realtimeOpened)).toBeGreaterThan(0)
 
     await page.evaluate(({ nodeId }) => {
       const browserWindow = window as typeof window & { __emitRealtime: (type: string, data?: string) => void }

@@ -19,8 +19,6 @@ import time
 
 ROOT = Path(__file__).resolve().parent.parent
 MIGRATIONS = ROOT / "crates/platpulse-server/migrations"
-CURRENT = 35
-CHECKPOINTS = (1, 9, 23, 29, 35)
 NOW = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=2)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 AGENT = "0195f2a1-0001-4001-8001-000000000001"
 NODE_A = "0195f2a1-0002-4002-8002-000000000002"
@@ -32,6 +30,9 @@ class RehearsalError(RuntimeError):
 
 def migration_files():
     return [(int(p.name.split("_", 1)[0]), p) for p in sorted(MIGRATIONS.glob("*.sql"))]
+
+CURRENT = migration_files()[-1][0]
+CHECKPOINTS = (1, 9, 23, 29, 35, 36, CURRENT)
 
 def digest(path, algorithm):
     h = hashlib.new(algorithm)
@@ -199,6 +200,11 @@ def check_fixture(path, checkpoint):
         for table, label in (("validators", "Validators"), ("current_validator_insights", "Validator insights"), ("validator_ranking_history", "Validator ranking history")):
             if value(path, f"SELECT COUNT(*) FROM {table}") < 1:
                 raise RehearsalError(f"{label} was not preserved")
+    if checkpoint >= 37:
+        if value(path, "SELECT setting_value FROM server_settings WHERE setting_key='site_access_mode'") not in ("public", "private"):
+            raise RehearsalError("Site Access Mode was not preserved")
+        if value(path, "SELECT setting_value FROM server_settings WHERE setting_key='authorization_generation'") != "0":
+            raise RehearsalError("authorization generation was not preserved")
 
 def self_test():
     with tempfile.TemporaryDirectory(prefix="platpulse-recovery-") as root:
@@ -248,7 +254,7 @@ def rehearsal(server, output, skip_package):
         check_fixture(state / "server.db", checkpoint)
         evidence["scenarios"].append({"name":f"forward-migration-{checkpoint}", "status":"PASS", "detail":"migrated and preserved representative data"})
 
-    state = output / "state-35"
+    state = output / f"state-{CURRENT}"
     cfg = state / "server.toml"
     db = state / "server.db"
     pepper = (state / "pepper").read_bytes()

@@ -221,7 +221,7 @@ body {
 }
 
 .sign-out {
-  min-height: 40px;
+  min-height: 44px;
   padding: 0.4rem 0.85rem;
   color: var(--muted);
   background: transparent;
@@ -495,7 +495,11 @@ button {
 }
 
 .text-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-height: 44px;
+  min-width: 44px;
   padding: 0;
   background: transparent;
   border: 0;

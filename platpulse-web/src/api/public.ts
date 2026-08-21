@@ -17,7 +17,12 @@ import {
   type PublicNode,
   type PublicPeerHistory,
 } from './generated'
-import { requestGenerated, requestHeaders, setActiveAccessGeneration } from './transport'
+import {
+  requestGenerated,
+  requestHeaders,
+  setActiveAccessGeneration,
+  useRealtimeCursor,
+} from './transport'
 
 export type SiteAccessMode = 'public' | 'private'
 export type SiteAccessSettings = {
@@ -349,6 +354,10 @@ export function usePublicRealtime(onReset?: () => void, enabled = true, accessGe
   const [status, setStatus] = useState<RealtimeStatus>('connecting')
   const [online, setOnline] = useState(() => typeof navigator === 'undefined' ? true : navigator.onLine)
   const [streamKey, setStreamKey] = useState(0)
+  const realtimeCursor = useRealtimeCursor('public')
+  const realtimeCursorRef = useRef(realtimeCursor)
+  realtimeCursorRef.current = realtimeCursor
+  const hasRealtimeCursor = realtimeCursor !== null
   const resetCallback = useRef(onReset)
   resetCallback.current = onReset
 
@@ -364,8 +373,12 @@ export function usePublicRealtime(onReset?: () => void, enabled = true, accessGe
   }, [])
 
   useEffect(() => {
-    if (!enabled || typeof EventSource === 'undefined') return
-    const events = new EventSource('/api/public/v1/events')
+    // The first REST response captures the hub cursor before reading its
+    // projection. Wait for that snapshot before opening the first stream so
+    // a fresh shell does not replay stale buffered reset events. Events
+    // published after the REST snapshot remain replayable through `after`.
+    if (!enabled || !hasRealtimeCursor || typeof EventSource === 'undefined') return
+    const events = new EventSource(`/api/public/v1/events?after=${realtimeCursorRef.current ?? 0}`)
     const reset = () => {
       events.close()
       setStatus('connecting')
@@ -402,7 +415,7 @@ export function usePublicRealtime(onReset?: () => void, enabled = true, accessGe
       events.removeEventListener('reset', reset)
       events.close()
     }
-  }, [accessGeneration, enabled, streamKey])
+  }, [accessGeneration, enabled, hasRealtimeCursor, streamKey])
 
   return { status, online }
 }

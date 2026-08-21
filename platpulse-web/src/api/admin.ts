@@ -9,7 +9,12 @@
 
 import { QueryClient, useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
-import { requestGenerated, setActiveAccessGeneration, TransportError } from './transport'
+import {
+  requestGenerated,
+  setActiveAccessGeneration,
+  TransportError,
+  useRealtimeCursor,
+} from './transport'
 import {
   applySiteAccessSettings,
   resetPublicCache,
@@ -1309,6 +1314,10 @@ export function useAdminRealtime(
   const [online, setOnline] = useState(() =>
     typeof navigator === 'undefined' ? true : navigator.onLine,
   )
+  const realtimeCursor = useRealtimeCursor('admin')
+  const realtimeCursorRef = useRef(realtimeCursor)
+  realtimeCursorRef.current = realtimeCursor
+  const hasRealtimeCursor = realtimeCursor !== null
   const accessReset = useRef(onAccessReset)
   accessReset.current = onAccessReset
 
@@ -1331,8 +1340,11 @@ export function useAdminRealtime(
   }, [])
 
   useEffect(() => {
-    if (!enabled || typeof EventSource === 'undefined') return
-    const events = new EventSource('/api/admin/v1/events')
+    // Establish the initial REST/SSE handoff from a route-group cursor. This
+    // avoids replaying stale buffered events on a fresh Admin shell while
+    // preserving every event published after the REST snapshot.
+    if (!enabled || !hasRealtimeCursor || typeof EventSource === 'undefined') return
+    const events = new EventSource(`/api/admin/v1/events?after=${realtimeCursorRef.current ?? 0}`)
     const closeStream = () => events.close()
     adminRealtimeClosers.add(closeStream)
     // The Server sends `event: reset` only when the session is no longer
@@ -1358,7 +1370,7 @@ export function useAdminRealtime(
       events.removeEventListener('reset', onReset)
       events.close()
     }
-  }, [accessGeneration, enabled, streamKey])
+  }, [accessGeneration, enabled, hasRealtimeCursor, streamKey])
 
   return { status, online }
 }

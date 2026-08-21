@@ -220,7 +220,7 @@ describe('PAGE-ADMIN-NODE-TRANSFER (two-phase workflow)', () => {
     await screen.findByText(/Create a pending transfer to 0195f2a1…/)
     fireEvent.click(screen.getByRole('button', { name: 'Confirm transfer' }))
 
-    const success = await screen.findByRole('status')
+    const success = await screen.findByText(/Transfer 0195f2a1… is pending/)
     expect(success.textContent).toContain('Transfer 0195f2a1… is pending')
     expect(screen.getByText(/Server-authoritative, never auto-extends/)).toBeTruthy()
     expect(screen.getByText('req-1')).toBeTruthy()

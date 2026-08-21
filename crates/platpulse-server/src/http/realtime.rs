@@ -108,6 +108,18 @@ impl RealtimeHub {
             .len() as u64
     }
 
+    /// Return the hub cursor at one instant. REST handlers capture this
+    /// before querying their authoritative projection and return it to the
+    /// browser so the first SSE connection can replay anything published
+    /// during that query.
+    pub(crate) fn current_id(&self) -> u64 {
+        self.inner
+            .state
+            .lock()
+            .expect("SSE hub mutex poisoned")
+            .next_id
+    }
+
     fn connection_guard(&self) -> ConnectionGuard {
         self.inner.connections.fetch_add(1, Ordering::Relaxed);
         ConnectionGuard {
@@ -407,6 +419,18 @@ pub(crate) fn parse_last_event_id(value: Option<&str>) -> Option<u64> {
     value.and_then(|value| value.parse::<u64>().ok())
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct CursorQuery {
+    pub(crate) after: Option<String>,
+}
+
+/// An explicit Last-Event-ID wins over the first-stream URL cursor on
+/// reconnect. Malformed values are ignored so they cannot affect stream
+/// authorization or replay state.
+pub(crate) fn parse_cursor(last_event_id: Option<&str>, after: Option<&str>) -> Option<u64> {
+    parse_last_event_id(last_event_id).or_else(|| parse_last_event_id(after))
+}
+
 /// Keepalive policy shared by the Public and Admin streams.
 pub(crate) fn keepalive_interval() -> Duration {
     Duration::from_secs(15)
@@ -466,6 +490,28 @@ mod tests {
         let event = hub.next_after(&mut cursor).unwrap();
         assert_eq!(event.reset, Some(true));
         assert_eq!(event.resource_id, None);
+    }
+
+    #[test]
+    fn a_cursor_snapshot_replays_events_published_during_rest_query() {
+        let hub = RealtimeHub::new(8);
+        let cursor_at_rest_start = hub.current_id();
+
+        hub.publish("node", Some("node-a"), 1);
+
+        let mut cursor = cursor_at_rest_start;
+        let event = hub
+            .next_after(&mut cursor)
+            .expect("event after REST cursor");
+        assert_eq!(event.resource, "node");
+        assert_eq!(event.resource_id.as_deref(), Some("node-a"));
+    }
+
+    #[test]
+    fn reconnect_cursor_takes_precedence_over_after_cursor() {
+        assert_eq!(parse_cursor(Some("17"), Some("9")), Some(17));
+        assert_eq!(parse_cursor(None, Some("9")), Some(9));
+        assert_eq!(parse_cursor(None, Some("not-a-cursor")), None);
     }
     #[tokio::test]
     async fn shutdown_emits_reset_and_closes_stream() {

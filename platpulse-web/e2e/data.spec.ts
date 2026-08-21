@@ -282,8 +282,8 @@ test.describe.serial('Data mutations (one run on desktop-1280)', () => {
     await page.getByLabel(/Type the confirmation phrase/).fill('create backup')
     await page.getByRole('button', { name: 'Queue backup' }).click()
     await expect(page.getByText('Succeeded').first()).toBeVisible({ timeout: 90_000 })
-    const result = await page.locator('.result-summary').textContent()
-    const filename = result?.match(/"filename"\s*:\s*"([^"]+)"/)?.[1]
+    const backupResultSummary = await page.getByText(/"filename"\s*:\s*"/).textContent()
+    const filename = backupResultSummary?.match(/"filename"\s*:\s*"([^"]+)"/)?.[1]
     expect(filename).toMatch(/^platpulse-[0-9a-f-]+\.db$/)
     // The dedicated high-risk route is reached through the Admin sidebar,
     // never from a generic Operation row.
