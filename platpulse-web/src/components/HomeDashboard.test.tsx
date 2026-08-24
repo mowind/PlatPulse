@@ -39,7 +39,7 @@ describe('Public Home dashboard', () => {
     expect(screen.getByText('Attention').nextElementSibling?.textContent).toBe('1')
     const alphaCard = screen.getByRole('link', { name: 'Alpha' }).closest('article')
     expect(within(alphaCard!).getByText('Peer Count').nextElementSibling?.textContent).toBe('0')
-    expect(screen.getByText('Current')).toBeTruthy()
+    expect(within(alphaCard!).getByText('RPC').nextElementSibling?.textContent).toBe('Current')
   })
 
   it('filters by Network and sorts by supported operational fields', () => {

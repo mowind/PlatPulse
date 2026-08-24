@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router'
 import type { PublicNetwork, PublicNode } from '../api/generated'
 import { realtimeStreamLabel } from './RealtimeNotice'
+import { StatusBadge } from './StatusBadge'
 
 type HomeDashboardProps = {
   networks: PublicNetwork[]
@@ -97,7 +98,7 @@ export default function HomeDashboard({
       {loading || (error && !hasLastGood)
         ? null
         : visibleRecords.length === 0
-        ? <div className="dashboard-empty" role="status"><strong>No published Nodes in this view.</strong><span>Private and retired Nodes are not listed on Home.</span></div>
+        ? <div className="dashboard-empty" role="status" aria-label="Empty: no published Nodes in this view."><strong>No published Nodes in this view.</strong><span>Private and retired Nodes are not listed on Home.</span></div>
         : <div className="dashboard-node-grid" aria-label="Active Nodes">{visibleRecords.map(({ network, node }) => <HomeNodeCard key={node.nodeId} network={network} node={node} />)}</div>}
     </section>
   )
@@ -110,21 +111,21 @@ function SummaryCard({ label, value, detail, tone }: { label: string; value: num
 function HomeNodeCard({ network, node }: NodeRecord) {
   const tone = toneFor(node.health)
   const metrics = [
-    ['RPC', node.rpcState],
-    ['Sync', node.syncState],
-    ['Consensus', node.consensusState],
-    ['Process', node.processState],
-    ['Resync', node.resyncState],
-    ['Freshness', node.freshness ?? 'Unknown'],
+    ['RPC', observationLabel(node.rpcState)],
+    ['Sync', observationLabel(node.syncState)],
+    ['Consensus', observationLabel(node.consensusState)],
+    ['Process', observationLabel(node.processState)],
+    ['Resync', observationLabel(node.resyncState)],
+    ['Freshness', freshnessLabel(node.freshness)],
   ]
   return (
     <article className={`dashboard-node-card dashboard-node-card-${tone}`}>
       <header className="dashboard-node-header">
         <div className="dashboard-node-title"><span className={`dashboard-node-status dashboard-node-status-${tone}`} aria-hidden="true" /><div><h2><Link to={`/nodes/${node.nodeId}`}>{nodeLabel(node)}</Link></h2><p><Link className="dashboard-card-network" to={`/networks/${network.networkKey}`}>{network.displayName}</Link> · <span className="breakable">{node.nodeId}</span></p></div></div>
-        <span className={`dashboard-health-label dashboard-health-label-${tone}`}>{node.health}</span>
+        <StatusBadge status={healthLabel(node.health)} tone={statusTone(tone)} />
       </header>
       <p className="dashboard-health-reason">{node.healthReason}</p>
-      <dl className="dashboard-node-metrics">{metrics.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value || 'Unknown'}</dd></div>)}</dl>
+      <dl className="dashboard-node-metrics">{metrics.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
       <dl className="dashboard-observation-row">
         <Observation label="Current Head" value={formatNumber(node.currentHead)} />
         <Observation label="History Boundary" value={formatNumber(node.historicalHighWatermark)} />
@@ -133,21 +134,67 @@ function HomeNodeCard({ network, node }: NodeRecord) {
         <Observation label="Host CPU" value={node.hostCpuPercent == null ? 'Unknown' : `${node.hostCpuPercent.toFixed(1)}%`} />
         <Observation label="Network Reference" value={`${formatNumber(node.networkReferenceHead)} · ${node.networkReferenceConfidence}`} />
       </dl>
-      <footer className="dashboard-node-footer"><span>{node.resyncProgress ?? node.resyncState}</span><Link to={`/nodes/${node.nodeId}`}>Open Node Detail <span aria-hidden="true">↗</span></Link></footer>
+      <footer className="dashboard-node-footer"><span>{node.resyncProgress ?? observationLabel(node.resyncState)}</span><Link to={`/nodes/${node.nodeId}`}>Open Node Detail <span aria-hidden="true">↗</span></Link></footer>
     </article>
   )
 }
 
 function Observation({ label, value }: { label: string; value: string }) { return <div><dt>{label}</dt><dd>{value}</dd></div> }
+function statusTone(tone: ReturnType<typeof toneFor>): 'ok' | 'warning' | 'error' | 'neutral' {
+  return tone === 'good' ? 'ok' : tone === 'bad' ? 'error' : tone === 'warn' ? 'warning' : 'neutral'
+}
+
+function healthLabel(value: string): string {
+  if (value === 'healthy') return 'Healthy'
+  if (value === 'unhealthy') return 'Unhealthy'
+  return 'Unknown'
+}
+
 function nodeLabel(node: PublicNode) { return node.displayName ?? node.nodeId }
+function observationLabel(value: string | null | undefined): string {
+  switch (value) {
+    case 'ok':
+    case 'connected':
+    case 'synced':
+    case 'ready':
+    case 'running':
+    case 'idle':
+    case 'normal':
+    case 'current':
+    case 'fresh':
+    case 'active':
+      return 'Current'
+    case 'error':
+    case 'failed':
+    case 'unhealthy':
+    case 'offline':
+      return 'Error'
+    case 'stale':
+      return 'Stale'
+    case 'starting':
+    case 'connecting':
+      return 'Starting'
+    case 'disabled':
+      return 'Disabled'
+    case 'unsupported':
+      return 'Unsupported'
+    case 'empty':
+      return 'Empty'
+    default:
+      return 'Unknown'
+  }
+}
+function freshnessLabel(value: string | null | undefined): string {
+  return value === 'current' ? 'Current' : value === 'stale' ? 'Stale' : 'Unknown'
+}
 function formatNumber(value: number | null | undefined) { return value == null ? 'Unknown' : value.toLocaleString() }
 function formatPeerCount(node: PublicNode) { return node.peers?.peerCount == null ? 'Unknown' : node.peers.peerCount.toLocaleString() }
 function formatPeerObservation(node: PublicNode) {
   const peer = node.peers
   if (!peer) return 'Unknown'
-  const freshness = peer.freshness || 'Unknown'
+  const freshness = freshnessLabel(peer.freshness)
   const staleSince = peer.staleSince ? ` · stale since ${peer.staleSince}` : ''
-  return `${peer.state} · ${freshness}${staleSince}`
+  return `${observationLabel(peer.state)} · ${freshness}${staleSince}`
 }
 function isHealthy(value: string) { return value.toLowerCase() === 'healthy' }
 function healthRank(value: string) { const tone = toneFor(value); return tone === 'bad' ? 0 : tone === 'warn' ? 1 : tone === 'good' ? 2 : 3 }

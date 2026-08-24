@@ -405,6 +405,29 @@ describe('App shell with private Home', () => {
           hostCpuPercent: 42.5,
         }],
       }], 200),
+      '/api/public/v1/networks/mainnet': () => jsonResponse({
+        networkKey: 'mainnet',
+        displayName: 'Mainnet',
+        nodes: [{
+          nodeId: 'node-1',
+          displayName: 'Validator A',
+          networkKey: 'mainnet',
+          health: 'healthy',
+          healthReason: 'rpc reachable',
+          freshness: 'current',
+          rpcState: 'ok',
+          syncState: 'synced',
+          consensusState: 'current',
+          processState: 'running',
+          resyncState: 'idle',
+          currentHead: 123,
+          historicalHighWatermark: 120,
+          peers: { state: 'current', freshness: 'current', peerCount: 3 },
+        }],
+        peers: { state: 'current', freshness: 'current', peerCount: 3 },
+        geo: { state: 'disabled' },
+        validators: [],
+      }, 200),
     })
 
     render(<App />)
@@ -413,7 +436,12 @@ describe('App shell with private Home', () => {
     expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeTruthy()
     expect(await screen.findByRole('link', { name: 'Mainnet' })).toBeTruthy()
     expect(screen.getByRole('link', { name: 'Validator A' })).toBeTruthy()
-    expect(screen.getByText('healthy')).toBeTruthy()
+    expect(screen.getByText('Healthy')).toBeTruthy()
+    fireEvent.click(screen.getByRole('link', { name: 'Mainnet' }))
+    expect(await screen.findByRole('heading', { level: 1, name: 'Mainnet' })).toBeTruthy()
+    expect(screen.getByText(/NETWORK OVERVIEW/)).toBeTruthy()
+    expect(screen.getByText('PlatON Nodes')).toBeTruthy()
+    expect(screen.getByText('Network key')).toBeTruthy()
   })
 
   it('keeps the Public Node route and last-good detail during a failed live refresh', async () => {

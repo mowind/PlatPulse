@@ -24,25 +24,38 @@ export function NetworkPage() {
   const { generation, resetting, realtime } = useHomeRealtimeContext()
   const query = usePublicNetwork(networkKey, generation)
 
-  if (resetting) return <section className="page"><p role="status">Revalidating Home access…</p></section>
-  if (query.isPending) return <section className="page"><p role="status">Loading Network…</p></section>
-  if (query.error && !query.data) return <section className="page"><p role="alert" className="form-error">{query.error instanceof Error ? query.error.message : 'Unable to load Network'}</p><Link to="/">Back to Home</Link></section>
-  if (!query.data) return <section className="page"><p role="status">Network unavailable.</p><Link to="/">Back to Home</Link></section>
+  if (resetting) return <section className="page public-network-page"><p role="status">Revalidating Home access…</p></section>
+  if (query.isPending) return <section className="page public-network-page"><p role="status">Network is Starting; loading public data…</p></section>
+  if (query.error && !query.data) return <section className="page public-network-page"><p role="alert" className="form-error">Network is Error; {query.error instanceof Error ? query.error.message : 'public Network data is unavailable.'}</p><Link to="/">Back to Home</Link></section>
+  if (!query.data) return <section className="page public-network-page"><p role="status">Network is Unknown; public data is unavailable.</p><Link to="/">Back to Home</Link></section>
 
   const network = query.data
-  return <section className="page">
-    <RealtimeNotice realtime={realtime} />
+  return <section className="page public-network-page" aria-labelledby="network-page-title">
+    <header className="public-page-heading">
+      <div>
+        <p className="dashboard-kicker">PLATPULSE / NETWORK OVERVIEW</p>
+        <h1 id="network-page-title">{network.displayName}</h1>
+        <p className="public-page-subtitle">Active PlatON Nodes and network-level public observations.</p>
+      </div>
+      <RealtimeNotice realtime={realtime} />
+    </header>
     {query.isRefetchError && <p role="status" className="form-error">Network refresh failed; showing the last successful Network data.</p>}
-    <p><Link to="/">← All Networks</Link></p>
-    <h1>{network.displayName}</h1>
-    <p className="muted">{network.networkKey}</p>
-    <PeerInsight insight={network.peers} />
-    <GeoInsight insight={network.geo} />
+    <div className="public-network-context">
+      <Link to="/">← All Networks</Link>
+      <span>Network key <code>{network.networkKey}</code></span>
+    </div>
+    <div className="public-network-insights">
+      <PeerInsight insight={network.peers} />
+      <GeoInsight insight={network.geo} />
+    </div>
     {network.validators.length > 0 && <>
-      <h2>Validators</h2>
+      <h2 className="public-section-heading">Validators</h2>
       <div className="node-grid">{network.validators.map((validator) => <ValidatorCard key={validator.validatorId} validator={validator} generation={generation} />)}</div>
     </>}
-    <div className="node-grid">{network.nodes.map((node) => <NodeCard node={node} key={node.nodeId} />)}</div>
+    <h2 className="public-section-heading">PlatON Nodes</h2>
+    {network.nodes.length === 0
+      ? <p className="public-empty-state" role="status">Empty: no Active Nodes are published for this Network.</p>
+      : <div className="node-grid">{network.nodes.map((node) => <NodeCard node={node} key={node.nodeId} />)}</div>}
   </section>
 }
 
@@ -225,8 +238,10 @@ function nodeComponentStateLabel(value: string | null | undefined): string {
     case 'stale': return 'Stale'
     case 'error':
     case 'unhealthy': return 'Error'
-    case 'stopped': return 'Stopped'
-    case 'resyncing': return 'Resyncing'
+    case 'stopped':
+      return 'Error'
+    case 'resyncing':
+      return 'Starting'
     case 'disabled': return 'Disabled'
     case 'unsupported': return 'Unsupported'
     case 'empty': return 'Empty'
@@ -234,8 +249,8 @@ function nodeComponentStateLabel(value: string | null | undefined): string {
     case 'Error': return 'Error'
     case 'Stale': return 'Stale'
     case 'Unsupported': return 'Unsupported'
-    case 'Stopped': return 'Stopped'
-    case 'Resyncing': return 'Resyncing'
+    case 'Stopped': return 'Error'
+    case 'Resyncing': return 'Starting'
     default: return 'Unknown'
   }
 }
@@ -255,8 +270,8 @@ function nodeHealthTone(value: string): 'ok' | 'warning' | 'error' | 'neutral' {
 function stateTone(value: string | null | undefined): 'ok' | 'warning' | 'error' | 'neutral' {
   const label = nodeComponentStateLabel(value)
   if (label === 'Current') return 'ok'
-  if (label === 'Error' || label === 'Stopped') return 'error'
-  if (label === 'Stale' || label === 'Unsupported' || label === 'Resyncing') return 'warning'
+  if (label === 'Error') return 'error'
+  if (label === 'Stale' || label === 'Starting' || label === 'Unsupported') return 'warning'
   return 'neutral'
 }
 
@@ -267,7 +282,7 @@ function statusTone(value: string): 'ok' | 'warning' | 'error' | 'neutral' {
 function freshnessLabel(value: string | null | undefined): string {
   if (value === 'current') return 'Current'
   if (value === 'stale') return 'Stale'
-  if (!value || value === 'unknown') return 'Unknown'
+  if (value && value !== 'unknown') return 'Current'
   return 'Unknown'
 }
 
@@ -319,10 +334,6 @@ function HistoryCard({ block }: { block: NonNullable<ReturnType<typeof usePublic
   return <article className="node-card"><strong>Height {block.height}</strong><span> · {block.blockTimeMs == null ? 'time unknown' : new Date(block.blockTimeMs).toISOString()} · {block.transactionCount == null ? 'transactions unknown' : `${block.transactionCount} transactions`}</span><p className="muted">{detail}</p></article>
 }
 
-function Status({ value }: { value: string }) {
-  return <span className={`status status-${value}`}>{value}</span>
-}
-
 function NodeCard({ node }: { node: PublicNode }) {
-  return <article className="node-card"><h2><Link to={`/nodes/${node.nodeId}`}>{node.displayName ?? node.nodeId}</Link></h2><p><Status value={node.health} /> {node.healthReason}</p><p className="muted">RPC: {node.rpcState} · Sync: {node.syncState} · Consensus: {node.consensusState} · Head: {node.currentHead ?? 'unknown'} · History: {node.historicalHighWatermark ?? 'unknown'} · {node.resyncState}</p>{node.validator && <ValidatorInsight insight={node.validator} compact />}<PeerInsight insight={node.peers} compact /></article>
+  return <article className="node-card"><h2><Link to={`/nodes/${node.nodeId}`}>{node.displayName ?? node.nodeId}</Link></h2><p><StatusBadge status={nodeHealthLabel(node.health)} tone={nodeHealthTone(node.health)} /> {node.healthReason}</p><p className="muted">RPC: {nodeComponentStateLabel(node.rpcState)} · Sync: {nodeComponentStateLabel(node.syncState)} · Consensus: {nodeComponentStateLabel(node.consensusState)} · Head: {node.currentHead == null ? 'Unknown' : node.currentHead.toLocaleString()} · History: {node.historicalHighWatermark == null ? 'Unknown' : node.historicalHighWatermark.toLocaleString()} · {nodeComponentStateLabel(node.resyncState)}</p>{node.validator && <ValidatorInsight insight={node.validator} compact />}<PeerInsight insight={node.peers} compact /></article>
 }
