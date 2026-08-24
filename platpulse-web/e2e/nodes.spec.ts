@@ -16,7 +16,7 @@ async function openNodes(page: Parameters<typeof loginAs>[0]) {
   await expect(page.getByRole('heading', { level: 1, name: 'Nodes' })).toBeVisible({ timeout: 15_000 })
 }
 
-// The mutation tests toggle shared Server state (Node C visibility/name),
+// The mutation test toggles shared Server state (Node C rename),
 // so all tests in this file run serially in one worker.
 test.describe.configure({ mode: 'serial' })
 
@@ -80,7 +80,7 @@ test.describe('Owner Node inventory (PAGE-ADMIN-NODES)', () => {
     await expectNoHorizontalOverflow(page)
   })
 
-  test('Node detail shows Server-owned metadata, matched identity, and per-Node observations', async ({
+  test('Node detail shows Server-owned metadata, matched identity, and administrative diagnostics', async ({
     page,
   }) => {
     await openNodes(page)
@@ -88,9 +88,12 @@ test.describe('Owner Node inventory (PAGE-ADMIN-NODES)', () => {
     await page.getByRole('link', { name: 'Node A' }).click()
     await expect(page.getByRole('heading', { level: 1, name: /Node A/ })).toBeVisible({ timeout: 15_000 })
 
-    // Server-owned metadata: display name, visibility, lifecycle guidance.
+    // Server-owned metadata: display name and lifecycle guidance.
     await expect(page.getByRole('heading', { level: 2, name: 'Server-owned metadata' })).toBeVisible()
     await expect(page.getByText(/never pushes Endpoint or lifecycle changes/)).toBeVisible()
+    // Lifecycle is Node Inventory state on its own administrative panel.
+    await expect(page.getByRole('heading', { level: 2, name: 'Node Inventory & lifecycle' })).toBeVisible()
+    await expect(page.getByRole('link', { name: 'Open the Audit log' })).toBeVisible()
 
     // Identity disposition is typed and visible.
     await expect(page.getByRole('heading', { level: 2, name: 'Network identity' })).toBeVisible()
@@ -104,6 +107,10 @@ test.describe('Owner Node inventory (PAGE-ADMIN-NODES)', () => {
     await expect(page.getByText('admin, net, platon')).toBeVisible()
     await expect(page.getByText('Redacted RPC Endpoint')).toBeVisible()
     await expect(page.getByRole('heading', { level: 2, name: 'Per-Node observations' })).toHaveCount(0)
+    // Node Transfer, per-Node Visibility, and operation controls are absent.
+    await expect(page.getByRole('link', { name: 'Transfer ownership' })).toHaveCount(0)
+    await expect(page.getByRole('link', { name: 'Publish to Home' })).toHaveCount(0)
+    await expect(page.getByRole('link', { name: 'Make private' })).toHaveCount(0)
     await expectNoHorizontalOverflow(page)
   })
 
@@ -147,6 +154,7 @@ test.describe('Owner Node inventory (PAGE-ADMIN-NODES)', () => {
 
     await page.getByRole('link', { name: 'Node D (retired)' }).click()
     await expect(page.getByRole('heading', { level: 1, name: /Node D \(retired\)/ })).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByRole('heading', { level: 2, name: 'Node Inventory & lifecycle' })).toBeVisible({ timeout: 15_000 })
     await expect(page.getByText(/Reactivation requires declaring the same Node ID/)).toBeVisible({ timeout: 15_000 })
     await expect(page.getByText(/the Server never changes Node lifecycle remotely/)).toBeVisible({ timeout: 15_000 })
     // No lifecycle mutation is offered.

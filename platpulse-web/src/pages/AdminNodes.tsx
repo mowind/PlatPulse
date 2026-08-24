@@ -3,7 +3,6 @@ import { Link, useParams, useSearchParams } from 'react-router'
 import {
   AdminApiError,
   updateNodeMetadata,
-  updateNodeVisibility,
   useAdminNodeDetail,
   useAdminNodes,
 } from '../api/admin'
@@ -19,16 +18,16 @@ import type {
   AdminNodeListItem,
   NodeIdentityStatus,
 } from '../api/generated'
-import { transferBadge } from './AdminNodeTransfer'
 
 /**
- * PAGE-ADMIN-NODES, PAGE-ADMIN-NODE-DETAIL, and PAGE-ADMIN-NODE-VISIBILITY
- * (design §4.3, §8.2): Owner-only Node inventory and management. Every row
+ * PAGE-ADMIN-NODES and PAGE-ADMIN-NODE-DETAIL (design §4.3, §8.2; webui.md
+ * §8.2): Owner-only Node inventory and administrative diagnostics. Every row
  * is one Node — block, transaction, consensus, peer, and error state never
- * merge across Nodes. Server-owned metadata (display name, visibility,
- * lifecycle guidance) stays distinct from Agent-observed identity and
- * endpoint configuration; lifecycle follows the latest Agent Inventory and
- * the Server never remotely changes a Node.
+ * merge across Nodes. Server-owned metadata (display name, lifecycle
+ * guidance) stays distinct from Agent-observed identity and endpoint
+ * configuration; lifecycle follows the latest Agent Inventory, the Server
+ * never remotely changes a Node, and the Admin detail never reproduces
+ * Home's full observation view.
  */
 
 function shortId(value: string): string {
@@ -37,6 +36,11 @@ function shortId(value: string): string {
 
 function healthTone(health: string): 'ok' | 'error' | 'neutral' {
   return health === 'healthy' ? 'ok' : health === 'unhealthy' ? 'error' : 'neutral'
+}
+
+/** Server freshness dimension → badge tone (current/stale/unknown). */
+function freshnessTone(freshness: string): 'ok' | 'warning' | 'neutral' {
+  return freshness === 'current' ? 'ok' : freshness === 'stale' ? 'warning' : 'neutral'
 }
 
 function identityBadge(identity: NodeIdentityStatus): {
@@ -57,6 +61,15 @@ function visibilityBadge(visibility: string): { label: string; tone: 'ok' | 'neu
   return visibility === 'public'
     ? { label: 'Public', tone: 'ok' }
     : { label: 'Private', tone: 'neutral' }
+}
+
+/** Lifecycle follows the latest Agent Inventory with a fixed vocabulary:
+ * only `active` and `retired` are known states — anything else renders as
+ * Unknown rather than as a definite lifecycle (preserve-last-good). */
+function lifecycleLabel(lifecycle: string): { label: string; tone: 'ok' | 'neutral' } {
+  if (lifecycle === 'active') return { label: 'Active', tone: 'ok' }
+  if (lifecycle === 'retired') return { label: 'Retired', tone: 'neutral' }
+  return { label: 'Unknown', tone: 'neutral' }
 }
 
 /** URL-state filters (design §10.1: back/forward preserves them). */
@@ -336,7 +349,7 @@ function NodeListRow({
   const identity = identityBadge(node.identity)
   const visibility = visibilityBadge(node.visibility)
   const health = healthTone(node.health)
-  const freshness = node.freshness === 'current' ? 'ok' : node.freshness === 'stale' ? 'warning' : 'neutral'
+  const freshness = freshnessTone(node.freshness)
   const detailId = `node-inventory-detail-${node.node_id}`
   const collapseOnEscape = (event: KeyboardEvent<HTMLElement>) => {
     if (event.key === 'Escape' && expanded) onToggle()
@@ -392,7 +405,7 @@ function NodeListRow({
           <small className="muted">{node.resync_state}</small>
         </td>
         <td data-label="Lifecycle">
-          <span>{node.lifecycle === 'retired' ? 'Retired' : 'Active'}</span>
+          <span>{lifecycleLabel(node.lifecycle).label}</span>
           <small className="muted">rev {node.inventory_revision}</small>
         </td>
       </tr>
@@ -434,8 +447,12 @@ function NodeListRow({
   )
 }
 
-/** PAGE-ADMIN-NODE-DETAIL: Server-owned metadata, lifecycle guidance,
- * identity disposition, and the independent observation dimensions. */
+/** PAGE-ADMIN-NODE-DETAIL (webui.md §8.2): administrative diagnostics only —
+ * Server-owned display name with its audited mutation flow, Node
+ * Inventory/lifecycle, freshness summary, safe Agent/Network context, and
+ * redacted RPC Endpoint diagnostics. Home-style observation cards, Block
+ * History, Peer History, Node Transfer, per-Node Visibility, and
+ * remote-operation controls are not part of this page. */
 export function AdminNodeDetail() {
   const { nodeId = '' } = useParams()
   const { generation, status } = useAuth()
@@ -462,6 +479,8 @@ export function AdminNodeDetail() {
           All Nodes
         </Link>{' '}
         · Server-owned metadata stays distinct from Agent-observed identity and configuration.
+        Lifecycle is Node Inventory state and is never confused with Agent liveness or Node
+        health.
       </p>
       {!query.data && (
         <>
@@ -489,24 +508,10 @@ export function AdminNodeDetail() {
               successful Node values.
             </p>
           )}
-          <div className="page-actions">
-            <Link
-              className="primary-action"
-              to={`/admin/nodes/${query.data.node_id}/visibility`}
-            >
-              {query.data.visibility === 'public' ? 'Make private' : 'Publish to Home'}
-            </Link>
-            <Link
-              className="secondary-action"
-              to={`/admin/nodes/${query.data.node_id}/transfer`}
-            >
-              Transfer ownership
-            </Link>
-          </div>
           <MetadataPanel node={query.data} csrfToken={csrfToken} />
+          <LifecyclePanel node={query.data} />
           <HealthPanel node={query.data} />
           <IdentityPanel node={query.data} />
-          <TransferPanel node={query.data} />
           <RpcDiagnosticsPanel node={query.data} />
         </>
       )}
@@ -549,7 +554,6 @@ function MetadataPanel({
     <article className="panel">
       <div className="panel-heading">
         <h2>Server-owned metadata</h2>
-        <span className="panel-count">{node.visibility === 'public' ? 'Public' : 'Private'}</span>
       </div>
       <dl className="detail-list">
         <div>
@@ -606,7 +610,7 @@ function MetadataPanel({
               </form>
             ) : (
               <>
-                {node.display_name ?? 'None — Agent ID is shown'}
+                {displayName.trim() || 'None — Agent ID is shown'}
                 <button
                   type="button"
                   className="text-action"
@@ -629,29 +633,6 @@ function MetadataPanel({
           </dd>
         </div>
         <div>
-          <dt>Visibility</dt>
-          <dd>
-            <StatusBadge
-              status={node.visibility === 'public' ? 'Public' : 'Private'}
-              tone={node.visibility === 'public' ? 'ok' : 'neutral'}
-            />{' '}
-            <Link className="text-action" to={`/admin/nodes/${node.node_id}/visibility`}>
-              Change
-            </Link>
-          </dd>
-        </div>
-        <div>
-          <dt>Lifecycle</dt>
-          <dd>
-            {node.lifecycle === 'retired' ? 'Retired' : 'Active'}{' '}
-            <span className="muted">· Inventory revision {node.inventory_revision}</span>
-          </dd>
-        </div>
-        <div>
-          <dt>Lifecycle guidance</dt>
-          <dd>{node.lifecycle_guidance}</dd>
-        </div>
-        <div>
           <dt>Agent</dt>
           <dd>
             <Link className="text-action" to={`/admin/agents/${node.agent_id}`}>
@@ -668,74 +649,54 @@ function MetadataPanel({
           <dt>Metadata updated</dt>
           <dd>{formatObservedAt(node.updated_at)}</dd>
         </div>
+        <div>
+          <dt>Audit trail</dt>
+          <dd>
+            Every mutation is recorded in the Server Audit log.{' '}
+            <Link className="text-action" to="/admin/access/audit">
+              Open the Audit log
+            </Link>
+          </dd>
+        </div>
       </dl>
     </article>
   )
 }
 
-/** Two-phase ownership handover summary (issue #46): the latest typed
- * outcome with a direct link to PAGE-ADMIN-NODE-TRANSFER. */
-function TransferPanel({ node }: { node: AdminNodeDetailDto }) {
-  const transfer = node.transfer
-  const badge = transfer ? transferBadge(transfer.status) : null
+/** Node Inventory/lifecycle (CONTEXT.md: Active Node / Retired Node): the
+ * latest valid Agent Inventory decides Active vs Retired. This is Server
+ * state separate from Agent liveness, Node health, and freshness; retiring
+ * is a local configuration fact, never a remote Server action. */
+function LifecyclePanel({ node }: { node: AdminNodeDetailDto }) {
+  const lifecycle = lifecycleLabel(node.lifecycle)
+  const known = lifecycle.label === 'Active' || lifecycle.label === 'Retired'
   return (
     <article className="panel">
       <div className="panel-heading">
-        <h2>Node transfer</h2>
-        {badge ? <StatusBadge status={badge.label} tone={badge.tone} /> : null}
+        <h2>Node Inventory &amp; lifecycle</h2>
+        <StatusBadge status={lifecycle.label} tone={lifecycle.tone} />
       </div>
       <p className="panel-copy">
-        Transfer is two-phase: the source Agent stays authoritative until the target Agent
-        declares the same Node ID with a validated Network Identity. The Server never pushes
-        an RPC Endpoint or command to either Agent.
+        Lifecycle follows the latest valid Agent Inventory: Active Nodes are eligible for
+        current observation and alert evaluation, while Retired Nodes keep their identity
+        and history but no longer receive live observation alerts. This is not Agent
+        liveness or Node health, and the Server never changes lifecycle remotely.
       </p>
-      {badge === null ? (
-        <p className="panel-state">
-          <StatusBadge status="Empty" tone="ok" /> This Node has never been transferred.{' '}
-          <Link className="text-action" to={`/admin/nodes/${node.node_id}/transfer`}>
-            Transfer ownership
-          </Link>
-        </p>
-      ) : (
-        <dl className="detail-list">
-          <div>
-            <dt>Status</dt>
-            <dd>{badge.label}</dd>
-          </div>
-          <div>
-            <dt>Source → Target</dt>
-            <dd>
-              {shortId(transfer!.source_agent_id)} → {shortId(transfer!.target_agent_id)}
-            </dd>
-          </div>
-          <div>
-            <dt>Expires</dt>
-            <dd>{formatObservedAt(transfer!.expires_at)}</dd>
-          </div>
-          {transfer!.mismatched_fields.length > 0 && (
-            <div>
-              <dt>Mismatched fields</dt>
-              <dd>{transfer!.mismatched_fields.join(', ')}</dd>
-            </div>
-          )}
-          <div>
-            <dt>Workflow</dt>
-            <dd>
-              <Link className="text-action" to={`/admin/nodes/${node.node_id}/transfer`}>
-                Open the transfer workflow
-              </Link>
-            </dd>
-          </div>
-        </dl>
-      )}
-      {transfer?.status === 'identity_mismatch' && (
-        <p className="panel-state" role="alert">
-          <StatusBadge status="Identity mismatch" tone="error" /> Blocking diagnostic: the
-          target-declared Network Identity contradicts the registered Network. Ownership stays
-          with the source Agent and new history is not merged into the registered Network
-          history.
-        </p>
-      )}
+      <dl className="detail-list">
+        <div>
+          <dt>Lifecycle</dt>
+          <dd>
+            {lifecycle.label}{' '}
+            <span className="muted">· Inventory revision {node.inventory_revision}</span>
+          </dd>
+        </div>
+        <div>
+          <dt>Lifecycle guidance</dt>
+          <dd>
+            {known ? node.lifecycle_guidance : 'No lifecycle disposition has been observed yet.'}
+          </dd>
+        </div>
+      </dl>
     </article>
   )
 }
@@ -744,15 +705,19 @@ function HealthPanel({ node }: { node: AdminNodeDetailDto }) {
   return (
     <article className="panel">
       <div className="panel-heading">
-        <h2>Health summary</h2>
+        <h2>Health and freshness</h2>
         <StatusBadge status={node.health} tone={healthTone(node.health)} />
       </div>
       <p className="panel-copy">
         {node.health_reason}. Freshness:{' '}
         <StatusBadge
           status={freshnessLabel(node.freshness)}
-          tone={node.freshness === 'current' ? 'ok' : node.freshness === 'stale' ? 'warning' : 'neutral'}
+          tone={freshnessTone(node.freshness)}
         />
+      </p>
+      <p className="panel-copy">
+        Health and freshness are separate Server dimensions: Unknown, Stale, and Error are
+        never shown as Healthy or as zero values.
       </p>
       <dl className="detail-list">
         <div>
@@ -899,98 +864,4 @@ function RpcDiagnosticsPanel({ node }: { node: AdminNodeDetailDto }) {
   )
 }
 
-/** PAGE-ADMIN-NODE-VISIBILITY: dedicated public/private workflow with
- * confirmation copy and authoritative refetch after success. */
-export function AdminNodeVisibility() {
-  const { nodeId = '' } = useParams()
-  const { generation, status } = useAuth()
-  const query = useAdminNodeDetail(generation, nodeId)
-  const csrfToken = status.state === 'authenticated' ? status.csrfToken : ''
-  const [message, setMessage] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-  const node = query.data
-  const visibility = visibilityBadge(node?.visibility ?? 'private')
 
-  async function confirm() {
-    if (!node) return
-    setMessage(null)
-    setError(null)
-    setBusy(true)
-    try {
-      const target = node.visibility === 'public' ? 'private' : 'public'
-      const result = await updateNodeVisibility(node.node_id, target, csrfToken)
-      setMessage(
-        `${node.display_name ?? node.node_id} is now ${result.visibility}. The Home projection was updated.`,
-      )
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Unable to update visibility')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  if (query.isError && query.error instanceof AdminApiError && query.error.code === 'not_found') {
-    return (
-      <section className="page">
-        <h1>Node unavailable</h1>
-        <p>This Node is no longer available.</p>
-      </section>
-    )
-  }
-  return (
-    <section className="page">
-      <h1>Node visibility</h1>
-      <p className="muted">
-        <Link className="text-action" to={`/admin/nodes/${nodeId}`}>
-          Back to Node detail
-        </Link>
-      </p>
-      {!node && query.isPending && (
-        <p className="panel-state" role="status">
-          <StatusBadge status="Starting" tone="neutral" /> Loading Node state…
-        </p>
-      )}
-      {node && (
-        <article className="panel">
-          <div className="panel-heading">
-            <h2>{node.display_name ?? node.node_id}</h2>
-            <StatusBadge status={visibility.label} tone={visibility.tone} />
-          </div>
-          <p className="panel-copy">
-            {node.visibility === 'public'
-              ? 'This Node is currently published on the Home projection. Making it private removes it from Home; Admin stays available and the Server keeps collecting.'
-              : 'This Node is private. Publishing it adds it to the Home projection with the Server-owned health summary. Endpoint, credential, and identity details stay hidden from Home.'}
-          </p>
-          <p className="panel-copy">
-            Visibility is Server-owned display metadata. It does not change the Agent-local
-            configuration, the Node lifecycle, or any observation.
-          </p>
-          <div className="action-row">
-            <button
-              type="button"
-              className="primary-action"
-              onClick={() => void confirm()}
-              disabled={busy}
-            >
-              {node.visibility === 'public' ? 'Make private' : 'Publish to Home'}
-            </button>
-            <Link className="secondary-action" to={`/admin/nodes/${node.node_id}`}>
-              Cancel
-            </Link>
-          </div>
-          {message && (
-            <p className="form-success" role="status">
-              {message}
-            </p>
-          )}
-          {error && (
-            <p className="form-error" role="alert">
-              {error}
-            </p>
-          )}
-        </article>
-      )}
-    </section>
-  )
-}

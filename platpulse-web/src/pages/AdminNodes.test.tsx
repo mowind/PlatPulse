@@ -166,6 +166,41 @@ const NODE_A_DETAIL = {
   },
 }
 
+/** Retired lifecycle (CONTEXT.md: Retired Node): identity and history stay,
+ * live observation alerts no longer apply, and health is not liveness. */
+const NODE_D_RETIRED_DETAIL = {
+  ...NODE_A,
+  node_id: '0195f2a1-0017-4017-8017-000000000017',
+  display_name: 'Node D (retired)',
+  lifecycle: 'retired',
+  lifecycle_guidance:
+    'Retired: absent from the latest valid Agent Inventory. Identity and history remain; live observation alerts no longer apply. Reactivation requires declaring the same Node ID in the Agent Inventory; the Server never changes Node lifecycle remotely.',
+  health: 'unknown',
+  health_reason: 'No live observation expectations for a Retired Node',
+  freshness: 'unknown',
+  current_head: null,
+}
+
+/** Error diagnostics keep the last-good values: RPC is in error with an
+ * explicit message while the last successful sync value stays visible. */
+const NODE_RPC_ERROR_DETAIL = {
+  ...NODE_A_DETAIL,
+  node_id: '0195f2a1-0015-4015-8015-000000000015',
+  display_name: 'Node B (private)',
+  health: 'unhealthy',
+  health_reason: 'RPC collection failed',
+  freshness: 'stale',
+  current_head: 12842018,
+  identity: NODE_B.identity,
+  rpc: {
+    ...NODE_A_DETAIL.rpc,
+    state: 'error',
+    attempted_at: '2026-08-12T08:05:00Z',
+    error_message: 'connection refused',
+  },
+  sync: NODE_A_DETAIL.sync,
+}
+
 function jsonResponse(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -277,6 +312,11 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     expect(screen.getByText('Server-owned metadata')).toBeTruthy()
     expect(screen.getByText('Lifecycle guidance')).toBeTruthy()
     expect(screen.getByText(/never pushes Endpoint or lifecycle changes/)).toBeTruthy()
+    // Lifecycle is Node Inventory state on its own panel (issue #94).
+    expect(
+      screen.getByRole('heading', { level: 2, name: 'Node Inventory & lifecycle' }),
+    ).toBeTruthy()
+    expect(screen.getByRole('link', { name: 'Open the Audit log' })).toBeTruthy()
     expect(screen.getByText('Network identity')).toBeTruthy()
     expect(screen.getByText('Observed chain ID / P2P network')).toBeTruthy()
     expect(screen.getByText(/210425 \/ 1/)).toBeTruthy()
@@ -293,6 +333,11 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     expect(screen.queryByText('peer-a')).toBeNull()
     expect(screen.queryByText('PlatON/v1.5.1')).toBeNull()
     expect(screen.queryByText('203.0.113.4')).toBeNull()
+    // Node Transfer, per-Node Visibility, and operation controls are absent.
+    expect(screen.queryByText('Node transfer')).toBeNull()
+    expect(screen.queryByRole('link', { name: /Transfer ownership/ })).toBeNull()
+    expect(screen.queryByRole('link', { name: /Publish to Home/ })).toBeNull()
+    expect(screen.queryByRole('link', { name: /Make private/ })).toBeNull()
   })
 
   it('shows the mismatch as a blocking diagnostic distinct from health', async () => {
@@ -310,15 +355,61 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     expect(screen.getByText(/New history is not merged/)).toBeTruthy()
   })
 
+  it('shows the Retired lifecycle from Node Inventory, separate from health', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes/0195f2a1-0017-4017-8017-000000000017': () =>
+        jsonResponse(NODE_D_RETIRED_DETAIL, 200),
+    })
+    renderAt('/admin/nodes/0195f2a1-0017-4017-8017-000000000017')
 
+    await screen.findByRole('heading', { level: 1, name: /Node D \(retired\)/ })
+    expect(
+      screen.getByRole('heading', { level: 2, name: 'Node Inventory & lifecycle' }),
+    ).toBeTruthy()
+    expect(screen.getAllByText('Retired').length).toBeGreaterThan(0)
+    expect(screen.getByText(/absent from the latest valid Agent Inventory/)).toBeTruthy()
+    expect(screen.getByText(/the Server never changes Node lifecycle remotely/)).toBeTruthy()
+    // Health stays Unknown for a Retired Node; lifecycle is not liveness.
+    expect(screen.getAllByText('Unknown').length).toBeGreaterThan(0)
+    expect(screen.queryByText('Healthy')).toBeNull()
+    expect(screen.queryByText('Active')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Retire|Reactivate/ })).toBeNull()
+  })
+
+  it('keeps Stale and Error diagnostics explicit, never as Healthy or zeros', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes/0195f2a1-0015-4015-8015-000000000015': () =>
+        jsonResponse(NODE_RPC_ERROR_DETAIL, 200),
+    })
+    renderAt('/admin/nodes/0195f2a1-0015-4015-8015-000000000015')
+
+    await screen.findByRole('heading', { level: 1, name: /Node B \(private\)/ })
+    expect(screen.getByText('Stale')).toBeTruthy()
+    expect(screen.getByText('Error')).toBeTruthy()
+    expect(screen.getByText('Last RPC error')).toBeTruthy()
+    expect(screen.getByText('connection refused')).toBeTruthy()
+    // Last-good values stay visible beside the Error diagnostic.
+    expect(screen.getByText(/last-good head 12842019/)).toBeTruthy()
+    expect(screen.queryByText('Healthy')).toBeNull()
+    // Only the redacted endpoint form is ever rendered.
+    expect(screen.getAllByText('ws://127.0.0.1:****').length).toBeGreaterThan(0)
+    expect(screen.queryByText('ws://127.0.0.1:8545')).toBeNull()
+  })
 
   it('updates the Server-owned display name and shows the confirmation', async () => {
+    // The mutation invalidates the Admin cache; the next detail read serves
+    // the new Server-owned name so the refetch half is asserted here too.
+    let detail = NODE_A_DETAIL
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
-        jsonResponse(NODE_A_DETAIL, 200),
-      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014/metadata': () =>
-        jsonResponse({ nodeId: NODE_A.node_id, displayName: 'Atlas-01' }, 200),
+        jsonResponse(detail, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014/metadata': () => {
+        detail = { ...detail, display_name: 'Atlas-01' }
+        return jsonResponse({ nodeId: NODE_A.node_id, displayName: 'Atlas-01' }, 200)
+      },
     })
     renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
 
@@ -333,6 +424,12 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     ).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Confirm rename' }))
     expect(await screen.findByText('Display name is now "Atlas-01".')).toBeTruthy()
+    // The read view shows the new name immediately, and the authoritative
+    // refetch replaces the heading with the Server-owned value (issue #94).
+    expect(screen.getAllByText('Atlas-01').length).toBeGreaterThan(0)
+    expect(
+      await screen.findByRole('heading', { level: 1, name: /Atlas-01/ }),
+    ).toBeTruthy()
   })
 
   it('shows a non-leaking unavailable state for an unknown Node', async () => {
