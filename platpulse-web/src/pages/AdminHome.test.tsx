@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
 import { adminQueryClient } from '../api/admin'
@@ -37,6 +37,68 @@ const NODE = {
   identity: { state: 'matched', observed: null, mismatched_fields: [] },
 }
 
+const OVERVIEW = {
+  generated_at: '2026-08-12T08:00:00Z',
+  summary: {
+    agents: { total: 1, online: 1, offline: 0, unknown: 0 },
+    nodes: { total: 1, healthy: 1, unhealthy: 0, unknown: 0, retired: 0, published: 1 },
+  },
+  attention: [
+    {
+      id: 'node_unhealthy:node:node-1',
+      kind: 'node_unhealthy',
+      severity: 'critical',
+      subject_kind: 'node',
+      subject_id: 'node-1',
+      subject_label: 'Node A',
+      message: 'RPC collection failed',
+      observed_at: '2026-08-12T08:00:00Z',
+    },
+  ],
+}
+
+const AGENT = {
+  agent_id: 'agent-1',
+  agent_epoch: 1,
+  boot_status: 'running',
+  active_boot_id: '0195f2a1-2b3c-4d5e-8f90-123456789abc',
+  capabilities: [],
+  clock_status: 'ok',
+  clock_skew_ms: 0,
+  credentials: [],
+  host: null,
+  last_received_at: '2026-08-12T08:00:00Z',
+  last_report_sequence: 42,
+  liveness: 'online',
+  nodes: [
+    {
+      node_id: 'node-1',
+      display_name: 'Node A',
+      network_key: 'platon-mainnet',
+      health: 'healthy',
+      health_reason: 'RPC, sync, and consensus are current',
+      freshness: 'current',
+      lifecycle: 'active',
+      visibility: 'public',
+      inventory_revision: 3,
+      resync_state: 'normal',
+      network_reference_confidence: 'high',
+      rpc: {
+        state: 'ok',
+        client_version: 'platon/1.5.1',
+        namespaces: ['platon', 'net', 'admin'],
+        methods: [],
+        received_at: '2026-08-12T08:00:00Z',
+      },
+    },
+  ],
+  security_event_count: 0,
+  sequence_gap_count: 0,
+  shutdown_state: 'running',
+  shutdown_forced: false,
+  previous_boot_id: null,
+}
+
 function jsonResponse(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -46,33 +108,24 @@ function jsonResponse(body: unknown, status: number): Response {
 
 const TEST_ORIGIN = 'http://platpulse.test'
 
-function mockFetch() {
-  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-    const request = input instanceof Request ? input : new Request(String(input))
-    const url = request.url.replace(TEST_ORIGIN, '')
-    if (url === '/api/public/v1/session') return jsonResponse(OWNER_SESSION, 200)
-    if (url === '/api/admin/v1/overview') {
-      return jsonResponse(
-        {
-          generated_at: '2026-08-12T08:00:00Z',
-          summary: {
-            agents: { total: 1, online: 1, offline: 0, unknown: 0 },
-            nodes: { total: 1, healthy: 1, unhealthy: 0, unknown: 0, retired: 0, published: 1 },
-          },
-          attention: [],
-        },
-        200,
-      )
-    }
-    if (url === '/api/admin/v1/nodes') return jsonResponse([NODE], 200)
-    if (url === '/api/admin/v1/agents') {
-      return jsonResponse({ error: { code: 'unavailable', message: 'Agent diagnostics unavailable' } }, 503)
-    }
-    if (url === '/api/admin/v1/geo') return jsonResponse({ error: { code: 'unavailable' } }, 503)
-    return jsonResponse({ error: { code: 'not_found' } }, 404)
+/** Exact-URL route map for the page's REST surface. */
+function mockFetch(routes: Record<string, () => Response | Promise<Response>>) {
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = (input instanceof Request ? input.url : String(input)).replace(TEST_ORIGIN, '')
+    const handler = routes[url]
+    if (handler) return Promise.resolve(handler())
+    return Promise.resolve(jsonResponse({ error: { code: 'not_found' } }, 404))
   })
   vi.stubGlobal('fetch', fetchMock)
   return fetchMock
+}
+
+/** The Overview page must never request the deferred Geo database status. */
+function expectNoGeoRequests(fetchMock: ReturnType<typeof mockFetch>) {
+  const geoCalls = fetchMock.mock.calls.filter(([input]) =>
+    String(input).includes('/api/admin/v1/geo'),
+  )
+  expect(geoCalls).toHaveLength(0)
 }
 
 async function renderAt(path: string) {
@@ -94,15 +147,138 @@ afterEach(() => {
   vi.unstubAllGlobals()
   adminQueryClient.clear()
 })
-
 describe('PAGE-ADMIN-OVERVIEW', () => {
+  it('prioritizes attention, Node health and Agent inventory; legacy Geo and Operations content is absent', async () => {
+    const fetchMock = mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/overview': () => jsonResponse(OVERVIEW, 200),
+      '/api/admin/v1/nodes': () => jsonResponse([NODE], 200),
+      '/api/admin/v1/agents': () => jsonResponse([AGENT], 200),
+    })
+    await renderAt('/admin')
+
+    await screen.findByRole('heading', { level: 1, name: 'Overview' })
+
+    // The attention queue is the first panel and renders Server-owned items.
+    const panels = screen.getAllByRole('heading', { level: 2 })
+    expect(panels[0].textContent).toContain('Attention queue')
+    expect(screen.getByText(/RPC collection failed/)).toBeTruthy()
+    expect(screen.getByText('Critical')).toBeTruthy()
+
+    // Node Health Summary with its own table row per Node.
+    expect(screen.getByRole('heading', { level: 2, name: 'Node health' })).toBeTruthy()
+    const nodeRow = await screen.findByRole('row', { name: /Node A/ })
+    expect(nodeRow.textContent).toContain('healthy')
+    expect(nodeRow.textContent).toContain('Current')
+
+    // Agent inventory stays an independent panel (one Agent, its own card).
+    expect(screen.getByRole('heading', { level: 2, name: 'Agents' })).toBeTruthy()
+    expect(screen.getByRole('heading', { level: 3, name: 'agent-1' })).toBeTruthy()
+
+    // Geo database status is absent from the Overview page (issue #93).
+    expect(screen.queryByRole('heading', { level: 2, name: 'Geo database' })).toBeNull()
+    expect(screen.queryByText('Cached countries')).toBeNull()
+
+    // Per-Node visibility/publication controls and the legacy Operations
+    // panel are absent; Site Access Mode is the single site authority.
+    expect(screen.queryByRole('heading', { level: 2, name: 'Operations' })).toBeNull()
+    expect(screen.queryByLabelText('Node ID')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Update visibility' })).toBeNull()
+    expect(screen.queryByText(/Nodes are visible on Home/)).toBeNull()
+    expect(screen.getByText(/Site Access Mode/)).toBeTruthy()
+
+    // The browser never asks the Server for Geo status on this page.
+    expectNoGeoRequests(fetchMock)
+  })
+
   it('keeps Node health available when Agent diagnostics fail independently', async () => {
-    mockFetch()
+    const fetchMock = mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/overview': () => jsonResponse(OVERVIEW, 200),
+      '/api/admin/v1/nodes': () => jsonResponse([NODE], 200),
+      '/api/admin/v1/agents': () =>
+        jsonResponse({ error: { code: 'unavailable', message: 'Agent diagnostics unavailable' } }, 503),
+    })
     await renderAt('/admin')
 
     await screen.findByRole('heading', { level: 1, name: 'Overview' })
     expect(await screen.findByRole('row', { name: /Node A/ })).toBeTruthy()
     expect(await screen.findByText('Agent diagnostics unavailable')).toBeTruthy()
     expect(screen.queryByText('Unable to load Nodes')).toBeNull()
+    expectNoGeoRequests(fetchMock)
+  })
+
+  it('keeps explicit empty states distinct from unknown or zero values', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/overview': () =>
+        jsonResponse(
+          {
+            generated_at: '2026-08-12T08:00:00Z',
+            summary: {
+              agents: { total: 0, online: 0, offline: 0, unknown: 0 },
+              nodes: { total: 0, healthy: 0, unhealthy: 0, unknown: 0, retired: 0, published: 0 },
+            },
+            attention: [],
+          },
+          200,
+        ),
+      '/api/admin/v1/nodes': () => jsonResponse([], 200),
+      '/api/admin/v1/agents': () => jsonResponse([], 200),
+    })
+    await renderAt('/admin')
+
+    await screen.findByRole('heading', { level: 1, name: 'Overview' })
+    expect(
+      await screen.findByText('No attention items. Nothing needs an Owner right now.'),
+    ).toBeTruthy()
+    expect(screen.getByText('No Nodes observed yet.')).toBeTruthy()
+    expect(screen.getByText('No Agents enrolled yet.')).toBeTruthy()
+  })
+
+  it('shows an explicit loading state while the overview is in flight', async () => {
+    let resolveOverview: (value: Response) => void = () => {}
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/overview': () =>
+        new Promise<Response>((resolve) => {
+          resolveOverview = resolve
+        }),
+    })
+    await renderAt('/admin')
+
+    await screen.findByRole('heading', { level: 1, name: 'Overview' })
+    expect(screen.getByText('Checking the Server for attention…')).toBeTruthy()
+
+    resolveOverview(jsonResponse(OVERVIEW, 200))
+    expect(await screen.findByText(/RPC collection failed/)).toBeTruthy()
+  })
+
+  it('shows an explicit error state with a retry when the overview fails', async () => {
+    let overviewCalls = 0
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/overview': () => {
+        overviewCalls += 1
+        return overviewCalls === 1
+          ? jsonResponse(
+              { error: { code: 'unavailable', message: 'Unable to load attention' } },
+              503,
+            )
+          : jsonResponse(OVERVIEW, 200)
+      },
+    })
+    await renderAt('/admin')
+
+    await screen.findByRole('heading', { level: 1, name: 'Overview' })
+    const attentionPanel = (await screen.findByText('Unable to load attention')).closest('article')
+    expect(attentionPanel).toBeTruthy()
+    expect(screen.queryByText(/RPC collection failed/)).toBeNull()
+
+    await act(async () => {
+      within(attentionPanel as HTMLElement).getByRole('button', { name: 'Try again' }).click()
+      await Promise.resolve()
+    })
+    expect(await screen.findByText(/RPC collection failed/)).toBeTruthy()
   })
 })

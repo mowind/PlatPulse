@@ -956,9 +956,6 @@ button {
   font-size: 0.72rem;
 }
 
-.geo-digest {
-  overflow-wrap: anywhere;
-}
 .history-list {
   display: grid;
   gap: 0.75rem;
@@ -1388,8 +1385,7 @@ button {
   color: var(--muted);
 }
 
-.summary-strip,
-.geo-status-strip {
+.summary-strip {
   display: grid;
   gap: 0.5rem 1rem;
   margin: 0.5rem 0 0.75rem;
@@ -1399,20 +1395,17 @@ button {
   background: #f7f8fc;
 }
 
-.summary-strip div,
-.geo-status-strip div {
+.summary-strip div {
   display: flex;
   gap: 0.5rem;
   flex-wrap: wrap;
 }
 
-.summary-strip dt,
-.geo-status-strip dt {
+.summary-strip dt {
   font-weight: 800;
 }
 
-.summary-strip dd,
-.geo-status-strip dd {
+.summary-strip dd {
   margin: 0;
 }
 
@@ -1584,10 +1577,6 @@ button {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
-}
-
-.visibility-form {
-  max-width: 32rem;
 }
 
 .filter-bar {
@@ -2158,8 +2147,7 @@ button {
  * ------------------------------------------------------------------------- */
 
 @media (min-width: 42rem) {
-  .summary-strip,
-  .geo-status-strip {
+  .summary-strip {
     grid-template-columns: repeat(3, auto);
   }
 

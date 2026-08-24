@@ -75,16 +75,16 @@ network_name = "PlatON E2E Network"
 network_genesis = "0x" + "1" * 64
 node_a = "0195f2a1-0014-4014-8014-000000000014"
 node_b = "0195f2a1-0015-4015-8015-000000000015"
-# Node C is used only by the Owner Overview mutation test, which publishes
-# and then retracts it, so parallel projects never observe a mutated Node.
+# Node C is used only by the Nodes page metadata-rename test, which renames
+# and then restores it, so parallel projects never observe a mutated Node.
 node_c = "0195f2a1-0016-4016-8016-000000000016"
 # Node D is retired: present in an earlier Inventory, absent from the
 # latest one. It keeps its identity and history but produces no live
 # alerts; the Admin surface shows the reactivation guidance.
 node_d = "0195f2a1-0017-4017-8017-000000000017"
-# Node E is used only by the PAGE-ADMIN-NODE-VISIBILITY mutation test, so
-# it never shares mutation state with the Overview test (Node C) or the
-# metadata test (Node C); parallel projects never observe a mutated Node.
+# Node E is used only by the Overview SSE-refetch test (issue #93), which
+# renames and then restores it through the Admin API; it never shares
+# mutation state with the Nodes page metadata test (Node C).
 node_e = "0195f2a1-0018-4018-8018-000000000018"
 # Node F is dedicated to PAGE-ADMIN-NODE-TRANSFER: its seeded history
 # covers identity mismatch, completed, cancelled, expired, and conflict

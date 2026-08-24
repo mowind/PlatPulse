@@ -14,7 +14,7 @@ import {
  * change, Audit immutability) are unchanged. The suite runs against one
  * shared Server, so every test that mutates access state (users,
  * Sessions, Guest access) runs only on the desktop project, exactly like
- * the shared visibility mutation in admin-overview.spec.ts; the
+ * the shared Node E metadata mutation in admin-overview.spec.ts; the
  * remaining projects still exercise the read-only workflows and the
  * fixed-viewport matrix.
  */

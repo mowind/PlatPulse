@@ -6,14 +6,40 @@ import {
   setPageZoom,
 } from './helpers'
 
-const NODE_C = '0195f2a1-0016-4016-8016-000000000016'
+// Node E is dedicated to this file's SSE-refetch mutation (see seed in
+// start-server.sh): renamed and restored through the Admin API, it never
+// shares mutation state with the Nodes page metadata test (Node C).
+const NODE_E = '0195f2a1-0018-4018-8018-000000000018'
 
-/** Published count from the Server-owned summary strip ("N of 5 Nodes…"). */
-async function publishedCount(page: Parameters<typeof loginAs>[0]): Promise<number> {
-  const text = await page.locator('.summary-strip').textContent()
-  const match = text?.match(/(\d+) of 7 Nodes are visible/)
-  if (!match) throw new Error(`unexpected summary strip: ${text}`)
-  return Number(match[1])
+/** Change a Node's Server-owned display name through the real Admin API
+ * from an authenticated page. The Overview surface itself carries no
+ * mutations (issue #93); an audited metadata change publishes the Admin
+ * `node` invalidation the refetch test needs. The call runs inside the
+ * page so the browser sends a same-origin Origin header; the Server's
+ * mutation guard requires it alongside the CSRF token (design §13.3). */
+async function renameNode(
+  page: Parameters<typeof loginAs>[0],
+  nodeId: string,
+  displayName: string,
+): Promise<void> {
+  const csrf = await page.evaluate(async () => {
+    const response = await fetch('/api/public/v1/session')
+    const body = (await response.json()) as { csrfToken: string }
+    return body.csrfToken
+  })
+  const result = await page.evaluate(
+    async ({ nodeId, displayName, csrf }) => {
+      const response = await fetch(`/api/admin/v1/nodes/${nodeId}/metadata`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+        // The Server DTO is camelCase (NodeMetadataRequest): displayName.
+        body: JSON.stringify({ displayName }),
+      })
+      return { status: response.status, body: await response.json() }
+    },
+    { nodeId, displayName, csrf },
+  )
+  expect(result.status, JSON.stringify(result.body)).toBe(200)
 }
 
 async function openOverview(page: Parameters<typeof loginAs>[0]) {
@@ -22,7 +48,7 @@ async function openOverview(page: Parameters<typeof loginAs>[0]) {
   await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
 }
 
-// This file owns the shared Node C visibility mutation; serial mode keeps
+// This file owns the shared Node E display-name mutation; serial mode keeps
 // its tests from overlapping each other on the same Server state.
 test.describe.configure({ mode: 'serial' })
 
@@ -51,13 +77,17 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
     // The Agent dimension stays independent of Node state.
     await expect(page.getByRole('heading', { level: 2, name: 'Agents' })).toBeVisible()
     await expect(page.getByRole('heading', { level: 2, name: 'Attention queue' })).toBeVisible()
+    // Legacy Geo and per-Node publication content is gone from Overview.
+    await expect(page.getByRole('heading', { level: 2, name: 'Geo database' })).toHaveCount(0)
+    await expect(page.getByRole('heading', { level: 2, name: 'Operations' })).toHaveCount(0)
+    await expect(page.getByText(/Nodes are visible on Home/)).toHaveCount(0)
     await expectNoHorizontalOverflow(page)
   })
 
   test('node detail expansion survives an SSE-triggered REST refetch', async ({ page }, testInfo) => {
     // The mutation mutates shared Server state, so only one project runs it
-    // and restores the seeded visibility afterwards.
-    test.skip(testInfo.project.name !== 'desktop-1280', 'visibility mutation runs once')
+    // and restores the seeded display name afterwards.
+    test.skip(testInfo.project.name !== 'desktop-1280', 'metadata mutation runs once')
     await openOverview(page)
 
     // Expand Node A's component details.
@@ -65,25 +95,15 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
     await expect(page.getByText('Collapse details')).toBeVisible()
     await expect(page.getByText('platon/1.5.1 · 3 namespaces')).toBeVisible()
 
-    // The published count is baseline-relative: the PAGE-ADMIN-NODE-VISIBILITY
-    // workflow test publishes/retracts its own scratch Node concurrently, so
-    // the exact total is only asserted to move by one around this mutation.
-    const strip = page.locator('.summary-strip')
-    await expect(strip).toContainText(/of 7 Nodes are visible/, { timeout: 15_000 })
-    const publishedBefore = await publishedCount(page)
-
     try {
-      // Publish Node C through the operations form. The Server publishes an
-      // Admin invalidation; the shell refetches the authoritative REST
-      // resources without a reload.
-      await page.getByLabel('Node ID').fill(NODE_C)
-      await page.getByLabel('Visibility').selectOption('public')
-      await page.getByRole('button', { name: 'Update visibility' }).click()
-      await expect(page.getByText(`${NODE_C} is now public.`)).toBeVisible()
-
-      await expect
-        .poll(async () => publishedCount(page), { timeout: 15_000 })
-        .toBe(publishedBefore + 1)
+      // Rename Node E through the real Admin API: the Server publishes an
+      // Admin `node` invalidation, and the shell refetches the
+      // authoritative REST resources without a reload.
+      await renameNode(page, NODE_E, 'Node E (refetched)')
+      await expect(
+        page.getByRole('row', { name: /Node E \(refetched\)/ }),
+        { timeout: 15_000 },
+      ).toBeVisible()
 
       // Expansion and URL state survive the authorized refetch.
       await expect(page.getByText('Collapse details')).toBeVisible()
@@ -96,13 +116,13 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
       await expect(page.getByRole('button', { name: 'Node A' })).toBeFocused()
       await expectNoHorizontalOverflow(page)
     } finally {
-      // Retract Node C so repeated runs and parallel projects keep the
-      // seeded Server state.
-      await page.getByLabel('Node ID').fill(NODE_C)
-      await page.getByLabel('Visibility').selectOption('private')
-      await page.getByRole('button', { name: 'Update visibility' }).click()
-      await expect(page.getByText(`${NODE_C} is now private.`)).toBeVisible({ timeout: 15_000 })
-      await expect.poll(async () => publishedCount(page), { timeout: 15_000 }).toBe(publishedBefore)
+      // Restore Node E's seeded display name so repeated runs and parallel
+      // projects keep the seeded Server state.
+      await renameNode(page, NODE_E, 'Node E (private)')
+      await expect(
+        page.getByRole('row', { name: /Node E \(private\)/ }),
+        { timeout: 15_000 },
+      ).toBeVisible()
     }
   })
 

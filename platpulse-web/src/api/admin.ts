@@ -23,7 +23,6 @@ import {
 } from './public'
 import {
   adminAgentAudit,
-  adminGeoStatus,
   adminAgentDetail,
   adminEnrollmentToken,
   adminNetworkDetail,
@@ -147,7 +146,6 @@ import {
   type AdminNodeListItem,
   type AdminOverview,
   type AgentAuditResponse,
-  type GeoStatusDiagnostic,
   type AgentDiagnostic,
   type AuditResponse,
   type CreatePersonRequest,
@@ -203,7 +201,6 @@ const adminKeys = {
   all: ['admin'] as const,
   overview: ['admin', 'overview'] as const,
   diagnostics: ['admin', 'diagnostics'] as const,
-  geo: ['admin', 'geo'] as const,
   agents: ['admin', 'agents'] as const,
   agentDetail: (agentId: string) => ['admin', 'agents', agentId] as const,
   agentAudit: (agentId: string) => ['admin', 'agents', agentId, 'audit'] as const,
@@ -330,21 +327,6 @@ export async function fetchAdminOverview(signal?: AbortSignal): Promise<AdminOve
     'Unable to load the Admin overview',
   )
 }
-
-export async function fetchAdminGeoStatus(signal?: AbortSignal): Promise<GeoStatusDiagnostic> {
-  return requestAdmin(
-    () => adminGeoStatus({ signal }),
-    'Unable to load Geo database status',
-  )
-}
-
-export function useAdminGeoStatus(generation: number) {
-  return useQuery({
-    queryKey: [...adminKeys.geo, generation],
-    queryFn: ({ signal }) => fetchAdminGeoStatus(signal),
-  })
-}
-
 
 export async function fetchAdminDiagnostics(signal?: AbortSignal): Promise<AgentDiagnostic[]> {
   return requestAdmin(
@@ -1211,7 +1193,11 @@ function invalidateAdminResource(resource: string, resourceId: string | undefine
       case 'peer':
         return [adminKeys.overview, adminKeys.nodes, adminKeys.networks]
       case 'geo':
-        return [adminKeys.geo, adminKeys.nodes, adminKeys.networks]
+        // The Geo database surface is deferred beyond the MVP WebUI
+        // (issue #93), but the Server still publishes geo invalidations
+        // on report ingestion; keep refreshing the retained Node/Network
+        // panels instead of falling back to the whole Admin namespace.
+        return [adminKeys.nodes, adminKeys.networks]
       case 'network':
         return [adminKeys.networks, adminKeys.validators, adminKeys.validatorLinks, adminKeys.nodes]
       case 'validator':

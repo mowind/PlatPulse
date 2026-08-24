@@ -494,29 +494,6 @@ describe('App shell with private Home', () => {
     expect(screen.getByText(/last successful Node data/i)).toBeTruthy()
   })
 
-  it('submits the Owner visibility mutation from Admin', async () => {
-    const fetchMock = mockFetch({
-      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
-      '/api/admin/v1/nodes/node-1/visibility': () => jsonResponse({ nodeId: 'node-1', visibility: 'public' }, 200),
-    })
-    window.history.replaceState({}, '', '/admin')
-
-    render(<App />)
-    const adminLink = await screen.findByRole('link', { name: 'Admin' })
-    fireEvent.click(adminLink)
-    await screen.findByRole('heading', { level: 1, name: 'Overview' })
-    fireEvent.change(screen.getByLabelText('Node ID'), { target: { value: 'node-1' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Update visibility' }))
-
-    expect(await screen.findByText('node-1 is now public.')).toBeTruthy()
-    const reportRequest = fetchMock.mock.calls
-      .map(([input]) => input)
-      .find((input): input is Request => input instanceof Request && input.url.includes('/api/admin/v1/nodes/node-1/visibility'))
-    expect(reportRequest).toBeTruthy()
-    expect(reportRequest?.method).toBe('PUT')
-    expect(reportRequest?.headers.get('X-CSRF-Token')).toBe('csrf-token')
-  })
-
   it('shows Checking access… before authorization resolves and never renders a session flash', async () => {
     let resolveSession: ((value: Response) => void) | null = null
     const sessionGate = new Promise<Response>((resolve) => {

@@ -71,7 +71,7 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expectNoHorizontalOverflow(page)
   })
 
-  test('Public and Owner Geo surfaces stay explicit when the database is disabled', async ({ page }) => {
+  test('Public Geo surface stays explicit when the database is disabled; the Owner Overview carries no Geo panel', async ({ page }) => {
     await loginAs(page)
     await page.getByRole('link', { name: 'PlatON E2E Network' }).click()
     await expect(page.getByRole('heading', { level: 1, name: 'PlatON E2E Network' })).toBeVisible()
@@ -81,13 +81,12 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expect(publicGeo).toContainText('Country insight is Disabled by the Server')
     await expect(page.getByText(/GeoLite|MaxMind/i)).toHaveCount(0)
 
+    // Geo database status is absent from the Owner Overview (issue #93);
+    // the Audit/Site Access surface remains the only Admin Geo context.
     await page.getByRole('link', { name: 'Admin', exact: true }).click()
     await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
-    const geoHeading = page.getByRole('heading', { level: 2, name: 'Geo database' })
-    const geoStatus = geoHeading.locator('..').locator('..')
-    await expect(geoStatus).toContainText('Disabled')
-    await expect(geoStatus).toContainText('Configured')
-    await expect(geoStatus).toContainText('No')
+    await expect(page.getByRole('heading', { level: 2, name: 'Geo database' })).toHaveCount(0)
+    await expect(page.getByText('Cached countries')).toHaveCount(0)
 
     // Owner current Peer diagnostics are available, but raw peer addresses
     // remain outside the Admin DTO as well as the Public projection.
@@ -105,16 +104,23 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expectNoHorizontalOverflow(page)
   })
   test('Owner diagnostics and SSE reconnect do not disturb an active form field', async ({ page }) => {
+    // The Overview itself carries no forms (issue #93); the active-field
+    // contract is exercised on the Admin Node detail rename form, which
+    // stays mounted while SSE reconnects and REST refetches run.
     await loginAs(page)
     await page.getByRole('link', { name: 'Admin', exact: true }).click()
     await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Node A' })).toBeVisible({ timeout: 15_000 })
-    await expect(page.getByRole('button', { name: 'Node B (private)' })).toBeVisible({ timeout: 15_000 })
+    const menu = page.getByRole('button', { name: 'Menu' })
+    if (await menu.isVisible()) await menu.click()
+    await page.getByRole('link', { name: 'Nodes', exact: true }).click()
+    await page.getByRole('link', { name: 'Node A' }).click()
+    await expect(page.getByRole('heading', { level: 1, name: /Node A/ })).toBeVisible({ timeout: 15_000 })
+    await page.getByRole('button', { name: 'Edit' }).click()
 
-    const nodeId = page.getByLabel('Node ID')
-    await nodeId.fill('0195f2a1-0014-4014-8014-000000000014')
+    const displayName = page.getByLabel('Display name')
+    await displayName.fill('Node A (field stays)')
     await page.waitForTimeout(1_100)
-    await expect(nodeId).toHaveValue('0195f2a1-0014-4014-8014-000000000014')
+    await expect(displayName).toHaveValue('Node A (field stays)')
     await expectNoHorizontalOverflow(page)
   })
 

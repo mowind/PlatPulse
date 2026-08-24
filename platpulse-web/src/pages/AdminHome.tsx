@@ -1,7 +1,5 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import {
-  updateNodeVisibility,
-  useAdminGeoStatus,
   useAdminDiagnostics,
   useAdminNodes,
   useAdminOverview,
@@ -23,61 +21,38 @@ import type {
 } from '../api/generated'
 
 /**
- * PAGE-ADMIN-OVERVIEW (design §8.1): Server-owned attention queue, Node
- * Health Summary, freshness, and next actions. Each panel collects,
- * refreshes, and fails independently; last-good values stay visible with
- * explicit Error and freshness context. The Server computes health,
- * freshness, and attention; the browser only formats them.
+ * PAGE-ADMIN-OVERVIEW (webui.md §8.4): Server-owned attention queue, Node
+ * Health Summary/freshness, and Agent inventory/diagnostics as applicable.
+ * Each panel collects, refreshes, and fails independently; last-good
+ * values stay visible with explicit Error and freshness context. The
+ * Server computes health, freshness, and attention; the browser only
+ * formats them. This page carries no per-Node visibility/publication or
+ * Geo database content: Site Access Mode on its own page remains the
+ * single site-level Public/Private authority (issue #93).
  */
 export default function AdminHome() {
-  const { status, generation } = useAuth()
+  const { generation } = useAuth()
   const overview = useAdminOverview(generation)
   const diagnostics = useAdminDiagnostics(generation)
   const nodes = useAdminNodes(generation)
-  const geo = useAdminGeoStatus(generation)
 
   return (
     <section className="page">
       <h1>Overview</h1>
       <p className="muted">
-        Server-owned attention queue and Node Health Summary. The Server
-        decides health and attention; this page only presents them.
+        Server-owned attention queue, Node Health Summary and Agent
+        inventory. The Server decides health, freshness and attention; this
+        page only presents them. Home visibility is governed by Site Access
+        Mode.
       </p>
-      <GeoStatusPanel query={geo} />
       <AttentionPanel query={overview} />
       <NodePanel nodeQuery={nodes} diagnosticsQuery={diagnostics} />
       <AgentPanel query={diagnostics} />
-      <OperationsPanel
-        csrfToken={status.state === 'authenticated' ? status.csrfToken : ''}
-      />
     </section>
   )
 }
 
 type OverviewQuery = ReturnType<typeof useAdminOverview>
-type GeoStatusQuery = ReturnType<typeof useAdminGeoStatus>
-
-function GeoStatusPanel({ query }: { query: GeoStatusQuery }) {
-  const status = query.data?.state ?? 'unknown'
-  const label = status === 'current' ? 'Current' : status === 'stale' ? 'Stale' : status === 'error' ? 'Error' : status === 'disabled' ? 'Disabled' : 'Unknown'
-  const tone = status === 'current' ? 'ok' : status === 'error' ? 'error' : status === 'stale' ? 'warning' : 'neutral'
-  return (
-    <article className="panel">
-      <div className="panel-heading"><h2>Geo database</h2><StatusBadge status={label} tone={tone} /></div>
-      {!query.data && query.isPending && <p className="panel-state" role="status"><StatusBadge status="Starting" tone="neutral" /> Loading Geo status…</p>}
-      {!query.data && query.isError && <p className="panel-state" role="alert"><StatusBadge status="Error" tone="error" /> Unable to load Geo status. <button type="button" className="text-action" onClick={() => void query.refetch()}>Try again</button></p>}
-      {query.data && <dl className="geo-status-strip">
-        <div><dt>Configured</dt><dd>{query.data.configured ? 'Yes' : 'No'}</dd></div>
-        <div><dt>Build epoch</dt><dd>{query.data.build_epoch ?? 'Unknown'}</dd></div>
-        <div><dt>Cached countries</dt><dd>{query.data.cache_country_count.toLocaleString()}</dd></div>
-      </dl>}
-      {query.data && query.isRefetchError && <p className="panel-state" role="alert"><StatusBadge status="Error" tone="error" /> Geo status refresh failed; showing the last successful status. <button type="button" className="text-action" onClick={() => void query.refetch()}>Try again</button></p>}
-      {query.data?.last_error && <p className="panel-state" role="alert"><StatusBadge status="Error" tone="error" /> {query.data.last_error}</p>}
-      {query.data?.digest && <p className="muted geo-digest">Database digest: <code>{query.data.digest}</code></p>}
-    </article>
-  )
-}
-
 
 function AttentionPanel({ query }: { query: OverviewQuery }) {
   const data = query.data
@@ -92,7 +67,7 @@ function AttentionPanel({ query }: { query: OverviewQuery }) {
       previousCount.current !== attentionLength
     ) {
       setAnnouncement(
-        `Attention queue updated: ${attentionLength} item${attentionLength === 1 ? '' : 's'} need${attentionLength === 1 ? 's' : ''} attention.`,
+        `Attention queue updated: ${attentionLength} item${attentionLength === 1 ? '' : 's'} need${attentionLength === 1 ? '' : 's'} attention.`,
       )
     }
     previousCount.current = attentionLength
@@ -164,12 +139,6 @@ function SummaryStrip({ summary }: { summary: AdminOverview['summary'] }) {
           {summary.nodes.retired > 0
             ? ` · ${summary.nodes.retired} retired`
             : ''}
-        </dd>
-      </div>
-      <div>
-        <dt>Published</dt>
-        <dd>
-          {summary.nodes.published} of {summary.nodes.total} Nodes are visible on Home
         </dd>
       </div>
     </dl>
@@ -561,72 +530,6 @@ function AgentCard({ agent }: { agent: AgentDiagnostic }) {
           </dd>
         </div>
       </dl>
-    </article>
-  )
-}
-
-function OperationsPanel({ csrfToken }: { csrfToken: string }) {
-  const [nodeId, setNodeId] = useState('')
-  const [visibility, setVisibility] = useState<'private' | 'public'>('public')
-  const [message, setMessage] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    setMessage(null)
-    setError(null)
-    try {
-      const result = await updateNodeVisibility(nodeId, visibility, csrfToken)
-      setMessage(`${result.nodeId} is now ${result.visibility}.`)
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Unable to update visibility')
-    }
-  }
-
-  return (
-    <article className="panel">
-      <div className="panel-heading">
-        <h2>Operations</h2>
-      </div>
-      <p className="muted">
-        Publish or retract a Node from the Home projection. Endpoint and
-        credential details remain hidden from Home.
-      </p>
-      <form onSubmit={submit} className="visibility-form">
-        <div className="field">
-          <label htmlFor="node-id">Node ID</label>
-          <input
-            id="node-id"
-            value={nodeId}
-            onChange={(event) => setNodeId(event.target.value)}
-            required
-          />
-        </div>
-        <div className="field">
-          <label htmlFor="visibility">Visibility</label>
-          <select
-            id="visibility"
-            value={visibility}
-            onChange={(event) => setVisibility(event.target.value as 'private' | 'public')}
-          >
-            <option value="public">Public</option>
-            <option value="private">Private</option>
-          </select>
-        </div>
-        <button className="primary-action" type="submit">
-          Update visibility
-        </button>
-      </form>
-      {message && (
-        <p className="form-success" role="status">
-          {message}
-        </p>
-      )}
-      {error && (
-        <p className="form-error" role="alert">
-          {error}
-        </p>
-      )}
     </article>
   )
 }
