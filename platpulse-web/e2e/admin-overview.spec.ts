@@ -144,52 +144,26 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
     await expect(adminNav).toBeVisible()
     // Opening moves focus inside the drawer.
     await expect(page.getByRole('link', { name: 'Overview' })).toBeFocused()
-    // Tab stays inside the drawer and wraps at the last item.
-    await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: 'Agents' })).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: 'Nodes' })).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: 'Networks' })).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: 'Validators' })).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: 'Alert Rules' })).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: 'Incidents' })).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: 'Silences' })).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: 'Maintenance' })).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: 'Deliveries' })).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: 'Channels' })).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: 'Operations' })).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: 'Data', exact: true })).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: 'Retention' })).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: 'History Window' })).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: 'Backups' })).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: 'Restore' })).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: 'Doctor' })).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: 'People' })).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: 'Site Access' })).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: 'Sessions' })).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: 'Audit' })).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: 'Overview' })).toBeFocused()
-    // Escape closes the drawer and restores focus to the opener.
+    // Tab stays inside the drawer and wraps at the last item (issue #92:
+    // the MVP navigation holds exactly the eight retained page groups).
+    const mvpNav = [
+      'Overview',
+      'Agents',
+      'Nodes',
+      'Networks',
+      'History Window',
+      'Site Access',
+      'Sessions',
+      'Audit',
+    ]
+    for (const item of [...mvpNav.slice(1), 'Overview']) {
+      await page.keyboard.press('Tab')
+      await expect(page.getByRole('link', { name: item })).toBeFocused()
+    }
+    for (const deferred of ['Validators', 'Alert Rules', 'Operations', 'Data', 'People']) {
+      await expect(page.getByRole('link', { name: deferred })).toHaveCount(0)
+    }
+// Escape closes the drawer and restores focus to the opener.
     await page.keyboard.press('Escape')
     await expect(menu).toBeFocused()
     await expect(adminNav).not.toBeInViewport()

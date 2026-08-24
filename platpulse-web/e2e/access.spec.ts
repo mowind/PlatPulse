@@ -7,13 +7,16 @@ import {
 } from './helpers'
 
 /**
- * SCN-ACCESS-ROLE-CHANGE, SCN-AUTH-SESSION-REVOKED, final-Owner
- * protection, Guest enable/disable, and Audit review (issue #47,
- * webui.md §12). The suite runs against one shared Server, so every test
- * that mutates access state (users, Sessions, Guest access) runs only on
- * the desktop project, exactly like the shared visibility mutation in
- * admin-overview.spec.ts; the remaining projects still exercise the
- * read-only workflows and the fixed-viewport matrix.
+ * SCN-ACCESS-ROLE-CHANGE, SCN-AUTH-SESSION-REVOKED, Guest enable/disable,
+ * and Audit review (issue #47, webui.md §12). The People page is deferred
+ * beyond the MVP WebUI (issue #92), so user and role mutations run
+ * through the Admin API; the Server policies (session revocation on role
+ * change, Audit immutability) are unchanged. The suite runs against one
+ * shared Server, so every test that mutates access state (users,
+ * Sessions, Guest access) runs only on the desktop project, exactly like
+ * the shared visibility mutation in admin-overview.spec.ts; the
+ * remaining projects still exercise the read-only workflows and the
+ * fixed-viewport matrix.
  */
 test.describe.configure({ mode: 'serial' })
 
@@ -21,6 +24,38 @@ const OPS_USERNAME = 'ops'
 const OPS_PASSWORD = 'platpulse-e2e-ops-2026'
 const ALICE_USERNAME = 'alice'
 const ALICE_PASSWORD = 'platpulse-e2e-alice-2026'
+
+/** Change a user's role through the real Admin API. The People page is
+ * deferred beyond the MVP WebUI (issue #92); the Server capability and
+ * the session-revocation policy are unchanged. The mutation runs inside
+ * the page (like createUserAs) so the browser sends a same-origin Origin
+ * header; the Server's mutation guard requires it alongside the CSRF
+ * token (design §12.4). */
+async function setPersonRole(page: Page, username: string, role: string): Promise<void> {
+  const csrf = await page.evaluate(async () => {
+    const response = await fetch('/api/public/v1/session')
+    const body = (await response.json()) as { csrfToken: string }
+    return body.csrfToken
+  })
+  const result = await page.evaluate(
+    async ({ username, role, csrf }) => {
+      const list = await fetch('/api/admin/v1/people')
+      const payload = (await list.json()) as {
+        users: Array<{ userId: string; username: string }>
+      }
+      const user = payload.users.find((entry) => entry.username === username)
+      if (!user) return { status: 404, body: { missing: username } }
+      const response = await fetch(`/api/admin/v1/people/${user.userId}/role`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+        body: JSON.stringify({ role }),
+      })
+      return { status: response.status, body: await response.json() }
+    },
+    { username, role, csrf },
+  )
+  expect(result.status, JSON.stringify(result.body)).toBe(200)
+}
 
 /** Create a user through the real Admin API from an authenticated page. */
 async function createUserAs(
@@ -47,53 +82,6 @@ async function createUserAs(
   )
   expect(result.status, JSON.stringify(result.body)).toBe(200)
 }
-
-test.describe('PAGE-ACCESS-PEOPLE (People and roles)', () => {
-  test('lists People without password material and protects the final Owner', async ({ page }) => {
-    await loginAs(page)
-    await page.goto('/admin/access/people')
-    await expect(page.getByRole('heading', { level: 1, name: 'People' })).toBeVisible()
-
-    const adminRow = page.getByRole('row', { name: /admin/ })
-    await expect(adminRow).toContainText('Owner')
-    await expect(adminRow).toContainText('Enabled')
-    // No password hash, token, or CSRF material anywhere on the page.
-    await expect(page.getByText('$argon2id')).toHaveCount(0)
-    await expect(page.getByText(/pp_session_/)).toHaveCount(0)
-    await expectNoHorizontalOverflow(page)
-
-    // Final-Owner protection: attempting to disable the only Owner fails
-    // with the Server's typed conflict and the row stays Enabled.
-    await adminRow.getByRole('button', { name: 'Disable me' }).click()
-    await expect(page.getByText('The final valid Owner cannot be disabled.')).toBeVisible()
-    await expect(adminRow).toContainText('Enabled')
-
-    // Demotion of the final Owner is refused the same way (no optimistic
-    // role state: the select still shows Owner).
-    await adminRow.getByLabel(/Role of admin/).selectOption('viewer')
-    await expect(page.getByText('The final valid Owner cannot be demoted.')).toBeVisible()
-    await expect(adminRow.getByLabel(/Role of admin/)).toHaveValue('owner')
-    await expectNoHorizontalOverflow(page)
-  })
-
-  test('creates a Viewer through the authoritative mutation', async ({ page }, testInfo) => {
-    // Mutates shared user state; only the desktop project runs it.
-    test.skip(testInfo.project.name !== 'desktop-1280', 'user mutation runs once')
-    await loginAs(page)
-    await page.goto('/admin/access/people')
-    await expect(page.getByRole('heading', { level: 1, name: 'People' })).toBeVisible()
-
-    await page.getByLabel('Username').fill(OPS_USERNAME)
-    await page.getByLabel('Password').fill(OPS_PASSWORD)
-    await page.getByLabel('Role', { exact: true }).selectOption('viewer')
-    await page.getByRole('button', { name: 'Create user' }).click()
-    await expect(page.getByText(`${OPS_USERNAME} created as a Viewer.`)).toBeVisible()
-    await expect(page.getByRole('row', { name: /ops/ })).toContainText('Viewer')
-    // The password never appears on the page.
-    await expect(page.getByText(OPS_PASSWORD)).toHaveCount(0)
-    await expectNoHorizontalOverflow(page)
-  })
-})
 
 test.describe('PAGE-ACCESS-SESSIONS (Human Sessions)', () => {
   test('revoking a Session closes the other tab and never flashes Admin data', async (
@@ -158,6 +146,15 @@ test.describe('SCN-ACCESS-ROLE-CHANGE', () => {
     // Depends on the desktop-only ops user and mutates roles.
     test.skip(testInfo.project.name !== 'desktop-1280', 'role change runs once')
 
+    // Create ops as a Viewer through the Admin API, then promote them:
+    // the People page is deferred beyond the MVP WebUI (issue #92) while
+    // the Server capability is unchanged. The Server revokes ops's live
+    // Session immediately on the role change.
+    const ownerContext = await browser.newContext()
+    const ownerPage = await ownerContext.newPage()
+    await loginAs(ownerPage)
+    await createUserAs(ownerPage, OPS_USERNAME, OPS_PASSWORD, 'viewer')
+
     // ops signs in as a Viewer first, with an open Admin attempt.
     const opsContext = await browser.newContext()
     const opsPage = await opsContext.newPage()
@@ -166,21 +163,11 @@ test.describe('SCN-ACCESS-ROLE-CHANGE', () => {
     await opsPage.goto('/admin')
     await expect(opsPage.getByRole('heading', { level: 1, name: 'Owner access required' })).toBeVisible()
 
-    const ownerContext = await browser.newContext()
-    const ownerPage = await ownerContext.newPage()
-    await loginAs(ownerPage)
-    await ownerPage.goto('/admin/access/people')
-    await expect(ownerPage.getByRole('heading', { level: 1, name: 'People' })).toBeVisible()
+    await setPersonRole(ownerPage, OPS_USERNAME, 'owner')
 
-    // Promote ops: the Server revokes ops's live Session immediately. The
-    // Viewer's blocked panel is intentionally static and non-leaking, so
-    // the next navigation re-validates and lands on the login path (no
+    // The Viewer's blocked panel is intentionally static and non-leaking,
+    // so the next navigation re-validates and lands on the login path (no
     // prior data ever flashes).
-    const opsRow = ownerPage.getByRole('row', { name: new RegExp(OPS_USERNAME) })
-    await opsRow.getByLabel(new RegExp(`Role of ${OPS_USERNAME}`)).selectOption('owner')
-    await expect(
-      ownerPage.getByText(`${OPS_USERNAME} is now an Owner. Their Sessions were revoked; they must sign in again.`),
-    ).toBeVisible()
     await opsPage.goto('/')
     await expect(opsPage).toHaveURL(/\/login$/, { timeout: 10_000 })
     await expect(opsPage.getByRole('heading', { level: 1, name: 'Sign in to PlatPulse' })).toBeVisible()
@@ -193,14 +180,12 @@ test.describe('SCN-ACCESS-ROLE-CHANGE', () => {
 
     // Cleanup: restore the Viewer role so later runs see the seeded state.
     // (ownerPage is still authenticated; no re-login is needed.)
-    await ownerPage.goto('/admin/access/people')
-    const row = ownerPage.getByRole('row', { name: new RegExp(OPS_USERNAME) })
-    await row.getByLabel(new RegExp(`Role of ${OPS_USERNAME}`)).selectOption('viewer')
-    await expect(row.getByLabel(new RegExp(`Role of ${OPS_USERNAME}`))).toHaveValue('viewer')
+    await setPersonRole(ownerPage, OPS_USERNAME, 'viewer')
     await opsContext.close()
     await ownerContext.close()
   })
 })
+
 
 test.describe('PAGE-ACCESS-AUDIT (Audit review)', () => {
   test('lists immutable redacted events and filters by kind', async ({ page }, testInfo) => {
@@ -287,13 +272,13 @@ test.describe('Anonymous Home (Guest) toggle', () => {
     await guest.close()
 
     await loginAs(page)
-    await page.goto('/admin/access/people')
-    await expect(page.getByRole('heading', { level: 1, name: 'People' })).toBeVisible()
+    await page.goto('/admin/site-access')
+    await expect(page.getByRole('heading', { level: 1, name: 'Site Access' })).toBeVisible()
 
     try {
       page.on('dialog', (dialog) => void dialog.accept())
       await page.getByRole('button', { name: 'Make Home Public' }).click()
-      await expect(page.getByText('Site Access Mode is now Public. Visitors can view Home without signing in.')).toBeVisible()
+      await expect(page.getByText('Site Access Mode is now Public. Audit was recorded.')).toBeVisible()
 
       // A fresh anonymous context can read the Public projection.
       const guest2 = await browser.newContext()
@@ -301,7 +286,7 @@ test.describe('Anonymous Home (Guest) toggle', () => {
       await guestPage2.goto('/')
       await expect(guestPage2.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible()
       await expect(guestPage2.getByText('Node A')).toBeVisible()
-      await expect(guestPage2.getByText('Current', { exact: true })).toBeVisible({ timeout: 15_000 })
+      await expect(guestPage2.getByText('Current', { exact: true }).first()).toBeVisible({ timeout: 15_000 })
       await expectNoHorizontalOverflow(guestPage2)
       // Guests never see Admin or Sign out.
       await expect(guestPage2.getByRole('link', { name: 'Admin' })).toHaveCount(0)
@@ -320,7 +305,7 @@ test.describe('Anonymous Home (Guest) toggle', () => {
       // Disabling closes the open Guest stream: the anonymous tab lands on
       // the login page without flashing prior data.
       await page.getByRole('button', { name: 'Make Home Private' }).click()
-      await expect(page.getByText('Site Access Mode is now Private. Visitors must sign in.')).toBeVisible()
+      await expect(page.getByText('Site Access Mode is now Private. Audit was recorded.')).toBeVisible()
       await expect(guestPage2).toHaveURL(/\/login$/, { timeout: 10_000 })
       await expect(
         guestPage2.getByRole('heading', { level: 1, name: 'Sign in to PlatPulse' }),
@@ -329,8 +314,8 @@ test.describe('Anonymous Home (Guest) toggle', () => {
       await guest2.close()
 
       // The Owner session is unaffected by the Guest toggle.
-      await page.goto('/admin/access/people')
-      await expect(page.getByRole('heading', { level: 1, name: 'People' })).toBeVisible()
+      await page.goto('/admin/site-access')
+      await expect(page.getByRole('heading', { level: 1, name: 'Site Access' })).toBeVisible()
     } finally {
       // Always restore the default so parallel suites keep their contract.
       const access = await page.request.get('/api/admin/v1/access-mode')

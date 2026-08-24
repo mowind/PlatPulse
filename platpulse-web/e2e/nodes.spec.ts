@@ -154,51 +154,6 @@ test.describe('Owner Node inventory (PAGE-ADMIN-NODES)', () => {
     await expectNoHorizontalOverflow(page)
   })
 
-  test('visibility workflow publishes and retracts with authoritative refetch', async ({
-    page,
-  }, testInfo) => {
-    // The mutation mutates shared Server state; one project runs it and
-    // restores the seeded visibility afterwards.
-    test.skip(testInfo.project.name !== 'desktop-1280', 'visibility mutation runs once')
-    await openNodes(page)
-
-    try {
-      await page.getByRole('link', { name: 'Node E (private)' }).click()
-      await expect(page.getByRole('heading', { level: 1, name: /Node E \(private\)/ })).toBeVisible({ timeout: 15_000 })
-      await expect(page.getByText('Private', { exact: true }).first()).toBeVisible({ timeout: 15_000 })
-      await page.getByRole('link', { name: 'Publish to Home' }).click()
-
-      // Dedicated confirmation workflow with explicit impact copy.
-      await expect(page.getByRole('heading', { level: 1, name: 'Node visibility' })).toBeVisible({ timeout: 15_000 })
-      await expect(page.getByText(/Publishing it adds it to the Home projection/)).toBeVisible()
-      await page.getByRole('button', { name: 'Publish to Home' }).click()
-      await expect(page.getByText(/is now public\. The Home projection was updated\./)).toBeVisible({
-        timeout: 15_000,
-      })
-
-      // Authoritative refetch: the detail now shows Public.
-      await page.getByRole('link', { name: 'Back to Node detail' }).click()
-      await expect(page.getByRole('heading', { level: 1, name: /Node E \(private\)/ })).toBeVisible({ timeout: 15_000 })
-      await expect(page.getByText('Public', { exact: true }).first()).toBeVisible({
-        timeout: 15_000,
-      })
-      // The Home projection is non-leaking: endpoints stay hidden.
-      await page.getByRole('link', { name: 'Home', exact: true }).click()
-      await expect(page.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible({ timeout: 15_000 })
-      await expect(page.getByText('Node E (private)', { exact: true })).toBeVisible({ timeout: 15_000 })
-      await expect(page.getByText('ws://127.0.0.1')).toHaveCount(0)
-    } finally {
-      // Retract Node E so repeated runs and parallel projects keep the
-      // seeded Server state.
-      await page.getByRole('link', { name: 'Admin', exact: true }).click()
-      await page.getByRole('link', { name: 'Nodes' }).click()
-      await page.getByRole('link', { name: 'Node E (private)' }).click()
-      await page.getByRole('link', { name: 'Make private' }).click()
-      await page.getByRole('button', { name: 'Make private' }).click()
-      await expect(page.getByText(/is now private\./)).toBeVisible({ timeout: 15_000 })
-    }
-  })
-
   test('metadata mutation refetches the authoritative display name', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'desktop-1280', 'metadata mutation runs once')
     await openNodes(page)

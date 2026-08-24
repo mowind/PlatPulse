@@ -161,54 +161,10 @@ export default function AdminLayout() {
           <NavLink to="/admin/networks" end onClick={closeNav}>
             Networks
           </NavLink>
-          <NavLink to="/admin/validators" end onClick={closeNav}>
-            Validators
-          </NavLink>
-      <p className="admin-nav-label">Alerts</p>
-          <NavLink to="/admin/alerts/rules" end onClick={closeNav}>
-            Alert Rules
-          </NavLink>
-          <NavLink to="/admin/alerts/incidents" end onClick={closeNav}>
-            Incidents
-          </NavLink>
-          <NavLink to="/admin/alerts/silences" end onClick={closeNav}>
-            Silences
-          </NavLink>
-          <NavLink to="/admin/alerts/maintenance" end onClick={closeNav}>
-            Maintenance
-          </NavLink>
-          <NavLink to="/admin/alerts/deliveries" end onClick={closeNav}>
-            Deliveries
-          </NavLink>
-          <NavLink to="/admin/alerts/channels" end onClick={closeNav}>
-            Channels
-          </NavLink>
-          <NavLink to="/admin/operations" end onClick={closeNav}>
-            Operations
-          </NavLink>
-          <p className="admin-nav-label">Data</p>
-          <NavLink to="/admin/data" end onClick={closeNav}>
-            Data
-          </NavLink>
-          <NavLink to="/admin/data/retention" end onClick={closeNav}>
-            Retention
-          </NavLink>
           <NavLink to="/admin/history-window" end onClick={closeNav}>
             History Window
           </NavLink>
-          <NavLink to="/admin/data/backups" end onClick={closeNav}>
-            Backups
-          </NavLink>
-          <NavLink to="/admin/data/restore" end onClick={closeNav}>
-            Restore
-          </NavLink>
-          <NavLink to="/admin/data/doctor" end onClick={closeNav}>
-            Doctor
-          </NavLink>
           <p className="admin-nav-label">Access</p>
-          <NavLink to="/admin/access/people" end onClick={closeNav}>
-            People
-          </NavLink>
           <NavLink to="/admin/site-access" end onClick={closeNav}>
             Site Access
           </NavLink>
@@ -218,7 +174,9 @@ export default function AdminLayout() {
           <NavLink to="/admin/access/audit" end onClick={closeNav}>
             Audit
           </NavLink>
-          {/* Later Phase 2 groups arrive here: Data and Maintenance. */}
+          {/* MVP Admin surface (issue #92): deferred groups (alerts,
+              operations, data/maintenance, validators, people, transfer,
+              enrollment/recovery/rotation) are not linked here. */}
         </nav>
         <div
           className={navOpen ? 'admin-nav-scrim admin-nav-scrim-open' : 'admin-nav-scrim'}

@@ -16,27 +16,6 @@ const OWNER_SESSION = {
   csrfToken: 'csrf-token',
 }
 
-const PEOPLE = {
-  users: [
-    {
-      userId: 'u-admin',
-      username: 'admin',
-      role: 'owner',
-      disabled: false,
-      createdAt: '2026-08-01T00:00:00Z',
-      sessionCount: 2,
-    },
-    {
-      userId: 'u-viewer',
-      username: 'viewer',
-      role: 'viewer',
-      disabled: true,
-      createdAt: '2026-08-02T00:00:00Z',
-      sessionCount: 0,
-    },
-  ],
-}
-
 const SESSIONS = {
   sessions: [
     {
@@ -146,95 +125,7 @@ afterEach(() => {
   adminQueryClient.clear()
 })
 
-describe('PAGE-ACCESS-PEOPLE (People and roles)', () => {
-  it('lists People with role, status, and session counts but never password material', async () => {
-    mockFetch({
-      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
-      '/api/admin/v1/people': () => jsonResponse(PEOPLE, 200),
-      '/api/admin/v1/access-mode': () => jsonResponse({ mode: 'private', authorizationGeneration: 0 }, 200),
-    })
-    renderAt('/admin/access/people')
 
-    await screen.findByRole('heading', { level: 1, name: 'People' })
-    const row = await screen.findByRole('row', { name: /admin/ })
-    expect(row.textContent).toContain('Owner')
-    expect(row.textContent).toContain('Enabled')
-    expect(row.textContent).toContain('2')
-    expect(screen.getByRole('row', { name: /viewer/ }).textContent).toContain('Disabled')
-    const documentText = document.body.textContent ?? ''
-    // The page copy may name the word "password", but no password VALUE,
-    // hash, token, or CSRF material may be rendered.
-    for (const forbidden of ['$argon2id', 'token', 'csrf-token']) {
-      expect(documentText.toLowerCase()).not.toContain(forbidden)
-    }
-  })
-
-  it('creates a user through the authoritative mutation and refetches', async () => {
-    let created = false
-    mockFetch({
-      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
-      '/api/admin/v1/access-mode': () => jsonResponse({ mode: 'private', authorizationGeneration: 0 }, 200),
-      '/api/admin/v1/people': ({ method }) => {
-        if (method === 'POST') {
-          created = true
-          return jsonResponse(
-            { userId: 'u-new', username: 'newuser', role: 'viewer', disabled: false, createdAt: '2026-08-12T00:00:00Z', sessionCount: 0 },
-            200,
-          )
-        }
-        return jsonResponse(PEOPLE, 200)
-      },
-    })
-    renderAt('/admin/access/people')
-    await screen.findByRole('heading', { level: 1, name: 'People' })
-
-    fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'newuser' } })
-    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'a long enough password' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Create user' }))
-    await screen.findByText(/newuser created as a Viewer/)
-    expect(created).toBe(true)
-  })
-
-  it('surfaces the final-Owner protection conflict without optimistic state', async () => {
-    mockFetch({
-      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
-      '/api/admin/v1/people': () => jsonResponse(PEOPLE, 200),
-      '/api/admin/v1/access-mode': () => jsonResponse({ mode: 'private', authorizationGeneration: 0 }, 200),
-      '/api/admin/v1/people/u-admin/role': () => errorBody('final_owner_protected'),
-    })
-    renderAt('/admin/access/people')
-    await screen.findByRole('heading', { level: 1, name: 'People' })
-
-    const row = await screen.findByRole('row', { name: /admin/ })
-    const roleSelect = row.querySelector('select') as HTMLSelectElement
-    fireEvent.change(roleSelect, { target: { value: 'viewer' } })
-    expect(await screen.findByText('The final valid Owner cannot be demoted.')).toBeTruthy()
-    // No optimistic state: the row still shows Owner.
-    expect(roleSelect.value).toBe('owner')
-  })
-
-  it('toggles anonymous Home through the authoritative mutation', async () => {
-    let mode = 'private'
-    mockFetch({
-      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
-      '/api/admin/v1/people': () => jsonResponse(PEOPLE, 200),
-      '/api/admin/v1/access-mode': ({ method }) => {
-        if (method === 'PUT') {
-          mode = 'public'
-          return jsonResponse({ mode, authorizationGeneration: 1 }, 200)
-        }
-        return jsonResponse({ mode, authorizationGeneration: mode === 'public' ? 1 : 0 }, 200)
-      },
-    })
-    renderAt('/admin/access/people')
-    await screen.findByRole('heading', { level: 1, name: 'People' })
-
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
-    fireEvent.click(await screen.findByRole('button', { name: 'Make Home Public' }))
-    await screen.findByText(/Site Access Mode is now Public/)
-    expect(await screen.findByRole('button', { name: 'Make Home Private' })).toBeTruthy()
-  })
-})
 
 describe('PAGE-ACCESS-SESSIONS (Human Sessions)', () => {
   it('lists coarse session metadata and marks the current session', async () => {

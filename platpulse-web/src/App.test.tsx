@@ -768,3 +768,151 @@ describe('App shell with private Home', () => {
     )
   })
 })
+
+describe('Admin MVP route inventory (issue #92)', () => {
+  /** Navigate the shared in-memory router the way browser history does. */
+  async function renderAt(path: string) {
+    await act(async () => {
+      window.history.pushState({}, '', path)
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+  }
+
+  // Complete MVP Admin inventory (issue #92): Overview, Agents, Agent
+  // Detail, Nodes, Node Detail, Networks, Network Detail, History Window,
+  // Site Access, Sessions and Audit. Each route renders its own page shell
+  // under the Owner gate; the Server REST mock answers 404s so the pages'
+  // headings are asserted without seeding page data.
+  const MVP_ROUTES: Array<[path: string, heading: RegExp]> = [
+    ['/admin', /Overview/],
+    ['/admin/agents', /Agents/],
+    ['/admin/agents/agent-1', /Agent agent-1/],
+    ['/admin/nodes', /Nodes/],
+    ['/admin/nodes/node-1', /node-1/],
+    ['/admin/networks', /Networks/],
+    ['/admin/networks/mainnet', /mainnet/],
+    ['/admin/history-window', /History Window/],
+    ['/admin/site-access', /Site Access/],
+    ['/admin/access/sessions', /Sessions/],
+    ['/admin/access/audit', /Audit log/],
+  ]
+
+  it('reaches every MVP Admin page through the production router', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/access-mode': () =>
+        jsonResponse({ mode: 'private', authorizationGeneration: 0 }, 200),
+    })
+    render(<App />)
+    await renderAt('/')
+    await screen.findByRole('heading', { level: 1, name: 'Home' })
+    await renderAt('/admin')
+    await screen.findByRole('heading', { level: 1, name: 'Overview' })
+
+    for (const [path, heading] of MVP_ROUTES) {
+      await renderAt(path)
+      await screen.findByRole('heading', { level: 1, name: heading })
+    }
+  })
+
+  // Removed legacy/deferred routes (issue #92): Validator administration,
+  // People, Alerts/Incidents/Silences/Maintenance, Delivery/Channel,
+  // Operations, Data/Retention, Backup/Restore, Doctor, Node Transfer,
+  // Node Visibility and Agent Enrollment/Recovery/Rotation. Direct
+  // navigation must land on the safe Admin fallback — never on a legacy
+  // page. `/admin/agents/enroll` is covered separately: it matches the
+  // generic `agents/:agentId` detail route and resolves to the normal
+  // unknown-Agent outcome instead of the removed enrollment page.
+  const REMOVED_ROUTES: Array<[path: string, legacyHeading: RegExp]> = [
+    ['/admin/validators', /Validators/],
+    ['/admin/validators/v-1', /Validators/],
+    ['/admin/access/people', /People/],
+    ['/admin/alerts', /Alerts/],
+    ['/admin/alerts/rules', /Alert Rules/],
+    ['/admin/alerts/rules/r-1', /Alert Rules/],
+    ['/admin/alerts/rules/r-1/edit', /Alert Rules/],
+    ['/admin/alerts/incidents', /Incidents/],
+    ['/admin/alerts/incidents/i-1', /Incidents/],
+    ['/admin/alerts/silences', /Silences/],
+    ['/admin/alerts/maintenance', /Maintenance/],
+    ['/admin/alerts/deliveries', /Deliveries/],
+    ['/admin/alerts/deliveries/d-1', /Deliveries/],
+    ['/admin/alerts/channels', /Channels/],
+    ['/admin/alerts/channels/c-1', /Channels/],
+    ['/admin/operations', /Operations/],
+    ['/admin/operations/o-1', /Operations/],
+    ['/admin/data', /Data/],
+    ['/admin/data/retention', /Retention/],
+    ['/admin/data/retention/edit', /Retention/],
+    ['/admin/data/backups', /Backups/],
+    ['/admin/data/backups/create', /Backups/],
+    ['/admin/data/backups/b-1', /Backups/],
+    ['/admin/data/restore', /Restore/],
+    ['/admin/data/doctor', /Doctor/],
+    ['/admin/nodes/node-1/visibility', /Node visibility/],
+    ['/admin/nodes/node-1/transfer', /Transfer Node ownership/],
+    ['/admin/agents/agent-1/recover', /Recover Agent/],
+    ['/admin/agents/agent-1/rotate', /Rotate credential/],
+  ]
+
+  it('resolves every removed legacy or deferred Admin route to the safe fallback', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+    })
+    render(<App />)
+    await renderAt('/')
+    await screen.findByRole('heading', { level: 1, name: 'Home' })
+    await renderAt('/admin')
+    await screen.findByRole('heading', { level: 1, name: 'Overview' })
+
+    for (const [path, legacyHeading] of REMOVED_ROUTES) {
+      await renderAt(path)
+      await screen.findByRole('heading', { level: 1, name: 'Section not found' })
+      expect(screen.queryByRole('heading', { level: 1, name: legacyHeading })).toBeNull()
+    }
+
+    // `/admin/agents/enroll` is not registered: it falls through to the
+    // generic Agent Detail route for an unknown id, never the enrollment
+    // workflow.
+    await renderAt('/admin/agents/enroll')
+    await screen.findByRole('heading', { level: 1, name: /Agent enrol/ })
+    expect(screen.queryByRole('heading', { level: 1, name: /Enroll a new Agent/ })).toBeNull()
+  })
+
+  it('exposes only the MVP page groups through Admin navigation', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+    })
+    render(<App />)
+    await renderAt('/')
+    await screen.findByRole('heading', { level: 1, name: 'Home' })
+    await renderAt('/admin')
+    await screen.findByRole('heading', { level: 1, name: 'Overview' })
+
+    const adminNav = screen.getByRole('navigation', { name: 'Admin' })
+    const menu = adminNav.querySelectorAll('a')
+    const links = Array.from(menu).map((element) => ({
+      name: element.textContent?.trim() ?? '',
+      href: element.getAttribute('href'),
+    }))
+    expect(links).toEqual([
+      { name: 'Overview', href: '/admin' },
+      { name: 'Agents', href: '/admin/agents' },
+      { name: 'Nodes', href: '/admin/nodes' },
+      { name: 'Networks', href: '/admin/networks' },
+      { name: 'History Window', href: '/admin/history-window' },
+      { name: 'Site Access', href: '/admin/site-access' },
+      { name: 'Sessions', href: '/admin/access/sessions' },
+      { name: 'Audit', href: '/admin/access/audit' },
+    ])
+    for (const removed of ['Validators', 'People', 'Alert Rules', 'Incidents', 'Silences', 'Maintenance', 'Deliveries', 'Channels', 'Operations', 'Data', 'Retention', 'Backups', 'Restore', 'Doctor', 'Enroll', 'Recover', 'Rotate']) {
+      expect(
+        Array.from(adminNav.querySelectorAll('a')).some((element) =>
+          element.textContent?.includes(removed),
+        ),
+        'removed page ' + removed + ' must not be linked from Admin navigation',
+      ).toBe(false)
+    }
+  })
+})

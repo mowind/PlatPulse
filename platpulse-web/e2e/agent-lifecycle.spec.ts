@@ -7,8 +7,11 @@ import {
 } from './helpers'
 
 /**
- * Agent lifecycle operations (PAGE-ADMIN-AGENTS, PAGE-ADMIN-AGENT-DETAIL,
- * PAGE-ADMIN-ENROLL, PAGE-ADMIN-AGENT-RECOVER, PAGE-ADMIN-AGENT-ROTATE).
+ * Agent inventory and detail (PAGE-ADMIN-AGENTS, PAGE-ADMIN-AGENT-DETAIL).
+ * Enrollment, recovery and credential rotation are deferred beyond the
+ * MVP WebUI (issue #92): their routes are not registered, so this suite
+ * covers the retained identity, liveness, credential and diagnostics
+ * surface only.
  *
  * Read-only flows run on every fixed viewport project. Mutations create
  * Server state, so each mutation runs once on desktop-1280 only (same
@@ -91,79 +94,6 @@ test.describe.serial('Agent lifecycle mutations (one run on desktop-1280)', () =
   test.beforeEach(async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'desktop-1280', 'security mutations run once')
     await openAgents(page)
-  })
-
-  test('enrollment shows the one-time secret only in the success response', async ({ page }) => {
-    await page.getByRole('link', { name: 'Enroll a new Agent' }).click()
-    await expect(
-      page.getByRole('heading', { level: 1, name: 'Enroll a new Agent' }),
-    ).toBeVisible()
-    await page.getByRole('button', { name: 'Create enrollment token' }).click()
-
-    const secretBox = page.locator('.secret-value')
-    await expect(secretBox).toBeVisible({ timeout: 15_000 })
-    const secret = (await secretBox.textContent()) ?? ''
-    expect(secret).toMatch(/^pp_enroll_[0-9a-f-]+_[0-9a-f]{64}$/)
-
-    // PATTERN-SECRET-ONCE: never in URL/query state or browser history.
-    expect(page.url()).not.toContain(secret)
-    expect(await page.evaluate(() => JSON.stringify(window.history.state))).not.toContain(secret)
-    await expect(page.locator('.secret-warning')).toBeVisible()
-
-    // Leaving the success view discards the secret; it is not recoverable.
-    await page.getByRole('link', { name: 'Back to Agents' }).click()
-    await expect(page.getByRole('heading', { level: 1, name: 'Agents' })).toBeVisible()
-    await expect(page.locator('.secret-value')).toHaveCount(0)
-    expect(page.url()).not.toContain(secret)
-    await expectNoHorizontalOverflow(page)
-  })
-
-  test('recovery issues a one-time token and links to the redacted audit trail', async ({ page }) => {
-    await page.getByRole('link', { name: AGENT_ID, exact: true }).click()
-    await expect(
-      page.getByRole('heading', { level: 1, name: /Agent 0195f2a1/ }),
-    ).toBeVisible()
-    await page.getByRole('link', { name: 'Recover agent' }).click()
-    await expect(
-      page.getByRole('heading', { level: 1, name: /Recover Agent 0195f2a1/ }),
-    ).toBeVisible()
-    // PATTERN-CONFIRMATION: the high-risk action requires the typed phrase.
-    await expect(page.getByRole('button', { name: 'Create recovery token' })).toBeDisabled()
-    await page.getByLabel(/I understand: recovery advances/).check()
-    await page.getByRole('button', { name: 'Create recovery token' }).click()
-
-    const secretBox = page.locator('.secret-value')
-    await expect(secretBox).toBeVisible({ timeout: 15_000 })
-    const secret = (await secretBox.textContent()) ?? ''
-    expect(secret).toMatch(/^pp_recover_[0-9a-f-]+_[0-9a-f]{64}$/)
-    expect(page.url()).not.toContain(secret)
-    // Recovery advances the Epoch without a duplicate Agent.
-    await expect(page.getByText(/Epoch advances from 1 to 2/)).toBeVisible()
-    await expect(page.getByText(/never duplicated/)).toBeVisible()
-    // Every security mutation carries the redacted Audit link.
-    await expect(page.getByRole('link', { name: 'view Agent audit' })).toBeVisible()
-  })
-
-  test('rotation shows the new credential once with overlap context', async ({ page }) => {
-    await page.getByRole('link', { name: AGENT_ID, exact: true }).click()
-    await page.getByRole('link', { name: 'Rotate credential' }).click()
-    await expect(
-      page.getByRole('heading', { level: 1, name: /Rotate credential/ }),
-    ).toBeVisible()
-    // PATTERN-CONFIRMATION: the security mutation requires the typed phrase.
-    await expect(page.getByRole('button', { name: 'Rotate credential' })).toBeDisabled()
-    await page.getByLabel(/I understand: rotation issues/).check()
-    await page.getByRole('button', { name: 'Rotate credential' }).click()
-
-    const secretBox = page.locator('.secret-value')
-    await expect(secretBox).toBeVisible({ timeout: 15_000 })
-    const secret = (await secretBox.textContent()) ?? ''
-    expect(secret).toMatch(/^pp_agent_[0-9a-f-]+_[0-9a-f]{64}$/)
-    expect(page.url()).not.toContain(secret)
-    await expect(page.getByText(/overlap 24 hours/)).toBeVisible()
-    await expect(page.getByText(/stay valid until/)).toBeVisible()
-    // Rotation is distinct from recovery: the Epoch is untouched.
-    await expect(page.getByText(/Agent Epoch was not changed/)).toBeVisible()
   })
 
   test('revocation is explicit, immediate, and refetches the authoritative state', async ({ page }) => {

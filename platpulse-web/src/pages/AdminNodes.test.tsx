@@ -310,44 +310,7 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     expect(screen.getByText(/New history is not merged/)).toBeTruthy()
   })
 
-  it('publishes through the dedicated visibility workflow and refetches authoritative state', async () => {
-    let visibility = 'private'
-    mockFetch({
-      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
-      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
-        jsonResponse({ ...NODE_A_DETAIL, visibility }, 200),
-      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014/visibility': () => {
-        visibility = 'public'
-        return jsonResponse(
-          { node_id: NODE_A.node_id, visibility: 'public' },
-          200,
-        )
-      },
-    })
-    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014/visibility')
 
-    await screen.findByRole('heading', { level: 1, name: 'Node visibility' })
-    expect(
-      await screen.findByText(/This Node is private\. Publishing it adds it to the Home projection/),
-    ).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: 'Publish to Home' }))
-    await screen.findByText(/is now public\. The Home projection was updated\./)
-    // The mutation invalidated the Admin cache; the next detail load
-    // refetches authoritative state (public now).
-    const fetchCalls = vi
-      .mocked(fetch)
-      .mock.calls.map((call) => {
-        const input = call[0]
-        const url =
-          input instanceof Request
-            ? new URL(input.url).pathname
-            : String(input).replace(TEST_ORIGIN, '')
-        return url
-      })
-      .filter((url) => url.includes('/visibility'))
-    expect(fetchCalls.length).toBeGreaterThan(0)
-    expect(visibility).toBe('public')
-  })
 
   it('updates the Server-owned display name and shows the confirmation', async () => {
     mockFetch({
