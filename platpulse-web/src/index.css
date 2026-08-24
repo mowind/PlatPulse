@@ -1023,6 +1023,102 @@ button {
   box-shadow: var(--shadow-soft);
 }
 
+.node-overview-panel {
+  margin-top: 1.25rem;
+  padding: 1.25rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: var(--shadow-soft);
+}
+
+.node-overview-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.node-overview-heading h2 {
+  margin: 0;
+}
+
+.node-overview-heading .health-reason {
+  margin: 0.45rem 0 0;
+}
+
+.node-overview-freshness {
+  display: grid;
+  justify-items: end;
+  gap: 0.4rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-align: right;
+}
+
+.node-overview-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 2fr);
+  gap: 0.75rem;
+  margin-top: 1.25rem;
+}
+
+.node-headline-metric,
+.node-overview-statuses {
+  min-width: 0;
+  padding: 1rem;
+  background: #f8f9fd;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.node-headline-metric {
+  display: grid;
+  align-content: space-between;
+  gap: 0.4rem;
+}
+
+.node-headline-metric > span,
+.node-overview-status > span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.node-headline-metric strong {
+  font-size: clamp(1.5rem, 3vw, 2.25rem);
+  overflow-wrap: anywhere;
+}
+
+.node-headline-metric small {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.node-overview-statuses {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.node-overview-status {
+  display: grid;
+  align-content: space-between;
+  gap: 0.7rem;
+  min-width: 0;
+}
+
+.node-chain-context {
+  margin-top: 1rem;
+}
+
+.node-chain-context .panel-heading {
+  margin-bottom: 1rem;
+}
+
+
 .node-summary-panel .panel-heading {
   align-items: flex-start;
   flex-wrap: wrap;
@@ -1073,14 +1169,18 @@ button {
 }
 
 .node-observation-grid {
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  margin: 1rem 0 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 0;
 }
 
 .node-observation-grid > div {
   min-width: 0;
-  padding: 0.75rem 0.85rem;
-  border-top: 1px solid var(--line);
+  padding: 0.85rem;
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  border-radius: 10px;
 }
 
 .node-observation-grid dt {
@@ -1189,6 +1289,20 @@ button {
   word-break: break-word;
 }
 
+.history-gap-card {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.history-gap-card > span {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.history-gap-card > p {
+  margin: 0.2rem 0 0;
+}
+
 .redaction-note {
   margin: 1rem 0 0;
   padding: 0.75rem 1rem;
@@ -1211,6 +1325,33 @@ button {
 }
 
 @media (max-width: 42rem) {
+  .node-overview-heading {
+    flex-direction: column;
+  }
+
+  .node-overview-freshness {
+    justify-items: start;
+    text-align: left;
+  }
+
+  .node-overview-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .node-overview-statuses {
+    grid-template-columns: 1fr;
+  }
+
+  .node-overview-status {
+    grid-template-columns: auto auto;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .node-observation-grid {
+    grid-template-columns: 1fr;
+  }
+
   .node-detail-heading {
     flex-direction: column;
   }
@@ -2434,6 +2575,14 @@ button {
 .dashboard-node-title p { margin: 0.28rem 0 0; color: rgba(255, 255, 255, 0.48); font-size: 0.72rem; overflow-wrap: anywhere; }
 .dashboard-card-network { display: inline-flex; align-items: center; min-height: 44px; color: #c5aeff; text-decoration: none; }
 .dashboard-health-reason { margin: 1rem 0 0; color: rgba(255, 255, 255, 0.62); font-size: 0.82rem; overflow-wrap: anywhere; }
+.dashboard-node-primary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.85rem; margin: 1rem 0 0; padding-top: 1rem; border-top: 1px solid rgba(255, 255, 255, 0.08); }
+.dashboard-node-primary-metric { min-width: 0; display: grid; gap: 0.28rem; }
+.dashboard-node-primary-metric > span, .dashboard-node-status-item > span { color: rgba(255, 255, 255, 0.45); font-size: 0.68rem; font-weight: 700; }
+.dashboard-node-primary-metric strong { color: rgba(255, 255, 255, 0.96); font-size: clamp(1.2rem, 2vw, 1.7rem); overflow-wrap: anywhere; }
+.dashboard-node-primary-metric small { color: rgba(255, 255, 255, 0.5); font-size: 0.72rem; overflow-wrap: anywhere; }
+.dashboard-node-statuses { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.6rem; margin-top: 1rem; padding-top: 1rem; border-top: 1px solid rgba(255, 255, 255, 0.08); }
+.dashboard-node-status-item { min-width: 0; display: grid; align-content: space-between; gap: 0.45rem; }
+.dashboard-node-status-item .status-badge { justify-content: center; min-width: 0; font-size: 0.68rem; }
 .dashboard-node-metrics, .dashboard-observation-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.85rem; margin: 1rem 0 0; padding-top: 1rem; border-top: 1px solid rgba(255, 255, 255, 0.08); }
 .dashboard-node-metrics > div, .dashboard-observation-row > div { min-width: 0; }
 .dashboard-node-metrics dt, .dashboard-observation-row dt { color: rgba(255, 255, 255, 0.45); font-size: 0.68rem; font-weight: 700; }
@@ -2464,6 +2613,9 @@ button {
   .dashboard-summary-card p { font-size: 0.72rem; }
   .dashboard-summary-card strong { font-size: 1.45rem; }
   .dashboard-node-metrics, .dashboard-observation-row { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.65rem; }
+  .dashboard-node-primary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dashboard-node-primary-metric:first-child { grid-column: 1 / -1; }
+  .dashboard-node-statuses { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dashboard-node-footer { align-items: flex-start; flex-wrap: wrap; }
   .dashboard-node-footer a { width: 100%; margin-left: 0; }
 }
@@ -2563,6 +2715,7 @@ button {
 .home-shell .public-network-page .validator-insight,
 .home-shell .node-detail-page .panel,
 .home-shell .node-detail-page .node-summary-panel,
+.home-shell .node-detail-page .node-overview-panel,
 .home-shell .node-detail-page .node-signal-card,
 .home-shell .node-detail-page .node-card {
   background: rgba(14, 14, 22, 0.74);
@@ -2591,9 +2744,93 @@ button {
   word-break: break-word;
 }
 
-.home-shell .public-network-page .node-card h2 a {
+.home-shell .network-node-card {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.network-node-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.node-card-eyebrow {
+  margin: 0 0 0.25rem;
+  color: rgba(247, 246, 251, 0.45);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.network-node-card h2 {
+  margin: 0;
+}
+
+.network-node-card .health-reason {
+  margin: 0;
+}
+
+.network-node-highlights {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.network-node-highlights > div {
+  min-width: 0;
+  display: grid;
+  gap: 0.25rem;
+}
+
+.network-node-highlights span,
+.network-node-highlights small {
+  color: rgba(247, 246, 251, 0.52);
+  font-size: 0.72rem;
+}
+
+.network-node-highlights strong {
+  font-size: 1.15rem;
   overflow-wrap: anywhere;
-  word-break: break-word;
+}
+
+.network-node-statuses {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.network-node-statuses .node-overview-status {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.network-node-detail-link {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  color: #c5aeff;
+  font-weight: 750;
+  text-decoration: none;
+}
+
+@media (max-width: 42rem) {
+  .network-node-highlights {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .network-node-statuses {
+    grid-template-columns: 1fr;
+  }
+
+  .network-node-highlights > div:first-child {
+    grid-column: 1 / -1;
+  }
 }
 
 .home-shell .public-network-page .node-card .muted,
@@ -2661,6 +2898,21 @@ button {
 .home-shell .health-reason,
 .home-shell .node-freshness-detail,
 .home-shell .node-history-panel .muted {
+  color: rgba(247, 246, 251, 0.58);
+}
+
+.home-shell .node-fact,
+.home-shell .node-signal-card,
+.home-shell .node-headline-metric,
+.home-shell .node-overview-statuses {
+  color: #f7f6fb;
+  background: rgba(255, 255, 255, 0.045);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.home-shell .node-overview-freshness,
+.home-shell .node-headline-metric small,
+.home-shell .node-overview-status > span {
   color: rgba(247, 246, 251, 0.58);
 }
 

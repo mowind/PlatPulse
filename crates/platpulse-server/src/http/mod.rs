@@ -247,7 +247,8 @@ async fn realtime_cursor_middleware(
 #[derive(Clone)]
 pub(crate) struct AuthenticatedSession(pub SessionInfo);
 
-const CRITICAL_WORKER_COUNT: usize = 4;
+const CRITICAL_WORKER_COUNT: usize = 3;
+const CRITICAL_WORKER_HEARTBEAT_STALE_AFTER_MS: u64 = 120_000;
 
 #[derive(Debug)]
 pub(crate) struct ServerRuntime {
@@ -332,7 +333,8 @@ impl ServerRuntime {
             && self.critical_worker_enabled.load(Ordering::Acquire)
             && self.critical_worker_heartbeats_ms.iter().all(|heartbeat| {
                 let heartbeat = heartbeat.load(Ordering::Acquire);
-                heartbeat != 0 && now.saturating_sub(heartbeat) <= 2_000
+                heartbeat != 0
+                    && now.saturating_sub(heartbeat) <= CRITICAL_WORKER_HEARTBEAT_STALE_AFTER_MS
             })
     }
 

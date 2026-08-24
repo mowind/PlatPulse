@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router'
 import type { PublicNetwork, PublicNode } from '../api/generated'
 import { realtimeStreamLabel } from './RealtimeNotice'
-import { StatusBadge } from './StatusBadge'
+import { formatObservedAt, StatusBadge } from './StatusBadge'
 
 type HomeDashboardProps = {
   networks: PublicNetwork[]
@@ -110,36 +110,56 @@ function SummaryCard({ label, value, detail, tone }: { label: string; value: num
 
 function HomeNodeCard({ network, node }: NodeRecord) {
   const tone = toneFor(node.health)
-  const metrics = [
-    ['RPC', observationLabel(node.rpcState)],
-    ['Sync', observationLabel(node.syncState)],
-    ['Consensus', observationLabel(node.consensusState)],
-    ['Process', observationLabel(node.processState)],
-    ['Resync', observationLabel(node.resyncState)],
-    ['Freshness', freshnessLabel(node.freshness)],
-  ]
   return (
     <article className={`dashboard-node-card dashboard-node-card-${tone}`}>
       <header className="dashboard-node-header">
-        <div className="dashboard-node-title"><span className={`dashboard-node-status dashboard-node-status-${tone}`} aria-hidden="true" /><div><h2><Link to={`/nodes/${node.nodeId}`}>{nodeLabel(node)}</Link></h2><p><Link className="dashboard-card-network" to={`/networks/${network.networkKey}`}>{network.displayName}</Link> · <span className="breakable">{node.nodeId}</span></p></div></div>
+        <div className="dashboard-node-title"><span className={`dashboard-node-status dashboard-node-status-${tone}`} aria-hidden="true" /><div><h2><Link to={`/nodes/${node.nodeId}`}>{nodeLabel(node)}</Link></h2><p><Link className="dashboard-card-network" to={`/networks/${network.networkKey}`}>{network.displayName}</Link></p></div></div>
         <StatusBadge status={healthLabel(node.health)} tone={statusTone(tone)} />
       </header>
       <p className="dashboard-health-reason">{node.healthReason}</p>
-      <dl className="dashboard-node-metrics">{metrics.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
-      <dl className="dashboard-observation-row">
-        <Observation label="Current Head" value={formatNumber(node.currentHead)} />
-        <Observation label="History Boundary" value={formatNumber(node.historicalHighWatermark)} />
-        <Observation label="Peer Count" value={formatPeerCount(node)} />
-        <Observation label="Peer Observation" value={formatPeerObservation(node)} />
-        <Observation label="Host CPU" value={node.hostCpuPercent == null ? 'Unknown' : `${node.hostCpuPercent.toFixed(1)}%`} />
-        <Observation label="Network Reference" value={`${formatNumber(node.networkReferenceHead)} · ${node.networkReferenceConfidence}`} />
-      </dl>
-      <footer className="dashboard-node-footer"><span>{node.resyncProgress ?? observationLabel(node.resyncState)}</span><Link to={`/nodes/${node.nodeId}`}>Open Node Detail <span aria-hidden="true">↗</span></Link></footer>
+      <div className="dashboard-node-primary" aria-label="Node highlights">
+        <Metric label="Current Head" value={formatNumber(node.currentHead)} />
+        <Metric label="Peers" value={formatPeerCount(node)} detail={formatPeerObservation(node)} />
+        <Metric label="Last Observed" value={freshnessLabel(node.freshness)} detail={lastObservedDetail(node.freshness)} />
+      </div>
+      <div className="dashboard-node-statuses" aria-label="Node component status">
+        <ComponentStatus label="RPC" value={observationLabel(node.rpcState)} />
+        <ComponentStatus label="Sync" value={observationLabel(node.syncState)} />
+        <ComponentStatus label="Consensus" value={observationLabel(node.consensusState)} />
+        <ComponentStatus label="Process" value={observationLabel(node.processState)} />
+      </div>
+      <footer className="dashboard-node-footer"><span>{resyncSummary(node)}</span><Link to={`/nodes/${node.nodeId}`}>View Node Details <span aria-hidden="true">↗</span></Link></footer>
     </article>
   )
 }
 
-function Observation({ label, value }: { label: string; value: string }) { return <div><dt>{label}</dt><dd>{value}</dd></div> }
+function Metric({ label, value, detail }: { label: string; value: string; detail?: string }) {
+  return <div className="dashboard-node-primary-metric"><span>{label}</span><strong>{value}</strong>{detail && <small>{detail}</small>}</div>
+}
+
+function ComponentStatus({ label, value }: { label: string; value: string }) {
+  return <div className="dashboard-node-status-item"><span>{label}</span><StatusBadge status={value} tone={statusTone(toneFor(value))} /></div>
+}
+
+function resyncSummary(node: PublicNode): string {
+  const state = observationLabel(node.resyncState)
+  return state === 'Current' ? 'No active resync' : node.resyncProgress ?? `Resync ${state}`
+}
+
+function lastObservedDetail(value: string | null | undefined): string {
+  if (!value || value === 'unknown' || value === 'current' || value === 'stale') return 'Server timestamp unavailable'
+  return formatObservedAt(value)
+}
+
+function formatPeerCount(node: PublicNode) { return node.peers?.peerCount == null ? 'Unknown' : node.peers.peerCount.toLocaleString() }
+function formatPeerObservation(node: PublicNode) {
+  const peer = node.peers
+  if (!peer) return 'Unknown observation'
+  if (peer.state === 'error') return peer.peerCount == null ? 'Error; no last-good value' : 'Error; showing last-good value'
+  if (peer.freshness === 'stale') return 'Stale; showing last-good value'
+  if (peer.peerCount === 0) return 'Empty; authoritative zero'
+  return 'Current observation'
+}
 function statusTone(tone: ReturnType<typeof toneFor>): 'ok' | 'warning' | 'error' | 'neutral' {
   return tone === 'good' ? 'ok' : tone === 'bad' ? 'error' : tone === 'warn' ? 'warning' : 'neutral'
 }
@@ -185,17 +205,9 @@ function observationLabel(value: string | null | undefined): string {
   }
 }
 function freshnessLabel(value: string | null | undefined): string {
-  return value === 'current' ? 'Current' : value === 'stale' ? 'Stale' : 'Unknown'
+  return value === 'stale' ? 'Stale' : value && value !== 'unknown' ? 'Current' : 'Unknown'
 }
 function formatNumber(value: number | null | undefined) { return value == null ? 'Unknown' : value.toLocaleString() }
-function formatPeerCount(node: PublicNode) { return node.peers?.peerCount == null ? 'Unknown' : node.peers.peerCount.toLocaleString() }
-function formatPeerObservation(node: PublicNode) {
-  const peer = node.peers
-  if (!peer) return 'Unknown'
-  const freshness = freshnessLabel(peer.freshness)
-  const staleSince = peer.staleSince ? ` · stale since ${peer.staleSince}` : ''
-  return `${observationLabel(peer.state)} · ${freshness}${staleSince}`
-}
 function isHealthy(value: string) { return value.toLowerCase() === 'healthy' }
 function healthRank(value: string) { const tone = toneFor(value); return tone === 'bad' ? 0 : tone === 'warn' ? 1 : tone === 'good' ? 2 : 3 }
 function toneFor(value: string): 'good' | 'warn' | 'bad' | 'neutral' {

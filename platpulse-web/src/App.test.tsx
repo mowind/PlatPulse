@@ -197,6 +197,14 @@ describe('App shell with private Home', () => {
         blockTimeMs: 1_755_638_400_000,
         transactionCount: 4,
         observedAt: '2026-08-20T00:00:00Z',
+      }, {
+        nodeId: 'node-1',
+        height: null,
+        gapFromHeight: 120,
+        gapToHeight: 122,
+        gapKind: 'unrecoverable_backfill',
+        gapReason: 'history interval unavailable',
+        observedAt: '2026-08-20T00:01:00Z',
       }], 200),
       '/api/public/v1/nodes/node-1/history/export': () => jsonResponse([{
         nodeId: 'node-1',
@@ -242,6 +250,8 @@ describe('App shell with private Home', () => {
     expect(screen.getAllByText('History Boundary').length).toBeGreaterThan(0)
     expect(screen.getByText('Bounded Block History')).toBeTruthy()
     expect(screen.getByText(/Server-configured history window; absent blocks are not zero/)).toBeTruthy()
+    expect(screen.getByText('History gap · 120–122')).toBeTruthy()
+    expect(screen.getByText('history interval unavailable')).toBeTruthy()
     expect(screen.getByText('Last-good peers')).toBeTruthy()
     expect(screen.getAllByText('12').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Error').length).toBeGreaterThan(0)

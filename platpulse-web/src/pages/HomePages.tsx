@@ -122,31 +122,26 @@ export function NodePage() {
     </header>
     {exportError && <p role="alert" className="form-error">{exportError}</p>}
 
-    <section className="node-summary-panel panel" aria-labelledby="node-summary-title">
-      <div className="panel-heading">
+    <section className="node-overview-panel panel" aria-labelledby="node-overview-title">
+      <div className="node-overview-heading">
         <div>
-          <h2 id="node-summary-title">Node Health Summary</h2>
+          <h2 id="node-overview-title">Node Health Summary</h2>
           <p className="health-reason">{node.healthReason}</p>
         </div>
-        <StatusBadge status={freshnessLabel(node.freshness)} tone={statusTone(freshnessLabel(node.freshness))} />
-        <p className="muted node-freshness-detail">{freshnessDetail(node.freshness)}</p>
+        <div className="node-overview-freshness">
+          <StatusBadge status={freshnessLabel(node.freshness)} tone={statusTone(freshnessLabel(node.freshness))} />
+          <span>{freshnessDetail(node.freshness)}</span>
+        </div>
       </div>
-      <div className="node-fact-grid" aria-label="Node independent facts">
-        <NodeFact label="Health" value={nodeHealthLabel(node.health)} tone={nodeHealthTone(node.health)} />
-        <NodeFact label="RPC" value={nodeComponentStateLabel(node.rpcState)} tone={stateTone(node.rpcState)} />
-        <NodeFact label="Sync" value={nodeComponentStateLabel(node.syncState)} tone={stateTone(node.syncState)} />
-        <NodeFact label="Consensus" value={nodeComponentStateLabel(node.consensusState)} tone={stateTone(node.consensusState)} />
-        <NodeFact label="Process" value={nodeComponentStateLabel(node.processState)} tone={stateTone(node.processState)} />
-        <NodeFact label="Resync" value={nodeComponentStateLabel(node.resyncState)} tone={stateTone(node.resyncState)} detail={node.resyncProgress ?? undefined} />
+      <div className="node-overview-grid">
+        <div className="node-headline-metric"><span>Current Head</span><strong>{formatNumber(node.currentHead)}</strong><small>Latest accepted Node observation</small></div>
+        <div className="node-headline-metric"><span>Peers</span><strong>{peerCount(node.peers)}</strong><small>{peerBreakdown(node.peers)}</small></div>
+        <div className="node-overview-statuses" aria-label="Node component status">
+          <NodeOverviewStatus label="RPC" value={nodeComponentStateLabel(node.rpcState)} />
+          <NodeOverviewStatus label="Sync" value={nodeComponentStateLabel(node.syncState)} />
+          <NodeOverviewStatus label="Consensus" value={nodeComponentStateLabel(node.consensusState)} />
+        </div>
       </div>
-      <dl className="node-observation-grid" aria-label="Node independent observations">
-        <Observation label="Current Head" value={formatNumber(node.currentHead)} />
-        <Observation label="History Boundary" value={formatNumber(node.historicalHighWatermark)} />
-        <Observation label="Network Reference" value={formatNumber(node.networkReferenceHead)} />
-        <Observation label="Reference Confidence" value={confidenceLabel(node.networkReferenceConfidence)} />
-        <Observation label="Host CPU" value={formatPercent(node.hostCpuPercent)} detail="Sanitized Host observation" />
-        <Observation label="Peer Count" value={peerCount(node.peers)} detail={peerCountDetail(node.peers)} />
-      </dl>
     </section>
 
     <div className="node-tabs" role="tablist" aria-label="Node detail views">
@@ -156,28 +151,38 @@ export function NodePage() {
 
     <section id="node-details-panel" className="node-tabpanel" role="tabpanel" aria-labelledby="node-details-tab" aria-label="Details" hidden={activeTab !== 'details'}>
       <h2 className="sr-only">Details</h2>
-      <div className="node-signal-grid" aria-label="Current observation signals">
-        <SignalCard label="Host CPU" value={formatPercent(node.hostCpuPercent)} detail="Shared Host observation" />
-        <SignalCard label="Current Head" value={formatNumber(node.currentHead)} detail="Latest accepted Node observation" />
-        <SignalCard label="History Boundary" value={formatNumber(node.historicalHighWatermark)} detail="Historical high-water mark" />
-        <SignalCard label="Peers" value={peerCount(node.peers)} detail={peerCountDetail(node.peers)} />
-        <SignalCard label="RPC" value={nodeComponentStateLabel(node.rpcState)} detail="Independent RPC observation" status={nodeComponentStateLabel(node.rpcState)} />
-        <SignalCard label="Consensus" value={nodeComponentStateLabel(node.consensusState)} detail="Independent consensus observation" status={nodeComponentStateLabel(node.consensusState)} />
-      </div>
       <section className="panel node-history-panel" aria-labelledby="node-history-title">
         <div className="panel-heading">
           <div>
             <h2 id="node-history-title">Bounded Block History</h2>
-          <p className="muted">Server-configured history window; absent blocks are not zero. The exact bound is not part of the Public Projection.</p>
+            <p className="muted">Server-configured history window; absent blocks are not zero. The exact bound is not part of the Public Projection.</p>
           </div>
           <span className="history-window-label">Best effort</span>
         </div>
         {historyQuery.error && <p role="status" className="form-error">Block History is Error; retained history is unavailable. <Link to={`/networks/${node.networkKey}`}>Return to Network</Link> and try again.</p>}
         {historyQuery.isPending && <p role="status">Block History is Starting; loading the Server window…</p>}
-        {!historyQuery.isPending && !historyQuery.error && (historyQuery.data?.filter((block) => block.height != null).length ?? 0) === 0 && <p className="panel-state">Block History is Empty; no retained Block Summary is available in the Server window.</p>}
+        {!historyQuery.isPending && !historyQuery.error && (historyQuery.data?.filter((block) => block.height != null).length ?? 0) === 0 && (historyQuery.data?.filter((block) => block.gapFromHeight != null || block.gapToHeight != null).length ?? 0) === 0 && <p className="panel-state">Block History is Empty; no retained Block Summary is available in the Server window.</p>}
+        {!historyQuery.isPending && !historyQuery.error && (historyQuery.data?.filter((block) => block.gapFromHeight != null || block.gapToHeight != null).length ?? 0) > 0 && <p className="panel-state">No block summaries are available in this window; the Server recorded history gaps instead.</p>}
         <div className="history-list">
           {historyQuery.data?.filter((block) => block.height != null).map((block) => <HistoryCard block={block} key={`${block.height}-${block.observedAt ?? ''}`} />)}
+          {historyQuery.data?.filter((block) => block.gapFromHeight != null || block.gapToHeight != null).slice(0, 3).map((gap) => <HistoryGapCard gap={gap} key={`${gap.gapFromHeight}-${gap.gapToHeight}-${gap.observedAt ?? ''}`} />)}
         </div>
+      </section>
+      <section className="panel node-chain-context" aria-labelledby="node-chain-context-title">
+        <div className="panel-heading">
+          <div>
+            <h2 id="node-chain-context-title">Chain context</h2>
+            <p className="muted">Supporting observations explain the current position without repeating the headline status.</p>
+          </div>
+        </div>
+        <dl className="node-observation-grid" aria-label="Supporting Node observations">
+          <Observation label="History Boundary" value={formatNumber(node.historicalHighWatermark)} />
+          <Observation label="Network Reference" value={formatNumber(node.networkReferenceHead)} />
+          <Observation label="Reference Confidence" value={confidenceLabel(node.networkReferenceConfidence)} />
+          <Observation label="Host CPU" value={formatPercent(node.hostCpuPercent)} detail="Sanitized Host observation" />
+          <Observation label="Process" value={nodeComponentStateLabel(node.processState)} detail="Node Process observation" />
+          <Observation label="Resync" value={nodeComponentStateLabel(node.resyncState)} detail={resyncDetail(node)} />
+        </dl>
       </section>
       {node.validator && <ValidatorDetails validator={node.validator} generation={generation} />}
     </section>
@@ -217,16 +222,12 @@ function TabButton({ id, panelId, selected, onSelect, onNavigate, children }: { 
   >{children}</button>
 }
 
-function NodeFact({ label, value, tone, detail }: { label: string; value: string; tone: 'ok' | 'warning' | 'error' | 'neutral'; detail?: string }) {
-  return <article className="node-fact"><span>{label}</span><StatusBadge status={value} tone={tone} />{detail && <small>{detail}</small>}</article>
+function NodeOverviewStatus({ label, value }: { label: string; value: string }) {
+  return <div className="node-overview-status"><span>{label}</span><StatusBadge status={value} tone={stateTone(value)} /></div>
 }
 
 function Observation({ label, value, detail }: { label: string; value: string; detail?: string }) {
   return <div><dt>{label}</dt><dd>{value}</dd>{detail && <small>{detail}</small>}</div>
-}
-
-function SignalCard({ label, value, detail, status }: { label: string; value: string; detail: string; status?: string }) {
-  return <article className="node-signal-card"><span className="node-signal-label">{label}</span><strong>{status ? <StatusBadge status={status} tone={stateTone(status)} /> : value}</strong><small>{detail}</small></article>
 }
 
 function nodeComponentStateLabel(value: string | null | undefined): string {
@@ -311,12 +312,12 @@ function peerCount(insight: PublicNode['peers']): string {
   return insight.peerCount.toLocaleString()
 }
 
-function peerCountDetail(insight: PublicNode['peers']): string {
-  if (insight.state === 'error') return insight.peerCount == null ? 'Error; no last-good value' : `Error; last-good value received ${formatObservedAt(insight.receivedAt)}`
-  if (insight.freshness === 'stale') return `Stale; last-good value received ${formatObservedAt(insight.receivedAt)}`
+function peerBreakdown(insight: PublicNode['peers']): string {
+  if (insight.state === 'error') return insight.peerCount == null ? 'Peer observation unavailable' : 'Error; showing last-good value'
+  if (insight.freshness === 'stale') return 'Stale; showing last-good value'
   if (insight.peerCount === 0) return 'Empty; authoritative successful zero'
-  if (insight.peerCount == null) return 'Unknown; never observed'
-  return `Current; observed ${formatObservedAt(insight.observedAt)}`
+  if (insight.inboundCount == null || insight.outboundCount == null) return 'Current observation'
+  return `${insight.inboundCount} inbound · ${insight.outboundCount} outbound`
 }
 
 function ValidatorDetails({ validator, generation }: { validator: PublicValidatorInsight; generation: number }) {
@@ -334,6 +335,36 @@ function HistoryCard({ block }: { block: NonNullable<ReturnType<typeof usePublic
   return <article className="node-card"><strong>Height {block.height}</strong><span> · {block.blockTimeMs == null ? 'time unknown' : new Date(block.blockTimeMs).toISOString()} · {block.transactionCount == null ? 'transactions unknown' : `${block.transactionCount} transactions`}</span><p className="muted">{detail}</p></article>
 }
 
+function resyncDetail(node: PublicNode): string {
+  return nodeComponentStateLabel(node.resyncState) === 'Current' ? 'No active resync' : node.resyncProgress ?? 'Progress unavailable'
+}
+
+function HistoryGapCard({ gap }: { gap: NonNullable<ReturnType<typeof usePublicNodeHistory>['data']>[number] }) {
+  const from = gap.gapFromHeight == null ? 'Unknown' : gap.gapFromHeight.toLocaleString()
+  const to = gap.gapToHeight == null ? 'Unknown' : gap.gapToHeight.toLocaleString()
+  return <article className="node-card history-gap-card"><strong>History gap · {from}–{to}</strong><span>{gap.gapKind ?? 'Unclassified gap'} · {formatObservedAt(gap.observedAt)}</span><p className="muted">{gap.gapReason ?? 'The interval could not be recovered.'}</p></article>
+}
+
 function NodeCard({ node }: { node: PublicNode }) {
-  return <article className="node-card"><h2><Link to={`/nodes/${node.nodeId}`}>{node.displayName ?? node.nodeId}</Link></h2><p><StatusBadge status={nodeHealthLabel(node.health)} tone={nodeHealthTone(node.health)} /> {node.healthReason}</p><p className="muted">RPC: {nodeComponentStateLabel(node.rpcState)} · Sync: {nodeComponentStateLabel(node.syncState)} · Consensus: {nodeComponentStateLabel(node.consensusState)} · Head: {node.currentHead == null ? 'Unknown' : node.currentHead.toLocaleString()} · History: {node.historicalHighWatermark == null ? 'Unknown' : node.historicalHighWatermark.toLocaleString()} · {nodeComponentStateLabel(node.resyncState)}</p>{node.validator && <ValidatorInsight insight={node.validator} compact />}<PeerInsight insight={node.peers} compact /></article>
+  return <article className="node-card network-node-card">
+    <header className="network-node-card-header">
+      <div>
+        <p className="node-card-eyebrow">PlatON Node</p>
+        <h2><Link to={`/nodes/${node.nodeId}`}>{node.displayName ?? node.nodeId}</Link></h2>
+      </div>
+      <StatusBadge status={nodeHealthLabel(node.health)} tone={nodeHealthTone(node.health)} />
+    </header>
+    <p className="health-reason">{node.healthReason}</p>
+    <div className="network-node-highlights">
+      <div><span>Current Head</span><strong>{formatNumber(node.currentHead)}</strong></div>
+      <div><span>Peers</span><strong>{peerCount(node.peers)}</strong><small>{peerBreakdown(node.peers)}</small></div>
+      <div><span>Last observed</span><strong>{freshnessLabel(node.freshness)}</strong><small>{freshnessDetail(node.freshness)}</small></div>
+    </div>
+    <div className="network-node-statuses" aria-label="Node component status">
+      <NodeOverviewStatus label="RPC" value={nodeComponentStateLabel(node.rpcState)} />
+      <NodeOverviewStatus label="Sync" value={nodeComponentStateLabel(node.syncState)} />
+      <NodeOverviewStatus label="Consensus" value={nodeComponentStateLabel(node.consensusState)} />
+    </div>
+    <Link className="network-node-detail-link" to={`/nodes/${node.nodeId}`}>View Node Details <span aria-hidden="true">↗</span></Link>
+  </article>
 }
