@@ -2572,6 +2572,7 @@ button {
   outline-offset: -2px;
 }
 .dashboard-node-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.9rem; }
+.dashboard-node-badges { display: flex; flex-direction: column; align-items: flex-end; flex: 0 0 auto; gap: 0.35rem; }
 .dashboard-node-title { display: flex; min-width: 0; gap: 0.65rem; align-items: flex-start; }
 .dashboard-node-status { width: 0.75rem; height: 0.75rem; flex: 0 0 auto; margin-top: 0.32rem; box-shadow: 0 0 0 0.24rem rgba(255, 255, 255, 0.06); }
 .dashboard-node-status-good { background: #4cdb9c; }

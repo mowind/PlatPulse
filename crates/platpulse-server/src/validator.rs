@@ -24,11 +24,50 @@ pub const MAX_VALIDATOR_DISPLAY_NAME_LEN: usize = 128;
 pub const MAX_PROVIDER_DIAGNOSTIC_LEN: usize = 256;
 pub const MAX_PROVIDER_BODY_LEN: usize = 64 * 1024;
 
+/// Canonical Validator Activity values. Provider-specific statuses (including
+/// numeric PlatScan statuses) never cross this boundary; adapters map their
+/// upstream vocabulary into these exact values (#100, #101).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidatorActivity {
+    Active,
+    Producing,
+    Exiting,
+    Exited,
+    Verifying,
+    Locked,
+}
+
+impl ValidatorActivity {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ValidatorActivity::Active => "active",
+            ValidatorActivity::Producing => "producing",
+            ValidatorActivity::Exiting => "exiting",
+            ValidatorActivity::Exited => "exited",
+            ValidatorActivity::Verifying => "verifying",
+            ValidatorActivity::Locked => "locked",
+        }
+    }
+
+    pub fn from_canonical(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "active" => Some(ValidatorActivity::Active),
+            "producing" => Some(ValidatorActivity::Producing),
+            "exiting" => Some(ValidatorActivity::Exiting),
+            "exited" => Some(ValidatorActivity::Exited),
+            "verifying" => Some(ValidatorActivity::Verifying),
+            "locked" => Some(ValidatorActivity::Locked),
+            _ => None,
+        }
+    }
+}
+
 /// Exact normalized values returned by a Server-side Validator Provider.
 /// Provider-specific JSON never crosses this boundary.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ValidatorObservation {
     pub provider_timestamp: Option<String>,
+    pub activity: Option<ValidatorActivity>,
     pub rank: Option<i64>,
     pub stake_amount: Option<String>,
     pub reward_amount: Option<String>,
@@ -240,11 +279,23 @@ fn normalize_explorer_response(value: &Value) -> Result<Option<ValidatorObservat
         }
         Ok(Some(parsed))
     };
+    let read_activity = |names: &[&str]| -> Result<Option<ValidatorActivity>, String> {
+        let Some(value) = names.iter().find_map(|name| object.get(*name)) else {
+            return Ok(None);
+        };
+        let value = value
+            .as_str()
+            .ok_or_else(|| "Explorer returned an unsupported Validator activity".to_owned())?;
+        ValidatorActivity::from_canonical(value)
+            .map(Some)
+            .ok_or_else(|| "Explorer returned an unsupported Validator activity".to_owned())
+    };
     let provider_timestamp = read_string(&["provider_timestamp", "timestamp", "updated_at"])?
         .map(|value| canonical_timestamp(&value).map_err(|error| error.to_string()))
         .transpose()?;
     let observation = ValidatorObservation {
         provider_timestamp,
+        activity: read_activity(&["activity", "status", "state"])?,
         rank: read_int(&["rank", "ranking"])?,
         stake_amount: read_string(&["stake_amount", "stake", "staking_amount"])?,
         reward_amount: read_string(&["reward_amount", "reward", "rewards"])?,
@@ -301,8 +352,9 @@ fn provider_diagnostic(value: String) -> String {
 
 fn observation_key(observation: &ValidatorObservation) -> String {
     let bytes = format!(
-        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
         observation.provider_timestamp,
+        observation.activity,
         observation.rank,
         observation.stake_amount,
         observation.reward_amount,
@@ -950,6 +1002,7 @@ pub struct ValidatorInsightRecord {
     pub outcome: String,
     pub diagnostic: Option<String>,
     pub provider_timestamp: Option<String>,
+    pub activity: Option<String>,
     pub last_attempt_received_at: String,
     pub last_good_received_at: Option<String>,
     pub last_good_provider_timestamp: Option<String>,
@@ -1250,7 +1303,7 @@ pub async fn load_insight(
     validator_id: &str,
 ) -> Result<Option<ValidatorInsightRecord>, ValidatorError> {
     Ok(sqlx::query_as::<_, ValidatorInsightRecord>(
-        "SELECT validator_id, source, outcome, diagnostic, provider_timestamp, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at FROM current_validator_insights WHERE validator_id = ?",
+        "SELECT validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at FROM current_validator_insights WHERE validator_id = ?",
     )
     .bind(validator_id)
     .fetch_optional(db.pool())
@@ -1262,7 +1315,7 @@ pub async fn list_insights(
     network_key: Option<&str>,
 ) -> Result<Vec<ValidatorInsightRecord>, ValidatorError> {
     let mut sql = String::from(
-        "SELECT i.validator_id, i.source, i.outcome, i.diagnostic, i.provider_timestamp, i.last_attempt_received_at, i.last_good_received_at, i.last_good_provider_timestamp, i.rank, i.stake_amount, i.reward_amount, i.reward_rate, i.delegator_count, i.epoch, i.block_count, i.counter_state, i.change_state, i.candidate_previous_rank, i.candidate_rank, i.candidate_observations, i.candidate_observed_at, i.candidate_provider_timestamp, i.candidate_observation_key, i.last_observation_key, i.updated_at FROM current_validator_insights i JOIN validators v ON v.validator_id = i.validator_id",
+        "SELECT i.validator_id, i.source, i.outcome, i.diagnostic, i.provider_timestamp, i.activity, i.last_attempt_received_at, i.last_good_received_at, i.last_good_provider_timestamp, i.rank, i.stake_amount, i.reward_amount, i.reward_rate, i.delegator_count, i.epoch, i.block_count, i.counter_state, i.change_state, i.candidate_previous_rank, i.candidate_rank, i.candidate_observations, i.candidate_observed_at, i.candidate_provider_timestamp, i.candidate_observation_key, i.last_observation_key, i.updated_at FROM current_validator_insights i JOIN validators v ON v.validator_id = i.validator_id",
     );
     if network_key.is_some() {
         sql.push_str(" WHERE v.network_key = ?");
@@ -1374,7 +1427,7 @@ async fn apply_provider_result(
 ) -> Result<(bool, bool, bool), ValidatorError> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     let existing = sqlx::query_as::<_, ValidatorInsightRecord>(
-        "SELECT validator_id, source, outcome, diagnostic, provider_timestamp, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at FROM current_validator_insights WHERE validator_id = ?",
+        "SELECT validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at FROM current_validator_insights WHERE validator_id = ?",
     )
     .bind(validator_id)
     .fetch_optional(&mut **tx)
@@ -1383,6 +1436,18 @@ async fn apply_provider_result(
         ValidatorProviderResult::Success(observation) => {
             validate_observation(&observation)?;
             let key = observation_key(&observation);
+            // Activity applies on each validated successful snapshot, never
+            // waiting for ranking-change confirmation, and its own change is
+            // part of the invalidation identity (#100). A validated snapshot
+            // that omits Activity must never erase the last-good canonical
+            // Activity: only a provider failure or an explicit change may
+            // move the stored value.
+            let stored_activity = match observation.activity {
+                Some(activity) => Some(activity.as_str()),
+                None => existing.as_ref().and_then(|row| row.activity.as_deref()),
+            };
+            let activity_changed =
+                existing.as_ref().and_then(|row| row.activity.as_deref()) != stored_activity;
             if existing
                 .as_ref()
                 .and_then(|row| row.last_observation_key.as_deref())
@@ -1391,8 +1456,9 @@ async fn apply_provider_result(
                 let counter_state = "normal";
                 let change_state = "normal";
                 sqlx::query(
-                    "UPDATE current_validator_insights SET outcome = 'success', diagnostic = NULL, last_attempt_received_at = ?, last_good_received_at = ?, counter_state = ?, change_state = ?, updated_at = ? WHERE validator_id = ?",
+                    "UPDATE current_validator_insights SET outcome = 'success', diagnostic = NULL, activity = ?, last_attempt_received_at = ?, last_good_received_at = ?, counter_state = ?, change_state = ?, updated_at = ? WHERE validator_id = ?",
                 )
+                .bind(stored_activity)
                 .bind(&now)
                 .bind(&now)
                 .bind(counter_state)
@@ -1412,7 +1478,11 @@ async fn apply_provider_result(
                 )
                 .await?;
                 rebuild_monthly_aggregate(tx, validator_id, timezone, &month_key, &now).await?;
-                return Ok((true, false, analytics_changed));
+                return Ok((
+                    true,
+                    activity_changed,
+                    analytics_changed || activity_changed,
+                ));
             }
 
             // A rank-less success cannot establish ranking evidence. The first
@@ -1534,10 +1604,11 @@ async fn apply_provider_result(
                 "normal"
             };
             let source = bounded_source(source);
-            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, ?, 'success', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=NULL, provider_timestamp=excluded.provider_timestamp, last_attempt_received_at=excluded.last_attempt_received_at, last_good_received_at=excluded.last_good_received_at, last_good_provider_timestamp=excluded.last_good_provider_timestamp, rank=excluded.rank, stake_amount=excluded.stake_amount, reward_amount=excluded.reward_amount, reward_rate=excluded.reward_rate, delegator_count=excluded.delegator_count, epoch=excluded.epoch, block_count=excluded.block_count, counter_state=excluded.counter_state, change_state=excluded.change_state, candidate_previous_rank=excluded.candidate_previous_rank, candidate_rank=excluded.candidate_rank, candidate_observations=excluded.candidate_observations, candidate_observed_at=excluded.candidate_observed_at, candidate_provider_timestamp=excluded.candidate_provider_timestamp, candidate_observation_key=excluded.candidate_observation_key, last_observation_key=excluded.last_observation_key, updated_at=excluded.updated_at")
+            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, ?, 'success', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=NULL, provider_timestamp=excluded.provider_timestamp, activity=excluded.activity, last_attempt_received_at=excluded.last_attempt_received_at, last_good_received_at=excluded.last_good_received_at, last_good_provider_timestamp=excluded.last_good_provider_timestamp, rank=excluded.rank, stake_amount=excluded.stake_amount, reward_amount=excluded.reward_amount, reward_rate=excluded.reward_rate, delegator_count=excluded.delegator_count, epoch=excluded.epoch, block_count=excluded.block_count, counter_state=excluded.counter_state, change_state=excluded.change_state, candidate_previous_rank=excluded.candidate_previous_rank, candidate_rank=excluded.candidate_rank, candidate_observations=excluded.candidate_observations, candidate_observed_at=excluded.candidate_observed_at, candidate_provider_timestamp=excluded.candidate_provider_timestamp, candidate_observation_key=excluded.candidate_observation_key, last_observation_key=excluded.last_observation_key, updated_at=excluded.updated_at")
                 .bind(validator_id)
                 .bind(&source)
                 .bind(observation.provider_timestamp.as_deref())
+                .bind(stored_activity)
                 .bind(&now)
                 .bind(&now)
                 .bind(observation.provider_timestamp.as_deref())
@@ -1573,8 +1644,11 @@ async fn apply_provider_result(
             rebuild_monthly_aggregate(tx, validator_id, timezone, &month_key, &now).await?;
             Ok((
                 true,
-                confirmed_ranking_change,
-                confirmed_ranking_change || counter_changed || analytics_changed,
+                confirmed_ranking_change || activity_changed,
+                confirmed_ranking_change
+                    || activity_changed
+                    || counter_changed
+                    || analytics_changed,
             ))
         }
         outcome => {
@@ -1593,7 +1667,7 @@ async fn apply_provider_result(
                 .as_ref()
                 .is_none_or(|row| row.outcome != name || row.diagnostic != diagnostic);
             let source = bounded_source(source);
-            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, ?, ?, ?, NULL, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'normal', 'normal', NULL, NULL, 0, NULL, NULL, NULL, NULL, ?) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=excluded.diagnostic, last_attempt_received_at=excluded.last_attempt_received_at, provider_timestamp=current_validator_insights.provider_timestamp, last_good_received_at=current_validator_insights.last_good_received_at, last_good_provider_timestamp=current_validator_insights.last_good_provider_timestamp, rank=current_validator_insights.rank, stake_amount=current_validator_insights.stake_amount, reward_amount=current_validator_insights.reward_amount, reward_rate=current_validator_insights.reward_rate, delegator_count=current_validator_insights.delegator_count, epoch=current_validator_insights.epoch, block_count=current_validator_insights.block_count, counter_state=current_validator_insights.counter_state, change_state='normal', candidate_previous_rank=NULL, candidate_rank=NULL, candidate_observations=0, candidate_observed_at=NULL, candidate_provider_timestamp=NULL, candidate_observation_key=NULL, last_observation_key=current_validator_insights.last_observation_key, updated_at=excluded.updated_at")
+            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'normal', 'normal', NULL, NULL, 0, NULL, NULL, NULL, NULL, ?) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=excluded.diagnostic, last_attempt_received_at=excluded.last_attempt_received_at, provider_timestamp=current_validator_insights.provider_timestamp, activity=current_validator_insights.activity, last_good_received_at=current_validator_insights.last_good_received_at, last_good_provider_timestamp=current_validator_insights.last_good_provider_timestamp, rank=current_validator_insights.rank, stake_amount=current_validator_insights.stake_amount, reward_amount=current_validator_insights.reward_amount, reward_rate=current_validator_insights.reward_rate, delegator_count=current_validator_insights.delegator_count, epoch=current_validator_insights.epoch, block_count=current_validator_insights.block_count, counter_state=current_validator_insights.counter_state, change_state='normal', candidate_previous_rank=NULL, candidate_rank=NULL, candidate_observations=0, candidate_observed_at=NULL, candidate_provider_timestamp=NULL, candidate_observation_key=NULL, last_observation_key=current_validator_insights.last_observation_key, updated_at=excluded.updated_at")
                 .bind(validator_id)
                 .bind(source)
                 .bind(name)
@@ -1612,7 +1686,8 @@ fn bounded_source(source: &str) -> String {
 }
 
 fn validate_observation(observation: &ValidatorObservation) -> Result<(), ValidatorError> {
-    let has_supported_value = observation.rank.is_some()
+    let has_supported_value = observation.activity.is_some()
+        || observation.rank.is_some()
         || observation.stake_amount.is_some()
         || observation.reward_amount.is_some()
         || observation.reward_rate.is_some()
@@ -1818,6 +1893,7 @@ mod tests {
     #[test]
     fn explorer_response_normalization_preserves_numeric_strings_and_rejects_invalid_data() {
         let value = serde_json::json!({
+            "activity": "producing",
             "rank": "7",
             "stake": "123456789012345678901234567890.123456789",
             "reward_rate": "0.125000000000000001",
@@ -1825,6 +1901,7 @@ mod tests {
             "timestamp": "2025-01-01T00:00:00Z"
         });
         let observation = normalize_explorer_response(&value).unwrap().unwrap();
+        assert_eq!(observation.activity, Some(ValidatorActivity::Producing));
         assert_eq!(observation.rank, Some(7));
         assert_eq!(
             observation.stake_amount.as_deref(),
@@ -1847,6 +1924,18 @@ mod tests {
             Some(3)
         );
         assert!(validate_observation(&ValidatorObservation::default()).is_err());
+        // Canonical activity alone is a supported observation; provider
+        // statuses outside the canonical vocabulary are rejected, never
+        // normalized into a fabricated label.
+        assert!(
+            validate_observation(&ValidatorObservation {
+                activity: Some(ValidatorActivity::Exiting),
+                ..Default::default()
+            })
+            .is_ok()
+        );
+        assert!(normalize_explorer_response(&serde_json::json!({"status": 3})).is_err());
+        assert!(normalize_explorer_response(&serde_json::json!({"status": "candidate"})).is_err());
     }
 
     #[test]
@@ -1992,6 +2081,141 @@ mod tests {
                 (true, "unsupported".to_owned())
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn activity_persists_applies_immediately_and_survives_provider_failure() {
+        let (_dir, db) = test_db().await;
+        let owner_id: String =
+            sqlx::query_scalar("SELECT user_id FROM users WHERE username = 'owner'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        let (validator, _) = create_validator(&db, "platon-mainnet", "0xactivity", None, &owner_id)
+            .await
+            .unwrap();
+        let provider = FakeProvider {
+            results: std::sync::Mutex::new(vec![
+                ValidatorProviderResult::Success(ValidatorObservation {
+                    provider_timestamp: Some("2025-01-01T00:00:00Z".to_owned()),
+                    activity: Some(ValidatorActivity::Active),
+                    rank: Some(1),
+                    ..Default::default()
+                }),
+                ValidatorProviderResult::Success(ValidatorObservation {
+                    provider_timestamp: Some("2025-01-01T00:01:00Z".to_owned()),
+                    activity: Some(ValidatorActivity::Producing),
+                    rank: Some(2),
+                    ..Default::default()
+                }),
+                ValidatorProviderResult::Success(ValidatorObservation {
+                    provider_timestamp: Some("2025-01-01T00:02:00Z".to_owned()),
+                    activity: Some(ValidatorActivity::Producing),
+                    rank: Some(2),
+                    ..Default::default()
+                }),
+                ValidatorProviderResult::Error("provider timeout".to_owned()),
+                ValidatorProviderResult::AuthoritativeEmpty,
+                // A validated snapshot that omits Activity preserves the
+                // last-good canonical value instead of erasing it.
+                ValidatorProviderResult::Success(ValidatorObservation {
+                    provider_timestamp: Some("2025-01-01T00:03:00Z".to_owned()),
+                    rank: Some(2),
+                    ..Default::default()
+                }),
+            ]),
+            ..FakeProvider::default()
+        };
+
+        let first = refresh_all(&db, &provider).await.unwrap();
+        assert_eq!(first.invalidations, 1);
+        let insight = load_insight(&db, &validator.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(insight.outcome, "success");
+        assert_eq!(insight.activity.as_deref(), Some("active"));
+
+        // Activity applies on the very next successful snapshot even while
+        // the rank change is still pending confirmation: the stored Activity
+        // is already Producing but the retained rank is still 1.
+        let second = refresh_all(&db, &provider).await.unwrap();
+        assert_eq!(second.changed, 1);
+        assert_eq!(second.invalidations, 1);
+        assert_eq!(
+            second.invalidated_validator_ids,
+            vec![validator.validator_id.clone()]
+        );
+        let insight = load_insight(&db, &validator.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(insight.activity.as_deref(), Some("producing"));
+        assert_eq!(insight.rank, Some(1));
+        assert_eq!(insight.candidate_rank, Some(2));
+
+        let third = refresh_all(&db, &provider).await.unwrap();
+        assert_eq!(third.changed, 1);
+        assert_eq!(third.invalidations, 1);
+        let insight = load_insight(&db, &validator.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(insight.activity.as_deref(), Some("producing"));
+        assert_eq!(insight.rank, Some(2));
+        assert_eq!(insight.candidate_rank, None);
+
+        // Provider failure keeps the last-good Activity: Error outcomes
+        // retain Producing so the Public projection can mark it Stale.
+        let failed = refresh_all(&db, &provider).await.unwrap();
+        assert_eq!(failed.invalidations, 1);
+        let insight = load_insight(&db, &validator.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(insight.outcome, "error");
+        assert_eq!(insight.activity.as_deref(), Some("producing"));
+
+        // An authoritative empty result is still Activity-less for the
+        // Public projection (Observing) and invalidates the projection.
+        let empty = refresh_all(&db, &provider).await.unwrap();
+        assert_eq!(empty.invalidations, 1);
+        let insight = load_insight(&db, &validator.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(insight.outcome, "empty");
+
+        // A later successful snapshot without an Activity value keeps the
+        // last-good canonical Activity (no erase on partial evidence).
+        refresh_all(&db, &provider).await.unwrap();
+        let insight = load_insight(&db, &validator.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(insight.outcome, "success");
+        assert_eq!(insight.rank, Some(2));
+        assert_eq!(insight.activity.as_deref(), Some("producing"));
+
+        // A Validator that has never seen a successful Activity stays Unknown
+        // even after an Error; Provider state never fabricates a value.
+        let (unknown, _) = create_validator(&db, "platon-mainnet", "0xunknown", None, &owner_id)
+            .await
+            .unwrap();
+        let failed_first = FakeProvider {
+            results: std::sync::Mutex::new(vec![
+                ValidatorProviderResult::Error("never seen".to_owned()),
+                ValidatorProviderResult::Error("never seen".to_owned()),
+            ]),
+            ..FakeProvider::default()
+        };
+        refresh_all(&db, &failed_first).await.unwrap();
+        let insight = load_insight(&db, &unknown.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(insight.outcome, "error");
+        assert_eq!(insight.activity, None);
     }
 
     #[tokio::test]

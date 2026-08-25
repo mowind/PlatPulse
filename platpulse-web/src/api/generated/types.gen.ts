@@ -1470,6 +1470,20 @@ export type PublicValidatorHistoryResponse = {
 };
 
 export type PublicValidatorInsight = {
+    /**
+     * Canonical last-good Validator Activity (`active`, `producing`,
+     * `exiting`, `exited`, `verifying`, `locked`) or `observing`/`unknown`.
+     * Home never infers this from names, endpoints, consensus membership,
+     * rank data, or Provider data: only an effective explicit Node Validator
+     * Link exposes it on a Public Node (#100).
+     */
+    activity: string;
+    /**
+     * `current`, `stale`, or `unknown` currency of the Activity value.
+     * Provider failure with a last-good Activity is always `stale`, even
+     * when the last-good timestamp is still within the freshness window.
+     */
+    activityState: string;
     blockCount?: number | null;
     counterState: string;
     delegatorCount?: number | null;

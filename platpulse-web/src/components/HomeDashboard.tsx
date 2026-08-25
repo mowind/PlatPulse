@@ -116,6 +116,7 @@ function SummaryCard({ label, value, tone }: { label: string; value: number | nu
  */
 function HomeNodeCard({ network, node }: NodeRecord) {
   const tone = toneFor(node.health)
+  const activity = activityBadge(node)
   const diagnostic = exceptionalDiagnostic(node)
   return (
     <article className={`dashboard-node-card dashboard-node-card-${tone}`}>
@@ -128,7 +129,10 @@ function HomeNodeCard({ network, node }: NodeRecord) {
               <p className="dashboard-node-network">{network.displayName}</p>
             </div>
           </div>
-          <StatusBadge status={healthLabel(node.health)} tone={statusTone(tone)} />
+          <div className="dashboard-node-badges">
+            <StatusBadge status={activity.status} tone={activity.tone} />
+            <StatusBadge status={healthLabel(node.health)} tone={statusTone(tone)} />
+          </div>
         </header>
         <div className="dashboard-node-primary" aria-label="Node highlights">
           <Metric label="HEAD" value={formatNumber(node.currentHead)} />
@@ -225,6 +229,26 @@ function formatPeerObservation(node: PublicNode) {
 }
 function statusTone(tone: ReturnType<typeof toneFor>): 'ok' | 'warning' | 'error' | 'neutral' {
   return tone === 'good' ? 'ok' : tone === 'bad' ? 'error' : tone === 'warn' ? 'warning' : 'neutral'
+}
+
+/**
+ * Link-aware Validator Activity (issue #100). A Public Node exposes Activity
+ * only through its effective explicit Node Validator Link; no link, a
+ * future/ended link, an unsupported Provider without last-good data, and a
+ * never-observed value all render Unknown. Authoritative empty/not-found
+ * renders Observing, and a retained last-good Activity after Provider
+ * Error/Unsupported is visibly marked Stale. Provider Activity never
+ * affects the separate Node Health badge.
+ */
+function activityBadge(node: PublicNode): { status: string; tone: 'ok' | 'warning' | 'error' | 'neutral' } {
+  const validator = node.validator
+  const value = validator?.activity
+  if (!value || value === 'unknown') return { status: 'Unknown', tone: 'neutral' }
+  if (value === 'observing') return { status: 'Observing', tone: 'neutral' }
+  const label = value.charAt(0).toUpperCase() + value.slice(1)
+  const stale = validator?.activityState === 'stale'
+  const tone = stale || ['exiting', 'exited', 'verifying', 'locked'].includes(value) ? 'warning' : 'ok'
+  return { status: stale ? `${label} (Stale)` : label, tone }
 }
 
 function healthLabel(value: string): string {

@@ -11343,9 +11343,19 @@
           "validatorNodeId",
           "state",
           "freshness",
-          "counterState"
+          "counterState",
+          "activity",
+          "activityState"
         ],
         "properties": {
+          "activity": {
+            "type": "string",
+            "description": "Canonical last-good Validator Activity (`active`, `producing`,\n`exiting`, `exited`, `verifying`, `locked`) or `observing`/`unknown`.\nHome never infers this from names, endpoints, consensus membership,\nrank data, or Provider data: only an effective explicit Node Validator\nLink exposes it on a Public Node (#100)."
+          },
+          "activityState": {
+            "type": "string",
+            "description": "`current`, `stale`, or `unknown` currency of the Activity value.\nProvider failure with a last-good Activity is always `stale`, even\nwhen the last-good timestamp is still within the freshness window."
+          },
           "blockCount": {
             "type": [
               "integer",

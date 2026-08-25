@@ -22,6 +22,8 @@ const fresh: PublicValidatorInsight = {
   epoch: 4,
   blockCount: 99,
   counterState: 'normal',
+  activity: 'active',
+  activityState: 'current',
 }
 
 afterEach(cleanup)

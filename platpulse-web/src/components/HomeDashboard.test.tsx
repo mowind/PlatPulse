@@ -179,6 +179,64 @@ describe('Public Home dashboard', () => {
     expect(within(unknownFreshnessCard).queryByText('Stale')).toBeNull()
   })
 
+  it('renders link-aware Validator Activity before Node Health as separate text badges', () => {
+    const linked = (activity: string, activityState: string) => ({
+      validatorId: 'validator-a', validatorNodeId: '0xvalidator', displayName: 'Validator A',
+      nodeId: 'node-a', linkRole: 'primary', state: activityState === 'stale' ? 'error' : 'fresh',
+      freshness: activityState === 'stale' ? 'fresh' : 'fresh', source: 'fake',
+      receivedAt: '2026-08-25T00:00:00Z', counterState: 'normal', activity, activityState,
+    })
+    const active = {
+      ...network.nodes[0], nodeId: 'node-active', displayName: 'Active Node',
+      validator: linked('producing', 'current'),
+    }
+    const observing = {
+      ...network.nodes[0], nodeId: 'node-observing', displayName: 'Observing Node',
+      validator: linked('observing', 'current'),
+    }
+    const unknown = {
+      ...network.nodes[0], nodeId: 'node-unknown', displayName: 'Unknown Node',
+      validator: null,
+    }
+    const stale = {
+      ...network.nodes[0], nodeId: 'node-stale', displayName: 'Stale Node',
+      validator: linked('locked', 'stale'),
+    }
+    render(<BrowserRouter><HomeDashboard
+      networks={[{ ...network, nodes: [active, observing, unknown, stale] }]}
+      realtimeStatus="connected" online resetting={false} error={null} loading={false}
+    /></BrowserRouter>)
+
+    // Activity badge is the first header badge, Node Health the second; both
+    // are text badges, never color-only (issue #100).
+    const activeCard = cardOf(nodeCardLink('Active Node'))
+    const activeBadges = activeCard.querySelectorAll('.status-badge')
+    expect(activeBadges).toHaveLength(2)
+    expect(activeBadges[0].textContent).toContain('Producing')
+    expect(activeBadges[1].textContent).toContain('Healthy')
+    expect(within(activeCard).getByText('Producing')).toBeTruthy()
+
+    // Authoritative empty/not-found renders Observing, not a fabricated label.
+    const observingCard = cardOf(nodeCardLink('Observing Node'))
+    expect(within(observingCard).getByText('Observing')).toBeTruthy()
+    expect(observingCard.querySelectorAll('.status-badge')[0]?.textContent).toContain('Observing')
+
+    // No effective explicit Link renders Unknown Activity before Health.
+    const unknownCard = cardOf(nodeCardLink('Unknown Node'))
+    const unknownBadges = unknownCard.querySelectorAll('.status-badge')
+    expect(unknownBadges[0].textContent).toContain('Unknown')
+    expect(unknownBadges[1].textContent).toContain('Healthy')
+
+    // Provider failure with a last-good Activity keeps the label and visibly
+    // marks it Stale; the independent Health badge stays Healthy.
+    const staleCard = cardOf(nodeCardLink('Stale Node'))
+    const staleBadges = staleCard.querySelectorAll('.status-badge')
+    expect(staleBadges[0].textContent).toContain('Locked')
+    expect(staleBadges[0].textContent).toContain('Stale')
+    expect(staleBadges[1].textContent).toContain('Healthy')
+    expect(within(staleCard).getByText('Locked (Stale)')).toBeTruthy()
+  })
+
   it('keeps summary cards to marker, title, and number with a compact shell', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
