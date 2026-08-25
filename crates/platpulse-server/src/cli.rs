@@ -503,8 +503,9 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
     .with_backup_dir(config.backup_dir.clone())
     .with_geo_loader(geo_loader);
     if let Some(provider_config) = config.validator_provider.clone() {
-        match crate::validator::ExplorerValidatorProvider::new(
+        match crate::validator::PlatScanValidatorProvider::new(
             &provider_config.base_url,
+            provider_config.networks.clone(),
             std::time::Duration::from_secs(provider_config.timeout_seconds),
         ) {
             Ok(provider) => {

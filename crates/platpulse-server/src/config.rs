@@ -110,12 +110,16 @@ pub struct TlsSectionFile {
     pub private_key_file: Option<PathBuf>,
 }
 
-/// `[validator_provider]` configures the Server-side Explorer adapter.
-/// Provider credentials are intentionally not part of this section.
+/// `[validator_provider]` configures the Server-side PlatScan adapter.
+/// Provider credentials are intentionally not part of this section; the
+/// allowlist declares exactly the registered Network keys the adapter may
+/// query (#101).
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ValidatorProviderSectionFile {
     pub base_url: Option<String>,
+    /// Registered Network keys covered by the PlatScan adapter (1..=64).
+    pub networks: Option<Vec<String>>,
     pub refresh_seconds: Option<u64>,
     pub timeout_seconds: Option<u64>,
     /// IANA timezone used for Validator daily and calendar-month buckets.
@@ -202,6 +206,8 @@ pub struct NativeTlsConfig {
 #[derive(Debug, Clone)]
 pub struct ValidatorProviderConfig {
     pub base_url: String,
+    /// Registered Network keys the PlatScan adapter is allowed to query.
+    pub networks: Vec<String>,
     pub refresh_seconds: u64,
     pub timeout_seconds: u64,
     pub timezone: String,
@@ -262,6 +268,8 @@ pub enum ConfigError {
     InvalidTlsConfiguration { path: PathBuf, reason: String },
     #[error("invalid Validator analytics IANA timezone in {path}: {timezone}")]
     InvalidValidatorTimezone { path: PathBuf, timezone: String },
+    #[error("invalid Validator Provider configuration in {path}: {reason}")]
+    InvalidValidatorProvider { path: PathBuf, reason: String },
     #[error("notifications.telegram.token_file is required in {path}")]
     MissingTelegramTokenFile { path: PathBuf },
     #[error("notifications.telegram.chat_id is required in {path}")]
@@ -517,17 +525,29 @@ fn resolve_validator_provider(
     let Some(base_url) = section.base_url.clone() else {
         return Ok(None);
     };
+    let path = config_path
+        .map(Path::to_owned)
+        .unwrap_or_else(|| PathBuf::from("<config>"));
+    let base_url = crate::validator::normalize_provider_base_url(&base_url).map_err(|reason| {
+        ConfigError::InvalidValidatorProvider {
+            path: path.clone(),
+            reason,
+        }
+    })?;
+    let networks = section.networks.clone().unwrap_or_default();
+    crate::validator::validate_provider_networks(&networks).map_err(|reason| {
+        ConfigError::InvalidValidatorProvider {
+            path: path.clone(),
+            reason,
+        }
+    })?;
     let timezone = section.timezone.clone().unwrap_or_else(|| "UTC".to_owned());
     if timezone.parse::<chrono_tz::Tz>().is_err() {
-        return Err(ConfigError::InvalidValidatorTimezone {
-            path: config_path
-                .map(Path::to_owned)
-                .unwrap_or_else(|| PathBuf::from("<config>")),
-            timezone,
-        });
+        return Err(ConfigError::InvalidValidatorTimezone { path, timezone });
     }
     Ok(Some(ValidatorProviderConfig {
         base_url,
+        networks,
         refresh_seconds: section.refresh_seconds.unwrap_or(60).clamp(1, 86_400),
         timeout_seconds: section.timeout_seconds.unwrap_or(10).clamp(1, 300),
         timezone,
@@ -932,6 +952,79 @@ development = false
         assert_eq!(tls.cert_chain_file, Path::new("cli-chain.pem"));
         assert_eq!(tls.private_key_file, Path::new("cli-key.pem"));
     }
+
+    #[test]
+    fn validator_provider_resolves_explicit_coverage_and_defaults() {
+        let dir = tempdir().unwrap();
+        let path = write_config(
+            dir.path(),
+            "state_dir = \"/srv/platpulse\"\n[validator_provider]\nbase_url = \"https://scan.example.com/\"\nnetworks = [\"platon-mainnet\", \"platon-devnet\"]\nrefresh_seconds = 120\ntimeout_seconds = 30\ntimezone = \"Asia/Tokyo\"\n",
+        );
+        let config = ServerConfig::resolve(Some(&path), &CliOverrides::default()).unwrap();
+        let provider = config.validator_provider.expect("configured");
+        assert_eq!(provider.base_url, "https://scan.example.com");
+        assert_eq!(
+            provider.networks,
+            vec!["platon-mainnet".to_owned(), "platon-devnet".to_owned()]
+        );
+        assert_eq!(provider.refresh_seconds, 120);
+        assert_eq!(provider.timeout_seconds, 30);
+        assert_eq!(provider.timezone, "Asia/Tokyo");
+
+        let path = write_config(
+            dir.path(),
+            "state_dir = \"/srv/platpulse\"\n[validator_provider]\nbase_url = \"https://scan.example.com\"\nnetworks = [\"platon-mainnet\"]\n",
+        );
+        let config = ServerConfig::resolve(Some(&path), &CliOverrides::default()).unwrap();
+        let provider = config.validator_provider.unwrap();
+        assert_eq!(provider.refresh_seconds, 60);
+        assert_eq!(provider.timeout_seconds, 10);
+        assert_eq!(provider.timezone, "UTC");
+
+        let path = write_config(
+            dir.path(),
+            "state_dir = \"/srv/platpulse\"\n[validator_provider]\nbase_url = \"https://scan.example.com\"\nnetworks = [\"platon-mainnet\"]\nrefresh_seconds = 0\ntimeout_seconds = 9999\n",
+        );
+        let config = ServerConfig::resolve(Some(&path), &CliOverrides::default()).unwrap();
+        let provider = config.validator_provider.unwrap();
+        assert_eq!(provider.refresh_seconds, 1);
+        assert_eq!(provider.timeout_seconds, 300);
+    }
+
+    #[test]
+    fn validator_provider_rejects_missing_coverage_and_unsafe_urls() {
+        let dir = tempdir().unwrap();
+        let path = write_config(
+            dir.path(),
+            "state_dir = \"/srv/platpulse\"\n[validator_provider]\nbase_url = \"https://scan.example.com\"\n",
+        );
+        assert!(matches!(
+            ServerConfig::resolve(Some(&path), &CliOverrides::default()),
+            Err(ConfigError::InvalidValidatorProvider { .. })
+        ));
+        for raw in [
+            "https://user:pass@scan.example.com",
+            "https://scan.example.com?query=1",
+            "https://scan.example.com#fragment",
+            "ftp://scan.example.com",
+            "not-a-url",
+        ] {
+            let path = write_config(
+                dir.path(),
+                &format!(
+                    "state_dir = \"/srv/platpulse\"\n[validator_provider]\nbase_url = \"{raw}\"\nnetworks = [\"platon-mainnet\"]\n"
+                ),
+            );
+            assert!(
+                matches!(
+                    ServerConfig::resolve(Some(&path), &CliOverrides::default()),
+                    Err(ConfigError::InvalidValidatorProvider { .. })
+                ),
+                "{raw}"
+            );
+        }
+    }
+
     #[test]
     fn unknown_config_fields_are_rejected() {
         let dir = tempdir().unwrap();

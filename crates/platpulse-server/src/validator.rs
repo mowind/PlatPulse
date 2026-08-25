@@ -111,73 +111,87 @@ impl ValidatorProvider for DisabledValidatorProvider {
     }
 }
 
-/// Initial Explorer adapter. Its response is deliberately reduced to the
-/// normalized observation above; unknown fields and response diagnostics are
-/// discarded at the trust boundary.
+pub const MAX_PROVIDER_NETWORKS: usize = 64;
+pub const MAX_PROVIDER_NETWORK_KEY_LEN: usize = 128;
+
+/// Server-side PlatScan adapter for the per-Validator `stakingDetails`
+/// endpoint. Its response is deliberately reduced to the normalized
+/// observation above; unknown fields and response diagnostics are discarded
+/// at the trust boundary (#101).
 #[derive(Clone)]
-pub struct ExplorerValidatorProvider {
+pub struct PlatScanValidatorProvider {
     client: reqwest::Client,
     base_url: String,
+    networks: Vec<String>,
 }
 
-impl ExplorerValidatorProvider {
-    pub fn new(base_url: &str, timeout: std::time::Duration) -> Result<Self, String> {
-        let base_url = base_url.trim().trim_end_matches('/');
-        if !(base_url.starts_with("https://") || base_url.starts_with("http://"))
-            || base_url.contains('@')
-            || base_url.contains('?')
-            || base_url.contains('#')
-        {
-            return Err(
-                "Explorer base URL must be an absolute HTTP(S) URL without credentials".to_owned(),
-            );
-        }
+impl PlatScanValidatorProvider {
+    pub fn new(
+        base_url: &str,
+        networks: Vec<String>,
+        timeout: std::time::Duration,
+    ) -> Result<Self, String> {
+        let base_url = normalize_provider_base_url(base_url)?;
+        validate_provider_networks(&networks)?;
         let client = reqwest::Client::builder()
             .timeout(timeout)
             .build()
-            .map_err(|_| "unable to construct Explorer client".to_owned())?;
+            .map_err(|_| "unable to construct PlatScan client".to_owned())?;
         Ok(Self {
             client,
-            base_url: base_url.to_owned(),
+            base_url,
+            networks,
         })
     }
 
-    fn endpoint(&self, network_key: &str, validator_node_id: &str) -> String {
-        format!(
-            "{}/api/v1/networks/{}/validators/{}",
-            self.base_url,
-            url_path_segment(network_key),
-            url_path_segment(validator_node_id)
-        )
+    fn endpoint(&self) -> String {
+        format!("{}/browser-server/staking/stakingDetails", self.base_url)
+    }
+
+    fn covers(&self, network_key: &str) -> bool {
+        self.networks.iter().any(|network| network == network_key)
     }
 }
 
 #[async_trait]
-impl ValidatorProvider for ExplorerValidatorProvider {
+impl ValidatorProvider for PlatScanValidatorProvider {
     fn source(&self) -> &str {
-        "explorer"
+        "platscan"
     }
 
     async fn fetch(&self, network_key: &str, validator_node_id: &str) -> ValidatorProviderResult {
+        if !self.covers(network_key) {
+            return ValidatorProviderResult::Unsupported(
+                "Network is outside configured PlatScan coverage".to_owned(),
+            );
+        }
+        if !is_platscan_node_id(validator_node_id) {
+            return ValidatorProviderResult::Unsupported(
+                "Validator node identifier is not supported by PlatScan".to_owned(),
+            );
+        }
+        let body = serde_json::json!({ "nodeId": validator_node_id });
         let response = match self
             .client
-            .get(self.endpoint(network_key, validator_node_id))
+            .post(self.endpoint())
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .json(&body)
             .send()
             .await
         {
             Ok(response) => response,
-            Err(_) => return ValidatorProviderResult::Error("Explorer request failed".to_owned()),
+            Err(_) => return ValidatorProviderResult::Error("PlatScan request failed".to_owned()),
         };
         match response.status() {
             StatusCode::NOT_FOUND => return ValidatorProviderResult::NotFound,
             StatusCode::NOT_IMPLEMENTED | StatusCode::METHOD_NOT_ALLOWED => {
                 return ValidatorProviderResult::Unsupported(
-                    "Explorer endpoint is unsupported".to_owned(),
+                    "PlatScan stakingDetails endpoint is unsupported".to_owned(),
                 );
             }
             status if status.is_client_error() || status.is_server_error() => {
                 return ValidatorProviderResult::Error(
-                    "Explorer returned an unsuccessful response".to_owned(),
+                    "PlatScan returned an unsuccessful response".to_owned(),
                 );
             }
             _ => {}
@@ -186,12 +200,12 @@ impl ValidatorProvider for ExplorerValidatorProvider {
             Ok(body) if body.len() <= MAX_PROVIDER_BODY_LEN => body,
             Ok(_) => {
                 return ValidatorProviderResult::Error(
-                    "Explorer response exceeded the size limit".to_owned(),
+                    "PlatScan response exceeded the size limit".to_owned(),
                 );
             }
             Err(_) => {
                 return ValidatorProviderResult::Error(
-                    "Explorer response could not be read".to_owned(),
+                    "PlatScan response could not be read".to_owned(),
                 );
             }
         };
@@ -199,11 +213,11 @@ impl ValidatorProvider for ExplorerValidatorProvider {
             Ok(value) => value,
             Err(_) => {
                 return ValidatorProviderResult::Error(
-                    "Explorer response was malformed".to_owned(),
+                    "PlatScan response was malformed".to_owned(),
                 );
             }
         };
-        match normalize_explorer_response(&value) {
+        match normalize_platscan_response(&value, validator_node_id) {
             Ok(Some(observation)) => ValidatorProviderResult::Success(observation),
             Ok(None) => ValidatorProviderResult::AuthoritativeEmpty,
             Err(error) => ValidatorProviderResult::Error(error),
@@ -211,102 +225,173 @@ impl ValidatorProvider for ExplorerValidatorProvider {
     }
 }
 
-fn url_path_segment(value: &str) -> String {
-    value
-        .bytes()
-        .flat_map(|byte| match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                vec![byte as char]
-            }
-            byte => format!("%{byte:02X}").chars().collect(),
-        })
-        .collect()
+/// Normalize an absolute HTTP(S) Provider base URL. Paths are allowed (the
+/// deployment may serve PlatScan under a prefix), but credentials, query
+/// strings, fragments, invalid hosts, and malformed URLs are rejected.
+pub fn normalize_provider_base_url(raw: &str) -> Result<String, String> {
+    let value = raw.trim();
+    let Some(rest) = value.split_once("://").map(|(_, rest)| rest) else {
+        return Err("PlatScan base URL must be an absolute HTTP(S) URL".to_owned());
+    };
+    if rest.is_empty() || rest.starts_with('/') {
+        return Err("PlatScan base URL must be an absolute HTTP(S) URL with a host".to_owned());
+    }
+    let parsed = url::Url::parse(value)
+        .map_err(|_| "PlatScan base URL must be an absolute HTTP(S) URL".to_owned())?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(
+            "PlatScan base URL must be an absolute HTTP(S) URL without credentials, query strings, or fragments"
+                .to_owned(),
+        );
+    }
+    Ok(parsed.as_str().trim_end_matches('/').to_owned())
 }
 
-fn normalize_explorer_response(value: &Value) -> Result<Option<ValidatorObservation>, String> {
-    if let Some(array) = value.as_array() {
-        return match array.as_slice() {
-            [] => Ok(None),
-            [single] => normalize_explorer_response(single),
-            _ => Err("Explorer returned multiple Validator observations".to_owned()),
-        };
+/// A registered Network-key allowlist is bounded and must be explicit: an
+/// unlisted Network is Unsupported and never reaches PlatScan.
+pub fn validate_provider_networks(networks: &[String]) -> Result<(), String> {
+    if networks.is_empty() {
+        return Err(
+            "PlatScan network coverage must contain at least one registered Network key".to_owned(),
+        );
     }
+    if networks.len() > MAX_PROVIDER_NETWORKS {
+        return Err(format!(
+            "PlatScan network coverage is limited to {MAX_PROVIDER_NETWORKS} keys"
+        ));
+    }
+    let mut seen = Vec::new();
+    for network in networks {
+        if network.is_empty()
+            || network.trim() != network
+            || network.chars().count() > MAX_PROVIDER_NETWORK_KEY_LEN
+            || network.chars().any(char::is_control)
+        {
+            return Err("PlatScan network coverage contains an invalid Network key".to_owned());
+        }
+        if seen.iter().any(|seen| seen == network) {
+            return Err("PlatScan network coverage contains duplicate Network keys".to_owned());
+        }
+        seen.push(network.as_str());
+    }
+    Ok(())
+}
+
+/// PlatScan validator addresses are `0x` followed by exactly 128 hexadecimal
+/// characters. Anything else is unsupported and never leaves the Server.
+pub fn is_platscan_node_id(value: &str) -> bool {
+    value.len() == 130
+        && value.starts_with("0x")
+        && value[2..].bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn platscan_status_activity(status: i64) -> Option<ValidatorActivity> {
+    match status {
+        1 | 2 => Some(ValidatorActivity::Active),
+        3 => Some(ValidatorActivity::Producing),
+        4 => Some(ValidatorActivity::Exiting),
+        5 => Some(ValidatorActivity::Exited),
+        6 => Some(ValidatorActivity::Verifying),
+        7 => Some(ValidatorActivity::Locked),
+        _ => None,
+    }
+}
+
+fn normalize_platscan_response(
+    value: &Value,
+    requested_node_id: &str,
+) -> Result<Option<ValidatorObservation>, String> {
     let object = value
         .as_object()
-        .ok_or_else(|| "Explorer response was not an object".to_owned())?;
-    for key in ["data", "validators", "result"] {
-        if let Some(array) = object.get(key).and_then(Value::as_array) {
-            if array.is_empty() {
-                return Ok(None);
-            }
-            if array.len() > 1 {
-                return Err("Explorer returned multiple Validator observations".to_owned());
-            }
-            return normalize_explorer_response(&array[0]);
+        .ok_or_else(|| "PlatScan response was not an object".to_owned())?;
+    let code = object
+        .get("code")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| "PlatScan response did not contain a success envelope".to_owned())?;
+    if code != 0 {
+        return Err("PlatScan returned an unsuccessful envelope".to_owned());
+    }
+    if let Some(err_msg) = object.get("errMsg") {
+        if !err_msg.is_string() {
+            return Err("PlatScan returned an invalid envelope message".to_owned());
         }
     }
+    let data = object
+        .get("data")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "PlatScan response did not contain a data object".to_owned())?;
+    let node_id = data.get("nodeId").and_then(Value::as_str).ok_or_else(|| {
+        "PlatScan response did not contain a Validator node identifier".to_owned()
+    })?;
+    let status = data
+        .get("status")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| "PlatScan response did not contain a Validator status".to_owned())?;
+    if node_id.is_empty() && status == 0 {
+        return Ok(None);
+    }
+    if node_id != requested_node_id {
+        return Err("PlatScan returned a mismatched Validator node identifier".to_owned());
+    }
+    let activity = platscan_status_activity(status)
+        .ok_or_else(|| "PlatScan returned an unsupported Validator status".to_owned())?;
     let read_string = |names: &[&str]| -> Result<Option<String>, String> {
-        let Some(value) = names.iter().find_map(|name| object.get(*name)) else {
+        let Some(value) = names.iter().find_map(|name| data.get(*name)) else {
             return Ok(None);
         };
         let value = match value.as_str() {
-            Some(value) => value.to_owned(),
+            Some(value) if !value.is_empty() => value.to_owned(),
+            Some(_) => return Ok(None),
+            None if value.is_null() => return Ok(None),
             None if value.is_number() => value.to_string(),
-            _ => return Err("Explorer returned an invalid text value".to_owned()),
+            _ => return Err("PlatScan returned an invalid text value".to_owned()),
         };
         normalize_bounded_text(&value)
     };
     let read_int = |names: &[&str]| -> Result<Option<i64>, String> {
-        let Some(value) = names.iter().find_map(|name| object.get(*name)) else {
+        let Some(value) = names.iter().find_map(|name| data.get(*name)) else {
             return Ok(None);
         };
+        if value.is_null() {
+            return Ok(None);
+        }
         if let Some(number) = value.as_i64() {
             return if number >= 0 {
                 Ok(Some(number))
             } else {
-                Err("Explorer returned a negative integer".to_owned())
+                Err("PlatScan returned a negative integer".to_owned())
             };
         }
         let text = match value.as_str() {
-            Some(text) => text,
-            None => return Err("Explorer returned an invalid integer".to_owned()),
+            Some(text) if !text.is_empty() => text,
+            Some(_) => return Ok(None),
+            None => return Err("PlatScan returned an invalid integer".to_owned()),
         };
         let parsed = text
             .parse::<i64>()
-            .map_err(|_| "Explorer returned an out-of-range integer".to_owned())?;
+            .map_err(|_| "PlatScan returned an out-of-range integer".to_owned())?;
         if parsed < 0 {
-            return Err("Explorer returned a negative integer".to_owned());
+            return Err("PlatScan returned a negative integer".to_owned());
         }
         Ok(Some(parsed))
     };
-    let read_activity = |names: &[&str]| -> Result<Option<ValidatorActivity>, String> {
-        let Some(value) = names.iter().find_map(|name| object.get(*name)) else {
-            return Ok(None);
-        };
-        let value = value
-            .as_str()
-            .ok_or_else(|| "Explorer returned an unsupported Validator activity".to_owned())?;
-        ValidatorActivity::from_canonical(value)
-            .map(Some)
-            .ok_or_else(|| "Explorer returned an unsupported Validator activity".to_owned())
-    };
-    let provider_timestamp = read_string(&["provider_timestamp", "timestamp", "updated_at"])?
-        .map(|value| canonical_timestamp(&value).map_err(|error| error.to_string()))
-        .transpose()?;
     let observation = ValidatorObservation {
-        provider_timestamp,
-        activity: read_activity(&["activity", "status", "state"])?,
-        rank: read_int(&["rank", "ranking"])?,
-        stake_amount: read_string(&["stake_amount", "stake", "staking_amount"])?,
-        reward_amount: read_string(&["reward_amount", "reward", "rewards"])?,
-        reward_rate: read_string(&["reward_rate", "rate", "percentage"])?,
-        delegator_count: read_int(&["delegator_count", "delegators", "delegatorCount"])?,
-        epoch: read_int(&["epoch", "epoch_number"])?,
-        block_count: read_int(&["block_count", "blocks"])?,
+        provider_timestamp: None,
+        activity: Some(activity),
+        rank: read_int(&["ranks", "ranking", "rank"])?,
+        stake_amount: read_string(&["stakingValue", "totalValue", "stake"])?,
+        reward_amount: read_string(&["rewardValue", "reward"])?,
+        reward_rate: read_string(&["deleAnnualizedRate", "rewardRate"])?,
+        delegator_count: read_int(&["delegateQty", "delegatorCount"])?,
+        epoch: read_int(&["epoch"])?,
+        block_count: read_int(&["blockQty", "blockCount"])?,
     };
-    if observation == ValidatorObservation::default() {
-        return Err("Explorer response did not contain supported Validator fields".to_owned());
-    }
     for value in [
         observation.stake_amount.as_deref(),
         observation.reward_amount.as_deref(),
@@ -322,7 +407,7 @@ fn normalize_explorer_response(value: &Value) -> Result<Option<ValidatorObservat
 
 fn normalize_bounded_text(value: &str) -> Result<Option<String>, String> {
     if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) {
-        return Err("Explorer returned an invalid bounded value".to_owned());
+        return Err("Provider returned an invalid bounded value".to_owned());
     }
     Ok(Some(value.to_owned()))
 }
@@ -334,11 +419,11 @@ fn validate_nonnegative_decimal(value: &str) -> Result<(), String> {
         match character {
             '0'..='9' => digits += 1,
             '.' => dots += 1,
-            _ => return Err("Explorer returned an invalid numeric value".to_owned()),
+            _ => return Err("Provider returned an invalid numeric value".to_owned()),
         }
     }
     if digits == 0 || dots > 1 {
-        return Err("Explorer returned an invalid numeric value".to_owned());
+        return Err("Provider returned an invalid numeric value".to_owned());
     }
     Ok(())
 }
@@ -1890,43 +1975,132 @@ mod tests {
         }
     }
 
-    #[test]
-    fn explorer_response_normalization_preserves_numeric_strings_and_rejects_invalid_data() {
-        let value = serde_json::json!({
-            "activity": "producing",
-            "rank": "7",
-            "stake": "123456789012345678901234567890.123456789",
-            "reward_rate": "0.125000000000000001",
-            "epoch": 42,
-            "timestamp": "2025-01-01T00:00:00Z"
+    fn provider_node_id() -> String {
+        format!("0x{}", "ab".repeat(64))
+    }
+
+    fn platscan_success(node_id: &str, status: i64) -> serde_json::Value {
+        serde_json::json!({ "code": 0, "errMsg": "success", "data": { "nodeId": node_id, "status": status } })
+    }
+
+    #[derive(Clone)]
+    struct RecordedMockRequest {
+        method: String,
+        path: String,
+        content_type: Option<String>,
+        body: String,
+    }
+
+    type MockPlatScanResponseQueue =
+        std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<(u16, Vec<u8>)>>>;
+
+    #[derive(Clone)]
+    struct MockPlatScanState {
+        requests: std::sync::Arc<std::sync::Mutex<Vec<RecordedMockRequest>>>,
+        responses: MockPlatScanResponseQueue,
+        delay_ms: u64,
+    }
+
+    async fn mock_platscan_handler(
+        axum::extract::State(state): axum::extract::State<MockPlatScanState>,
+        request: axum::http::Request<axum::body::Body>,
+    ) -> axum::response::Response<String> {
+        let method = request.method().to_string();
+        let path = request.uri().path().to_string();
+        let content_type = request
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let body_bytes = axum::body::to_bytes(request.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&body_bytes).to_string();
+        state.requests.lock().unwrap().push(RecordedMockRequest {
+            method,
+            path,
+            content_type,
+            body,
         });
-        let observation = normalize_explorer_response(&value).unwrap().unwrap();
-        assert_eq!(observation.activity, Some(ValidatorActivity::Producing));
-        assert_eq!(observation.rank, Some(7));
+        if state.delay_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(state.delay_ms)).await;
+        }
+        let (status, body) = state
+            .responses
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or((500, Vec::new()));
+        axum::response::Response::builder()
+            .status(axum::http::StatusCode::from_u16(status).unwrap())
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(String::from_utf8_lossy(&body).to_string())
+            .unwrap()
+    }
+
+    async fn start_mock_platscan(
+        responses: Vec<(u16, Vec<u8>)>,
+        delay_ms: u64,
+    ) -> (String, MockPlatScanState, tokio::task::JoinHandle<()>) {
+        let state = MockPlatScanState {
+            requests: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            responses: std::sync::Arc::new(std::sync::Mutex::new(responses.into())),
+            delay_ms,
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = axum::Router::new()
+            .route(
+                "/browser-server/staking/stakingDetails",
+                axum::routing::post(mock_platscan_handler),
+            )
+            .with_state(state.clone());
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{addr}"), state, handle)
+    }
+
+    #[test]
+    fn platscan_normalization_maps_statuses_and_allows_activity_only_snapshots() {
+        let node_id = provider_node_id();
+        for (status, activity) in [
+            (1, ValidatorActivity::Active),
+            (2, ValidatorActivity::Active),
+            (3, ValidatorActivity::Producing),
+            (4, ValidatorActivity::Exiting),
+            (5, ValidatorActivity::Exited),
+            (6, ValidatorActivity::Verifying),
+            (7, ValidatorActivity::Locked),
+        ] {
+            let observation =
+                normalize_platscan_response(&platscan_success(&node_id, status), &node_id)
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(observation.activity, Some(activity), "status {status}");
+            assert_eq!(observation.stake_amount, None);
+            assert_eq!(observation.rank, None);
+        }
         assert_eq!(
-            observation.stake_amount.as_deref(),
-            Some("123456789012345678901234567890.123456789")
-        );
-        assert_eq!(
-            observation.reward_rate.as_deref(),
-            Some("0.125000000000000001")
-        );
-        assert!(normalize_explorer_response(&serde_json::json!({"stake": "-1"})).is_err());
-        assert_eq!(
-            normalize_explorer_response(&serde_json::json!({"data": []})).unwrap(),
+            normalize_platscan_response(&platscan_success("", 0), &node_id).unwrap(),
             None
         );
-        assert_eq!(
-            normalize_explorer_response(&serde_json::json!({"data": [{"rank": 3}]}))
-                .unwrap()
-                .unwrap()
-                .rank,
-            Some(3)
+        assert!(normalize_platscan_response(&platscan_success(&node_id, 8), &node_id).is_err());
+        assert!(
+            normalize_platscan_response(
+                &platscan_success(&format!("0x{}", "cd".repeat(64)), 2),
+                &node_id
+            )
+            .is_err()
         );
-        assert!(validate_observation(&ValidatorObservation::default()).is_err());
-        // Canonical activity alone is a supported observation; provider
-        // statuses outside the canonical vocabulary are rejected, never
-        // normalized into a fabricated label.
+        assert!(normalize_platscan_response(&serde_json::json!({ "code": 0 }), &node_id).is_err());
+        assert!(
+            normalize_platscan_response(
+                &serde_json::json!({ "code": 0, "data": { "nodeId": node_id, "status": "3" } }),
+                &node_id
+            )
+            .is_err()
+        );
         assert!(
             validate_observation(&ValidatorObservation {
                 activity: Some(ValidatorActivity::Exiting),
@@ -1934,13 +2108,235 @@ mod tests {
             })
             .is_ok()
         );
-        assert!(normalize_explorer_response(&serde_json::json!({"status": 3})).is_err());
-        assert!(normalize_explorer_response(&serde_json::json!({"status": "candidate"})).is_err());
+        assert!(validate_observation(&ValidatorObservation::default()).is_err());
+    }
+
+    #[tokio::test]
+    async fn platscan_adapter_posts_staking_details_and_maps_every_status() {
+        let node_id = provider_node_id();
+        let mut responses = Vec::new();
+        let mut expected = Vec::new();
+        for (status, activity) in [
+            (1, ValidatorActivity::Active),
+            (2, ValidatorActivity::Active),
+            (3, ValidatorActivity::Producing),
+            (4, ValidatorActivity::Exiting),
+            (5, ValidatorActivity::Exited),
+            (6, ValidatorActivity::Verifying),
+            (7, ValidatorActivity::Locked),
+        ] {
+            responses.push((
+                200,
+                serde_json::to_vec(&platscan_success(&node_id, status)).unwrap(),
+            ));
+            expected.push((status, activity));
+        }
+        let (base_url, state, handle) = start_mock_platscan(responses, 0).await;
+        let provider = PlatScanValidatorProvider::new(
+            &base_url,
+            vec!["platon-mainnet".to_owned()],
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+        for (status, activity) in expected {
+            assert_eq!(
+                provider.fetch("platon-mainnet", &node_id).await,
+                ValidatorProviderResult::Success(ValidatorObservation {
+                    activity: Some(activity),
+                    ..Default::default()
+                }),
+                "status {status}"
+            );
+        }
+        let requests = state.requests.lock().unwrap();
+        assert_eq!(requests.len(), 7);
+        for request in requests.iter() {
+            assert_eq!(request.method, "POST");
+            assert_eq!(request.path, "/browser-server/staking/stakingDetails");
+            assert_eq!(request.content_type.as_deref(), Some("application/json"));
+            assert_eq!(request.body, format!(r#"{{"nodeId":"{node_id}"}}"#));
+        }
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn platscan_rejects_invalid_identifiers_and_uncovered_networks_without_request() {
+        let (base_url, state, handle) = start_mock_platscan(Vec::new(), 0).await;
+        let provider = PlatScanValidatorProvider::new(
+            &base_url,
+            vec!["platon-mainnet".to_owned()],
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+        let valid = provider_node_id();
+        let invalid = vec![
+            "0x".to_owned(),
+            "0x123".to_owned(),
+            "0xzz".to_owned(),
+            format!("0x{}", "ab".repeat(63)),
+            format!("0x{}", "ab".repeat(65)),
+        ];
+        for id in invalid {
+            assert!(matches!(
+                provider.fetch("platon-mainnet", &id).await,
+                ValidatorProviderResult::Unsupported(_)
+            ));
+        }
+        assert!(matches!(
+            provider.fetch("platon-devnet", &valid).await,
+            ValidatorProviderResult::Unsupported(_)
+        ));
+        assert!(state.requests.lock().unwrap().is_empty());
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn platscan_authoritative_empty_and_not_found_remain_distinct() {
+        let node_id = provider_node_id();
+        let responses = vec![
+            (
+                200,
+                serde_json::to_vec(
+                    &serde_json::json!({ "code": 0, "data": { "nodeId": "", "status": 0 } }),
+                )
+                .unwrap(),
+            ),
+            (404, Vec::new()),
+        ];
+        let (base_url, _state, handle) = start_mock_platscan(responses, 0).await;
+        let provider = PlatScanValidatorProvider::new(
+            &base_url,
+            vec!["platon-mainnet".to_owned()],
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(
+            provider.fetch("platon-mainnet", &node_id).await,
+            ValidatorProviderResult::AuthoritativeEmpty
+        );
+        assert_eq!(
+            provider.fetch("platon-mainnet", &node_id).await,
+            ValidatorProviderResult::NotFound
+        );
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn platscan_rejects_mismatch_malformed_types_and_unsuccessful_responses() {
+        let node_id = provider_node_id();
+        let other = format!("0x{}", "cd".repeat(64));
+        let responses: Vec<(u16, Vec<u8>)> = vec![
+            (
+                200,
+                serde_json::to_vec(&platscan_success(&other, 3)).unwrap(),
+            ),
+            (
+                200,
+                serde_json::to_vec(&serde_json::json!({ "code": 0 })).unwrap(),
+            ),
+            (
+                200,
+                serde_json::to_vec(&serde_json::json!({
+                    "code": 0,
+                    "data": { "nodeId": node_id, "status": "3" }
+                }))
+                .unwrap(),
+            ),
+            (
+                200,
+                serde_json::to_vec(&platscan_success(&node_id, 99)).unwrap(),
+            ),
+            (
+                200,
+                serde_json::to_vec(&serde_json::json!({
+                    "code": 1,
+                    "data": { "nodeId": node_id, "status": 3 }
+                }))
+                .unwrap(),
+            ),
+            (200, b"not-json".to_vec()),
+            (500, Vec::new()),
+            (405, Vec::new()),
+        ];
+        let (base_url, _state, handle) = start_mock_platscan(responses, 0).await;
+        let provider = PlatScanValidatorProvider::new(
+            &base_url,
+            vec!["platon-mainnet".to_owned()],
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+        for _ in 0..7 {
+            assert!(matches!(
+                provider.fetch("platon-mainnet", &node_id).await,
+                ValidatorProviderResult::Error(_)
+            ));
+        }
+        assert!(matches!(
+            provider.fetch("platon-mainnet", &node_id).await,
+            ValidatorProviderResult::Unsupported(_)
+        ));
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn platscan_rejects_oversized_bodies_and_times_out() {
+        let oversized = vec![b'x'; MAX_PROVIDER_BODY_LEN + 1];
+        let (base_url, _state, handle) = start_mock_platscan(vec![(200, oversized)], 0).await;
+        let provider = PlatScanValidatorProvider::new(
+            &base_url,
+            vec!["platon-mainnet".to_owned()],
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(matches!(
+            provider.fetch("platon-mainnet", &provider_node_id()).await,
+            ValidatorProviderResult::Error(_)
+        ));
+        handle.abort();
+
+        let (base_url, _state, handle) = start_mock_platscan(Vec::new(), 500).await;
+        let provider = PlatScanValidatorProvider::new(
+            &base_url,
+            vec!["platon-mainnet".to_owned()],
+            std::time::Duration::from_millis(100),
+        )
+        .unwrap();
+        assert!(matches!(
+            provider.fetch("platon-mainnet", &provider_node_id()).await,
+            ValidatorProviderResult::Error(_)
+        ));
+        handle.abort();
     }
 
     #[test]
-    fn explorer_path_segments_are_encoded_without_leaking_raw_identifiers() {
-        assert_eq!(url_path_segment("node/a?b"), "node%2Fa%3Fb");
+    fn platscan_url_and_network_allowlist_validation_are_bounded() {
+        assert!(normalize_provider_base_url(" https://scan.example.com/ ").is_ok());
+        assert_eq!(
+            normalize_provider_base_url("https://scan.example.com/base/").unwrap(),
+            "https://scan.example.com/base"
+        );
+        for raw in [
+            "ftp://scan.example.com",
+            "https://user@scan.example.com",
+            "https://user:pass@scan.example.com",
+            "https://scan.example.com?query=1",
+            "https://scan.example.com#fragment",
+            "https://",
+            "https:///path",
+            "https://host with spaces",
+            "https://host:bad",
+            "not-a-url",
+        ] {
+            assert!(normalize_provider_base_url(raw).is_err(), "{raw}");
+        }
+        assert!(validate_provider_networks(&[]).is_err());
+        assert!(validate_provider_networks(&["".to_owned()]).is_err());
+        assert!(
+            validate_provider_networks(&["platon-mainnet".to_owned(), "platon-mainnet".to_owned()])
+                .is_err()
+        );
+        let many = (0..65).map(|index| format!("n{index}")).collect::<Vec<_>>();
+        assert!(validate_provider_networks(&many).is_err());
     }
     #[tokio::test]
     async fn provider_refresh_preserves_last_good_and_confirms_rank_after_two_observations() {

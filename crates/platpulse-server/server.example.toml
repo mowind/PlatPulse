@@ -37,3 +37,14 @@ development = false
 # listen = "127.0.0.1:9090"
 # Non-loopback metrics uses the same explicit native-TLS or trusted-HTTPS
 # proxy policy above; plaintext non-loopback exposure is rejected.
+
+# Optional Server-side PlatScan Validator Provider. The Server is the only
+# component that calls PlatScan (per-Validator POST stakingDetails); the
+# browser and Agent never contact it. `networks` is the bounded registered
+# Network-key allowlist the adapter may query; unlisted Networks stay Unknown.
+# [validator_provider]
+# base_url = "https://scan.platon.network"
+# networks = ["platon-mainnet"]
+# refresh_seconds = 60
+# timeout_seconds = 10
+# timezone = "UTC"

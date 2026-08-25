@@ -686,8 +686,10 @@ struct PublicValidatorRow {
 /// Map the linked Validator's canonical last-good Activity and its currency
 /// for the Public projection. Provider outcomes never fabricate a value:
 /// authoritative empty/not-found is Observing, a successful snapshot shows
-/// the canonical label (Stale when Server freshness expired), and
-/// Error/Unsupported with a last-good Activity is always Stale (#100).
+/// the canonical label (Stale when Server freshness expired), and Error
+/// with a last-good Activity is always Stale. Unsupported coverage is
+/// permanent for the Public projection: it projects Unknown even when a
+/// last-good Activity was previously observed (#100, #101).
 fn public_validator_activity(
     outcome: &str,
     activity: Option<&str>,
@@ -707,10 +709,11 @@ fn public_validator_activity(
             ),
             None => ("unknown".to_owned(), "unknown".to_owned()),
         },
-        "error" | "unsupported" => match activity {
+        "error" => match activity {
             Some(value) => (value.to_owned(), "stale".to_owned()),
             None => ("unknown".to_owned(), "unknown".to_owned()),
         },
+        "unsupported" => ("unknown".to_owned(), "unknown".to_owned()),
         _ => ("unknown".to_owned(), "unknown".to_owned()),
     }
 }
@@ -3247,11 +3250,12 @@ mod tests {
         assert_eq!(unknown["validator"]["activity"], "unknown");
         assert_eq!(unknown["validator"]["activityState"], "unknown");
 
-        // Provider Unsupported with a last-good Activity is also Stale;
-        // without a last-good Activity it is Unknown.
+        // Provider Unsupported never projects a retained Activity: lack of
+        // configured coverage is Unknown even after a last-good snapshot;
+        // without a last-good Activity it is also Unknown (#101).
         let unsupported_good = find_node("node-unsupported-good");
-        assert_eq!(unsupported_good["validator"]["activity"], "verifying");
-        assert_eq!(unsupported_good["validator"]["activityState"], "stale");
+        assert_eq!(unsupported_good["validator"]["activity"], "unknown");
+        assert_eq!(unsupported_good["validator"]["activityState"], "unknown");
         let unsupported_none = find_node("node-unsupported-none");
         assert_eq!(unsupported_none["validator"]["activity"], "unknown");
         assert_eq!(unsupported_none["validator"]["activityState"], "unknown");

@@ -65,7 +65,7 @@ An explicit time-bounded relationship between a monitored Node and a Validator, 
 _Avoid_: Positional mapping, Inferred validator ownership
 
 **Validator Provider**:
-A Server-side Network adapter that supplies Validator current data and snapshots, such as a PlatON Explorer adapter. Provider failure does not change Node health or erase the last successful Validator value.
+A Server-side Network adapter that supplies Validator current data and snapshots, such as the PlatScan browser-server adapter. Provider failure does not change Node health or erase the last successful Validator value.
 _Avoid_: Agent collector, Validator authority
 
 **Agent Enrollment**:
