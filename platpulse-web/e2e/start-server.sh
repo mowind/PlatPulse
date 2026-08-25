@@ -425,6 +425,163 @@ with sqlite3.connect(path) as db:
             "INSERT OR IGNORE INTO validator_monthly_aggregates (aggregate_id, validator_id, timezone, month_key, snapshot_count, first_sample_at, last_sample_at, rank_min, rank_max, rank_last, stake_last, reward_last, reward_rate_last, delegator_count_last, epoch_last, block_count_last, updated_at) VALUES (?, ?, 'UTC', ?, 1, ?, ?, 2, 2, 2, '1000', '10', '0.05', 8, 42, 100, ?)",
             (f"agg-{day}", validator_id, month, sample_at, sample_at, fresh),
         )
+
+    # Home convergence fixture (issue #102): the production-like card states
+    # the final Home acceptance needs. They live on a SECOND public Network
+    # so the established PlatON E2E Network row counts and Peer insight stay
+    # untouched, and every display name sorts after "Node B (private)" with
+    # no Server-unhealthy Node so the existing Admin Nodes list contract
+    # (Node A first, Node B last) is preserved.
+    convergence_network_key = "home-convergence"
+    convergence_network_name = "Home Convergence Network With An Extremely Long Display Name"
+    convergence_genesis = "0x" + "5" * 64
+    convergence_agent_id = "0195f2a1-0023-4023-8023-000000000023"
+    db.execute(
+        "INSERT OR IGNORE INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES (?, 1, ?, ?)",
+        (convergence_agent_id, now, now),
+    )
+    db.execute(
+        "UPDATE agents SET last_received_at = ?, shutdown_state = 'running', last_report_sequence = 54 WHERE agent_id = ?",
+        (fresh, convergence_agent_id),
+    )
+    db.execute(
+        "INSERT OR IGNORE INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES (?, ?, ?, 210425, 210425, 'lat', ?, ?)",
+        (convergence_network_key, convergence_network_name, convergence_genesis, now, now),
+    )
+
+    node_h = "0195f2a1-0060-4060-8060-000000000060"
+    node_k = "0195f2a1-0061-4061-8061-000000000061"
+    node_l = "0195f2a1-0062-4062-8062-000000000062"
+    node_m = "0195f2a1-0063-4063-8063-000000000063"
+    node_n = "0195f2a1-0064-4064-8064-000000000064"
+    node_p = "0195f2a1-0065-4065-8065-000000000065"
+    for port, (node_id, name) in enumerate((
+        (node_h, "Node H — Producing Card With A Very Long Display Name That Must Not Overflow"),
+        (node_k, "Node K — Missing Current Head Block Summary"),
+        (node_l, "Node L — Stale Consensus Membership"),
+        (node_m, "Node M — Validator Observing"),
+        (node_n, "Node N — Stale Last-Good Provider Activity"),
+        (node_p, "Node P — Never Observed"),
+    ), start=6797):
+        db.execute(
+            "INSERT OR IGNORE INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', 'public', 1, ?, ?)",
+            (node_id, convergence_agent_id, convergence_network_key, name, f"ws://127.0.0.1:{port}", now, now),
+        )
+
+    def seed_chain(node_id, head, validator, qc, lock, commit, observed_at):
+        db.execute(
+            "INSERT OR IGNORE INTO current_node_chain_observations (node_id, rpc_client_version, syncing, current_block, highest_block, consensus_epoch, consensus_view_number, consensus_validator, consensus_highest_qc_block, consensus_highest_lock_block, consensus_highest_commit_block, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, updated_at) VALUES (?, 'platon/1.5.1', 0, ?, ?, 43, 7, ?, ?, ?, ?, ?, 210425, 210425, 'lat', ?)",
+            (node_id, head, head, 1 if validator else 0, qc, lock, commit, convergence_genesis, observed_at),
+        )
+
+    def seed_components(node_id, received_at, value_received_at):
+        for key in ("rpc", "sync", "consensus"):
+            db.execute(
+                "INSERT OR IGNORE INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES (?, 'node', ?, ?, ?, 'ok', ?, ?, ?, ?, 1, 1)",
+                (convergence_agent_id, node_id, node_id, key, received_at, received_at, received_at, value_received_at),
+            )
+        db.execute(
+            "INSERT OR IGNORE INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES (?, 'node', ?, ?, 'peers', 'ok', ?, ?, ?, ?, 1, 1)",
+            (convergence_agent_id, node_id, node_id, received_at, received_at, received_at, value_received_at),
+        )
+
+    def seed_summary(node_id, height, transaction_count, genesis, observed_at):
+        db.execute(
+            "INSERT OR IGNORE INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, source, coinbase, seal_signer_match, protocol_proposer_kind, attribution_reason, accepted_at) VALUES (?, ?, ?, ?, ?, 210425, 210425, 'lat', ?, ?, ?, 'subscription', ?, 'unknown', 'unknown', 'test', ?)",
+            (node_id, height, "0x" + format(height, "064x"), "0x" + format(height - 1, "064x"), genesis, height, observed_at, transaction_count, coinbase, observed_at),
+        )
+
+    # Node H: the fully production-like card - exact Current Head Block
+    # Summary (TXS), current consensus membership, and current Provider
+    # Activity through an effective Node Validator Link.
+    seed_chain(node_h, 12842025, True, 12842025, 12842024, 12842025, fresh)
+    seed_components(node_h, fresh, fresh)
+    seed_summary(node_h, 12842025, 21, convergence_genesis, fresh)
+    for peer_id, direction in (("home-h-1", "inbound"), ("home-h-2", "outbound"), ("home-h-3", "outbound")):
+        db.execute(
+            "INSERT OR IGNORE INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, client_name, updated_at) VALUES (?, ?, '203.0.113.11', ?, 1, 0, 0, 'platond', ?)",
+            (node_h, peer_id, direction, fresh),
+        )
+
+    # Node K: current consensus non-membership and an authoritative empty
+    # peer set, but no Current Head Block Summary: TXS must stay Unknown.
+    seed_chain(node_k, 12842024, False, 12842024, 12842023, 12842024, fresh)
+    seed_components(node_k, fresh, fresh)
+
+    # Node L: last-good consensus membership retained but stale; the exact
+    # Current Head Summary still proves TXS is current-head scoped.
+    seed_chain(node_l, 12842023, True, 12842023, 12842022, 12842023, stale)
+    seed_components(node_l, stale, stale)
+    seed_summary(node_l, 12842023, 13, convergence_genesis, stale)
+    db.execute(
+        "INSERT OR IGNORE INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, client_name, updated_at) VALUES (?, 'home-l-1', '203.0.113.12', 'outbound', 1, 0, 1, 'platond', ?)",
+        (node_l, stale),
+    )
+
+    # Node M: effective Link with an authoritative no-live-validator result.
+    seed_chain(node_m, 12842022, True, 12842022, 12842021, 12842022, fresh)
+    seed_components(node_m, fresh, fresh)
+    seed_summary(node_m, 12842022, 9, convergence_genesis, fresh)
+    for peer_id, direction in (("home-m-1", "inbound"), ("home-m-2", "outbound")):
+        db.execute(
+            "INSERT OR IGNORE INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, client_name, updated_at) VALUES (?, ?, '203.0.113.13', ?, 1, 0, 0, 'platond', ?)",
+            (node_m, peer_id, direction, fresh),
+        )
+
+    # Node N: Provider error retains the last-good Activity and must never
+    # affect the independent Node Health badge.
+    seed_chain(node_n, 12842021, True, 12842021, 12842020, 12842021, fresh)
+    seed_components(node_n, fresh, fresh)
+    db.execute(
+        "INSERT OR IGNORE INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, client_name, updated_at) VALUES (?, 'home-n-1', '203.0.113.14', 'inbound', 1, 0, 0, 'platond', ?)",
+        (node_n, fresh),
+    )
+
+    # Node P: never observed. Nothing is seeded: HEAD, TXS, PEERS, consensus,
+    # and Activity all stay Unknown without zero/false fabrication.
+
+    # Exact Current Head Block Summary for Node A so the original card also
+    # carries TXS (previously only the missing-summary case was exercised).
+    seed_summary(node_a, 12842019, 7, network_genesis, fresh)
+
+    # Validator Activity fixtures (issue #102): one Validator per effective
+    # Link; the identifier is a production-like 128-hex PlatScan node id.
+    validator_h_id = "0195f2a1-0070-4070-8070-000000000070"
+    validator_m_id = "0195f2a1-0071-4071-8071-000000000071"
+    validator_n_id = "0195f2a1-0072-4072-8072-000000000072"
+    link_h = "0195f2a1-0080-4080-8080-000000000080"
+    link_m = "0195f2a1-0081-4081-8081-000000000081"
+    link_n = "0195f2a1-0082-4082-8082-000000000082"
+    for validator_id, validator_hex, name in (
+        (validator_h_id, "b", "Home Producing Validator"),
+        (validator_m_id, "c", "Home Observing Validator"),
+        (validator_n_id, "d", "Home Stale Validator"),
+    ):
+        db.execute(
+            "INSERT OR IGNORE INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (validator_id, convergence_network_key, "0x" + validator_hex * 128, name, now, now),
+        )
+    for link_id, node_id, validator_id in (
+        (link_h, node_h, validator_h_id),
+        (link_m, node_m, validator_m_id),
+        (link_n, node_n, validator_n_id),
+    ):
+        db.execute(
+            "INSERT OR IGNORE INTO node_validator_links (link_id, node_id, validator_id, role, valid_from, valid_until, created_at, updated_at) VALUES (?, ?, ?, 'primary', '2026-01-01T00:00:00Z', NULL, ?, ?)",
+            (link_id, node_id, validator_id, now, now),
+        )
+    db.execute(
+        "INSERT OR IGNORE INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, 'explorer', 'success', NULL, ?, 'producing', ?, ?, ?, 2, '1200', '12', '0.06', 6, 43, 90, 'normal', 'normal', NULL, NULL, 0, NULL, NULL, NULL, 'obs-h', ?)",
+        (validator_h_id, fresh, fresh, fresh, fresh, fresh),
+    )
+    db.execute(
+        "INSERT OR IGNORE INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, 'explorer', 'empty', NULL, ?, NULL, ?, NULL, NULL, 2, '900', '9', '0.04', 4, 43, 80, 'normal', 'normal', NULL, NULL, 0, NULL, NULL, NULL, 'obs-m', ?)",
+        (validator_m_id, fresh, fresh, fresh),
+    )
+    db.execute(
+        "INSERT OR IGNORE INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, 'explorer', 'error', 'platscan_http_502', ?, 'locked', ?, ?, ?, 2, '1100', '11', '0.05', 5, 43, 85, 'normal', 'normal', NULL, NULL, 0, NULL, NULL, NULL, 'obs-n', ?)",
+        (validator_n_id, fresh, fresh, fresh, fresh, fresh),
+    )
 PY
 
 # Keep Node A's seeded observations fresh for the whole suite: the
@@ -448,7 +605,7 @@ while True:
     try:
         with sqlite3.connect(path, timeout=5) as db:
             db.execute(
-                "UPDATE component_status SET attempted_at = ?, observed_at = ?, received_at = ?, value_received_at = CASE WHEN component_key = 'peers' THEN ? ELSE value_received_at END WHERE node_id = ?",
+                "UPDATE component_status SET attempted_at = ?, observed_at = ?, received_at = ?, value_received_at = CASE WHEN component_key IN ('peers', 'consensus') THEN ? ELSE value_received_at END WHERE node_id = ?",
                 (fresh, fresh, fresh, fresh, node_a),
             )
             # The seeded Agent's liveness is time-based too; refresh it so
@@ -545,27 +702,47 @@ path = sys.argv[1]
 agent_id = "0195f2a1-0011-4011-8011-000000000011"
 target_agent = "0195f2a1-0021-4021-8021-000000000021"
 node_a = "0195f2a1-0014-4014-8014-000000000014"
+# Home convergence fixtures (issue #102) that must stay deterministically
+# current/fresh for the whole suite: Node H (Producing Activity), Node K
+# (current False membership), Node M (Observing), and Node N (healthy with
+# stale Activity). Node L stays deliberately stale, and Node P is never
+# observed, so neither is touched here.
+fresh_nodes = [
+    node_a,
+    "0195f2a1-0060-4060-8060-000000000060",
+    "0195f2a1-0061-4061-8061-000000000061",
+    "0195f2a1-0063-4063-8063-000000000063",
+    "0195f2a1-0064-4064-8064-000000000064",
+]
+fresh_placeholders = ",".join("?" for _ in fresh_nodes)
 
 while True:
     fresh = (datetime.now(timezone.utc) - timedelta(seconds=20)).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
         with sqlite3.connect(path, timeout=5) as db:
             db.execute(
-                "UPDATE agents SET last_received_at = ? WHERE agent_id IN (?, ?)",
-                (fresh, agent_id, target_agent),
+                "UPDATE agents SET last_received_at = ? WHERE agent_id IN (?, ?, ?)",
+                (fresh, agent_id, target_agent, "0195f2a1-0023-4023-8023-000000000023"),
             )
             db.execute(
-                "UPDATE current_node_chain_observations SET updated_at = ? WHERE node_id = ?",
-                (fresh, node_a),
+                f"UPDATE current_node_chain_observations SET updated_at = ? WHERE node_id IN ({fresh_placeholders})",
+                (fresh, *fresh_nodes),
             )
             db.execute(
                 "UPDATE current_node_rpc_namespaces SET updated_at = ? WHERE node_id = ?",
                 (fresh, node_a),
             )
             db.execute(
-                "UPDATE component_status SET attempted_at = ?, observed_at = ?, received_at = ?, value_received_at = CASE WHEN component_key = 'peers' THEN ? ELSE value_received_at END "
-                "WHERE agent_id = ? AND node_id = ? AND scope = 'node'",
-                (fresh, fresh, fresh, fresh, agent_id, node_a),
+                f"UPDATE component_status SET attempted_at = ?, observed_at = ?, received_at = ?, value_received_at = CASE WHEN component_key IN ('peers', 'consensus') THEN ? ELSE value_received_at END "
+                f"WHERE node_id IN ({fresh_placeholders}) AND scope = 'node'",
+                (fresh, fresh, fresh, fresh, *fresh_nodes),
+            )
+            # Node H's current Provider Activity stays fresh: Provider
+            # failures (Node N) and authoritative empty (Node M) are
+            # deliberately static.
+            db.execute(
+                "UPDATE current_validator_insights SET last_attempt_received_at = ?, last_good_received_at = ?, last_good_provider_timestamp = ?, provider_timestamp = ?, updated_at = ? WHERE validator_id = ?",
+                (fresh, fresh, fresh, fresh, fresh, "0195f2a1-0070-4070-8070-000000000070"),
             )
     except Exception:
         # The Server holds the only write connection; a transient SQLITE_BUSY

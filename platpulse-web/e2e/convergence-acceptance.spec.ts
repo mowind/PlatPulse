@@ -205,7 +205,10 @@ test.describe('Converged WebUI acceptance (issue #95)', () => {
     expect(box!.width).toBeGreaterThanOrEqual(44)
     expect(box!.height).toBeGreaterThanOrEqual(44)
 
-    // Keyboard: tab to the whole-card link and activate with Enter.
+    // Keyboard: tab to the first whole-card Node link and activate with
+    // Enter. The card order is Server-driven (attention first), so the
+    // activated Node is the first Node link in tab order, not necessarily
+    // the seeded Node A card; the URL it opens must be the focused card's.
     await page.keyboard.press('Tab')
     let activeHref = ''
     for (let i = 0; i < 25; i++) {
@@ -213,13 +216,19 @@ test.describe('Converged WebUI acceptance (issue #95)', () => {
       if (activeHref.startsWith('/nodes/')) break
       await page.keyboard.press('Tab')
     }
-    expect(activeHref).toContain(`/nodes/${PUBLIC_NODE_ID}`)
+    expect(activeHref).toMatch(/^\/nodes\//)
     await expectFocusedElementHasVisibleFocus(page)
+    const escapedHref = activeHref.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     await page.keyboard.press('Enter')
-    await expect(page).toHaveURL(new RegExp(`/nodes/${PUBLIC_NODE_ID}$`))
-    await expect(page.getByRole('heading', { level: 1, name: PUBLIC_NODE_NAME })).toBeVisible({
-      timeout: 15_000,
-    })
+    await expect(page).toHaveURL(new RegExp(`${escapedHref}$`))
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible({ timeout: 15_000 })
+    // The fixture-specific Node A card is still a single whole-card target
+    // reachable from Home.
+    await page.getByRole('link', { name: 'PlatPulse', exact: true }).click()
+    await expect(page.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible()
+    const nodeACard = page.getByRole('link', { name: new RegExp(PUBLIC_NODE_NAME) })
+    await expect(nodeACard).toHaveCount(1)
+    expect(await nodeACard.getAttribute('href')).toBe(`/nodes/${PUBLIC_NODE_ID}`)
 
     // Back Home; the compact shell must not overflow at the fixed viewport.
     await page.getByRole('link', { name: 'PlatPulse', exact: true }).click()
