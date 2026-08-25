@@ -1287,6 +1287,12 @@ export type PublicNode = {
     resyncState: string;
     rpcState: string;
     syncState: string;
+    /**
+     * Transaction count from the persisted Block Summary for this Node at
+     * exactly `current_head`. `None` means no exact match exists and the
+     * value must be presented as Unknown; no latest-summary fallback exists.
+     */
+    transactionCountAtCurrentHead?: number | null;
     validator?: null | PublicValidatorInsight;
 };
 

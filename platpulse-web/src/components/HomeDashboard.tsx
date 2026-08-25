@@ -131,8 +131,9 @@ function HomeNodeCard({ network, node }: NodeRecord) {
           <StatusBadge status={healthLabel(node.health)} tone={statusTone(tone)} />
         </header>
         <div className="dashboard-node-primary" aria-label="Node highlights">
-          <Metric label="Current Head" value={formatNumber(node.currentHead)} />
-          <Metric label="Peers" value={formatPeerCount(node)} detail={formatPeerObservation(node)} />
+          <Metric label="HEAD" value={formatNumber(node.currentHead)} />
+          <Metric label="TXS" value={formatNumber(node.transactionCountAtCurrentHead)} />
+          <Metric label="PEERS" value={formatPeerCount(node)} detail={formatPeerObservation(node)} />
         </div>
         {diagnostic && <p className="dashboard-node-diagnostic">{diagnostic}</p>}
       </Link>

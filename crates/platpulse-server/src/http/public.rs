@@ -985,6 +985,10 @@ pub struct PublicNode {
     pub peers: PublicPeerInsight,
     pub host_cpu_percent: Option<f64>,
     pub current_head: Option<i64>,
+    /// Transaction count from the persisted Block Summary for this Node at
+    /// exactly `current_head`. `None` means no exact match exists and the
+    /// value must be presented as Unknown; no latest-summary fallback exists.
+    pub transaction_count_at_current_head: Option<i64>,
     pub historical_high_watermark: Option<i64>,
     pub resync_state: String,
     pub network_reference_head: Option<i64>,
@@ -1020,6 +1024,7 @@ struct PublicNodeRow {
     peer_static_count: Option<i64>,
     peer_consensus_count: Option<i64>,
     current_head: Option<i64>,
+    transaction_count_at_current_head: Option<i64>,
     historical_high_watermark: Option<i64>,
     resync_state: Option<String>,
     resync_last_progress_at: Option<String>,
@@ -1296,6 +1301,7 @@ fn public_node(row: PublicNodeRow) -> (String, PublicNode) {
         peers,
         host_cpu_percent: row.host_cpu_percent,
         current_head: row.current_head,
+        transaction_count_at_current_head: row.transaction_count_at_current_head,
         historical_high_watermark: row.historical_high_watermark,
         resync_state: row.resync_state.unwrap_or_else(|| "normal".to_owned()),
         network_reference_head: row.network_reference_head,
@@ -1327,7 +1333,9 @@ const PUBLIC_NODE_QUERY_BASE: &str = r#"SELECT n.node_id, n.display_name, n.netw
        CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN COALESCE(pc.trusted_count, 0) ELSE NULL END AS peer_trusted_count,
        CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN COALESCE(pc.static_count, 0) ELSE NULL END AS peer_static_count,
        CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN COALESCE(pc.consensus_count, 0) ELSE NULL END AS peer_consensus_count,
-       c.current_block AS current_head, hs.historical_high_watermark,
+       c.current_block AS current_head,
+       bs.transaction_count AS transaction_count_at_current_head,
+       hs.historical_high_watermark,
        hs.resync_state, hs.resync_last_progress_at,
        nr.block_number AS network_reference_head, nr.confidence AS network_reference_confidence
   FROM nodes n
@@ -1351,6 +1359,7 @@ const PUBLIC_NODE_QUERY_BASE: &str = r#"SELECT n.node_id, n.display_name, n.netw
   ) pc ON pc.node_id = n.node_id
   LEFT JOIN current_host_observations h ON h.agent_id = n.agent_id
   LEFT JOIN current_node_chain_observations c ON c.node_id = n.node_id
+  LEFT JOIN block_summaries bs ON bs.node_id = n.node_id AND bs.block_number = c.current_block
   LEFT JOIN block_history_state hs ON hs.node_id = n.node_id
   LEFT JOIN network_reference_heads nr ON nr.network_key = n.network_key"#;
 
@@ -2112,6 +2121,106 @@ mod tests {
             .execute(state.db().pool()).await.unwrap();
         sqlx::query("INSERT INTO current_host_observations (agent_id, cpu_percent, updated_at) VALUES ('agent-public-test', 42.5, '2026-01-01T00:00:00Z')")
             .execute(state.db().pool()).await.unwrap();
+    }
+
+    async fn seed_block_summary(
+        state: &AppState,
+        node_id: &str,
+        height: i64,
+        transaction_count: i64,
+    ) {
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        sqlx::query("INSERT INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, source, coinbase, seal_signer_match, protocol_proposer_kind, attribution_reason, accepted_at) VALUES (?, ?, ?, '0xparent', '0xgenesis', 1, 1, 'lat', 1, ?, ?, 'subscription', '0x0000000000000000000000000000000000000000', 'unknown', 'unknown', 'test', ?)")
+            .bind(node_id)
+            .bind(height)
+            .bind(format!("0x{node_id}-{height}"))
+            .bind(&now)
+            .bind(transaction_count)
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+    }
+
+    async fn seed_exact_head_transaction_fixtures(state: &AppState) {
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        for node_id in [
+            "node-exact",
+            "node-missing",
+            "node-behind",
+            "node-ahead",
+            "node-other",
+        ] {
+            sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES (?, 'agent-public-test', 'mainnet', ?, 'ws://127.0.0.1:1', 'active', 'public', 1, ?, ?)")
+                .bind(node_id)
+                .bind(format!("{node_id} display"))
+                .bind(&now)
+                .bind(&now)
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO current_node_chain_observations (node_id, current_block, updated_at) VALUES (?, 100, ?)")
+                .bind(node_id)
+                .bind(&now)
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+        }
+        for (node_id, watermark) in [
+            ("node-exact", 100_i64),
+            ("node-missing", 100_i64),
+            ("node-behind", 99_i64),
+            ("node-ahead", 200_i64),
+            ("node-other", 100_i64),
+        ] {
+            sqlx::query("INSERT INTO block_history_state (node_id, historical_high_watermark, updated_at) VALUES (?, ?, ?)")
+                .bind(node_id)
+                .bind(watermark)
+                .bind(&now)
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+        }
+        for (node_id, height, transaction_count) in [
+            ("node-exact", 100_i64, 7_i64),
+            ("node-behind", 99_i64, 9_i64),
+            ("node-ahead", 101_i64, 11_i64),
+            ("node-other", 100_i64, 13_i64),
+        ] {
+            seed_block_summary(state, node_id, height, transaction_count).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn public_node_exact_current_head_transaction_count_is_node_scoped_and_exact() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        seed_exact_head_transaction_fixtures(&state).await;
+
+        let response = public_networks(State(state)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let nodes = value[0]["nodes"].as_array().unwrap();
+        let node = |node_id: &str| {
+            nodes
+                .iter()
+                .find(|node| node["nodeId"].as_str() == Some(node_id))
+                .unwrap_or_else(|| panic!("missing {node_id}"))
+        };
+
+        // HEAD stays the sync observation Current Head even when a Block
+        // Summary or Historical High-Water Mark is higher.
+        assert_eq!(node("node-exact")["currentHead"], 100);
+        assert_eq!(node("node-exact")["transactionCountAtCurrentHead"], 7);
+        assert_eq!(node("node-missing")["currentHead"], 100);
+        assert!(node("node-missing")["transactionCountAtCurrentHead"].is_null());
+        assert_eq!(node("node-behind")["currentHead"], 100);
+        assert!(node("node-behind")["transactionCountAtCurrentHead"].is_null());
+        assert_eq!(node("node-ahead")["currentHead"], 100);
+        assert!(node("node-ahead")["transactionCountAtCurrentHead"].is_null());
+        assert_eq!(node("node-other")["currentHead"], 100);
+        assert_eq!(node("node-other")["transactionCountAtCurrentHead"], 13);
     }
 
     #[tokio::test]

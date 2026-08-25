@@ -14,14 +14,14 @@ const network = {
     {
       nodeId: 'node-a', displayName: 'Alpha', networkKey: 'mainnet', health: 'healthy', healthReason: 'RPC reachable',
       rpcState: 'connected', syncState: 'synced', consensusState: 'ready', processState: 'running', resyncState: 'idle',
-      currentHead: 120, historicalHighWatermark: 120, hostCpuPercent: 14.5, networkReferenceHead: 120,
+      currentHead: 120, transactionCountAtCurrentHead: 12345, historicalHighWatermark: 120, hostCpuPercent: 14.5, networkReferenceHead: 120,
       networkReferenceConfidence: 'high', freshness: 'current', resyncProgress: null,
       peers: { state: 'current', freshness: 'current', peerCount: 0 }, validator: null,
     },
     {
       nodeId: 'node-b', displayName: 'Beta', networkKey: 'mainnet', health: 'unknown', healthReason: 'Never observed',
       rpcState: 'unknown', syncState: 'unknown', consensusState: 'unknown', processState: 'unknown', resyncState: 'unknown',
-      currentHead: null, historicalHighWatermark: null, hostCpuPercent: null, networkReferenceHead: null,
+      currentHead: null, transactionCountAtCurrentHead: null, historicalHighWatermark: null, hostCpuPercent: null, networkReferenceHead: null,
       networkReferenceConfidence: 'unknown', freshness: 'unknown', resyncProgress: null,
       peers: { state: 'unknown', freshness: 'unknown', peerCount: null }, validator: null,
     },
@@ -42,9 +42,28 @@ describe('Public Home dashboard', () => {
     expect(screen.getByText('Healthy Nodes').nextElementSibling?.textContent).toBe('1')
     expect(screen.getByText('Attention').nextElementSibling?.textContent).toBe('1')
     const alphaCard = cardOf(nodeCardLink('Alpha'))
-    expect(within(alphaCard).getByText('Peers').nextElementSibling?.textContent).toBe('0')
+    expect(within(alphaCard).getByText('PEERS').nextElementSibling?.textContent).toBe('0')
     // A successful zero snapshot stays an authoritative zero, not Unknown.
     expect(within(alphaCard).getByText('Empty; authoritative zero')).toBeTruthy()
+  })
+
+  it('shows the first compact metric row as HEAD, TXS, and PEERS with Unknown on absence', () => {
+    render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+
+    const alphaCard = cardOf(nodeCardLink('Alpha'))
+    expect(within(alphaCard).getByText('HEAD')).toBeTruthy()
+    expect(within(alphaCard).getByText('120')).toBeTruthy()
+    expect(within(alphaCard).getByText('TXS')).toBeTruthy()
+    // Formatted exact match is rendered with locale grouping, never as a raw number.
+    expect(within(alphaCard).getByText('12,345')).toBeTruthy()
+    expect(within(alphaCard).getByText('PEERS')).toBeTruthy()
+    expect(within(alphaCard).getByText('0')).toBeTruthy()
+    // No exact Block Summary match is Unknown, not zero (issue #98).
+    const betaCard = cardOf(nodeCardLink('Beta'))
+    expect(within(betaCard).getByText('HEAD')).toBeTruthy()
+    expect(within(betaCard).getByText('TXS')).toBeTruthy()
+    expect(within(betaCard).getByText('PEERS')).toBeTruthy()
+    expect(within(betaCard).getAllByText('Unknown').length).toBeGreaterThanOrEqual(3)
   })
 
   it('keeps summary cards to marker, title, and number with a compact shell', () => {

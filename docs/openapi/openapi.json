@@ -10813,6 +10813,14 @@
           "syncState": {
             "type": "string"
           },
+          "transactionCountAtCurrentHead": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Transaction count from the persisted Block Summary for this Node at\nexactly `current_head`. `None` means no exact match exists and the\nvalue must be presented as Unknown; no latest-summary fallback exists."
+          },
           "validator": {
             "oneOf": [
               {
