@@ -144,12 +144,25 @@ async function openAdminNavLink(page: Page, linkName: string) {
 }
 
 test.describe('Converged WebUI acceptance (issue #95)', () => {
-  test('Public Home → Network → Node Detail works at every fixed viewport', async ({ page }) => {
+  test('Public Home → Node Detail → Network works at every fixed viewport', async ({ page }) => {
     await loginAs(page)
     await expect(page.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible()
 
-    // Home → Network overview.
-    await page.getByRole('link', { name: PUBLIC_NETWORK_NAME }).click()
+    // Home → Node Detail via the one whole-card link (issue #97).
+    await page.getByRole('link', { name: new RegExp(PUBLIC_NODE_NAME) }).click()
+    await expect(page).toHaveURL(new RegExp(`/nodes/${PUBLIC_NODE_ID}$`))
+    await expect(page.getByRole('heading', { level: 1, name: PUBLIC_NODE_NAME })).toBeVisible({
+      timeout: 15_000,
+    })
+    await expect(page.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true')
+    await page.getByRole('tab', { name: 'Network' }).click()
+    await expect(page.getByRole('tabpanel', { name: 'Network' })).toBeVisible()
+    await page.getByRole('tab', { name: 'Details' }).click()
+    await expect(page.getByRole('tabpanel', { name: 'Details' })).toBeVisible()
+
+    // Node Detail → Network overview via the breadcrumb (the Home card
+    // Network display name is plain text, not a nested link).
+    await page.getByRole('link', { name: new RegExp(`← ${PUBLIC_NETWORK_KEY}`) }).click()
     await expect(page).toHaveURL(new RegExp(`/networks/${PUBLIC_NETWORK_KEY}$`))
     await expect(page.getByRole('heading', { level: 1, name: PUBLIC_NETWORK_NAME })).toBeVisible({
       timeout: 15_000,
@@ -162,17 +175,53 @@ test.describe('Converged WebUI acceptance (issue #95)', () => {
     await expect(page.getByRole('heading', { level: 1, name: PUBLIC_NODE_NAME })).toBeVisible({
       timeout: 15_000,
     })
-    await expect(page.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true')
-    await page.getByRole('tab', { name: 'Network' }).click()
-    await expect(page.getByRole('tabpanel', { name: 'Network' })).toBeVisible()
-    await page.getByRole('tab', { name: 'Details' }).click()
-    await expect(page.getByRole('tabpanel', { name: 'Details' })).toBeVisible()
 
     // Responsive and keyboard/semantic contract at the fixed viewport.
     await expectVisibleInteractiveTargets(page)
     await expectNoHorizontalOverflow(page)
 
     // The flow returns home; the shell stays intact.
+    await page.getByRole('link', { name: 'PlatPulse', exact: true }).click()
+    await expect(page.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible()
+    await expectNoHorizontalOverflow(page)
+  })
+
+  test('compact Home node cards keep one whole-card navigation target at every fixed viewport', async ({ page }) => {
+    await loginAs(page)
+    await expect(page.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible()
+
+    const cardLink = page.getByRole('link', { name: new RegExp(PUBLIC_NODE_NAME) }).first()
+    await expect(cardLink).toBeVisible({ timeout: 15_000 })
+
+    // Whole-card target: the link wraps the Node label and the Network name,
+    // which stays plain text (no nested link), and the redundant
+    // "View Node Details" affordance is absent from Home.
+    await expect(cardLink).toContainText(PUBLIC_NETWORK_NAME)
+    await expect(page.getByRole('link', { name: PUBLIC_NETWORK_NAME, exact: true })).toHaveCount(0)
+    await expect(page.getByRole('link', { name: /View Node Details/ })).toHaveCount(0)
+
+    // Touch target: the whole card is the interactive target, at least 44px.
+    const box = await cardLink.boundingBox()
+    expect(box!.width).toBeGreaterThanOrEqual(44)
+    expect(box!.height).toBeGreaterThanOrEqual(44)
+
+    // Keyboard: tab to the whole-card link and activate with Enter.
+    await page.keyboard.press('Tab')
+    let activeHref = ''
+    for (let i = 0; i < 25; i++) {
+      activeHref = await page.evaluate(() => document.activeElement?.getAttribute('href') ?? '')
+      if (activeHref.startsWith('/nodes/')) break
+      await page.keyboard.press('Tab')
+    }
+    expect(activeHref).toContain(`/nodes/${PUBLIC_NODE_ID}`)
+    await expectFocusedElementHasVisibleFocus(page)
+    await page.keyboard.press('Enter')
+    await expect(page).toHaveURL(new RegExp(`/nodes/${PUBLIC_NODE_ID}$`))
+    await expect(page.getByRole('heading', { level: 1, name: PUBLIC_NODE_NAME })).toBeVisible({
+      timeout: 15_000,
+    })
+
+    // Back Home; the compact shell must not overflow at the fixed viewport.
     await page.getByRole('link', { name: 'PlatPulse', exact: true }).click()
     await expect(page.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible()
     await expectNoHorizontalOverflow(page)

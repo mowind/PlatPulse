@@ -399,6 +399,27 @@ describe('App shell with private Home', () => {
   })
 
   it('renders published Network and Node data on Home', async () => {
+    const nodePayload = {
+      nodeId: 'node-1',
+      displayName: 'Validator A',
+      networkKey: 'mainnet',
+      health: 'healthy',
+      healthReason: 'rpc reachable',
+      freshness: 'current',
+      rpcState: 'ok',
+      syncState: 'synced',
+      consensusState: 'current',
+      processState: 'running',
+      resyncState: 'idle',
+      currentHead: 123,
+      historicalHighWatermark: 120,
+      networkReferenceHead: 123,
+      networkReferenceConfidence: 'high',
+      hostCpuPercent: 42.5,
+      resyncProgress: null,
+      peers: { state: 'current', freshness: 'current', peerCount: 3 },
+      validator: null,
+    }
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       '/api/public/v1/networks': () => jsonResponse([{
@@ -415,25 +436,11 @@ describe('App shell with private Home', () => {
           hostCpuPercent: 42.5,
         }],
       }], 200),
+      '/api/public/v1/nodes/node-1': () => jsonResponse(nodePayload, 200),
       '/api/public/v1/networks/mainnet': () => jsonResponse({
         networkKey: 'mainnet',
         displayName: 'Mainnet',
-        nodes: [{
-          nodeId: 'node-1',
-          displayName: 'Validator A',
-          networkKey: 'mainnet',
-          health: 'healthy',
-          healthReason: 'rpc reachable',
-          freshness: 'current',
-          rpcState: 'ok',
-          syncState: 'synced',
-          consensusState: 'current',
-          processState: 'running',
-          resyncState: 'idle',
-          currentHead: 123,
-          historicalHighWatermark: 120,
-          peers: { state: 'current', freshness: 'current', peerCount: 3 },
-        }],
+        nodes: [nodePayload],
         peers: { state: 'current', freshness: 'current', peerCount: 3 },
         geo: { state: 'disabled' },
         validators: [],
@@ -444,10 +451,15 @@ describe('App shell with private Home', () => {
     const homeLink = await screen.findByRole('link', { name: 'Home' })
     fireEvent.click(homeLink)
     expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeTruthy()
-    expect(await screen.findByRole('link', { name: 'Mainnet' })).toBeTruthy()
-    expect(screen.getByRole('link', { name: 'Validator A' })).toBeTruthy()
+    // The whole-card Node link names the Node; the Network stays plain text.
+    const nodeCard = await screen.findByRole('link', { name: /Validator A/ })
+    expect(nodeCard.getAttribute('href')).toBe('/nodes/node-1')
+    expect(nodeCard.textContent).toContain('Mainnet')
+    expect(screen.queryByRole('link', { name: 'Mainnet' })).toBeNull()
     expect(screen.getByText('Healthy')).toBeTruthy()
-    fireEvent.click(screen.getByRole('link', { name: 'Mainnet' }))
+    fireEvent.click(nodeCard)
+    expect(await screen.findByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('link', { name: /← mainnet/ }))
     expect(await screen.findByRole('heading', { level: 1, name: 'Mainnet' })).toBeTruthy()
     expect(screen.getByText(/NETWORK OVERVIEW/)).toBeTruthy()
     expect(screen.getByText('PlatON Nodes')).toBeTruthy()

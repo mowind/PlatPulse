@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router'
 import type { PublicNetwork, PublicNode } from '../api/generated'
 import { realtimeStreamLabel } from './RealtimeNotice'
-import { formatObservedAt, StatusBadge } from './StatusBadge'
+import { StatusBadge } from './StatusBadge'
 
 type HomeDashboardProps = {
   networks: PublicNetwork[]
@@ -73,10 +73,10 @@ export default function HomeDashboard({
       {loading && <p role="status">Starting Home…</p>}
 
       <div className="dashboard-summary-grid" aria-label="Home summary">
-        <SummaryCard label="Published Nodes" value={hasProjection ? records.length : null} detail="Active Nodes on Home" tone="indigo" />
-        <SummaryCard label="Healthy Nodes" value={healthyCount} detail="Server-owned health" tone="green" />
-        <SummaryCard label="Attention" value={healthyCount === null ? null : records.length - healthyCount} detail="Unknown and degraded included" tone={healthyCount !== null && records.length === healthyCount ? 'green' : 'red'} />
-        <SummaryCard label="Networks" value={hasProjection ? networks.length : null} detail="Published Network groups" tone="violet" />
+        <SummaryCard label="Published Nodes" value={hasProjection ? records.length : null} tone="indigo" />
+        <SummaryCard label="Healthy Nodes" value={healthyCount} tone="green" />
+        <SummaryCard label="Attention" value={healthyCount === null ? null : records.length - healthyCount} tone={healthyCount !== null && records.length === healthyCount ? 'green' : 'red'} />
+        <SummaryCard label="Networks" value={hasProjection ? networks.length : null} tone="violet" />
       </div>
 
       <div className="dashboard-toolbar" aria-label="Node filters and sorting">
@@ -104,31 +104,38 @@ export default function HomeDashboard({
   )
 }
 
-function SummaryCard({ label, value, detail, tone }: { label: string; value: number | null; detail: string; tone: string }) {
-  return <article className="dashboard-summary-card"><span className={`dashboard-summary-dot dashboard-summary-dot-${tone}`} aria-hidden="true" /><p>{label}</p><strong>{value === null ? '—' : value.toLocaleString()}</strong><small>{detail}</small></article>
+function SummaryCard({ label, value, tone }: { label: string; value: number | null; tone: string }) {
+  return <article className="dashboard-summary-card"><span className={`dashboard-summary-dot dashboard-summary-dot-${tone}`} aria-hidden="true" /><p>{label}</p><strong>{value === null ? '—' : value.toLocaleString()}</strong></article>
 }
 
+/**
+ * Compact Home card: ONE whole-card semantic link to Node Detail. Healthy
+ * Nodes carry no routine prose (health reason, Last Observed, component
+ * status rows, "no active resync"); only an exceptional Node keeps a single
+ * short diagnostic line (issue #97).
+ */
 function HomeNodeCard({ network, node }: NodeRecord) {
   const tone = toneFor(node.health)
+  const diagnostic = exceptionalDiagnostic(node)
   return (
     <article className={`dashboard-node-card dashboard-node-card-${tone}`}>
-      <header className="dashboard-node-header">
-        <div className="dashboard-node-title"><span className={`dashboard-node-status dashboard-node-status-${tone}`} aria-hidden="true" /><div><h2><Link to={`/nodes/${node.nodeId}`}>{nodeLabel(node)}</Link></h2><p><Link className="dashboard-card-network" to={`/networks/${network.networkKey}`}>{network.displayName}</Link></p></div></div>
-        <StatusBadge status={healthLabel(node.health)} tone={statusTone(tone)} />
-      </header>
-      <p className="dashboard-health-reason">{node.healthReason}</p>
-      <div className="dashboard-node-primary" aria-label="Node highlights">
-        <Metric label="Current Head" value={formatNumber(node.currentHead)} />
-        <Metric label="Peers" value={formatPeerCount(node)} detail={formatPeerObservation(node)} />
-        <Metric label="Last Observed" value={freshnessLabel(node.freshness)} detail={lastObservedDetail(node.freshness)} />
-      </div>
-      <div className="dashboard-node-statuses" aria-label="Node component status">
-        <ComponentStatus label="RPC" value={observationLabel(node.rpcState)} />
-        <ComponentStatus label="Sync" value={observationLabel(node.syncState)} />
-        <ComponentStatus label="Consensus" value={observationLabel(node.consensusState)} />
-        <ComponentStatus label="Process" value={observationLabel(node.processState)} />
-      </div>
-      <footer className="dashboard-node-footer"><span>{resyncSummary(node)}</span><Link to={`/nodes/${node.nodeId}`}>View Node Details <span aria-hidden="true">↗</span></Link></footer>
+      <Link className="dashboard-node-card-link" to={`/nodes/${node.nodeId}`}>
+        <header className="dashboard-node-header">
+          <div className="dashboard-node-title">
+            <span className={`dashboard-node-status dashboard-node-status-${tone}`} aria-hidden="true" />
+            <div>
+              <h2>{nodeLabel(node)}</h2>
+              <p className="dashboard-node-network">{network.displayName}</p>
+            </div>
+          </div>
+          <StatusBadge status={healthLabel(node.health)} tone={statusTone(tone)} />
+        </header>
+        <div className="dashboard-node-primary" aria-label="Node highlights">
+          <Metric label="Current Head" value={formatNumber(node.currentHead)} />
+          <Metric label="Peers" value={formatPeerCount(node)} detail={formatPeerObservation(node)} />
+        </div>
+        {diagnostic && <p className="dashboard-node-diagnostic">{diagnostic}</p>}
+      </Link>
     </article>
   )
 }
@@ -137,25 +144,35 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
   return <div className="dashboard-node-primary-metric"><span>{label}</span><strong>{value}</strong>{detail && <small>{detail}</small>}</div>
 }
 
-function ComponentStatus({ label, value }: { label: string; value: string }) {
-  return <div className="dashboard-node-status-item"><span>{label}</span><StatusBadge status={value} tone={statusTone(toneFor(value))} /></div>
+/** One sanitized diagnostic line for exceptional Nodes only (issue #97). */
+function exceptionalDiagnostic(node: PublicNode): string | null {
+  if (node.health !== 'healthy') {
+    const reason = node.healthReason?.trim()
+    return reason || `Health ${healthLabel(node.health).toLowerCase()}`
+  }
+  if ((node.resyncState ?? '').toLowerCase() === 'resyncing') {
+    const progress = node.resyncProgress?.trim()
+    return progress || 'Resync in progress'
+  }
+  return null
 }
 
-function resyncSummary(node: PublicNode): string {
-  const state = observationLabel(node.resyncState)
-  return state === 'Current' ? 'No active resync' : node.resyncProgress ?? `Resync ${state}`
+function formatPeerCount(node: PublicNode) {
+  const peer = node.peers
+  if (peer?.peerCount == null) return 'Unknown'
+  // Starting/Disabled/Unsupported do not provide a usable value; only a
+  // successful observation may show an authoritative zero (webui.md §5.3).
+  if (peer.peerCount === 0 && ['starting', 'disabled', 'unsupported'].includes(peer.state)) return 'Unknown'
+  return peer.peerCount.toLocaleString()
 }
-
-function lastObservedDetail(value: string | null | undefined): string {
-  if (!value || value === 'unknown' || value === 'current' || value === 'stale') return 'Server timestamp unavailable'
-  return formatObservedAt(value)
-}
-
-function formatPeerCount(node: PublicNode) { return node.peers?.peerCount == null ? 'Unknown' : node.peers.peerCount.toLocaleString() }
 function formatPeerObservation(node: PublicNode) {
   const peer = node.peers
   if (!peer) return 'Unknown observation'
   if (peer.state === 'error') return peer.peerCount == null ? 'Error; no last-good value' : 'Error; showing last-good value'
+  if (peer.state === 'starting') return 'Starting; no usable snapshot yet'
+  if (peer.state === 'disabled') return 'Disabled; Peer observation is not configured'
+  if (peer.state === 'unsupported') return 'Unsupported; no supported Peer snapshot'
+  if (peer.peerCount == null || peer.state === 'unknown') return 'Unknown observation'
   if (peer.freshness === 'stale') return 'Stale; showing last-good value'
   if (peer.peerCount === 0) return 'Empty; authoritative zero'
   return 'Current observation'
@@ -171,42 +188,6 @@ function healthLabel(value: string): string {
 }
 
 function nodeLabel(node: PublicNode) { return node.displayName ?? node.nodeId }
-function observationLabel(value: string | null | undefined): string {
-  switch (value) {
-    case 'ok':
-    case 'connected':
-    case 'synced':
-    case 'ready':
-    case 'running':
-    case 'idle':
-    case 'normal':
-    case 'current':
-    case 'fresh':
-    case 'active':
-      return 'Current'
-    case 'error':
-    case 'failed':
-    case 'unhealthy':
-    case 'offline':
-      return 'Error'
-    case 'stale':
-      return 'Stale'
-    case 'starting':
-    case 'connecting':
-      return 'Starting'
-    case 'disabled':
-      return 'Disabled'
-    case 'unsupported':
-      return 'Unsupported'
-    case 'empty':
-      return 'Empty'
-    default:
-      return 'Unknown'
-  }
-}
-function freshnessLabel(value: string | null | undefined): string {
-  return value === 'stale' ? 'Stale' : value && value !== 'unknown' ? 'Current' : 'Unknown'
-}
 function formatNumber(value: number | null | undefined) { return value == null ? 'Unknown' : value.toLocaleString() }
 function isHealthy(value: string) { return value.toLowerCase() === 'healthy' }
 function healthRank(value: string) { const tone = toneFor(value); return tone === 'bad' ? 0 : tone === 'warn' ? 1 : tone === 'good' ? 2 : 3 }

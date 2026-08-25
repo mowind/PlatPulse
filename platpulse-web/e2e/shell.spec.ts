@@ -35,7 +35,7 @@ test.describe('Authenticated shell', () => {
     await expect(home.getByRole('button', { name: 'All Networks' })).toHaveAttribute('aria-pressed', 'true')
     await home.getByRole('combobox', { name: 'Sort' }).selectOption('head')
 
-    const undersized = await home.locator('button, a').evaluateAll((elements) => elements.flatMap((element) => {
+    const undersized = await home.locator('button, a, select').evaluateAll((elements) => elements.flatMap((element) => {
       const rect = element.getBoundingClientRect()
       return rect.width < 44 || rect.height < 44 ? [element.textContent?.trim() || element.getAttribute('aria-label') || element.tagName] : []
     }))

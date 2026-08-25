@@ -10,10 +10,10 @@ import {
 test.describe('Phase 1 release-candidate vertical slice', () => {
   test('public projection isolates a private Node and Node detail works at fixed viewports', async ({ page }) => {
     await loginAs(page)
-    await expect(page.getByRole('link', { name: 'Node A' })).toBeVisible()
+    await expect(page.getByRole('link', { name: /Node A/ })).toBeVisible()
     await expect(page.getByText('Node B (private)', { exact: true })).toHaveCount(0)
 
-    await page.getByRole('link', { name: 'Node A' }).click()
+    await page.getByRole('link', { name: /Node A/ }).click()
     await expect(page).toHaveURL(/\/nodes\/0195f2a1-0014-4014-8014-000000000014$/)
     await expect(page.getByRole('heading', { level: 1, name: 'Node A' })).toBeVisible({ timeout: 15_000 })
     await expect(page.getByText('Current Head', { exact: true }).first()).toBeVisible({ timeout: 15_000 })
@@ -46,7 +46,9 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
 
   test('Public Peer insight exposes bounded summaries without peer identities', async ({ page }) => {
     await loginAs(page)
-    await page.getByRole('link', { name: 'PlatON E2E Network' }).click()
+    // Home's Network display name is plain text (issue #97), so reach the
+    // Network overview through the Node Detail breadcrumb.
+    await page.goto('/networks/platon-e2e')
     await expect(page.getByRole('heading', { level: 1, name: 'PlatON E2E Network' })).toBeVisible()
     const networkPeer = page.getByRole('region', { name: 'Peer insight' }).first()
     await expect(networkPeer).toContainText('Peer insight')
@@ -73,7 +75,7 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
 
   test('Public Geo surface stays explicit when the database is disabled; the Owner Overview carries no Geo panel', async ({ page }) => {
     await loginAs(page)
-    await page.getByRole('link', { name: 'PlatON E2E Network' }).click()
+    await page.goto('/networks/platon-e2e')
     await expect(page.getByRole('heading', { level: 1, name: 'PlatON E2E Network' })).toBeVisible()
     const publicGeo = page.getByRole('region', { name: 'Peer countries' }).first()
     await expect(publicGeo).toContainText('Peer countries')
@@ -126,7 +128,7 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
 
   test('public history export downloads the bounded JSON representation', async ({ page }) => {
     await loginAs(page)
-    await page.getByRole('link', { name: 'Node A' }).click()
+    await page.getByRole('link', { name: /Node A/ }).click()
     await expect(page.getByRole('heading', { level: 1, name: 'Node A' })).toBeVisible({ timeout: 15_000 })
 
     const downloadPromise = page.waitForEvent('download')

@@ -28,6 +28,10 @@ const network = {
   ],
 } satisfies PublicNetwork
 
+/** Node card links carry the whole card as their accessible name (issue #97). */
+const nodeCardLink = (name: string) => screen.getByRole('link', { name: new RegExp(name) })
+const cardOf = (link: HTMLElement) => link.closest('article') as HTMLElement
+
 afterEach(cleanup)
 
 describe('Public Home dashboard', () => {
@@ -37,9 +41,80 @@ describe('Public Home dashboard', () => {
     expect(screen.getByText('Published Nodes').nextElementSibling?.textContent).toBe('2')
     expect(screen.getByText('Healthy Nodes').nextElementSibling?.textContent).toBe('1')
     expect(screen.getByText('Attention').nextElementSibling?.textContent).toBe('1')
-    const alphaCard = screen.getByRole('link', { name: 'Alpha' }).closest('article')
-    expect(within(alphaCard!).getByText('Peers').nextElementSibling?.textContent).toBe('0')
-    expect(within(alphaCard!).getByText('RPC').parentElement?.textContent).toContain('Current')
+    const alphaCard = cardOf(nodeCardLink('Alpha'))
+    expect(within(alphaCard).getByText('Peers').nextElementSibling?.textContent).toBe('0')
+    // A successful zero snapshot stays an authoritative zero, not Unknown.
+    expect(within(alphaCard).getByText('Empty; authoritative zero')).toBeTruthy()
+  })
+
+  it('keeps summary cards to marker, title, and number with a compact shell', () => {
+    render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+
+    expect(screen.queryByText('Active Nodes on Home')).toBeNull()
+    expect(screen.queryByText('Server-owned health')).toBeNull()
+    expect(screen.queryByText('Unknown and degraded included')).toBeNull()
+    expect(screen.queryByText('Published Network groups')).toBeNull()
+    const cards = screen.getAllByRole('article').filter((card) => card.className.includes('dashboard-summary-card'))
+    expect(cards).toHaveLength(4)
+    for (const card of cards) {
+      // exactly one dot, one title, one number — no footer text
+      expect(card.querySelectorAll('.dashboard-summary-dot')).toHaveLength(1)
+      expect(card.querySelectorAll('p')).toHaveLength(1)
+      expect(card.querySelectorAll('strong')).toHaveLength(1)
+      expect(card.querySelectorAll('small')).toHaveLength(0)
+    }
+  })
+
+  it('renders one whole-card Node link with the Network name as plain text', () => {
+    render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+
+    // One semantic link per Node card, named by its visible card content.
+    const alphaLink = nodeCardLink('Alpha')
+    expect(alphaLink.getAttribute('href')).toBe('/nodes/node-a')
+    const alphaCard = cardOf(alphaLink)
+    expect(alphaCard.querySelectorAll('a')).toHaveLength(1)
+    // The Network display name is visible text inside the card link, never a
+    // nested link (issue #97).
+    expect(within(alphaCard).getByText('Mainnet')).toBeTruthy()
+    expect(screen.queryByRole('link', { name: 'Mainnet' })).toBeNull()
+    // The explicit "View Node Details" affordance is gone.
+    expect(screen.queryByText('View Node Details')).toBeNull()
+  })
+
+  it('omits routine prose and component status rows on healthy Nodes', () => {
+    render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+
+    const alphaCard = cardOf(nodeCardLink('Alpha'))
+    expect(within(alphaCard).queryByText('RPC reachable')).toBeNull()
+    expect(within(alphaCard).queryByText('Last Observed')).toBeNull()
+    expect(within(alphaCard).queryByText('RPC')).toBeNull()
+    expect(within(alphaCard).queryByText('Sync')).toBeNull()
+    expect(within(alphaCard).queryByText('Consensus')).toBeNull()
+    expect(within(alphaCard).queryByText('Process')).toBeNull()
+    expect(within(alphaCard).queryByText('No active resync')).toBeNull()
+    expect(alphaCard.querySelectorAll('.dashboard-node-diagnostic')).toHaveLength(0)
+  })
+
+  it('keeps exactly one short diagnostic line on exceptional Nodes', () => {
+    const resyncingNode = {
+      ...network.nodes[0],
+      nodeId: 'node-c', displayName: 'Gamma', health: 'healthy', resyncState: 'resyncing',
+      resyncProgress: 'Backfilling 10,000 blocks', peers: { state: 'current', freshness: 'current', peerCount: 3 },
+    }
+    render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes: [network.nodes[1], resyncingNode] }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+
+    // Unknown Node: the Server-sanitized health reason is the single line.
+    const betaCard = cardOf(nodeCardLink('Beta'))
+    expect(within(betaCard).getByText('Never observed')).toBeTruthy()
+    expect(betaCard.querySelectorAll('.dashboard-node-diagnostic')).toHaveLength(1)
+    // The unknown peer observation is never presented as Current (webui.md §5.3).
+    expect(within(betaCard).getByText('Unknown observation')).toBeTruthy()
+    expect(within(betaCard).queryByText('Current observation')).toBeNull()
+
+    // Healthy Node with an active resync: progress is the single line.
+    const gammaCard = cardOf(nodeCardLink('Gamma'))
+    expect(within(gammaCard).getByText('Backfilling 10,000 blocks')).toBeTruthy()
+    expect(gammaCard.querySelectorAll('.dashboard-node-diagnostic')).toHaveLength(1)
   })
 
   it('filters by Network and sorts by supported operational fields', () => {
@@ -47,13 +122,13 @@ describe('Public Home dashboard', () => {
     render(<BrowserRouter><HomeDashboard networks={[network, secondNetwork]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
     fireEvent.click(screen.getByRole('button', { name: 'Testnet' }))
-    expect(screen.getByRole('link', { name: 'Gamma' })).toBeTruthy()
-    expect(screen.queryByRole('link', { name: 'Alpha' })).toBeNull()
+    expect(nodeCardLink('Gamma')).toBeTruthy()
+    expect(screen.queryByRole('link', { name: /Alpha/ })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'All Networks' }))
     fireEvent.change(screen.getByRole('combobox', { name: 'Sort' }), { target: { value: 'head' } })
-    const links = screen.getAllByRole('link').filter((link) => ['Alpha', 'Beta', 'Gamma'].includes(link.textContent ?? ''))
-    expect(links.map((link) => link.textContent)).toEqual(['Gamma', 'Alpha', 'Beta'])
+    const nodeLinks = screen.getAllByRole('link').filter((link) => link.getAttribute('href')?.startsWith('/nodes/'))
+    expect(nodeLinks.map((link) => link.getAttribute('href'))).toEqual(['/nodes/node-c', '/nodes/node-a', '/nodes/node-b'])
   })
 
   it('keeps transport and authorization state explicit', () => {
@@ -68,8 +143,8 @@ describe('Public Home dashboard', () => {
       nodes: [{ ...network.nodes[0], nodeId: 'node-error', displayName: 'Error Node', health: 'unhealthy', healthReason: 'RPC failed' }, network.nodes[0]],
     }
     render(<BrowserRouter><HomeDashboard networks={[unhealthyNetwork]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
-    const nodeLinks = screen.getAllByRole('link').filter((link) => ['Error Node', 'Alpha'].includes(link.textContent ?? ''))
-    expect(nodeLinks.map((link) => link.textContent)).toEqual(['Error Node', 'Alpha'])
+    const nodeLinks = screen.getAllByRole('link').filter((link) => link.getAttribute('href')?.startsWith('/nodes/'))
+    expect(nodeLinks.map((link) => link.getAttribute('href'))).toEqual(['/nodes/node-error', '/nodes/node-a'])
   })
 
   it('does not render loading as fabricated zero-valued summary data', () => {
