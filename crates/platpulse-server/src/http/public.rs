@@ -583,6 +583,40 @@ fn unknown_public_peer_insight() -> PublicPeerInsight {
     }
 }
 
+/// Node-scoped last-good consensus state projected from Agent reports.
+/// `None` value fields mean no successful consensus observation has ever
+/// been accepted; `Some(0)` is an authoritative zero-height observation.
+/// Consensus membership is Agent-observed pool membership only; it never
+/// creates or infers a Validator identity or Block Production evidence.
+#[derive(Debug, Serialize, ToSchema, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicConsensusInsight {
+    /// Agent-reported collection state. The WebUI presents this separately
+    /// from freshness and value availability.
+    pub state: String,
+    /// Server-owned freshness of the last successful consensus observation.
+    pub freshness: String,
+    /// The last successful observation time.
+    pub observed_at: Option<String>,
+    /// Server receipt time for the last accepted consensus observation.
+    pub received_at: Option<String>,
+    /// Server-computed boundary at which the last observation became stale.
+    pub stale_since: Option<String>,
+    /// Current epoch from the last good consensus observation.
+    pub epoch: Option<i64>,
+    /// Current view number from the last good consensus observation.
+    pub view_number: Option<i64>,
+    /// Whether the current validator pool contains this Node. `None` means
+    /// no successful observation exists; it must never be presented as False.
+    pub validator: Option<bool>,
+    /// Highest QC block height from the last good consensus observation.
+    pub highest_qc_block: Option<i64>,
+    /// Highest lock block height from the last good consensus observation.
+    pub highest_lock_block: Option<i64>,
+    /// Highest commit block height from the last good consensus observation.
+    pub highest_commit_block: Option<i64>,
+}
+
 #[derive(Debug, Serialize, ToSchema, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct PublicNetwork {
@@ -983,6 +1017,7 @@ pub struct PublicNode {
     pub consensus_state: String,
     pub process_state: String,
     pub peers: PublicPeerInsight,
+    pub consensus: PublicConsensusInsight,
     pub host_cpu_percent: Option<f64>,
     pub current_head: Option<i64>,
     /// Transaction count from the persisted Block Summary for this Node at
@@ -1023,6 +1058,15 @@ struct PublicNodeRow {
     peer_trusted_count: Option<i64>,
     peer_static_count: Option<i64>,
     peer_consensus_count: Option<i64>,
+    consensus_observed_at: Option<String>,
+    consensus_value_received_at: Option<String>,
+    consensus_value_revision: Option<i64>,
+    consensus_epoch: Option<i64>,
+    consensus_view_number: Option<i64>,
+    consensus_validator: Option<i64>,
+    consensus_highest_qc_block: Option<i64>,
+    consensus_highest_lock_block: Option<i64>,
+    consensus_highest_commit_block: Option<i64>,
     current_head: Option<i64>,
     transaction_count_at_current_head: Option<i64>,
     historical_high_watermark: Option<i64>,
@@ -1146,6 +1190,56 @@ fn public_peer_insight(row: &PublicNodeRow) -> PublicPeerInsight {
         trusted_count: has_value.then_some(row.peer_trusted_count).flatten(),
         static_count: has_value.then_some(row.peer_static_count).flatten(),
         consensus_count: has_value.then_some(row.peer_consensus_count).flatten(),
+    }
+}
+
+fn public_consensus_insight(row: &PublicNodeRow) -> PublicConsensusInsight {
+    let has_value = row.consensus_value_revision.unwrap_or_default() > 0;
+    let freshness = if has_value {
+        match row.consensus_value_received_at.as_deref() {
+            Some(timestamp) if fresh(Some(timestamp), crate::auth::now_utc()) => "current",
+            Some(_) => "stale",
+            None => "unknown",
+        }
+    } else {
+        "unknown"
+    };
+    let stale_since = if freshness == "stale" {
+        row.consensus_value_received_at
+            .as_deref()
+            .and_then(|timestamp| {
+                crate::auth::parse_rfc3339(timestamp).map(|received| {
+                    crate::auth::format_rfc3339(
+                        received + time::Duration::seconds(FRESHNESS_LIMIT_SECONDS),
+                    )
+                })
+            })
+    } else {
+        None
+    };
+    PublicConsensusInsight {
+        state: row
+            .consensus_state
+            .clone()
+            .unwrap_or_else(|| "unknown".to_owned()),
+        freshness: freshness.to_owned(),
+        observed_at: row.consensus_observed_at.clone(),
+        received_at: row.consensus_value_received_at.clone(),
+        stale_since,
+        epoch: has_value.then_some(row.consensus_epoch).flatten(),
+        view_number: has_value.then_some(row.consensus_view_number).flatten(),
+        validator: has_value
+            .then_some(row.consensus_validator.map(|value| value != 0))
+            .flatten(),
+        highest_qc_block: has_value
+            .then_some(row.consensus_highest_qc_block)
+            .flatten(),
+        highest_lock_block: has_value
+            .then_some(row.consensus_highest_lock_block)
+            .flatten(),
+        highest_commit_block: has_value
+            .then_some(row.consensus_highest_commit_block)
+            .flatten(),
     }
 }
 
@@ -1287,6 +1381,7 @@ fn public_node(row: PublicNodeRow) -> (String, PublicNode) {
     );
     let freshness = freshness_for(&row);
     let peers = public_peer_insight(&row);
+    let consensus = public_consensus_insight(&row);
     let node = PublicNode {
         node_id: row.node_id.clone(),
         display_name: row.display_name,
@@ -1299,6 +1394,7 @@ fn public_node(row: PublicNodeRow) -> (String, PublicNode) {
         consensus_state: row.consensus_state.unwrap_or_else(|| "unknown".to_owned()),
         process_state: row.process_state.unwrap_or_else(|| "unknown".to_owned()),
         peers,
+        consensus,
         host_cpu_percent: row.host_cpu_percent,
         current_head: row.current_head,
         transaction_count_at_current_head: row.transaction_count_at_current_head,
@@ -1333,6 +1429,15 @@ const PUBLIC_NODE_QUERY_BASE: &str = r#"SELECT n.node_id, n.display_name, n.netw
        CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN COALESCE(pc.trusted_count, 0) ELSE NULL END AS peer_trusted_count,
        CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN COALESCE(pc.static_count, 0) ELSE NULL END AS peer_static_count,
        CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN COALESCE(pc.consensus_count, 0) ELSE NULL END AS peer_consensus_count,
+       co.observed_at AS consensus_observed_at,
+       co.value_received_at AS consensus_value_received_at,
+       co.value_revision AS consensus_value_revision,
+       c.consensus_epoch,
+       c.consensus_view_number,
+       c.consensus_validator,
+       c.consensus_highest_qc_block,
+       c.consensus_highest_lock_block,
+       c.consensus_highest_commit_block,
        c.current_block AS current_head,
        bs.transaction_count AS transaction_count_at_current_head,
        hs.historical_high_watermark,
@@ -2221,6 +2326,171 @@ mod tests {
         assert!(node("node-ahead")["transactionCountAtCurrentHead"].is_null());
         assert_eq!(node("node-other")["currentHead"], 100);
         assert_eq!(node("node-other")["transactionCountAtCurrentHead"], 13);
+    }
+
+    #[tokio::test]
+    async fn public_consensus_projection_is_node_scoped_and_last_good() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        seed_exact_head_transaction_fixtures(&state).await;
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        let stale =
+            crate::auth::format_rfc3339(crate::auth::now_utc() - time::Duration::minutes(5));
+        seed_consensus_fixture(&state, "node-cons-current-true", "ok", &now, 1, 10, 9, 8, 1).await;
+        seed_consensus_fixture(&state, "node-cons-current-false", "ok", &now, 0, 0, 0, 0, 1).await;
+        seed_consensus_fixture(
+            &state,
+            "node-cons-stale-true",
+            "ok",
+            &stale,
+            1,
+            20,
+            19,
+            18,
+            1,
+        )
+        .await;
+        seed_consensus_fixture(&state, "node-cons-stale-false", "ok", &stale, 0, 3, 2, 1, 1).await;
+        // Failed collection with no accepted value: values exist in the raw
+        // chain row but value_revision=0 means they are not projected.
+        seed_consensus_fixture(&state, "node-cons-error-none", "error", &now, 0, 0, 0, 0, 0).await;
+
+        let response = public_networks(State(state.clone())).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let nodes = value[0]["nodes"].as_array().unwrap();
+        let node = |node_id: &str| {
+            nodes
+                .iter()
+                .find(|node| node["nodeId"].as_str() == Some(node_id))
+                .unwrap_or_else(|| panic!("missing {node_id}"))
+        };
+
+        // Current successful membership: true renders as a boolean.
+        let current_true = &node("node-cons-current-true")["consensus"];
+        assert_eq!(current_true["state"], "ok");
+        assert_eq!(current_true["freshness"], "current");
+        assert_eq!(current_true["validator"], true);
+        assert_eq!(current_true["epoch"], 1);
+        assert_eq!(current_true["viewNumber"], 2);
+        assert_eq!(current_true["highestQcBlock"], 10);
+        assert_eq!(current_true["highestLockBlock"], 9);
+        assert_eq!(current_true["highestCommitBlock"], 8);
+        assert!(current_true["staleSince"].is_null());
+
+        // Current successful non-membership plus authoritative zero heights.
+        let current_false = &node("node-cons-current-false")["consensus"];
+        assert_eq!(current_false["freshness"], "current");
+        assert_eq!(current_false["validator"], false);
+        assert_eq!(current_false["highestQcBlock"], 0);
+        assert_eq!(current_false["highestLockBlock"], 0);
+        assert_eq!(current_false["highestCommitBlock"], 0);
+
+        // Stale last-good true retains membership and block heights.
+        let stale_true = &node("node-cons-stale-true")["consensus"];
+        assert_eq!(stale_true["freshness"], "stale");
+        assert_eq!(stale_true["validator"], true);
+        assert_eq!(stale_true["highestQcBlock"], 20);
+        assert_eq!(stale_true["highestLockBlock"], 19);
+        assert_eq!(stale_true["highestCommitBlock"], 18);
+        assert!(stale_true["staleSince"].is_string());
+
+        // Stale last-good false retains an authoritative false.
+        let stale_false = &node("node-cons-stale-false")["consensus"];
+        assert_eq!(stale_false["freshness"], "stale");
+        assert_eq!(stale_false["validator"], false);
+        assert_eq!(stale_false["highestQcBlock"], 3);
+        assert_eq!(stale_false["highestLockBlock"], 2);
+        assert_eq!(stale_false["highestCommitBlock"], 1);
+
+        // Never-observed is Unknown, never zero/False, even when other chain
+        // observations exist and even when membership was withheld.
+        for node_id in ["node-public", "node-exact"] {
+            let consensus = &node(node_id)["consensus"];
+            assert_eq!(consensus["state"], "unknown", "{node_id}");
+            assert_eq!(consensus["freshness"], "unknown", "{node_id}");
+            assert!(consensus["validator"].is_null(), "{node_id}");
+            assert!(consensus["highestQcBlock"].is_null(), "{node_id}");
+            assert!(consensus["highestLockBlock"].is_null(), "{node_id}");
+            assert!(consensus["highestCommitBlock"].is_null(), "{node_id}");
+        }
+        // node-exact has a chain observation row but no accepted consensus
+        // value; nulls prove values do not default to zero.
+        assert!(node("node-exact")["consensus"]["validator"].is_null());
+
+        // A failed collection without an accepted value is Unknown, never
+        // False or zero, and is not certified as current.
+        let error_none = &node("node-cons-error-none")["consensus"];
+        assert_eq!(error_none["state"], "error");
+        assert_eq!(error_none["freshness"], "unknown");
+        assert!(error_none["validator"].is_null());
+        assert!(error_none["highestQcBlock"].is_null());
+        assert!(error_none["highestLockBlock"].is_null());
+        assert!(error_none["highestCommitBlock"].is_null());
+
+        // A failed collection keeps the last-good value and records error
+        // state so Home can mark the retained row Stale.
+        sqlx::query("UPDATE component_status SET state='error', state_revision=2 WHERE node_id='node-cons-current-true' AND component_key='consensus'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let response = public_node_detail(
+            State(state),
+            Path("node-cons-current-true".to_owned()),
+            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
+        )
+        .await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["consensus"]["state"], "error");
+        assert_eq!(value["consensus"]["validator"], true);
+        assert_eq!(value["consensus"]["highestQcBlock"], 10);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn seed_consensus_fixture(
+        state: &AppState,
+        node_id: &str,
+        component_state: &str,
+        value_received_at: &str,
+        validator: i64,
+        qc: i64,
+        locked: i64,
+        committed: i64,
+        value_revision: i64,
+    ) {
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES (?, 'agent-public-test', 'mainnet', ?, 'ws://127.0.0.1:1', 'active', 'public', 1, ?, ?)")
+            .bind(node_id)
+            .bind(format!("{node_id} display"))
+            .bind(&now)
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES ('agent-public-test', 'node', ?, ?, 'consensus', ?, ?, ?, ?, 1, ?)")
+            .bind(node_id)
+            .bind(node_id)
+            .bind(component_state)
+            .bind(&now)
+            .bind(&now)
+            .bind(value_received_at)
+            .bind(value_revision)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO current_node_chain_observations (node_id, current_block, consensus_epoch, consensus_view_number, consensus_validator, consensus_highest_qc_block, consensus_highest_lock_block, consensus_highest_commit_block, updated_at) VALUES (?, ?, 1, 2, ?, ?, ?, ?, ?)")
+            .bind(node_id)
+            .bind(qc.max(1))
+            .bind(validator)
+            .bind(qc)
+            .bind(locked)
+            .bind(committed)
+            .bind(value_received_at)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

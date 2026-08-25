@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router'
-import type { PublicNetwork, PublicNode } from '../api/generated'
+import type { PublicConsensusInsight, PublicNetwork, PublicNode } from '../api/generated'
 import { realtimeStreamLabel } from './RealtimeNotice'
 import { StatusBadge } from './StatusBadge'
 
@@ -135,6 +135,7 @@ function HomeNodeCard({ network, node }: NodeRecord) {
           <Metric label="TXS" value={formatNumber(node.transactionCountAtCurrentHead)} />
           <Metric label="PEERS" value={formatPeerCount(node)} detail={formatPeerObservation(node)} />
         </div>
+        <ConsensusRow consensus={node.consensus} />
         {diagnostic && <p className="dashboard-node-diagnostic">{diagnostic}</p>}
       </Link>
     </article>
@@ -143,6 +144,50 @@ function HomeNodeCard({ network, node }: NodeRecord) {
 
 function Metric({ label, value, detail }: { label: string; value: string; detail?: string }) {
   return <div className="dashboard-node-primary-metric"><span>{label}</span><strong>{value}</strong>{detail && <small>{detail}</small>}</div>
+}
+
+/**
+ * The final compact metric row: QC, LOCKED, COMMITTED, and VALIDATOR come
+ * from the Node-scoped last-good consensus observation (issue #99). Missing,
+ * unsupported, disabled, and never-observed values render Unknown, never
+ * zero or False; failed or stale collections keep the last-good values and
+ * visibly mark them Stale.
+ */
+function ConsensusRow({ consensus }: { consensus: PublicConsensusInsight | undefined }) {
+  const status = consensusValueStatus(consensus)
+  const detail = status === 'stale' ? 'Stale' : undefined
+  return (
+    <div className="dashboard-node-consensus" aria-label="Consensus progress">
+      <Metric label="QC" value={formatConsensusBlock(consensus?.highestQcBlock, status)} detail={detail} />
+      <Metric label="LOCKED" value={formatConsensusBlock(consensus?.highestLockBlock, status)} detail={detail} />
+      <Metric label="COMMITTED" value={formatConsensusBlock(consensus?.highestCommitBlock, status)} detail={detail} />
+      <Metric label="VALIDATOR" value={formatConsensusValidator(consensus, status)} detail={detail} />
+    </div>
+  )
+}
+
+function consensusValueStatus(insight: PublicConsensusInsight | undefined): 'current' | 'stale' | 'unknown' {
+  if (!insight || insight.validator == null) return 'unknown'
+  // Starting/Disabled/Unsupported never carry a usable consensus value;
+  // only an accepted successful observation provides membership truth.
+  if (['starting', 'disabled', 'unsupported'].includes(insight.state)) return 'unknown'
+  // Unknown freshness means the Server cannot certify currency; never
+  // present a retained value as current (issue #99).
+  if (insight.freshness === 'unknown') return 'unknown'
+  // A failed collection or an aged value is Stale while the last-good value
+  // remains visible; Server state and freshness remain separate dimensions.
+  if (insight.state === 'error' || insight.freshness === 'stale') return 'stale'
+  return 'current'
+}
+
+function formatConsensusBlock(value: number | null | undefined, status: 'current' | 'stale' | 'unknown'): string {
+  if (value == null || status === 'unknown') return 'Unknown'
+  return value.toLocaleString()
+}
+
+function formatConsensusValidator(insight: PublicConsensusInsight | undefined, status: 'current' | 'stale' | 'unknown'): string {
+  if (status === 'unknown' || insight?.validator == null) return 'Unknown'
+  return insight.validator ? 'True' : 'False'
 }
 
 /** One sanitized diagnostic line for exceptional Nodes only (issue #97). */

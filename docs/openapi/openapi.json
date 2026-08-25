@@ -10598,6 +10598,92 @@
           }
         }
       },
+      "PublicConsensusInsight": {
+        "type": "object",
+        "description": "Node-scoped last-good consensus state projected from Agent reports.\n`None` value fields mean no successful consensus observation has ever\nbeen accepted; `Some(0)` is an authoritative zero-height observation.\nConsensus membership is Agent-observed pool membership only; it never\ncreates or infers a Validator identity or Block Production evidence.",
+        "required": [
+          "state",
+          "freshness"
+        ],
+        "properties": {
+          "epoch": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Current epoch from the last good consensus observation."
+          },
+          "freshness": {
+            "type": "string",
+            "description": "Server-owned freshness of the last successful consensus observation."
+          },
+          "highestCommitBlock": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Highest commit block height from the last good consensus observation."
+          },
+          "highestLockBlock": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Highest lock block height from the last good consensus observation."
+          },
+          "highestQcBlock": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Highest QC block height from the last good consensus observation."
+          },
+          "observedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The last successful observation time."
+          },
+          "receivedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Server receipt time for the last accepted consensus observation."
+          },
+          "staleSince": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Server-computed boundary at which the last observation became stale."
+          },
+          "state": {
+            "type": "string",
+            "description": "Agent-reported collection state. The WebUI presents this separately\nfrom freshness and value availability."
+          },
+          "validator": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the current validator pool contains this Node. `None` means\nno successful observation exists; it must never be presented as False."
+          },
+          "viewNumber": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Current view number from the last good consensus observation."
+          }
+        }
+      },
       "PublicCountryCount": {
         "type": "object",
         "required": [
@@ -10730,10 +10816,14 @@
           "consensusState",
           "processState",
           "peers",
+          "consensus",
           "resyncState",
           "networkReferenceConfidence"
         ],
         "properties": {
+          "consensus": {
+            "$ref": "#/components/schemas/PublicConsensusInsight"
+          },
           "consensusState": {
             "type": "string"
           },

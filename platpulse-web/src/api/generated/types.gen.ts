@@ -1238,6 +1238,62 @@ export type PublicBlockHistoryItem = {
     transactionCount?: number | null;
 };
 
+/**
+ * Node-scoped last-good consensus state projected from Agent reports.
+ * `None` value fields mean no successful consensus observation has ever
+ * been accepted; `Some(0)` is an authoritative zero-height observation.
+ * Consensus membership is Agent-observed pool membership only; it never
+ * creates or infers a Validator identity or Block Production evidence.
+ */
+export type PublicConsensusInsight = {
+    /**
+     * Current epoch from the last good consensus observation.
+     */
+    epoch?: number | null;
+    /**
+     * Server-owned freshness of the last successful consensus observation.
+     */
+    freshness: string;
+    /**
+     * Highest commit block height from the last good consensus observation.
+     */
+    highestCommitBlock?: number | null;
+    /**
+     * Highest lock block height from the last good consensus observation.
+     */
+    highestLockBlock?: number | null;
+    /**
+     * Highest QC block height from the last good consensus observation.
+     */
+    highestQcBlock?: number | null;
+    /**
+     * The last successful observation time.
+     */
+    observedAt?: string | null;
+    /**
+     * Server receipt time for the last accepted consensus observation.
+     */
+    receivedAt?: string | null;
+    /**
+     * Server-computed boundary at which the last observation became stale.
+     */
+    staleSince?: string | null;
+    /**
+     * Agent-reported collection state. The WebUI presents this separately
+     * from freshness and value availability.
+     */
+    state: string;
+    /**
+     * Whether the current validator pool contains this Node. `None` means
+     * no successful observation exists; it must never be presented as False.
+     */
+    validator?: boolean | null;
+    /**
+     * Current view number from the last good consensus observation.
+     */
+    viewNumber?: number | null;
+};
+
 export type PublicCountryCount = {
     centroidLat?: number | null;
     centroidLon?: number | null;
@@ -1269,6 +1325,7 @@ export type PublicNetwork = {
 };
 
 export type PublicNode = {
+    consensus: PublicConsensusInsight;
     consensusState: string;
     currentHead?: number | null;
     displayName?: string | null;

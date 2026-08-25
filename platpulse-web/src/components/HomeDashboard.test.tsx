@@ -16,14 +16,21 @@ const network = {
       rpcState: 'connected', syncState: 'synced', consensusState: 'ready', processState: 'running', resyncState: 'idle',
       currentHead: 120, transactionCountAtCurrentHead: 12345, historicalHighWatermark: 120, hostCpuPercent: 14.5, networkReferenceHead: 120,
       networkReferenceConfidence: 'high', freshness: 'current', resyncProgress: null,
-      peers: { state: 'current', freshness: 'current', peerCount: 0 }, validator: null,
+      peers: { state: 'current', freshness: 'current', peerCount: 0 },
+      consensus: {
+        state: 'ok', freshness: 'current', observedAt: '2026-08-25T00:00:00Z', receivedAt: '2026-08-25T00:00:00Z',
+        epoch: 1, viewNumber: 2, validator: true, highestQcBlock: 100, highestLockBlock: 99, highestCommitBlock: 98,
+      },
+      validator: null,
     },
     {
       nodeId: 'node-b', displayName: 'Beta', networkKey: 'mainnet', health: 'unknown', healthReason: 'Never observed',
       rpcState: 'unknown', syncState: 'unknown', consensusState: 'unknown', processState: 'unknown', resyncState: 'unknown',
       currentHead: null, transactionCountAtCurrentHead: null, historicalHighWatermark: null, hostCpuPercent: null, networkReferenceHead: null,
       networkReferenceConfidence: 'unknown', freshness: 'unknown', resyncProgress: null,
-      peers: { state: 'unknown', freshness: 'unknown', peerCount: null }, validator: null,
+      peers: { state: 'unknown', freshness: 'unknown', peerCount: null },
+      consensus: { state: 'unknown', freshness: 'unknown', validator: null, highestQcBlock: null, highestLockBlock: null, highestCommitBlock: null },
+      validator: null,
     },
   ],
 } satisfies PublicNetwork
@@ -64,6 +71,112 @@ describe('Public Home dashboard', () => {
     expect(within(betaCard).getByText('TXS')).toBeTruthy()
     expect(within(betaCard).getByText('PEERS')).toBeTruthy()
     expect(within(betaCard).getAllByText('Unknown').length).toBeGreaterThanOrEqual(3)
+  })
+
+  it('shows the second compact metric row as QC, LOCKED, COMMITTED, and VALIDATOR', () => {
+    render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+
+    const alphaCard = cardOf(nodeCardLink('Alpha'))
+    expect(within(alphaCard).getByText('QC')).toBeTruthy()
+    expect(within(alphaCard).getByText('100')).toBeTruthy()
+    expect(within(alphaCard).getByText('LOCKED')).toBeTruthy()
+    expect(within(alphaCard).getByText('99')).toBeTruthy()
+    expect(within(alphaCard).getByText('COMMITTED')).toBeTruthy()
+    expect(within(alphaCard).getByText('98')).toBeTruthy()
+    expect(within(alphaCard).getByText('VALIDATOR')).toBeTruthy()
+    // Current successful membership renders True, not a badge or color.
+    expect(within(alphaCard).getByText('True')).toBeTruthy()
+    expect(within(alphaCard).queryByText('Stale')).toBeNull()
+
+    // Never-observed consensus is Unknown for every metric, never zero/False.
+    const betaCard = cardOf(nodeCardLink('Beta'))
+    for (const label of ['QC', 'LOCKED', 'COMMITTED', 'VALIDATOR']) {
+      expect(within(betaCard).getByText(label)).toBeTruthy()
+    }
+    expect(within(betaCard).getAllByText('Unknown').length).toBeGreaterThanOrEqual(7)
+    expect(within(betaCard).queryByText('False')).toBeNull()
+  })
+
+  it('retains last-good consensus values and visibly marks failed or stale collections', () => {
+    const staleTrue = {
+      ...network.nodes[0],
+      nodeId: 'node-stale-true', displayName: 'Stale True',
+      consensus: { ...network.nodes[0].consensus!, freshness: 'stale', validator: true, highestQcBlock: 141, highestLockBlock: 140, highestCommitBlock: 139 },
+    }
+    const failedTrue = {
+      ...network.nodes[0],
+      nodeId: 'node-failed-true', displayName: 'Failed True',
+      consensus: { ...network.nodes[0].consensus!, state: 'error', validator: true, highestQcBlock: 151, highestLockBlock: 150, highestCommitBlock: 149 },
+    }
+    const failedWithoutLastGood = {
+      ...network.nodes[1],
+      nodeId: 'node-failed-none', displayName: 'Failed None',
+      consensus: { state: 'error', freshness: 'unknown', validator: null, highestQcBlock: null, highestLockBlock: null, highestCommitBlock: null },
+    }
+    const currentFalse = {
+      ...network.nodes[0],
+      nodeId: 'node-current-false', displayName: 'Current False',
+      consensus: { ...network.nodes[0].consensus!, validator: false, highestQcBlock: 0, highestLockBlock: 0, highestCommitBlock: 0 },
+    }
+    const staleFalse = {
+      ...network.nodes[0],
+      nodeId: 'node-stale-false', displayName: 'Stale False',
+      consensus: { ...network.nodes[0].consensus!, freshness: 'stale', validator: false, highestQcBlock: 161, highestLockBlock: 160, highestCommitBlock: 159 },
+    }
+    const unknownFreshness = {
+      ...network.nodes[0],
+      nodeId: 'node-unknown-freshness', displayName: 'Unknown Freshness',
+      consensus: { ...network.nodes[0].consensus!, freshness: 'unknown', validator: true, highestQcBlock: 171, highestLockBlock: 170, highestCommitBlock: 169 },
+    }
+    render(<BrowserRouter><HomeDashboard
+      networks={[{ ...network, nodes: [staleTrue, staleFalse, failedTrue, failedWithoutLastGood, currentFalse, unknownFreshness] }]}
+      realtimeStatus="connected" online resetting={false} error={null} loading={false}
+    /></BrowserRouter>)
+
+    // A stale successful observation keeps True and every block height, and
+    // visibly marks the retained row Stale (text, never color only).
+    const staleCard = cardOf(nodeCardLink('Stale True'))
+    expect(within(staleCard).getByText('141')).toBeTruthy()
+    expect(within(staleCard).getByText('140')).toBeTruthy()
+    expect(within(staleCard).getByText('139')).toBeTruthy()
+    expect(within(staleCard).getByText('True')).toBeTruthy()
+    expect(within(staleCard).getAllByText('Stale')).toHaveLength(4)
+
+    // A failed collection with last-good true keeps the value and is Stale.
+    const failedCard = cardOf(nodeCardLink('Failed True'))
+    expect(within(failedCard).getByText('151')).toBeTruthy()
+    expect(within(failedCard).getByText('150')).toBeTruthy()
+    expect(within(failedCard).getByText('149')).toBeTruthy()
+    expect(within(failedCard).getByText('True')).toBeTruthy()
+    expect(within(failedCard).getAllByText('Stale')).toHaveLength(4)
+
+    // A stale successful non-membership keeps False and marks it Stale.
+    const staleFalseCard = cardOf(nodeCardLink('Stale False'))
+    expect(within(staleFalseCard).getByText('161')).toBeTruthy()
+    expect(within(staleFalseCard).getByText('False')).toBeTruthy()
+    expect(within(staleFalseCard).getAllByText('Stale')).toHaveLength(4)
+
+    // A failed collection without a last-good membership is Unknown, never
+    // False, and is not dressed up as Stale with no retained value.
+    const failedNoneCard = cardOf(nodeCardLink('Failed None'))
+    expect(within(failedNoneCard).getAllByText('Unknown').length).toBeGreaterThanOrEqual(4)
+    expect(within(failedNoneCard).queryByText('Stale')).toBeNull()
+    expect(within(failedNoneCard).queryByText('False')).toBeNull()
+
+    // A current successful non-membership renders False; an observed zero
+    // block height is an authoritative zero, never Unknown.
+    const falseCard = cardOf(nodeCardLink('Current False'))
+    expect(within(falseCard).getByText('False')).toBeTruthy()
+    expect(within(falseCard).getAllByText('0').length).toBeGreaterThanOrEqual(4)
+    expect(within(falseCard).queryByText('Stale')).toBeNull()
+
+    // Unknown freshness means currency cannot be certified: the retained
+    // value must not be presented as current True/False or block heights.
+    const unknownFreshnessCard = cardOf(nodeCardLink('Unknown Freshness'))
+    expect(within(unknownFreshnessCard).getAllByText('Unknown').length).toBeGreaterThanOrEqual(4)
+    expect(within(unknownFreshnessCard).queryByText('True')).toBeNull()
+    expect(within(unknownFreshnessCard).queryByText('False')).toBeNull()
+    expect(within(unknownFreshnessCard).queryByText('Stale')).toBeNull()
   })
 
   it('keeps summary cards to marker, title, and number with a compact shell', () => {

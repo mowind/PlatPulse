@@ -2588,6 +2588,7 @@ button {
 .dashboard-node-primary-metric > span { color: rgba(255, 255, 255, 0.45); font-size: 0.68rem; font-weight: 700; }
 .dashboard-node-primary-metric strong { color: rgba(255, 255, 255, 0.96); font-size: clamp(1.1rem, 2vw, 1.5rem); overflow-wrap: anywhere; }
 .dashboard-node-primary-metric small { color: rgba(255, 255, 255, 0.5); font-size: 0.7rem; overflow-wrap: anywhere; }
+.dashboard-node-consensus { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.85rem; margin: 0.85rem 0 0; padding-top: 0.85rem; border-top: 1px solid rgba(255, 255, 255, 0.08); }
 .dashboard-node-diagnostic { margin: 0.85rem 0 0; padding-top: 0.85rem; border-top: 1px solid rgba(255, 255, 255, 0.08); color: rgba(255, 255, 255, 0.72); font-size: 0.78rem; overflow-wrap: anywhere; }
 .dashboard-node-metrics, .dashboard-observation-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.85rem; margin: 1rem 0 0; padding-top: 1rem; border-top: 1px solid rgba(255, 255, 255, 0.08); }
 .dashboard-node-metrics > div, .dashboard-observation-row > div { min-width: 0; }
@@ -2616,6 +2617,7 @@ button {
   .dashboard-summary-card p { font-size: 0.7rem; }
   .dashboard-summary-card strong { font-size: 1.3rem; }
   .dashboard-node-metrics, .dashboard-observation-row { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.65rem; }
+  .dashboard-node-consensus { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.65rem; }
 }
 
 /* ---------------------------------------------------------------------------

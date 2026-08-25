@@ -139,7 +139,7 @@ with sqlite3.connect(path) as db:
     # Node A: healthy and current (RPC, sync, and consensus all ok and fresh).
     # The observed Network identity matches the Registry tuple exactly.
     db.execute(
-        "INSERT INTO current_node_chain_observations (node_id, rpc_client_version, syncing, current_block, highest_block, consensus_epoch, consensus_validator, consensus_highest_commit_block, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, updated_at) VALUES (?, 'platon/1.5.1', 0, 12842019, 12842019, 42, 1, 12842019, ?, 210425, 210425, 'lat', ?)",
+        "INSERT INTO current_node_chain_observations (node_id, rpc_client_version, syncing, current_block, highest_block, consensus_epoch, consensus_view_number, consensus_validator, consensus_highest_qc_block, consensus_highest_lock_block, consensus_highest_commit_block, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, updated_at) VALUES (?, 'platon/1.5.1', 0, 12842019, 12842019, 42, 7, 1, 12842019, 12842018, 12842019, ?, 210425, 210425, 'lat', ?)",
         (node_a, network_genesis, fresh),
     )
     for component in ("rpc", "sync", "consensus"):
@@ -147,6 +147,12 @@ with sqlite3.connect(path) as db:
             "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES (?, 'node', ?, ?, ?, 'ok', ?, ?, ?, 1, 1)",
             (agent_id, node_a, node_a, component, fresh, fresh, fresh),
         )
+    # The consensus component carries an accepted last-good value receipt so
+    # the Public Home card projects current QC/LOCKED/COMMITTED/VALIDATOR.
+    db.execute(
+        "UPDATE component_status SET value_received_at = ? WHERE node_id = ? AND component_key = 'consensus'",
+        (fresh, node_a),
+    )
     for namespace in ("platon", "net", "admin"):
         db.execute(
             "INSERT INTO current_node_rpc_namespaces (node_id, namespace, updated_at) VALUES (?, ?, ?)",
