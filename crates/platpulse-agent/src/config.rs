@@ -14,6 +14,8 @@ pub struct AgentConfigFile {
     pub server_url: String,
     pub credential_file: PathBuf,
     pub state_db: PathBuf,
+    #[serde(default = "default_collection_interval_seconds")]
+    pub collection_interval_seconds: u64,
     #[serde(default = "default_inventory_revision")]
     pub inventory_revision: u64,
     /// Conservative bounded recovery point-query policy. These defaults are
@@ -22,6 +24,13 @@ pub struct AgentConfigFile {
     pub backfill: BackfillConfig,
     #[serde(default)]
     pub nodes: Vec<AgentNodeConfig>,
+}
+
+pub const MIN_COLLECTION_INTERVAL_SECONDS: u64 = 1;
+pub const MAX_COLLECTION_INTERVAL_SECONDS: u64 = 300;
+
+fn default_collection_interval_seconds() -> u64 {
+    5
 }
 
 fn default_inventory_revision() -> u64 {
@@ -115,6 +124,7 @@ pub struct AgentConfig {
     pub server_url: String,
     pub credential_file: PathBuf,
     pub state_db: PathBuf,
+    pub collection_interval_seconds: u64,
     pub backfill: BackfillConfig,
 }
 
@@ -138,6 +148,8 @@ pub enum AgentConfigError {
     InvalidNode(String),
     #[error("invalid backfill configuration: {0}")]
     InvalidBackfill(String),
+    #[error("collection_interval_seconds must be between 1 and 300")]
+    InvalidCollectionInterval,
     #[error("inventory_revision must be greater than zero")]
     InvalidInventoryRevision,
 }
@@ -156,6 +168,11 @@ impl AgentConfigFile {
 
     /// Validate the entire Node set before an Inventory is submitted.
     pub fn validate(&self) -> Result<ValidatedAgentConfig, AgentConfigError> {
+        if !(MIN_COLLECTION_INTERVAL_SECONDS..=MAX_COLLECTION_INTERVAL_SECONDS)
+            .contains(&self.collection_interval_seconds)
+        {
+            return Err(AgentConfigError::InvalidCollectionInterval);
+        }
         if self.inventory_revision == 0 {
             return Err(AgentConfigError::InvalidInventoryRevision);
         }
@@ -276,11 +293,17 @@ impl AgentConfig {
                 reason,
             }
         })?;
+        if !(MIN_COLLECTION_INTERVAL_SECONDS..=MAX_COLLECTION_INTERVAL_SECONDS)
+            .contains(&file.collection_interval_seconds)
+        {
+            return Err(AgentConfigError::InvalidCollectionInterval);
+        }
         Ok(Self {
             config_path: config_path.to_owned(),
             server_url,
             credential_file: file.credential_file,
             state_db: file.state_db,
+            collection_interval_seconds: file.collection_interval_seconds,
             backfill: file.backfill,
         })
     }
@@ -311,6 +334,35 @@ mod tests {
         );
         let config = AgentConfig::resolve(&path).unwrap();
         assert_eq!(config.server_url, "https://monitor.example.com");
+        assert_eq!(config.collection_interval_seconds, 5);
+    }
+
+    #[test]
+    fn collection_interval_has_safe_configurable_bounds() {
+        let dir = tempdir().unwrap();
+        let config = |seconds| {
+            write_config(
+                dir.path(),
+                &format!(
+                    "server_url=\"https://example.com\"\ncredential_file=\"/tmp/c\"\nstate_db=\"/tmp/d\"\ncollection_interval_seconds={seconds}\n"
+                ),
+            )
+        };
+
+        assert_eq!(
+            AgentConfig::resolve(&config(3))
+                .unwrap()
+                .collection_interval_seconds,
+            3
+        );
+        assert!(matches!(
+            AgentConfig::resolve(&config(0)),
+            Err(AgentConfigError::InvalidCollectionInterval)
+        ));
+        assert!(matches!(
+            AgentConfig::resolve(&config(301)),
+            Err(AgentConfigError::InvalidCollectionInterval)
+        ));
     }
 
     #[test]

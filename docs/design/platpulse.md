@@ -231,7 +231,7 @@ CLI：`validate-config`、`collect-report`、`run`、`shutdown`。没有 enroll 
 server_url = "https://monitor.example.com"
 credential_file = "/var/lib/platpulse-agent/credential"
 state_db = "/var/lib/platpulse-agent/agent.db"
-collection_interval_seconds = 15
+collection_interval_seconds = 5
 
 [[nodes]]
 node_id = "..."
@@ -249,9 +249,12 @@ Server 不下发或修改 `nodes.rpc_endpoint`。
 流程：
 
 ~~~text
-采集 → 生成完整 AgentReport → 校验 → 写入 Agent Store
-     → 尝试发送 → 校验 Receipt → 事务性删除已确认报告
+每 Node 长连接 Head Subscription → 解析并立即持久化待上报 Block Summary
+每 5 秒采集当前观测 → 生成完整 AgentReport → 校验 → 写入 Agent Store
+独立 1 秒发送循环 → 最老报告优先 → 校验 Receipt → 事务性删除已确认报告
 ~~~
+
+`collection_interval_seconds` 可配置范围为 1–300 秒，默认 5 秒。区块订阅、当前观测采集、报告组装与发送相互解耦；线上仍只使用完整、不可变的 AgentReport，不按数据类型拆分 wire protocol。
 
 要求：
 

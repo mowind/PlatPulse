@@ -14,8 +14,9 @@ const network = {
     {
       nodeId: 'node-a', displayName: 'Alpha', networkKey: 'mainnet', health: 'healthy', healthReason: 'RPC reachable',
       rpcState: 'connected', syncState: 'synced', consensusState: 'ready', processState: 'running', resyncState: 'idle',
-      currentHead: 120, transactionCountAtCurrentHead: 12345, historicalHighWatermark: 120, hostCpuPercent: 14.5, networkReferenceHead: 120,
+      currentHead: 120, latestBlockTransactionCount: 12345, historicalHighWatermark: 120, networkReferenceHead: 120,
       networkReferenceConfidence: 'high', freshness: 'current', resyncProgress: null,
+      hostCpuPercent: 12.5, hostMemoryPercent: 45.25, hostStoragePercent: 80, hostNetworkRxBytesPerSec: 1024, hostNetworkTxBytesPerSec: 2048,
       peers: { state: 'current', freshness: 'current', peerCount: 0 },
       consensus: {
         state: 'ok', freshness: 'current', observedAt: '2026-08-25T00:00:00Z', receivedAt: '2026-08-25T00:00:00Z',
@@ -26,7 +27,7 @@ const network = {
     {
       nodeId: 'node-b', displayName: 'Beta', networkKey: 'mainnet', health: 'unknown', healthReason: 'Never observed',
       rpcState: 'unknown', syncState: 'unknown', consensusState: 'unknown', processState: 'unknown', resyncState: 'unknown',
-      currentHead: null, transactionCountAtCurrentHead: null, historicalHighWatermark: null, hostCpuPercent: null, networkReferenceHead: null,
+      currentHead: null, latestBlockTransactionCount: null, historicalHighWatermark: null, hostCpuPercent: null, networkReferenceHead: null,
       networkReferenceConfidence: 'unknown', freshness: 'unknown', resyncProgress: null,
       peers: { state: 'unknown', freshness: 'unknown', peerCount: null },
       consensus: { state: 'unknown', freshness: 'unknown', validator: null, highestQcBlock: null, highestLockBlock: null, highestCommitBlock: null },
@@ -73,6 +74,20 @@ describe('Public Home dashboard', () => {
     expect(within(betaCard).getAllByText('Unknown').length).toBeGreaterThanOrEqual(3)
   })
 
+  it('shows host CPU, memory, storage, and network rates in the first metric row', () => {
+    render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+
+    const alphaCard = cardOf(nodeCardLink('Alpha'))
+    const resources = within(alphaCard).getByLabelText('Host resources')
+    const highlights = within(alphaCard).getByLabelText('Node highlights')
+    expect(resources.compareDocumentPosition(highlights) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(within(resources).getByText('CPU')).toBeTruthy()
+    expect(within(resources).getByText('12.5%')).toBeTruthy()
+    expect(within(resources).getByText('45.3%')).toBeTruthy()
+    expect(within(resources).getByText('80.0%')).toBeTruthy()
+    expect(within(resources).getByText('2.00 KiB/s')).toBeTruthy()
+    expect(within(resources).getByText('1.00 KiB/s')).toBeTruthy()
+  })
   it('shows the second compact metric row as QC, LOCKED, COMMITTED, and VALIDATOR', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
@@ -221,10 +236,10 @@ describe('Public Home dashboard', () => {
     expect(within(observingCard).getByText('Observing')).toBeTruthy()
     expect(observingCard.querySelectorAll('.status-badge')[0]?.textContent).toContain('Observing')
 
-    // No effective explicit Link renders Unknown Activity before Health.
+    // No effective explicit Link renders Observing Activity before Health.
     const unknownCard = cardOf(nodeCardLink('Unknown Node'))
     const unknownBadges = unknownCard.querySelectorAll('.status-badge')
-    expect(unknownBadges[0].textContent).toContain('Unknown')
+    expect(unknownBadges[0].textContent).toContain('Observing')
     expect(unknownBadges[1].textContent).toContain('Healthy')
 
     // Provider failure with a last-good Activity keeps the label and visibly

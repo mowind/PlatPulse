@@ -134,9 +134,10 @@ function HomeNodeCard({ network, node }: NodeRecord) {
             <StatusBadge status={healthLabel(node.health)} tone={statusTone(tone)} />
           </div>
         </header>
+        <ResourceRow node={node} />
         <div className="dashboard-node-primary" aria-label="Node highlights">
           <Metric label="HEAD" value={formatNumber(node.currentHead)} />
-          <Metric label="TXS" value={formatNumber(node.transactionCountAtCurrentHead)} />
+          <Metric label="TXS" value={formatNumber(node.latestBlockTransactionCount)} />
           <Metric label="PEERS" value={formatPeerCount(node)} detail={formatPeerObservation(node)} />
         </div>
         <ConsensusRow consensus={node.consensus} />
@@ -144,6 +145,35 @@ function HomeNodeCard({ network, node }: NodeRecord) {
       </Link>
     </article>
   )
+}
+
+function ResourceRow({ node }: { node: PublicNode }) {
+  return (
+    <div className="dashboard-node-resources" aria-label="Host resources">
+      <Metric label="CPU" value={formatPercent(node.hostCpuPercent)} />
+      <Metric label="MEMORY" value={formatPercent(node.hostMemoryPercent)} />
+      <Metric label="STORAGE" value={formatPercent(node.hostStoragePercent)} />
+      <Metric label="↑ UP" value={formatRate(node.hostNetworkTxBytesPerSec)} />
+      <Metric label="↓ DOWN" value={formatRate(node.hostNetworkRxBytesPerSec)} />
+    </div>
+  )
+}
+
+function formatPercent(value: number | null | undefined) {
+  return value == null ? '—' : `${value.toFixed(1)}%`
+}
+
+function formatRate(value: number | null | undefined) {
+  if (value == null) return '—'
+  const units = ['B/s', 'KiB/s', 'MiB/s', 'GiB/s']
+  let scaled = value
+  let unit = 0
+  while (scaled >= 1024 && unit < units.length - 1) {
+    scaled /= 1024
+    unit += 1
+  }
+  const digits = scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2
+  return `${scaled.toFixed(digits)} ${units[unit]}`
 }
 
 function Metric({ label, value, detail }: { label: string; value: string; detail?: string }) {
@@ -233,17 +263,14 @@ function statusTone(tone: ReturnType<typeof toneFor>): 'ok' | 'warning' | 'error
 
 /**
  * Link-aware Validator Activity (issue #100). A Public Node exposes Activity
- * only through its effective explicit Node Validator Link; no link, a
- * future/ended link, an unsupported Provider without last-good data, and a
- * never-observed value all render Unknown. Authoritative empty/not-found
- * renders Observing, and a retained last-good Activity after Provider
- * Error/Unsupported is visibly marked Stale. Provider Activity never
- * affects the separate Node Health badge.
+ * only through its effective explicit Node Validator Link. A Node without
+ * an observed activity value renders Observing in the compact Home badge.
+ * Provider Activity never affects the separate Node Health badge.
  */
 function activityBadge(node: PublicNode): { status: string; tone: 'ok' | 'warning' | 'error' | 'neutral' } {
   const validator = node.validator
   const value = validator?.activity
-  if (!value || value === 'unknown') return { status: 'Unknown', tone: 'neutral' }
+  if (!value || value === 'unknown') return { status: 'Observing', tone: 'neutral' }
   if (value === 'observing') return { status: 'Observing', tone: 'neutral' }
   const label = value.charAt(0).toUpperCase() + value.slice(1)
   const stale = validator?.activityState === 'stale'

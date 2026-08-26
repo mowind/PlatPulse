@@ -11,7 +11,7 @@ use std::str::FromStr;
 
 use platpulse_core::component::{BoundedError, ComponentObservation, ComponentStatus};
 use platpulse_core::identity::{AgentId, BootId, ReportId};
-use platpulse_core::inventory::NodeInventory;
+use platpulse_core::inventory::{InventoryNode, NodeInventory};
 use platpulse_core::network::{NetworkIdentity, RpcEndpoint};
 use platpulse_core::observation::{
     ConsensusCurrent, DiskCurrent, HostObservation, LoadCurrent, MemoryCurrent,
@@ -25,12 +25,16 @@ use platpulse_core::{
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use sqlx::Connection;
-use sysinfo::{Disks, System};
+use sysinfo::{Disks, Networks, System};
 use thiserror::Error;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::block::{NodeSubscriptions, load_block_summaries};
+use tokio_util::sync::CancellationToken;
+
+use crate::block::{
+    HeadSubscription, NodeSubscriptions, WebSocketBlockTransport, load_block_summaries,
+};
 use crate::config::AgentConfig;
 use crate::database::{AgentDatabaseConfig, AgentStore};
 use crate::reporting::ReportStoreError;
@@ -95,6 +99,22 @@ pub struct RpcSnapshot {
 /// probe and return bounded, already-redacted values.
 pub trait RpcAdapter {
     fn collect(&self, endpoint: &RpcEndpoint) -> Result<RpcSnapshot, RpcCollectError>;
+}
+
+struct PrecollectedRpcAdapter {
+    snapshots: HashMap<String, Result<RpcSnapshot, String>>,
+}
+
+impl RpcAdapter for PrecollectedRpcAdapter {
+    fn collect(&self, endpoint: &RpcEndpoint) -> Result<RpcSnapshot, RpcCollectError> {
+        match self.snapshots.get(endpoint.as_str()) {
+            Some(Ok(snapshot)) => Ok(snapshot.clone()),
+            Some(Err(error)) => Err(RpcCollectError::Failed(error.clone())),
+            None => Err(RpcCollectError::Failed(
+                "no precollected snapshot for endpoint".to_owned(),
+            )),
+        }
+    }
 }
 
 /// Deterministic adapter useful for scripted local fakes and integration tests.
@@ -194,6 +214,16 @@ pub enum CollectionError {
     Serialization(#[from] serde_json::Error),
 }
 
+pub(crate) fn is_transient_database_lock(error: &CollectionError) -> bool {
+    match error {
+        CollectionError::Database(error) => crate::database::is_lock_contention(error),
+        CollectionError::Report(crate::reporting::ReportStoreError::Database(error)) => {
+            crate::database::is_lock_contention(error)
+        }
+        _ => false,
+    }
+}
+
 pub(crate) fn timestamp() -> Rfc3339 {
     let value = OffsetDateTime::now_utc()
         .replace_nanosecond(0)
@@ -251,8 +281,8 @@ pub(crate) fn clock_skew_error(at: Rfc3339, message: &str) -> ComponentObservati
 }
 
 /// Collect Host metrics once for this Agent. Disk/network structures are
-/// intentionally bounded; empty disk is an authoritative snapshot, while
-/// throughput remains explicitly Unsupported until a prior sample exists.
+/// intentionally bounded; empty disk is an authoritative snapshot, and
+/// network throughput is measured over a short local sampling interval.
 pub fn collect_host(
     system: &mut System,
     disks: &mut Disks,
@@ -265,6 +295,25 @@ pub fn collect_host(
     disks.refresh();
     let cpu = system.global_cpu_info().cpu_usage().clamp(0.0, 100.0) as f64;
     let load = System::load_average();
+    let network_started = std::time::Instant::now();
+    let mut networks = Networks::new_with_refreshed_list();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    networks.refresh();
+    let elapsed = network_started.elapsed().as_secs_f64().max(0.001);
+    let (received, transmitted) = networks.values().fold((0_u64, 0_u64), |(rx, tx), network| {
+        (
+            rx.saturating_add(network.received()),
+            tx.saturating_add(network.transmitted()),
+        )
+    });
+    let rate = |bytes: u64| (bytes as f64 / elapsed).round() as u64;
+    let network_throughput = ok(
+        platpulse_core::NetworkThroughput {
+            rx_bytes_per_sec: rate(received),
+            tx_bytes_per_sec: rate(transmitted),
+        },
+        at,
+    );
     HostObservation {
         cpu_percent: ok(cpu, at),
         memory: ok(
@@ -301,10 +350,7 @@ pub fn collect_host(
             },
             at,
         ),
-        // A rate requires a prior Host sample. This collector does not have
-        // that interval, so report explicit Unsupported rather than an
-        // invented zero/rate.
-        network_throughput: unsupported(),
+        network_throughput,
         monotonic_elapsed_ms: Some(started.elapsed().as_millis() as u64),
         clock_skew,
         spool: ok(
@@ -764,7 +810,25 @@ pub async fn collect_and_persist<A: RpcAdapter>(
     adapter: &A,
 ) -> Result<String, CollectionError> {
     let mut store = AgentStore::open(AgentDatabaseConfig::new(&config.state_db)).await?;
-    crate::reporting::ensure_spool_healthy(&mut store).await?;
+    let result = collect_and_persist_in_store(config, adapter, &mut store).await;
+    store.close().await?;
+    result
+}
+
+pub(crate) async fn collect_and_persist_precollected_in_store(
+    config: &AgentConfig,
+    snapshots: HashMap<String, Result<RpcSnapshot, String>>,
+    store: &mut AgentStore,
+) -> Result<String, CollectionError> {
+    collect_and_persist_in_store(config, &PrecollectedRpcAdapter { snapshots }, store).await
+}
+
+pub(crate) async fn collect_and_persist_in_store<A: RpcAdapter>(
+    config: &AgentConfig,
+    adapter: &A,
+    store: &mut AgentStore,
+) -> Result<String, CollectionError> {
+    crate::reporting::ensure_spool_healthy(store).await?;
     #[allow(clippy::type_complexity)]
     let state: Option<(String, i64, Option<String>, i64, String, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
         "SELECT agent_id, agent_epoch, boot_id, report_sequence, boot_state, previous_boot_id, pending_transition, pending_previous_boot_id FROM agent_state WHERE singleton=1",
@@ -794,7 +858,7 @@ pub async fn collect_and_persist<A: RpcAdapter>(
     let validated = config
         .validated_inventory()
         .map_err(|error| CollectionError::Identity(error.to_string()))?;
-    let previous = load_last_report(&mut store).await?;
+    let previous = load_last_report(store).await?;
     let clock_at = timestamp();
     let clock_skew = match crate::time_exchange::exchange_server_time(config).await {
         Ok(estimate) => ok(estimate.offset_ms, clock_at),
@@ -821,13 +885,10 @@ pub async fn collect_and_persist<A: RpcAdapter>(
             .transpose()
             .map_err(|error| CollectionError::Identity(error.to_string()))?;
     }
-    report.block_summaries = load_block_summaries(&mut store).await?;
-    report.history_gaps = crate::block::load_history_gaps(&mut store).await?;
+    report.block_summaries = load_block_summaries(store).await?;
+    report.history_gaps = crate::block::load_history_gaps(store).await?;
     add_sample_capabilities(&mut report);
-    report.host.spool = ok(
-        current_spool_diagnostics(&mut store).await?,
-        report.generated_at,
-    );
+    report.host.spool = ok(current_spool_diagnostics(store).await?, report.generated_at);
     report
         .validate()
         .map_err(|error| CollectionError::Identity(error.to_string()))?;
@@ -854,15 +915,274 @@ pub async fn collect_and_persist<A: RpcAdapter>(
     sqlx::query("UPDATE agent_state SET agent_id=?, agent_epoch=?, boot_id=?, report_sequence=?, inventory_revision=?, boot_state=CASE WHEN ?='drained_previous' THEN 'active' ELSE boot_state END, pending_transition=CASE WHEN ?='drained_previous' THEN NULL ELSE pending_transition END, pending_previous_boot_id=CASE WHEN ?='drained_previous' THEN NULL ELSE pending_previous_boot_id END, updated_at=? WHERE singleton=1")
         .bind(report.agent_id.to_string()).bind(report.agent_epoch as i64).bind(report.boot_id.to_string()).bind(report.report_sequence as i64).bind(report.inventory.revision as i64).bind(transition).bind(transition).bind(transition).bind(&now).execute(&mut *tx).await?;
     tx.commit().await?;
-    crate::reporting::enforce_spool_policy(
-        &mut store,
-        &crate::collector::SpoolPolicy::default(),
-        &now,
-    )
-    .await
-    .map_err(CollectionError::Report)?;
-    store.close().await?;
+    crate::reporting::enforce_spool_policy(store, &crate::collector::SpoolPolicy::default(), &now)
+        .await
+        .map_err(CollectionError::Report)?;
     Ok(digest)
+}
+
+pub struct BlockWorkerExit {
+    pub subscription: HeadSubscription,
+    pub error: Option<CollectionError>,
+}
+
+struct NodeRecoveryRequest<'a> {
+    config: &'a AgentConfig,
+    node: &'a InventoryNode,
+    identity: NetworkIdentity,
+    boot_id: BootId,
+    observed_at: Rfc3339,
+    reconnect_needed: bool,
+}
+
+async fn recover_node_blocks(
+    store: &mut AgentStore,
+    transport: &WebSocketBlockTransport,
+    request: NodeRecoveryRequest<'_>,
+) -> Result<(), CollectionError> {
+    let NodeRecoveryRequest {
+        config,
+        node,
+        identity,
+        boot_id,
+        observed_at,
+        reconnect_needed,
+    } = request;
+    let prior_recovery = sqlx::query_as::<_, (
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<String>,
+    )>(
+        "SELECT boot_id, last_head, pending_from, pending_to, pending_trigger FROM node_recovery_state WHERE node_id=?",
+    )
+    .bind(node.node_id.to_string())
+    .fetch_optional(store.connection())
+    .await?;
+    let Ok(head) = transport.current_head_async(&node.rpc_endpoint).await else {
+        return Ok(());
+    };
+    let boot_text = boot_id.to_string();
+    let boot_changed =
+        prior_recovery.as_ref().and_then(|row| row.0.as_deref()) != Some(boot_text.as_str());
+    let plan = crate::block::plan_recovery(
+        prior_recovery
+            .as_ref()
+            .and_then(|row| row.1)
+            .map(|value| value as u64),
+        head,
+        boot_changed,
+        reconnect_needed,
+        false,
+        None,
+    );
+    let bounds = crate::block::BackfillBounds {
+        max_height_span: config.backfill.max_height_span,
+        max_block_count: config.backfill.max_block_count,
+        max_time: std::time::Duration::from_millis(config.backfill.max_time_ms),
+    };
+    if let Some(plan) = plan {
+        let outcome = transport
+            .gap_backfill(
+                &node.rpc_endpoint,
+                node.node_id,
+                identity,
+                observed_at,
+                plan.from_height,
+                plan.to_height,
+                bounds,
+                plan.trigger,
+            )
+            .await;
+        for summary in outcome.summaries {
+            crate::block::persist_block_summary(store, &summary, &observed_at.to_string()).await?;
+        }
+        for gap in &outcome.gaps {
+            crate::block::persist_history_gap(store, gap).await?;
+        }
+        let pending = outcome
+            .gaps
+            .first()
+            .map(|gap| (gap.from_height, gap.to_height));
+        sqlx::query("INSERT INTO node_recovery_state (node_id, boot_id, last_head, pending_from, pending_to, pending_trigger, pending_reason, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET boot_id=excluded.boot_id,last_head=excluded.last_head,pending_from=excluded.pending_from,pending_to=excluded.pending_to,pending_trigger=excluded.pending_trigger,pending_reason=excluded.pending_reason,updated_at=excluded.updated_at")
+            .bind(node.node_id.to_string())
+            .bind(boot_text)
+            .bind(head as i64)
+            .bind(pending.map(|value| value.0 as i64))
+            .bind(pending.map(|value| value.1 as i64))
+            .bind(
+                pending
+                    .as_ref()
+                    .map(|_| format!("{:?}", plan.trigger).to_lowercase()),
+            )
+            .bind(outcome.gaps.first().map(|gap| gap.reason.as_str()))
+            .bind(observed_at.to_string())
+            .execute(store.connection())
+            .await?;
+    } else {
+        sqlx::query("INSERT INTO node_recovery_state (node_id, boot_id, last_head, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET boot_id=excluded.boot_id,last_head=excluded.last_head,updated_at=excluded.updated_at")
+            .bind(node.node_id.to_string())
+            .bind(boot_text)
+            .bind(head as i64)
+            .bind(observed_at.to_string())
+            .execute(store.connection())
+            .await?;
+    }
+    Ok(())
+}
+
+/// Keep one Node's `newHeads` subscription open independently of report
+/// assembly. Resolved Block Summaries are persisted immediately; the next
+/// immutable report claims whatever summaries are pending at assembly time.
+pub async fn run_node_block_worker(
+    config: AgentConfig,
+    node: InventoryNode,
+    transport: WebSocketBlockTransport,
+    cancel: CancellationToken,
+) -> BlockWorkerExit {
+    let mut subscription = HeadSubscription::new(node.node_id, transport.max_heads);
+    let mut store = match AgentStore::open(AgentDatabaseConfig::new(&config.state_db)).await {
+        Ok(store) => store,
+        Err(error) => {
+            return BlockWorkerExit {
+                subscription,
+                error: Some(CollectionError::Store(error)),
+            };
+        }
+    };
+
+    loop {
+        if cancel.is_cancelled() {
+            return BlockWorkerExit {
+                subscription,
+                error: None,
+            };
+        }
+
+        let latest = match load_last_report(&mut store).await {
+            Ok(report) => report,
+            Err(error) => {
+                return BlockWorkerExit {
+                    subscription,
+                    error: Some(CollectionError::Database(error)),
+                };
+            }
+        };
+        let Some((identity, boot_id)) = latest.and_then(|report| {
+            report
+                .nodes
+                .iter()
+                .find(|item| item.node_id == node.node_id)
+                .and_then(|item| item.chain.network_identity.latest.clone())
+                .map(|identity| (identity, report.boot_id))
+        }) else {
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    return BlockWorkerExit { subscription, error: None };
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {}
+            }
+            continue;
+        };
+
+        let live_result = tokio::select! {
+            _ = cancel.cancelled() => {
+                return BlockWorkerExit { subscription, error: None };
+            }
+            result = transport.open_live_head_subscription(&node.rpc_endpoint) => result,
+        };
+        let mut live = match live_result {
+            Ok(live) => live,
+            Err(_) => {
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        return BlockWorkerExit { subscription, error: None };
+                    }
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+                }
+                continue;
+            }
+        };
+        if let Err(error) = recover_node_blocks(
+            &mut store,
+            &transport,
+            NodeRecoveryRequest {
+                config: &config,
+                node: &node,
+                identity: identity.clone(),
+                boot_id,
+                observed_at: timestamp(),
+                reconnect_needed: true,
+            },
+        )
+        .await
+        {
+            return BlockWorkerExit {
+                subscription,
+                error: Some(error),
+            };
+        }
+
+        'connected: loop {
+            while let Some(header) = subscription.front_header().cloned() {
+                let observed_at = timestamp();
+                let summary = match transport
+                    .resolve_live_head(&live, node.node_id, &header, &identity, observed_at)
+                    .await
+                {
+                    Ok(summary) => summary,
+                    Err(_) => break 'connected,
+                };
+                if let Err(error) = crate::block::persist_block_summary(
+                    &mut store,
+                    &summary,
+                    &observed_at.to_string(),
+                )
+                .await
+                {
+                    return BlockWorkerExit {
+                        subscription,
+                        error: Some(CollectionError::Database(error)),
+                    };
+                }
+                if let Err(error) = sqlx::query("INSERT INTO node_recovery_state (node_id, boot_id, last_head, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET boot_id=excluded.boot_id,last_head=excluded.last_head,updated_at=excluded.updated_at")
+                    .bind(node.node_id.to_string())
+                    .bind(boot_id.to_string())
+                    .bind(summary.block_number as i64)
+                    .bind(observed_at.to_string())
+                    .execute(store.connection())
+                    .await
+                {
+                    return BlockWorkerExit {
+                        subscription,
+                        error: Some(CollectionError::Database(error)),
+                    };
+                }
+                subscription.pop_front();
+            }
+
+            let header = tokio::select! {
+                _ = cancel.cancelled() => {
+                    return BlockWorkerExit { subscription, error: None };
+                }
+                result = transport.receive_live_head(&mut live) => match result {
+                    Ok(header) => header,
+                    Err(_) => break 'connected,
+                }
+            };
+            if subscription.push(header).is_err() {
+                break 'connected;
+            }
+        }
+
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                return BlockWorkerExit { subscription, error: None };
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+        }
+    }
 }
 
 /// Collect, persist, and include the normal per-Node subscription summaries in
@@ -934,12 +1254,6 @@ pub async fn collect_and_persist_with_blocks<A: RpcAdapter>(
         else {
             continue;
         };
-        let prior_recovery = sqlx::query_as::<_, (Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<String>)>(
-            "SELECT boot_id, last_head, pending_from, pending_to, pending_trigger FROM node_recovery_state WHERE node_id=?",
-        )
-        .bind(node.node_id.to_string())
-        .fetch_optional(store.connection())
-        .await?;
         let mut reconnect_needed = false;
         let subscription = subscriptions
             .iter_mut()
@@ -977,69 +1291,21 @@ pub async fn collect_and_persist_with_blocks<A: RpcAdapter>(
                     .await?;
                 }
             }
-            Err(_) => {
-                reconnect_needed = true;
-            }
+            Err(_) => reconnect_needed = true,
         }
-        if let Ok(head) = transport.current_head_async(&node.rpc_endpoint).await {
-            let boot_changed = prior_recovery.as_ref().and_then(|row| row.0.as_deref())
-                != Some(report.boot_id.to_string().as_str());
-            let plan = crate::block::plan_recovery(
-                prior_recovery
-                    .as_ref()
-                    .and_then(|row| row.1)
-                    .map(|v| v as u64),
-                head,
-                boot_changed,
+        recover_node_blocks(
+            &mut store,
+            transport,
+            NodeRecoveryRequest {
+                config,
+                node,
+                identity,
+                boot_id: report.boot_id,
+                observed_at: report.generated_at,
                 reconnect_needed,
-                false,
-                None,
-            );
-            let bounds = crate::block::BackfillBounds {
-                max_height_span: config.backfill.max_height_span,
-                max_block_count: config.backfill.max_block_count,
-                max_time: std::time::Duration::from_millis(config.backfill.max_time_ms),
-            };
-            if let Some(plan) = plan {
-                let outcome = transport
-                    .gap_backfill(
-                        &node.rpc_endpoint,
-                        node.node_id,
-                        identity,
-                        report.generated_at,
-                        plan.from_height,
-                        plan.to_height,
-                        bounds,
-                        plan.trigger,
-                    )
-                    .await;
-                for summary in outcome.summaries {
-                    crate::block::persist_block_summary(
-                        &mut store,
-                        &summary,
-                        &report.generated_at.to_string(),
-                    )
-                    .await?;
-                }
-                for gap in &outcome.gaps {
-                    crate::block::persist_history_gap(&mut store, gap).await?;
-                }
-                let pending = outcome
-                    .gaps
-                    .first()
-                    .map(|gap| (gap.from_height, gap.to_height));
-                sqlx::query("INSERT INTO node_recovery_state (node_id, boot_id, last_head, pending_from, pending_to, pending_trigger, pending_reason, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET boot_id=excluded.boot_id,last_head=excluded.last_head,pending_from=excluded.pending_from,pending_to=excluded.pending_to,pending_trigger=excluded.pending_trigger,pending_reason=excluded.pending_reason,updated_at=excluded.updated_at")
-                    .bind(node.node_id.to_string()).bind(report.boot_id.to_string()).bind(head as i64)
-                    .bind(pending.map(|v| v.0 as i64)).bind(pending.map(|v| v.1 as i64))
-                    .bind(pending.as_ref().map(|_| format!("{:?}", plan.trigger).to_lowercase()))
-                    .bind(outcome.gaps.first().map(|gap| gap.reason.as_str())).bind(report.generated_at.to_string())
-                    .execute(store.connection()).await?;
-            } else {
-                sqlx::query("INSERT INTO node_recovery_state (node_id, boot_id, last_head, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET boot_id=excluded.boot_id,last_head=excluded.last_head,updated_at=excluded.updated_at")
-                    .bind(node.node_id.to_string()).bind(report.boot_id.to_string()).bind(head as i64).bind(report.generated_at.to_string())
-                    .execute(store.connection()).await?;
-            }
-        }
+            },
+        )
+        .await?;
     }
     if pending_transition.as_deref() == Some("drained_previous") {
         report.boot_transition = BootTransition::DrainedPrevious;
@@ -1483,6 +1749,7 @@ mod tests {
             server_url: "https://example.com".into(),
             credential_file: dir.path().join("credential"),
             state_db: dir.path().join("agent.db"),
+            collection_interval_seconds: 5,
             backfill: crate::config::BackfillConfig::default(),
         };
         let inventory: NodeInventory = serde_json::from_str(r#"{"revision":1,"nodes":[{"node_id":"0195f2a1-0014-4014-8014-000000000014","network_key":"platon-mainnet","rpc_endpoint":"ws://127.0.0.1:6790"}]}"#).unwrap();
@@ -1539,6 +1806,7 @@ mod tests {
             server_url: "https://example.com".into(),
             credential_file: dir.path().join("credential"),
             state_db: dir.path().join("agent.db"),
+            collection_interval_seconds: 5,
             backfill: crate::config::BackfillConfig::default(),
         };
         let first_endpoint: RpcEndpoint = "ws://127.0.0.1:6790".parse().unwrap();
@@ -1615,6 +1883,7 @@ mod tests {
             server_url: "https://example.com".into(),
             credential_file: dir.path().join("credential"),
             state_db: dir.path().join("agent.db"),
+            collection_interval_seconds: 5,
             backfill: crate::config::BackfillConfig::default(),
         };
         let first_endpoint: RpcEndpoint = "ws://127.0.0.1:6790".parse().unwrap();

@@ -35,4 +35,4 @@ nix = { version = "0.29", features = ["user", "fs"] }
 axum = "0.8"
 platpulse-server = { path = "../platpulse-server" }
 tempfile = "3"
-tokio = { version = "1", features = ["net"] }
+tokio = { version = "1", features = ["net", "test-util"] }

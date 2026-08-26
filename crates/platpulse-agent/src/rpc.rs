@@ -25,7 +25,6 @@ use platpulse_core::observation::{ConsensusCurrent, PeerCurrent, PeerDirection, 
 use serde::Deserialize;
 use serde_json::{Value, json, value::RawValue};
 use thiserror::Error;
-use tokio::sync::broadcast::error::RecvError as BroadcastRecvError;
 use tokio::time::timeout;
 
 use crate::block::{PlatonBlock, PlatonHead};
@@ -88,6 +87,44 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 /// without nesting `block_on`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AlloyRpcAdapter;
+
+pub(crate) struct LiveRpcProbe {
+    provider: DynProvider<Ethereum>,
+    subscription_supported: bool,
+}
+
+impl LiveRpcProbe {
+    pub(crate) async fn collect(&self) -> Result<RpcSnapshot, RpcCollectError> {
+        timeout(
+            PROBE_TIMEOUT,
+            probe_provider(&self.provider, self.subscription_supported),
+        )
+        .await
+        .map_err(|_| RpcCollectError::Failed("RPC capability probe timed out".to_owned()))?
+    }
+}
+
+impl AlloyRpcAdapter {
+    pub(crate) async fn connect_live(
+        &self,
+        endpoint: &RpcEndpoint,
+    ) -> Result<LiveRpcProbe, RpcCollectError> {
+        if !privileged_rpc_endpoint_allowed(endpoint) {
+            return Err(RpcCollectError::Failed(
+                "privileged RPC probe requires IPC or a loopback/private endpoint".to_owned(),
+            ));
+        }
+        let provider = timeout(CONNECT_TIMEOUT, connect(endpoint))
+            .await
+            .map_err(|_| RpcCollectError::Failed("RPC connection timed out".to_owned()))?
+            .map_err(|error| RpcCollectError::Failed(format!("RPC connection failed: {error}")))?;
+        let subscription_supported = probe_subscription(&provider).await.is_ok();
+        Ok(LiveRpcProbe {
+            provider,
+            subscription_supported,
+        })
+    }
+}
 
 impl RpcAdapter for AlloyRpcAdapter {
     fn collect(&self, endpoint: &RpcEndpoint) -> Result<RpcSnapshot, RpcCollectError> {
@@ -603,27 +640,19 @@ fn parse_literal_remote_ip(value: &str) -> Option<String> {
         .map(|address| address.to_string())
 }
 
-/// Verify that `eth_subscribe("newHeads")` is available. An idle chain may
-/// not emit a head within the window; the established subscription itself is
-/// the capability evidence.
+/// Verify that `eth_subscribe("newHeads")` is available. Establishing the
+/// subscription is the capability evidence; waiting for a notification would
+/// add block-time latency to every current-observation report.
 async fn probe_subscription(provider: &DynProvider<Ethereum>) -> Result<(), ProbeError> {
     let mut call = provider.client().request("eth_subscribe", ("newHeads",));
     call.set_is_subscription();
     let subscription =
         GetSubscription::<_, PlatonHead>::new(provider.weak_client(), call).channel_size(1);
-    let mut subscription = timeout(CALL_TIMEOUT, subscription)
+    let _subscription = timeout(CALL_TIMEOUT, subscription)
         .await
         .map_err(|_| ProbeError::Timeout)?
         .map_err(ProbeError::from)?;
-    match timeout(CALL_TIMEOUT, subscription.recv_result()).await {
-        Ok(Ok(Err(error))) => Err(ProbeError::Malformed(format!(
-            "malformed head notification: {error}"
-        ))),
-        Ok(Err(BroadcastRecvError::Closed)) => Err(ProbeError::Malformed(
-            "head notification stream closed".to_owned(),
-        )),
-        Ok(_) | Err(_) => Ok(()),
-    }
+    Ok(())
 }
 
 /// One bounded capability/identity probe of a single Node.
@@ -643,12 +672,19 @@ async fn probe_node_inner(endpoint: &RpcEndpoint) -> Result<RpcSnapshot, RpcColl
         .await
         .map_err(|_| RpcCollectError::Failed("RPC connection timed out".to_owned()))?
         .map_err(|error| RpcCollectError::Failed(format!("RPC connection failed: {error}")))?;
+    let subscription_supported = probe_subscription(&provider).await.is_ok();
+    probe_provider(&provider, subscription_supported).await
+}
 
+async fn probe_provider(
+    provider: &DynProvider<Ethereum>,
+    subscription_supported: bool,
+) -> Result<RpcSnapshot, RpcCollectError> {
     let mut methods: Vec<String> = Vec::new();
 
     // Client version is the RPC component's identity; an unusable answer
     // fails the whole probe rather than persisting a partial snapshot.
-    let client_version = match call(&provider, "web3_clientVersion", json!([])).await {
+    let client_version = match call(provider, "web3_clientVersion", json!([])).await {
         Ok(Value::String(value)) if !value.is_empty() => {
             record_method(&mut methods, "web3_clientVersion");
             truncate_chars(value, MAX_CLIENT_VERSION_CHARS)
@@ -670,7 +706,7 @@ async fn probe_node_inner(endpoint: &RpcEndpoint) -> Result<RpcSnapshot, RpcColl
         }
     };
 
-    let namespaces = match call(&provider, "rpc_modules", json!([])).await {
+    let namespaces = match call(provider, "rpc_modules", json!([])).await {
         Ok(Value::Object(modules)) => {
             record_method(&mut methods, "rpc_modules");
             parse_rpc_modules(modules)
@@ -678,7 +714,7 @@ async fn probe_node_inner(endpoint: &RpcEndpoint) -> Result<RpcSnapshot, RpcColl
         _ => Vec::new(),
     };
 
-    let head = match call(&provider, "eth_blockNumber", json!([])).await {
+    let head = match call(provider, "eth_blockNumber", json!([])).await {
         Ok(value) => {
             record_method(&mut methods, "eth_blockNumber");
             parse_quantity_string(&value).map_err(|error| {
@@ -694,7 +730,7 @@ async fn probe_node_inner(endpoint: &RpcEndpoint) -> Result<RpcSnapshot, RpcColl
 
     // Genesis hash comes from the authoritative block 0 through the standard
     // eth_getBlockByNumber interface.
-    let genesis_hash: Hash32 = match call(&provider, "eth_getBlockByNumber", json!(["0x0", false]))
+    let genesis_hash: Hash32 = match call(provider, "eth_getBlockByNumber", json!(["0x0", false]))
         .await
     {
         Ok(value) => {
@@ -714,7 +750,7 @@ async fn probe_node_inner(endpoint: &RpcEndpoint) -> Result<RpcSnapshot, RpcColl
         }
     };
 
-    let chain_id = match call(&provider, "eth_chainId", json!([])).await {
+    let chain_id = match call(provider, "eth_chainId", json!([])).await {
         Ok(value) => {
             record_method(&mut methods, "eth_chainId");
             parse_quantity_string(&value).map_err(|error| {
@@ -728,7 +764,7 @@ async fn probe_node_inner(endpoint: &RpcEndpoint) -> Result<RpcSnapshot, RpcColl
         }
     };
 
-    let node_info = match call(&provider, "admin_nodeInfo", json!([])).await {
+    let node_info = match call(provider, "admin_nodeInfo", json!([])).await {
         Ok(value) => {
             record_method(&mut methods, "admin_nodeInfo");
             value
@@ -756,7 +792,7 @@ async fn probe_node_inner(endpoint: &RpcEndpoint) -> Result<RpcSnapshot, RpcColl
         .and_then(Value::as_str)
         .map(|value| truncate_chars(value.to_owned(), MAX_ENODE_CHARS));
 
-    let sync = match call(&provider, "eth_syncing", json!([])).await {
+    let sync = match call(provider, "eth_syncing", json!([])).await {
         Ok(Value::Bool(false)) => {
             record_method(&mut methods, "eth_syncing");
             ProbeValue::Supported(SyncCurrent {
@@ -779,7 +815,7 @@ async fn probe_node_inner(endpoint: &RpcEndpoint) -> Result<RpcSnapshot, RpcColl
         Err(error) => ProbeValue::Error(format!("eth_syncing failed: {error}")),
     };
 
-    let consensus = match call(&provider, "debug_consensusStatus", json!([])).await {
+    let consensus = match call(provider, "debug_consensusStatus", json!([])).await {
         Ok(value) => {
             record_method(&mut methods, "debug_consensusStatus");
             match parse_consensus_status(value) {
@@ -793,7 +829,7 @@ async fn probe_node_inner(endpoint: &RpcEndpoint) -> Result<RpcSnapshot, RpcColl
         Err(error) => ProbeValue::Error(format!("debug_consensusStatus failed: {error}")),
     };
 
-    let peers = match call(&provider, "admin_peers", json!([])).await {
+    let peers = match call(provider, "admin_peers", json!([])).await {
         Ok(value) => {
             record_method(&mut methods, "admin_peers");
             match parse_admin_peers(value) {
@@ -809,7 +845,7 @@ async fn probe_node_inner(endpoint: &RpcEndpoint) -> Result<RpcSnapshot, RpcColl
         Err(error) => ProbeValue::Error(format!("admin_peers probe failed: {error}")),
     };
 
-    if probe_subscription(&provider).await.is_ok() {
+    if subscription_supported {
         record_method(&mut methods, "eth_subscribe");
     }
 

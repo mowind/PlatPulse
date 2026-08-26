@@ -10866,6 +10866,42 @@
             ],
             "format": "double"
           },
+          "hostMemoryPercent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "hostNetworkRxBytesPerSec": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "hostNetworkTxBytesPerSec": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "hostStoragePercent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "latestBlockTransactionCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Transaction count from this Node's latest persisted Block Summary.\n`None` means the Node has not produced a Block Summary yet."
+          },
           "networkKey": {
             "type": "string"
           },
@@ -10902,14 +10938,6 @@
           },
           "syncState": {
             "type": "string"
-          },
-          "transactionCountAtCurrentHead": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "description": "Transaction count from the persisted Block Summary for this Node at\nexactly `current_head`. `None` means no exact match exists and the\nvalue must be presented as Unknown; no latest-summary fallback exists."
           },
           "validator": {
             "oneOf": [

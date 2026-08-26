@@ -413,9 +413,9 @@ SCN-HISTORY-WINDOW-BOUNDS
 
 Scenario state is memory-only. No credentials, secrets, production API origins, local persistence, or prototype-only branches are allowed in production pages.
 
-## 11.1 Accepted Home and Node Detail visual contract (Issue #75)
+## 11.1 Accepted Home and Node Detail visual contract (Issues #75 and #97)
 
-The accepted direction from Issue #75 and the prototype/home-node-detail branch is the production visual baseline for the public Home surface. It borrows the supplied Nezha references' operational hierarchy and dark glass treatment without importing their server, resource, pricing, or remote-control data model.
+The accepted direction from Issue #75 and the compact Home contract from Issue #97 are the production visual baseline for the public Home surface. It borrows the supplied Nezha references' operational hierarchy and dark glass treatment without importing their server, pricing, or remote-control data model.
 
 ### Visual language
 
@@ -424,18 +424,19 @@ The accepted direction from Issue #75 and the prototype/home-node-detail branch 
 - Primary numbers and page titles use high contrast and strong weight. Secondary labels, timestamps, identifiers, and explanatory copy are visibly quieter.
 - Green, amber, red, violet/indigo, and neutral tones communicate good, attention, error, contextual accent, and unavailable/unknown states respectively. Every status also has text or an equivalent accessible explanation; color is never the sole signal.
 - Cards, pills, separators, progress bars, and focus states share one spacing and radius system. Hover elevation is optional decoration and must not be required to discover an action.
-- The visual contract does not authorize fields that are absent from the Public Projection. In particular, it does not add memory, disk, bandwidth, traffic, uptime, pricing, geography, raw Peer identity, or RPC Endpoint text.
+- The visual contract does not authorize fields that are absent from the Public Projection. Home may show the sanitized Host CPU and memory/storage percentages and sampled network receive/transmit rates supplied by the Server; it does not add uptime, pricing, geography, raw Peer identity, Host identity, or RPC Endpoint text.
 
 ### Home composition (PAGE-HOME-NETWORKS and PAGE-HOME-NETWORK)
 
 The Home route is a read-only operational overview composed in this order:
 
 1. A compact header with the PlatPulse brand link at left and one circular Admin icon link at right. The brand returns to Home; the Admin icon enters the Admin route and does not expose Admin data inside Home.
-2. A page kicker, the Home heading, a server-authoritative live/realtime indicator, and a current-clock presentation that is decorative context rather than domain freshness.
+2. A page kicker, the Home heading, explanatory Public Projection copy, and a server-authoritative live/realtime indicator.
 3. Four summary cards for published Node count, Server-owned healthy Node count, Nodes needing attention, and published Network count. These are projections of already-loaded Public data; they are not new health policy.
-4. A toolbar containing the supported card view, Network filter pills, and a clearly labelled sort control. Unsupported future views are not rendered as usable production actions.
-5. A responsive collection of Active Node cards. Each card links to Node Detail and may link back to its Network. Cards show only the Public Node fields needed for Network, identity, Node Health Summary, RPC/Sync/Consensus/Process/Resync state, Current Head, history boundary, Peer Count Observation, freshness/value cues, and sanitized Host CPU percentage.
-6. An explicit empty state when the selected Network has no published Nodes, without implying that missing data is zero or healthy.
+4. A toolbar containing Network filter pills and a clearly labelled sort control. Unsupported future views are not rendered as usable production actions.
+5. A responsive collection of compact Active Node cards. Each whole card is one semantic link to Node Detail; the Network name is plain text and the card contains no nested Network link. The header shows Node identity, Validator Activity, and Node Health without `ACTIVITY` or `HEALTH` labels; missing Validator Activity is `Observing`. Healthy Nodes omit routine component rows, health prose, Last Observed, and no-op Resync copy; an exceptional Node may show one short diagnostic line.
+6. Each compact card presents three ordered metric rows: sanitized Host `CPU / MEMORY / STORAGE / ↑ UP / ↓ DOWN`; Node `HEAD / TXS / PEERS`; and Consensus `QC / LOCKED / COMMITTED / VALIDATOR`. HEAD remains Sync Current Head, TXS is the transaction count from that Node's latest persisted Block Summary, and PEERS retains its independent observation-state cue. Missing values remain unavailable rather than becoming zero.
+7. An explicit empty state when the selected Network has no published Nodes, without implying that missing data is zero or healthy.
 
 Network hierarchy remains Network -> PlatON Node -> Node Detail. Home never reorganizes the view around Agent or Host topology.
 
@@ -458,7 +459,7 @@ The fixed acceptance viewports are 360x800, 390x844, 768x1024, and 1280x800.
 
 - At 1280x800, Home uses four summary columns and a two-column Node grid. Node Detail uses six-column facts/observations and a three-column signal grid.
 - At 768x1024, Home uses two summary columns and a single-column Node grid when the content width requires it. Node Detail uses three-column facts/observations and a two-column signal grid.
-- At 360x800 and 390x844, Home keeps a compact two-column summary where it remains legible, uses a single-column Node grid, and allows filter pills to scroll within their own control rather than causing page overflow. Node Detail stacks the heading, summary actions, facts, observations, signal cards, and secondary panels; the two tabs remain full-width touch controls.
+- At 360x800 and 390x844, Home keeps a compact two-column summary where it remains legible, uses a single-column Node grid, keeps `HEAD / TXS / PEERS` together, and reflows the four-column Host-resource and Consensus rows to two columns. Filter pills scroll within their own control rather than causing page overflow. Node Detail stacks the heading, summary actions, facts, observations, signal cards, and secondary panels; the two tabs remain full-width touch controls.
 - At every viewport, long Node names, Node IDs, Network keys, status reasons, and values wrap or truncate with an accessible full value. No critical state requires primary horizontal page scrolling.
 - The Block History table becomes priority rows/cards on phone widths. If a table representation is retained at a larger width, it must not force the phone page wider than the viewport.
 - Touch targets are at least 44x44 CSS pixels. Portrait, landscape, 200% zoom, and reduced-motion settings remain usable.
@@ -479,7 +480,7 @@ The UI keeps collection state, freshness state, value state, and authorization s
 
 - The PlatPulse brand is a keyboard-focusable link to `/`. Its accessible name identifies PlatPulse and its destination is stable from Home and Node Detail.
 - The circular Admin icon is a keyboard-focusable link to /admin with an explicit accessible name such as Open Admin login. Home does not show text navigation or a Home logout action in this header.
-- Node cards, Network links, the Network back link, history export, and Details/Network tabs are reachable by keyboard in a predictable order. Browser back/forward preserves route context.
+- Whole-card Node links, Node Detail Network links, the Network back link, history export, and Details/Network tabs are reachable by keyboard in a predictable order. Browser back/forward preserves route context.
 - Tabs use tab/list semantics with a single selected tab, a labelled panel, visible focus, and keyboard activation. Switching tabs preserves Node identity and summary state.
 - Pages expose one logical h1, ordered headings, semantic lists/tables where appropriate, meaningful empty/error regions, and polite live regions only for meaningful transitions.
 - Status uses text plus icon, shape, or an equivalent explanation. Focus rings remain visible against the dark shell. Reduced motion removes non-essential transitions and does not remove state information.
@@ -519,7 +520,7 @@ desktop-1280
 | `SCN-AUTH-SESSION-REVOKED` | old stream closes, Admin data clears, no stale flash, login/revalidation path |
 | `SCN-SITE-ACCESS-PRIVATE` | switch to Private closes public streams, Home requires login, old public cache cleared, audit row |
 | `SCN-HOME-NETWORK-LIST` | network list from Public Projection, all Active Nodes visible, anonymous access follows Site Access Mode |
-| `SCN-HOME-NODE-DETAIL` | independent dimensions, bounded Block History, Peer Count only, sanitized Host percentages |
+| `SCN-HOME-NODE-DETAIL` | independent dimensions, compact Home metric order, bounded Block History, Peer Count only, sanitized Host resource values |
 | `SCN-HOME-UNAVAILABLE-NODE` | non-leaking unavailable copy for retired/unknown; no internal detail |
 | `SCN-OVERVIEW-FRESH` | independent Node rows, Server Health Summary, current timestamps |
 | `SCN-OVERVIEW-STALE-LAST-GOOD` | last-good remains, Error/Stale reason and age visible, no zero substitution |

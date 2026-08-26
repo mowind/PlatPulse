@@ -1,4 +1,7 @@
 //! `platpulse-agent` CLI (design §8.2).
+use std::collections::HashMap;
+#[cfg(test)]
+use std::future::Future;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -7,7 +10,10 @@ use clap::{Args, Parser, Subcommand};
 use thiserror::Error;
 
 use crate::block::WebSocketBlockTransport;
-use crate::collector::{FailClosedRpcAdapter, collect_and_persist_with_blocks};
+use crate::collector::{
+    FailClosedRpcAdapter, RpcSnapshot, collect_and_persist_precollected_in_store,
+    collect_and_persist_with_blocks, run_node_block_worker,
+};
 use crate::config::{AgentConfig, AgentConfigFile, generate_node_id};
 use crate::enroll::{EnrollError, enroll_agent};
 use crate::rpc::AlloyRpcAdapter;
@@ -153,6 +159,169 @@ pub async fn run_collect_report(args: &CollectReportArgs) -> Result<(), AgentCli
     Ok(())
 }
 
+fn periodic_interval(period: Duration) -> tokio::time::Interval {
+    let mut tick = tokio::time::interval(period);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    tick
+}
+
+#[cfg(test)]
+async fn run_periodic_until_cancel<F, Fut, E>(
+    period: Duration,
+    cancel: tokio_util::sync::CancellationToken,
+    mut operation: F,
+) -> Result<(), E>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<(), E>>,
+{
+    let mut tick = periodic_interval(period);
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => return Ok(()),
+            _ = tick.tick() => {
+                tokio::select! {
+                    _ = cancel.cancelled() => return Ok(()),
+                    result = operation() => result?,
+                }
+            }
+        }
+    }
+}
+
+async fn run_rpc_snapshot_worker(
+    endpoint: platpulse_core::network::RpcEndpoint,
+    period: Duration,
+    snapshots: tokio::sync::watch::Sender<Option<Result<RpcSnapshot, String>>>,
+    cancel: tokio_util::sync::CancellationToken,
+) {
+    loop {
+        let probe = tokio::select! {
+            _ = cancel.cancelled() => return,
+            result = AlloyRpcAdapter.connect_live(&endpoint) => match result {
+                Ok(probe) => probe,
+                Err(error) => {
+                    snapshots.send_replace(Some(Err(error.to_string())));
+                    tokio::select! {
+                        _ = cancel.cancelled() => return,
+                        _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                    }
+                    continue;
+                }
+            }
+        };
+        let mut tick = periodic_interval(period);
+        loop {
+            let result = tokio::select! {
+                _ = cancel.cancelled() => return,
+                _ = tick.tick() => probe.collect().await,
+            };
+            let reconnect = result.is_err();
+            snapshots.send_replace(Some(result.map_err(|error| error.to_string())));
+            if reconnect {
+                break;
+            }
+        }
+    }
+}
+
+type RpcSnapshotReceiver = (
+    String,
+    tokio::sync::watch::Receiver<Option<Result<RpcSnapshot, String>>>,
+);
+
+async fn run_report_collection_loop(
+    config: AgentConfig,
+    mut snapshots: Vec<RpcSnapshotReceiver>,
+    cancel: tokio_util::sync::CancellationToken,
+) -> Result<(), AgentCliError> {
+    let mut store = crate::database::AgentStore::open(crate::database::AgentDatabaseConfig::new(
+        &config.state_db,
+    ))
+    .await
+    .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    let mut tick = periodic_interval(Duration::from_secs(config.collection_interval_seconds));
+    let result = loop {
+        tokio::select! {
+            _ = cancel.cancelled() => break Ok(()),
+            _ = tick.tick() => {
+                let current = snapshots
+                    .iter_mut()
+                    .map(|(endpoint, receiver)| {
+                        let snapshot = receiver.borrow_and_update().clone().unwrap_or_else(|| {
+                            Err("RPC snapshot collection is starting".to_owned())
+                        });
+                        (endpoint.clone(), snapshot)
+                    })
+                    .collect::<HashMap<_, _>>();
+                let collection = tokio::select! {
+                    _ = cancel.cancelled() => break Ok(()),
+                    result = collect_and_persist_precollected_in_store(
+                        &config,
+                        current,
+                        &mut store,
+                    ) => result,
+                };
+                if let Err(error) = collection {
+                    if crate::collector::is_transient_database_lock(&error) {
+                        eprintln!(
+                            "Agent report collection deferred: {}",
+                            crate::redaction::redact_sensitive(&error.to_string())
+                        );
+                        continue;
+                    }
+                    break Err(AgentCliError::Collection(error.to_string()));
+                }
+            }
+        }
+    };
+    let close_result = store
+        .close()
+        .await
+        .map_err(|error| AgentCliError::Collection(error.to_string()));
+    result.and(close_result)
+}
+
+async fn run_delivery_loop(
+    config: AgentConfig,
+    cancel: tokio_util::sync::CancellationToken,
+) -> Result<(), AgentCliError> {
+    let mut store = crate::database::AgentStore::open(crate::database::AgentDatabaseConfig::new(
+        &config.state_db,
+    ))
+    .await
+    .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    let transport = crate::reporting::HttpReportTransport::from_config(&config)
+        .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    let policy = crate::collector::SpoolPolicy::default();
+    let mut tick = periodic_interval(Duration::from_secs(1));
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            _ = tick.tick() => {
+                let result = tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    result = crate::reporting::deliver_periodic(
+                        &mut store,
+                        &transport,
+                        &policy,
+                    ) => result,
+                };
+                if let Err(error) = result {
+                    eprintln!(
+                        "Agent report delivery deferred: {}",
+                        crate::redaction::redact_sensitive(&error.to_string())
+                    );
+                }
+            }
+        }
+    }
+    store
+        .close()
+        .await
+        .map_err(|error| AgentCliError::Collection(error.to_string()))
+}
+
 pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
     let config = AgentConfig::resolve(&args.config)?;
     let adapter = AlloyRpcAdapter;
@@ -162,60 +331,138 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
     let validated = config
         .validated_inventory()
         .map_err(|error| AgentCliError::Collection(error.to_string()))?;
-    let mut subscriptions = validated
+    let node_ids = validated
         .inventory
         .nodes
         .iter()
-        .map(|node| crate::block::HeadSubscription::new(node.node_id, 32))
+        .map(|node| node.node_id)
         .collect::<Vec<_>>();
     let runtime = crate::shutdown::AgentRuntime::new();
-    let transport = WebSocketBlockTransport::default();
-    let mut delivery_tick = tokio::time::interval(Duration::from_secs(1));
+    let cancel = runtime.cancellation_token();
+
+    let delivery_worker = tokio::spawn(run_delivery_loop(config.clone(), cancel.clone()));
+
+    let mut rpc_workers = tokio::task::JoinSet::new();
+    let mut rpc_snapshots = Vec::with_capacity(validated.inventory.nodes.len());
+    let rpc_period = Duration::from_secs(config.collection_interval_seconds);
+    for node in &validated.inventory.nodes {
+        let (sender, receiver) = tokio::sync::watch::channel(None);
+        rpc_snapshots.push((node.rpc_endpoint.as_str().to_owned(), receiver));
+        rpc_workers.spawn(run_rpc_snapshot_worker(
+            node.rpc_endpoint.clone(),
+            rpc_period,
+            sender,
+            cancel.clone(),
+        ));
+    }
+
+    let mut block_workers = tokio::task::JoinSet::new();
+    for node in validated.inventory.nodes.iter().cloned() {
+        block_workers.spawn(run_node_block_worker(
+            config.clone(),
+            node,
+            WebSocketBlockTransport::default(),
+            cancel.clone(),
+        ));
+    }
+
+    let reports = run_report_collection_loop(config.clone(), rpc_snapshots, cancel.clone());
+    tokio::pin!(reports);
     let signal = wait_for_shutdown_signal();
     tokio::pin!(signal);
-    loop {
-        // Delivery runs in its own 1s tick slot. The collection cycle must
-        // never share the select with the tick: cancelling a collect at the
-        // next tick can leave the spool and `agent_state` racing (a report
-        // INSERTed under a stale sequence read while its state update is
-        // still uncommitted), which surfaces as `UNIQUE constraint failed:
-        // reports.boot_id, reports.report_sequence` and kills the Agent.
-        tokio::select! {
-            _ = &mut signal => {
-                runtime.request_shutdown();
-                break;
-            }
-            _ = delivery_tick.tick() => {
-                let mut store = crate::database::AgentStore::open(
-                    crate::database::AgentDatabaseConfig::new(&config.state_db),
-                ).await.map_err(|error| AgentCliError::Collection(error.to_string()))?;
-                let result = crate::reporting::deliver_periodic(
-                    &mut store,
-                    &crate::reporting::HttpReportTransport::from_config(&config)
-                        .map_err(|error| AgentCliError::Collection(error.to_string()))?,
-                    &crate::collector::SpoolPolicy::default(),
-                ).await;
-                store.close().await.map_err(|error| AgentCliError::Collection(error.to_string()))?;
-                if let Err(error) = result {
-                    eprintln!(
-                        "Agent report delivery deferred: {}",
-                        crate::redaction::redact_sensitive(&error.to_string())
-                    );
-                }
+
+    let mut subscriptions = Vec::with_capacity(node_ids.len());
+    let runtime_result = tokio::select! {
+        _ = &mut signal => Ok(()),
+        result = &mut reports => result,
+        exit = rpc_workers.join_next(), if !rpc_workers.is_empty() => {
+            match exit {
+                Some(Ok(())) => Err(AgentCliError::Collection(
+                    "Node RPC snapshot worker stopped unexpectedly".to_owned(),
+                )),
+                Some(Err(error)) => Err(AgentCliError::Collection(format!(
+                    "Node RPC snapshot worker failed: {error}"
+                ))),
+                None => Ok(()),
             }
         }
-        // One full collection cycle, run to completion before the next
-        // delivery slot. Only shutdown cancels it.
-        tokio::select! {
-            _ = &mut signal => {
-                runtime.request_shutdown();
-                break;
+        exit = block_workers.join_next(), if !block_workers.is_empty() => {
+            match exit {
+                Some(Ok(exit)) => {
+                    subscriptions.push(exit.subscription);
+                    match exit.error {
+                        Some(error) => Err(AgentCliError::Collection(error.to_string())),
+                        None => Err(AgentCliError::Collection(
+                            "Node block worker stopped unexpectedly".to_owned(),
+                        )),
+                    }
+                }
+                Some(Err(error)) => Err(AgentCliError::Collection(format!(
+                    "Node block worker failed: {error}"
+                ))),
+                None => Ok(()),
             }
-            result = collect_and_persist_with_blocks(&config, &adapter, &transport, &mut subscriptions) => {
-                result.map_err(|error| AgentCliError::Collection(error.to_string()))?;
+        }
+    };
+    runtime.request_shutdown();
+
+    let block_deadline =
+        tokio::time::Instant::now() + std::time::Duration::from_millis(args.drain_deadline_ms);
+    while !rpc_workers.is_empty() {
+        match tokio::time::timeout_at(block_deadline, rpc_workers.join_next()).await {
+            Ok(Some(Ok(()))) | Ok(None) => {}
+            Ok(Some(Err(error))) => {
+                eprintln!("Node RPC snapshot worker join failed during shutdown: {error}");
+            }
+            Err(_) => {
+                rpc_workers.abort_all();
+                break;
             }
         }
     }
+    while !block_workers.is_empty() {
+        match tokio::time::timeout_at(block_deadline, block_workers.join_next()).await {
+            Ok(Some(Ok(exit))) => {
+                if runtime_result.is_ok() {
+                    if let Some(error) = exit.error {
+                        eprintln!(
+                            "Node block worker stopped with error during shutdown: {}",
+                            crate::redaction::redact_sensitive(&error.to_string())
+                        );
+                    }
+                }
+                subscriptions.push(exit.subscription);
+            }
+            Ok(Some(Err(error))) => {
+                eprintln!("Node block worker join failed during shutdown: {error}");
+            }
+            Ok(None) => break,
+            Err(_) => {
+                block_workers.abort_all();
+                break;
+            }
+        }
+    }
+    for node_id in node_ids {
+        if !subscriptions
+            .iter()
+            .any(|subscription| subscription.node_id() == node_id)
+        {
+            subscriptions.push(crate::block::HeadSubscription::new(node_id, 32));
+        }
+    }
+
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(args.sender_deadline_ms),
+        delivery_worker,
+    )
+    .await
+    {
+        Ok(Ok(Ok(()))) => {}
+        Ok(Ok(Err(error))) if runtime_result.is_ok() => return Err(error),
+        Ok(Ok(Err(_))) | Ok(Err(_)) | Err(_) => {}
+    }
+
     let outcome = crate::shutdown::graceful_shutdown_with_subscriptions(
         &config,
         &adapter,
@@ -229,7 +476,7 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
         "Agent stopped with shutdown state {} (report {}).",
         outcome.shutdown_state, outcome.report_id
     );
-    Ok(())
+    runtime_result
 }
 
 async fn wait_for_shutdown_signal() {
@@ -304,6 +551,76 @@ fn read_enrollment_token() -> Result<String, std::io::Error> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Notify;
+    use tokio_util::sync::CancellationToken;
+
+    #[tokio::test(start_paused = true)]
+    async fn report_and_delivery_workers_advance_on_independent_cadences() {
+        let report_count = Arc::new(AtomicUsize::new(0));
+        let delivery_count = Arc::new(AtomicUsize::new(0));
+        let report_gate = Arc::new(Notify::new());
+        let cancel = CancellationToken::new();
+
+        let report_task = {
+            let report_count = Arc::clone(&report_count);
+            let report_gate = Arc::clone(&report_gate);
+            let cancel = cancel.clone();
+            tokio::spawn(run_periodic_until_cancel(
+                Duration::from_secs(5),
+                cancel,
+                move || {
+                    let invocation = report_count.fetch_add(1, Ordering::SeqCst);
+                    let report_gate = Arc::clone(&report_gate);
+                    async move {
+                        if invocation == 0 {
+                            report_gate.notified().await;
+                        }
+                        Ok::<(), ()>(())
+                    }
+                },
+            ))
+        };
+        let delivery_task = {
+            let delivery_count = Arc::clone(&delivery_count);
+            let cancel = cancel.clone();
+            tokio::spawn(run_periodic_until_cancel(
+                Duration::from_secs(1),
+                cancel,
+                move || {
+                    delivery_count.fetch_add(1, Ordering::SeqCst);
+                    async { Ok::<(), ()>(()) }
+                },
+            ))
+        };
+
+        tokio::task::yield_now().await;
+        assert_eq!(report_count.load(Ordering::SeqCst), 1);
+        assert_eq!(delivery_count.load(Ordering::SeqCst), 1);
+
+        for _ in 0..3 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(report_count.load(Ordering::SeqCst), 1);
+        assert_eq!(delivery_count.load(Ordering::SeqCst), 4);
+
+        report_gate.notify_one();
+        tokio::task::yield_now().await;
+        for _ in 0..2 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(report_count.load(Ordering::SeqCst), 2);
+        assert_eq!(delivery_count.load(Ordering::SeqCst), 6);
+
+        cancel.cancel();
+        assert!(report_task.await.unwrap().is_ok());
+        assert!(delivery_task.await.unwrap().is_ok());
+    }
+
     #[test]
     fn stdin_token_keeps_spaces_and_strips_only_line_endings() {
         assert_eq!("a b c".trim_end_matches(['\r', '\n']), "a b c");

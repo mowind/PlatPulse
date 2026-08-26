@@ -1132,11 +1132,14 @@ pub struct PublicNode {
     pub peers: PublicPeerInsight,
     pub consensus: PublicConsensusInsight,
     pub host_cpu_percent: Option<f64>,
+    pub host_memory_percent: Option<f64>,
+    pub host_storage_percent: Option<f64>,
+    pub host_network_rx_bytes_per_sec: Option<i64>,
+    pub host_network_tx_bytes_per_sec: Option<i64>,
     pub current_head: Option<i64>,
-    /// Transaction count from the persisted Block Summary for this Node at
-    /// exactly `current_head`. `None` means no exact match exists and the
-    /// value must be presented as Unknown; no latest-summary fallback exists.
-    pub transaction_count_at_current_head: Option<i64>,
+    /// Transaction count from this Node's latest persisted Block Summary.
+    /// `None` means the Node has not produced a Block Summary yet.
+    pub latest_block_transaction_count: Option<i64>,
     pub historical_high_watermark: Option<i64>,
     pub resync_state: String,
     pub network_reference_head: Option<i64>,
@@ -1156,6 +1159,10 @@ struct PublicNodeRow {
     identity_state: Option<String>,
     updated_at: Option<String>,
     host_cpu_percent: Option<f64>,
+    host_memory_percent: Option<f64>,
+    host_storage_percent: Option<f64>,
+    host_network_rx_bytes_per_sec: Option<i64>,
+    host_network_tx_bytes_per_sec: Option<i64>,
     sync_state: Option<String>,
     consensus_state: Option<String>,
     process_state: Option<String>,
@@ -1181,7 +1188,7 @@ struct PublicNodeRow {
     consensus_highest_lock_block: Option<i64>,
     consensus_highest_commit_block: Option<i64>,
     current_head: Option<i64>,
-    transaction_count_at_current_head: Option<i64>,
+    latest_block_transaction_count: Option<i64>,
     historical_high_watermark: Option<i64>,
     resync_state: Option<String>,
     resync_last_progress_at: Option<String>,
@@ -1509,8 +1516,12 @@ fn public_node(row: PublicNodeRow) -> (String, PublicNode) {
         peers,
         consensus,
         host_cpu_percent: row.host_cpu_percent,
+        host_memory_percent: row.host_memory_percent,
+        host_storage_percent: row.host_storage_percent,
+        host_network_rx_bytes_per_sec: row.host_network_rx_bytes_per_sec,
+        host_network_tx_bytes_per_sec: row.host_network_tx_bytes_per_sec,
         current_head: row.current_head,
-        transaction_count_at_current_head: row.transaction_count_at_current_head,
+        latest_block_transaction_count: row.latest_block_transaction_count,
         historical_high_watermark: row.historical_high_watermark,
         resync_state: row.resync_state.unwrap_or_else(|| "normal".to_owned()),
         network_reference_head: row.network_reference_head,
@@ -1533,6 +1544,10 @@ const PUBLIC_NODE_QUERY_BASE: &str = r#"SELECT n.node_id, n.display_name, n.netw
        p.state AS process_state, i.state AS identity_state, s.received_at AS updated_at,
        sy.received_at AS sync_received_at, co.received_at AS consensus_received_at,
        h.cpu_percent AS host_cpu_percent,
+       CASE WHEN h.memory_total_bytes > 0 THEN (CAST(h.memory_used_bytes AS REAL) * 100.0 / h.memory_total_bytes) ELSE NULL END AS host_memory_percent,
+       hd.storage_percent AS host_storage_percent,
+       h.network_rx_bytes_per_sec AS host_network_rx_bytes_per_sec,
+       h.network_tx_bytes_per_sec AS host_network_tx_bytes_per_sec,
        ps.state AS peer_state, ps.observed_at AS peer_observed_at,
        ps.value_received_at AS peer_value_received_at,
        ps.value_revision AS peer_value_revision,
@@ -1552,7 +1567,7 @@ const PUBLIC_NODE_QUERY_BASE: &str = r#"SELECT n.node_id, n.display_name, n.netw
        c.consensus_highest_lock_block,
        c.consensus_highest_commit_block,
        c.current_block AS current_head,
-       bs.transaction_count AS transaction_count_at_current_head,
+       bs.transaction_count AS latest_block_transaction_count,
        hs.historical_high_watermark,
        hs.resync_state, hs.resync_last_progress_at,
        nr.block_number AS network_reference_head, nr.confidence AS network_reference_confidence
@@ -1576,8 +1591,15 @@ const PUBLIC_NODE_QUERY_BASE: &str = r#"SELECT n.node_id, n.display_name, n.netw
         GROUP BY node_id
   ) pc ON pc.node_id = n.node_id
   LEFT JOIN current_host_observations h ON h.agent_id = n.agent_id
+  LEFT JOIN (
+       SELECT agent_id,
+              MAX(CASE WHEN total_bytes > 0 THEN (CAST(used_bytes AS REAL) * 100.0 / total_bytes) ELSE NULL END) AS storage_percent
+         FROM current_host_disk_mounts
+        GROUP BY agent_id
+  ) hd ON hd.agent_id = n.agent_id
   LEFT JOIN current_node_chain_observations c ON c.node_id = n.node_id
-  LEFT JOIN block_summaries bs ON bs.node_id = n.node_id AND bs.block_number = c.current_block
+  LEFT JOIN block_summaries bs ON bs.node_id = n.node_id
+       AND bs.block_number = (SELECT MAX(latest.block_number) FROM block_summaries latest WHERE latest.node_id = n.node_id)
   LEFT JOIN block_history_state hs ON hs.node_id = n.node_id
   LEFT JOIN network_reference_heads nr ON nr.network_key = n.network_key"#;
 
@@ -2359,6 +2381,17 @@ mod tests {
             .execute(state.db().pool()).await.unwrap();
         sqlx::query("INSERT INTO current_host_observations (agent_id, cpu_percent, updated_at) VALUES ('agent-public-test', 42.5, '2026-01-01T00:00:00Z')")
             .execute(state.db().pool()).await.unwrap();
+        for (mount_path, total_bytes, used_bytes) in
+            [("/", 1_000_i64, 500_i64), ("/data", 2_000_i64, 1_600_i64)]
+        {
+            sqlx::query("INSERT INTO current_host_disk_mounts (agent_id, mount_path, total_bytes, used_bytes, updated_at) VALUES ('agent-public-test', ?, ?, ?, '2026-01-01T00:00:00Z')")
+                .bind(mount_path)
+                .bind(total_bytes)
+                .bind(used_bytes)
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+        }
     }
 
     async fn seed_block_summary(
@@ -2430,7 +2463,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn public_node_exact_current_head_transaction_count_is_node_scoped_and_exact() {
+    async fn public_node_latest_block_summary_transaction_count_is_node_scoped() {
         let (_dir, state) = test_state().await;
         seed_public_data(&state).await;
         seed_exact_head_transaction_fixtures(&state).await;
@@ -2447,18 +2480,18 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing {node_id}"))
         };
 
-        // HEAD stays the sync observation Current Head even when a Block
-        // Summary or Historical High-Water Mark is higher.
+        // HEAD stays the Sync observation Current Head. TXS independently
+        // uses this Node's latest persisted Block Summary.
         assert_eq!(node("node-exact")["currentHead"], 100);
-        assert_eq!(node("node-exact")["transactionCountAtCurrentHead"], 7);
+        assert_eq!(node("node-exact")["latestBlockTransactionCount"], 7);
         assert_eq!(node("node-missing")["currentHead"], 100);
-        assert!(node("node-missing")["transactionCountAtCurrentHead"].is_null());
+        assert!(node("node-missing")["latestBlockTransactionCount"].is_null());
         assert_eq!(node("node-behind")["currentHead"], 100);
-        assert!(node("node-behind")["transactionCountAtCurrentHead"].is_null());
+        assert_eq!(node("node-behind")["latestBlockTransactionCount"], 9);
         assert_eq!(node("node-ahead")["currentHead"], 100);
-        assert!(node("node-ahead")["transactionCountAtCurrentHead"].is_null());
+        assert_eq!(node("node-ahead")["latestBlockTransactionCount"], 11);
         assert_eq!(node("node-other")["currentHead"], 100);
-        assert_eq!(node("node-other")["transactionCountAtCurrentHead"], 13);
+        assert_eq!(node("node-other")["latestBlockTransactionCount"], 13);
     }
 
     #[tokio::test]
@@ -2901,6 +2934,7 @@ mod tests {
             );
         }
         assert_eq!(node["hostCpuPercent"], 42.5);
+        assert_eq!(node["hostStoragePercent"], 80.0);
         for forbidden in [
             "rpcEndpoint",
             "agentId",

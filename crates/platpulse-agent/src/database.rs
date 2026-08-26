@@ -28,6 +28,18 @@ pub const AGENT_SCHEMA_VERSION: i64 = 12;
 /// tighter or more generous value for a test/deployment.
 pub const DEFAULT_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// SQLite BUSY/LOCKED result codes are transient contention, including
+/// extended result codes whose low byte is the primary code.
+pub(crate) fn is_lock_contention(error: &sqlx::Error) -> bool {
+    let sqlx::Error::Database(error) = error else {
+        return false;
+    };
+    error
+        .code()
+        .and_then(|code| code.parse::<i32>().ok())
+        .is_some_and(|code| matches!(code & 0xff, 5 | 6))
+}
+
 const REQUIRED_TABLES: &[&str] = &[
     "agent_state",
     "pending_block_summaries",

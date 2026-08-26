@@ -21,6 +21,7 @@ use platpulse_core::block::{
 use platpulse_core::hex::{Address, Hash32};
 use platpulse_core::identity::NodeId;
 use platpulse_core::network::{NetworkIdentity, RpcEndpoint, RpcScheme};
+use platpulse_core::protocol::{MAX_BLOCK_SUMMARIES, MAX_HISTORY_GAPS};
 use platpulse_core::time::Rfc3339;
 use serde::Deserialize;
 use sqlx::{Connection, FromRow};
@@ -77,10 +78,15 @@ pub struct WebSocketBlockTransport {
     pub allowed_methods: &'static [&'static str],
 }
 
+pub(crate) struct LiveHeadSubscription {
+    provider: DynProvider<Ethereum>,
+    heads: alloy::pubsub::Subscription<PlatonHead>,
+}
+
 impl Default for WebSocketBlockTransport {
     fn default() -> Self {
         Self {
-            receive_timeout: Duration::from_millis(250),
+            receive_timeout: Duration::from_secs(3),
             connect_timeout: Duration::from_secs(10),
             max_heads: 32,
             max_transactions: 100_000,
@@ -138,6 +144,7 @@ fn parse_hash(value: &str) -> Result<Hash32, TransportError> {
 fn parse_address(value: Option<String>) -> Result<Address, TransportError> {
     value
         .unwrap_or_else(|| ZERO_COINBASE.to_owned())
+        .to_ascii_lowercase()
         .parse()
         .map_err(|_| TransportError::Failed("invalid RPC coinbase".to_owned()))
 }
@@ -258,6 +265,23 @@ impl WebSocketBlockTransport {
         })
     }
 
+    async fn get_block_by_hash_with_provider(
+        &self,
+        provider: &DynProvider<Ethereum>,
+        hash: &Hash32,
+        identity: &NetworkIdentity,
+    ) -> Result<ResolvedBlock, TransportError> {
+        let value = self
+            .request_value(
+                provider,
+                "eth_getBlockByHash",
+                serde_json::json!([hash.to_string(), false]),
+            )
+            .await?;
+        let block = parse_block_value(value, self.max_response_bytes, self.max_transactions)?;
+        self.resolved_from_block(block, identity)
+    }
+
     pub async fn get_block_by_hash_async(
         &self,
         endpoint: &RpcEndpoint,
@@ -265,15 +289,8 @@ impl WebSocketBlockTransport {
         identity: &NetworkIdentity,
     ) -> Result<ResolvedBlock, TransportError> {
         let provider = self.connect(endpoint).await?;
-        let value = self
-            .request_value(
-                &provider,
-                "eth_getBlockByHash",
-                serde_json::json!([hash.to_string(), false]),
-            )
-            .await?;
-        let block = parse_block_value(value, self.max_response_bytes, self.max_transactions)?;
-        self.resolved_from_block(block, identity)
+        self.get_block_by_hash_with_provider(&provider, hash, identity)
+            .await
     }
 
     pub async fn get_block_by_number_async(
@@ -379,9 +396,16 @@ impl WebSocketBlockTransport {
     ) -> Result<Vec<BlockSummary>, TransportError> {
         let provider = self.connect(endpoint).await?;
         let mut heads = self.subscribe_heads(&provider).await?;
+        let mut received_head = false;
         for _ in 0..self.max_heads {
-            match timeout(self.receive_timeout, heads.recv_result()).await {
+            let receive_timeout = if received_head {
+                Duration::from_millis(10)
+            } else {
+                self.receive_timeout
+            };
+            match timeout(receive_timeout, heads.recv_result()).await {
                 Ok(Ok(Ok(head))) => {
+                    received_head = true;
                     subscription
                         .push(HeadHeader {
                             block_number: quantity(&head.number)?,
@@ -443,6 +467,85 @@ impl WebSocketBlockTransport {
             });
         }
         Ok(summaries)
+    }
+
+    pub(crate) async fn open_live_head_subscription(
+        &self,
+        endpoint: &RpcEndpoint,
+    ) -> Result<LiveHeadSubscription, TransportError> {
+        let provider = self.connect(endpoint).await?;
+        let heads = self.subscribe_heads(&provider).await?;
+        Ok(LiveHeadSubscription { provider, heads })
+    }
+
+    pub(crate) async fn receive_live_head(
+        &self,
+        subscription: &mut LiveHeadSubscription,
+    ) -> Result<HeadHeader, TransportError> {
+        let head = match subscription.heads.recv_result().await {
+            Ok(Ok(head)) => head,
+            Ok(Err(error)) => {
+                return Err(TransportError::Failed(format!(
+                    "malformed head notification: {error}"
+                )));
+            }
+            Err(BroadcastRecvError::Lagged(_)) => {
+                return Err(TransportError::Failed(
+                    "head notification queue lagged; reconnect required".to_owned(),
+                ));
+            }
+            Err(BroadcastRecvError::Closed) => {
+                return Err(TransportError::Failed(
+                    "head subscription closed; reconnect required".to_owned(),
+                ));
+            }
+        };
+        Ok(HeadHeader {
+            block_number: quantity(&head.number)?,
+            block_hash: parse_hash(&head.hash)?,
+            parent_hash: parse_hash(&head.parent_hash)?,
+            block_timestamp_ms: timestamp_ms(&head.timestamp)?,
+            coinbase: parse_address(head.miner)?,
+        })
+    }
+
+    pub(crate) async fn resolve_live_head(
+        &self,
+        subscription: &LiveHeadSubscription,
+        node_id: NodeId,
+        header: &HeadHeader,
+        identity: &NetworkIdentity,
+        observed_at: Rfc3339,
+    ) -> Result<BlockSummary, TransportError> {
+        let resolved = self
+            .get_block_by_hash_with_provider(&subscription.provider, &header.block_hash, identity)
+            .await?;
+        if resolved.block_number != header.block_number
+            || resolved.block_hash != header.block_hash
+            || resolved.parent_hash != header.parent_hash
+        {
+            return Err(TransportError::Resolve(ResolveError::IdentityMismatch));
+        }
+        Ok(BlockSummary {
+            node_id,
+            network_identity: resolved.network_identity,
+            block_number: resolved.block_number,
+            block_hash: resolved.block_hash,
+            parent_hash: resolved.parent_hash,
+            block_timestamp_ms: resolved.block_timestamp_ms,
+            observed_at,
+            transaction_count: resolved.transaction_hashes.len() as u64,
+            block_interval_ms: None,
+            source: BlockSource::Subscription,
+            attribution: BlockProductionAttribution::unknown_attribution(
+                if resolved.coinbase.as_str() != ZERO_COINBASE {
+                    resolved.coinbase
+                } else {
+                    header.coinbase.clone()
+                },
+                "seal recovery rule is not verified for this fork; protocol proposer evidence is unavailable",
+            ),
+        })
     }
 
     /// Subscribe to `newHeads` through Alloy. The local `PlatonHead` DTO keeps
@@ -800,7 +903,7 @@ pub async fn persist_block_summary(
     created_at: &str,
 ) -> Result<(), sqlx::Error> {
     let mut tx = store.connection().begin().await?;
-    sqlx::query("INSERT OR IGNORE INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, block_interval_ms, source, coinbase, seal_signer_key_fingerprint, seal_signer_match, protocol_proposer_kind, protocol_proposer_identity, attribution_reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    sqlx::query("INSERT OR IGNORE INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, block_interval_ms, source, coinbase, seal_signer_key_fingerprint, seal_signer_match, node_key_fingerprint, node_key_valid_from, node_key_valid_until, node_key_history_complete, seal_recovery_rule, seal_evidence, protocol_proposer_kind, protocol_proposer_identity, attribution_reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .bind(summary.node_id.to_string()).bind(summary.block_number as i64).bind(summary.block_hash.to_string()).bind(summary.parent_hash.to_string())
         .bind(summary.network_identity.genesis_hash.to_string()).bind(summary.network_identity.chain_id as i64).bind(summary.network_identity.p2p_network_id as i64).bind(summary.network_identity.address_hrp.as_deref()).bind(summary.block_timestamp_ms as i64).bind(summary.observed_at.to_string()).bind(summary.transaction_count as i64).bind(summary.block_interval_ms.map(|v| v as i64)).bind(match summary.source { BlockSource::Subscription => "subscription", BlockSource::GapBackfill => "gap_backfill" }).bind(summary.attribution.coinbase.to_string()).bind(summary.attribution.seal_signer_key_fingerprint.as_ref().map(ToString::to_string)).bind(match summary.attribution.seal_signer_match { SealSignerMatch::SignerSelf => "self", SealSignerMatch::Other => "other", SealSignerMatch::Unknown => "unknown" }).bind(summary.attribution.node_key.as_ref().map(|key| key.fingerprint.to_string())).bind(summary.attribution.node_key.as_ref().and_then(|key| key.valid_from.map(|value| value.to_string()))).bind(summary.attribution.node_key.as_ref().and_then(|key| key.valid_until.map(|value| value.to_string()))).bind(summary.attribution.node_key.as_ref().is_some_and(|key| key.history_complete) as i64).bind(summary.attribution.seal_recovery_rule.as_deref()).bind(summary.attribution.seal_evidence.as_deref()).bind(match &summary.attribution.protocol_proposer { ProtocolProposer::Verified { .. } => "verified", ProtocolProposer::Unknown {} => "unknown" }).bind(match &summary.attribution.protocol_proposer { ProtocolProposer::Verified { identity } => Some(identity.as_str()), ProtocolProposer::Unknown {} => None }).bind(&summary.attribution.attribution_reason).bind(created_at).execute(&mut *tx).await?;
     tx.commit().await
@@ -833,9 +936,11 @@ pub async fn load_history_gaps(
     store: &mut AgentStore,
 ) -> Result<Vec<platpulse_core::gap::HistoryGap>, sqlx::Error> {
     let rows = sqlx::query_as::<_, (String, i64, i64, String, String)>(
-        "SELECT g.node_id, g.from_height, g.to_height, g.kind, g.created_at FROM history_gaps g WHERE NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id=g.node_id AND a.sample_kind='gap' AND a.from_height=g.from_height AND a.to_height=g.to_height) ORDER BY g.created_at, g.gap_id",
+        "SELECT g.node_id, g.from_height, g.to_height, g.kind, g.created_at FROM history_gaps g WHERE NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id=g.node_id AND a.sample_kind='gap' AND a.from_height=g.from_height AND a.to_height=g.to_height) ORDER BY g.created_at, g.gap_id LIMIT ?",
     )
-    .fetch_all(store.connection()).await?;
+    .bind(MAX_HISTORY_GAPS as i64)
+    .fetch_all(store.connection())
+    .await?;
     rows.into_iter()
         .map(|(node_id, from, to, kind, at)| {
             let kind = match kind.as_str() {
@@ -863,7 +968,10 @@ pub async fn load_history_gaps(
 pub async fn load_block_summaries(
     store: &mut AgentStore,
 ) -> Result<Vec<BlockSummary>, sqlx::Error> {
-    let rows = sqlx::query_as::<_, BlockRow>("SELECT b.node_id, b.block_number, b.block_hash, b.parent_hash, b.network_genesis_hash, b.network_chain_id, b.network_p2p_network_id, b.network_address_hrp, b.block_timestamp_ms, b.observed_at, b.transaction_count, b.block_interval_ms, b.source, b.coinbase, b.seal_signer_key_fingerprint, b.seal_signer_match, b.protocol_proposer_kind, b.protocol_proposer_identity, b.attribution_reason FROM block_summaries b WHERE NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id=b.node_id AND a.sample_kind='block' AND a.from_height=b.block_number AND a.to_height=b.block_number) ORDER BY b.created_at, b.sample_id").fetch_all(store.connection()).await?;
+    let rows = sqlx::query_as::<_, BlockRow>("SELECT b.node_id, b.block_number, b.block_hash, b.parent_hash, b.network_genesis_hash, b.network_chain_id, b.network_p2p_network_id, b.network_address_hrp, b.block_timestamp_ms, b.observed_at, b.transaction_count, b.block_interval_ms, b.source, b.coinbase, b.seal_signer_key_fingerprint, b.seal_signer_match, b.protocol_proposer_kind, b.protocol_proposer_identity, b.attribution_reason FROM block_summaries b WHERE NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id=b.node_id AND a.sample_kind='block' AND a.from_height=b.block_number AND a.to_height=b.block_number) ORDER BY b.created_at, b.sample_id LIMIT ?")
+        .bind(MAX_BLOCK_SUMMARIES as i64)
+        .fetch_all(store.connection())
+        .await?;
     rows.into_iter()
         .map(|row| {
             let BlockRow {
@@ -1097,6 +1205,8 @@ impl NodeSubscriptions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::database::{AgentDatabaseConfig, AgentStore};
+    use tempfile::tempdir;
 
     fn hash(byte: char) -> Hash32 {
         format!("0x{}", byte.to_string().repeat(64))
@@ -1160,6 +1270,83 @@ mod tests {
         assert_eq!(summary.transaction_count, 2);
         assert_eq!(fake.calls.get(), 1);
         assert!(sub.is_empty());
+    }
+
+    #[tokio::test]
+    async fn persisted_block_summary_round_trips_through_the_agent_store() {
+        let dir = tempdir().unwrap();
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(dir.path().join("agent.db")))
+            .await
+            .unwrap();
+        let observed_at: Rfc3339 = "2026-01-01T00:00:00Z".parse().unwrap();
+        let summary = BlockSummary {
+            node_id: "0195f2a1-0014-4014-8014-000000000014".parse().unwrap(),
+            network_identity: identity(),
+            block_number: 9,
+            block_hash: hash('c'),
+            parent_hash: hash('d'),
+            block_timestamp_ms: 1_000,
+            observed_at,
+            transaction_count: 2,
+            block_interval_ms: None,
+            source: BlockSource::Subscription,
+            attribution: BlockProductionAttribution::unknown_attribution(
+                address(),
+                "test attribution",
+            ),
+        };
+
+        persist_block_summary(&mut store, &summary, &observed_at.to_string())
+            .await
+            .unwrap();
+
+        let loaded = load_block_summaries(&mut store).await.unwrap();
+        assert_eq!(loaded, vec![summary]);
+    }
+
+    #[tokio::test]
+    async fn loading_block_summaries_is_bounded_by_report_contract() {
+        let dir = tempdir().unwrap();
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(dir.path().join("agent.db")))
+            .await
+            .unwrap();
+        let observed_at: Rfc3339 = "2026-01-01T00:00:00Z".parse().unwrap();
+        let template = BlockSummary {
+            node_id: "0195f2a1-0014-4014-8014-000000000014".parse().unwrap(),
+            network_identity: identity(),
+            block_number: 0,
+            block_hash: hash('c'),
+            parent_hash: hash('d'),
+            block_timestamp_ms: 1_000,
+            observed_at,
+            transaction_count: 2,
+            block_interval_ms: None,
+            source: BlockSource::Subscription,
+            attribution: BlockProductionAttribution::unknown_attribution(
+                address(),
+                "test attribution",
+            ),
+        };
+
+        for block_number in 0..=MAX_BLOCK_SUMMARIES as u64 {
+            let mut summary = template.clone();
+            summary.block_number = block_number;
+            summary.block_hash = format!("0x{block_number:064x}").parse().unwrap();
+            summary.parent_hash = format!("0x{:064x}", block_number + 1).parse().unwrap();
+            persist_block_summary(&mut store, &summary, &observed_at.to_string())
+                .await
+                .unwrap();
+        }
+
+        let loaded = load_block_summaries(&mut store).await.unwrap();
+        assert_eq!(loaded.len(), MAX_BLOCK_SUMMARIES);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM block_summaries")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            (MAX_BLOCK_SUMMARIES + 1) as i64
+        );
     }
 
     struct MissingResolver;
@@ -1307,6 +1494,35 @@ mod tests {
         assert_eq!(
             sub.resolve_next(&fake, identity(), "2026-01-01T00:00:00Z".parse().unwrap()),
             Err(ResolveError::IdentityMismatch)
+        );
+    }
+
+    #[test]
+    fn production_subscription_waits_long_enough_for_the_first_head() {
+        assert_eq!(
+            WebSocketBlockTransport::default().receive_timeout,
+            Duration::from_secs(3)
+        );
+    }
+
+    #[test]
+    fn rpc_block_accepts_checksum_case_coinbase_and_canonicalizes_it() {
+        let block = PlatonBlock {
+            number: "0x1".to_owned(),
+            hash: format!("0x{}", "a".repeat(64)),
+            parent_hash: format!("0x{}", "b".repeat(64)),
+            timestamp: "0x1".to_owned(),
+            miner: Some("0x58CD1c8953742b5a1A946753a8EDb39C1DFE739b".to_owned()),
+            transactions: vec![],
+        };
+
+        let resolved = WebSocketBlockTransport::default()
+            .resolved_from_block(block, &identity())
+            .unwrap();
+
+        assert_eq!(
+            resolved.coinbase.as_str(),
+            "0x58cd1c8953742b5a1a946753a8edb39c1dfe739b"
         );
     }
 
