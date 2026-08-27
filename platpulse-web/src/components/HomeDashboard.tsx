@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type CSSProperties } from 'react'
 import { Link } from 'react-router'
 import type { PublicConsensusInsight, PublicNetwork, PublicNode } from '../api/generated'
 import { realtimeStreamLabel } from './RealtimeNotice'
@@ -58,15 +58,17 @@ export default function HomeDashboard({
   return (
     <section className="page home-dashboard" aria-labelledby="home-dashboard-title">
       <header className="dashboard-heading">
-        <div>
-          <p className="dashboard-kicker">PLATPULSE / OVERVIEW</p>
+        <div className="dashboard-heading-copy">
+          <p className="dashboard-kicker">PLATPULSE / NETWORK OBSERVATORY</p>
           <h1 id="home-dashboard-title">Home</h1>
-          <p className="dashboard-subtitle">Published Active Nodes from the Server-owned Public Projection.</p>
+          <p className="dashboard-subtitle">A live operational view of every published PlatON Node.</p>
         </div>
-        <p className={`dashboard-live dashboard-live-${toneFor(liveMessage)}`} role="status" aria-live="polite">
-          <span aria-hidden="true" /> {liveMessage}
-        </p>
-        {!online && <p className="dashboard-live dashboard-live-warning" role="status" aria-live="polite"><span aria-hidden="true" /> You are offline</p>}
+        <div className="dashboard-connection-state">
+          <p className={`dashboard-live dashboard-live-${toneFor(liveMessage)}`} role="status" aria-live="polite">
+            <span aria-hidden="true" /> {liveMessage}
+          </p>
+          {!online && <p className="dashboard-live dashboard-live-warning" role="status" aria-live="polite"><span aria-hidden="true" /> You are offline</p>}
+        </div>
       </header>
 
       {error && <p className="dashboard-error" role="alert">{error}</p>}
@@ -150,9 +152,9 @@ function HomeNodeCard({ network, node }: NodeRecord) {
 function ResourceRow({ node }: { node: PublicNode }) {
   return (
     <div className="dashboard-node-resources" aria-label="Host resources">
-      <Metric label="CPU" value={formatPercent(node.hostCpuPercent)} />
-      <Metric label="MEMORY" value={formatPercent(node.hostMemoryPercent)} />
-      <Metric label="STORAGE" value={formatPercent(node.hostStoragePercent)} />
+      <Metric label="CPU" value={formatPercent(node.hostCpuPercent)} progress={node.hostCpuPercent} />
+      <Metric label="MEMORY" value={formatPercent(node.hostMemoryPercent)} progress={node.hostMemoryPercent} />
+      <Metric label="STORAGE" value={formatPercent(node.hostStoragePercent)} progress={node.hostStoragePercent} />
       <Metric label="↑ UP" value={formatRate(node.hostNetworkTxBytesPerSec)} />
       <Metric label="↓ DOWN" value={formatRate(node.hostNetworkRxBytesPerSec)} />
     </div>
@@ -176,8 +178,17 @@ function formatRate(value: number | null | undefined) {
   return `${scaled.toFixed(digits)} ${units[unit]}`
 }
 
-function Metric({ label, value, detail }: { label: string; value: string; detail?: string }) {
-  return <div className="dashboard-node-primary-metric"><span>{label}</span><strong>{value}</strong>{detail && <small>{detail}</small>}</div>
+function Metric({ label, value, detail, progress }: { label: string; value: string; detail?: string; progress?: number | null }) {
+  const boundedProgress = progress == null ? null : Math.max(0, Math.min(100, progress))
+  const style = boundedProgress == null ? undefined : { '--metric-progress': `${boundedProgress}%` } as CSSProperties
+  return (
+    <div className={`dashboard-node-primary-metric${boundedProgress == null ? '' : ' dashboard-node-primary-metric-progress'}`} style={style}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+      {boundedProgress != null && <i aria-hidden="true" />}
+      {detail && <small>{detail}</small>}
+    </div>
+  )
 }
 
 /**
