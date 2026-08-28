@@ -260,6 +260,23 @@ pub struct NodeObservation {
     /// Process-level observation; `disabled` when no selector is configured,
     /// `unsupported` when the Agent cannot collect it.
     pub process: ComponentObservation<ProcessCurrent>,
+    /// Recursive byte size of the explicitly configured PlatON data directory.
+    /// Older Agents omit this component; an omitted value is not zero.
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub data_directory_size_bytes: Option<ComponentObservation<u64>>,
+    /// Total byte capacity of the filesystem containing the configured data
+    /// directory. It is sampled with the directory size so Public projections
+    /// can present a truthful capacity ratio. Older Agents omit this component.
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub data_directory_capacity_bytes: Option<ComponentObservation<u64>>,
     /// Agent monotonic elapsed time spent collecting this Node snapshot, in
     /// milliseconds. This is duration data, not an RFC3339 timestamp.
     #[serde(

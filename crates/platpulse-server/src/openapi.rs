@@ -60,6 +60,7 @@ impl Modify for AgentBearerScheme {
         crate::http::public::public_network,
         crate::http::public::public_node_detail,
         crate::http::public::public_node_history,
+        crate::http::public::public_node_metrics,
         crate::http::public::public_node_peer_history,
         crate::http::public::public_node_history_export,
         crate::http::public::public_validator_history,

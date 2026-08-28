@@ -873,6 +873,46 @@ struct PublicHistoryRow {
     pub divergence_kind: Option<String>,
 }
 
+const PUBLIC_NODE_METRIC_WINDOW_SECONDS: i64 = 60;
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PublicMetricPoint {
+    pub sampled_at: String,
+    pub value: f64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PublicNodeMetricHistory {
+    pub from: String,
+    pub to: String,
+    pub window_seconds: i64,
+    pub process_cpu_percent: Vec<PublicMetricPoint>,
+    pub process_memory_percent: Vec<PublicMetricPoint>,
+    pub data_directory_percent: Vec<PublicMetricPoint>,
+    pub network_rx_bytes_per_sec: Vec<PublicMetricPoint>,
+    pub network_tx_bytes_per_sec: Vec<PublicMetricPoint>,
+    pub peer_inbound_count: Vec<PublicMetricPoint>,
+    pub peer_outbound_count: Vec<PublicMetricPoint>,
+    pub block_interval_ms: Vec<PublicMetricPoint>,
+    pub transaction_count: Vec<PublicMetricPoint>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct MetricHistoryRow {
+    metric: String,
+    sampled_at: String,
+    value: f64,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct BlockMetricHistoryRow {
+    sampled_at: String,
+    block_interval_ms: Option<i64>,
+    transaction_count: i64,
+}
+
 #[utoipa::path(
     get,
     path = "/api/public/v1/nodes/{node_id}/history",
@@ -991,6 +1031,149 @@ pub(crate) async fn public_node_history(
             "server database is unavailable",
         ),
     }
+}
+
+fn push_metric_point(history: &mut PublicNodeMetricHistory, row: MetricHistoryRow) {
+    let point = PublicMetricPoint {
+        sampled_at: row.sampled_at,
+        value: row.value,
+    };
+    match row.metric.as_str() {
+        "process_cpu_percent" => history.process_cpu_percent.push(point),
+        "process_memory_percent" => history.process_memory_percent.push(point),
+        "data_directory_percent" => history.data_directory_percent.push(point),
+        "network_rx_bytes_per_sec" => history.network_rx_bytes_per_sec.push(point),
+        "network_tx_bytes_per_sec" => history.network_tx_bytes_per_sec.push(point),
+        "peer_inbound_count" => history.peer_inbound_count.push(point),
+        "peer_outbound_count" => history.peer_outbound_count.push(point),
+        _ => {}
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/public/v1/nodes/{node_id}/metrics",
+    tag = "public",
+    params(("node_id" = String, Path)),
+    responses(
+        (status = 200, body = PublicNodeMetricHistory),
+        (status = 404, body = crate::http::ApiErrorBody),
+        (status = 503, body = crate::http::ApiErrorBody)
+    )
+)]
+pub(crate) async fn public_node_metrics(
+    State(state): State<AppState>,
+    Path(node_id): Path<String>,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    let agent_id = sqlx::query_scalar::<_, String>(
+        "SELECT agent_id FROM nodes WHERE node_id=? AND visibility='public' AND lifecycle='active'",
+    )
+    .bind(&node_id)
+    .fetch_optional(state.db().pool())
+    .await;
+    let agent_id = match agent_id {
+        Ok(Some(agent_id)) => agent_id,
+        Ok(None) => {
+            return error_response(
+                &request_id.0,
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "resource not found",
+            );
+        }
+        Err(_) => {
+            return error_response(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    };
+
+    let to = crate::auth::now_utc();
+    let from = to - time::Duration::seconds(PUBLIC_NODE_METRIC_WINDOW_SECONDS);
+    let from = format_rfc3339(from);
+    let to = format_rfc3339(to);
+    let metric_rows = sqlx::query_as::<_, MetricHistoryRow>(
+        "SELECT metric, observed_at AS sampled_at, value FROM node_metric_samples AS current WHERE node_id=? AND (received_at>=? OR received_at=(SELECT MAX(received_at) FROM node_metric_samples AS previous WHERE previous.node_id=current.node_id AND previous.metric=current.metric AND previous.received_at<?)) UNION ALL SELECT metric, observed_at AS sampled_at, value FROM host_metric_samples AS current WHERE agent_id=? AND (received_at>=? OR received_at=(SELECT MAX(received_at) FROM host_metric_samples AS previous WHERE previous.agent_id=current.agent_id AND previous.metric=current.metric AND previous.received_at<?)) ORDER BY sampled_at, metric",
+    )
+    .bind(&node_id)
+    .bind(&from)
+    .bind(&from)
+    .bind(&agent_id)
+    .bind(&from)
+    .bind(&from)
+    .fetch_all(state.db().pool())
+    .await;
+    let block_rows = sqlx::query_as::<_, BlockMetricHistoryRow>(
+        "SELECT current.observed_at AS sampled_at, CASE WHEN previous.block_timestamp_ms IS NOT NULL AND current.block_timestamp_ms > previous.block_timestamp_ms THEN current.block_timestamp_ms - previous.block_timestamp_ms ELSE NULL END AS block_interval_ms, current.transaction_count FROM block_summaries AS current LEFT JOIN block_summaries AS previous ON previous.node_id=current.node_id AND previous.block_number=current.block_number-1 WHERE current.node_id=? ORDER BY current.block_number DESC LIMIT 200",
+    )
+    .bind(&node_id)
+    .fetch_all(state.db().pool())
+    .await;
+    let (metric_rows, block_rows) = match (metric_rows, block_rows) {
+        (Ok(metric_rows), Ok(block_rows)) => (metric_rows, block_rows),
+        _ => {
+            return error_response(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    };
+
+    let mut history = PublicNodeMetricHistory {
+        from: from.clone(),
+        to,
+        window_seconds: PUBLIC_NODE_METRIC_WINDOW_SECONDS,
+        process_cpu_percent: Vec::new(),
+        process_memory_percent: Vec::new(),
+        data_directory_percent: Vec::new(),
+        network_rx_bytes_per_sec: Vec::new(),
+        network_tx_bytes_per_sec: Vec::new(),
+        peer_inbound_count: Vec::new(),
+        peer_outbound_count: Vec::new(),
+        block_interval_ms: Vec::new(),
+        transaction_count: Vec::new(),
+    };
+    for row in metric_rows {
+        push_metric_point(&mut history, row);
+    }
+
+    let mut prior_interval = None;
+    let mut prior_transactions = None;
+    for row in block_rows.into_iter().rev() {
+        let interval = row.block_interval_ms.map(|value| PublicMetricPoint {
+            sampled_at: row.sampled_at.clone(),
+            value: value as f64,
+        });
+        let transactions = PublicMetricPoint {
+            sampled_at: row.sampled_at.clone(),
+            value: row.transaction_count as f64,
+        };
+        if row.sampled_at < from {
+            if interval.is_some() {
+                prior_interval = interval;
+            }
+            prior_transactions = Some(transactions);
+        } else {
+            if let Some(interval) = interval {
+                history.block_interval_ms.push(interval);
+            }
+            history.transaction_count.push(transactions);
+        }
+    }
+    if let Some(point) = prior_interval {
+        history.block_interval_ms.insert(0, point);
+    }
+    if let Some(point) = prior_transactions {
+        history.transaction_count.insert(0, point);
+    }
+
+    Json(history).into_response()
 }
 
 #[utoipa::path(
@@ -1131,9 +1314,16 @@ pub struct PublicNode {
     pub process_state: String,
     pub peers: PublicPeerInsight,
     pub consensus: PublicConsensusInsight,
+    pub process_cpu_percent: Option<f64>,
+    pub process_memory_percent: Option<f64>,
+    pub process_started_at: Option<String>,
+    pub process_uptime_ms: Option<i64>,
+    pub last_report_at: Option<String>,
     pub host_cpu_percent: Option<f64>,
     pub host_memory_percent: Option<f64>,
     pub host_storage_percent: Option<f64>,
+    pub node_data_directory_size_bytes: Option<i64>,
+    pub node_data_directory_capacity_bytes: Option<i64>,
     pub host_network_rx_bytes_per_sec: Option<i64>,
     pub host_network_tx_bytes_per_sec: Option<i64>,
     pub current_head: Option<i64>,
@@ -1158,9 +1348,16 @@ struct PublicNodeRow {
     rpc_state: Option<String>,
     identity_state: Option<String>,
     updated_at: Option<String>,
+    process_cpu_percent: Option<f64>,
+    process_memory_percent: Option<f64>,
+    process_started_at: Option<String>,
+    process_uptime_ms: Option<i64>,
+    last_report_at: Option<String>,
     host_cpu_percent: Option<f64>,
     host_memory_percent: Option<f64>,
     host_storage_percent: Option<f64>,
+    node_data_directory_size_bytes: Option<i64>,
+    node_data_directory_capacity_bytes: Option<i64>,
     host_network_rx_bytes_per_sec: Option<i64>,
     host_network_tx_bytes_per_sec: Option<i64>,
     sync_state: Option<String>,
@@ -1515,9 +1712,16 @@ fn public_node(row: PublicNodeRow) -> (String, PublicNode) {
         process_state: row.process_state.unwrap_or_else(|| "unknown".to_owned()),
         peers,
         consensus,
+        process_cpu_percent: row.process_cpu_percent,
+        process_memory_percent: row.process_memory_percent,
+        process_started_at: row.process_started_at,
+        process_uptime_ms: row.process_uptime_ms,
+        last_report_at: row.last_report_at,
         host_cpu_percent: row.host_cpu_percent,
         host_memory_percent: row.host_memory_percent,
         host_storage_percent: row.host_storage_percent,
+        node_data_directory_size_bytes: row.node_data_directory_size_bytes,
+        node_data_directory_capacity_bytes: row.node_data_directory_capacity_bytes,
         host_network_rx_bytes_per_sec: row.host_network_rx_bytes_per_sec,
         host_network_tx_bytes_per_sec: row.host_network_tx_bytes_per_sec,
         current_head: row.current_head,
@@ -1543,9 +1747,16 @@ const PUBLIC_NODE_QUERY_BASE: &str = r#"SELECT n.node_id, n.display_name, n.netw
        n.lifecycle, s.state AS rpc_state, sy.state AS sync_state, co.state AS consensus_state,
        p.state AS process_state, i.state AS identity_state, s.received_at AS updated_at,
        sy.received_at AS sync_received_at, co.received_at AS consensus_received_at,
+       CASE WHEN p.state IN ('ok', 'error') THEN proc.cpu_percent ELSE NULL END AS process_cpu_percent,
+       CASE WHEN p.state IN ('ok', 'error') AND h.memory_total_bytes > 0 THEN (CAST(proc.memory_bytes AS REAL) * 100.0 / h.memory_total_bytes) ELSE NULL END AS process_memory_percent,
+       CASE WHEN p.state IN ('ok', 'error') THEN proc.started_at ELSE NULL END AS process_started_at,
+       CASE WHEN p.state IN ('ok', 'error') THEN proc.uptime_ms ELSE NULL END AS process_uptime_ms,
+       a.last_received_at AS last_report_at,
        h.cpu_percent AS host_cpu_percent,
        CASE WHEN h.memory_total_bytes > 0 THEN (CAST(h.memory_used_bytes AS REAL) * 100.0 / h.memory_total_bytes) ELSE NULL END AS host_memory_percent,
        hd.storage_percent AS host_storage_percent,
+       CASE WHEN ds.state IN ('ok', 'error') THEN dd.size_bytes ELSE NULL END AS node_data_directory_size_bytes,
+       CASE WHEN ds.state IN ('ok', 'error') AND dc.state IN ('ok', 'error') THEN dd.capacity_bytes ELSE NULL END AS node_data_directory_capacity_bytes,
        h.network_rx_bytes_per_sec AS host_network_rx_bytes_per_sec,
        h.network_tx_bytes_per_sec AS host_network_tx_bytes_per_sec,
        ps.state AS peer_state, ps.observed_at AS peer_observed_at,
@@ -1572,11 +1783,14 @@ const PUBLIC_NODE_QUERY_BASE: &str = r#"SELECT n.node_id, n.display_name, n.netw
        hs.resync_state, hs.resync_last_progress_at,
        nr.block_number AS network_reference_head, nr.confidence AS network_reference_confidence
   FROM nodes n
+  JOIN agents a ON a.agent_id = n.agent_id
   JOIN networks r ON r.network_key = n.network_key
   LEFT JOIN component_status s ON s.node_id = n.node_id AND s.component_key = 'rpc'
   LEFT JOIN component_status sy ON sy.node_id = n.node_id AND sy.component_key = 'sync'
   LEFT JOIN component_status co ON co.node_id = n.node_id AND co.component_key = 'consensus'
   LEFT JOIN component_status p ON p.node_id = n.node_id AND p.component_key = 'process'
+  LEFT JOIN component_status ds ON ds.node_id = n.node_id AND ds.component_key = 'datadirectorysizebytes'
+  LEFT JOIN component_status dc ON dc.node_id = n.node_id AND dc.component_key = 'datadirectorycapacitybytes'
   LEFT JOIN component_status i ON i.node_id = n.node_id AND i.component_key = 'network_identity'
   LEFT JOIN component_status ps ON ps.node_id = n.node_id AND ps.component_key = 'peers'
   LEFT JOIN (
@@ -1591,12 +1805,14 @@ const PUBLIC_NODE_QUERY_BASE: &str = r#"SELECT n.node_id, n.display_name, n.netw
         GROUP BY node_id
   ) pc ON pc.node_id = n.node_id
   LEFT JOIN current_host_observations h ON h.agent_id = n.agent_id
+  LEFT JOIN current_node_process_observations proc ON proc.node_id = n.node_id
   LEFT JOIN (
        SELECT agent_id,
               MAX(CASE WHEN total_bytes > 0 THEN (CAST(used_bytes AS REAL) * 100.0 / total_bytes) ELSE NULL END) AS storage_percent
          FROM current_host_disk_mounts
         GROUP BY agent_id
   ) hd ON hd.agent_id = n.agent_id
+  LEFT JOIN current_node_data_directory_observations dd ON dd.node_id = n.node_id
   LEFT JOIN current_node_chain_observations c ON c.node_id = n.node_id
   LEFT JOIN block_summaries bs ON bs.node_id = n.node_id
        AND bs.block_number = (SELECT MAX(latest.block_number) FROM block_summaries latest WHERE latest.node_id = n.node_id)
@@ -2242,6 +2458,7 @@ pub fn router() -> Router<AppState> {
         .route("/networks/{network_key}", get(public_network))
         .route("/nodes/{node_id}", get(public_node_detail))
         .route("/nodes/{node_id}/history", get(public_node_history))
+        .route("/nodes/{node_id}/metrics", get(public_node_metrics))
         .route(
             "/nodes/{node_id}/peer-history",
             get(public_node_peer_history),
@@ -2364,7 +2581,7 @@ mod tests {
     }
 
     async fn seed_public_data(state: &AppState) {
-        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('agent-public-test', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, last_received_at, created_at, updated_at) VALUES ('agent-public-test', 1, '2026-01-01T00:00:05Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:05Z')")
             .execute(state.db().pool()).await.unwrap();
         sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('mainnet', 'Main Network', '0xgenesis', 1, 1, 'lat', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
             .execute(state.db().pool()).await.unwrap();
@@ -2379,7 +2596,11 @@ mod tests {
         }
         sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, received_at, state_revision, value_revision) VALUES ('agent-public-test', 'node', 'node-public', 'node-public', 'rpc', 'ok', '2026-01-01T00:00:00Z', 1, 1)")
             .execute(state.db().pool()).await.unwrap();
-        sqlx::query("INSERT INTO current_host_observations (agent_id, cpu_percent, updated_at) VALUES ('agent-public-test', 42.5, '2026-01-01T00:00:00Z')")
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, received_at, state_revision, value_revision) VALUES ('agent-public-test', 'node', 'node-public', 'node-public', 'process', 'ok', '2026-01-01T00:00:00Z', 1, 1)")
+            .execute(state.db().pool()).await.unwrap();
+        sqlx::query("INSERT INTO current_host_observations (agent_id, cpu_percent, memory_total_bytes, memory_used_bytes, updated_at) VALUES ('agent-public-test', 42.5, 10000, 5000, '2026-01-01T00:00:00Z')")
+            .execute(state.db().pool()).await.unwrap();
+        sqlx::query("INSERT INTO current_node_process_observations (node_id, pid, started_at, cpu_percent, memory_bytes, uptime_ms, updated_at) VALUES ('node-public', 100, '2026-01-01T00:00:00Z', 12.5, 2500, 1000, '2026-01-01T00:00:00Z')")
             .execute(state.db().pool()).await.unwrap();
         for (mount_path, total_bytes, used_bytes) in
             [("/", 1_000_i64, 500_i64), ("/data", 2_000_i64, 1_600_i64)]
@@ -2411,6 +2632,85 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn public_node_metrics_returns_real_recent_and_carried_samples() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        let now = crate::auth::now_utc();
+        let old = format_rfc3339(now - time::Duration::seconds(90));
+        let recent = format_rfc3339(now - time::Duration::seconds(10));
+        for (metric, observed_at, received_at, value) in [
+            (
+                "process_cpu_percent",
+                "2026-01-01T00:00:00Z",
+                old.as_str(),
+                10.0,
+            ),
+            (
+                "process_cpu_percent",
+                "2026-01-01T00:01:00Z",
+                recent.as_str(),
+                20.0,
+            ),
+            (
+                "data_directory_percent",
+                "2026-01-01T00:00:00Z",
+                old.as_str(),
+                25.0,
+            ),
+        ] {
+            sqlx::query("INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES ('node-public', ?, ?, ?, ?)")
+                .bind(metric)
+                .bind(observed_at)
+                .bind(received_at)
+                .bind(value)
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO host_metric_samples (agent_id, metric, observed_at, received_at, value) VALUES ('agent-public-test', 'network_rx_bytes_per_sec', '2026-01-01T00:01:00Z', ?, 2048)")
+            .bind(&recent)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        seed_block_summary(&state, "node-public", 99, 3).await;
+        seed_block_summary(&state, "node-public", 100, 7).await;
+        sqlx::query("UPDATE block_summaries SET block_timestamp_ms=CASE block_number WHEN 99 THEN 1000 ELSE 3000 END, observed_at=CASE block_number WHEN 99 THEN ? ELSE ? END, accepted_at=CASE block_number WHEN 99 THEN ? ELSE ? END WHERE node_id='node-public' AND block_number IN (99, 100)")
+            .bind(&old)
+            .bind(&recent)
+            .bind(&old)
+            .bind(&recent)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let response = public_node_metrics(
+            State(state.clone()),
+            Path("node-public".to_owned()),
+            Extension(RequestId(std::sync::Arc::from("metric-history-test"))),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let history: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(history["windowSeconds"], 60);
+        assert_eq!(history["processCpuPercent"].as_array().unwrap().len(), 2);
+        assert_eq!(history["processCpuPercent"][0]["value"], 10.0);
+        assert_eq!(history["processCpuPercent"][1]["value"], 20.0);
+        assert_eq!(history["dataDirectoryPercent"][0]["value"], 25.0);
+        assert_eq!(history["networkRxBytesPerSec"][0]["value"], 2048.0);
+        assert_eq!(history["blockIntervalMs"][0]["value"], 2000.0);
+        assert_eq!(history["transactionCount"][1]["value"], 7.0);
+
+        let hidden = public_node_metrics(
+            State(state),
+            Path("node-private".to_owned()),
+            Extension(RequestId(std::sync::Arc::from("metric-history-hidden"))),
+        )
+        .await;
+        assert_eq!(hidden.status(), StatusCode::NOT_FOUND);
     }
 
     async fn seed_exact_head_transaction_fixtures(state: &AppState) {
@@ -2859,6 +3159,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn public_process_resources_preserve_last_good_on_error_but_not_when_disabled() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+
+        sqlx::query("UPDATE component_status SET state = 'error' WHERE node_id = 'node-public' AND component_key = 'process'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let response = public_node_detail(
+            State(state.clone()),
+            Path("node-public".to_owned()),
+            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
+        )
+        .await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let node: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(node["processCpuPercent"], 12.5);
+        assert_eq!(node["processMemoryPercent"], 25.0);
+        assert_eq!(node["processStartedAt"], "2026-01-01T00:00:00Z");
+        assert_eq!(node["processUptimeMs"], 1000);
+        assert_eq!(node["lastReportAt"], "2026-01-01T00:00:05Z");
+
+        sqlx::query("UPDATE component_status SET state = 'disabled' WHERE node_id = 'node-public' AND component_key = 'process'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let response = public_node_detail(
+            State(state),
+            Path("node-public".to_owned()),
+            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
+        )
+        .await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let node: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(node["processCpuPercent"].is_null());
+        assert!(node["processMemoryPercent"].is_null());
+        assert!(node["processStartedAt"].is_null());
+        assert!(node["processUptimeMs"].is_null());
+        assert_eq!(node["lastReportAt"], "2026-01-01T00:00:05Z");
+    }
+
+    #[tokio::test]
     async fn public_projection_filters_private_and_retired_nodes_and_is_allowlisted() {
         let (_dir, state) = test_state().await;
         seed_public_data(&state).await;
@@ -2933,7 +3275,13 @@ mod tests {
                 "public history leaked {forbidden}"
             );
         }
+        assert_eq!(node["processCpuPercent"], 12.5);
+        assert_eq!(node["processMemoryPercent"], 25.0);
+        assert_eq!(node["processStartedAt"], "2026-01-01T00:00:00Z");
+        assert_eq!(node["processUptimeMs"], 1000);
+        assert_eq!(node["lastReportAt"], "2026-01-01T00:00:05Z");
         assert_eq!(node["hostCpuPercent"], 42.5);
+        assert_eq!(node["hostMemoryPercent"], 50.0);
         assert_eq!(node["hostStoragePercent"], 80.0);
         for forbidden in [
             "rpcEndpoint",

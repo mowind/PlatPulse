@@ -264,6 +264,28 @@ impl AgentReport {
 
         for obs in &self.nodes {
             validate_component("process", &obs.process)?;
+            if let Some(data_directory) = &obs.data_directory_size_bytes {
+                validate_component("data_directory_size_bytes", data_directory)?;
+                if data_directory
+                    .latest
+                    .is_some_and(|value| value > i64::MAX as u64)
+                {
+                    return Err(WireError::ValueOutOfRange {
+                        field: "data_directory_size_bytes",
+                    });
+                }
+            }
+            if let Some(data_directory_capacity) = &obs.data_directory_capacity_bytes {
+                validate_component("data_directory_capacity_bytes", data_directory_capacity)?;
+                if data_directory_capacity
+                    .latest
+                    .is_some_and(|value| value > i64::MAX as u64)
+                {
+                    return Err(WireError::ValueOutOfRange {
+                        field: "data_directory_capacity_bytes",
+                    });
+                }
+            }
             if let Some(process) = &obs.process.latest {
                 if !process.cpu_percent.is_finite() || process.cpu_percent < 0.0 {
                     return Err(WireError::ValueNotFinite {

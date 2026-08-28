@@ -66,6 +66,8 @@ now = "2026-08-12T08:00:00Z"
 # Observation timestamps are relative to the real clock so the Server's
 # freshness window (120s) and liveness window behave deterministically.
 fresh = (datetime.now(timezone.utc) - timedelta(seconds=20)).strftime("%Y-%m-%dT%H:%M:%SZ")
+metric_old = (datetime.now(timezone.utc) - timedelta(seconds=55)).strftime("%Y-%m-%dT%H:%M:%SZ")
+process_started = (datetime.now(timezone.utc) - timedelta(days=4, hours=3, minutes=12)).strftime("%Y-%m-%dT%H:%M:%SZ")
 # Node B's observations are older than the 120s freshness window so its
 # Server-owned freshness dimension is deterministically `stale`.
 stale = (datetime.now(timezone.utc) - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -142,11 +144,23 @@ with sqlite3.connect(path) as db:
         "INSERT INTO current_node_chain_observations (node_id, rpc_client_version, syncing, current_block, highest_block, consensus_epoch, consensus_view_number, consensus_validator, consensus_highest_qc_block, consensus_highest_lock_block, consensus_highest_commit_block, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, updated_at) VALUES (?, 'platon/1.5.1', 0, 12842019, 12842019, 42, 7, 1, 12842019, 12842018, 12842019, ?, 210425, 210425, 'lat', ?)",
         (node_a, network_genesis, fresh),
     )
-    for component in ("rpc", "sync", "consensus"):
+    for component in ("rpc", "sync", "consensus", "process", "datadirectorysizebytes", "datadirectorycapacitybytes"):
         db.execute(
-            "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES (?, 'node', ?, ?, ?, 'ok', ?, ?, ?, 1, 1)",
-            (agent_id, node_a, node_a, component, fresh, fresh, fresh),
+            "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES (?, 'node', ?, ?, ?, 'ok', ?, ?, ?, ?, 1, 1)",
+            (agent_id, node_a, node_a, component, fresh, fresh, fresh, fresh),
         )
+    db.execute(
+        "INSERT INTO current_host_observations (agent_id, cpu_percent, memory_total_bytes, memory_used_bytes, network_rx_bytes_per_sec, network_tx_bytes_per_sec, updated_at) VALUES (?, 31.0, 34359738368, 17179869184, 892416, 245760, ?)",
+        (agent_id, fresh),
+    )
+    db.execute(
+        "INSERT INTO current_node_process_observations (node_id, pid, started_at, cpu_percent, memory_bytes, uptime_ms, updated_at) VALUES (?, 4242, ?, 18.4, 4294967296, 356400000, ?)",
+        (node_a, process_started, fresh),
+    )
+    db.execute(
+        "INSERT INTO current_node_data_directory_observations (node_id, size_bytes, capacity_bytes, updated_at) VALUES (?, 268435456000, 536870912000, ?)",
+        (node_a, fresh),
+    )
     # The consensus component carries an accepted last-good value receipt so
     # the Public Home card projects current QC/LOCKED/COMMITTED/VALIDATOR.
     db.execute(
@@ -174,6 +188,35 @@ with sqlite3.connect(path) as db:
         db.execute(
             "INSERT INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, client_name, updated_at) VALUES (?, ?, '203.0.113.9', ?, ?, ?, ?, 'platond', ?)",
             (node_a, peer_id, direction, trusted, static_peer, consensus_peer, fresh),
+        )
+
+    # Node Detail metric charts use real persisted samples at both ends of
+    # their one-minute window; the fixture does not fabricate samples in the
+    # browser or route layer.
+    for sampled_at, cpu, memory, disk, inbound, outbound in (
+        (metric_old, 16.8, 11.9, 49.7, 2, 2),
+        (fresh, 18.4, 12.5, 50.0, 1, 2),
+    ):
+        db.executemany(
+            "INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES (?, ?, ?, ?, ?)",
+            [
+                (node_a, "process_cpu_percent", sampled_at, sampled_at, cpu),
+                (node_a, "process_memory_percent", sampled_at, sampled_at, memory),
+                (node_a, "data_directory_percent", sampled_at, sampled_at, disk),
+                (node_a, "peer_inbound_count", sampled_at, sampled_at, inbound),
+                (node_a, "peer_outbound_count", sampled_at, sampled_at, outbound),
+            ],
+        )
+    for sampled_at, rx, tx in (
+        (metric_old, 768000, 184320),
+        (fresh, 892416, 245760),
+    ):
+        db.executemany(
+            "INSERT INTO host_metric_samples (agent_id, metric, observed_at, received_at, value) VALUES (?, ?, ?, ?, ?)",
+            [
+                (agent_id, "network_rx_bytes_per_sec", sampled_at, sampled_at, rx),
+                (agent_id, "network_tx_bytes_per_sec", sampled_at, sampled_at, tx),
+            ],
         )
 
     # Node B: RPC collection failed but last-good sync values remain visible
@@ -390,9 +433,12 @@ with sqlite3.connect(path) as db:
             for height in range(0, 2000)
         ],
     )
-    db.execute(
-        "INSERT OR IGNORE INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, source, coinbase, seal_signer_match, protocol_proposer_kind, attribution_reason, accepted_at) VALUES (?, 3000, ?, ?, ?, 210425, 210425, 'lat', 3000, ?, 2, 'subscription', ?, 'unknown', 'unknown', 'test', ?)",
-        (node_a, "0x" + format(3000, "064x"), "0x" + format(2999, "064x"), network_genesis, fresh_block_time, coinbase, fresh_block_time),
+    db.executemany(
+        "INSERT OR IGNORE INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, source, coinbase, seal_signer_match, protocol_proposer_kind, attribution_reason, accepted_at) VALUES (?, ?, ?, ?, ?, 210425, 210425, 'lat', ?, ?, ?, 'subscription', ?, 'unknown', 'unknown', 'test', ?)",
+        [
+            (node_a, 2999, "0x" + format(2999, "064x"), "0x" + format(2998, "064x"), network_genesis, 2_998_000, fresh_block_time, 3, coinbase, fresh_block_time),
+            (node_a, 3000, "0x" + format(3000, "064x"), "0x" + format(2999, "064x"), network_genesis, 3_000_000, fresh_block_time, 4, coinbase, fresh_block_time),
+        ],
     )
 
     # Validator analytics fixture (issue #64): one public Validator linked to
@@ -540,9 +586,17 @@ with sqlite3.connect(path) as db:
     # Node P: never observed. Nothing is seeded: HEAD, TXS, PEERS, consensus,
     # and Activity all stay Unknown without zero/false fabrication.
 
-    # Exact Current Head Block Summary for Node A so the original card also
-    # carries TXS (previously only the missing-summary case was exercised).
-    seed_summary(node_a, 12842019, 7, network_genesis, fresh)
+    # Consecutive current Block Summaries for Node A drive the TXS and block-time
+    # bar charts without relying on the bounded history UI. Their observation
+    # times are spread across the current minute so the discrete bars are visible.
+    transactions = (2, 5, 1, 4, 8, 3, 6, 2, 5, 7)
+    for index, (height, transaction_count) in enumerate(zip(range(12842010, 12842020), transactions, strict=True)):
+        observed_at = (datetime.now(timezone.utc) - timedelta(seconds=38 - index * 2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        seed_summary(node_a, height, transaction_count, network_genesis, observed_at)
+        db.execute(
+            "UPDATE block_summaries SET block_timestamp_ms = ? WHERE node_id = ? AND block_number = ?",
+            (3000000 + index * 2000, node_a, height),
+        )
 
     # Validator Activity fixtures (issue #102): one Validator per effective
     # Link; the identifier is a production-like 128-hex PlatScan node id.
@@ -615,6 +669,14 @@ while True:
                 "UPDATE agents SET last_received_at = ? WHERE agent_id = ?",
                 (fresh, "0195f2a1-0011-4011-8011-000000000011"),
             )
+            # Keep the discrete Block Summary fixture inside the one-minute
+            # chart window during the complete multi-viewport run.
+            for index, height in enumerate(range(12842010, 12842020)):
+                observed_at = (datetime.now(timezone.utc) - timedelta(seconds=38 - index * 2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                db.execute(
+                    "UPDATE block_summaries SET observed_at = ?, accepted_at = ? WHERE node_id = ? AND block_number = ?",
+                    (observed_at, observed_at, node_a, height),
+                )
     except Exception:
         break
 REFRESH

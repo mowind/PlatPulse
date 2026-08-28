@@ -16,9 +16,9 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await page.getByRole('link', { name: /Node A/ }).click()
     await expect(page).toHaveURL(/\/nodes\/0195f2a1-0014-4014-8014-000000000014$/)
     await expect(page.getByRole('heading', { level: 1, name: 'Node A' })).toBeVisible({ timeout: 15_000 })
-    await expect(page.getByText('Current Head', { exact: true }).first()).toBeVisible({ timeout: 15_000 })
-    await expect(page.getByRole('heading', { level: 2, name: 'Node Health Summary' })).toBeVisible()
-    await expect(page.getByText('Reference Confidence', { exact: true })).toBeVisible()
+    await expect(page.getByText('HEAD', { exact: true })).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText('Process uptime', { exact: true })).toBeVisible()
+    await expect(page.getByLabel('Node process and storage resources').getByText('CPU', { exact: true })).toBeVisible()
     await expect(page.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true')
     await page.getByRole('tab', { name: 'Details' }).focus()
     await page.keyboard.press('ArrowRight')
@@ -126,39 +126,55 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expectNoHorizontalOverflow(page)
   })
 
-  test('public history export downloads the bounded JSON representation', async ({ page }) => {
+  test('Node Detail keeps resources in the large card and presents four equal metric charts without bounded history', async ({ page }) => {
     await loginAs(page)
     await page.getByRole('link', { name: /Node A/ }).click()
     await expect(page.getByRole('heading', { level: 1, name: 'Node A' })).toBeVisible({ timeout: 15_000 })
 
-    const downloadPromise = page.waitForEvent('download')
-    await page.getByRole('button', { name: 'Export public history' }).click()
-    const download = await downloadPromise
-    expect(download.suggestedFilename()).toBe('public-history.json')
-    const json = JSON.parse(await download.createReadStream().then(async (stream) => {
-      if (!stream) throw new Error('history export stream was unavailable')
-      const chunks: Buffer[] = []
-      for await (const chunk of stream) chunks.push(Buffer.from(chunk))
-      return Buffer.concat(chunks).toString('utf8')
-    })) as Array<{ nodeId?: string; height?: number }>
-    expect(json.length).toBeGreaterThan(0)
-    expect(json.every((entry) => entry.nodeId === '0195f2a1-0014-4014-8014-000000000014')).toBe(true)
-    expect(json.every((entry) => typeof entry.height === 'number')).toBe(true)
-  })
-
-  test('public history export reports a safe partial-failure state', async ({ page }) => {
-    await loginAs(page)
-    await page.goto('/nodes/0195f2a1-0014-4014-8014-000000000014')
-    await expect(page.getByRole('heading', { level: 1, name: 'Node A' })).toBeVisible({ timeout: 15_000 })
-    await page.route('**/api/public/v1/nodes/*/history/export**', (route) => route.fulfill({
-      status: 503,
-      contentType: 'application/json',
-      body: JSON.stringify({ error: { code: 'unavailable', message: 'history export unavailable' } }),
+    await expect(page.getByText('Process uptime')).toBeVisible()
+    const heroCard = page.locator('.node-hero-card')
+    await expect.poll(() => heroCard.evaluate((card) => getComputedStyle(card, '::before').content)).toBe('none')
+    const heroLayout = await heroCard.evaluate((card) => ({
+      height: Math.round(card.getBoundingClientRect().height),
+      children: [...card.children].map((child) => ({ className: child.className, height: Math.round(child.getBoundingClientRect().height) })),
     }))
-
-    await page.getByRole('button', { name: 'Export public history' }).click()
-    await expect(page.getByRole('alert')).toContainText('Unable to export block history')
-    await expect(page.getByRole('button', { name: 'Export public history' })).toBeEnabled()
+    expect(heroLayout.height, JSON.stringify(heroLayout)).toBeLessThanOrEqual(500)
+    await expect(page.getByText('HEAD')).toBeVisible()
+    await expect(page.getByText('QC')).toBeVisible()
+    await expect(page.getByText('LOCKED')).toBeVisible()
+    await expect(page.getByText('COMMITTED')).toBeVisible()
+    await expect(page.getByText('VALIDATOR')).toBeVisible()
+    await expect(page.getByText('True', { exact: true })).toBeVisible()
+    await expect(page.getByText('Yes', { exact: true })).toHaveCount(0)
+    await expect(page.getByText('Server updates arrive as invalidations; REST data stays authoritative.', { exact: true })).toHaveCount(0)
+    await expect(page.getByText('RPC, sync, and consensus are current', { exact: true })).toHaveCount(0)
+    const resources = page.getByLabel('Node process and storage resources')
+    for (const label of ['CPU', 'MEMORY', 'NODE DATA']) {
+      await expect(resources.getByText(label, { exact: true })).toBeVisible()
+    }
+    await expect(resources.locator('.node-hero-resource-progress')).toHaveCount(3)
+    for (const heading of ['Network', 'Connections', 'Block time', 'Transactions']) {
+      await expect(page.getByRole('heading', { level: 3, name: heading })).toBeVisible()
+    }
+    await expect(page.getByText('2.00 s')).toBeVisible()
+    const detailsPanel = page.getByRole('tabpanel', { name: 'Details' })
+    await expect(detailsPanel.getByRole('img', { name: /line chart over the last minute/ })).toHaveCount(2)
+    await expect(detailsPanel.getByRole('img', { name: /bar chart over the last minute/ })).toHaveCount(2)
+    await expect(detailsPanel.locator('.node-metric-chart-bar')).not.toHaveCount(0)
+    await expect(detailsPanel.getByText('1m', { exact: true })).toHaveCount(4)
+    const cardSizes = await detailsPanel.locator('.node-metric-card').evaluateAll((cards) => cards.map((card) => {
+      const box = card.getBoundingClientRect()
+      return { width: Math.round(box.width), height: Math.round(box.height) }
+    }))
+    expect(cardSizes).toHaveLength(4)
+    expect(new Set(cardSizes.map(({ width }) => width)).size).toBe(1)
+    expect(new Set(cardSizes.map(({ height }) => height)).size, JSON.stringify(cardSizes)).toBe(1)
+    expect(Math.max(...cardSizes.map(({ height }) => height))).toBeLessThanOrEqual(270)
+    await expect(detailsPanel.getByText('No samples in the last minute', { exact: true })).toHaveCount(0)
+    await expect.poll(() => detailsPanel.locator('.node-metric-card').first().evaluate((card) => getComputedStyle(card, '::before').content)).toBe('none')
+    await expect(page.getByText('Bounded Block History')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Export public history' })).toHaveCount(0)
+    await expectNoHorizontalOverflow(page)
   })
 
   test('reduced-motion preference and keyboard login remain honored', async ({ page }) => {

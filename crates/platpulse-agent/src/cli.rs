@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
+use platpulse_core::identity::NodeId;
 use thiserror::Error;
 
 use crate::block::WebSocketBlockTransport;
@@ -229,10 +230,49 @@ type RpcSnapshotReceiver = (
     String,
     tokio::sync::watch::Receiver<Option<Result<RpcSnapshot, String>>>,
 );
+type DataDirectoryReceiver = (
+    NodeId,
+    tokio::sync::watch::Receiver<crate::data_directory::DataDirectoryObservations>,
+);
+
+async fn run_data_directory_worker(
+    path: PathBuf,
+    observations: tokio::sync::watch::Sender<crate::data_directory::DataDirectoryObservations>,
+    cancel: tokio_util::sync::CancellationToken,
+) {
+    let mut tick = periodic_interval(crate::data_directory::DATA_DIRECTORY_SAMPLE_INTERVAL);
+    loop {
+        let attempted_at = tokio::select! {
+            _ = cancel.cancelled() => return,
+            _ = tick.tick() => crate::collector::timestamp(),
+        };
+        let scan_path = path.clone();
+        let (result_sender, result_receiver) = tokio::sync::oneshot::channel();
+        if std::thread::Builder::new()
+            .name("platon-data-directory-scan".to_owned())
+            .spawn(move || {
+                let _ = result_sender.send(crate::data_directory::collect_observations(
+                    &scan_path,
+                    attempted_at,
+                ));
+            })
+            .is_err()
+        {
+            observations.send_replace(crate::data_directory::failed_observations(attempted_at));
+            continue;
+        }
+        let observation = tokio::select! {
+            _ = cancel.cancelled() => return,
+            result = result_receiver => result.unwrap_or_else(|_| crate::data_directory::failed_observations(attempted_at)),
+        };
+        observations.send_replace(observation);
+    }
+}
 
 async fn run_report_collection_loop(
     config: AgentConfig,
     mut snapshots: Vec<RpcSnapshotReceiver>,
+    mut data_directories: Vec<DataDirectoryReceiver>,
     cancel: tokio_util::sync::CancellationToken,
 ) -> Result<(), AgentCliError> {
     let mut store = crate::database::AgentStore::open(crate::database::AgentDatabaseConfig::new(
@@ -254,11 +294,16 @@ async fn run_report_collection_loop(
                         (endpoint.clone(), snapshot)
                     })
                     .collect::<HashMap<_, _>>();
+                let current_data_directories = data_directories
+                    .iter_mut()
+                    .map(|(node_id, receiver)| (*node_id, receiver.borrow_and_update().clone()))
+                    .collect::<HashMap<_, _>>();
                 let collection = tokio::select! {
                     _ = cancel.cancelled() => break Ok(()),
                     result = collect_and_persist_precollected_in_store(
                         &config,
                         current,
+                        current_data_directories,
                         &mut store,
                     ) => result,
                 };
@@ -356,6 +401,25 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
         ));
     }
 
+    let mut data_directory_workers = tokio::task::JoinSet::new();
+    let mut data_directory_snapshots = Vec::with_capacity(validated.inventory.nodes.len());
+    for node in &validated.inventory.nodes {
+        let initial = if validated.data_directories.contains_key(&node.node_id) {
+            crate::data_directory::starting_observations()
+        } else {
+            crate::data_directory::disabled_observations()
+        };
+        let (sender, receiver) = tokio::sync::watch::channel(initial);
+        data_directory_snapshots.push((node.node_id, receiver));
+        if let Some(path) = validated.data_directories.get(&node.node_id) {
+            data_directory_workers.spawn(run_data_directory_worker(
+                path.clone(),
+                sender,
+                cancel.clone(),
+            ));
+        }
+    }
+
     let mut block_workers = tokio::task::JoinSet::new();
     for node in validated.inventory.nodes.iter().cloned() {
         block_workers.spawn(run_node_block_worker(
@@ -366,7 +430,12 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
         ));
     }
 
-    let reports = run_report_collection_loop(config.clone(), rpc_snapshots, cancel.clone());
+    let reports = run_report_collection_loop(
+        config.clone(),
+        rpc_snapshots,
+        data_directory_snapshots,
+        cancel.clone(),
+    );
     tokio::pin!(reports);
     let signal = wait_for_shutdown_signal();
     tokio::pin!(signal);
@@ -382,6 +451,17 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
                 )),
                 Some(Err(error)) => Err(AgentCliError::Collection(format!(
                     "Node RPC snapshot worker failed: {error}"
+                ))),
+                None => Ok(()),
+            }
+        }
+        exit = data_directory_workers.join_next(), if !data_directory_workers.is_empty() => {
+            match exit {
+                Some(Ok(())) => Err(AgentCliError::Collection(
+                    "Node data-directory worker stopped unexpectedly".to_owned(),
+                )),
+                Some(Err(error)) => Err(AgentCliError::Collection(format!(
+                    "Node data-directory worker failed: {error}"
                 ))),
                 None => Ok(()),
             }
@@ -416,6 +496,18 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
             }
             Err(_) => {
                 rpc_workers.abort_all();
+                break;
+            }
+        }
+    }
+    while !data_directory_workers.is_empty() {
+        match tokio::time::timeout_at(block_deadline, data_directory_workers.join_next()).await {
+            Ok(Some(Ok(()))) | Ok(None) => {}
+            Ok(Some(Err(error))) => {
+                eprintln!("Node data-directory worker join failed during shutdown: {error}");
+            }
+            Err(_) => {
+                data_directory_workers.abort_all();
                 break;
             }
         }
@@ -619,6 +711,30 @@ mod tests {
         cancel.cancel();
         assert!(report_task.await.unwrap().is_ok());
         assert!(delivery_task.await.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn data_directory_worker_publishes_cached_observation() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("data"), vec![0_u8; 11]).unwrap();
+        let cancel = CancellationToken::new();
+        let (sender, mut receiver) =
+            tokio::sync::watch::channel(crate::data_directory::starting_observations());
+        let task = tokio::spawn(run_data_directory_worker(
+            temp.path().to_owned(),
+            sender,
+            cancel.clone(),
+        ));
+
+        tokio::time::timeout(Duration::from_secs(2), receiver.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(receiver.borrow().size_bytes.latest, Some(11));
+        assert!(receiver.borrow().capacity_bytes.latest.is_some());
+
+        cancel.cancel();
+        task.await.unwrap();
     }
 
     #[test]

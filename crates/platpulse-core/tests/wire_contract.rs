@@ -102,6 +102,66 @@ fn receipt_fixtures_validate() {
 }
 
 #[test]
+fn node_data_directory_size_is_optional_and_bounded_for_sqlite() {
+    let mut value = fixture_value("report_v1_minimal.json");
+    value["nodes"][0]["data_directory_size_bytes"] = json!({
+        "status": "ok",
+        "attempted_at": "2026-08-12T10:00:00Z",
+        "latest_observed_at": "2026-08-12T10:00:00Z",
+        "state_revision": 1,
+        "value_revision": 1,
+        "latest": 123456u64
+    });
+    let report: AgentReport = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(
+        report.nodes[0]
+            .data_directory_size_bytes
+            .as_ref()
+            .unwrap()
+            .latest,
+        Some(123456)
+    );
+    assert_eq!(report.validate(), Ok(()));
+
+    value["nodes"][0]["data_directory_size_bytes"]["latest"] = json!(i64::MAX as u64 + 1);
+    let report: AgentReport = serde_json::from_value(value).unwrap();
+    assert_eq!(
+        report.validate(),
+        Err(platpulse_core::WireError::ValueOutOfRange {
+            field: "data_directory_size_bytes"
+        })
+    );
+}
+
+#[test]
+fn node_data_directory_capacity_is_optional_and_bounded_for_sqlite() {
+    let mut value = fixture_value("report_v1_minimal.json");
+    value["nodes"][0]["data_directory_capacity_bytes"] = json!({
+        "status": "ok",
+        "attempted_at": "2026-08-12T10:00:00Z",
+        "latest_observed_at": "2026-08-12T10:00:00Z",
+        "state_revision": 1,
+        "value_revision": 1,
+        "latest": 1_099_511_627_776_u64
+    });
+    let report: AgentReport = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(report.validate(), Ok(()));
+    assert_eq!(
+        serde_json::to_value(report).unwrap()["nodes"][0]["data_directory_capacity_bytes"]["latest"],
+        json!(1_099_511_627_776_u64)
+    );
+
+    value["nodes"][0]["data_directory_capacity_bytes"]["latest"] = json!(i64::MAX as u64 + 1);
+    let report: AgentReport = serde_json::from_value(value).unwrap();
+    assert_eq!(
+        report.validate(),
+        Err(platpulse_core::WireError::ValueOutOfRange {
+            field: "data_directory_capacity_bytes"
+        })
+    );
+}
+
+#[test]
 fn agent_report_rejects_server_only_received_at() {
     // Trust boundary: received_at is populated by the Server at commit time
     // and must never be carried by an Agent report.

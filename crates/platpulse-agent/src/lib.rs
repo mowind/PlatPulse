@@ -14,6 +14,7 @@ pub mod cli;
 pub mod collector;
 pub mod config;
 pub mod credential;
+pub mod data_directory;
 pub mod database;
 pub mod enroll;
 pub mod process;

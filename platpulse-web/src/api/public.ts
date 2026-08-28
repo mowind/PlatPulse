@@ -6,7 +6,7 @@ import {
   publicNetworks,
   publicNodeDetail,
   publicNodeHistory,
-  publicNodeHistoryExport,
+  publicNodeMetrics,
   publicNodePeerHistory,
   publicValidatorAnalytics,
   publicValidatorHistory,
@@ -15,6 +15,7 @@ import {
   type PublicValidatorHistoryResponse,
   type PublicNetwork,
   type PublicNode,
+  type PublicNodeMetricHistory,
   type PublicPeerHistory,
 } from './generated'
 import {
@@ -56,6 +57,7 @@ export const publicKeys = {
   nodes: ['public', 'node'] as const,
   node: (nodeId: string) => ['public', 'node', nodeId] as const,
   history: (nodeId: string) => ['public', 'node', nodeId, 'history'] as const,
+  metrics: (nodeId: string) => ['public', 'node', nodeId, 'metrics'] as const,
   peerHistory: (nodeId: string) => ['public', 'node', nodeId, 'peer-history'] as const,
   validators: ['public', 'validator'] as const,
   validatorHistory: (validatorId: string, limit: number) =>
@@ -201,19 +203,19 @@ export async function fetchValidatorAnalytics(validatorId: string, limit = 31, s
   )
 }
 
-export async function fetchNodeHistory(nodeId: string, signal?: AbortSignal, generation?: number): Promise<PublicBlockHistoryItem[]> {
+export async function fetchNodeMetrics(nodeId: string, signal?: AbortSignal, generation?: number): Promise<PublicNodeMetricHistory> {
   const context = contextOf(signal, generation)
   return requestGenerated(
-    () => publicNodeHistory({ path: { node_id: nodeId }, signal: context.signal, headers: headersOf(context) }),
-    'Unable to load block history',
+    () => publicNodeMetrics({ path: { node_id: nodeId }, signal: context.signal, headers: headersOf(context) }),
+    'Unable to load metric history',
   )
 }
 
-export async function fetchNodeHistoryExport(nodeId: string, signal?: AbortSignal, generation?: number): Promise<PublicBlockHistoryItem[]> {
+export async function fetchNodeHistory(nodeId: string, signal?: AbortSignal, generation?: number): Promise<PublicBlockHistoryItem[]> {
   const context = contextOf(signal, generation)
   return requestGenerated(
-    () => publicNodeHistoryExport({ path: { node_id: nodeId }, signal: context.signal, headers: headersOf(context) }),
-    'Unable to export block history',
+    () => publicNodeHistory({ path: { node_id: nodeId }, query: { limit: 2 }, signal: context.signal, headers: headersOf(context) }),
+    'Unable to load block history',
   )
 }
 
@@ -234,6 +236,14 @@ export function usePublicNode(nodeId: string, generation: number) {
   return useQuery({
     queryKey: [...publicKeys.node(nodeId), generation],
     queryFn: ({ signal }) => fetchNode(nodeId, signal, generation),
+    enabled: nodeId.length > 0,
+  })
+}
+
+export function usePublicNodeMetrics(nodeId: string, generation: number) {
+  return useQuery({
+    queryKey: [...publicKeys.metrics(nodeId), generation],
+    queryFn: ({ signal }) => fetchNodeMetrics(nodeId, signal, generation),
     enabled: nodeId.length > 0,
   })
 }
@@ -322,7 +332,7 @@ export function invalidatePublicResource(resource: string, resourceId?: string, 
     switch (resource) {
       case 'node':
         return resourceId
-          ? [publicKeys.node(resourceId), publicKeys.history(resourceId), publicKeys.peerHistory(resourceId)]
+          ? [publicKeys.node(resourceId), publicKeys.history(resourceId), publicKeys.metrics(resourceId), publicKeys.peerHistory(resourceId)]
           : [publicKeys.nodes, publicKeys.networks]
       case 'network':
         return [publicKeys.networks, ...(resourceId ? [publicKeys.network(resourceId)] : [])]

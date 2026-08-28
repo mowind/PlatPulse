@@ -5,6 +5,7 @@ import {
   useAdminOverview,
 } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
+import { formatBytes } from '../formatBytes'
 import {
   StatusBadge,
   componentStateLabel,
@@ -397,6 +398,17 @@ function NodeRows({
                     observedAt={diagnostic.process?.received_at}
                     detail={
                       diagnostic.process?.pid != null ? `pid ${diagnostic.process.pid}` : undefined
+                    }
+                  />
+                  <ComponentRow
+                    label="Node Data"
+                    state={diagnostic.data_directory?.state}
+                    errorMessage={diagnostic.data_directory?.error_message}
+                    observedAt={diagnostic.data_directory?.received_at}
+                    detail={
+                      diagnostic.data_directory?.size_bytes != null
+                        ? formatBytes(diagnostic.data_directory.size_bytes)
+                        : undefined
                     }
                   />
                 </dl>

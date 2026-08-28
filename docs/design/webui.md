@@ -18,7 +18,7 @@ PlatPulse WebUI presents operational truth from the Server and gives the Owner s
 
 ### 1.1 In scope
 
-- Home Dashboard: read-only Public Projections, Network → Node → Node Detail, including recent Server-side Block History;
+- Home Dashboard: read-only Public Projections, Network → Node → Node Detail, including a current block interval derived from the latest two consecutive retained Block Summaries;
 - Admin Dashboard: Agent/Node/Network configuration, global history window, Site Access Mode, Sessions, and Audit;
 - responsive behavior at 360×800, 390×844, 768×1024, and 1280×800;
 - current Peer Count display (Peer Snapshots and Peer Presence Intervals are deferred);
@@ -80,12 +80,13 @@ Home
 ├── Network Overview
 │   └── Node list/cards
 └── Node Detail
-    ├── Health and freshness
-    ├── Current head, sync, consensus
-    ├── Recent Block History (Server window)
-    ├── Process summary
-    ├── Sanitized Host percentages
-    └── Peer Count
+    ├── Health, Validator Activity, and process uptime
+    ├── Head, QC, Locked, Committed, and Validator membership
+    ├── Process start and last report times
+    ├── Process CPU and memory percentages
+    ├── Node Data size/capacity progress
+    ├── Host network rates and Peer connections
+    └── Current block interval and latest transaction count
 ```
 
 Home is organized Network → PlatON Node, never Agent → Node. Agent and Host topology belongs to Admin.
@@ -302,10 +303,11 @@ Every `PAGE-*` entry must specify the following before production coding:
 
 ### 8.1 Home Node Detail (`PAGE-HOME-NODE`)
 
-- shows independent collection/freshness/value states per component, plus the Server-owned Node Health Summary and its dimension reasons;
-- Block History is bounded by the Server window: missing blocks are absence, not zero; the window boundary is visible when relevant;
-- the Peer section shows the Peer Count Observation only (count, freshness, and last-good age on error); no peer list and no Peer Presence;
-- Host percentages are sanitized and shared, never duplicated per Node;
+- the primary Node card uses a compact Komari-inspired density with a neutral one-pixel outline and no coloured edge strip. It shows display name/Node ID, Server-owned Health, explicit Validator Activity (`Observing`, `Verifying`, `Producing`, `Active`, or another canonical activity), process uptime, compact PlatON process CPU/process-memory/Node Data progress, `HEAD / QC / LOCKED / COMMITTED / VALIDATOR`, process start time, and last Agent report time. Routine Healthy prose is omitted; an exceptional Server-owned health reason remains visible;
+- Details contains exactly four equal-size one-minute metric cards: shared Host network receive/transmit rates, Peer connections, latest consecutive-block interval, and latest Block Summary transaction count. Network and Connections use line charts; Block time and Transactions use bar charts;
+- the bounded Block History list and public-history export are not rendered on Node Detail. The history endpoint remains a Server boundary; the page reads retained summaries only to derive the consecutive-block interval, and missing/non-consecutive summaries remain `Unknown`;
+- Network shows Peer Insight and aggregate Peer History only; no peer address or identity list is exposed;
+- Host CPU and memory are never substituted for PlatON process CPU and memory, and shared Host network rates are labelled as Host observations;
 - retired/deleted/unknown Nodes use the non-leaking unavailable semantics.
 
 ### 8.2 Admin Node Detail (`PAGE-ADMIN-NODE-DETAIL`)
@@ -424,7 +426,7 @@ The accepted direction from Issue #75 and the compact Home contract from Issue #
 - Primary numbers and page titles use high contrast and strong weight. Secondary labels, timestamps, identifiers, and explanatory copy are visibly quieter.
 - Green, amber, red, violet/indigo, and neutral tones communicate good, attention, error, contextual accent, and unavailable/unknown states respectively. Every status also has text or an equivalent accessible explanation; color is never the sole signal.
 - Cards, pills, separators, progress bars, and focus states share one spacing and radius system. Hover elevation is optional decoration and must not be required to discover an action.
-- The visual contract does not authorize fields that are absent from the Public Projection. Home may show the sanitized Host CPU and memory/storage percentages and sampled network receive/transmit rates supplied by the Server; it does not add uptime, pricing, geography, raw Peer identity, Host identity, or RPC Endpoint text.
+- The visual contract does not authorize fields that are absent from the Public Projection. Node Detail may show the monitored PlatON process CPU/memory, process start/uptime, last Agent report time, Node Data usage/capacity, and sampled Host network receive/transmit rates supplied by the Server; it does not add pricing, raw Peer identity, Host identity, or RPC Endpoint text.
 
 ### Home composition (PAGE-HOME-NETWORKS and PAGE-HOME-NETWORK)
 
@@ -444,12 +446,14 @@ Network hierarchy remains Network -> PlatON Node -> Node Detail. Home never reor
 
 Node Detail freezes the accepted reference-inspired hierarchy:
 
-1. The page heading identifies the PlatON Node, shows the Server-owned health state, and shows freshness/live context without replacing the health contract.
-2. A summary panel provides a Network back link, Network identity, display name/Node ID, public-history export, six independent facts (Health, RPC, Sync, Consensus, Process, Resync), six independent observations (Current Head, History Boundary, Network Reference, Reference Confidence, sanitized Host CPU, Peer Count), and the Server-owned health reason.
-3. A centred two-tab control defaults to Details and switches to Network without replacing the heading or summary panel. The selected tab is exposed semantically and visually.
-4. Details presents current-observation signal cards for Host CPU, Current Head, History Boundary, Peers, RPC, and Consensus, followed by bounded Server-side Block History and any available Public Validator insight/analytics.
-5. Network presents the Public Peer Insight and Public Peer History modules. It never exposes peer addresses or a peer identity list.
-6. Block History shows the Server window's published rows, its best-effort nature, an explicit empty state, and public export. Missing blocks remain absent; the WebUI never synthesizes zero rows or gap evidence.
+1. One compact Komari-inspired Node card owns the page identity. It uses a quiet neutral outline, restrained radius and shadow, no coloured top/edge strip, and shows the Network back context, display name/Node ID, Server-owned Health, canonical Validator Activity, and process uptime. Routine Healthy prose is omitted, while exceptional Server-owned health reasons remain visible.
+2. A compact resource row inside that card follows the Home Node-card hierarchy: PlatON process `CPU`, PlatON process `MEMORY`, and `NODE DATA`, each with a current value and a progress track when a valid percentage exists. Node Data keeps its size and filesystem-capacity detail; unavailable values remain explicit rather than becoming zero.
+3. A chain-specific consensus runway presents `HEAD / QC / LOCKED / COMMITTED / VALIDATOR`; Validator membership renders the explicit boolean text `True` or `False`. Process start time and last Agent report time form the card footer. Missing or uncertified values remain `Unknown`.
+4. A centred two-tab control defaults to Details and switches to Network without replacing the large Node card. The selected tab is exposed semantically and visually.
+5. Details presents four equal-size, compact cards in this order: Host network upload/download rates, Peer connections, block interval (`latest block timestamp - previous consecutive block timestamp`), and latest Block Summary transaction count. Every card keeps its current value and a labelled 60-second chart with `1m` and `0s` time bounds; reduced padding, chart height, radius and shadow keep the deck close to Komari's information density.
+6. Network renders upload and download as distinct line series; Connections renders inbound and outbound as distinct line series. Block interval and transaction count use Server-retained Block Summary samples as bars. The Server may include one last-good point immediately before the window as a line chart's starting value, but bar charts render only observations inside the window; neither Server nor WebUI fabricates intermediate samples or substitutes zero for unavailable data.
+7. Details does not render Bounded Block History, History Gaps, public Validator analytics, or history export. The separate two-summary history request is used only for the current block-interval label; two missing or non-consecutive summaries produce `Unknown`, never a fabricated zero. Missing or failed metric history leaves the current card value intact and renders an explicit chart state.
+8. Network presents the Public Peer Insight and Public Peer History modules. It never exposes peer addresses or a peer identity list.
 
 The dashboard presents independent observation dimensions. One failed collection must not hide or rewrite another dimension, and one Agent's Nodes must never be merged into an Agent-level chain view.
 
@@ -457,11 +461,10 @@ The dashboard presents independent observation dimensions. One failed collection
 
 The fixed acceptance viewports are 360x800, 390x844, 768x1024, and 1280x800.
 
-- At 1280x800, Home uses four summary columns and a two-column Node grid. Node Detail uses six-column facts/observations and a three-column signal grid.
-- At 768x1024, Home uses two summary columns and a single-column Node grid when the content width requires it. Node Detail uses three-column facts/observations and a two-column signal grid.
-- At 360x800 and 390x844, Home keeps a compact two-column summary where it remains legible, uses a single-column Node grid, keeps `HEAD / TXS / PEERS` together, and reflows the four-column Host-resource and Consensus rows to two columns. Filter pills scroll within their own control rather than causing page overflow. Node Detail stacks the heading, summary actions, facts, observations, signal cards, and secondary panels; the two tabs remain full-width touch controls.
+- At 1280x800, Home uses four summary columns and a two-column Node grid. Node Detail centres its compact card deck within a 68rem maximum width, keeps its three resource metrics on one row, and lays the four equal metric cards in a two-by-two deck.
+- At 768x1024, Home uses two summary columns and a single-column Node grid when the content width requires it. Node Detail retains the two-column, equal-height compact metric deck.
+- At 360x800 and 390x844, Home keeps a compact two-column summary where it remains legible, uses a single-column Node grid, keeps `HEAD / TXS / PEERS` together, and reflows the four-column Host-resource and Consensus rows to two columns. Filter pills scroll within their own control rather than causing page overflow. Node Detail keeps the three resource metrics and three status facts in compact rows, reflows consensus into a three-column grid, stacks the four equal-height metric cards, and keeps the tabs full-width touch controls.
 - At every viewport, long Node names, Node IDs, Network keys, status reasons, and values wrap or truncate with an accessible full value. No critical state requires primary horizontal page scrolling.
-- The Block History table becomes priority rows/cards on phone widths. If a table representation is retained at a larger width, it must not force the phone page wider than the viewport.
 - Touch targets are at least 44x44 CSS pixels. Portrait, landscape, 200% zoom, and reduced-motion settings remain usable.
 
 ### State and realtime acceptance
@@ -471,7 +474,7 @@ The UI keeps collection state, freshness state, value state, and authorization s
 - Initial route loads show a meaningful Starting/loading state and do not fabricate values.
 - A successful observation may show Current or an authoritative empty value. A successful Peer Count Observation of zero is displayed as zero, not Unknown.
 - An Error or Stale observation may retain LastGood data, but the UI must show the error/stale reason and age/freshness supplied by the Server. It must never convert Unknown, stale, never-observed, Disabled, or Unsupported into 0, false, or Healthy.
-- Node, history, peer-history, and validator requests fail independently. A failed optional module does not erase the Node summary or unrelated successful modules.
+- Node, history, metric-history, peer-history, and validator requests fail independently. A failed optional module does not erase the Node summary or unrelated successful modules.
 - A normal SSE invalidation preserves the currently displayed Node and view context while the exact Public resource is refetched. A reset, authorization transition, Node ID change, or access recheck clears affected sensitive projection state before the next render and may show a revalidation state.
 - SSE carries invalidation/reset signals only. REST remains authoritative for all displayed business values. A disconnected stream announces Live updates paused; browser-offline state may additionally announce You are offline.
 - Retired, deleted, forbidden, or unknown public Nodes use non-leaking unavailable copy and never reveal whether a protected record exists.
@@ -480,11 +483,10 @@ The UI keeps collection state, freshness state, value state, and authorization s
 
 - The PlatPulse brand is a keyboard-focusable link to `/`. Its accessible name identifies PlatPulse and its destination is stable from Home and Node Detail.
 - The circular Admin icon is a keyboard-focusable link to /admin with an explicit accessible name such as Open Admin login. Home does not show text navigation or a Home logout action in this header.
-- Whole-card Node links, Node Detail Network links, the Network back link, history export, and Details/Network tabs are reachable by keyboard in a predictable order. Browser back/forward preserves route context.
+- Whole-card Node links, Node Detail Network links, the Network back link, and Details/Network tabs are reachable by keyboard in a predictable order. Browser back/forward preserves route context.
 - Tabs use tab/list semantics with a single selected tab, a labelled panel, visible focus, and keyboard activation. Switching tabs preserves Node identity and summary state.
 - Pages expose one logical h1, ordered headings, semantic lists/tables where appropriate, meaningful empty/error regions, and polite live regions only for meaningful transitions.
 - Status uses text plus icon, shape, or an equivalent explanation. Focus rings remain visible against the dark shell. Reduced motion removes non-essential transitions and does not remove state information.
-- Export reports success through the browser download flow and reports a safe task-level error without leaking internal paths or response bodies.
 
 ### Exploration disposition and production boundary
 
@@ -499,9 +501,9 @@ coverage are the only supported Home and Node Detail implementation.
 
 ### Production seam and test intent
 
-The highest-value external seam is the routed public Home shell and its child page modules, exercised through the typed Public API adapter and a controllable realtime invalidation source. Tests cross this seam with real Public DTO-shaped responses and explicit transport/error transitions; they do not reach into CSS selectors, private helpers, or implementation-only state. The same seam covers Home filtering/sorting, Node Detail tabs, bounded history and export, Logo/Admin navigation, independent module failures, reset behavior, and last-good refresh preservation.
+The highest-value external seam is the routed public Home shell and its child page modules, exercised through the typed Public API adapter and a controllable realtime invalidation source. Tests cross this seam with real Public DTO-shaped responses and explicit transport/error transitions; they do not reach into CSS selectors, private helpers, or implementation-only state. The same seam covers Home filtering/sorting, Node Detail hero/metric content and tabs, block-interval derivation, Logo/Admin navigation, independent module failures, reset behavior, and last-good refresh preservation.
 
-SCN-HOME-NODE-DETAIL is expanded with the visual and state assertions above. Add focused scenarios for SCN-HOME-FILTER-SORT, SCN-HOME-NAVIGATION, SCN-NODE-TABS, SCN-NODE-HISTORY-EXPORT, SCN-NODE-INDEPENDENT-STATES, SCN-NODE-LAST-GOOD-REFRESH, and SCN-HOME-RESPONSIVE-ACCESSIBILITY. Each scenario must assert semantic content at all four fixed viewports; screenshots may supplement but cannot replace those assertions.
+SCN-HOME-NODE-DETAIL is expanded with the visual and state assertions above. Add focused scenarios for SCN-HOME-FILTER-SORT, SCN-HOME-NAVIGATION, SCN-NODE-TABS, SCN-NODE-BLOCK-INTERVAL, SCN-NODE-INDEPENDENT-STATES, SCN-NODE-LAST-GOOD-REFRESH, and SCN-HOME-RESPONSIVE-ACCESSIBILITY. Each scenario must assert semantic content at all four fixed viewports; screenshots may supplement but cannot replace those assertions.
 
 ## 12. Playwright-oriented acceptance matrix
 
@@ -520,7 +522,7 @@ desktop-1280
 | `SCN-AUTH-SESSION-REVOKED` | old stream closes, Admin data clears, no stale flash, login/revalidation path |
 | `SCN-SITE-ACCESS-PRIVATE` | switch to Private closes public streams, Home requires login, old public cache cleared, audit row |
 | `SCN-HOME-NETWORK-LIST` | network list from Public Projection, all Active Nodes visible, anonymous access follows Site Access Mode |
-| `SCN-HOME-NODE-DETAIL` | independent dimensions, compact Home metric order, bounded Block History, Peer Count only, sanitized Host resource values |
+| `SCN-HOME-NODE-DETAIL` | compact Komari-density Node card with no coloured edge strip, compact process CPU/process memory/Node Data progress, four equal-height compact detail cards containing two 60-second line charts and two bar charts backed by real retained samples, neutral card borders, no rendered Bounded Block History, derived consecutive-block interval, Peer Count only |
 | `SCN-HOME-UNAVAILABLE-NODE` | non-leaking unavailable copy for retired/unknown; no internal detail |
 | `SCN-OVERVIEW-FRESH` | independent Node rows, Server Health Summary, current timestamps |
 | `SCN-OVERVIEW-STALE-LAST-GOOD` | last-good remains, Error/Stale reason and age visible, no zero substitution |

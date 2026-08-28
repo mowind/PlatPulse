@@ -7,6 +7,7 @@ import {
   useAdminNodes,
 } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
+import { formatBytes } from '../formatBytes'
 import {
   StatusBadge,
   componentStateLabel,
@@ -720,6 +721,17 @@ function HealthPanel({ node }: { node: AdminNodeDetailDto }) {
         never shown as Healthy or as zero values.
       </p>
       <dl className="detail-list">
+        <div>
+          <dt>Node data size</dt>
+          <dd>
+            {formatBytes(node.data_directory?.size_bytes)}
+            {node.data_directory?.state && (
+              <span className="muted">
+                {' '}· {componentStateLabel(node.data_directory.state)}
+              </span>
+            )}
+          </dd>
+        </div>
         <div>
           <dt>Current head</dt>
           <dd>{node.current_head ?? 'Unknown'}</dd>

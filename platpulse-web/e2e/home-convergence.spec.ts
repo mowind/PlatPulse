@@ -124,15 +124,13 @@ test.describe('Converged Public Home (issue #102)', () => {
     // False, and a Node without an effective Link has Unknown Activity.
     const kCard = nodeCard(page, /Node K/)
     await expect(kCard).toBeVisible({ timeout: 15_000 })
-    await expect(kCard.getByText('Unknown', { exact: true })).toHaveCount(2)
+    await expect(kCard.getByText('Unknown', { exact: true })).toHaveCount(1)
     await expect(kCard.getByText('12,842,024', { exact: true })).toHaveCount(3)
     await expect(kCard.getByText('12,842,023', { exact: true })).toHaveCount(1)
     await expect(kCard.getByText('0', { exact: true })).toHaveCount(1)
     await expect(kCard.getByText('Empty; authoritative zero')).toBeVisible()
     await expect(kCard.getByText('False', { exact: true })).toHaveCount(1)
-    await expect(
-      page.getByRole('link', { name: /Node K — Missing[\s\S]*Unknown[\s\S]*Healthy/ }),
-    ).toHaveCount(1)
+    await expect(kCard.getByText('Healthy', { exact: true })).toBeVisible()
 
     // Node L: stale last-good consensus keeps the values and marks them.
     const lCard = nodeCard(page, /Node L/)
@@ -156,20 +154,19 @@ test.describe('Converged Public Home (issue #102)', () => {
     ).toHaveCount(1)
     await expect(nodeCard(page, /Node N/).getByText('Locked (Stale)', { exact: true })).toHaveCount(1)
 
-    // Node P: never observed is Unknown everywhere, never 0 or False.
+    // Node P has no Node observation; only the Agent-shared Host network
+    // observation is known, and missing Node values never become 0 or False.
     const pCard = nodeCard(page, /Node P/)
-    await expect(pCard.getByText('Unknown', { exact: true })).toHaveCount(9)
+    await expect(pCard.getByText('Unknown', { exact: true })).toHaveCount(8)
     await expect(pCard.getByText('0', { exact: true })).toHaveCount(0)
     await expect(pCard.getByText('False', { exact: true })).toHaveCount(0)
     await expect(pCard.getByText('one or more observations are stale or unknown')).toHaveCount(1)
 
-    // Node A: the exact Current Head Block Summary now proves TXS, and a
-    // linked Validator without Activity evidence never fabricates a label.
+    // Node A: the exact Current Head Block Summary proves TXS while the
+    // current process, data-directory, and shared Host metrics stay explicit.
     const aCard = nodeCard(page, /Node A/)
     await expect(aCard.getByText('7', { exact: true })).toHaveCount(1)
-    await expect(
-      page.getByRole('link', { name: /Node A[\s\S]*Unknown[\s\S]*Healthy/ }),
-    ).toHaveCount(1)
+    await expect(aCard.getByText('Healthy', { exact: true })).toBeVisible()
 
     await expectNoHorizontalOverflow(page)
   })

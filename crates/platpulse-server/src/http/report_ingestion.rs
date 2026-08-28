@@ -609,6 +609,67 @@ async fn observe_block_identity(
     Ok(false)
 }
 
+// One minute at the minimum 1-second report cadence, plus a small carry-in margin.
+const NODE_METRIC_SAMPLES_PER_SERIES: i64 = 64;
+
+fn metric_observed_at<T>(observation: &ComponentObservation<T>) -> Option<Rfc3339> {
+    observation.latest_observed_at.or_else(|| {
+        (observation.status == ComponentStatus::Ok)
+            .then_some(observation.attempted_at)
+            .flatten()
+    })
+}
+
+async fn save_node_metric(
+    tx: &mut Transaction<'_, Sqlite>,
+    node_id: &str,
+    metric: &str,
+    observed_at: Rfc3339,
+    received_at: &str,
+    value: f64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES (?, ?, ?, ?, ?) ON CONFLICT(node_id, metric, observed_at) DO UPDATE SET value=excluded.value")
+        .bind(node_id)
+        .bind(metric)
+        .bind(observed_at.to_string())
+        .bind(received_at)
+        .bind(value)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("DELETE FROM node_metric_samples WHERE rowid IN (SELECT rowid FROM node_metric_samples WHERE node_id=? AND metric=? ORDER BY received_at DESC LIMIT -1 OFFSET ?)")
+        .bind(node_id)
+        .bind(metric)
+        .bind(NODE_METRIC_SAMPLES_PER_SERIES)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+async fn save_host_metric(
+    tx: &mut Transaction<'_, Sqlite>,
+    agent_id: &str,
+    metric: &str,
+    observed_at: Rfc3339,
+    received_at: &str,
+    value: f64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO host_metric_samples (agent_id, metric, observed_at, received_at, value) VALUES (?, ?, ?, ?, ?) ON CONFLICT(agent_id, metric, observed_at) DO UPDATE SET value=excluded.value")
+        .bind(agent_id)
+        .bind(metric)
+        .bind(observed_at.to_string())
+        .bind(received_at)
+        .bind(value)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("DELETE FROM host_metric_samples WHERE rowid IN (SELECT rowid FROM host_metric_samples WHERE agent_id=? AND metric=? ORDER BY received_at DESC LIMIT -1 OFFSET ?)")
+        .bind(agent_id)
+        .bind(metric)
+        .bind(NODE_METRIC_SAMPLES_PER_SERIES)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
 async fn save_current(
     tx: &mut Transaction<'_, Sqlite>,
     report: &AgentReport,
@@ -768,6 +829,29 @@ async fn save_current(
                 .bind(&agent_id).bind(&mount.mount_path).bind(mount.total_bytes as i64).bind(mount.used_bytes as i64).bind(received_at).execute(&mut **tx).await?;
         }
     }
+    if let (Some(network), Some(observed_at)) = (
+        host.network_throughput.latest,
+        metric_observed_at(&host.network_throughput),
+    ) {
+        save_host_metric(
+            tx,
+            &agent_id,
+            "network_rx_bytes_per_sec",
+            observed_at,
+            received_at,
+            network.rx_bytes_per_sec as f64,
+        )
+        .await?;
+        save_host_metric(
+            tx,
+            &agent_id,
+            "network_tx_bytes_per_sec",
+            observed_at,
+            received_at,
+            network.tx_bytes_per_sec as f64,
+        )
+        .await?;
+    }
     for node in &report.nodes {
         let node_id = node.node_id.to_string();
         save_component(
@@ -781,6 +865,32 @@ async fn save_current(
             received_at,
         )
         .await?;
+        if let Some(data_directory_size) = &node.data_directory_size_bytes {
+            save_component(
+                tx,
+                &agent_id,
+                "node",
+                &node_id,
+                Some(&node_id),
+                ComponentKey::DataDirectorySizeBytes,
+                data_directory_size,
+                received_at,
+            )
+            .await?;
+        }
+        if let Some(data_directory_capacity) = &node.data_directory_capacity_bytes {
+            save_component(
+                tx,
+                &agent_id,
+                "node",
+                &node_id,
+                Some(&node_id),
+                ComponentKey::DataDirectoryCapacityBytes,
+                data_directory_capacity,
+                received_at,
+            )
+            .await?;
+        }
         save_component(
             tx,
             &agent_id,
@@ -898,6 +1008,108 @@ async fn save_current(
         if let Some(process) = node.process.latest {
             sqlx::query("INSERT INTO current_node_process_observations (node_id, pid, started_at, cpu_percent, memory_bytes, uptime_ms, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET pid=excluded.pid, started_at=excluded.started_at, cpu_percent=excluded.cpu_percent, memory_bytes=excluded.memory_bytes, uptime_ms=excluded.uptime_ms, updated_at=excluded.updated_at")
                 .bind(&node_id).bind(process.pid as i64).bind(process.started_at.to_string()).bind(process.cpu_percent).bind(process.memory_bytes as i64).bind(process.uptime_ms as i64).bind(received_at).execute(&mut **tx).await?;
+        }
+        if let Some(size_bytes) = node
+            .data_directory_size_bytes
+            .as_ref()
+            .and_then(|observation| observation.latest)
+        {
+            sqlx::query("INSERT INTO current_node_data_directory_observations (node_id, size_bytes, updated_at) VALUES (?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET size_bytes=excluded.size_bytes, updated_at=excluded.updated_at")
+                .bind(&node_id)
+                .bind(size_bytes as i64)
+                .bind(received_at)
+                .execute(&mut **tx)
+                .await?;
+        }
+        if let Some(capacity_bytes) = node
+            .data_directory_capacity_bytes
+            .as_ref()
+            .and_then(|observation| observation.latest)
+        {
+            sqlx::query("UPDATE current_node_data_directory_observations SET capacity_bytes=?, updated_at=? WHERE node_id=?")
+                .bind(capacity_bytes as i64)
+                .bind(received_at)
+                .bind(&node_id)
+                .execute(&mut **tx)
+                .await?;
+        }
+        if let (Some(process), Some(observed_at)) =
+            (node.process.latest, metric_observed_at(&node.process))
+        {
+            save_node_metric(
+                tx,
+                &node_id,
+                "process_cpu_percent",
+                observed_at,
+                received_at,
+                process.cpu_percent,
+            )
+            .await?;
+            if let Some(memory) = host.memory.latest.filter(|memory| memory.total_bytes > 0) {
+                save_node_metric(
+                    tx,
+                    &node_id,
+                    "process_memory_percent",
+                    observed_at,
+                    received_at,
+                    process.memory_bytes as f64 * 100.0 / memory.total_bytes as f64,
+                )
+                .await?;
+            }
+        }
+        if let (Some(size), Some(capacity), Some(size_observed_at), Some(capacity_observed_at)) = (
+            node.data_directory_size_bytes
+                .as_ref()
+                .and_then(|observation| observation.latest),
+            node.data_directory_capacity_bytes
+                .as_ref()
+                .and_then(|observation| observation.latest)
+                .filter(|capacity| *capacity > 0),
+            node.data_directory_size_bytes
+                .as_ref()
+                .and_then(metric_observed_at),
+            node.data_directory_capacity_bytes
+                .as_ref()
+                .and_then(metric_observed_at),
+        ) {
+            save_node_metric(
+                tx,
+                &node_id,
+                "data_directory_percent",
+                size_observed_at.max(capacity_observed_at),
+                received_at,
+                size as f64 * 100.0 / capacity as f64,
+            )
+            .await?;
+        }
+        if let Some(peers) = node.chain.peers.as_ref()
+            && let (Some(snapshot), Some(observed_at)) =
+                (peers.latest.as_ref(), metric_observed_at(peers))
+        {
+            let inbound = snapshot
+                .peers
+                .iter()
+                .filter(|peer| peer.direction == PeerDirection::Inbound)
+                .count();
+            let outbound = snapshot.peers.len().saturating_sub(inbound);
+            save_node_metric(
+                tx,
+                &node_id,
+                "peer_inbound_count",
+                observed_at,
+                received_at,
+                inbound as f64,
+            )
+            .await?;
+            save_node_metric(
+                tx,
+                &node_id,
+                "peer_outbound_count",
+                observed_at,
+                received_at,
+                outbound as f64,
+            )
+            .await?;
         }
         if node.chain.rpc.latest.is_some()
             || node.chain.sync.latest.is_some()
@@ -2007,6 +2219,20 @@ async fn handler(
                             value_revision: observed.chain.static_metadata.value_revision,
                         },
                     ];
+                    if let Some(data_directory_size) = &observed.data_directory_size_bytes {
+                        revisions.push(ComponentRevision {
+                            component: ComponentKey::DataDirectorySizeBytes,
+                            state_revision: data_directory_size.state_revision,
+                            value_revision: data_directory_size.value_revision,
+                        });
+                    }
+                    if let Some(data_directory_capacity) = &observed.data_directory_capacity_bytes {
+                        revisions.push(ComponentRevision {
+                            component: ComponentKey::DataDirectoryCapacityBytes,
+                            state_revision: data_directory_capacity.state_revision,
+                            value_revision: data_directory_capacity.value_revision,
+                        });
+                    }
                     if let Some(peers) = &observed.chain.peers {
                         revisions.push(ComponentRevision {
                             component: ComponentKey::Peers,
@@ -2573,6 +2799,113 @@ mod tests {
             Err(StatusCode::PAYLOAD_TOO_LARGE)
         );
     }
+    #[tokio::test]
+    async fn persists_node_data_directory_size_and_preserves_last_good_value() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let mut report: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        let observed_at = report.generated_at;
+        report.nodes[0].data_directory_size_bytes = Some(ComponentObservation {
+            status: ComponentStatus::Ok,
+            attempted_at: Some(observed_at),
+            latest_observed_at: Some(observed_at),
+            received_at: None,
+            state_revision: 1,
+            value_revision: 1,
+            latest: Some(12_884_901_888),
+            error: None,
+        });
+        report.nodes[0].data_directory_capacity_bytes = Some(ComponentObservation {
+            status: ComponentStatus::Ok,
+            attempted_at: Some(observed_at),
+            latest_observed_at: Some(observed_at),
+            received_at: None,
+            state_revision: 1,
+            value_revision: 1,
+            latest: Some(51_539_607_552),
+            error: None,
+        });
+
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+        assert!(
+            receipt.nodes[0]
+                .accepted_component_revisions
+                .iter()
+                .any(|revision| revision.component == ComponentKey::DataDirectorySizeBytes)
+        );
+        assert!(
+            receipt.nodes[0]
+                .accepted_component_revisions
+                .iter()
+                .any(|revision| revision.component == ComponentKey::DataDirectoryCapacityBytes)
+        );
+        let stored: (i64, Option<i64>) = sqlx::query_as(
+            "SELECT size_bytes, capacity_bytes FROM current_node_data_directory_observations WHERE node_id=?",
+        )
+        .bind(report.nodes[0].node_id.to_string())
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(stored, (12_884_901_888, Some(51_539_607_552)));
+        let disk_sample: (f64, String) = sqlx::query_as(
+            "SELECT value, received_at FROM node_metric_samples WHERE node_id=? AND metric='data_directory_percent'",
+        )
+        .bind(report.nodes[0].node_id.to_string())
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(disk_sample.0, 25.0);
+        assert!(!disk_sample.1.is_empty());
+        let host_network_samples: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM host_metric_samples WHERE agent_id=? AND metric IN ('network_rx_bytes_per_sec', 'network_tx_bytes_per_sec')",
+        )
+        .bind(&agent_id)
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(host_network_samples, 2);
+
+        report.report_sequence += 1;
+        report.report_id = "0195f2a1-0090-4090-8090-000000000090".parse().unwrap();
+        report.nodes[0].data_directory_size_bytes = Some(ComponentObservation {
+            status: ComponentStatus::Error,
+            attempted_at: Some(observed_at),
+            latest_observed_at: None,
+            received_at: None,
+            state_revision: 2,
+            value_revision: 1,
+            latest: None,
+            error: Some(platpulse_core::BoundedError {
+                code: "data_directory_scan_failed".to_owned(),
+                message: "PlatON data directory could not be measured".to_owned(),
+            }),
+        });
+        submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+        let stored: i64 = sqlx::query_scalar(
+            "SELECT size_bytes FROM current_node_data_directory_observations WHERE node_id=?",
+        )
+        .bind(report.nodes[0].node_id.to_string())
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(stored, 12_884_901_888);
+
+        report.report_sequence += 1;
+        report.report_id = "0195f2a1-0091-4091-8091-000000000091".parse().unwrap();
+        report.nodes[0].data_directory_size_bytes = None;
+        submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+        let stored: i64 = sqlx::query_scalar(
+            "SELECT size_bytes FROM current_node_data_directory_observations WHERE node_id=?",
+        )
+        .bind(report.nodes[0].node_id.to_string())
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(stored, 12_884_901_888);
+    }
+
     #[tokio::test]
     async fn boot_sequence_gaps_and_competing_boots_are_recorded_and_rejected() {
         let (_dir, state, agent_id) = state_with_agent().await;

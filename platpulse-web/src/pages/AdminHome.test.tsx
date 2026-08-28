@@ -83,6 +83,13 @@ const AGENT = {
       inventory_revision: 3,
       resync_state: 'normal',
       network_reference_confidence: 'high',
+      data_directory: {
+        state: 'ok',
+        state_revision: 1,
+        value_revision: 1,
+        size_bytes: 12_884_901_888,
+        received_at: '2026-08-12T08:00:00Z',
+      },
       rpc: {
         state: 'ok',
         client_version: 'platon/1.5.1',
@@ -170,6 +177,11 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     const nodeRow = await screen.findByRole('row', { name: /Node A/ })
     expect(nodeRow.textContent).toContain('healthy')
     expect(nodeRow.textContent).toContain('Current')
+    await act(async () => {
+      screen.getByRole('button', { name: /Node A/ }).click()
+    })
+    expect(screen.getByText('Node Data')).toBeTruthy()
+    expect(screen.getByText('12.0 GiB')).toBeTruthy()
 
     // Agent inventory stays an independent panel (one Agent, its own card).
     expect(screen.getByRole('heading', { level: 2, name: 'Agents' })).toBeTruthy()

@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 use platpulse_core::component::{BoundedError, ComponentObservation, ComponentStatus};
-use platpulse_core::identity::{AgentId, BootId, ReportId};
+use platpulse_core::identity::{AgentId, BootId, NodeId, ReportId};
 use platpulse_core::inventory::{InventoryNode, NodeInventory};
 use platpulse_core::network::{NetworkIdentity, RpcEndpoint};
 use platpulse_core::observation::{
@@ -425,6 +425,18 @@ fn preserve_last_good_values(current: &mut AgentReport, previous: &AgentReport) 
             continue;
         };
         preserve_last_good(&mut node.process, &previous_node.process);
+        if let (Some(current_data_directory), Some(previous_data_directory)) = (
+            &mut node.data_directory_size_bytes,
+            &previous_node.data_directory_size_bytes,
+        ) {
+            preserve_last_good(current_data_directory, previous_data_directory);
+        }
+        if let (Some(current_data_directory), Some(previous_data_directory)) = (
+            &mut node.data_directory_capacity_bytes,
+            &previous_node.data_directory_capacity_bytes,
+        ) {
+            preserve_last_good(current_data_directory, previous_data_directory);
+        }
         preserve_last_good(&mut node.chain.rpc, &previous_node.chain.rpc);
         preserve_last_good(&mut node.chain.sync, &previous_node.chain.sync);
         preserve_last_good(&mut node.chain.consensus, &previous_node.chain.consensus);
@@ -503,6 +515,8 @@ fn probe_component<T>(probe: ProbeValue<T>, at: Rfc3339) -> ComponentObservation
 fn collect_node<A: RpcAdapter>(
     system: &mut System,
     node: &platpulse_core::inventory::InventoryNode,
+    data_directory_size_bytes: Option<ComponentObservation<u64>>,
+    data_directory_capacity_bytes: Option<ComponentObservation<u64>>,
     attempted: Rfc3339,
     adapter: &A,
 ) -> NodeObservation {
@@ -543,6 +557,8 @@ fn collect_node<A: RpcAdapter>(
     NodeObservation {
         node_id: node.node_id,
         process,
+        data_directory_size_bytes,
+        data_directory_capacity_bytes,
         monotonic_elapsed_ms: Some(started.elapsed().as_millis() as u64),
         chain: NodeChainObservation {
             rpc,
@@ -588,6 +604,206 @@ pub fn collect_report_with_clock_skew<A: RpcAdapter>(
     adapter: &A,
     clock_skew: ComponentObservation<i64>,
 ) -> Result<AgentReport, CollectionError> {
+    let data_directories = inventory
+        .nodes
+        .iter()
+        .map(|node| (node.node_id, crate::data_directory::disabled_observations()))
+        .collect();
+    collect_report_with_data_directories(
+        config,
+        agent_id,
+        agent_epoch,
+        boot_id,
+        sequence,
+        inventory,
+        adapter,
+        clock_skew,
+        &data_directories,
+    )
+}
+
+fn reconcile_data_directory_observation(
+    mut current: ComponentObservation<u64>,
+    previous: Option<&ComponentObservation<u64>>,
+) -> ComponentObservation<u64> {
+    if let Some(previous) = previous {
+        current.state_revision = previous.state_revision
+            + u64::from(current.status != previous.status || current.error != previous.error);
+        current.value_revision = previous.value_revision
+            + u64::from(current.latest.is_some() && current.latest != previous.latest);
+    }
+    current
+}
+
+fn previous_data_directory_observations(
+    previous: Option<&AgentReport>,
+    node_id: NodeId,
+) -> (
+    Option<&ComponentObservation<u64>>,
+    Option<&ComponentObservation<u64>>,
+) {
+    let node = previous.and_then(|report| {
+        report
+            .nodes
+            .iter()
+            .find(|candidate| candidate.node_id == node_id)
+    });
+    (
+        node.and_then(|item| item.data_directory_size_bytes.as_ref()),
+        node.and_then(|item| item.data_directory_capacity_bytes.as_ref()),
+    )
+}
+
+fn reconcile_data_directory_observations(
+    mut current: crate::data_directory::DataDirectoryObservations,
+    previous_size: Option<&ComponentObservation<u64>>,
+    previous_capacity: Option<&ComponentObservation<u64>>,
+) -> crate::data_directory::DataDirectoryObservations {
+    current.size_bytes = reconcile_data_directory_observation(current.size_bytes, previous_size);
+    current.capacity_bytes =
+        reconcile_data_directory_observation(current.capacity_bytes, previous_capacity);
+    current
+}
+
+fn collect_directory_observations(
+    paths: &HashMap<NodeId, std::path::PathBuf>,
+    inventory: &NodeInventory,
+    previous: Option<&AgentReport>,
+    attempted: Rfc3339,
+) -> HashMap<NodeId, crate::data_directory::DataDirectoryObservations> {
+    inventory
+        .nodes
+        .iter()
+        .map(|node| {
+            let (previous_size, previous_capacity) =
+                previous_data_directory_observations(previous, node.node_id);
+            let observations = match paths.get(&node.node_id) {
+                None => reconcile_data_directory_observations(
+                    crate::data_directory::disabled_observations(),
+                    previous_size,
+                    previous_capacity,
+                ),
+                Some(path) => previous_size
+                    .filter(|observation| {
+                        previous_capacity.is_some()
+                            && observation.attempted_at.is_some_and(|last_attempt| {
+                                attempted.as_datetime() >= last_attempt.as_datetime()
+                                    && (attempted.as_datetime() - last_attempt.as_datetime())
+                                        .whole_seconds()
+                                        < crate::data_directory::DATA_DIRECTORY_SAMPLE_INTERVAL
+                                            .as_secs()
+                                            as i64
+                            })
+                    })
+                    .zip(previous_capacity)
+                    .map(|(size_bytes, capacity_bytes)| {
+                        crate::data_directory::DataDirectoryObservations {
+                            size_bytes: size_bytes.clone(),
+                            capacity_bytes: capacity_bytes.clone(),
+                        }
+                    })
+                    .unwrap_or_else(|| {
+                        reconcile_data_directory_observations(
+                            crate::data_directory::collect_observations(path, attempted),
+                            previous_size,
+                            previous_capacity,
+                        )
+                    }),
+            };
+            (node.node_id, observations)
+        })
+        .collect()
+}
+
+fn reconcile_precollected_observation(
+    current: ComponentObservation<u64>,
+    previous: Option<&ComponentObservation<u64>>,
+) -> ComponentObservation<u64> {
+    if current.status == ComponentStatus::Starting {
+        if let Some(previous) = previous {
+            return previous.clone();
+        }
+    }
+    reconcile_data_directory_observation(current, previous)
+}
+
+fn reconcile_precollected_directory_observations(
+    mut current: HashMap<NodeId, crate::data_directory::DataDirectoryObservations>,
+    inventory: &NodeInventory,
+    previous: Option<&AgentReport>,
+) -> HashMap<NodeId, crate::data_directory::DataDirectoryObservations> {
+    inventory
+        .nodes
+        .iter()
+        .map(|node| {
+            let (previous_size, previous_capacity) =
+                previous_data_directory_observations(previous, node.node_id);
+            let observations = match current.remove(&node.node_id) {
+                Some(observations) => crate::data_directory::DataDirectoryObservations {
+                    size_bytes: reconcile_precollected_observation(
+                        observations.size_bytes,
+                        previous_size,
+                    ),
+                    capacity_bytes: reconcile_precollected_observation(
+                        observations.capacity_bytes,
+                        previous_capacity,
+                    ),
+                },
+                None => reconcile_data_directory_observations(
+                    crate::data_directory::disabled_observations(),
+                    previous_size,
+                    previous_capacity,
+                ),
+            };
+            (node.node_id, observations)
+        })
+        .collect()
+}
+
+fn closing_directory_observations(
+    paths: &HashMap<NodeId, std::path::PathBuf>,
+    inventory: &NodeInventory,
+    previous: Option<&AgentReport>,
+) -> HashMap<NodeId, crate::data_directory::DataDirectoryObservations> {
+    inventory
+        .nodes
+        .iter()
+        .map(|node| {
+            let (previous_size, previous_capacity) =
+                previous_data_directory_observations(previous, node.node_id);
+            let observations = if paths.contains_key(&node.node_id) {
+                crate::data_directory::DataDirectoryObservations {
+                    size_bytes: previous_size
+                        .cloned()
+                        .unwrap_or_else(crate::data_directory::starting),
+                    capacity_bytes: previous_capacity
+                        .cloned()
+                        .unwrap_or_else(crate::data_directory::starting),
+                }
+            } else {
+                reconcile_data_directory_observations(
+                    crate::data_directory::disabled_observations(),
+                    previous_size,
+                    previous_capacity,
+                )
+            };
+            (node.node_id, observations)
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_report_with_data_directories<A: RpcAdapter>(
+    config: &AgentConfig,
+    agent_id: AgentId,
+    agent_epoch: u64,
+    boot_id: BootId,
+    sequence: u64,
+    inventory: NodeInventory,
+    adapter: &A,
+    clock_skew: ComponentObservation<i64>,
+    data_directories: &HashMap<NodeId, crate::data_directory::DataDirectoryObservations>,
+) -> Result<AgentReport, CollectionError> {
     if inventory.nodes.is_empty() {
         let at = timestamp();
         let mut system = System::new_all();
@@ -626,7 +842,20 @@ pub fn collect_report_with_clock_skew<A: RpcAdapter>(
     let nodes = inventory
         .nodes
         .iter()
-        .map(|node| collect_node(&mut system, node, attempted, adapter))
+        .map(|node| {
+            collect_node(
+                &mut system,
+                node,
+                data_directories
+                    .get(&node.node_id)
+                    .map(|observations| observations.size_bytes.clone()),
+                data_directories
+                    .get(&node.node_id)
+                    .map(|observations| observations.capacity_bytes.clone()),
+                attempted,
+                adapter,
+            )
+        })
         .collect::<Vec<_>>();
     let mut capabilities = vec![
         AgentCapability::RpcCapabilityProbe,
@@ -742,30 +971,38 @@ pub async fn recover_previous_boot<A: RpcAdapter>(
         .execute(store.connection())
         .await?;
     let transport = crate::reporting::HttpReportTransport::from_config(config)?;
-    while crate::reporting::deliver_one(&mut store, &transport)
-        .await?
-        .is_some()
-    {}
+    while let Some(delivered) = crate::reporting::deliver_one(&mut store, &transport).await? {
+        if delivered_report_closes_boot(&delivered, &boot_text)? {
+            stage_recovered_boot(&mut store, &boot_text, Some(&delivered.report_id)).await?;
+            store.close().await?;
+            return Ok(());
+        }
+    }
 
     let agent_id = AgentId::from_str(&agent_text)
         .map_err(|error| CollectionError::Identity(error.to_string()))?;
     let boot_id = BootId::from_str(&boot_text)
         .map_err(|error| CollectionError::Identity(error.to_string()))?;
-    let inventory = config
+    let validated = config
         .validated_inventory()
-        .map_err(|error| CollectionError::Identity(error.to_string()))?
-        .inventory;
+        .map_err(|error| CollectionError::Identity(error.to_string()))?;
     let previous = load_last_report(&mut store).await?;
+    let data_directories = closing_directory_observations(
+        &validated.data_directories,
+        &validated.inventory,
+        previous.as_ref(),
+    );
     let at = timestamp();
-    let mut closing = collect_report_with_clock_skew(
+    let mut closing = collect_report_with_data_directories(
         config,
         agent_id,
         epoch as u64,
         boot_id,
         sequence as u64 + 1,
-        inventory,
+        validated.inventory,
         adapter,
         clock_skew_error(at, "Server time exchange was unavailable during recovery"),
+        &data_directories,
     )?;
     if let Some(previous) = previous.as_ref() {
         preserve_last_good_values(&mut closing, previous);
@@ -791,18 +1028,40 @@ pub async fn recover_previous_boot<A: RpcAdapter>(
     crate::reporting::deliver_one(&mut store, &transport)
         .await?
         .ok_or(CollectionError::RecoveryRequired)?;
-    let new_boot_id = BootId::from_str(&Uuid::new_v4().to_string()).expect("UUID is valid");
-    sqlx::query("UPDATE agent_state SET boot_id=?, report_sequence=0, boot_state='drained_pending', pending_transition='drained_previous', pending_previous_boot_id=?, previous_boot_id=?, close_report_id=NULL, close_applied_at=?, updated_at=? WHERE singleton=1")
-        .bind(new_boot_id.to_string())
-        .bind(boot_text.clone())
-        .bind(boot_text)
-        .bind(timestamp().to_string())
-        .bind(timestamp().to_string())
-        .execute(store.connection())
-        .await?;
+    stage_recovered_boot(&mut store, &boot_text, Some(&closing.report_id.to_string())).await?;
     store.close().await?;
     Ok(())
 }
+
+fn delivered_report_closes_boot(
+    delivered: &crate::reporting::StoredReport,
+    boot_id: &str,
+) -> Result<bool, CollectionError> {
+    let report: AgentReport = serde_json::from_slice(&delivered.body)?;
+    Ok(report.boot_id.to_string() == boot_id && report.boot_transition == BootTransition::Closing)
+}
+
+async fn stage_recovered_boot(
+    store: &mut AgentStore,
+    previous_boot_id: &str,
+    close_report_id: Option<&str>,
+) -> Result<(), CollectionError> {
+    let new_boot_id = BootId::from_str(&Uuid::new_v4().to_string()).expect("UUID is valid");
+    let at = timestamp().to_string();
+    sqlx::query("UPDATE agent_state SET boot_id=?, report_sequence=0, boot_state='drained_pending', pending_transition='drained_previous', pending_previous_boot_id=?, previous_boot_id=?, close_report_id=?, close_applied_at=?, shutdown_state='final_stored', shutdown_finished_at=?, shutdown_last_error=NULL, shutdown_updated_at=?, updated_at=? WHERE singleton=1")
+        .bind(new_boot_id.to_string())
+        .bind(previous_boot_id)
+        .bind(previous_boot_id)
+        .bind(close_report_id)
+        .bind(&at)
+        .bind(&at)
+        .bind(&at)
+        .bind(&at)
+        .execute(store.connection())
+        .await?;
+    Ok(())
+}
+
 /// Collect and persist one complete immutable report. Agent state (identity,
 /// boot and sequence) is advanced in the same transaction as the report body.
 pub async fn collect_and_persist<A: RpcAdapter>(
@@ -818,14 +1077,32 @@ pub async fn collect_and_persist<A: RpcAdapter>(
 pub(crate) async fn collect_and_persist_precollected_in_store(
     config: &AgentConfig,
     snapshots: HashMap<String, Result<RpcSnapshot, String>>,
+    data_directories: HashMap<NodeId, crate::data_directory::DataDirectoryObservations>,
     store: &mut AgentStore,
 ) -> Result<String, CollectionError> {
-    collect_and_persist_in_store(config, &PrecollectedRpcAdapter { snapshots }, store).await
+    collect_and_persist_in_store_with_data_directories(
+        config,
+        &PrecollectedRpcAdapter { snapshots },
+        Some(data_directories),
+        store,
+    )
+    .await
 }
 
 pub(crate) async fn collect_and_persist_in_store<A: RpcAdapter>(
     config: &AgentConfig,
     adapter: &A,
+    store: &mut AgentStore,
+) -> Result<String, CollectionError> {
+    collect_and_persist_in_store_with_data_directories(config, adapter, None, store).await
+}
+
+async fn collect_and_persist_in_store_with_data_directories<A: RpcAdapter>(
+    config: &AgentConfig,
+    adapter: &A,
+    precollected_data_directories: Option<
+        HashMap<NodeId, crate::data_directory::DataDirectoryObservations>,
+    >,
     store: &mut AgentStore,
 ) -> Result<String, CollectionError> {
     crate::reporting::ensure_spool_healthy(store).await?;
@@ -864,7 +1141,20 @@ pub(crate) async fn collect_and_persist_in_store<A: RpcAdapter>(
         Ok(estimate) => ok(estimate.offset_ms, clock_at),
         Err(error) => clock_skew_error(clock_at, &error.to_string()),
     };
-    let mut report = collect_report_with_clock_skew(
+    let data_directories = match precollected_data_directories {
+        Some(current) => reconcile_precollected_directory_observations(
+            current,
+            &validated.inventory,
+            previous.as_ref(),
+        ),
+        None => collect_directory_observations(
+            &validated.data_directories,
+            &validated.inventory,
+            previous.as_ref(),
+            clock_at,
+        ),
+    };
+    let mut report = collect_report_with_data_directories(
         config,
         agent_id,
         epoch as u64,
@@ -873,6 +1163,7 @@ pub(crate) async fn collect_and_persist_in_store<A: RpcAdapter>(
         validated.inventory,
         adapter,
         clock_skew,
+        &data_directories,
     )?;
     if let Some(previous) = previous.as_ref() {
         preserve_last_good_values(&mut report, previous);
@@ -888,7 +1179,13 @@ pub(crate) async fn collect_and_persist_in_store<A: RpcAdapter>(
     report.block_summaries = load_block_summaries(store).await?;
     report.history_gaps = crate::block::load_history_gaps(store).await?;
     add_sample_capabilities(&mut report);
-    report.host.spool = ok(current_spool_diagnostics(store).await?, report.generated_at);
+    report.host.spool = ok(
+        spool_diagnostics_for_transition(
+            current_spool_diagnostics(store).await?,
+            report.boot_transition,
+        ),
+        report.generated_at,
+    );
     report
         .validate()
         .map_err(|error| CollectionError::Identity(error.to_string()))?;
@@ -912,8 +1209,7 @@ pub(crate) async fn collect_and_persist_in_store<A: RpcAdapter>(
         BootTransition::DrainedPrevious => "drained_previous",
         BootTransition::RecoveredAfterStale => "recovered_after_stale",
     };
-    sqlx::query("UPDATE agent_state SET agent_id=?, agent_epoch=?, boot_id=?, report_sequence=?, inventory_revision=?, boot_state=CASE WHEN ?='drained_previous' THEN 'active' ELSE boot_state END, pending_transition=CASE WHEN ?='drained_previous' THEN NULL ELSE pending_transition END, pending_previous_boot_id=CASE WHEN ?='drained_previous' THEN NULL ELSE pending_previous_boot_id END, updated_at=? WHERE singleton=1")
-        .bind(report.agent_id.to_string()).bind(report.agent_epoch as i64).bind(report.boot_id.to_string()).bind(report.report_sequence as i64).bind(report.inventory.revision as i64).bind(transition).bind(transition).bind(transition).bind(&now).execute(&mut *tx).await?;
+    update_agent_state_for_persisted_report(&mut tx, &report, transition, &now).await?;
     tx.commit().await?;
     crate::reporting::enforce_spool_policy(store, &crate::collector::SpoolPolicy::default(), &now)
         .await
@@ -1230,9 +1526,15 @@ pub async fn collect_and_persist_with_blocks<A: RpcAdapter>(
         Ok(estimate) => ok(estimate.offset_ms, clock_at),
         Err(error) => clock_skew_error(clock_at, &error.to_string()),
     };
-    let inventory = validated.inventory;
     let previous = load_last_report(&mut store).await?;
-    let mut report = collect_report_with_clock_skew(
+    let data_directories = collect_directory_observations(
+        &validated.data_directories,
+        &validated.inventory,
+        previous.as_ref(),
+        clock_at,
+    );
+    let inventory = validated.inventory;
+    let mut report = collect_report_with_data_directories(
         config,
         agent_id,
         epoch as u64,
@@ -1241,6 +1543,7 @@ pub async fn collect_and_persist_with_blocks<A: RpcAdapter>(
         inventory.clone(),
         adapter,
         clock_skew,
+        &data_directories,
     )?;
     if let Some(previous) = previous.as_ref() {
         preserve_last_good_values(&mut report, previous);
@@ -1319,7 +1622,10 @@ pub async fn collect_and_persist_with_blocks<A: RpcAdapter>(
     report.history_gaps = crate::block::load_history_gaps(&mut store).await?;
     add_sample_capabilities(&mut report);
     report.host.spool = ok(
-        current_spool_diagnostics(&mut store).await?,
+        spool_diagnostics_for_transition(
+            current_spool_diagnostics(&mut store).await?,
+            report.boot_transition,
+        ),
         report.generated_at,
     );
     report
@@ -1345,8 +1651,7 @@ pub async fn collect_and_persist_with_blocks<A: RpcAdapter>(
         BootTransition::DrainedPrevious => "drained_previous",
         BootTransition::RecoveredAfterStale => "recovered_after_stale",
     };
-    sqlx::query("UPDATE agent_state SET agent_id=?, agent_epoch=?, boot_id=?, report_sequence=?, inventory_revision=?, boot_state=CASE WHEN ?='drained_previous' THEN 'active' ELSE boot_state END, pending_transition=CASE WHEN ?='drained_previous' THEN NULL ELSE pending_transition END, pending_previous_boot_id=CASE WHEN ?='drained_previous' THEN NULL ELSE pending_previous_boot_id END, updated_at=? WHERE singleton=1")
-        .bind(report.agent_id.to_string()).bind(report.agent_epoch as i64).bind(report.boot_id.to_string()).bind(report.report_sequence as i64).bind(report.inventory.revision as i64).bind(transition).bind(transition).bind(transition).bind(&now).execute(&mut *tx).await?;
+    update_agent_state_for_persisted_report(&mut tx, &report, transition, &now).await?;
     tx.commit().await?;
     crate::reporting::enforce_spool_policy(&mut store, &SpoolPolicy::default(), &now)
         .await
@@ -1354,6 +1659,41 @@ pub async fn collect_and_persist_with_blocks<A: RpcAdapter>(
     store.close().await?;
     Ok(digest)
 }
+
+fn spool_diagnostics_for_transition(
+    mut diagnostics: SpoolDiagnostics,
+    transition: BootTransition,
+) -> SpoolDiagnostics {
+    if transition == BootTransition::DrainedPrevious {
+        diagnostics.shutdown_state = Some("running".to_owned());
+        diagnostics.shutdown_started_at = None;
+        diagnostics.shutdown_deadline_at = None;
+        diagnostics.shutdown_finished_at = None;
+        diagnostics.shutdown_unresolved_range = None;
+        diagnostics.shutdown_last_error = None;
+        diagnostics.shutdown_forced = Some(false);
+        diagnostics.shutdown_report_id = None;
+    }
+    diagnostics
+}
+
+async fn update_agent_state_for_persisted_report(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    report: &AgentReport,
+    transition: &str,
+    now: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE agent_state SET agent_id=?, agent_epoch=?, boot_id=?, report_sequence=?, inventory_revision=?, boot_state=CASE WHEN ?='drained_previous' THEN 'active' ELSE boot_state END, pending_transition=CASE WHEN ?='drained_previous' THEN NULL ELSE pending_transition END, pending_previous_boot_id=CASE WHEN ?='drained_previous' THEN NULL ELSE pending_previous_boot_id END, updated_at=? WHERE singleton=1")
+        .bind(report.agent_id.to_string()).bind(report.agent_epoch as i64).bind(report.boot_id.to_string()).bind(report.report_sequence as i64).bind(report.inventory.revision as i64).bind(transition).bind(transition).bind(transition).bind(now).execute(&mut **tx).await?;
+    if transition == "drained_previous" {
+        sqlx::query("UPDATE agent_state SET shutdown_state='running', shutdown_started_at=NULL, shutdown_deadline_at=NULL, shutdown_finished_at=NULL, shutdown_unresolved_from=NULL, shutdown_unresolved_to=NULL, shutdown_last_error=NULL, shutdown_forced=0, shutdown_report_id=NULL, shutdown_report_sequence=NULL, shutdown_updated_at=? WHERE singleton=1")
+            .bind(now)
+            .execute(&mut **tx)
+            .await?;
+    }
+    Ok(())
+}
+
 /// Read bounded local delivery state for the next immutable report.
 pub(crate) async fn current_spool_diagnostics(
     store: &mut AgentStore,
@@ -1705,6 +2045,26 @@ mod tests {
     use platpulse_core::observation::{PeerCurrent, PeerDirection};
     use tempfile::tempdir;
 
+    #[test]
+    fn recognizes_a_delivered_closing_report_for_the_recovered_boot() {
+        let mut report: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        report.boot_transition = BootTransition::Closing;
+        let stored = crate::reporting::StoredReport {
+            report_id: report.report_id.to_string(),
+            report_sequence: report.report_sequence,
+            body: serde_json::to_vec(&report).unwrap(),
+            body_sha256: "unused-in-this-check".to_owned(),
+        };
+
+        assert!(delivered_report_closes_boot(&stored, &report.boot_id.to_string()).unwrap());
+        assert!(
+            !delivered_report_closes_boot(&stored, "0195f2a1-0099-4099-8099-000000000099").unwrap()
+        );
+    }
+
     fn snapshot() -> RpcSnapshot {
         RpcSnapshot {
             client_version: "fake-platon/1.0".into(),
@@ -1971,12 +2331,214 @@ mod tests {
                 rpc_endpoint: "ws://127.0.0.1:6790".parse().unwrap(),
                 process: None,
             },
+            None,
+            None,
             timestamp(),
             &FailClosedRpcAdapter,
         );
         assert_eq!(node.chain.rpc.status, ComponentStatus::Error);
         assert!(node.chain.rpc.error.is_some());
         assert_eq!(node.chain.sync.status, ComponentStatus::Error);
+    }
+
+    #[test]
+    fn failed_directory_scan_is_cached_for_the_full_sample_interval() {
+        let mut previous: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        let last_good = "2026-08-20T00:00:00Z".parse().unwrap();
+        let failed_at = "2026-08-20T00:05:00Z".parse().unwrap();
+        previous.nodes[0].data_directory_size_bytes = Some(ComponentObservation {
+            status: ComponentStatus::Error,
+            attempted_at: Some(failed_at),
+            latest_observed_at: Some(last_good),
+            received_at: None,
+            state_revision: 2,
+            value_revision: 1,
+            latest: Some(42),
+            error: Some(BoundedError {
+                code: "data_directory_scan_failed".to_owned(),
+                message: "PlatON data directory could not be measured".to_owned(),
+            }),
+        });
+        previous.nodes[0].data_directory_capacity_bytes = Some(ComponentObservation {
+            status: ComponentStatus::Error,
+            attempted_at: Some(failed_at),
+            latest_observed_at: Some(last_good),
+            received_at: None,
+            state_revision: 2,
+            value_revision: 1,
+            latest: Some(100),
+            error: Some(BoundedError {
+                code: "data_directory_capacity_failed".to_owned(),
+                message: "PlatON data directory filesystem capacity could not be measured"
+                    .to_owned(),
+            }),
+        });
+        let mut paths = HashMap::new();
+        paths.insert(
+            previous.nodes[0].node_id,
+            std::path::PathBuf::from("/definitely/missing/platon-data"),
+        );
+
+        let inventory = previous.inventory.clone();
+        let observations = collect_directory_observations(
+            &paths,
+            &inventory,
+            Some(&previous),
+            "2026-08-20T00:05:01Z".parse().unwrap(),
+        );
+
+        assert_eq!(
+            observations[&previous.nodes[0].node_id]
+                .size_bytes
+                .attempted_at,
+            Some(failed_at)
+        );
+    }
+
+    #[test]
+    fn disabled_directory_advances_state_without_rewinding_value_revision() {
+        let mut previous: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        previous.nodes[0].data_directory_size_bytes = Some(ComponentObservation {
+            status: ComponentStatus::Ok,
+            attempted_at: Some("2026-08-20T00:00:00Z".parse().unwrap()),
+            latest_observed_at: Some("2026-08-20T00:00:00Z".parse().unwrap()),
+            received_at: None,
+            state_revision: 7,
+            value_revision: 9,
+            latest: Some(42),
+            error: None,
+        });
+        let inventory = previous.inventory.clone();
+
+        let observations = collect_directory_observations(
+            &HashMap::new(),
+            &inventory,
+            Some(&previous),
+            "2026-08-20T00:05:00Z".parse().unwrap(),
+        );
+        let observation = &observations[&previous.nodes[0].node_id];
+
+        assert_eq!(observation.size_bytes.status, ComponentStatus::Disabled);
+        assert_eq!(observation.size_bytes.state_revision, 8);
+        assert_eq!(observation.size_bytes.value_revision, 9);
+        assert_eq!(observation.size_bytes.latest, None);
+    }
+
+    #[test]
+    fn precollected_directory_cache_preserves_restart_value_and_advances_revision() {
+        let mut previous: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        let previous_observation = ComponentObservation {
+            status: ComponentStatus::Ok,
+            attempted_at: Some("2026-08-20T00:00:00Z".parse().unwrap()),
+            latest_observed_at: Some("2026-08-20T00:00:00Z".parse().unwrap()),
+            received_at: None,
+            state_revision: 4,
+            value_revision: 6,
+            latest: Some(42),
+            error: None,
+        };
+        previous.nodes[0].data_directory_size_bytes = Some(previous_observation.clone());
+        previous.nodes[0].data_directory_capacity_bytes =
+            Some(ok(100_u64, "2026-08-20T00:00:00Z".parse().unwrap()));
+        let node_id = previous.nodes[0].node_id;
+
+        let starting = reconcile_precollected_directory_observations(
+            HashMap::from([(
+                node_id,
+                crate::data_directory::DataDirectoryObservations {
+                    size_bytes: crate::data_directory::starting(),
+                    capacity_bytes: crate::data_directory::starting(),
+                },
+            )]),
+            &previous.inventory,
+            Some(&previous),
+        );
+        assert_eq!(starting[&node_id].size_bytes, previous_observation);
+
+        let changed = reconcile_precollected_directory_observations(
+            HashMap::from([(
+                node_id,
+                crate::data_directory::DataDirectoryObservations {
+                    size_bytes: ok(43_u64, "2026-08-20T00:05:00Z".parse().unwrap()),
+                    capacity_bytes: ok(101_u64, "2026-08-20T00:05:00Z".parse().unwrap()),
+                },
+            )]),
+            &previous.inventory,
+            Some(&previous),
+        );
+        assert_eq!(changed[&node_id].size_bytes.state_revision, 4);
+        assert_eq!(changed[&node_id].size_bytes.value_revision, 7);
+        assert_eq!(changed[&node_id].size_bytes.latest, Some(43));
+    }
+
+    #[test]
+    fn closing_report_reuses_configured_directory_observation() {
+        let mut previous: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        let observation = ok(42_u64, "2026-08-20T00:00:00Z".parse().unwrap());
+        previous.nodes[0].data_directory_size_bytes = Some(observation.clone());
+        previous.nodes[0].data_directory_capacity_bytes =
+            Some(ok(100_u64, "2026-08-20T00:00:00Z".parse().unwrap()));
+        let mut paths = HashMap::new();
+        paths.insert(
+            previous.nodes[0].node_id,
+            std::path::PathBuf::from("/configured/platon-data"),
+        );
+
+        let observations =
+            closing_directory_observations(&paths, &previous.inventory, Some(&previous));
+
+        assert_eq!(
+            observations[&previous.nodes[0].node_id].size_bytes,
+            observation
+        );
+    }
+
+    #[test]
+    fn multiple_nodes_keep_distinct_directory_measurements() {
+        let temp = tempdir().unwrap();
+        let first_path = temp.path().join("first");
+        let second_path = temp.path().join("second");
+        std::fs::create_dir_all(&first_path).unwrap();
+        std::fs::create_dir_all(&second_path).unwrap();
+        std::fs::write(first_path.join("data"), vec![0_u8; 3]).unwrap();
+        std::fs::write(second_path.join("data"), vec![0_u8; 7]).unwrap();
+        let previous: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        let mut inventory = previous.inventory.clone();
+        let second_id: NodeId = "0195f2a1-0099-4099-8099-000000000099".parse().unwrap();
+        let mut second_node = inventory.nodes[0].clone();
+        second_node.node_id = second_id;
+        inventory.nodes.push(second_node);
+        let mut paths = HashMap::new();
+        paths.insert(inventory.nodes[0].node_id, first_path);
+        paths.insert(second_id, second_path);
+
+        let observations = collect_directory_observations(
+            &paths,
+            &inventory,
+            None,
+            "2026-08-20T00:00:00Z".parse().unwrap(),
+        );
+
+        assert_eq!(
+            observations[&inventory.nodes[0].node_id].size_bytes.latest,
+            Some(3)
+        );
+        assert_eq!(observations[&second_id].size_bytes.latest, Some(7));
     }
 
     #[test]
@@ -2098,10 +2660,11 @@ mod tests {
         let mut store = AgentStore::open(AgentDatabaseConfig::new(&db_path))
             .await
             .unwrap();
-        sqlx::query("INSERT INTO agent_state (singleton, agent_id, agent_epoch, boot_id, report_sequence, inventory_revision, boot_state, pending_transition, pending_previous_boot_id, updated_at) VALUES (1, ?, 1, ?, 0, 1, 'drained_pending', 'drained_previous', ?, ?)")
+        sqlx::query("INSERT INTO agent_state (singleton, agent_id, agent_epoch, boot_id, report_sequence, inventory_revision, boot_state, pending_transition, pending_previous_boot_id, shutdown_state, shutdown_started_at, updated_at) VALUES (1, ?, 1, ?, 0, 1, 'drained_pending', 'drained_previous', ?, 'draining', ?, ?)")
             .bind("0195f2a1-0011-4011-8011-000000000011")
             .bind(new_boot)
             .bind(old_boot)
+            .bind("2026-08-12T07:59:00Z")
             .bind("2026-08-12T08:00:00Z")
             .execute(store.connection())
             .await
@@ -2122,13 +2685,25 @@ mod tests {
         let report: AgentReport = serde_json::from_slice(&body).unwrap();
         assert_eq!(report.boot_transition, BootTransition::DrainedPrevious);
         assert_eq!(report.previous_boot_id.unwrap().to_string(), old_boot);
-        let state: (String, Option<String>, String) = sqlx::query_as(
-            "SELECT boot_id, pending_transition, boot_state FROM agent_state WHERE singleton=1",
+        let spool = report.host.spool.latest.unwrap();
+        assert_eq!(spool.shutdown_state.as_deref(), Some("running"));
+        assert_eq!(spool.shutdown_started_at, None);
+        let state: (String, Option<String>, String, String, Option<String>) = sqlx::query_as(
+            "SELECT boot_id, pending_transition, boot_state, shutdown_state, shutdown_started_at FROM agent_state WHERE singleton=1",
         )
         .fetch_one(reopened.connection())
         .await
         .unwrap();
-        assert_eq!(state, (new_boot.to_owned(), None, "active".to_owned()));
+        assert_eq!(
+            state,
+            (
+                new_boot.to_owned(),
+                None,
+                "active".to_owned(),
+                "running".to_owned(),
+                None,
+            )
+        );
         reopened.close().await.unwrap();
     }
     #[tokio::test]

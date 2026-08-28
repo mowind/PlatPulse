@@ -173,14 +173,35 @@ describe('App shell with private Home', () => {
         freshness: 'stale',
         rpcState: 'error',
         syncState: 'unknown',
-        consensusState: 'unsupported',
-        processState: 'disabled',
+        consensusState: 'ok',
+        processState: 'ok',
         resyncState: 'normal',
         networkReferenceConfidence: 'unknown',
         currentHead: 123,
+        latestBlockTransactionCount: 4,
         historicalHighWatermark: 128,
         networkReferenceHead: null,
-        hostCpuPercent: 42.5,
+        processCpuPercent: 12.5,
+        processMemoryPercent: 6.25,
+        processStartedAt: '2026-08-19T22:58:00Z',
+        processUptimeMs: 3_720_000,
+        lastReportAt: '2026-08-20T00:00:05Z',
+        nodeDataDirectorySizeBytes: 2_147_483_648,
+        nodeDataDirectoryCapacityBytes: 8_589_934_592,
+        hostNetworkRxBytesPerSec: 4096,
+        hostNetworkTxBytesPerSec: 2048,
+        consensus: {
+          state: 'ok',
+          freshness: 'current',
+          highestQcBlock: 122,
+          highestLockBlock: 121,
+          highestCommitBlock: 120,
+          validator: true,
+        },
+        validator: {
+          activity: 'producing',
+          activityState: 'current',
+        },
         peers: {
           state: 'error',
           freshness: 'stale',
@@ -191,7 +212,7 @@ describe('App shell with private Home', () => {
           staleSince: '2026-08-20T00:05:00Z',
         },
       }, 200),
-      '/api/public/v1/nodes/node-1/history': () => jsonResponse([{
+      '/api/public/v1/nodes/node-1/history?limit=2': () => jsonResponse([{
         nodeId: 'node-1',
         height: 123,
         blockTimeMs: 1_755_638_400_000,
@@ -199,18 +220,33 @@ describe('App shell with private Home', () => {
         observedAt: '2026-08-20T00:00:00Z',
       }, {
         nodeId: 'node-1',
+        height: 122,
+        blockTimeMs: 1_755_638_398_000,
+        transactionCount: 3,
+        observedAt: '2026-08-19T23:59:58Z',
+      }, {
+        nodeId: 'node-1',
         height: null,
         gapFromHeight: 120,
-        gapToHeight: 122,
+        gapToHeight: 121,
         gapKind: 'unrecoverable_backfill',
         gapReason: 'history interval unavailable',
         observedAt: '2026-08-20T00:01:00Z',
       }], 200),
-      '/api/public/v1/nodes/node-1/history/export': () => jsonResponse([{
-        nodeId: 'node-1',
-        height: 123,
-        observedAt: '2026-08-20T00:00:00Z',
-      }], 200),
+      '/api/public/v1/nodes/node-1/metrics': () => jsonResponse({
+        from: '2026-08-19T23:59:00Z',
+        to: '2026-08-20T00:00:00Z',
+        windowSeconds: 60,
+        processCpuPercent: [{ sampledAt: '2026-08-19T23:59:00Z', value: 10 }, { sampledAt: '2026-08-20T00:00:00Z', value: 12.5 }],
+        processMemoryPercent: [{ sampledAt: '2026-08-19T23:59:00Z', value: 20 }, { sampledAt: '2026-08-20T00:00:00Z', value: 25 }],
+        dataDirectoryPercent: [{ sampledAt: '2026-08-19T23:59:00Z', value: 45 }, { sampledAt: '2026-08-20T00:00:00Z', value: 50 }],
+        networkRxBytesPerSec: [{ sampledAt: '2026-08-19T23:59:00Z', value: 2048 }, { sampledAt: '2026-08-20T00:00:00Z', value: 4096 }],
+        networkTxBytesPerSec: [{ sampledAt: '2026-08-19T23:59:00Z', value: 1024 }, { sampledAt: '2026-08-20T00:00:00Z', value: 2048 }],
+        peerInboundCount: [{ sampledAt: '2026-08-19T23:59:00Z', value: 7 }, { sampledAt: '2026-08-20T00:00:00Z', value: 8 }],
+        peerOutboundCount: [{ sampledAt: '2026-08-19T23:59:00Z', value: 3 }, { sampledAt: '2026-08-20T00:00:00Z', value: 4 }],
+        blockIntervalMs: [{ sampledAt: '2026-08-19T23:59:00Z', value: 1800 }, { sampledAt: '2026-08-20T00:00:00Z', value: 2000 }],
+        transactionCount: [{ sampledAt: '2026-08-19T23:59:00Z', value: 3 }, { sampledAt: '2026-08-20T00:00:00Z', value: 4 }],
+      }, 200),
       '/api/public/v1/nodes/node-1/peer-history': () => jsonResponse({
         state: 'ok',
         freshness: 'current',
@@ -240,25 +276,42 @@ describe('App shell with private Home', () => {
     })
 
     expect(await screen.findByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
-    expect(screen.getByText('Node Health Summary')).toBeTruthy()
-    expect(screen.getAllByText('RPC').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Sync').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Consensus').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Process').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Resync').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Current Head').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('History Boundary').length).toBeGreaterThan(0)
-    expect(screen.getByText('Bounded Block History')).toBeTruthy()
-    expect(screen.getByText(/Server-configured history window; absent blocks are not zero/)).toBeTruthy()
-    expect(screen.getByText('History gap · 120–122')).toBeTruthy()
-    expect(screen.getByText('history interval unavailable')).toBeTruthy()
-    expect(screen.getByText('Last-good peers')).toBeTruthy()
-    expect(screen.getAllByText('12').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Error').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Unknown').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Unsupported').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Disabled').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Stale').length).toBeGreaterThan(0)
+    expect(screen.getByText('Health')).toBeTruthy()
+    expect(screen.getByText('Node status')).toBeTruthy()
+    expect(screen.getByText('Producing')).toBeTruthy()
+    expect(screen.getByText('Process uptime')).toBeTruthy()
+    expect(screen.getByText('1h 2m')).toBeTruthy()
+    expect(screen.getByText('HEAD')).toBeTruthy()
+    expect(screen.getByText('QC')).toBeTruthy()
+    expect(screen.getByText('LOCKED')).toBeTruthy()
+    expect(screen.getByText('COMMITTED')).toBeTruthy()
+    expect(screen.getByText('VALIDATOR')).toBeTruthy()
+    expect(screen.getByText('True')).toBeTruthy()
+    expect(screen.queryByText('Yes')).toBeNull()
+    expect(screen.getByText('RPC observation failed')).toBeTruthy()
+    expect(screen.getByText('Started')).toBeTruthy()
+    expect(screen.getByText('Last report')).toBeTruthy()
+    const resources = screen.getByLabelText('Node process and storage resources')
+    expect(resources.textContent).toContain('CPU')
+    expect(resources.textContent).toContain('12.5%')
+    expect(resources.textContent).toContain('MEMORY')
+    expect(resources.textContent).toContain('6.3%')
+    expect(resources.textContent).toContain('NODE DATA')
+    expect(resources.textContent).toContain('2.00 GiB')
+    expect(resources.querySelectorAll('.node-hero-resource-progress')).toHaveLength(3)
+    expect(screen.getByRole('heading', { level: 3, name: 'Network' })).toBeTruthy()
+    expect(screen.getByText('2.00 KiB/s')).toBeTruthy()
+    expect(screen.getByText('4.00 KiB/s')).toBeTruthy()
+    expect(screen.getByRole('heading', { level: 3, name: 'Connections' })).toBeTruthy()
+    expect(screen.getByRole('heading', { level: 3, name: 'Block time' })).toBeTruthy()
+    expect(screen.getByText('2.00 s')).toBeTruthy()
+    expect(screen.getByRole('heading', { level: 3, name: 'Transactions' })).toBeTruthy()
+    expect(screen.getAllByRole('img', { name: /line chart over the last minute/ })).toHaveLength(2)
+    expect(screen.getAllByRole('img', { name: /bar chart over the last minute/ })).toHaveLength(2)
+    expect(screen.getAllByText('1m')).toHaveLength(4)
+    expect(screen.queryByRole('progressbar')).toBeNull()
+    expect(screen.queryByText('Bounded Block History')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Export public history' })).toBeNull()
     expect(screen.queryByRole('navigation', { name: 'Prototype variants' })).toBeNull()
 
     for (const variant of ['mission-control', 'evidence-ledger']) {
@@ -270,13 +323,6 @@ describe('App shell with private Home', () => {
       expect(screen.getByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
       expect(screen.queryByRole('navigation', { name: 'Prototype variants' })).toBeNull()
     }
-
-    const createObjectUrl = vi.fn(() => 'blob:public-history')
-    const revokeObjectUrl = vi.fn()
-    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectUrl })
-    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectUrl })
-    fireEvent.click(screen.getByRole('button', { name: 'Export public history' }))
-    await waitFor(() => expect(createObjectUrl).toHaveBeenCalled())
 
     const detailsTab = screen.getByRole('tab', { name: 'Details' })
     const networkTab = screen.getByRole('tab', { name: 'Network' })
@@ -484,7 +530,13 @@ describe('App shell with private Home', () => {
             }, 200)
           : jsonResponse({ error: { code: 'unavailable', message: 'refresh failed' } }, 503)
       },
-      '/api/public/v1/nodes/node-1/history': () => jsonResponse([], 200),
+      '/api/public/v1/nodes/node-1/history?limit=2': () => jsonResponse([], 200),
+      '/api/public/v1/nodes/node-1/metrics': () => jsonResponse({
+        from: '2026-08-19T23:59:00Z', to: '2026-08-20T00:00:00Z', windowSeconds: 60,
+        processCpuPercent: [], processMemoryPercent: [], dataDirectoryPercent: [],
+        networkRxBytesPerSec: [], networkTxBytesPerSec: [], peerInboundCount: [], peerOutboundCount: [],
+        blockIntervalMs: [], transactionCount: [],
+      }, 200),
       '/api/public/v1/nodes/node-1/peer-history': () => jsonResponse({ state: 'ok', freshness: 'current', fiveMinute: [], hourly: [] }, 200),
     })
     vi.stubGlobal('EventSource', FakeEventSource)
@@ -496,6 +548,9 @@ describe('App shell with private Home', () => {
       await Promise.resolve()
     })
     expect(await screen.findByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
+    expect(screen.getAllByRole('img', { name: /line chart over the last minute/ })).toHaveLength(2)
+    expect(screen.getAllByRole('img', { name: /bar chart over the last minute/ })).toHaveLength(2)
+    expect(screen.getAllByText('No samples in the last minute')).toHaveLength(4)
     fireEvent.click(screen.getByRole('tab', { name: 'Network' }))
     expect(screen.getByRole('tab', { name: 'Network' }).getAttribute('aria-selected')).toBe('true')
 

@@ -123,6 +123,10 @@ pub enum ComponentKey {
     Spool,
     /// `NodeObservation::process`
     Process,
+    /// `NodeObservation::data_directory_size_bytes`
+    DataDirectorySizeBytes,
+    /// `NodeObservation::data_directory_capacity_bytes`
+    DataDirectoryCapacityBytes,
     /// `NodeChainObservation::rpc`
     Rpc,
     /// `NodeChainObservation::sync`

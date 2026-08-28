@@ -18,7 +18,7 @@
 
 产品分离参照 Komari（<https://github.com/komari-monitor/komari>），但监控对象是 PlatON Node 而不是服务器：
 
-- Home：只读、以 Node 为中心的监控面。Network → Node → Node Detail，展示 Node 当前状态与近期 Block History。Site Access Mode 为 Public 时所有人可读，为 Private 时需登录。
+- Home：只读、以 Node 为中心的监控面。Network → Node → Node Detail，展示 Node 当前状态、共识进度、资源指标与由最近两个连续 Block Summary 推导的出块间隔；Node Detail 不展示 Bounded Block History 列表。Site Access Mode 为 Public 时所有人可读，为 Private 时需登录。
 - Admin：认证后的系统概览与配置面。覆盖 Agent/Node/Network 配置、全局历史窗口、Site Access Mode、Sessions 与 Audit；不复刻 Home 的完整 Node Detail。
 - 同一个 WebUI 承载 `/` 与 `/admin` 两组路由，使用不同的 DTO、查询缓存、权限和导航。
 - 站点级 Site Access Mode（Public/Private）：由 Owner 配置，变更记 Audit；MVP 默认 Private。所有 Active Node 一律出现在 Home，没有按 Node 的可见性开关。
@@ -155,7 +155,7 @@ Freshness State:  Fresh | Stale | Unknown
 
 ### 5.3 Node Process Observation
 
-每个 Node 独立采集：进程是否存在、PID 或 PID 文件、进程身份校验、进程 CPU/Memory、启动时间或运行时长、进程错误。MVP 只观察，不重启、不停止、不升级、不执行命令。
+每个 Node 独立采集：进程是否存在、PID 或 PID 文件、进程身份校验、进程 CPU/Memory、启动时间或运行时长、进程错误；配置 `data_directory` 时，Agent 每五分钟递归统计一次该 PlatON 数据目录内常规文件的逻辑大小，并同时记录其所在文件系统总容量，缓存结果，且不跟随符号链接。WebUI 可据此显示 Node Data 的占用进度；容量未知或无效时只显示目录大小，不伪造百分比。MVP 只观察，不重启、不停止、不升级、不执行命令。
 
 ### 5.4 Node RPC Observation
 
@@ -237,6 +237,7 @@ collection_interval_seconds = 5
 node_id = "..."
 network_key = "platon-mainnet"
 rpc_endpoint = "ipc:///var/lib/platon/data/platon.ipc"
+data_directory = "/var/lib/platon/data"
 
 [nodes.process]
 pid_file = "/var/run/platon.pid"
@@ -408,7 +409,7 @@ MVP 不为后续能力预留空路由。
 
 - Network 列表；
 - Network 概览（Active Node 列表/卡片）；
-- Node Detail：Node Health Summary、freshness、当前 Head、Sync、Consensus、近期 Block History（受全局窗口约束）、Peer Count、Process 摘要、脱敏的 Host 百分比。
+- Node Detail：一个 Komari 风格的紧凑主卡片展示 Node 名称、Node Health Summary、Validator Activity、进程运行时间、PlatON 进程 CPU、进程内存占比、Node Data 大小/容量、`HEAD / QC / LOCKED / COMMITTED / VALIDATOR`、进程启动时间和 Agent 最后上报时间；主卡片使用中性细边框，不显示彩色顶部/边缘色条。CPU、Memory 与 Node Data 在主卡片内沿用 Home Node 卡片的紧凑当前值和进度条层级。Details 仅展示四张等高、缩小内边距与图表高度的一分钟图表卡片：Host 网络上下行、Peer 连接数、最近连续区块间隔与最新 Block Summary 交易数；Network 与 Connections 使用折线图，Block time 与 Transactions 使用柱状图；不伪造中间点，不以 0 替代未知值。进程内存占比使用该进程 RSS 除以所属 Host 总内存；不展示 Bounded Block History 列表或历史导出。
 
 Home 不展示：凭证、RPC Endpoint 原文、内部错误堆栈、Agent/Host 拓扑、任何操作入口。已退休/已删除/未知 Node 使用不泄漏信息的 unavailable 文案。Site Access Mode 为 Private 时 Home 路由要求登录，为 Public 时匿名可读。
 
@@ -530,7 +531,7 @@ Server 可以保留有界、去重的 History Gap 记录表达缺失区间；缺
 ### 13.4 WebUI
 
 - Home 从 Network 列表进入 Node Detail；站点 Private 时 Home 要求登录，Public 时匿名可读；
-- Node Detail 显示当前健康、Head、Sync、Consensus、Peer Count、Block History 与 Host 摘要；
+- Node Detail 使用无彩色边缘条的 Komari 风格紧凑首卡片，显示当前健康、Validator Activity、进程运行时间、PlatON 进程 CPU/Memory、Node Data、Head/QC/Locked/Committed/Validator；Details 展示四张等高紧凑卡片，其中 Network 与 Connections 使用折线图，Block time 与 Transactions 使用柱状图；Bounded Block History 不在页面展示，最近两个连续 Block Summary 仅用于计算区块间隔；
 - Admin 的 Node 页面不复制 Home 的完整 Node Detail；
 - SSE 断开显示 `Live updates paused`；invalidation 后通过 REST 重取；
 - 360px 无水平溢出；Unknown、Stale、Error 不被渲染成 Healthy。

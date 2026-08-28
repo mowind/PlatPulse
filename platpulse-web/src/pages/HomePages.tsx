@@ -1,15 +1,15 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { Link, useParams } from 'react-router'
 import {
-  fetchNodeHistoryExport,
   usePublicNetwork,
   usePublicNode,
   usePublicNodeHistory,
+  usePublicNodeMetrics,
   usePublicNodePeerHistory,
   usePublicValidatorAnalytics,
   usePublicValidatorHistory,
 } from '../api/public'
-import type { PublicNode, PublicValidatorInsight } from '../api/generated'
+import type { PublicMetricPoint, PublicNode, PublicValidatorInsight } from '../api/generated'
 import { useHomeRealtimeContext } from '../layouts/HomeLayout'
 import { PeerInsight } from '../components/PeerInsight'
 import { PeerHistoryInsight, normalizePublicPeerHistory } from '../components/PeerHistoryInsight'
@@ -18,6 +18,7 @@ import { ValidatorInsight } from '../components/ValidatorInsight'
 import { ValidatorAnalytics } from '../components/ValidatorAnalytics'
 import { formatObservedAt, StatusBadge } from '../components/StatusBadge'
 import { RealtimeNotice } from '../components/RealtimeNotice'
+import { formatBytes } from '../formatBytes'
 
 export function NetworkPage() {
   const { networkKey = '' } = useParams()
@@ -74,9 +75,9 @@ export function NodePage() {
   const { generation, resetting, realtime } = useHomeRealtimeContext()
   const nodeQuery = usePublicNode(nodeId, generation)
   const historyQuery = usePublicNodeHistory(nodeId, generation)
+  const metricsQuery = usePublicNodeMetrics(nodeId, generation)
   const peerHistoryQuery = usePublicNodePeerHistory(nodeId, generation)
   const [activeTab, setActiveTab] = useState<'details' | 'network'>('details')
-  const [exportError, setExportError] = useState<string | null>(null)
 
   if (resetting) return <section className="page"><p role="status">Revalidating Node access…</p></section>
   if (nodeQuery.isPending) return <section className="page"><p role="status">Loading Node…</p></section>
@@ -84,64 +85,64 @@ export function NodePage() {
   if (!nodeQuery.data) return <section className="page"><p role="status">Node unavailable.</p><Link to="/">Back to Home</Link></section>
 
   const node = nodeQuery.data
-  const exportHistory = async () => {
-    setExportError(null)
-    try {
-      const items = await fetchNodeHistoryExport(nodeId, undefined, generation)
-      const blob = new Blob([JSON.stringify(items, null, 2)], { type: 'application/json' })
-      const url = URL.createObjectURL(blob)
-      const anchor = document.createElement('a')
-      anchor.href = url
-      anchor.download = 'public-history.json'
-      anchor.click()
-      URL.revokeObjectURL(url)
-    } catch {
-      setExportError('Unable to export block history')
-    }
-  }
+  const activity = nodeActivity(node)
+  const blockInterval = latestBlockInterval(historyQuery.data)
+  const metricHistory = metricsQuery.data
+  const metricHistoryMessage = metricHistory
+    ? undefined
+    : metricsQuery.isPending
+      ? 'Loading metric history…'
+      : metricsQuery.error
+        ? 'Metric history unavailable'
+        : undefined
 
   return <section className="page node-detail-page">
-    <RealtimeNotice realtime={realtime} />
-    {nodeQuery.isRefetchError && <p role="status" className="form-error">Node refresh failed; showing the last successful Node data.</p>}
-    <div className="node-detail-breadcrumb">
-      <Link to={`/networks/${node.networkKey}`}>← {node.networkKey}</Link>
-      <span aria-hidden="true">/</span>
-      <span>Public Node Detail</span>
+    <div className="node-detail-topline">
+      <div className="node-detail-breadcrumb">
+        <Link to={`/networks/${node.networkKey}`}>← {node.networkKey}</Link>
+        <span aria-hidden="true">/</span>
+        <span>Node detail</span>
+      </div>
+      <RealtimeNotice realtime={realtime} />
     </div>
-    <header className="node-detail-heading">
-      <div>
-        <p className="dashboard-kicker">PLATPULSE / NODE DETAIL</p>
-        <h1>{node.displayName ?? 'Node detail'}</h1>
-        <p className="node-id-line">Node ID <code>{node.nodeId}</code></p>
-        <p className="node-id-line">Network key <code>{node.networkKey}</code></p>
-      </div>
-      <div className="node-detail-actions">
-        <StatusBadge status={nodeHealthLabel(node.health)} tone={nodeHealthTone(node.health)} />
-        <button className="secondary-action" type="button" onClick={() => void exportHistory()}>Export public history</button>
-      </div>
-    </header>
-    {exportError && <p role="alert" className="form-error">{exportError}</p>}
+    {nodeQuery.isRefetchError && <p role="status" className="form-error">Node refresh failed; showing the last successful Node data.</p>}
 
-    <section className="node-overview-panel panel" aria-labelledby="node-overview-title">
-      <div className="node-overview-heading">
+    <section className="node-hero-card" aria-labelledby="node-detail-title">
+      <header className="node-hero-header">
         <div>
-          <h2 id="node-overview-title">Node Health Summary</h2>
-          <p className="health-reason">{node.healthReason}</p>
+          <p className="dashboard-kicker">PLATPULSE / {node.networkKey}</p>
+          <h1 id="node-detail-title">{node.displayName ?? 'Node detail'}</h1>
+          <p className="node-id-line">Node ID <code>{node.nodeId}</code></p>
         </div>
-        <div className="node-overview-freshness">
-          <StatusBadge status={freshnessLabel(node.freshness)} tone={statusTone(freshnessLabel(node.freshness))} />
-          <span>{freshnessDetail(node.freshness)}</span>
+        <div className="node-hero-badges" aria-label="Node status">
+          <div><span>Health</span><StatusBadge status={nodeHealthLabel(node.health)} tone={nodeHealthTone(node.health)} /></div>
+          <div><span>Node status</span><StatusBadge status={activity.label} tone={activity.tone} /></div>
+          <div className="node-uptime"><span>Process uptime</span><strong>{formatDuration(node.processUptimeMs)}</strong></div>
         </div>
+      </header>
+
+      {nodeHealthTone(node.health) !== 'ok' && <p className="node-hero-reason">{node.healthReason}</p>}
+      <div className="node-hero-resources" aria-label="Node process and storage resources">
+        <HeroResourceMetric label="CPU" value={formatPercent(node.processCpuPercent)} progress={node.processCpuPercent} />
+        <HeroResourceMetric label="MEMORY" value={formatPercent(node.processMemoryPercent)} progress={node.processMemoryPercent} />
+        <HeroResourceMetric
+          label="NODE DATA"
+          value={formatBytes(node.nodeDataDirectorySizeBytes)}
+          detail={diskDetail(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)}
+          progress={diskProgress(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)}
+        />
       </div>
-      <div className="node-overview-grid">
-        <div className="node-headline-metric"><span>Current Head</span><strong>{formatNumber(node.currentHead)}</strong><small>Latest accepted Node observation</small></div>
-        <div className="node-headline-metric"><span>Peers</span><strong>{peerCount(node.peers)}</strong><small>{peerBreakdown(node.peers)}</small></div>
-        <div className="node-overview-statuses" aria-label="Node component status">
-          <NodeOverviewStatus label="RPC" value={nodeComponentStateLabel(node.rpcState)} />
-          <NodeOverviewStatus label="Sync" value={nodeComponentStateLabel(node.syncState)} />
-          <NodeOverviewStatus label="Consensus" value={nodeComponentStateLabel(node.consensusState)} />
-        </div>
+      <div className="node-consensus-runway" aria-label="Node chain and consensus progress">
+        <HeroMetric label="HEAD" value={formatNumber(node.currentHead)} />
+        <HeroMetric label="QC" value={formatConsensusValue(node.consensus?.highestQcBlock, node.consensus)} />
+        <HeroMetric label="LOCKED" value={formatConsensusValue(node.consensus?.highestLockBlock, node.consensus)} />
+        <HeroMetric label="COMMITTED" value={formatConsensusValue(node.consensus?.highestCommitBlock, node.consensus)} />
+        <HeroMetric label="VALIDATOR" value={formatValidatorMembership(node)} />
       </div>
+      <footer className="node-hero-footer">
+        <div><span>Started</span><strong>{formatDateTime(node.processStartedAt)}</strong></div>
+        <div><span>Last report</span><strong>{formatDateTime(node.lastReportAt)}</strong></div>
+      </footer>
     </section>
 
     <div className="node-tabs" role="tablist" aria-label="Node detail views">
@@ -151,40 +152,64 @@ export function NodePage() {
 
     <section id="node-details-panel" className="node-tabpanel" role="tabpanel" aria-labelledby="node-details-tab" aria-label="Details" hidden={activeTab !== 'details'}>
       <h2 className="sr-only">Details</h2>
-      <section className="panel node-history-panel" aria-labelledby="node-history-title">
-        <div className="panel-heading">
-          <div>
-            <h2 id="node-history-title">Bounded Block History</h2>
-            <p className="muted">Server-configured history window; absent blocks are not zero. The exact bound is not part of the Public Projection.</p>
+      <div className="node-metric-grid">
+        <article className="node-metric-card node-metric-network">
+          <MetricCardHeading label="Network" hint="Host observation · live 1m" />
+          <div className="node-network-rates">
+            <div><span><i className="node-chart-key node-chart-key-primary" />↑ Upload</span><strong>{formatRate(node.hostNetworkTxBytesPerSec)}</strong></div>
+            <div><span><i className="node-chart-key node-chart-key-secondary" />↓ Download</span><strong>{formatRate(node.hostNetworkRxBytesPerSec)}</strong></div>
           </div>
-          <span className="history-window-label">Best effort</span>
-        </div>
-        {historyQuery.error && <p role="status" className="form-error">Block History is Error; retained history is unavailable. <Link to={`/networks/${node.networkKey}`}>Return to Network</Link> and try again.</p>}
-        {historyQuery.isPending && <p role="status">Block History is Starting; loading the Server window…</p>}
-        {!historyQuery.isPending && !historyQuery.error && (historyQuery.data?.filter((block) => block.height != null).length ?? 0) === 0 && (historyQuery.data?.filter((block) => block.gapFromHeight != null || block.gapToHeight != null).length ?? 0) === 0 && <p className="panel-state">Block History is Empty; no retained Block Summary is available in the Server window.</p>}
-        {!historyQuery.isPending && !historyQuery.error && (historyQuery.data?.filter((block) => block.gapFromHeight != null || block.gapToHeight != null).length ?? 0) > 0 && <p className="panel-state">No block summaries are available in this window; the Server recorded history gaps instead.</p>}
-        <div className="history-list">
-          {historyQuery.data?.filter((block) => block.height != null).map((block) => <HistoryCard block={block} key={`${block.height}-${block.observedAt ?? ''}`} />)}
-          {historyQuery.data?.filter((block) => block.gapFromHeight != null || block.gapToHeight != null).slice(0, 3).map((gap) => <HistoryGapCard gap={gap} key={`${gap.gapFromHeight}-${gap.gapToHeight}-${gap.observedAt ?? ''}`} />)}
-        </div>
-      </section>
-      <section className="panel node-chain-context" aria-labelledby="node-chain-context-title">
-        <div className="panel-heading">
-          <div>
-            <h2 id="node-chain-context-title">Chain context</h2>
-            <p className="muted">Supporting observations explain the current position without repeating the headline status.</p>
-          </div>
-        </div>
-        <dl className="node-observation-grid" aria-label="Supporting Node observations">
-          <Observation label="History Boundary" value={formatNumber(node.historicalHighWatermark)} />
-          <Observation label="Network Reference" value={formatNumber(node.networkReferenceHead)} />
-          <Observation label="Reference Confidence" value={confidenceLabel(node.networkReferenceConfidence)} />
-          <Observation label="Host CPU" value={formatPercent(node.hostCpuPercent)} detail="Sanitized Host observation" />
-          <Observation label="Process" value={nodeComponentStateLabel(node.processState)} detail="Node Process observation" />
-          <Observation label="Resync" value={nodeComponentStateLabel(node.resyncState)} detail={resyncDetail(node)} />
-        </dl>
-      </section>
-      {node.validator && <ValidatorDetails validator={node.validator} generation={generation} />}
+          <MetricChart
+            label="Network"
+            series={[
+              { label: 'Upload', points: metricHistory?.networkTxBytesPerSec ?? [] },
+              { label: 'Download', points: metricHistory?.networkRxBytesPerSec ?? [], secondary: true },
+            ]}
+            from={metricHistory?.from}
+            to={metricHistory?.to}
+            axisFormat={formatRate}
+            message={metricHistoryMessage}
+          />
+        </article>
+        <NodeMetricCard
+          label="Connections"
+          value={peerCount(node.peers)}
+          detail={`${peerBreakdown(node.peers)} · live 1m`}
+          tone="blue"
+          series={[
+            { label: 'Inbound', points: metricHistory?.peerInboundCount ?? [] },
+            { label: 'Outbound', points: metricHistory?.peerOutboundCount ?? [], secondary: true },
+          ]}
+          from={metricHistory?.from}
+          to={metricHistory?.to}
+          axisFormat={formatCountAxis}
+          historyMessage={metricHistoryMessage}
+        />
+        <NodeMetricCard
+          label="Block time"
+          value={blockInterval.value}
+          detail={`${historyQuery.error ? 'History unavailable' : blockInterval.detail} · live 1m`}
+          tone="amber"
+          series={[{ label: 'Block time', points: metricHistory?.blockIntervalMs ?? [] }]}
+          from={metricHistory?.from}
+          to={metricHistory?.to}
+          axisFormat={formatMillisecondsAxis}
+          historyMessage={metricHistoryMessage}
+          chartKind="bar"
+        />
+        <NodeMetricCard
+          label="Transactions"
+          value={formatNumber(node.latestBlockTransactionCount)}
+          detail="Block Summary transaction count · live 1m"
+          tone="violet"
+          series={[{ label: 'Transactions', points: metricHistory?.transactionCount ?? [] }]}
+          from={metricHistory?.from}
+          to={metricHistory?.to}
+          axisFormat={formatCountAxis}
+          historyMessage={metricHistoryMessage}
+          chartKind="bar"
+        />
+      </div>
     </section>
 
     <section id="node-network-panel" className="node-tabpanel" role="tabpanel" aria-labelledby="node-network-tab" aria-label="Network" hidden={activeTab !== 'network'}>
@@ -198,6 +223,263 @@ export function NodePage() {
       <p className="redaction-note">Network insight is public and redacted: peer addresses and identity lists are never displayed.</p>
     </section>
   </section>
+}
+
+function HeroMetric({ label, value }: { label: string; value: string }) {
+  return <div><span>{label}</span><strong>{value}</strong></div>
+}
+
+function HeroResourceMetric({ label, value, detail, progress }: { label: string; value: string; detail?: string; progress?: number | null }) {
+  const boundedProgress = progress == null ? null : Math.max(0, Math.min(100, progress))
+  return <div className="node-hero-resource">
+    <div><span>{label}</span><strong>{value}</strong></div>
+    {boundedProgress != null && <i className="node-hero-resource-progress" aria-hidden="true"><span style={{ width: `${boundedProgress}%` }} /></i>}
+    {detail && <small>{detail}</small>}
+  </div>
+}
+
+function MetricCardHeading({ label, hint }: { label: string; hint?: string }) {
+  return <header className="node-metric-card-heading"><h3>{label}</h3>{hint && <span>{hint}</span>}</header>
+}
+
+type MetricSeries = {
+  label: string
+  points: PublicMetricPoint[]
+  secondary?: boolean
+}
+
+type MetricChartKind = 'line' | 'bar'
+
+type MetricChartProps = {
+  label: string
+  series: MetricSeries[]
+  from?: string
+  to?: string
+  fixedMax?: number
+  axisFormat: (value: number) => string
+  message?: string
+  kind?: MetricChartKind
+}
+
+function NodeMetricCard({ label, value, detail, tone, series, from, to, fixedMax, axisFormat, historyMessage, chartKind = 'line', className = '' }: {
+  label: string
+  value: string
+  detail?: string
+  tone: 'blue' | 'violet' | 'amber'
+  series: MetricSeries[]
+  from?: string
+  to?: string
+  fixedMax?: number
+  axisFormat: (value: number) => string
+  historyMessage?: string
+  chartKind?: MetricChartKind
+  className?: string
+}) {
+  return <article className={`node-metric-card node-metric-${tone} ${className}`.trim()}>
+    <div className="node-metric-card-summary">
+      <MetricCardHeading label={label} />
+      <strong className="node-metric-value">{value}</strong>
+    </div>
+    {detail && <p>{detail}</p>}
+    <MetricChart label={label} series={series} from={from} to={to} fixedMax={fixedMax} axisFormat={axisFormat} message={historyMessage} kind={chartKind} />
+  </article>
+}
+
+function MetricChart({ label, series, from, to, fixedMax, axisFormat, message, kind = 'line' }: MetricChartProps) {
+  const gradientId = `node-metric-fill-${useId().replaceAll(':', '')}`
+  const fromMs = from ? Date.parse(from) : Number.NaN
+  const toMs = to ? Date.parse(to) : Number.NaN
+  const validWindow = Number.isFinite(fromMs) && Number.isFinite(toMs) && toMs > fromMs
+  const values = series.flatMap((item) => item.points.map((point) => point.value)).filter(Number.isFinite)
+  const max = fixedMax ?? niceChartMax(values.length > 0 ? Math.max(...values) : 0)
+  const plots = validWindow
+    ? series.map((item) => ({
+        ...item,
+        coordinates: kind === 'bar'
+          ? chartBarCoordinates(item.points, fromMs, toMs, max)
+          : chartCoordinates(item.points, fromMs, toMs, max),
+      }))
+    : []
+  const hasPoints = plots.some((item) => item.coordinates.length > 0)
+  const chartMessage = message ?? (hasPoints ? undefined : 'No samples in the last minute')
+
+  return <div className="node-metric-chart">
+    <div className="node-metric-y-axis" aria-hidden="true">
+      <span>{axisFormat(max)}</span>
+      <span>{axisFormat(max / 2)}</span>
+      <span>{axisFormat(0)}</span>
+    </div>
+    <svg viewBox="0 0 600 150" preserveAspectRatio="none" role="img" aria-label={`${label} ${kind} chart over the last minute`}>
+      <title>{label} {kind} chart over the last minute</title>
+      <desc>{chartMessage ? `${label}: ${chartMessage}` : `${series.map((item) => item.label).join(' and ')} values from one minute ago to now`}</desc>
+      <defs>
+        <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="var(--node-metric-accent)" stopOpacity="0.34" />
+          <stop offset="100%" stopColor="var(--node-metric-accent)" stopOpacity="0.02" />
+        </linearGradient>
+      </defs>
+      <g className="node-metric-grid-lines" aria-hidden="true">
+        <line x1="0" y1="8" x2="600" y2="8" />
+        <line x1="0" y1="75" x2="600" y2="75" />
+        <line x1="0" y1="142" x2="600" y2="142" />
+      </g>
+      {!chartMessage && kind === 'line' && plots.map((item, index) => {
+        const line = chartLinePath(item.coordinates)
+        const area = plots.length === 1 ? chartAreaPath(item.coordinates) : ''
+        return <g key={item.label}>
+          {area && <path className="node-metric-chart-area" d={area} fill={`url(#${gradientId})`} />}
+          {line && <path className={item.secondary ? 'node-metric-chart-line node-metric-chart-line-secondary' : 'node-metric-chart-line'} d={line} />}
+          {item.coordinates.length === 1 && <circle className={item.secondary ? 'node-metric-chart-dot node-metric-chart-dot-secondary' : 'node-metric-chart-dot'} cx={item.coordinates[0].x} cy={item.coordinates[0].y} r={index === 0 ? 4 : 3.5} />}
+        </g>
+      })}
+      {!chartMessage && kind === 'bar' && plots.flatMap((item) => {
+        const width = chartBarWidth(item.coordinates.length)
+        return item.coordinates.map((point, index) => {
+          const height = Math.max(1, 142 - point.y)
+          const x = Math.max(0, Math.min(600 - width, point.x - width / 2))
+          return <rect key={`${item.label}-${index}`} className="node-metric-chart-bar" x={x} y={142 - height} width={width} height={height} rx={Math.min(2.5, width / 3)} />
+        })
+      })}
+      {chartMessage && <text className="node-metric-chart-empty" x="300" y="78" textAnchor="middle">{chartMessage}</text>}
+    </svg>
+    <div className="node-metric-x-axis" aria-hidden="true"><span>1m</span><span>0s</span></div>
+  </div>
+}
+
+type ChartCoordinate = { x: number; y: number }
+
+function chartCoordinates(points: PublicMetricPoint[], from: number, to: number, max: number): ChartCoordinate[] {
+  const coordinates = points
+    .map((point) => ({ sampledAt: Date.parse(point.sampledAt), value: point.value }))
+    .filter((point) => Number.isFinite(point.sampledAt) && Number.isFinite(point.value))
+    .sort((left, right) => left.sampledAt - right.sampledAt)
+    .map((point) => ({
+      x: Math.max(0, Math.min(600, ((point.sampledAt - from) / (to - from)) * 600)),
+      y: 142 - (Math.max(0, Math.min(max, point.value)) / max) * 134,
+    }))
+  const last = coordinates.at(-1)
+  if (last && last.x < 600) coordinates.push({ x: 600, y: last.y })
+  return coordinates
+}
+
+function chartBarCoordinates(points: PublicMetricPoint[], from: number, to: number, max: number): ChartCoordinate[] {
+  return points
+    .map((point) => ({ sampledAt: Date.parse(point.sampledAt), value: point.value }))
+    .filter((point) => Number.isFinite(point.sampledAt) && Number.isFinite(point.value) && point.sampledAt >= from && point.sampledAt <= to)
+    .sort((left, right) => left.sampledAt - right.sampledAt)
+    .map((point) => ({
+      x: ((point.sampledAt - from) / (to - from)) * 600,
+      y: 142 - (Math.max(0, Math.min(max, point.value)) / max) * 134,
+    }))
+}
+
+function chartBarWidth(count: number): number {
+  if (count <= 0) return 0
+  return Math.max(2, Math.min(18, (600 / count) * 0.64))
+}
+
+function chartLinePath(points: ChartCoordinate[]): string {
+  return points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(' ')
+}
+
+function chartAreaPath(points: ChartCoordinate[]): string {
+  if (points.length < 2) return ''
+  const first = points[0]
+  const last = points.at(-1)
+  if (!last) return ''
+  return `${chartLinePath(points)} L ${last.x.toFixed(2)} 142 L ${first.x.toFixed(2)} 142 Z`
+}
+
+function niceChartMax(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return 1
+  const magnitude = 10 ** Math.floor(Math.log10(value))
+  const normalized = value / magnitude
+  const step = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10
+  return step * magnitude
+}
+
+function nodeActivity(node: PublicNode): { label: string; tone: 'ok' | 'warning' | 'error' | 'neutral' } {
+  const value = node.validator?.activity
+  if (!value || value === 'unknown' || value === 'observing') return { label: 'Observing', tone: 'neutral' }
+  const label = value.charAt(0).toUpperCase() + value.slice(1)
+  if (node.validator?.activityState === 'stale') return { label: `${label} (Stale)`, tone: 'warning' }
+  return { label, tone: ['exiting', 'exited', 'verifying', 'locked'].includes(value) ? 'warning' : 'ok' }
+}
+
+function formatConsensusValue(value: number | null | undefined, consensus: PublicNode['consensus'] | undefined): string {
+  if (!consensus || value == null || consensus.freshness === 'unknown' || ['starting', 'disabled', 'unsupported'].includes(consensus.state)) return 'Unknown'
+  return value.toLocaleString()
+}
+
+function formatValidatorMembership(node: PublicNode): string {
+  const consensus = node.consensus
+  if (!consensus || consensus.validator == null || consensus.freshness === 'unknown' || ['starting', 'disabled', 'unsupported'].includes(consensus.state)) return 'Unknown'
+  return consensus.validator ? 'True' : 'False'
+}
+
+function formatDuration(value: number | null | undefined): string {
+  if (value == null || value < 0) return 'Unknown'
+  const totalSeconds = Math.floor(value / 1000)
+  const days = Math.floor(totalSeconds / 86_400)
+  const hours = Math.floor((totalSeconds % 86_400) / 3_600)
+  const minutes = Math.floor((totalSeconds % 3_600) / 60)
+  if (days > 0) return `${days}d ${hours}h`
+  if (hours > 0) return `${hours}h ${minutes}m`
+  if (minutes > 0) return `${minutes}m`
+  return `${totalSeconds}s`
+}
+
+function formatDateTime(value: string | null | undefined): string {
+  if (!value) return 'Unknown'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return 'Unknown'
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium' }).format(date)
+}
+
+function formatRate(value: number | null | undefined): string {
+  if (value == null) return 'Unknown'
+  const units = ['B/s', 'KiB/s', 'MiB/s', 'GiB/s']
+  let scaled = value
+  let unit = 0
+  while (scaled >= 1024 && unit < units.length - 1) {
+    scaled /= 1024
+    unit += 1
+  }
+  const digits = scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2
+  return `${scaled.toFixed(digits)} ${units[unit]}`
+}
+
+function formatCountAxis(value: number): string {
+  return Math.round(value).toLocaleString()
+}
+
+function formatMillisecondsAxis(value: number): string {
+  if (value >= 1000) return `${Number((value / 1000).toFixed(value >= 10_000 ? 0 : 1))}s`
+  return `${Math.round(value)}ms`
+}
+
+function diskProgress(size: number | null | undefined, capacity: number | null | undefined): number | null {
+  if (size == null || capacity == null || capacity <= 0) return null
+  return (size / capacity) * 100
+}
+
+function diskDetail(size: number | null | undefined, capacity: number | null | undefined): string {
+  const progress = diskProgress(size, capacity)
+  if (progress == null) return 'Node data directory'
+  return `${formatBytes(capacity)} total · ${formatPercent(progress)}`
+}
+
+function latestBlockInterval(history: ReturnType<typeof usePublicNodeHistory>['data']): { value: string; detail: string } {
+  const blocks = history?.filter((item) => item.height != null && item.blockTimeMs != null).slice(0, 2) ?? []
+  if (blocks.length < 2) return { value: 'Unknown', detail: 'Two Block Summaries are required' }
+  const [latest, previous] = blocks
+  if (latest.height == null || previous.height == null || latest.blockTimeMs == null || previous.blockTimeMs == null || latest.height - previous.height !== 1) {
+    return { value: 'Unknown', detail: 'Consecutive Block Summaries unavailable' }
+  }
+  const elapsed = latest.blockTimeMs - previous.blockTimeMs
+  if (elapsed < 0) return { value: 'Unknown', detail: 'Block timestamps are inconsistent' }
+  const value = elapsed < 1000 ? `${elapsed} ms` : `${(elapsed / 1000).toFixed(2)} s`
+  return { value, detail: `Block ${latest.height.toLocaleString()} − ${previous.height.toLocaleString()}` }
 }
 
 function TabButton({ id, panelId, selected, onSelect, onNavigate, children }: { id: string; panelId: string; selected: boolean; onSelect: () => void; onNavigate: (tab: 'details' | 'network') => void; children: string }) {
@@ -224,10 +506,6 @@ function TabButton({ id, panelId, selected, onSelect, onNavigate, children }: { 
 
 function NodeOverviewStatus({ label, value }: { label: string; value: string }) {
   return <div className="node-overview-status"><span>{label}</span><StatusBadge status={value} tone={stateTone(value)} /></div>
-}
-
-function Observation({ label, value, detail }: { label: string; value: string; detail?: string }) {
-  return <div><dt>{label}</dt><dd>{value}</dd>{detail && <small>{detail}</small>}</div>
 }
 
 function nodeComponentStateLabel(value: string | null | undefined): string {
@@ -276,10 +554,6 @@ function stateTone(value: string | null | undefined): 'ok' | 'warning' | 'error'
   return 'neutral'
 }
 
-function statusTone(value: string): 'ok' | 'warning' | 'error' | 'neutral' {
-  return stateTone(value)
-}
-
 function freshnessLabel(value: string | null | undefined): string {
   if (value === 'current') return 'Current'
   if (value === 'stale') return 'Stale'
@@ -291,11 +565,6 @@ function freshnessDetail(value: string | null | undefined): string {
   if (!value || value === 'unknown') return 'Freshness Unknown; no Server timestamp is available.'
   if (value === 'current' || value === 'stale') return `Freshness ${freshnessLabel(value)}; Server-provided state.`
   return `Last observed ${formatObservedAt(value)}.`
-}
-
-function confidenceLabel(value: string | null | undefined): string {
-  if (!value || value === 'unknown') return 'Unknown'
-  return value.charAt(0).toUpperCase() + value.slice(1)
 }
 
 function formatNumber(value: number | null | undefined): string {
@@ -318,31 +587,6 @@ function peerBreakdown(insight: PublicNode['peers']): string {
   if (insight.peerCount === 0) return 'Empty; authoritative successful zero'
   if (insight.inboundCount == null || insight.outboundCount == null) return 'Current observation'
   return `${insight.inboundCount} inbound · ${insight.outboundCount} outbound`
-}
-
-function ValidatorDetails({ validator, generation }: { validator: PublicValidatorInsight; generation: number }) {
-  const analytics = usePublicValidatorAnalytics(validator.validatorId, 31, generation)
-  return <>
-    <ValidatorInsight insight={validator} />
-    {analytics.data && <ValidatorAnalytics analytics={analytics.data} compact />}
-    {analytics.error && <p role="status" className="muted">Validator analytics unavailable; the core Node view remains available.</p>}
-  </>
-}
-
-function HistoryCard({ block }: { block: NonNullable<ReturnType<typeof usePublicNodeHistory>['data']>[number] }) {
-  if (block.height == null) return null
-  const detail = `Freshness: ${block.freshness ?? 'unknown'} · Coinbase: ${block.coinbase ?? 'unknown'} · Seal signer: ${block.sealSignerMatch ?? 'unknown'} · Protocol proposer: ${block.protocolProposer ?? 'unknown'}`
-  return <article className="node-card"><strong>Height {block.height}</strong><span> · {block.blockTimeMs == null ? 'time unknown' : new Date(block.blockTimeMs).toISOString()} · {block.transactionCount == null ? 'transactions unknown' : `${block.transactionCount} transactions`}</span><p className="muted">{detail}</p></article>
-}
-
-function resyncDetail(node: PublicNode): string {
-  return nodeComponentStateLabel(node.resyncState) === 'Current' ? 'No active resync' : node.resyncProgress ?? 'Progress unavailable'
-}
-
-function HistoryGapCard({ gap }: { gap: NonNullable<ReturnType<typeof usePublicNodeHistory>['data']>[number] }) {
-  const from = gap.gapFromHeight == null ? 'Unknown' : gap.gapFromHeight.toLocaleString()
-  const to = gap.gapToHeight == null ? 'Unknown' : gap.gapToHeight.toLocaleString()
-  return <article className="node-card history-gap-card"><strong>History gap · {from}–{to}</strong><span>{gap.gapKind ?? 'Unclassified gap'} · {formatObservedAt(gap.observedAt)}</span><p className="muted">{gap.gapReason ?? 'The interval could not be recovered.'}</p></article>
 }
 
 function NodeCard({ node }: { node: PublicNode }) {

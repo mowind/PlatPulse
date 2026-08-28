@@ -85,6 +85,15 @@ const NODE_A_DETAIL = {
   resync_progress: null,
   network_reference_head: 12842019,
   network_reference_confidence: 'low',
+  data_directory: {
+    state: 'ok',
+    attempted_at: '2026-08-12T08:00:00Z',
+    observed_at: '2026-08-12T08:00:00Z',
+    received_at: '2026-08-12T08:00:00Z',
+    state_revision: 1,
+    value_revision: 1,
+    size_bytes: 12_884_901_888,
+  },
   process: {
     state: 'ok',
     attempted_at: '2026-08-12T08:00:00Z',
@@ -326,6 +335,8 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     expect(screen.getByText('Redacted RPC Endpoint')).toBeTruthy()
     expect(screen.getByText('platon/1.5.1')).toBeTruthy()
     expect(screen.getByText('admin, net, platon')).toBeTruthy()
+    expect(screen.getByText('Node data size')).toBeTruthy()
+    expect(screen.getByText(/12.0 GiB/)).toBeTruthy()
     expect(screen.getByText('Last-good head')).toBeTruthy()
     expect(screen.getAllByText('12842019').length).toBeGreaterThan(0)
     expect(screen.queryByText('Per-Node observations')).toBeNull()

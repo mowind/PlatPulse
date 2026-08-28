@@ -16,7 +16,7 @@ const network = {
       rpcState: 'connected', syncState: 'synced', consensusState: 'ready', processState: 'running', resyncState: 'idle',
       currentHead: 120, latestBlockTransactionCount: 12345, historicalHighWatermark: 120, networkReferenceHead: 120,
       networkReferenceConfidence: 'high', freshness: 'current', resyncProgress: null,
-      hostCpuPercent: 12.5, hostMemoryPercent: 45.25, hostStoragePercent: 80, hostNetworkRxBytesPerSec: 1024, hostNetworkTxBytesPerSec: 2048,
+      hostCpuPercent: 91.5, hostMemoryPercent: 82.25, processCpuPercent: 12.5, processMemoryPercent: 45.25, hostStoragePercent: 80, nodeDataDirectorySizeBytes: 12_884_901_888, nodeDataDirectoryCapacityBytes: 51_539_607_552, hostNetworkRxBytesPerSec: 1024, hostNetworkTxBytesPerSec: 2048,
       peers: { state: 'current', freshness: 'current', peerCount: 0 },
       consensus: {
         state: 'ok', freshness: 'current', observedAt: '2026-08-25T00:00:00Z', receivedAt: '2026-08-25T00:00:00Z',
@@ -74,20 +74,43 @@ describe('Public Home dashboard', () => {
     expect(within(betaCard).getAllByText('Unknown').length).toBeGreaterThanOrEqual(3)
   })
 
-  it('shows host CPU, memory, storage, and network rates in the first metric row', () => {
+  it('shows process CPU and memory with Node data and host network rates', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
     const alphaCard = cardOf(nodeCardLink('Alpha'))
-    const resources = within(alphaCard).getByLabelText('Host resources')
+    const resources = within(alphaCard).getByLabelText('Node process and host network resources')
     const highlights = within(alphaCard).getByLabelText('Node highlights')
     expect(resources.compareDocumentPosition(highlights) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(within(resources).getByText('CPU')).toBeTruthy()
     expect(within(resources).getByText('12.5%')).toBeTruthy()
     expect(within(resources).getByText('45.3%')).toBeTruthy()
-    expect(within(resources).getByText('80.0%')).toBeTruthy()
+    const nodeDataLabel = within(resources).getByText('NODE DATA')
+    expect(nodeDataLabel).toBeTruthy()
+    expect(within(resources).getByText('12.0 GiB')).toBeTruthy()
+    const nodeDataMetric = nodeDataLabel.parentElement as HTMLElement
+    expect(nodeDataMetric.classList.contains('dashboard-node-primary-metric-progress')).toBe(true)
+    expect(nodeDataMetric.style.getPropertyValue('--metric-progress')).toBe('25%')
+    expect(within(resources).queryByText('STORAGE')).toBeNull()
     expect(within(resources).getByText('2.00 KiB/s')).toBeTruthy()
     expect(within(resources).getByText('1.00 KiB/s')).toBeTruthy()
   })
+  it('shows Node data as a percentage of its filesystem capacity', () => {
+    const withCapacity = {
+      ...network,
+      nodes: [
+        { ...network.nodes[0], nodeDataDirectoryCapacityBytes: 51_539_607_552 },
+        network.nodes[1],
+      ],
+    } as unknown as PublicNetwork
+    render(<BrowserRouter><HomeDashboard networks={[withCapacity]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+
+    const alphaCard = cardOf(nodeCardLink('Alpha'))
+    const nodeDataMetric = within(alphaCard).getByText('NODE DATA').parentElement as HTMLElement
+    expect(nodeDataMetric.classList.contains('dashboard-node-primary-metric-progress')).toBe(true)
+    expect(nodeDataMetric.style.getPropertyValue('--metric-progress')).toBe('25%')
+    expect(within(nodeDataMetric).getByText('48.0 GiB total · 25.0%')).toBeTruthy()
+  })
+
   it('shows the second compact metric row as QC, LOCKED, COMMITTED, and VALIDATOR', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 

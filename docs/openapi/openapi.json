@@ -5723,6 +5723,56 @@
         }
       }
     },
+    "/api/public/v1/nodes/{node_id}/metrics": {
+      "get": {
+        "tags": [
+          "public"
+        ],
+        "operationId": "public_node_metrics",
+        "parameters": [
+          {
+            "name": "node_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicNodeMetricHistory"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/public/v1/nodes/{node_id}/peer-history": {
       "get": {
         "tags": [
@@ -6412,6 +6462,16 @@
               "null"
             ],
             "format": "int64"
+          },
+          "data_directory": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/DataDirectoryDiagnostic"
+              }
+            ]
           },
           "display_name": {
             "type": [
@@ -8249,6 +8309,71 @@
           }
         }
       },
+      "DataDirectoryDiagnostic": {
+        "type": "object",
+        "required": [
+          "state",
+          "state_revision",
+          "value_revision"
+        ],
+        "properties": {
+          "attempted_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "capacity_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "observed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "received_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "state": {
+            "type": "string"
+          },
+          "state_revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "value_revision": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "DeliveryRetryResponse": {
         "allOf": [
           {
@@ -9354,6 +9479,16 @@
               "null"
             ],
             "format": "int64"
+          },
+          "data_directory": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/DataDirectoryDiagnostic"
+              }
+            ]
           },
           "display_name": {
             "type": [
@@ -10767,6 +10902,22 @@
           }
         }
       },
+      "PublicMetricPoint": {
+        "type": "object",
+        "required": [
+          "sampledAt",
+          "value"
+        ],
+        "properties": {
+          "sampledAt": {
+            "type": "string"
+          },
+          "value": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
       "PublicNetwork": {
         "type": "object",
         "required": [
@@ -10894,6 +11045,12 @@
             ],
             "format": "double"
           },
+          "lastReportAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "latestBlockTransactionCount": {
             "type": [
               "integer",
@@ -10915,14 +11072,55 @@
             ],
             "format": "int64"
           },
+          "nodeDataDirectoryCapacityBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "nodeDataDirectorySizeBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
           "nodeId": {
             "type": "string"
           },
           "peers": {
             "$ref": "#/components/schemas/PublicPeerInsight"
           },
+          "processCpuPercent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "processMemoryPercent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "processStartedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "processState": {
             "type": "string"
+          },
+          "processUptimeMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
           },
           "resyncProgress": {
             "type": [
@@ -10948,6 +11146,89 @@
                 "$ref": "#/components/schemas/PublicValidatorInsight"
               }
             ]
+          }
+        }
+      },
+      "PublicNodeMetricHistory": {
+        "type": "object",
+        "required": [
+          "from",
+          "to",
+          "windowSeconds",
+          "processCpuPercent",
+          "processMemoryPercent",
+          "dataDirectoryPercent",
+          "networkRxBytesPerSec",
+          "networkTxBytesPerSec",
+          "peerInboundCount",
+          "peerOutboundCount",
+          "blockIntervalMs",
+          "transactionCount"
+        ],
+        "properties": {
+          "blockIntervalMs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicMetricPoint"
+            }
+          },
+          "dataDirectoryPercent": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicMetricPoint"
+            }
+          },
+          "from": {
+            "type": "string"
+          },
+          "networkRxBytesPerSec": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicMetricPoint"
+            }
+          },
+          "networkTxBytesPerSec": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicMetricPoint"
+            }
+          },
+          "peerInboundCount": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicMetricPoint"
+            }
+          },
+          "peerOutboundCount": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicMetricPoint"
+            }
+          },
+          "processCpuPercent": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicMetricPoint"
+            }
+          },
+          "processMemoryPercent": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicMetricPoint"
+            }
+          },
+          "to": {
+            "type": "string"
+          },
+          "transactionCount": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicMetricPoint"
+            }
+          },
+          "windowSeconds": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },

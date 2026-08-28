@@ -116,6 +116,7 @@ export type AdminNodeDetail = {
     agent_id: string;
     consensus?: null | ConsensusDiagnostic;
     current_head?: number | null;
+    data_directory?: null | DataDirectoryDiagnostic;
     display_name?: string | null;
     first_seen_at: string;
     freshness: string;
@@ -593,6 +594,19 @@ export type CreatePersonRequest = {
     username: string;
 };
 
+export type DataDirectoryDiagnostic = {
+    attempted_at?: string | null;
+    capacity_bytes?: number | null;
+    error_code?: string | null;
+    error_message?: string | null;
+    observed_at?: string | null;
+    received_at?: string | null;
+    size_bytes?: number | null;
+    state: string;
+    state_revision: number;
+    value_revision: number;
+};
+
 export type DeliveryRetryResponse = DeliveryRow & {
     auditEventId: number;
 };
@@ -868,6 +882,7 @@ export type NetworkUpdateRequest = {
 export type NodeDiagnostic = {
     consensus?: null | ConsensusDiagnostic;
     current_head?: number | null;
+    data_directory?: null | DataDirectoryDiagnostic;
     display_name?: string | null;
     /**
      * Server-owned freshness dimension: `current`, `stale`, or `unknown`.
@@ -1315,6 +1330,11 @@ export type PublicGeoInsight = {
     state: string;
 };
 
+export type PublicMetricPoint = {
+    sampledAt: string;
+    value: number;
+};
+
 export type PublicNetwork = {
     displayName: string;
     geo: PublicGeoInsight;
@@ -1338,6 +1358,7 @@ export type PublicNode = {
     hostNetworkRxBytesPerSec?: number | null;
     hostNetworkTxBytesPerSec?: number | null;
     hostStoragePercent?: number | null;
+    lastReportAt?: string | null;
     /**
      * Transaction count from this Node's latest persisted Block Summary.
      * `None` means the Node has not produced a Block Summary yet.
@@ -1346,14 +1367,35 @@ export type PublicNode = {
     networkKey: string;
     networkReferenceConfidence: string;
     networkReferenceHead?: number | null;
+    nodeDataDirectoryCapacityBytes?: number | null;
+    nodeDataDirectorySizeBytes?: number | null;
     nodeId: string;
     peers: PublicPeerInsight;
+    processCpuPercent?: number | null;
+    processMemoryPercent?: number | null;
+    processStartedAt?: string | null;
     processState: string;
+    processUptimeMs?: number | null;
     resyncProgress?: string | null;
     resyncState: string;
     rpcState: string;
     syncState: string;
     validator?: null | PublicValidatorInsight;
+};
+
+export type PublicNodeMetricHistory = {
+    blockIntervalMs: Array<PublicMetricPoint>;
+    dataDirectoryPercent: Array<PublicMetricPoint>;
+    from: string;
+    networkRxBytesPerSec: Array<PublicMetricPoint>;
+    networkTxBytesPerSec: Array<PublicMetricPoint>;
+    peerInboundCount: Array<PublicMetricPoint>;
+    peerOutboundCount: Array<PublicMetricPoint>;
+    processCpuPercent: Array<PublicMetricPoint>;
+    processMemoryPercent: Array<PublicMetricPoint>;
+    to: string;
+    transactionCount: Array<PublicMetricPoint>;
+    windowSeconds: number;
 };
 
 export type PublicPeerAggregate = {
@@ -4368,6 +4410,28 @@ export type PublicNodeHistoryExportResponses = {
 };
 
 export type PublicNodeHistoryExportResponse = PublicNodeHistoryExportResponses[keyof PublicNodeHistoryExportResponses];
+
+export type PublicNodeMetricsData = {
+    body?: never;
+    path: {
+        node_id: string;
+    };
+    query?: never;
+    url: '/api/public/v1/nodes/{node_id}/metrics';
+};
+
+export type PublicNodeMetricsErrors = {
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type PublicNodeMetricsError = PublicNodeMetricsErrors[keyof PublicNodeMetricsErrors];
+
+export type PublicNodeMetricsResponses = {
+    200: PublicNodeMetricHistory;
+};
+
+export type PublicNodeMetricsResponse = PublicNodeMetricsResponses[keyof PublicNodeMetricsResponses];
 
 export type PublicNodePeerHistoryData = {
     body?: never;

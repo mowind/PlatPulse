@@ -31,7 +31,6 @@ export function RealtimeNotice({ realtime }: { realtime: RealtimeState }) {
         aria-label={streamLabel}
       >
         <StatusBadge status={streamLabel} tone={streamTone} />
-        <span className="muted"> Server updates arrive as invalidations; REST data stays authoritative.</span>
       </p>
       {!realtime.online && (
         <p className="realtime-notice">

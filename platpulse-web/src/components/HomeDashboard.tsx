@@ -3,6 +3,7 @@ import { Link } from 'react-router'
 import type { PublicConsensusInsight, PublicNetwork, PublicNode } from '../api/generated'
 import { realtimeStreamLabel } from './RealtimeNotice'
 import { StatusBadge } from './StatusBadge'
+import { formatBytes } from '../formatBytes'
 
 type HomeDashboardProps = {
   networks: PublicNetwork[]
@@ -151,14 +152,29 @@ function HomeNodeCard({ network, node }: NodeRecord) {
 
 function ResourceRow({ node }: { node: PublicNode }) {
   return (
-    <div className="dashboard-node-resources" aria-label="Host resources">
-      <Metric label="CPU" value={formatPercent(node.hostCpuPercent)} progress={node.hostCpuPercent} />
-      <Metric label="MEMORY" value={formatPercent(node.hostMemoryPercent)} progress={node.hostMemoryPercent} />
-      <Metric label="STORAGE" value={formatPercent(node.hostStoragePercent)} progress={node.hostStoragePercent} />
+    <div className="dashboard-node-resources" aria-label="Node process and host network resources">
+      <Metric label="CPU" value={formatPercent(node.processCpuPercent)} progress={node.processCpuPercent} />
+      <Metric label="MEMORY" value={formatPercent(node.processMemoryPercent)} progress={node.processMemoryPercent} />
+      <Metric
+        label="NODE DATA"
+        value={formatBytes(node.nodeDataDirectorySizeBytes)}
+        detail={nodeDataDetail(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)}
+        progress={nodeDataProgress(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)}
+      />
       <Metric label="↑ UP" value={formatRate(node.hostNetworkTxBytesPerSec)} />
       <Metric label="↓ DOWN" value={formatRate(node.hostNetworkRxBytesPerSec)} />
     </div>
   )
+}
+
+function nodeDataProgress(size: number | null | undefined, capacity: number | null | undefined) {
+  if (size == null || capacity == null || capacity <= 0) return null
+  return (size / capacity) * 100
+}
+
+function nodeDataDetail(size: number | null | undefined, capacity: number | null | undefined) {
+  const progress = nodeDataProgress(size, capacity)
+  return progress == null ? undefined : `${formatBytes(capacity)} total · ${formatPercent(progress)}`
 }
 
 function formatPercent(value: number | null | undefined) {

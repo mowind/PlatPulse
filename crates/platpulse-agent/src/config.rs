@@ -1,5 +1,6 @@
 //! Agent configuration (design §8.2).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use platpulse_core::identity::NodeId;
@@ -111,11 +112,17 @@ pub struct AgentNodeConfig {
     pub display_name: Option<String>,
     #[serde(default)]
     pub process: Option<ProcessSelector>,
+    /// Absolute PlatON data directory measured as this Node's disk usage.
+    /// The local path is never included in the Agent Inventory or Public
+    /// Projection.
+    #[serde(default)]
+    pub data_directory: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ValidatedAgentConfig {
     pub inventory: NodeInventory,
+    pub data_directories: HashMap<NodeId, PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -180,6 +187,7 @@ impl AgentConfigFile {
         let mut seen_ids = std::collections::HashSet::new();
         let mut seen_endpoints = std::collections::HashSet::new();
         let mut nodes = Vec::with_capacity(self.nodes.len());
+        let mut data_directories = HashMap::new();
         for node in &self.nodes {
             if !seen_ids.insert(node.node_id) {
                 return Err(AgentConfigError::InvalidNode(format!(
@@ -221,6 +229,20 @@ impl AgentConfigFile {
                     ));
                 }
             }
+            if let Some(path) = &node.data_directory {
+                let text = path.to_string_lossy();
+                if !path.is_absolute()
+                    || text.is_empty()
+                    || text.len() > 4096
+                    || text.chars().any(char::is_control)
+                {
+                    return Err(AgentConfigError::InvalidNode(
+                        "data_directory must be an absolute path of at most 4096 characters"
+                            .to_owned(),
+                    ));
+                }
+                data_directories.insert(node.node_id, path.clone());
+            }
             nodes.push(InventoryNode {
                 node_id: node.node_id,
                 display_name: node.display_name.clone(),
@@ -234,6 +256,7 @@ impl AgentConfigFile {
                 revision: self.inventory_revision,
                 nodes,
             },
+            data_directories,
         })
     }
 }
@@ -402,6 +425,35 @@ mod tests {
         let file: AgentConfigFile = toml::from_str(&duplicate).unwrap();
         assert!(matches!(
             file.validate(),
+            Err(AgentConfigError::InvalidNode(_))
+        ));
+    }
+
+    #[test]
+    fn validates_explicit_node_data_directories_without_publishing_the_path() {
+        let id = "0195f2a1-2b3c-4d5e-8f90-123456789abc";
+        let configured: AgentConfigFile = toml::from_str(&format!(
+            "server_url=\"https://example.com\"\ncredential_file=\"/tmp/c\"\nstate_db=\"/tmp/d\"\nnodes=[{{node_id=\"{id}\",network_key=\"platon-mainnet\",rpc_endpoint=\"ws://127.0.0.1:1\",data_directory=\"/var/lib/platon/data\"}}]\n"
+        ))
+        .unwrap();
+        let validated = configured.validate().unwrap();
+        let node_id: NodeId = id.parse().unwrap();
+        assert_eq!(
+            validated.data_directories.get(&node_id),
+            Some(&PathBuf::from("/var/lib/platon/data"))
+        );
+        assert!(
+            !serde_json::to_string(&validated.inventory)
+                .unwrap()
+                .contains("/var/lib/platon/data")
+        );
+
+        let relative: AgentConfigFile = toml::from_str(&format!(
+            "server_url=\"https://example.com\"\ncredential_file=\"/tmp/c\"\nstate_db=\"/tmp/d\"\nnodes=[{{node_id=\"{id}\",network_key=\"platon-mainnet\",rpc_endpoint=\"ws://127.0.0.1:1\",data_directory=\"relative/data\"}}]\n"
+        ))
+        .unwrap();
+        assert!(matches!(
+            relative.validate(),
             Err(AgentConfigError::InvalidNode(_))
         ));
     }
