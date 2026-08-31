@@ -54,19 +54,27 @@ impl AgentRuntime {
         drain_deadline: Duration,
         sender_deadline: Duration,
     ) -> Result<ShutdownOutcome, crate::collector::CollectionError> {
-        let token = self.cancel.clone();
-        tokio::select! {
-            _ = token.cancelled() => {}
-            result = crate::collector::collect_and_persist_with_blocks(config, adapter, transport, subscriptions) => {
-                result?;
-            }
-        }
-        graceful_shutdown_with_subscriptions(
+        let _runtime_lock =
+            crate::database::AgentRuntimeLock::acquire(&config.state_db).map_err(|error| {
+                crate::collector::CollectionError::RuntimeOwnership(error.to_string())
+            })?;
+        let write_permit = crate::database::AgentStoreWritePermit::new();
+        let collection_result = crate::collector::collect_and_persist_with_blocks_with_permit(
+            config,
+            adapter,
+            transport,
+            subscriptions,
+            write_permit.clone(),
+        )
+        .await;
+        collection_result?;
+        graceful_shutdown_with_subscriptions_with_permit(
             config,
             adapter,
             subscriptions,
             drain_deadline,
             sender_deadline,
+            write_permit,
         )
         .await
     }
@@ -83,6 +91,9 @@ impl Default for AgentRuntime {
 pub async fn run_until_signal(
     config: &crate::config::AgentConfig,
 ) -> Result<ShutdownOutcome, crate::collector::CollectionError> {
+    let _runtime_lock = crate::database::AgentRuntimeLock::acquire(&config.state_db)
+        .map_err(|error| crate::collector::CollectionError::RuntimeOwnership(error.to_string()))?;
+    let write_permit = crate::database::AgentStoreWritePermit::new();
     let runtime = AgentRuntime::new();
     let token = runtime.cancellation_token();
     tokio::select! {
@@ -90,12 +101,13 @@ pub async fn run_until_signal(
         _ = token.cancelled() => {}
     }
     let mut queues = Vec::new();
-    graceful_shutdown_with_subscriptions(
+    graceful_shutdown_with_subscriptions_with_permit(
         config,
         &FailClosedRpcAdapter,
         &mut queues,
         Duration::from_secs(5),
         Duration::from_secs(5),
+        write_permit,
     )
     .await
 }
@@ -177,11 +189,7 @@ pub async fn drain_subscription<R: AsyncBlockResolver>(
             ),
         });
     }
-    let unresolved_range = if subscription.is_empty() {
-        None
-    } else {
-        subscription.drain_unresolved_range()
-    };
+    let unresolved_range = subscription.drain_unresolved_range();
     ShutdownDrainResult {
         summaries,
         unresolved_range,
@@ -592,16 +600,41 @@ impl AsyncBlockResolver for TransportResolver<'_> {
 /// unresolved range, then persist a canonical immutable Closing report.
 pub async fn graceful_shutdown_with_subscriptions<A: crate::collector::RpcAdapter>(
     config: &crate::config::AgentConfig,
-    _adapter: &A,
+    adapter: &A,
     subscriptions: &mut [HeadSubscription],
     drain_deadline: Duration,
     sender_deadline: Duration,
 ) -> Result<ShutdownOutcome, crate::collector::CollectionError> {
+    let _runtime_lock = crate::database::AgentRuntimeLock::acquire(&config.state_db)
+        .map_err(|error| crate::collector::CollectionError::RuntimeOwnership(error.to_string()))?;
+    graceful_shutdown_with_subscriptions_with_permit(
+        config,
+        adapter,
+        subscriptions,
+        drain_deadline,
+        sender_deadline,
+        crate::database::AgentStoreWritePermit::new(),
+    )
+    .await
+}
+
+pub(crate) async fn graceful_shutdown_with_subscriptions_with_permit<
+    A: crate::collector::RpcAdapter,
+>(
+    config: &crate::config::AgentConfig,
+    _adapter: &A,
+    subscriptions: &mut [HeadSubscription],
+    drain_deadline: Duration,
+    sender_deadline: Duration,
+    write_permit: crate::database::AgentStoreWritePermit,
+) -> Result<ShutdownOutcome, crate::collector::CollectionError> {
     use std::str::FromStr;
-    let mut store = crate::database::AgentStore::open(crate::database::AgentDatabaseConfig::new(
-        &config.state_db,
-    ))
+    let mut store = crate::database::AgentStore::open_with_write_permit(
+        crate::database::AgentDatabaseConfig::new(&config.state_db),
+        write_permit,
+    )
     .await?;
+    let _write_permit = store.acquire_write().await;
     let state: Option<(String, i64, Option<String>, i64, String)> = sqlx::query_as(
         "SELECT agent_id, agent_epoch, boot_id, report_sequence, boot_state FROM agent_state WHERE singleton=1",
     )
@@ -615,17 +648,27 @@ pub async fn graceful_shutdown_with_subscriptions<A: crate::collector::RpcAdapte
     }
     let agent_id = platpulse_core::identity::AgentId::from_str(&agent_text)
         .map_err(|error| crate::collector::CollectionError::Identity(error.to_string()))?;
-    let boot_id = boot_text
-        .ok_or(crate::collector::CollectionError::RecoveryRequired)
-        .and_then(|value| {
-            platpulse_core::identity::BootId::from_str(&value)
-                .map_err(|error| crate::collector::CollectionError::Identity(error.to_string()))
-        })?;
+    let boot_text = boot_text.ok_or(crate::collector::CollectionError::RecoveryRequired)?;
+    let boot_id = platpulse_core::identity::BootId::from_str(&boot_text)
+        .map_err(|error| crate::collector::CollectionError::Identity(error.to_string()))?;
     let started = shutdown_timestamp();
     let deadline = started_at_plus(started, drain_deadline);
-    sqlx::query("UPDATE agent_state SET shutdown_state='draining', shutdown_started_at=?, shutdown_deadline_at=?, shutdown_updated_at=?, updated_at=? WHERE singleton=1")
-        .bind(started.to_string()).bind(deadline.to_string()).bind(started.to_string()).bind(started.to_string())
-        .execute(store.connection()).await?;
+    let result = sqlx::query("UPDATE agent_state SET shutdown_state='draining', shutdown_started_at=?, shutdown_deadline_at=?, shutdown_updated_at=?, updated_at=? WHERE singleton=1 AND agent_id=? AND agent_epoch=? AND boot_id=? AND report_sequence=? AND boot_state=?")
+        .bind(started.to_string())
+        .bind(deadline.to_string())
+        .bind(started.to_string())
+        .bind(started.to_string())
+        .bind(&agent_text)
+        .bind(epoch)
+        .bind(&boot_text)
+        .bind(sequence)
+        .bind(&boot_state)
+        .execute(store.connection())
+        .await?;
+    if result.rows_affected() != 1 {
+        return Err(crate::collector::CollectionError::ConcurrentStateChange);
+    }
+    drop(_write_permit);
 
     let inventory = config
         .validated_inventory()
@@ -676,6 +719,7 @@ pub async fn graceful_shutdown_with_subscriptions<A: crate::collector::RpcAdapte
                 },
             );
             crate::block::persist_history_gap(&mut store, &gap).await?;
+            let _write_permit = store.acquire_write().await;
             sqlx::query("UPDATE agent_state SET shutdown_unresolved_from=?, shutdown_unresolved_to=?, shutdown_last_error=? WHERE singleton=1")
                 .bind(range.0 as i64).bind(range.1 as i64).bind(&gap.reason).execute(store.connection()).await?;
         }
@@ -708,7 +752,7 @@ pub async fn graceful_shutdown_with_subscriptions<A: crate::collector::RpcAdapte
         .map_err(|error| crate::collector::CollectionError::Identity(error.to_string()))?;
     let body = serde_json::to_vec(&report)?;
     let generated = report.generated_at.to_string();
-    crate::reporting::persist_immutable_report(
+    crate::reporting::persist_closing_report(
         &mut store,
         &report.report_id.to_string(),
         report.agent_epoch,
@@ -716,29 +760,37 @@ pub async fn graceful_shutdown_with_subscriptions<A: crate::collector::RpcAdapte
         report.report_sequence,
         &generated,
         &body,
+        sequence as u64,
+        &boot_state,
     )
     .await?;
-    sqlx::query("UPDATE agent_state SET report_sequence=?, shutdown_state='final_stored', shutdown_report_id=?, shutdown_report_sequence=?, shutdown_finished_at=?, shutdown_updated_at=?, updated_at=? WHERE singleton=1")
-        .bind(report.report_sequence as i64).bind(report.report_id.to_string()).bind(report.report_sequence as i64).bind(&generated).bind(&generated).bind(&generated).execute(store.connection()).await?;
+    let closing_report_id = report.report_id.to_string();
     let mut receipt_applied = false;
     let mut exhausted = false;
     let send_until = tokio::time::Instant::now() + sender_deadline;
     let sender = crate::reporting::HttpReportTransport::from_config(config)?;
     loop {
-        let Some(remaining) = send_until.checked_duration_since(tokio::time::Instant::now()) else {
+        if tokio::time::Instant::now() >= send_until {
             exhausted = true;
             break;
-        };
-        match tokio::time::timeout(
-            remaining,
-            crate::reporting::deliver_one(&mut store, &sender),
-        )
-        .await
+        }
+        match crate::reporting::deliver_one_with_send_deadline(&mut store, &sender, send_until)
+            .await
         {
-            Ok(Ok(Some(_))) => receipt_applied = true,
-            Ok(Ok(None)) => break,
-            Ok(Err(error)) => {
+            Ok(Some(delivered)) => {
+                if delivered.report_id == closing_report_id {
+                    receipt_applied = true;
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(crate::reporting::ReportStoreError::DeliveryDeadline) => {
+                exhausted = true;
+                break;
+            }
+            Err(error) => {
                 let at = shutdown_timestamp();
+                let _write_permit = store.acquire_write().await;
                 sqlx::query("UPDATE agent_state SET shutdown_state='send_failed', shutdown_last_error=?, shutdown_updated_at=? WHERE singleton=1").bind(error.to_string().chars().take(256).collect::<String>()).bind(at.to_string()).execute(store.connection()).await?;
                 store.close().await?;
                 return Ok(ShutdownOutcome {
@@ -750,35 +802,12 @@ pub async fn graceful_shutdown_with_subscriptions<A: crate::collector::RpcAdapte
                     shutdown_state: "send_failed",
                 });
             }
-            Err(_) => {
-                exhausted = true;
-                break;
-            }
         }
     }
-    if exhausted {
+    if exhausted && !receipt_applied {
         let at = shutdown_timestamp();
+        let _write_permit = store.acquire_write().await;
         sqlx::query("UPDATE agent_state SET shutdown_state='forced_kill_recovery', shutdown_forced=1, shutdown_finished_at=?, shutdown_updated_at=? WHERE singleton=1").bind(at.to_string()).bind(at.to_string()).execute(store.connection()).await?;
-    }
-    if receipt_applied {
-        // The Closing receipt is the lifecycle boundary. Keep the closed boot
-        // immutable and stage a fresh boot so the next process restart emits
-        // DrainedPrevious instead of continuing with a Server-closed boot.
-        let new_boot_id =
-            platpulse_core::identity::BootId::from_str(&uuid::Uuid::new_v4().to_string())
-                .expect("UUID is valid");
-        let previous_boot_id = report.boot_id.to_string();
-        let at = shutdown_timestamp().to_string();
-        sqlx::query("UPDATE agent_state SET boot_id=?, report_sequence=0, boot_state='drained_pending', pending_transition='drained_previous', pending_previous_boot_id=?, previous_boot_id=?, close_report_id=?, close_applied_at=?, shutdown_updated_at=?, updated_at=? WHERE singleton=1")
-            .bind(new_boot_id.to_string())
-            .bind(&previous_boot_id)
-            .bind(&previous_boot_id)
-            .bind(report.report_id.to_string())
-            .bind(&at)
-            .bind(&at)
-            .bind(&at)
-            .execute(store.connection())
-            .await?;
     }
     store.close().await?;
     Ok(ShutdownOutcome {
@@ -817,13 +846,31 @@ pub async fn graceful_shutdown<A: crate::collector::RpcAdapter>(
     adapter: &A,
     sender_deadline: Duration,
 ) -> Result<ShutdownOutcome, crate::collector::CollectionError> {
+    let _runtime_lock = crate::database::AgentRuntimeLock::acquire(&config.state_db)
+        .map_err(|error| crate::collector::CollectionError::RuntimeOwnership(error.to_string()))?;
+    graceful_shutdown_with_permit(
+        config,
+        adapter,
+        sender_deadline,
+        crate::database::AgentStoreWritePermit::new(),
+    )
+    .await
+}
+
+pub(crate) async fn graceful_shutdown_with_permit<A: crate::collector::RpcAdapter>(
+    config: &crate::config::AgentConfig,
+    adapter: &A,
+    sender_deadline: Duration,
+    write_permit: crate::database::AgentStoreWritePermit,
+) -> Result<ShutdownOutcome, crate::collector::CollectionError> {
     let mut subscriptions = Vec::new();
-    graceful_shutdown_with_subscriptions(
+    graceful_shutdown_with_subscriptions_with_permit(
         config,
         adapter,
         &mut subscriptions,
         sender_deadline,
         sender_deadline,
+        write_permit,
     )
     .await
 }

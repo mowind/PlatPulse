@@ -2,7 +2,7 @@
 //! The Server timestamp is authoritative; local monotonic time is used only
 //! to bound request latency and never mixed with RFC3339 observation times.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use reqwest::StatusCode;
 use serde::Deserialize;
@@ -84,6 +84,7 @@ pub async fn exchange_server_time(
     let credential = load_credential_file(&config.credential_file)?;
     let client = reqwest::Client::builder()
         .user_agent(format!("platpulse-agent/{}", crate::VERSION))
+        .timeout(Duration::from_millis(MAX_ROUND_TRIP_MS))
         .build()?;
     let before = OffsetDateTime::now_utc();
     let monotonic_before = Instant::now();

@@ -1,14 +1,21 @@
 use sha2::{Digest, Sha256};
 use sqlx::{Connection, Sqlite, Transaction};
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use thiserror::Error;
 
-use platpulse_core::{AgentReport, ReceiptDisposition, ReportReceipt};
+use platpulse_core::hex::Sha256Hex;
+use platpulse_core::identity::ReportId;
+use platpulse_core::{AgentReport, BootTransition, ReceiptDisposition, ReportReceipt};
+
+/// The Agent retains only enough terminal receipt markers for recent duplicate
+/// or conflict detection; the exact receipt remains a Server-side record.
+pub const MAX_APPLIED_RECEIPT_MARKERS: usize = 256;
 use serde::Deserialize;
 
-use crate::collector::{SpoolCleanupSummary, SpoolPolicy, apply_receipt, receipt_disposition_name};
+use crate::collector::{SpoolCleanupSummary, SpoolPolicy, apply_receipt};
 use crate::config::{AgentConfig, AgentConfigError};
 use crate::credential::{CredentialError, load_credential_file};
 use crate::database::{AgentDatabaseConfig, AgentDatabaseError, AgentStore};
@@ -41,6 +48,8 @@ pub enum ReportStoreError {
     ReceiptMismatch,
     #[error("delivery transport failed: {0}")]
     Delivery(String),
+    #[error("delivery sender deadline exhausted")]
+    DeliveryDeadline,
     #[error("failed to read report body {path}: {source}")]
     ReadReport {
         path: PathBuf,
@@ -55,6 +64,8 @@ pub enum ReportStoreError {
     Config(#[from] AgentConfigError),
     #[error("Agent Store initialization failed: {0}")]
     Store(#[from] AgentDatabaseError),
+    #[error("Agent runtime ownership failed: {0}")]
+    RuntimeOwnership(String),
     #[error("credential load failed: {0}")]
     Credential(#[from] CredentialError),
     #[error("database error: {0}")]
@@ -134,40 +145,52 @@ pub trait ReportTransport {
 pub async fn claim_oldest_report(
     store: &mut AgentStore,
 ) -> Result<Option<StoredReport>, ReportStoreError> {
+    let _write_permit = store.acquire_write().await;
     let mut tx = store.connection().begin().await?;
-    let in_flight: Option<String> = sqlx::query_scalar(
-        "SELECT report_id FROM reports WHERE in_flight = 1 ORDER BY created_at, report_id LIMIT 1",
-    )
-    .fetch_optional(&mut *tx)
-    .await?;
-    let report_id = if let Some(id) = in_flight {
-        id
-    } else {
-        let Some(id) = sqlx::query_scalar::<_, String>("SELECT report_id FROM reports WHERE in_flight = 0 ORDER BY created_at, report_id LIMIT 1")
-            .fetch_optional(&mut *tx).await? else {
-            tx.commit().await?;
-            return Ok(None);
-        };
-        sqlx::query("UPDATE reports SET in_flight = 1 WHERE report_id = ? AND in_flight = 0")
-            .bind(&id)
-            .execute(&mut *tx)
-            .await?;
-        id
-    };
-    let report = sqlx::query_as::<_, (String, i64, Vec<u8>, String)>("SELECT report_id, report_sequence, body, body_sha256 FROM reports WHERE report_id = ? AND in_flight = 1")
-        .bind(&report_id).fetch_optional(&mut *tx).await?;
-    tx.commit().await?;
-    report
-        .map(
-            |(report_id, report_sequence, body, body_sha256)| StoredReport {
-                report_id,
-                report_sequence: report_sequence as u64,
-                body,
-                body_sha256,
-            },
+    let transaction_result: Result<Option<StoredReport>, ReportStoreError> = async {
+        let in_flight: Option<String> = sqlx::query_scalar(
+            "SELECT report_id FROM reports WHERE in_flight = 1 ORDER BY created_at, report_id LIMIT 1",
         )
-        .ok_or(ReportStoreError::DeliveryInFlight)
-        .map(Some)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let report_id = if let Some(id) = in_flight {
+            id
+        } else {
+            let Some(id) = sqlx::query_scalar::<_, String>("SELECT report_id FROM reports WHERE in_flight = 0 ORDER BY created_at, report_id LIMIT 1")
+                .fetch_optional(&mut *tx).await? else {
+                return Ok(None);
+            };
+            sqlx::query("UPDATE reports SET in_flight = 1 WHERE report_id = ? AND in_flight = 0")
+                .bind(&id)
+                .execute(&mut *tx)
+                .await?;
+            id
+        };
+        let report = sqlx::query_as::<_, (String, i64, Vec<u8>, String)>("SELECT report_id, report_sequence, body, body_sha256 FROM reports WHERE report_id = ? AND in_flight = 1")
+            .bind(&report_id).fetch_optional(&mut *tx).await?;
+        report
+            .map(
+                |(report_id, report_sequence, body, body_sha256)| StoredReport {
+                    report_id,
+                    report_sequence: report_sequence as u64,
+                    body,
+                    body_sha256,
+                },
+            )
+            .ok_or(ReportStoreError::DeliveryInFlight)
+            .map(Some)
+    }
+    .await;
+    match transaction_result {
+        Ok(report) => {
+            tx.commit().await?;
+            Ok(report)
+        }
+        Err(error) => match tx.rollback().await {
+            Ok(()) => Err(error),
+            Err(rollback_error) => Err(ReportStoreError::Database(rollback_error)),
+        },
+    }
 }
 
 /// Record a bounded delivery failure while preserving the immutable report.
@@ -177,6 +200,7 @@ pub async fn record_delivery_failure(
     at: &str,
 ) -> Result<(), ReportStoreError> {
     let message = message.chars().take(256).collect::<String>();
+    let _write_permit = store.acquire_write().await;
     sqlx::query("INSERT INTO delivery_diagnostics (singleton, last_error, last_error_at) VALUES (1, ?, ?) ON CONFLICT(singleton) DO UPDATE SET last_error=excluded.last_error, last_error_at=excluded.last_error_at")
         .bind(message).bind(at).execute(store.connection()).await?;
     Ok(())
@@ -194,16 +218,55 @@ pub async fn deliver_one<T: ReportTransport>(
     store: &mut AgentStore,
     transport: &T,
 ) -> Result<Option<StoredReport>, ReportStoreError> {
+    deliver_one_inner(store, transport, None).await
+}
+
+/// Deliver one report while applying a deadline only to the HTTP send. Once
+/// the response arrives, receipt validation and its SQLite transaction are
+/// allowed to finish without cancellation.
+pub async fn deliver_one_with_send_deadline<T: ReportTransport>(
+    store: &mut AgentStore,
+    transport: &T,
+    send_deadline: tokio::time::Instant,
+) -> Result<Option<StoredReport>, ReportStoreError> {
+    deliver_one_inner(store, transport, Some(send_deadline)).await
+}
+
+async fn deliver_one_inner<T: ReportTransport>(
+    store: &mut AgentStore,
+    transport: &T,
+    send_deadline: Option<tokio::time::Instant>,
+) -> Result<Option<StoredReport>, ReportStoreError> {
     ensure_spool_healthy(store).await?;
     let Some(report) = claim_oldest_report(store).await? else {
         return Ok(None);
     };
-    let response = match transport.send(&report.body).await {
-        Ok(response) => response,
-        Err(error) => {
-            let _ = record_delivery_failure(store, &error.to_string(), &now_rfc3339()).await;
-            return Err(error);
-        }
+    let response = match send_deadline {
+        Some(deadline) => match tokio::time::timeout_at(deadline, transport.send(&report.body))
+            .await
+        {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => {
+                let _ = record_delivery_failure(store, &error.to_string(), &now_rfc3339()).await;
+                return Err(error);
+            }
+            Err(_) => {
+                let _ = record_delivery_failure(
+                    store,
+                    "delivery sender deadline exhausted",
+                    &now_rfc3339(),
+                )
+                .await;
+                return Err(ReportStoreError::DeliveryDeadline);
+            }
+        },
+        None => match transport.send(&report.body).await {
+            Ok(response) => response,
+            Err(error) => {
+                let _ = record_delivery_failure(store, &error.to_string(), &now_rfc3339()).await;
+                return Err(error);
+            }
+        },
     };
     let envelope: WireReportResponse = serde_json::from_slice(&response)
         .map_err(|error| ReportStoreError::InvalidReceipt(error.to_string()))?;
@@ -246,6 +309,50 @@ fn now_rfc3339() -> String {
         .expect("valid timestamp")
 }
 
+/// Claim the durable block and gap samples included in a report.
+///
+/// The source row and its unassigned state are checked by the same INSERT
+/// statement that creates the ownership marker. A zero-row insert means the
+/// collection snapshot became stale or the report repeated a sample already
+/// owned by another in-flight report.
+pub(crate) async fn claim_report_samples(
+    tx: &mut Transaction<'_, Sqlite>,
+    report_id: &str,
+    block_summaries: &[platpulse_core::block::BlockSummary],
+    history_gaps: &[platpulse_core::gap::HistoryGap],
+) -> Result<bool, sqlx::Error> {
+    for sample in block_summaries {
+        let result = sqlx::query(
+            "INSERT INTO report_sample_assignments (report_id, node_id, sample_kind, from_height, to_height) SELECT ?, b.node_id, 'block', b.block_number, b.block_number FROM block_summaries b WHERE b.node_id = ? AND b.block_number = ? AND b.block_hash = ? AND NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id = b.node_id AND a.sample_kind = 'block' AND a.from_height = b.block_number AND a.to_height = b.block_number)",
+        )
+        .bind(report_id)
+        .bind(sample.node_id.to_string())
+        .bind(sample.block_number as i64)
+        .bind(sample.block_hash.to_string())
+        .execute(&mut **tx)
+        .await?;
+        if result.rows_affected() != 1 {
+            return Ok(false);
+        }
+    }
+    for gap in history_gaps {
+        let result = sqlx::query(
+            "INSERT INTO report_sample_assignments (report_id, node_id, sample_kind, from_height, to_height) SELECT ?, g.node_id, 'gap', g.from_height, g.to_height FROM history_gaps g WHERE g.node_id = ? AND g.from_height = ? AND g.to_height = ? AND g.kind = ? AND NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id = g.node_id AND a.sample_kind = 'gap' AND a.from_height = g.from_height AND a.to_height = g.to_height)",
+        )
+        .bind(report_id)
+        .bind(gap.node_id.to_string())
+        .bind(gap.from_height as i64)
+        .bind(gap.to_height as i64)
+        .bind(crate::block::gap_kind_name(gap.kind))
+        .execute(&mut **tx)
+        .await?;
+        if result.rows_affected() != 1 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// The body is inserted exactly as supplied and cannot be updated later.
 pub async fn persist_immutable_report(
     store: &mut AgentStore,
@@ -255,6 +362,76 @@ pub async fn persist_immutable_report(
     report_sequence: u64,
     generated_at: &str,
     body: &[u8],
+) -> Result<String, ReportStoreError> {
+    persist_immutable_report_inner(
+        store,
+        report_id,
+        agent_epoch,
+        boot_id,
+        report_sequence,
+        generated_at,
+        body,
+        None,
+    )
+    .await
+}
+
+/// Persist a Closing report while revalidating and advancing the authoritative
+/// Agent lifecycle state in the same transaction as the immutable report.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn persist_closing_report(
+    store: &mut AgentStore,
+    report_id: &str,
+    agent_epoch: u64,
+    boot_id: &str,
+    report_sequence: u64,
+    generated_at: &str,
+    body: &[u8],
+    expected_report_sequence: u64,
+    expected_boot_state: &str,
+) -> Result<String, ReportStoreError> {
+    let report = serde_json::from_slice::<AgentReport>(body)
+        .map_err(|error| ReportStoreError::InvalidReport(error.to_string()))?;
+    if report.boot_transition != BootTransition::Closing {
+        return Err(ReportStoreError::InvalidReport(
+            "closing report has the wrong boot transition".to_owned(),
+        ));
+    }
+    persist_immutable_report_inner(
+        store,
+        report_id,
+        agent_epoch,
+        boot_id,
+        report_sequence,
+        generated_at,
+        body,
+        Some(ClosingStateExpectation {
+            agent_epoch,
+            boot_id: boot_id.to_owned(),
+            report_sequence: expected_report_sequence,
+            boot_state: expected_boot_state.to_owned(),
+        }),
+    )
+    .await
+}
+
+struct ClosingStateExpectation {
+    agent_epoch: u64,
+    boot_id: String,
+    report_sequence: u64,
+    boot_state: String,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn persist_immutable_report_inner(
+    store: &mut AgentStore,
+    report_id: &str,
+    agent_epoch: u64,
+    boot_id: &str,
+    report_sequence: u64,
+    generated_at: &str,
+    body: &[u8],
+    closing: Option<ClosingStateExpectation>,
 ) -> Result<String, ReportStoreError> {
     if body.is_empty() {
         return Err(ReportStoreError::Empty);
@@ -278,37 +455,102 @@ pub async fn persist_immutable_report(
     if let Some(reason) = validate_spool_report(&candidate) {
         return Err(ReportStoreError::InvalidReport(reason));
     }
+    let report = serde_json::from_slice::<AgentReport>(body)
+        .map_err(|error| ReportStoreError::InvalidReport(error.to_string()))?;
+    let agent_id = report.agent_id.to_string();
+    let _write_permit = store.acquire_write().await;
     let mut tx = store.connection().begin().await?;
-    sqlx::query(
-        "INSERT INTO reports (report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes, in_flight, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
-    )
-    .bind(report_id)
-    .bind(agent_epoch as i64)
-    .bind(boot_id)
-    .bind(report_sequence as i64)
-    .bind(generated_at)
-    .bind(body)
-    .bind(&digest)
-    .bind(body.len() as i64)
-    .bind(generated_at)
-    .execute(&mut *tx)
-    .await?;
-    persist_last_report_snapshot(&mut tx, agent_epoch, boot_id, report_sequence, body).await?;
-    if let Ok(report) = serde_json::from_slice::<AgentReport>(body) {
-        for sample in &report.block_summaries {
-            sqlx::query("INSERT OR IGNORE INTO report_sample_assignments (report_id,node_id,sample_kind,from_height,to_height) VALUES (?,?,?,?,?)")
-                .bind(report_id).bind(sample.node_id.to_string()).bind("block")
-                .bind(sample.block_number as i64).bind(sample.block_number as i64)
-                .execute(&mut *tx).await?;
+    let transaction_result: Result<(), sqlx::Error> = async {
+        if let Some(closing) = closing.as_ref() {
+            let state: Option<(i64, Option<String>, i64, String)> = sqlx::query_as(
+                "SELECT agent_epoch, boot_id, report_sequence, boot_state FROM agent_state WHERE singleton=1",
+            )
+            .fetch_optional(&mut *tx)
+            .await?;
+            let Some((current_epoch, current_boot_id, current_sequence, current_boot_state)) = state
+            else {
+                return Err(sqlx::Error::Protocol(
+                    "Agent state is missing while storing Closing report".to_owned(),
+                ));
+            };
+            if current_epoch != closing.agent_epoch as i64
+                || current_boot_id.as_deref() != Some(closing.boot_id.as_str())
+                || current_sequence != closing.report_sequence as i64
+                || current_boot_state != closing.boot_state
+            {
+                return Err(sqlx::Error::Protocol(
+                    "Agent state changed while storing Closing report".to_owned(),
+                ));
+            }
         }
-        for gap in &report.history_gaps {
-            sqlx::query("INSERT OR IGNORE INTO report_sample_assignments (report_id,node_id,sample_kind,from_height,to_height) VALUES (?,?,?,?,?)")
-                .bind(report_id).bind(gap.node_id.to_string()).bind("gap")
-                .bind(gap.from_height as i64).bind(gap.to_height as i64)
-                .execute(&mut *tx).await?;
+        sqlx::query(
+            "INSERT INTO reports (report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes, in_flight, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
+        )
+        .bind(report_id)
+        .bind(agent_epoch as i64)
+        .bind(boot_id)
+        .bind(report_sequence as i64)
+        .bind(generated_at)
+        .bind(body)
+        .bind(&digest)
+        .bind(body.len() as i64)
+        .bind(generated_at)
+        .execute(&mut *tx)
+        .await?;
+        persist_last_report_snapshot(
+            &mut tx,
+            &agent_id,
+            agent_epoch,
+            boot_id,
+            report_sequence,
+            body,
+        )
+        .await?;
+        if !claim_report_samples(
+            &mut tx,
+            report_id,
+            &report.block_summaries,
+            &report.history_gaps,
+        )
+        .await?
+        {
+            return Err(sqlx::Error::Protocol(
+                "report samples changed while storing report".to_owned(),
+            ));
+        }
+        if let Some(closing) = closing.as_ref() {
+            let result = sqlx::query(
+                "UPDATE agent_state SET report_sequence=?, shutdown_state='final_stored', shutdown_report_id=?, shutdown_report_sequence=?, shutdown_finished_at=?, shutdown_updated_at=?, updated_at=? WHERE singleton=1 AND agent_epoch=? AND boot_id=? AND report_sequence=? AND boot_state=?",
+            )
+            .bind(report_sequence as i64)
+            .bind(report_id)
+            .bind(report_sequence as i64)
+            .bind(generated_at)
+            .bind(generated_at)
+            .bind(generated_at)
+            .bind(closing.agent_epoch as i64)
+            .bind(&closing.boot_id)
+            .bind(closing.report_sequence as i64)
+            .bind(&closing.boot_state)
+            .execute(&mut *tx)
+            .await?;
+            if result.rows_affected() != 1 {
+                return Err(sqlx::Error::Protocol(
+                    "Agent state changed while storing Closing report".to_owned(),
+                ));
+            }
+        }
+        Ok(())
+    }
+    .await;
+    match transaction_result {
+        Ok(()) => tx.commit().await?,
+        Err(error) => {
+            tx.rollback().await?;
+            return Err(error.into());
         }
     }
-    tx.commit().await?;
+    drop(_write_permit);
     enforce_spool_policy(store, &SpoolPolicy::default(), generated_at).await?;
     Ok(digest)
 }
@@ -318,15 +560,12 @@ pub async fn persist_immutable_report(
 /// the last-good baseline for the next collection cycle.
 pub(crate) async fn persist_last_report_snapshot(
     tx: &mut Transaction<'_, Sqlite>,
+    agent_id: &str,
     agent_epoch: u64,
     boot_id: &str,
     report_sequence: u64,
     body: &[u8],
 ) -> Result<(), sqlx::Error> {
-    let agent_id = serde_json::from_slice::<AgentReport>(body)
-        .map_err(|error| sqlx::Error::Protocol(format!("snapshot report is invalid: {error}")))?
-        .agent_id
-        .to_string();
     sqlx::query(
         "UPDATE agent_state
          SET last_report_body=?
@@ -354,6 +593,24 @@ pub async fn deliver_periodic<T: ReportTransport>(
     transport: &T,
     policy: &SpoolPolicy,
 ) -> Result<usize, ReportStoreError> {
+    deliver_periodic_inner(store, transport, policy, None).await
+}
+
+pub(crate) async fn deliver_periodic_with_send_deadline<T: ReportTransport>(
+    store: &mut AgentStore,
+    transport: &T,
+    policy: &SpoolPolicy,
+    send_deadline: tokio::time::Instant,
+) -> Result<usize, ReportStoreError> {
+    deliver_periodic_inner(store, transport, policy, Some(send_deadline)).await
+}
+
+async fn deliver_periodic_inner<T: ReportTransport>(
+    store: &mut AgentStore,
+    transport: &T,
+    policy: &SpoolPolicy,
+    send_deadline: Option<tokio::time::Instant>,
+) -> Result<usize, ReportStoreError> {
     let queued_bytes: i64 =
         sqlx::query_scalar("SELECT COALESCE(SUM(body_bytes), 0) FROM reports WHERE in_flight = 0")
             .fetch_one(store.connection())
@@ -365,7 +622,16 @@ pub async fn deliver_periodic<T: ReportTransport>(
     };
     let mut delivered = 0;
     for _ in 0..max_reports {
-        match deliver_one(store, transport).await? {
+        let result = match send_deadline {
+            Some(deadline) => {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(ReportStoreError::DeliveryDeadline);
+                }
+                deliver_one_with_send_deadline(store, transport, deadline).await
+            }
+            None => deliver_one(store, transport).await,
+        }?;
+        match result {
             Some(_) => delivered += 1,
             None => break,
         }
@@ -392,50 +658,63 @@ pub async fn ensure_spool_healthy(store: &mut AgentStore) -> Result<(), ReportSt
         mark_spool_fatal_store(store, &now_rfc3339(), &reason).await?;
         return Err(ReportStoreError::StoreFatal(reason));
     }
-    let receipts = sqlx::query_as::<_, (String, String, String, Vec<u8>)>(
-        "SELECT report_id, report_body_sha256, disposition, receipt_body FROM report_receipts ORDER BY applied_at, report_id",
+    if let Some(reason) = validate_receipt_rows(
+        store,
+        "SELECT receipt.report_id, receipt.report_body_sha256, receipt.disposition, receipt.applied_at
+         FROM reports
+         CROSS JOIN report_receipts AS receipt
+         WHERE receipt.report_id = reports.report_id
+         ORDER BY receipt.applied_at, receipt.report_id",
     )
-    .fetch_all(store.connection())
-    .await?;
-    for (report_id, body_sha256, disposition, receipt_body) in receipts {
-        let reason = match serde_json::from_slice::<serde_json::Value>(&receipt_body)
-            .ok()
-            .and_then(|envelope| envelope.get("receipt").cloned())
-            .and_then(|value| serde_json::from_value::<ReportReceipt>(value).ok())
-        {
-            Some(receipt) => {
-                let expected_disposition = receipt_disposition_name(receipt.disposition);
-                if receipt.validate().is_err()
-                    || receipt.report_id.to_string() != report_id
-                    || receipt.report_body_sha256.to_string() != body_sha256
-                    || expected_disposition != disposition
-                {
-                    Some(format!(
-                        "stored receipt for report {report_id} does not match its receipt metadata"
-                    ))
-                } else {
-                    let stored_report_hash: Option<String> =
-                        sqlx::query_scalar("SELECT body_sha256 FROM reports WHERE report_id = ?")
-                            .bind(&report_id)
-                            .fetch_optional(store.connection())
-                            .await?;
-                    stored_report_hash
-                        .filter(|hash| hash != &body_sha256)
-                        .map(|_| {
-                            format!(
-                                "stored receipt for report {report_id} conflicts with its report"
-                            )
-                        })
-                }
-            }
-            None => Some(format!("stored receipt for report {report_id} is invalid")),
-        };
-        if let Some(reason) = reason {
-            mark_spool_fatal_store(store, &now_rfc3339(), &reason).await?;
-            return Err(ReportStoreError::StoreFatal(reason));
-        }
+    .await?
+    {
+        mark_spool_fatal_store(store, &now_rfc3339(), &reason).await?;
+        return Err(ReportStoreError::StoreFatal(reason));
     }
     Ok(())
+}
+
+/// Validate the bounded Agent-local terminal marker set once at a process
+/// startup boundary. Hot collection and delivery paths only validate markers
+/// that still have a queued report; applied markers no longer participate in
+/// runtime decisions.
+pub async fn validate_receipt_history(store: &mut AgentStore) -> Result<(), ReportStoreError> {
+    ensure_spool_healthy(store).await?;
+    if let Some(reason) = validate_receipt_rows(
+        store,
+        "SELECT receipt.report_id, receipt.report_body_sha256, receipt.disposition, receipt.applied_at
+         FROM report_receipts AS receipt
+         ORDER BY receipt.applied_at, receipt.report_id",
+    )
+    .await?
+    {
+        mark_spool_fatal_store(store, &now_rfc3339(), &reason).await?;
+        return Err(ReportStoreError::StoreFatal(reason));
+    }
+    Ok(())
+}
+
+async fn validate_receipt_rows(
+    store: &mut AgentStore,
+    query: &str,
+) -> Result<Option<String>, ReportStoreError> {
+    let receipts = sqlx::query_as::<_, (String, String, String, String)>(query)
+        .fetch_all(store.connection())
+        .await?;
+    for (report_id, body_sha256, disposition, _applied_at) in receipts {
+        let valid_identity = report_id.parse::<ReportId>().is_ok();
+        let valid_hash = body_sha256.parse::<Sha256Hex>().is_ok();
+        let valid_disposition = matches!(
+            disposition.as_str(),
+            "accepted" | "partially_accepted" | "rejected"
+        );
+        if !valid_identity || !valid_hash || !valid_disposition {
+            return Ok(Some(format!(
+                "stored receipt marker for report {report_id} is invalid"
+            )));
+        }
+    }
+    Ok(None)
 }
 
 /// Apply a bounded, transactional spool policy. In-flight and newest complete
@@ -447,17 +726,56 @@ pub async fn enforce_spool_policy(
     now: &str,
 ) -> Result<SpoolCleanupSummary, ReportStoreError> {
     ensure_spool_healthy(store).await?;
-    let mut tx = store.connection().begin().await?;
-    let rows = sqlx::query_as::<_, (String, i64, String, i64, Vec<u8>, String)>(
-        "SELECT report_id, report_sequence, generated_at, body_bytes, body, body_sha256 FROM reports ORDER BY created_at, report_id",
+    let rows = sqlx::query_as::<_, SpoolReportRow>(
+        "SELECT report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes FROM reports ORDER BY created_at, report_id",
     )
-    .fetch_all(&mut *tx)
+    .fetch_all(store.connection())
     .await?;
-    let total: i64 = rows.iter().map(|row| row.3.max(0)).sum();
+    let mut sample_stats = HashMap::with_capacity(rows.len());
+    for row in &rows {
+        if let Some(reason) = validate_spool_report(row) {
+            mark_spool_fatal_store(store, now, &reason).await?;
+            return Err(ReportStoreError::StoreFatal(reason));
+        }
+        let report: AgentReport = serde_json::from_slice(&row.body).map_err(|error| {
+            ReportStoreError::InvalidReport(format!("stored report is invalid: {error}"))
+        })?;
+        let mut sample_count = 0u64;
+        let mut height_range: Option<(u64, u64)> = None;
+        for sample in &report.block_summaries {
+            sample_count += 1;
+            height_range = Some(
+                height_range.map_or((sample.block_number, sample.block_number), |(from, to)| {
+                    (from.min(sample.block_number), to.max(sample.block_number))
+                }),
+            );
+        }
+        for gap in &report.history_gaps {
+            sample_count += 1;
+            height_range = Some(
+                height_range.map_or((gap.from_height, gap.to_height), |(from, to)| {
+                    (from.min(gap.from_height), to.max(gap.to_height))
+                }),
+            );
+        }
+        sample_stats.insert(row.report_id.clone(), (sample_count, height_range));
+    }
+
     let cutoff = time::OffsetDateTime::parse(now, &time::format_description::well_known::Rfc3339)
         .ok()
         .map(|value| value - time::Duration::seconds(policy.max_age_seconds as i64));
-    let mut summary = SpoolCleanupSummary::default();
+    let _write_permit = store.acquire_write().await;
+    let mut tx = store.connection().begin().await?;
+    let transaction_result: Result<SpoolCleanupSummary, ReportStoreError> = async {
+        let rows: Vec<(String, i64, String, i64, i64)> = sqlx::query_as(
+            "SELECT report_id, report_sequence, generated_at, body_bytes, in_flight FROM reports ORDER BY created_at, report_id",
+        )
+    .fetch_all(&mut *tx)
+    .await?;
+    let total: i64 = rows
+        .iter()
+        .map(|(_, _, _, body_bytes, _)| (*body_bytes).max(0))
+        .sum();
     let current_report_id: Option<String> = sqlx::query_scalar(
         "SELECT r.report_id FROM reports r JOIN agent_state s ON s.singleton = 1 AND s.agent_id IS NOT NULL AND s.agent_epoch = r.agent_epoch AND s.boot_id = r.boot_id AND s.report_sequence = r.report_sequence ORDER BY r.created_at DESC, r.report_id DESC LIMIT 1",
     )
@@ -470,9 +788,11 @@ pub async fn enforce_spool_policy(
         .fetch_optional(&mut *tx)
         .await?,
     );
+    let mut summary = SpoolCleanupSummary::default();
     let mut bytes = total;
-    for (report_id, sequence, generated_at, body_bytes, body, body_sha256) in rows {
-        if bytes <= policy.max_bytes as i64
+    let max_bytes = policy.max_bytes.min(i64::MAX as u64) as i64;
+    for (report_id, sequence, generated_at, body_bytes, in_flight) in rows {
+        if bytes <= max_bytes
             && cutoff.as_ref().is_none_or(|cutoff| {
                 time::OffsetDateTime::parse(
                     &generated_at,
@@ -484,28 +804,10 @@ pub async fn enforce_spool_policy(
         {
             continue;
         }
-        let actual_hash = format!("0x{}", hex::encode(Sha256::digest(&body)));
-        let report: AgentReport = match serde_json::from_slice(&body) {
-            Ok(report) if actual_hash == body_sha256 => report,
-            _ => {
-                tx.rollback().await?;
-                mark_spool_fatal_store(
-                    store,
-                    now,
-                    "immutable spool report failed integrity validation",
-                )
-                .await?;
-                return Err(ReportStoreError::StoreFatal(
-                    "immutable spool report failed integrity validation".to_owned(),
-                ));
-            }
+        let Some((sample_count, height_range)) = sample_stats.get(&report_id).copied() else {
+            continue;
         };
-        let protected: Option<i64> =
-            sqlx::query_scalar("SELECT in_flight FROM reports WHERE report_id = ?")
-                .bind(&report_id)
-                .fetch_optional(&mut *tx)
-                .await?;
-        if protected == Some(1) || current_report_id.as_deref() == Some(report_id.as_str()) {
+        if in_flight == 1 || current_report_id.as_deref() == Some(report_id.as_str()) {
             continue;
         }
         let deleted = sqlx::query("DELETE FROM reports WHERE report_id = ? AND in_flight = 0")
@@ -528,33 +830,15 @@ pub async fn enforce_spool_policy(
             (generated_at.clone(), generated_at.clone()),
             |(from, to)| (from.min(generated_at.clone()), to.max(generated_at.clone())),
         ));
-
-        let mut sample_count = 0u64;
-        let mut height_range: Option<(u64, u64)> = None;
-        for sample in &report.block_summaries {
-            sample_count += 1;
-            height_range = Some(
-                height_range.map_or((sample.block_number, sample.block_number), |(from, to)| {
-                    (from.min(sample.block_number), to.max(sample.block_number))
-                }),
-            );
-        }
-        for gap in &report.history_gaps {
-            sample_count += 1;
-            height_range = Some(
-                height_range.map_or((gap.from_height, gap.to_height), |(from, to)| {
-                    (from.min(gap.from_height), to.max(gap.to_height))
-                }),
-            );
-        }
         summary.dropped_samples += sample_count;
-        summary.height_range = Some(summary.height_range.take().map_or(
-            height_range.unwrap_or((0, 0)),
-            |(from, to)| {
-                let range = height_range.unwrap_or((0, 0));
-                (from.min(range.0), to.max(range.1))
-            },
-        ));
+        if let Some(range) = height_range {
+            summary.height_range = Some(
+                summary
+                    .height_range
+                    .take()
+                    .map_or(range, |(from, to)| (from.min(range.0), to.max(range.1))),
+            );
+        }
     }
     sqlx::query("UPDATE spool_state SET dropped_reports=dropped_reports+?, dropped_samples=dropped_samples+?, dropped_sequence_from=COALESCE(MIN(dropped_sequence_from, ?), ?), dropped_sequence_to=MAX(COALESCE(dropped_sequence_to, ?), ?), dropped_time_from=COALESCE(MIN(dropped_time_from, ?), ?), dropped_time_to=MAX(COALESCE(dropped_time_to, ?), ?), dropped_height_from=COALESCE(MIN(dropped_height_from, ?), ?), dropped_height_to=MAX(COALESCE(dropped_height_to, ?), ?), pending_history_gaps=pending_history_gaps+?, updated_at=? WHERE singleton=1")
         .bind(summary.dropped_reports as i64).bind(summary.dropped_samples as i64)
@@ -565,8 +849,19 @@ pub async fn enforce_spool_policy(
         .bind(summary.height_range.map(|v| v.0 as i64)).bind(summary.height_range.map(|v| v.0 as i64))
         .bind(summary.height_range.map(|v| v.1 as i64)).bind(summary.height_range.map(|v| v.1 as i64))
         .bind(summary.pending_history_gaps as i64).bind(now).execute(&mut *tx).await?;
-    tx.commit().await?;
-    Ok(summary)
+        Ok(summary)
+    }
+    .await;
+    match transaction_result {
+        Ok(summary) => {
+            tx.commit().await?;
+            Ok(summary)
+        }
+        Err(error) => {
+            tx.rollback().await?;
+            Err(error)
+        }
+    }
 }
 
 fn validate_spool_report(row: &SpoolReportRow) -> Option<String> {
@@ -617,6 +912,7 @@ async fn mark_spool_fatal_store(
     now: &str,
     message: &str,
 ) -> Result<(), ReportStoreError> {
+    let _write_permit = store.acquire_write().await;
     sqlx::query(
         "UPDATE spool_state SET store_fatal=1, store_error=?, updated_at=? WHERE singleton=1",
     )
@@ -628,6 +924,7 @@ async fn mark_spool_fatal_store(
 }
 
 async fn mark_report_too_large(store: &mut AgentStore, now: &str) -> Result<(), ReportStoreError> {
+    let _write_permit = store.acquire_write().await;
     sqlx::query("UPDATE spool_state SET report_too_large=1, store_error='minimum complete current report exceeds protocol limit', updated_at=? WHERE singleton=1")
         .bind(now).execute(store.connection()).await?;
     Ok(())
@@ -642,6 +939,21 @@ pub async fn persist_report_from_config(
     report_path: &Path,
 ) -> Result<String, ReportStoreError> {
     let config = AgentConfig::resolve(config_path)?;
+    let _runtime_lock = crate::database::AgentRuntimeLock::acquire(&config.state_db)
+        .map_err(|error| ReportStoreError::RuntimeOwnership(error.to_string()))?;
+    persist_report_from_config_with_permit(
+        &config,
+        report_path,
+        crate::database::AgentStoreWritePermit::new(),
+    )
+    .await
+}
+
+pub(crate) async fn persist_report_from_config_with_permit(
+    config: &AgentConfig,
+    report_path: &Path,
+    write_permit: crate::database::AgentStoreWritePermit,
+) -> Result<String, ReportStoreError> {
     let validated = config.validated_inventory()?;
     let body = std::fs::read(report_path).map_err(|source| ReportStoreError::ReadReport {
         path: report_path.to_owned(),
@@ -655,7 +967,12 @@ pub async fn persist_report_from_config(
     if report.inventory != validated.inventory {
         return Err(ReportStoreError::InventoryMismatch);
     }
-    let mut store = AgentStore::open(AgentDatabaseConfig::new(&config.state_db)).await?;
+    let mut store = AgentStore::open_with_write_permit(
+        AgentDatabaseConfig::new(&config.state_db),
+        write_permit,
+    )
+    .await?;
+    validate_receipt_history(&mut store).await?;
     let digest = persist_immutable_report(
         &mut store,
         &report.report_id.to_string(),
@@ -1112,6 +1429,47 @@ mod delivery_tests {
     }
 
     #[tokio::test]
+    async fn hot_receipt_validation_only_reads_queued_receipts() {
+        let mut store = test_store().await;
+        let pending_id = report_id(7);
+        let pending_body = report_body(7);
+        persist_immutable_report(
+            &mut store,
+            &pending_id,
+            1,
+            "0195f2a1-0012-4012-8012-000000000012",
+            7,
+            "2026-08-12T09:00:00Z",
+            &pending_body,
+        )
+        .await
+        .unwrap();
+
+        for _ in 0..2_000 {
+            let historical_id = uuid::Uuid::new_v4().to_string();
+            let historical_hash = format!("0x{}", hex::encode(Sha256::digest(&pending_body)));
+            sqlx::query("INSERT INTO report_receipts (report_id, report_body_sha256, disposition, applied_at) VALUES (?, ?, 'accepted', ?)")
+                .bind(historical_id)
+                .bind(historical_hash)
+                .bind("2026-08-12T10:00:00Z")
+                .execute(store.connection())
+                .await
+                .unwrap();
+        }
+
+        ensure_spool_healthy(&mut store).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT store_fatal FROM spool_state WHERE singleton = 1",
+            )
+            .fetch_one(store.connection())
+            .await
+            .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
     async fn corrupt_spool_state_is_marked_fatal_before_delivery() {
         let mut store = test_store().await;
         let id = report_id(5);
@@ -1165,10 +1523,9 @@ mod delivery_tests {
         )
         .await
         .unwrap();
-        sqlx::query("INSERT INTO report_receipts (report_id, report_body_sha256, disposition, receipt_body, applied_at) VALUES (?, ?, 'accepted', ?, ?)")
+        sqlx::query("INSERT INTO report_receipts (report_id, report_body_sha256, disposition, applied_at) VALUES (?, ?, 'accepted', ?)")
             .bind(&id)
-            .bind("0x0000000000000000000000000000000000000000000000000000000000000000")
-            .bind(br#"{"receipt":{}}"# as &[u8])
+            .bind("bad")
             .bind("2026-08-12T10:00:00Z")
             .execute(store.connection())
             .await

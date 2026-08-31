@@ -36,7 +36,7 @@ use crate::block::{
     HeadSubscription, NodeSubscriptions, WebSocketBlockTransport, load_block_summaries,
 };
 use crate::config::AgentConfig;
-use crate::database::{AgentDatabaseConfig, AgentStore};
+use crate::database::{AgentDatabaseConfig, AgentStore, AgentStoreWritePermit};
 use crate::reporting::ReportStoreError;
 pub const MAX_SPOOL_BYTES: u64 = 2 * 1024 * 1024;
 pub const MAX_SPOOL_AGE_SECONDS: u64 = 24 * 60 * 60;
@@ -204,6 +204,8 @@ pub enum CollectionError {
     Database(#[from] sqlx::Error),
     #[error("Agent is not enrolled")]
     NotEnrolled,
+    #[error("Agent runtime ownership failed: {0}")]
+    RuntimeOwnership(String),
     #[error("invalid persisted Agent identity: {0}")]
     Identity(String),
     #[error("RPC collection failed: {0}")]
@@ -212,6 +214,29 @@ pub enum CollectionError {
     Report(#[from] ReportStoreError),
     #[error("report serialization failed: {0}")]
     Serialization(#[from] serde_json::Error),
+    #[error("Agent state changed while assembling the report")]
+    ConcurrentStateChange,
+}
+
+type CollectionState = (
+    String,
+    i64,
+    Option<String>,
+    i64,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+async fn load_collection_state(
+    store: &mut AgentStore,
+) -> Result<Option<CollectionState>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT agent_id, agent_epoch, boot_id, report_sequence, boot_state, previous_boot_id, pending_transition, pending_previous_boot_id FROM agent_state WHERE singleton=1",
+    )
+    .fetch_optional(store.connection())
+    .await
 }
 
 pub(crate) fn is_transient_database_lock(error: &CollectionError) -> bool {
@@ -950,8 +975,22 @@ pub async fn recover_previous_boot<A: RpcAdapter>(
     config: &AgentConfig,
     adapter: &A,
 ) -> Result<(), CollectionError> {
-    let mut store = AgentStore::open(AgentDatabaseConfig::new(&config.state_db)).await?;
-    crate::reporting::ensure_spool_healthy(&mut store).await?;
+    let _runtime_lock = crate::database::AgentRuntimeLock::acquire(&config.state_db)
+        .map_err(|error| CollectionError::RuntimeOwnership(error.to_string()))?;
+    recover_previous_boot_with_permit(config, adapter, AgentStoreWritePermit::new()).await
+}
+
+pub(crate) async fn recover_previous_boot_with_permit<A: RpcAdapter>(
+    config: &AgentConfig,
+    adapter: &A,
+    write_permit: AgentStoreWritePermit,
+) -> Result<(), CollectionError> {
+    let mut store = AgentStore::open_with_write_permit(
+        AgentDatabaseConfig::new(&config.state_db),
+        write_permit,
+    )
+    .await?;
+    crate::reporting::validate_receipt_history(&mut store).await?;
     let state: Option<(String, i64, Option<String>, i64, String)> = sqlx::query_as(
         "SELECT agent_id, agent_epoch, boot_id, report_sequence, boot_state FROM agent_state WHERE singleton=1",
     )
@@ -966,14 +1005,112 @@ pub async fn recover_previous_boot<A: RpcAdapter>(
     if boot_state == "drained_pending" {
         return Ok(());
     }
-    sqlx::query("UPDATE agent_state SET boot_state='draining', updated_at=? WHERE singleton=1")
-        .bind(timestamp().to_string())
-        .execute(store.connection())
+    if let Some(last_report) = load_last_report(&mut store).await? {
+        let last_report_id = last_report.report_id.to_string();
+        let closing_receipt_exists: Option<i64> =
+            sqlx::query_scalar("SELECT 1 FROM report_receipts WHERE report_id = ?")
+                .bind(&last_report_id)
+                .fetch_optional(store.connection())
+                .await?;
+        if last_report.boot_id.to_string() == boot_text
+            && last_report.boot_transition == BootTransition::Closing
+            && closing_receipt_exists.is_some()
+        {
+            let new_boot_id = BootId::from_str(&Uuid::new_v4().to_string()).expect("UUID is valid");
+            let at = timestamp().to_string();
+            let _write_permit = store.acquire_write().await;
+            let mut tx = store.connection().begin().await?;
+            let transaction_result: Result<(), CollectionError> = async {
+                let current: Option<(String, i64, Option<String>, i64, String)> =
+                    sqlx::query_as(
+                        "SELECT agent_id, agent_epoch, boot_id, report_sequence, boot_state FROM agent_state WHERE singleton=1",
+                    )
+                    .fetch_optional(&mut *tx)
+                    .await?;
+                let state_matches = current.as_ref().is_some_and(
+                    |(current_agent, current_epoch, current_boot, current_sequence, current_state)| {
+                        current_agent == &agent_text
+                            && *current_epoch == epoch
+                            && current_boot.as_deref() == Some(boot_text.as_str())
+                            && *current_sequence == sequence
+                            && current_state == &boot_state
+                    },
+                );
+                let receipt_exists: Option<i64> = sqlx::query_scalar(
+                    "SELECT 1 FROM report_receipts WHERE report_id = ?",
+                )
+                .bind(&last_report_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+                if !state_matches || receipt_exists.is_none() {
+                    return Err(CollectionError::ConcurrentStateChange);
+                }
+                let result = sqlx::query("UPDATE agent_state SET boot_id=?, report_sequence=0, boot_state='drained_pending', pending_transition='drained_previous', pending_previous_boot_id=?, previous_boot_id=?, close_report_id=?, close_applied_at=?, shutdown_state='final_stored', shutdown_finished_at=?, shutdown_last_error=NULL, shutdown_updated_at=?, updated_at=? WHERE singleton=1")
+                    .bind(new_boot_id.to_string())
+                    .bind(&boot_text)
+                    .bind(&boot_text)
+                    .bind(&last_report_id)
+                    .bind(&at)
+                    .bind(&at)
+                    .bind(&at)
+                    .bind(&at)
+                    .execute(&mut *tx)
+                    .await?;
+                if result.rows_affected() != 1 {
+                    return Err(CollectionError::ConcurrentStateChange);
+                }
+                Ok(())
+            }
+            .await;
+            match transaction_result {
+                Ok(()) => tx.commit().await?,
+                Err(error) => {
+                    tx.rollback().await?;
+                    return Err(error);
+                }
+            }
+            store.close().await?;
+            return Ok(());
+        }
+    }
+    let _write_permit = store.acquire_write().await;
+    let mut tx = store.connection().begin().await?;
+    let transaction_result: Result<(), CollectionError> = async {
+        let current: Option<(String, i64, Option<String>, i64, String)> = sqlx::query_as(
+            "SELECT agent_id, agent_epoch, boot_id, report_sequence, boot_state FROM agent_state WHERE singleton=1",
+        )
+        .fetch_optional(&mut *tx)
         .await?;
+        let state_matches = current.as_ref().is_some_and(
+            |(current_agent, current_epoch, current_boot, current_sequence, current_state)| {
+                current_agent == &agent_text
+                    && *current_epoch == epoch
+                    && current_boot.as_deref() == Some(boot_text.as_str())
+                    && *current_sequence == sequence
+                    && current_state == &boot_state
+            },
+        );
+        if !state_matches {
+            return Err(CollectionError::ConcurrentStateChange);
+        }
+        sqlx::query("UPDATE agent_state SET boot_state='draining', updated_at=? WHERE singleton=1")
+            .bind(timestamp().to_string())
+            .execute(&mut *tx)
+            .await?;
+        Ok(())
+    }
+    .await;
+    match transaction_result {
+        Ok(()) => tx.commit().await?,
+        Err(error) => {
+            tx.rollback().await?;
+            return Err(error);
+        }
+    }
+    drop(_write_permit);
     let transport = crate::reporting::HttpReportTransport::from_config(config)?;
     while let Some(delivered) = crate::reporting::deliver_one(&mut store, &transport).await? {
         if delivered_report_closes_boot(&delivered, &boot_text)? {
-            stage_recovered_boot(&mut store, &boot_text, Some(&delivered.report_id)).await?;
             store.close().await?;
             return Ok(());
         }
@@ -1015,7 +1152,7 @@ pub async fn recover_previous_boot<A: RpcAdapter>(
         .validate()
         .map_err(|error| CollectionError::Identity(error.to_string()))?;
     let body = serde_json::to_vec(&closing)?;
-    crate::reporting::persist_immutable_report(
+    crate::reporting::persist_closing_report(
         &mut store,
         &closing.report_id.to_string(),
         closing.agent_epoch,
@@ -1023,12 +1160,16 @@ pub async fn recover_previous_boot<A: RpcAdapter>(
         closing.report_sequence,
         &closing.generated_at.to_string(),
         &body,
+        sequence as u64,
+        "draining",
     )
     .await?;
-    crate::reporting::deliver_one(&mut store, &transport)
+    let delivered = crate::reporting::deliver_one(&mut store, &transport)
         .await?
         .ok_or(CollectionError::RecoveryRequired)?;
-    stage_recovered_boot(&mut store, &boot_text, Some(&closing.report_id.to_string())).await?;
+    if !delivered_report_closes_boot(&delivered, &boot_text)? {
+        return Err(CollectionError::RecoveryRequired);
+    }
     store.close().await?;
     Ok(())
 }
@@ -1041,34 +1182,27 @@ fn delivered_report_closes_boot(
     Ok(report.boot_id.to_string() == boot_id && report.boot_transition == BootTransition::Closing)
 }
 
-async fn stage_recovered_boot(
-    store: &mut AgentStore,
-    previous_boot_id: &str,
-    close_report_id: Option<&str>,
-) -> Result<(), CollectionError> {
-    let new_boot_id = BootId::from_str(&Uuid::new_v4().to_string()).expect("UUID is valid");
-    let at = timestamp().to_string();
-    sqlx::query("UPDATE agent_state SET boot_id=?, report_sequence=0, boot_state='drained_pending', pending_transition='drained_previous', pending_previous_boot_id=?, previous_boot_id=?, close_report_id=?, close_applied_at=?, shutdown_state='final_stored', shutdown_finished_at=?, shutdown_last_error=NULL, shutdown_updated_at=?, updated_at=? WHERE singleton=1")
-        .bind(new_boot_id.to_string())
-        .bind(previous_boot_id)
-        .bind(previous_boot_id)
-        .bind(close_report_id)
-        .bind(&at)
-        .bind(&at)
-        .bind(&at)
-        .bind(&at)
-        .execute(store.connection())
-        .await?;
-    Ok(())
-}
-
 /// Collect and persist one complete immutable report. Agent state (identity,
 /// boot and sequence) is advanced in the same transaction as the report body.
 pub async fn collect_and_persist<A: RpcAdapter>(
     config: &AgentConfig,
     adapter: &A,
 ) -> Result<String, CollectionError> {
-    let mut store = AgentStore::open(AgentDatabaseConfig::new(&config.state_db)).await?;
+    let _runtime_lock = crate::database::AgentRuntimeLock::acquire(&config.state_db)
+        .map_err(|error| CollectionError::RuntimeOwnership(error.to_string()))?;
+    collect_and_persist_with_permit(config, adapter, AgentStoreWritePermit::new()).await
+}
+
+pub(crate) async fn collect_and_persist_with_permit<A: RpcAdapter>(
+    config: &AgentConfig,
+    adapter: &A,
+    write_permit: AgentStoreWritePermit,
+) -> Result<String, CollectionError> {
+    let mut store = AgentStore::open_with_write_permit(
+        AgentDatabaseConfig::new(&config.state_db),
+        write_permit,
+    )
+    .await?;
     let result = collect_and_persist_in_store(config, adapter, &mut store).await;
     store.close().await?;
     result
@@ -1106,12 +1240,7 @@ async fn collect_and_persist_in_store_with_data_directories<A: RpcAdapter>(
     store: &mut AgentStore,
 ) -> Result<String, CollectionError> {
     crate::reporting::ensure_spool_healthy(store).await?;
-    #[allow(clippy::type_complexity)]
-    let state: Option<(String, i64, Option<String>, i64, String, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT agent_id, agent_epoch, boot_id, report_sequence, boot_state, previous_boot_id, pending_transition, pending_previous_boot_id FROM agent_state WHERE singleton=1",
-    )
-    .fetch_optional(store.connection())
-    .await?;
+    let state: Option<CollectionState> = load_collection_state(store).await?;
     let (
         agent_text,
         epoch,
@@ -1192,11 +1321,42 @@ async fn collect_and_persist_in_store_with_data_directories<A: RpcAdapter>(
     let body = serde_json::to_vec(&report)?;
     let digest = format!("0x{}", hex::encode(sha2::Sha256::digest(&body)));
     let now = report.generated_at.to_string();
+    let _write_permit = store.acquire_write().await;
     let mut tx = store.connection().begin().await?;
+    let transaction_result: Result<(), CollectionError> = async {
+        let committed_state: Option<(i64, Option<String>, i64, String)> = sqlx::query_as(
+            "SELECT agent_epoch, boot_id, report_sequence, boot_state FROM agent_state WHERE singleton=1",
+        )
+    .fetch_optional(&mut *tx)
+    .await?;
+    let report_boot_id = report.boot_id.to_string();
+    let state_matches =
+        committed_state
+            .as_ref()
+            .is_some_and(|(epoch, boot_id, sequence, current_boot_state)| {
+                *epoch == report.agent_epoch as i64
+                    && *sequence == report.report_sequence as i64 - 1
+                    && current_boot_state == &boot_state
+                    && (boot_id.as_deref() == Some(report_boot_id.as_str()) || boot_id.is_none())
+            });
+        if !state_matches {
+            return Err(CollectionError::ConcurrentStateChange);
+        }
     sqlx::query("INSERT INTO reports (report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes, in_flight, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)")
         .bind(report.report_id.to_string()).bind(report.agent_epoch as i64).bind(report.boot_id.to_string()).bind(report.report_sequence as i64).bind(report.generated_at.to_string()).bind(&body).bind(&digest).bind(body.len() as i64).bind(&now).execute(&mut *tx).await?;
+    if !crate::reporting::claim_report_samples(
+        &mut tx,
+        &report.report_id.to_string(),
+        &report.block_summaries,
+        &report.history_gaps,
+    )
+    .await?
+    {
+        return Err(CollectionError::ConcurrentStateChange);
+    }
     crate::reporting::persist_last_report_snapshot(
         &mut tx,
+        &report.agent_id.to_string(),
         report.agent_epoch,
         &report.boot_id.to_string(),
         report.report_sequence,
@@ -1210,7 +1370,17 @@ async fn collect_and_persist_in_store_with_data_directories<A: RpcAdapter>(
         BootTransition::RecoveredAfterStale => "recovered_after_stale",
     };
     update_agent_state_for_persisted_report(&mut tx, &report, transition, &now).await?;
-    tx.commit().await?;
+        Ok(())
+    }
+    .await;
+    match transaction_result {
+        Ok(()) => tx.commit().await?,
+        Err(error) => {
+            tx.rollback().await?;
+            return Err(error);
+        }
+    }
+    drop(_write_permit);
     crate::reporting::enforce_spool_policy(store, &crate::collector::SpoolPolicy::default(), &now)
         .await
         .map_err(CollectionError::Report)?;
@@ -1222,6 +1392,25 @@ pub struct BlockWorkerExit {
     pub error: Option<CollectionError>,
 }
 
+type NodeRecoveryState = (
+    Option<String>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+);
+
+struct NodeRecoveryWrite {
+    expected: Option<NodeRecoveryState>,
+    boot_id: String,
+    head: u64,
+    pending: Option<(u64, u64)>,
+    pending_trigger: Option<String>,
+    pending_reason: Option<String>,
+    observed_at: Rfc3339,
+}
+
 struct NodeRecoveryRequest<'a> {
     config: &'a AgentConfig,
     node: &'a InventoryNode,
@@ -1231,11 +1420,77 @@ struct NodeRecoveryRequest<'a> {
     reconnect_needed: bool,
 }
 
+async fn persist_recovery_state(
+    store: &mut AgentStore,
+    node_id: NodeId,
+    update: NodeRecoveryWrite,
+    summaries: &[platpulse_core::block::BlockSummary],
+    gaps: &[platpulse_core::gap::HistoryGap],
+) -> Result<(), CollectionError> {
+    let NodeRecoveryWrite {
+        expected,
+        boot_id,
+        head,
+        pending,
+        pending_trigger,
+        pending_reason,
+        observed_at,
+    } = update;
+    let _write_permit = store.acquire_write().await;
+    let mut tx = store.connection().begin().await?;
+    let transaction_result: Result<(), CollectionError> = async {
+        let current = sqlx::query_as::<_, (
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+        )>(
+            "SELECT boot_id, last_head, pending_from, pending_to, pending_trigger, pending_reason FROM node_recovery_state WHERE node_id=?",
+        )
+        .bind(node_id.to_string())
+        .fetch_optional(&mut *tx)
+        .await?;
+        if current != expected {
+            return Err(CollectionError::ConcurrentStateChange);
+        }
+        let created_at = observed_at.to_string();
+        for summary in summaries {
+            crate::block::insert_block_summary(&mut tx, summary, &created_at).await?;
+        }
+        for gap in gaps {
+            crate::block::insert_history_gap(&mut tx, gap).await?;
+        }
+        sqlx::query("INSERT INTO node_recovery_state (node_id, boot_id, last_head, pending_from, pending_to, pending_trigger, pending_reason, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET boot_id=excluded.boot_id,last_head=excluded.last_head,pending_from=excluded.pending_from,pending_to=excluded.pending_to,pending_trigger=excluded.pending_trigger,pending_reason=excluded.pending_reason,updated_at=excluded.updated_at")
+            .bind(node_id.to_string())
+            .bind(&boot_id)
+            .bind(head as i64)
+            .bind(pending.map(|value| value.0 as i64))
+            .bind(pending.map(|value| value.1 as i64))
+            .bind(pending_trigger)
+            .bind(pending_reason)
+            .bind(observed_at.to_string())
+            .execute(&mut *tx)
+            .await?;
+        Ok(())
+    }
+    .await;
+    match transaction_result {
+        Ok(()) => tx.commit().await?,
+        Err(error) => {
+            tx.rollback().await?;
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
 async fn recover_node_blocks(
     store: &mut AgentStore,
     transport: &WebSocketBlockTransport,
     request: NodeRecoveryRequest<'_>,
-) -> Result<(), CollectionError> {
+) -> Result<bool, CollectionError> {
     let NodeRecoveryRequest {
         config,
         node,
@@ -1244,20 +1499,14 @@ async fn recover_node_blocks(
         observed_at,
         reconnect_needed,
     } = request;
-    let prior_recovery = sqlx::query_as::<_, (
-        Option<String>,
-        Option<i64>,
-        Option<i64>,
-        Option<i64>,
-        Option<String>,
-    )>(
-        "SELECT boot_id, last_head, pending_from, pending_to, pending_trigger FROM node_recovery_state WHERE node_id=?",
+    let prior_recovery = sqlx::query_as::<_, NodeRecoveryState>(
+        "SELECT boot_id, last_head, pending_from, pending_to, pending_trigger, pending_reason FROM node_recovery_state WHERE node_id=?",
     )
     .bind(node.node_id.to_string())
     .fetch_optional(store.connection())
     .await?;
     let Ok(head) = transport.current_head_async(&node.rpc_endpoint).await else {
-        return Ok(());
+        return Ok(false);
     };
     let boot_text = boot_id.to_string();
     let boot_changed =
@@ -1291,54 +1540,71 @@ async fn recover_node_blocks(
                 plan.trigger,
             )
             .await;
-        for summary in outcome.summaries {
-            crate::block::persist_block_summary(store, &summary, &observed_at.to_string()).await?;
-        }
-        for gap in &outcome.gaps {
-            crate::block::persist_history_gap(store, gap).await?;
-        }
         let pending = outcome
             .gaps
             .first()
             .map(|gap| (gap.from_height, gap.to_height));
-        sqlx::query("INSERT INTO node_recovery_state (node_id, boot_id, last_head, pending_from, pending_to, pending_trigger, pending_reason, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET boot_id=excluded.boot_id,last_head=excluded.last_head,pending_from=excluded.pending_from,pending_to=excluded.pending_to,pending_trigger=excluded.pending_trigger,pending_reason=excluded.pending_reason,updated_at=excluded.updated_at")
-            .bind(node.node_id.to_string())
-            .bind(boot_text)
-            .bind(head as i64)
-            .bind(pending.map(|value| value.0 as i64))
-            .bind(pending.map(|value| value.1 as i64))
-            .bind(
-                pending
+        persist_recovery_state(
+            store,
+            node.node_id,
+            NodeRecoveryWrite {
+                expected: prior_recovery.clone(),
+                boot_id: boot_text.clone(),
+                head,
+                pending,
+                pending_trigger: pending
                     .as_ref()
                     .map(|_| format!("{:?}", plan.trigger).to_lowercase()),
-            )
-            .bind(outcome.gaps.first().map(|gap| gap.reason.as_str()))
-            .bind(observed_at.to_string())
-            .execute(store.connection())
-            .await?;
+                pending_reason: outcome.gaps.first().map(|gap| gap.reason.clone()),
+                observed_at,
+            },
+            &outcome.summaries,
+            &outcome.gaps,
+        )
+        .await?;
     } else {
-        sqlx::query("INSERT INTO node_recovery_state (node_id, boot_id, last_head, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET boot_id=excluded.boot_id,last_head=excluded.last_head,updated_at=excluded.updated_at")
-            .bind(node.node_id.to_string())
-            .bind(boot_text)
-            .bind(head as i64)
-            .bind(observed_at.to_string())
-            .execute(store.connection())
-            .await?;
+        persist_recovery_state(
+            store,
+            node.node_id,
+            NodeRecoveryWrite {
+                expected: prior_recovery,
+                boot_id: boot_text,
+                head,
+                pending: None,
+                pending_trigger: None,
+                pending_reason: None,
+                observed_at,
+            },
+            &[],
+            &[],
+        )
+        .await?;
     }
-    Ok(())
+    Ok(true)
 }
 
 /// Keep one Node's `newHeads` subscription open independently of report
 /// assembly. Resolved Block Summaries are persisted immediately; the next
 /// immutable report claims whatever summaries are pending at assembly time.
-pub async fn run_node_block_worker(
+pub(crate) async fn run_node_block_worker(
     config: AgentConfig,
     node: InventoryNode,
     transport: WebSocketBlockTransport,
     cancel: CancellationToken,
+    write_permit: AgentStoreWritePermit,
 ) -> BlockWorkerExit {
-    let mut subscription = HeadSubscription::new(node.node_id, transport.max_heads);
-    let mut store = match AgentStore::open(AgentDatabaseConfig::new(&config.state_db)).await {
+    // The live Alloy channel can contain `max_heads` notifications while the
+    // worker's queue already contains up to twice that amount. Reserve space
+    // for both before cancellation drains the channel into the shutdown-owned
+    // queue.
+    let queue_capacity = transport.max_heads.saturating_mul(3).max(1);
+    let mut subscription = HeadSubscription::new(node.node_id, queue_capacity);
+    let mut store = match AgentStore::open_with_write_permit(
+        AgentDatabaseConfig::new(&config.state_db),
+        write_permit,
+    )
+    .await
+    {
         Ok(store) => store,
         Err(error) => {
             return BlockWorkerExit {
@@ -1356,14 +1622,19 @@ pub async fn run_node_block_worker(
             };
         }
 
-        let latest = match load_last_report(&mut store).await {
-            Ok(report) => report,
-            Err(error) => {
-                return BlockWorkerExit {
-                    subscription,
-                    error: Some(CollectionError::Database(error)),
-                };
+        let latest = tokio::select! {
+            _ = cancel.cancelled() => {
+                return BlockWorkerExit { subscription, error: None };
             }
+            result = load_last_report(&mut store) => match result {
+                Ok(report) => report,
+                Err(error) => {
+                    return BlockWorkerExit {
+                        subscription,
+                        error: Some(CollectionError::Database(error)),
+                    };
+                }
+            },
         };
         let Some((identity, boot_id)) = latest.and_then(|report| {
             report
@@ -1400,7 +1671,7 @@ pub async fn run_node_block_worker(
                 continue;
             }
         };
-        if let Err(error) = recover_node_blocks(
+        let recovery_succeeded = match recover_node_blocks(
             &mut store,
             &transport,
             NodeRecoveryRequest {
@@ -1414,42 +1685,62 @@ pub async fn run_node_block_worker(
         )
         .await
         {
-            return BlockWorkerExit {
-                subscription,
-                error: Some(error),
-            };
+            Ok(succeeded) => succeeded,
+            Err(error) => {
+                return BlockWorkerExit {
+                    subscription,
+                    error: Some(error),
+                };
+            }
+        };
+        if recovery_succeeded {
+            subscription.clear_loss();
         }
 
         'connected: loop {
             while let Some(header) = subscription.front_header().cloned() {
                 let observed_at = timestamp();
-                let summary = match transport
-                    .resolve_live_head(&live, node.node_id, &header, &identity, observed_at)
-                    .await
-                {
+                let summary = match tokio::select! {
+                    _ = cancel.cancelled() => {
+                        transport.drain_live_heads(&mut live, &mut subscription);
+                        return BlockWorkerExit { subscription, error: None };
+                    }
+                    result = transport.resolve_live_head(
+                        &live,
+                        node.node_id,
+                        &header,
+                        &identity,
+                        observed_at,
+                    ) => result,
+                } {
                     Ok(summary) => summary,
                     Err(_) => break 'connected,
                 };
-                if let Err(error) = crate::block::persist_block_summary(
-                    &mut store,
-                    &summary,
-                    &observed_at.to_string(),
-                )
-                .await
-                {
+                let observed_at_text = observed_at.to_string();
+                let persist_result =
+                    crate::block::persist_block_summary(&mut store, &summary, &observed_at_text)
+                        .await;
+                if let Err(error) = persist_result {
                     return BlockWorkerExit {
                         subscription,
                         error: Some(CollectionError::Database(error)),
                     };
                 }
-                if let Err(error) = sqlx::query("INSERT INTO node_recovery_state (node_id, boot_id, last_head, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET boot_id=excluded.boot_id,last_head=excluded.last_head,updated_at=excluded.updated_at")
+                let _write_permit = tokio::select! {
+                    _ = cancel.cancelled() => {
+                        transport.drain_live_heads(&mut live, &mut subscription);
+                        return BlockWorkerExit { subscription, error: None };
+                    }
+                    permit = store.acquire_write() => permit,
+                };
+                let state_result = sqlx::query("INSERT INTO node_recovery_state (node_id, boot_id, last_head, pending_from, pending_to, pending_trigger, pending_reason, updated_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, ?) ON CONFLICT(node_id) DO UPDATE SET boot_id=excluded.boot_id,last_head=excluded.last_head,pending_from=NULL,pending_to=NULL,pending_trigger=NULL,pending_reason=NULL,updated_at=excluded.updated_at")
                     .bind(node.node_id.to_string())
                     .bind(boot_id.to_string())
                     .bind(summary.block_number as i64)
                     .bind(observed_at.to_string())
                     .execute(store.connection())
-                    .await
-                {
+                    .await;
+                if let Err(error) = state_result {
                     return BlockWorkerExit {
                         subscription,
                         error: Some(CollectionError::Database(error)),
@@ -1460,20 +1751,47 @@ pub async fn run_node_block_worker(
 
             let header = tokio::select! {
                 _ = cancel.cancelled() => {
+                    transport.drain_live_heads(&mut live, &mut subscription);
                     return BlockWorkerExit { subscription, error: None };
                 }
                 result = transport.receive_live_head(&mut live) => match result {
                     Ok(header) => header,
+                    Err(crate::block::TransportError::HeadLagged
+                        | crate::block::TransportError::MalformedHead(_)) => {
+                        subscription.mark_loss();
+                        break 'connected;
+                    }
                     Err(_) => break 'connected,
                 }
             };
+            let header_height = header.block_number;
             if subscription.push(header).is_err() {
                 break 'connected;
             }
+            let _write_permit = tokio::select! {
+                _ = cancel.cancelled() => {
+                    transport.drain_live_heads(&mut live, &mut subscription);
+                    return BlockWorkerExit { subscription, error: None };
+                }
+                permit = store.acquire_write() => permit,
+            };
+            let pending_result = sqlx::query("INSERT INTO node_recovery_state (node_id, boot_id, last_head, pending_from, pending_to, pending_trigger, pending_reason, updated_at) VALUES (?, ?, NULL, ?, ?, 'live_head', 'live head awaiting resolution', ?) ON CONFLICT(node_id) DO UPDATE SET boot_id=excluded.boot_id, pending_from=excluded.pending_from, pending_to=excluded.pending_to, pending_trigger=excluded.pending_trigger, pending_reason=excluded.pending_reason, updated_at=excluded.updated_at")
+                .bind(node.node_id.to_string())
+                .bind(boot_id.to_string())
+                .bind(header_height as i64)
+                .bind(header_height as i64)
+                .bind(timestamp().to_string())
+                .execute(store.connection())
+                .await;
+            if pending_result.is_err() {
+                break 'connected;
+            }
         }
+        transport.drain_live_heads(&mut live, &mut subscription);
 
         tokio::select! {
             _ = cancel.cancelled() => {
+                transport.drain_live_heads(&mut live, &mut subscription);
                 return BlockWorkerExit { subscription, error: None };
             }
             _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
@@ -1490,14 +1808,32 @@ pub async fn collect_and_persist_with_blocks<A: RpcAdapter>(
     transport: &crate::block::WebSocketBlockTransport,
     subscriptions: &mut [crate::block::HeadSubscription],
 ) -> Result<String, CollectionError> {
-    let mut store = AgentStore::open(AgentDatabaseConfig::new(&config.state_db)).await?;
-    crate::reporting::ensure_spool_healthy(&mut store).await?;
-    #[allow(clippy::type_complexity)]
-    let state: Option<(String, i64, Option<String>, i64, String, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT agent_id, agent_epoch, boot_id, report_sequence, boot_state, previous_boot_id, pending_transition, pending_previous_boot_id FROM agent_state WHERE singleton=1",
+    let _runtime_lock = crate::database::AgentRuntimeLock::acquire(&config.state_db)
+        .map_err(|error| CollectionError::RuntimeOwnership(error.to_string()))?;
+    collect_and_persist_with_blocks_with_permit(
+        config,
+        adapter,
+        transport,
+        subscriptions,
+        AgentStoreWritePermit::new(),
     )
-    .fetch_optional(store.connection())
+    .await
+}
+
+pub(crate) async fn collect_and_persist_with_blocks_with_permit<A: RpcAdapter>(
+    config: &AgentConfig,
+    adapter: &A,
+    transport: &crate::block::WebSocketBlockTransport,
+    subscriptions: &mut [crate::block::HeadSubscription],
+    write_permit: AgentStoreWritePermit,
+) -> Result<String, CollectionError> {
+    let mut store = AgentStore::open_with_write_permit(
+        AgentDatabaseConfig::new(&config.state_db),
+        write_permit,
+    )
     .await?;
+    crate::reporting::ensure_spool_healthy(&mut store).await?;
+    let state: Option<CollectionState> = load_collection_state(&mut store).await?;
     let (
         agent_text,
         epoch,
@@ -1596,7 +1932,7 @@ pub async fn collect_and_persist_with_blocks<A: RpcAdapter>(
             }
             Err(_) => reconnect_needed = true,
         }
-        recover_node_blocks(
+        let recovery_succeeded = recover_node_blocks(
             &mut store,
             transport,
             NodeRecoveryRequest {
@@ -1609,6 +1945,14 @@ pub async fn collect_and_persist_with_blocks<A: RpcAdapter>(
             },
         )
         .await?;
+        if recovery_succeeded {
+            if let Some(subscription) = subscriptions
+                .iter_mut()
+                .find(|subscription| subscription.node_id() == node.node_id)
+            {
+                subscription.clear_loss();
+            }
+        }
     }
     if pending_transition.as_deref() == Some("drained_previous") {
         report.boot_transition = BootTransition::DrainedPrevious;
@@ -1634,11 +1978,42 @@ pub async fn collect_and_persist_with_blocks<A: RpcAdapter>(
     let body = serde_json::to_vec(&report)?;
     let digest = format!("0x{}", hex::encode(sha2::Sha256::digest(&body)));
     let now = report.generated_at.to_string();
+    let _write_permit = store.acquire_write().await;
     let mut tx = store.connection().begin().await?;
+    let transaction_result: Result<(), CollectionError> = async {
+        let committed_state: Option<(i64, Option<String>, i64, String)> = sqlx::query_as(
+            "SELECT agent_epoch, boot_id, report_sequence, boot_state FROM agent_state WHERE singleton=1",
+        )
+    .fetch_optional(&mut *tx)
+    .await?;
+    let report_boot_id = report.boot_id.to_string();
+    let state_matches =
+        committed_state
+            .as_ref()
+            .is_some_and(|(epoch, boot_id, sequence, current_boot_state)| {
+                *epoch == report.agent_epoch as i64
+                    && *sequence == report.report_sequence as i64 - 1
+                    && current_boot_state == &boot_state
+                    && (boot_id.as_deref() == Some(report_boot_id.as_str()) || boot_id.is_none())
+            });
+        if !state_matches {
+            return Err(CollectionError::ConcurrentStateChange);
+        }
     sqlx::query("INSERT INTO reports (report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes, in_flight, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)")
         .bind(report.report_id.to_string()).bind(report.agent_epoch as i64).bind(report.boot_id.to_string()).bind(report.report_sequence as i64).bind(report.generated_at.to_string()).bind(&body).bind(&digest).bind(body.len() as i64).bind(&now).execute(&mut *tx).await?;
+    if !crate::reporting::claim_report_samples(
+        &mut tx,
+        &report.report_id.to_string(),
+        &report.block_summaries,
+        &report.history_gaps,
+    )
+    .await?
+    {
+        return Err(CollectionError::ConcurrentStateChange);
+    }
     crate::reporting::persist_last_report_snapshot(
         &mut tx,
+        &report.agent_id.to_string(),
         report.agent_epoch,
         &report.boot_id.to_string(),
         report.report_sequence,
@@ -1652,7 +2027,17 @@ pub async fn collect_and_persist_with_blocks<A: RpcAdapter>(
         BootTransition::RecoveredAfterStale => "recovered_after_stale",
     };
     update_agent_state_for_persisted_report(&mut tx, &report, transition, &now).await?;
-    tx.commit().await?;
+        Ok(())
+    }
+    .await;
+    match transaction_result {
+        Ok(()) => tx.commit().await?,
+        Err(error) => {
+            tx.rollback().await?;
+            return Err(error);
+        }
+    }
+    drop(_write_permit);
     crate::reporting::enforce_spool_policy(&mut store, &SpoolPolicy::default(), &now)
         .await
         .map_err(CollectionError::Report)?;
@@ -1845,30 +2230,10 @@ pub async fn apply_receipt(
         ));
     }
 
-    let mut tx = store.connection().begin().await?;
-    let existing_receipt: Option<(String, String, Vec<u8>)> = sqlx::query_as(
-        "SELECT report_body_sha256, disposition, receipt_body FROM report_receipts WHERE report_id = ?",
-    )
-    .bind(report_id)
-    .fetch_optional(&mut *tx)
-    .await?;
-    if existing_receipt.is_some() {
-        sqlx::query(
-            "UPDATE spool_state SET store_fatal = 1, store_error = ?, updated_at = ? WHERE singleton = 1",
-        )
-        .bind("pending report has a pre-existing receipt")
-        .bind(applied_at)
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        return Err(sqlx::Error::Protocol(
-            "pending report has a pre-existing receipt".to_owned(),
-        ));
-    }
     let (raw_report, stored_body_sha256, stored_body_bytes): (Vec<u8>, String, i64) =
         sqlx::query_as("SELECT body, body_sha256, body_bytes FROM reports WHERE report_id = ?")
             .bind(report_id)
-            .fetch_optional(&mut *tx)
+            .fetch_optional(store.connection())
             .await?
             .ok_or_else(|| sqlx::Error::Protocol("report is not in the Agent spool".to_owned()))?;
     let actual_hash = format!("0x{}", hex::encode(sha2::Sha256::digest(&raw_report)));
@@ -1889,6 +2254,62 @@ pub async fn apply_receipt(
     if parsed_report.report_id.to_string() != report_id {
         return Err(sqlx::Error::Protocol(
             "stored report id mismatch".to_owned(),
+        ));
+    }
+
+    let _write_permit = store.acquire_write().await;
+    let mut tx = store.connection().begin().await?;
+    let existing_receipt: Option<(String, String)> = match sqlx::query_as(
+        "SELECT report_body_sha256, disposition FROM report_receipts WHERE report_id = ?",
+    )
+    .bind(report_id)
+    .fetch_optional(&mut *tx)
+    .await
+    {
+        Ok(value) => value,
+        Err(error) => {
+            tx.rollback().await?;
+            return Err(error);
+        }
+    };
+    if existing_receipt.is_some() {
+        let fatal_update = sqlx::query(
+            "UPDATE spool_state SET store_fatal = 1, store_error = ?, updated_at = ? WHERE singleton = 1",
+        )
+        .bind("pending report has a pre-existing receipt")
+        .bind(applied_at)
+        .execute(&mut *tx)
+        .await;
+        return match fatal_update {
+            Ok(_) => {
+                tx.commit().await?;
+                Err(sqlx::Error::Protocol(
+                    "pending report has a pre-existing receipt".to_owned(),
+                ))
+            }
+            Err(error) => match tx.rollback().await {
+                Ok(()) => Err(error),
+                Err(rollback_error) => Err(rollback_error),
+            },
+        };
+    }
+    let transaction_result: Result<(), sqlx::Error> = async {
+        let current_report: Option<(Vec<u8>, String, i64)> =
+        sqlx::query_as("SELECT body, body_sha256, body_bytes FROM reports WHERE report_id = ?")
+            .bind(report_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some((current_body, current_body_sha256, current_body_bytes)) = current_report else {
+        return Err(sqlx::Error::Protocol(
+            "report is not in the Agent spool".to_owned(),
+        ));
+    };
+    if current_body != raw_report
+        || current_body_sha256 != stored_body_sha256
+        || current_body_bytes != stored_body_bytes
+    {
+        return Err(sqlx::Error::Protocol(
+            "stored report changed during receipt application".to_owned(),
         ));
     }
     let mut expected_nodes = std::collections::HashSet::new();
@@ -1960,18 +2381,47 @@ pub async fn apply_receipt(
         match sample.disposition {
             SampleDispositionKind::Accepted | SampleDispositionKind::TerminalRejected => {
                 if kind == "block" {
+                    let block_hash = parsed_report
+                        .block_summaries
+                        .iter()
+                        .find(|summary| {
+                            summary.node_id == sample.node_id
+                                && summary.block_number == from_height
+                        })
+                        .map(|summary| summary.block_hash.to_string())
+                        .ok_or_else(|| {
+                            sqlx::Error::Protocol(
+                                "stored report is missing the referenced block summary".to_owned(),
+                            )
+                        })?;
                     sqlx::query(
-                        "DELETE FROM block_summaries WHERE node_id = ? AND block_number = ?",
+                        "DELETE FROM block_summaries WHERE node_id = ? AND block_number = ? AND block_hash = ?",
                     )
                     .bind(sample.node_id.to_string())
                     .bind(from_height as i64)
+                    .bind(block_hash)
                     .execute(&mut *tx)
                     .await?;
                 } else {
-                    sqlx::query("DELETE FROM history_gaps WHERE node_id = ? AND from_height = ? AND to_height = ?")
+                    let gap_kind = parsed_report
+                        .history_gaps
+                        .iter()
+                        .find(|gap| {
+                            gap.node_id == sample.node_id
+                                && gap.from_height == from_height
+                                && gap.to_height == to_height
+                        })
+                        .map(|gap| crate::block::gap_kind_name(gap.kind))
+                        .ok_or_else(|| {
+                            sqlx::Error::Protocol(
+                                "stored report is missing the referenced history gap".to_owned(),
+                            )
+                        })?;
+                    sqlx::query("DELETE FROM history_gaps WHERE node_id = ? AND from_height = ? AND to_height = ? AND kind = ?")
                         .bind(sample.node_id.to_string())
                         .bind(from_height as i64)
                         .bind(to_height as i64)
+                        .bind(gap_kind)
                         .execute(&mut *tx)
                         .await?;
                 }
@@ -2004,11 +2454,10 @@ pub async fn apply_receipt(
         }
     }
 
-    sqlx::query("INSERT INTO report_receipts (report_id, report_body_sha256, disposition, receipt_body, applied_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(report_id) DO NOTHING")
+    sqlx::query("INSERT INTO report_receipts (report_id, report_body_sha256, disposition, applied_at) VALUES (?, ?, ?, ?) ON CONFLICT(report_id) DO NOTHING")
         .bind(report_id)
         .bind(body_sha256)
         .bind(disposition)
-        .bind(receipt_body)
         .bind(applied_at)
         .execute(&mut *tx)
         .await?;
@@ -2017,7 +2466,48 @@ pub async fn apply_receipt(
         .bind(report_id)
         .execute(&mut *tx)
         .await?;
-    tx.commit().await
+    sqlx::query(
+        "DELETE FROM report_receipts WHERE report_id NOT IN (SELECT report_id FROM report_receipts ORDER BY applied_at DESC, report_id DESC LIMIT ?)",
+    )
+    .bind(crate::reporting::MAX_APPLIED_RECEIPT_MARKERS as i64)
+    .execute(&mut *tx)
+    .await?;
+    if parsed_report.boot_transition == BootTransition::Closing {
+        let new_boot_id =
+            BootId::from_str(&Uuid::new_v4().to_string()).expect("UUID is valid");
+        let closed_boot_id = parsed_report.boot_id.to_string();
+        let result = sqlx::query(
+            "UPDATE agent_state SET boot_id=?, report_sequence=0, boot_state='drained_pending', pending_transition='drained_previous', pending_previous_boot_id=?, previous_boot_id=?, close_report_id=?, close_applied_at=?, shutdown_state='final_stored', shutdown_finished_at=?, shutdown_last_error=NULL, shutdown_updated_at=?, updated_at=? WHERE singleton=1 AND agent_epoch=? AND boot_id=? AND report_sequence=? AND boot_state IN ('active', 'draining', 'final_stored')",
+        )
+        .bind(new_boot_id.to_string())
+        .bind(&closed_boot_id)
+        .bind(&closed_boot_id)
+        .bind(report_id)
+        .bind(applied_at)
+        .bind(applied_at)
+        .bind(applied_at)
+        .bind(applied_at)
+        .bind(parsed_report.agent_epoch as i64)
+        .bind(&closed_boot_id)
+        .bind(parsed_report.report_sequence as i64)
+        .execute(&mut *tx)
+        .await?;
+        if result.rows_affected() != 1 {
+            return Err(sqlx::Error::Protocol(
+                "Agent state changed while applying Closing receipt".to_owned(),
+            ));
+        }
+    }
+        Ok(())
+    }
+    .await;
+    match transaction_result {
+        Ok(()) => tx.commit().await,
+        Err(error) => match tx.rollback().await {
+            Ok(()) => Err(error),
+            Err(rollback_error) => Err(rollback_error),
+        },
+    }
 }
 
 fn sample_reference(sample: SampleRef) -> (&'static str, u64, u64) {
@@ -2062,6 +2552,59 @@ mod tests {
         assert!(delivered_report_closes_boot(&stored, &report.boot_id.to_string()).unwrap());
         assert!(
             !delivered_report_closes_boot(&stored, "0195f2a1-0099-4099-8099-000000000099").unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_recovery_outcome_rolls_back_before_writing_gaps() {
+        let directory = tempdir().unwrap();
+        let mut store =
+            AgentStore::open(AgentDatabaseConfig::new(directory.path().join("agent.db")))
+                .await
+                .unwrap();
+        let node_id: NodeId = "0195f2a1-0014-4014-8014-000000000014".parse().unwrap();
+        sqlx::query(
+            "INSERT INTO node_recovery_state (node_id, boot_id, last_head, pending_from, pending_to, pending_trigger, pending_reason, updated_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, ?)",
+        )
+        .bind(node_id.to_string())
+        .bind("new-boot")
+        .bind(10_i64)
+        .bind("2026-01-01T00:00:00Z")
+        .execute(store.connection())
+        .await
+        .unwrap();
+        let gap = crate::shutdown::shutdown_gap(
+            node_id,
+            (11, 12),
+            "2026-01-01T00:00:00Z".parse().unwrap(),
+            "stale recovery outcome",
+        );
+        let result = persist_recovery_state(
+            &mut store,
+            node_id,
+            NodeRecoveryWrite {
+                expected: Some((Some("old-boot".to_owned()), Some(9), None, None, None, None)),
+                boot_id: "old-boot".to_owned(),
+                head: 12,
+                pending: Some((11, 12)),
+                pending_trigger: Some("backfill".to_owned()),
+                pending_reason: Some("stale".to_owned()),
+                observed_at: "2026-01-01T00:00:01Z".parse().unwrap(),
+            },
+            &[],
+            &[gap],
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(CollectionError::ConcurrentStateChange)
+        ));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM history_gaps")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            0
         );
     }
 
@@ -2598,6 +3141,28 @@ mod tests {
             .execute(store.connection())
             .await
             .unwrap();
+        sqlx::query("INSERT INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, block_interval_ms, source, coinbase, seal_signer_match, protocol_proposer_kind, attribution_reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind("0195f2a1-0014-4014-8014-000000000014")
+            .bind(9_i64)
+            .bind(format!("0x{}", "00".repeat(32)))
+            .bind(format!("0x{}", "11".repeat(32)))
+            .bind(format!("0x{}", "22".repeat(32)))
+            .bind(1_i64)
+            .bind(1_i64)
+            .bind("lat")
+            .bind(0_i64)
+            .bind("2026-08-12T08:00:00Z")
+            .bind(0_i64)
+            .bind(None::<i64>)
+            .bind("subscription")
+            .bind(format!("0x{}", "00".repeat(20)))
+            .bind("unknown")
+            .bind("unknown")
+            .bind("test sample")
+            .bind("2026-08-12T08:00:00Z")
+            .execute(store.connection())
+            .await
+            .unwrap();
         store.close().await.unwrap();
 
         collect_and_persist(&config, &ScriptedRpcAdapter::new(snapshot()))
@@ -2625,17 +3190,32 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(reports, 2);
-        let body: Vec<u8> =
+        let first_body: Vec<u8> =
+            sqlx::query_scalar("SELECT body FROM reports ORDER BY report_sequence ASC LIMIT 1")
+                .fetch_one(reopened.connection())
+                .await
+                .unwrap();
+        let first_report: AgentReport = serde_json::from_slice(&first_body).unwrap();
+        assert_eq!(first_report.block_summaries.len(), 1);
+        let second_body: Vec<u8> =
             sqlx::query_scalar("SELECT body FROM reports ORDER BY report_sequence DESC LIMIT 1")
                 .fetch_one(reopened.connection())
                 .await
                 .unwrap();
-        let report: AgentReport = serde_json::from_slice(&body).unwrap();
+        let report: AgentReport = serde_json::from_slice(&second_body).unwrap();
+        assert!(report.block_summaries.is_empty());
         let node = &report.nodes[0];
         assert_eq!(node.chain.rpc.status, ComponentStatus::Error);
         assert_eq!(
             node.chain.rpc.latest.as_ref().unwrap().client_version,
             "fake-platon/1.0"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM report_sample_assignments")
+                .fetch_one(reopened.connection())
+                .await
+                .unwrap(),
+            1
         );
         reopened.close().await.unwrap();
     }
@@ -2707,6 +3287,71 @@ mod tests {
         reopened.close().await.unwrap();
     }
     #[tokio::test]
+    async fn receipt_application_prunes_terminal_markers_to_a_bounded_set() {
+        let dir = tempdir().unwrap();
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(dir.path().join("agent.db")))
+            .await
+            .unwrap();
+        let marker_hash = "0x0000000000000000000000000000000000000000000000000000000000000000";
+        for _ in 0..crate::reporting::MAX_APPLIED_RECEIPT_MARKERS {
+            sqlx::query("INSERT INTO report_receipts (report_id, report_body_sha256, disposition, applied_at) VALUES (?, ?, 'accepted', ?)")
+                .bind(Uuid::new_v4().to_string())
+                .bind(marker_hash)
+                .bind("2026-01-01T00:00:00Z")
+                .execute(store.connection())
+                .await
+                .unwrap();
+        }
+
+        let report_id = "0195f2a1-0013-4013-8013-000000000013";
+        let body = include_bytes!("../../platpulse-core/tests/fixtures/report_v1_minimal.json");
+        let hash = format!("0x{}", hex::encode(sha2::Sha256::digest(body)));
+        let receipt_body = format!(
+            r#"{{"receipt":{{"report_id":"{report_id}","disposition":"rejected","report_body_sha256":"{hash}","server_version":"test","supported_protocol_majors":[1],"server_time":"2026-01-01T00:00:00Z","inventory":"rejected","rejections":[{{"code":"invalid_envelope","retryable":false,"reason":"test"}}],"nodes":[],"samples":[]}}}}"#
+        );
+        sqlx::query("INSERT INTO reports (report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes, created_at) VALUES (?,1,?,1,?, ?, ?, ?, ?)")
+            .bind(report_id)
+            .bind("0195f2a1-0012-4012-8012-000000000012")
+            .bind("2026-08-12T09:00:00Z")
+            .bind(&body[..])
+            .bind(&hash)
+            .bind(body.len() as i64)
+            .bind("2026-08-12T09:00:00Z")
+            .execute(store.connection())
+            .await
+            .unwrap();
+        apply_receipt(
+            &mut store,
+            report_id,
+            &hash,
+            "rejected",
+            receipt_body.as_bytes(),
+            "2099-01-01T00:00:00Z",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM report_receipts")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            crate::reporting::MAX_APPLIED_RECEIPT_MARKERS as i64
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM report_receipts WHERE report_id = ?",
+            )
+            .bind(report_id)
+            .fetch_one(store.connection())
+            .await
+            .unwrap(),
+            1
+        );
+        store.close().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn receipt_application_is_atomic_and_removes_report() {
         let dir = tempdir().unwrap();
         let mut store = AgentStore::open(AgentDatabaseConfig::new(dir.path().join("agent.db")))
@@ -2745,6 +3390,110 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 0);
+        store.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn receipt_application_keeps_an_unclaimed_block_fork() {
+        let dir = tempdir().unwrap();
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(dir.path().join("agent.db")))
+            .await
+            .unwrap();
+        let mut report: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        let report_id = "0195f2a1-0013-4013-8013-000000000013";
+        let node_id = report.inventory.nodes[0].node_id;
+        report.report_id = report_id.parse().unwrap();
+        report.report_sequence = 1;
+        let mut sample = serde_json::from_slice::<AgentReport>(include_bytes!(
+            "../../platpulse-core/tests/fixtures/report_v1_canonical.json"
+        ))
+        .unwrap()
+        .block_summaries[0]
+            .clone();
+        sample.node_id = node_id;
+        sample.block_number = 9;
+        sample.block_hash = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa9"
+            .parse()
+            .unwrap();
+        sample.parent_hash = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa8"
+            .parse()
+            .unwrap();
+        sample.observed_at = report.generated_at;
+        report.block_summaries.push(sample.clone());
+        report.validate().unwrap();
+        let body = serde_json::to_vec(&report).unwrap();
+        let body_hash = format!("0x{}", hex::encode(sha2::Sha256::digest(&body)));
+        let created_at = report.generated_at.to_string();
+        crate::block::persist_block_summary(&mut store, &sample, &created_at)
+            .await
+            .unwrap();
+        let mut fork = sample.clone();
+        fork.block_hash = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"
+            .parse()
+            .unwrap();
+        crate::block::persist_block_summary(&mut store, &fork, &created_at)
+            .await
+            .unwrap();
+        crate::reporting::persist_immutable_report(
+            &mut store,
+            report_id,
+            report.agent_epoch,
+            &report.boot_id.to_string(),
+            report.report_sequence,
+            &created_at,
+            &body,
+        )
+        .await
+        .unwrap();
+        let receipt_body = serde_json::json!({
+            "receipt": {
+                "report_id": report_id,
+                "disposition": "accepted",
+                "report_body_sha256": body_hash,
+                "server_version": "test",
+                "supported_protocol_majors": [1],
+                "server_time": created_at,
+                "inventory": "accepted",
+                "rejections": [],
+                "nodes": [{
+                    "node_id": node_id,
+                    "current": "accepted",
+                    "accepted_component_revisions": [],
+                    "rejections": []
+                }],
+                "samples": [{
+                    "node_id": node_id,
+                    "sample": {"kind": "block", "height": 9},
+                    "disposition": "accepted"
+                }]
+            }
+        })
+        .to_string();
+        apply_receipt(
+            &mut store,
+            report_id,
+            &body_hash,
+            "accepted",
+            receipt_body.as_bytes(),
+            &created_at,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM block_summaries WHERE node_id=? AND block_number=? AND block_hash=?",
+            )
+            .bind(node_id.to_string())
+            .bind(9_i64)
+            .bind(fork.block_hash.to_string())
+            .fetch_one(store.connection())
+            .await
+            .unwrap(),
+            1
+        );
         store.close().await.unwrap();
     }
 }

@@ -24,9 +24,11 @@ use platpulse_core::network::{NetworkIdentity, RpcEndpoint, RpcScheme};
 use platpulse_core::protocol::{MAX_BLOCK_SUMMARIES, MAX_HISTORY_GAPS};
 use platpulse_core::time::Rfc3339;
 use serde::Deserialize;
-use sqlx::{Connection, FromRow};
+use sqlx::{Connection, FromRow, SqliteConnection};
 use thiserror::Error;
-use tokio::sync::broadcast::error::RecvError as BroadcastRecvError;
+use tokio::sync::broadcast::error::{
+    RecvError as BroadcastRecvError, TryRecvError as BroadcastTryRecvError,
+};
 use tokio::time::timeout;
 
 use crate::database::AgentStore;
@@ -56,6 +58,12 @@ pub enum TransportError {
     Unavailable,
     #[error("resolved block failed: {0}")]
     Resolve(#[from] ResolveError),
+    #[error("malformed head notification: {0}")]
+    MalformedHead(String),
+    #[error("head notification queue lagged; reconnect required")]
+    HeadLagged,
+    #[error("head subscription closed; reconnect required")]
+    HeadClosed,
     #[error("block transport request failed: {0}")]
     Failed(String),
 }
@@ -478,28 +486,29 @@ impl WebSocketBlockTransport {
         Ok(LiveHeadSubscription { provider, heads })
     }
 
-    pub(crate) async fn receive_live_head(
+    pub(crate) fn drain_live_heads(
         &self,
         subscription: &mut LiveHeadSubscription,
-    ) -> Result<HeadHeader, TransportError> {
-        let head = match subscription.heads.recv_result().await {
-            Ok(Ok(head)) => head,
-            Ok(Err(error)) => {
-                return Err(TransportError::Failed(format!(
-                    "malformed head notification: {error}"
-                )));
+        queue: &mut HeadSubscription,
+    ) {
+        loop {
+            match subscription.heads.try_recv_result() {
+                Ok(Ok(head)) => match self.parse_head(head) {
+                    Ok(header) => {
+                        if queue.push(header).is_err() {
+                            queue.mark_loss();
+                        }
+                    }
+                    Err(_) => queue.mark_loss(),
+                },
+                Ok(Err(_)) => queue.mark_loss(),
+                Err(BroadcastTryRecvError::Empty | BroadcastTryRecvError::Closed) => break,
+                Err(BroadcastTryRecvError::Lagged(_)) => queue.mark_loss(),
             }
-            Err(BroadcastRecvError::Lagged(_)) => {
-                return Err(TransportError::Failed(
-                    "head notification queue lagged; reconnect required".to_owned(),
-                ));
-            }
-            Err(BroadcastRecvError::Closed) => {
-                return Err(TransportError::Failed(
-                    "head subscription closed; reconnect required".to_owned(),
-                ));
-            }
-        };
+        }
+    }
+
+    fn parse_head(&self, head: PlatonHead) -> Result<HeadHeader, TransportError> {
         Ok(HeadHeader {
             block_number: quantity(&head.number)?,
             block_hash: parse_hash(&head.hash)?,
@@ -507,6 +516,18 @@ impl WebSocketBlockTransport {
             block_timestamp_ms: timestamp_ms(&head.timestamp)?,
             coinbase: parse_address(head.miner)?,
         })
+    }
+
+    pub(crate) async fn receive_live_head(
+        &self,
+        subscription: &mut LiveHeadSubscription,
+    ) -> Result<HeadHeader, TransportError> {
+        match subscription.heads.recv_result().await {
+            Ok(Ok(head)) => self.parse_head(head),
+            Ok(Err(error)) => Err(TransportError::MalformedHead(error.to_string())),
+            Err(BroadcastRecvError::Lagged(_)) => Err(TransportError::HeadLagged),
+            Err(BroadcastRecvError::Closed) => Err(TransportError::HeadClosed),
+        }
     }
 
     pub(crate) async fn resolve_live_head(
@@ -817,7 +838,7 @@ fn make_gap(
     }
 }
 
-fn gap_kind_name(kind: platpulse_core::gap::GapKind) -> &'static str {
+pub(crate) fn gap_kind_name(kind: platpulse_core::gap::GapKind) -> &'static str {
     match kind {
         platpulse_core::gap::GapKind::UnrecoverableBackfill => "unrecoverable_backfill",
         platpulse_core::gap::GapKind::SpoolOverflow => "spool_overflow",
@@ -825,8 +846,8 @@ fn gap_kind_name(kind: platpulse_core::gap::GapKind) -> &'static str {
     }
 }
 
-pub async fn persist_history_gap(
-    store: &mut AgentStore,
+pub(crate) async fn insert_history_gap(
+    connection: &mut SqliteConnection,
     gap: &platpulse_core::gap::HistoryGap,
 ) -> Result<(), sqlx::Error> {
     sqlx::query("INSERT OR IGNORE INTO history_gaps (node_id, from_height, to_height, kind, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)")
@@ -836,9 +857,17 @@ pub async fn persist_history_gap(
         .bind(gap_kind_name(gap.kind))
         .bind(&gap.reason)
         .bind(gap.recorded_at.to_string())
-        .execute(store.connection())
+        .execute(&mut *connection)
         .await?;
     Ok(())
+}
+
+pub async fn persist_history_gap(
+    store: &mut AgentStore,
+    gap: &platpulse_core::gap::HistoryGap,
+) -> Result<(), sqlx::Error> {
+    let _write_permit = store.acquire_write().await;
+    insert_history_gap(store.connection(), gap).await
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -895,6 +924,17 @@ impl BlockResolver for ScriptedBlockResolver {
     }
 }
 
+pub(crate) async fn insert_block_summary(
+    connection: &mut SqliteConnection,
+    summary: &BlockSummary,
+    created_at: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT OR IGNORE INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, block_interval_ms, source, coinbase, seal_signer_key_fingerprint, seal_signer_match, node_key_fingerprint, node_key_valid_from, node_key_valid_until, node_key_history_complete, seal_recovery_rule, seal_evidence, protocol_proposer_kind, protocol_proposer_identity, attribution_reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind(summary.node_id.to_string()).bind(summary.block_number as i64).bind(summary.block_hash.to_string()).bind(summary.parent_hash.to_string())
+        .bind(summary.network_identity.genesis_hash.to_string()).bind(summary.network_identity.chain_id as i64).bind(summary.network_identity.p2p_network_id as i64).bind(summary.network_identity.address_hrp.as_deref()).bind(summary.block_timestamp_ms as i64).bind(summary.observed_at.to_string()).bind(summary.transaction_count as i64).bind(summary.block_interval_ms.map(|v| v as i64)).bind(match summary.source { BlockSource::Subscription => "subscription", BlockSource::GapBackfill => "gap_backfill" }).bind(summary.attribution.coinbase.to_string()).bind(summary.attribution.seal_signer_key_fingerprint.as_ref().map(ToString::to_string)).bind(match summary.attribution.seal_signer_match { SealSignerMatch::SignerSelf => "self", SealSignerMatch::Other => "other", SealSignerMatch::Unknown => "unknown" }).bind(summary.attribution.node_key.as_ref().map(|key| key.fingerprint.to_string())).bind(summary.attribution.node_key.as_ref().and_then(|key| key.valid_from.map(|value| value.to_string()))).bind(summary.attribution.node_key.as_ref().and_then(|key| key.valid_until.map(|value| value.to_string()))).bind(summary.attribution.node_key.as_ref().is_some_and(|key| key.history_complete) as i64).bind(summary.attribution.seal_recovery_rule.as_deref()).bind(summary.attribution.seal_evidence.as_deref()).bind(match &summary.attribution.protocol_proposer { ProtocolProposer::Verified { .. } => "verified", ProtocolProposer::Unknown {} => "unknown" }).bind(match &summary.attribution.protocol_proposer { ProtocolProposer::Verified { identity } => Some(identity.as_str()), ProtocolProposer::Unknown {} => None }).bind(&summary.attribution.attribution_reason).bind(created_at).execute(&mut *connection).await?;
+    Ok(())
+}
+
 /// Persist a resolved sample before constructing a report. Duplicate hash
 /// deliveries are idempotent and never mutate the original sample.
 pub async fn persist_block_summary(
@@ -902,11 +942,16 @@ pub async fn persist_block_summary(
     summary: &BlockSummary,
     created_at: &str,
 ) -> Result<(), sqlx::Error> {
+    let _write_permit = store.acquire_write().await;
     let mut tx = store.connection().begin().await?;
-    sqlx::query("INSERT OR IGNORE INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, block_interval_ms, source, coinbase, seal_signer_key_fingerprint, seal_signer_match, node_key_fingerprint, node_key_valid_from, node_key_valid_until, node_key_history_complete, seal_recovery_rule, seal_evidence, protocol_proposer_kind, protocol_proposer_identity, attribution_reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .bind(summary.node_id.to_string()).bind(summary.block_number as i64).bind(summary.block_hash.to_string()).bind(summary.parent_hash.to_string())
-        .bind(summary.network_identity.genesis_hash.to_string()).bind(summary.network_identity.chain_id as i64).bind(summary.network_identity.p2p_network_id as i64).bind(summary.network_identity.address_hrp.as_deref()).bind(summary.block_timestamp_ms as i64).bind(summary.observed_at.to_string()).bind(summary.transaction_count as i64).bind(summary.block_interval_ms.map(|v| v as i64)).bind(match summary.source { BlockSource::Subscription => "subscription", BlockSource::GapBackfill => "gap_backfill" }).bind(summary.attribution.coinbase.to_string()).bind(summary.attribution.seal_signer_key_fingerprint.as_ref().map(ToString::to_string)).bind(match summary.attribution.seal_signer_match { SealSignerMatch::SignerSelf => "self", SealSignerMatch::Other => "other", SealSignerMatch::Unknown => "unknown" }).bind(summary.attribution.node_key.as_ref().map(|key| key.fingerprint.to_string())).bind(summary.attribution.node_key.as_ref().and_then(|key| key.valid_from.map(|value| value.to_string()))).bind(summary.attribution.node_key.as_ref().and_then(|key| key.valid_until.map(|value| value.to_string()))).bind(summary.attribution.node_key.as_ref().is_some_and(|key| key.history_complete) as i64).bind(summary.attribution.seal_recovery_rule.as_deref()).bind(summary.attribution.seal_evidence.as_deref()).bind(match &summary.attribution.protocol_proposer { ProtocolProposer::Verified { .. } => "verified", ProtocolProposer::Unknown {} => "unknown" }).bind(match &summary.attribution.protocol_proposer { ProtocolProposer::Verified { identity } => Some(identity.as_str()), ProtocolProposer::Unknown {} => None }).bind(&summary.attribution.attribution_reason).bind(created_at).execute(&mut *tx).await?;
-    tx.commit().await
+    let result = insert_block_summary(&mut tx, summary, created_at).await;
+    match result {
+        Ok(()) => tx.commit().await,
+        Err(error) => match tx.rollback().await {
+            Ok(()) => Err(error),
+            Err(rollback_error) => Err(rollback_error),
+        },
+    }
 }
 
 #[derive(Debug, FromRow)]
@@ -936,7 +981,7 @@ pub async fn load_history_gaps(
     store: &mut AgentStore,
 ) -> Result<Vec<platpulse_core::gap::HistoryGap>, sqlx::Error> {
     let rows = sqlx::query_as::<_, (String, i64, i64, String, String)>(
-        "SELECT g.node_id, g.from_height, g.to_height, g.kind, g.created_at FROM history_gaps g WHERE NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id=g.node_id AND a.sample_kind='gap' AND a.from_height=g.from_height AND a.to_height=g.to_height) ORDER BY g.created_at, g.gap_id LIMIT ?",
+        "SELECT g.node_id, g.from_height, g.to_height, g.kind, g.created_at FROM history_gaps g WHERE NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id=g.node_id AND a.sample_kind='gap' AND a.from_height=g.from_height AND a.to_height=g.to_height) AND g.gap_id = (SELECT MIN(candidate.gap_id) FROM history_gaps candidate WHERE candidate.node_id=g.node_id AND candidate.from_height=g.from_height AND candidate.to_height=g.to_height AND NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id=candidate.node_id AND a.sample_kind='gap' AND a.from_height=candidate.from_height AND a.to_height=candidate.to_height)) ORDER BY g.created_at, g.gap_id LIMIT ?",
     )
     .bind(MAX_HISTORY_GAPS as i64)
     .fetch_all(store.connection())
@@ -968,7 +1013,7 @@ pub async fn load_history_gaps(
 pub async fn load_block_summaries(
     store: &mut AgentStore,
 ) -> Result<Vec<BlockSummary>, sqlx::Error> {
-    let rows = sqlx::query_as::<_, BlockRow>("SELECT b.node_id, b.block_number, b.block_hash, b.parent_hash, b.network_genesis_hash, b.network_chain_id, b.network_p2p_network_id, b.network_address_hrp, b.block_timestamp_ms, b.observed_at, b.transaction_count, b.block_interval_ms, b.source, b.coinbase, b.seal_signer_key_fingerprint, b.seal_signer_match, b.protocol_proposer_kind, b.protocol_proposer_identity, b.attribution_reason FROM block_summaries b WHERE NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id=b.node_id AND a.sample_kind='block' AND a.from_height=b.block_number AND a.to_height=b.block_number) ORDER BY b.created_at, b.sample_id LIMIT ?")
+    let rows = sqlx::query_as::<_, BlockRow>("SELECT b.node_id, b.block_number, b.block_hash, b.parent_hash, b.network_genesis_hash, b.network_chain_id, b.network_p2p_network_id, b.network_address_hrp, b.block_timestamp_ms, b.observed_at, b.transaction_count, b.block_interval_ms, b.source, b.coinbase, b.seal_signer_key_fingerprint, b.seal_signer_match, b.protocol_proposer_kind, b.protocol_proposer_identity, b.attribution_reason FROM block_summaries b WHERE NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id=b.node_id AND a.sample_kind='block' AND a.from_height=b.block_number AND a.to_height=b.block_number) AND b.sample_id = (SELECT MIN(candidate.sample_id) FROM block_summaries candidate WHERE candidate.node_id=b.node_id AND candidate.block_number=b.block_number AND NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id=candidate.node_id AND a.sample_kind='block' AND a.from_height=candidate.block_number AND a.to_height=candidate.block_number)) ORDER BY b.created_at, b.sample_id LIMIT ?")
         .bind(MAX_BLOCK_SUMMARIES as i64)
         .fetch_all(store.connection())
         .await?;
@@ -1075,6 +1120,9 @@ pub struct HeadSubscription {
     node_id: NodeId,
     capacity: usize,
     queue: VecDeque<HeadHeader>,
+    loss_from: Option<u64>,
+    loss_to: Option<u64>,
+    last_resolved_height: Option<u64>,
 }
 
 impl HeadSubscription {
@@ -1084,6 +1132,9 @@ impl HeadSubscription {
             node_id,
             capacity,
             queue: VecDeque::with_capacity(capacity),
+            loss_from: None,
+            loss_to: None,
+            last_resolved_height: None,
         }
     }
 
@@ -1102,7 +1153,9 @@ impl HeadSubscription {
     }
 
     pub fn pop_front(&mut self) -> Option<HeadHeader> {
-        self.queue.pop_front()
+        let header = self.queue.pop_front()?;
+        self.last_resolved_height = Some(header.block_number);
+        Some(header)
     }
 
     pub fn backfill_range(&self, current_head: u64) -> Option<(u64, u64)> {
@@ -1111,10 +1164,43 @@ impl HeadSubscription {
     }
 
     pub fn drain_unresolved_range(&mut self) -> Option<(u64, u64)> {
-        let first = self.queue.front()?.block_number;
-        let last = self.queue.back()?.block_number;
+        let queued_first = self.queue.front().map(|header| header.block_number);
+        let queued_last = self.queue.back().map(|header| header.block_number);
+        let loss_range = self.loss_from.map(|from| {
+            let to = self.loss_to.unwrap_or(from);
+            (from, queued_last.map_or(to, |queued| to.max(queued)))
+        });
         self.queue.clear();
-        Some((first, last))
+        self.loss_from = None;
+        self.loss_to = None;
+        match (loss_range, queued_first.zip(queued_last)) {
+            (Some(loss), Some(queued)) => Some((loss.0.min(queued.0), loss.1.max(queued.1))),
+            (Some(loss), None) => Some(loss),
+            (None, Some(queued)) => Some(queued),
+            (None, None) => None,
+        }
+    }
+
+    pub(crate) fn mark_loss(&mut self) {
+        if self.loss_from.is_none() {
+            self.loss_from = Some(
+                self.queue
+                    .back()
+                    .map(|header| header.block_number.saturating_add(1))
+                    .or_else(|| {
+                        self.last_resolved_height
+                            .map(|height| height.saturating_add(1))
+                    })
+                    .unwrap_or(0),
+            );
+        }
+    }
+
+    /// Mark the current loss range as covered by a successful recovery pass
+    /// without disturbing headers that were already queued.
+    pub(crate) fn clear_loss(&mut self) {
+        self.loss_from = None;
+        self.loss_to = None;
     }
 
     /// Drop all queued headers after intake has been cancelled, preserving the
@@ -1132,7 +1218,12 @@ impl HeadSubscription {
     }
 
     pub fn push(&mut self, header: HeadHeader) -> Result<(), QueueError> {
+        if let (Some(from), None) = (self.loss_from, self.loss_to) {
+            self.loss_to = Some(header.block_number.saturating_sub(1).max(from));
+        }
         if self.queue.len() >= self.capacity {
+            self.mark_loss();
+            self.loss_to = Some(header.block_number);
             return Err(QueueError::Full);
         }
         self.queue.push_back(header);
@@ -1205,7 +1296,7 @@ impl NodeSubscriptions {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::database::{AgentDatabaseConfig, AgentStore};
+    use crate::database::{AgentDatabaseConfig, AgentStore, AgentStoreWritePermit};
     use tempfile::tempdir;
 
     fn hash(byte: char) -> Hash32 {
@@ -1270,6 +1361,150 @@ mod tests {
         assert_eq!(summary.transaction_count, 2);
         assert_eq!(fake.calls.get(), 1);
         assert!(sub.is_empty());
+    }
+
+    #[test]
+    fn lost_head_notifications_become_an_explicit_unresolved_range() {
+        let node: NodeId = "0195f2a1-0014-4014-8014-000000000014".parse().unwrap();
+        let mut sub = HeadSubscription::new(node, 4);
+        let mut resolved = header();
+        resolved.block_number = 10;
+        sub.push(resolved).unwrap();
+        assert!(sub.pop_front().is_some());
+        sub.mark_loss();
+        let mut retained = header();
+        retained.block_number = 13;
+        sub.push(retained).unwrap();
+        assert!(sub.pop_front().is_some());
+        assert_eq!(sub.drain_unresolved_range(), Some((11, 12)));
+    }
+
+    #[test]
+    fn successful_recovery_can_acknowledge_loss_without_dropping_queued_heads() {
+        let node: NodeId = "0195f2a1-0014-4014-8014-000000000014".parse().unwrap();
+        let mut sub = HeadSubscription::new(node, 4);
+        sub.mark_loss();
+        sub.push(header()).unwrap();
+        sub.clear_loss();
+        assert_eq!(sub.len(), 1);
+        assert_eq!(sub.drain_unresolved_range(), Some((9, 9)));
+    }
+
+    #[tokio::test]
+    async fn collection_delivery_and_block_writes_serialize_without_busy_errors() {
+        let dir = tempdir().unwrap();
+        let database = dir.path().join("agent.db");
+        let permit = AgentStoreWritePermit::new();
+        let permit_observer = permit.clone();
+        let acquisition_notify = permit_observer.test_acquisition_notify();
+        let database_config =
+            || AgentDatabaseConfig::new(&database).with_busy_timeout(Duration::from_millis(20));
+        let mut block_store = AgentStore::open_with_write_permit(database_config(), permit.clone())
+            .await
+            .unwrap();
+        let mut collection_store =
+            AgentStore::open_with_write_permit(database_config(), permit.clone())
+                .await
+                .unwrap();
+        let mut delivery_store =
+            AgentStore::open_with_write_permit(database_config(), permit.clone())
+                .await
+                .unwrap();
+        let mut blocking_store =
+            AgentStore::open_with_write_permit(database_config(), permit.clone())
+                .await
+                .unwrap();
+        let baseline_acquisition_attempts = permit_observer.test_acquisition_attempts();
+        let observed_at: Rfc3339 = "2026-01-01T00:00:00Z".parse().unwrap();
+        let summary = BlockSummary {
+            node_id: "0195f2a1-0014-4014-8014-000000000014".parse().unwrap(),
+            network_identity: identity(),
+            block_number: 9,
+            block_hash: hash('c'),
+            parent_hash: hash('d'),
+            block_timestamp_ms: 1_000,
+            observed_at,
+            transaction_count: 2,
+            block_interval_ms: None,
+            source: BlockSource::Subscription,
+            attribution: BlockProductionAttribution::unknown_attribution(
+                address(),
+                "test attribution",
+            ),
+        };
+        let body = include_bytes!("../../platpulse-core/tests/fixtures/report_v1_minimal.json");
+        let observed_at_text = observed_at.to_string();
+
+        let held = blocking_store.acquire_write().await;
+        let mut blocking_transaction = blocking_store.connection().begin().await.unwrap();
+        sqlx::query("UPDATE agent_state SET report_sequence = report_sequence WHERE singleton = 1")
+            .execute(&mut *blocking_transaction)
+            .await
+            .unwrap();
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(4));
+        let block_barrier = barrier.clone();
+        let block_task = tokio::spawn(async move {
+            block_barrier.wait().await;
+            let result = persist_block_summary(&mut block_store, &summary, &observed_at_text).await;
+            (result, block_store)
+        });
+        let collection_barrier = barrier.clone();
+        let collection_task = tokio::spawn(async move {
+            collection_barrier.wait().await;
+            let result = crate::reporting::persist_immutable_report(
+                &mut collection_store,
+                "0195f2a1-0013-4013-8013-000000000013",
+                1,
+                "0195f2a1-0012-4012-8012-000000000012",
+                1,
+                "2026-08-12T09:00:00Z",
+                body,
+            )
+            .await;
+            (result, collection_store)
+        });
+        let delivery_barrier = barrier.clone();
+        let delivery_task = tokio::spawn(async move {
+            delivery_barrier.wait().await;
+            let result = crate::reporting::record_delivery_failure(
+                &mut delivery_store,
+                "test delivery failure",
+                "2026-01-01T00:00:00Z",
+            )
+            .await;
+            (result, delivery_store)
+        });
+        barrier.wait().await;
+        loop {
+            let notified = acquisition_notify.notified();
+            if permit_observer.test_acquisition_attempts() >= baseline_acquisition_attempts + 4 {
+                break;
+            }
+            notified.await;
+        }
+        assert!(!block_task.is_finished());
+        assert!(!collection_task.is_finished());
+        assert!(!delivery_task.is_finished());
+        blocking_transaction.commit().await.unwrap();
+        drop(held);
+        blocking_store.close().await.unwrap();
+
+        let (block_result, block_store) = block_task.await.unwrap();
+        let (collection_result, collection_store) = collection_task.await.unwrap();
+        let (delivery_result, delivery_store) = delivery_task.await.unwrap();
+
+        assert!(block_result.is_ok(), "block write failed: {block_result:?}");
+        assert!(
+            collection_result.is_ok(),
+            "collection write failed: {collection_result:?}"
+        );
+        assert!(
+            delivery_result.is_ok(),
+            "delivery write failed: {delivery_result:?}"
+        );
+        block_store.close().await.unwrap();
+        collection_store.close().await.unwrap();
+        delivery_store.close().await.unwrap();
     }
 
     #[tokio::test]
@@ -1346,6 +1581,59 @@ mod tests {
                 .await
                 .unwrap(),
             (MAX_BLOCK_SUMMARIES + 1) as i64
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_loaders_choose_one_row_per_receipt_key() {
+        let dir = tempdir().unwrap();
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(dir.path().join("agent.db")))
+            .await
+            .unwrap();
+        let observed_at: Rfc3339 = "2026-01-01T00:00:00Z".parse().unwrap();
+        let mut first = BlockSummary {
+            node_id: "0195f2a1-0014-4014-8014-000000000014".parse().unwrap(),
+            network_identity: identity(),
+            block_number: 9,
+            block_hash: hash('c'),
+            parent_hash: hash('d'),
+            block_timestamp_ms: 1_000,
+            observed_at,
+            transaction_count: 2,
+            block_interval_ms: None,
+            source: BlockSource::Subscription,
+            attribution: BlockProductionAttribution::unknown_attribution(
+                address(),
+                "test attribution",
+            ),
+        };
+        persist_block_summary(&mut store, &first, &observed_at.to_string())
+            .await
+            .unwrap();
+        first.block_hash = hash('e');
+        persist_block_summary(&mut store, &first, &observed_at.to_string())
+            .await
+            .unwrap();
+        let loaded_blocks = load_block_summaries(&mut store).await.unwrap();
+        assert_eq!(loaded_blocks.len(), 1);
+        assert_eq!(loaded_blocks[0].block_hash, hash('c'));
+
+        let mut first_gap = platpulse_core::gap::HistoryGap {
+            node_id: first.node_id,
+            kind: platpulse_core::gap::GapKind::UnrecoverableBackfill,
+            from_height: 20,
+            to_height: 21,
+            reason: "first gap".to_owned(),
+            recorded_at: observed_at,
+        };
+        persist_history_gap(&mut store, &first_gap).await.unwrap();
+        first_gap.kind = platpulse_core::gap::GapKind::ServerRejected;
+        persist_history_gap(&mut store, &first_gap).await.unwrap();
+        let loaded_gaps = load_history_gaps(&mut store).await.unwrap();
+        assert_eq!(loaded_gaps.len(), 1);
+        assert_eq!(
+            loaded_gaps[0].kind,
+            platpulse_core::gap::GapKind::UnrecoverableBackfill
         );
     }
 

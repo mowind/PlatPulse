@@ -17,7 +17,7 @@ use thiserror::Error;
 
 use crate::config::{AgentConfig, AgentConfigError};
 use crate::credential::{CredentialError, write_credential_file};
-use crate::database::{AgentDatabaseConfig, AgentDatabaseError, AgentStore};
+use crate::database::{AgentDatabaseConfig, AgentDatabaseError, AgentStore, AgentStoreWritePermit};
 
 /// Outcome of a successful local Enrollment.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,6 +37,8 @@ pub enum EnrollError {
     },
     #[error("failed to open the agent store: {0}")]
     Store(#[from] AgentDatabaseError),
+    #[error("Agent runtime ownership failed: {0}")]
+    RuntimeOwnership(String),
     #[error(
         "this agent is already enrolled as {0}; enrollment is one-time per identity (Recovery handles credential loss)"
     )]
@@ -109,17 +111,32 @@ async fn persist_identity(
     agent_epoch: i64,
 ) -> Result<(), sqlx::Error> {
     let now = time_now_rfc3339();
+    let _write_permit = store.acquire_write().await;
     let mut transaction = store.connection().begin().await?;
-    sqlx::query(
+    let result = sqlx::query(
         "INSERT INTO agent_state (singleton, agent_id, agent_epoch, boot_id, report_sequence, inventory_revision, updated_at)
          VALUES (1, ?, ?, NULL, 0, 0, ?)
-         ON CONFLICT(singleton) DO UPDATE SET agent_id = excluded.agent_id, agent_epoch = excluded.agent_epoch, updated_at = excluded.updated_at",
+         ON CONFLICT(singleton) DO UPDATE SET agent_id = excluded.agent_id, agent_epoch = excluded.agent_epoch, updated_at = excluded.updated_at
+         WHERE agent_state.agent_id IS NULL",
     )
     .bind(agent_id)
     .bind(agent_epoch)
     .bind(&now)
     .execute(&mut *transaction)
-    .await?;
+    .await;
+    let result = match result {
+        Ok(result) => result,
+        Err(error) => {
+            transaction.rollback().await?;
+            return Err(error);
+        }
+    };
+    if result.rows_affected() == 0 {
+        transaction.rollback().await?;
+        return Err(sqlx::Error::Protocol(
+            "Agent enrollment was completed concurrently".to_owned(),
+        ));
+    }
     transaction.commit().await
 }
 
@@ -130,13 +147,27 @@ async fn persist_identity(
 /// Recovery (Phase 2) addresses; the Server never issues a second identity
 /// for the same token.
 pub async fn enroll_agent(config: &AgentConfig, token: &str) -> Result<EnrolledAgent, EnrollError> {
+    let _runtime_lock = crate::database::AgentRuntimeLock::acquire(&config.state_db)
+        .map_err(|error| EnrollError::RuntimeOwnership(error.to_string()))?;
+    enroll_agent_with_permit(config, token, AgentStoreWritePermit::new()).await
+}
+
+pub(crate) async fn enroll_agent_with_permit(
+    config: &AgentConfig,
+    token: &str,
+    write_permit: AgentStoreWritePermit,
+) -> Result<EnrolledAgent, EnrollError> {
     if token.is_empty() {
         return Err(EnrollError::ServerRejected(
             "an enrollment token is required".to_owned(),
         ));
     }
 
-    let mut store = AgentStore::open(AgentDatabaseConfig::new(&config.state_db)).await?;
+    let mut store = AgentStore::open_with_write_permit(
+        AgentDatabaseConfig::new(&config.state_db),
+        write_permit,
+    )
+    .await?;
     if let Some(agent_id) = existing_agent_id(&mut store)
         .await
         .map_err(EnrollError::IdentityPersist)?

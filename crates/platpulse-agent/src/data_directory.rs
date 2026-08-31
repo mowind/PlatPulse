@@ -3,6 +3,7 @@
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use platpulse_core::component::{BoundedError, ComponentObservation, ComponentStatus};
@@ -61,14 +62,32 @@ pub fn starting() -> ComponentObservation<u64> {
 /// symlinks are never followed. Failures expose bounded diagnostics without
 /// leaking the configured path.
 pub fn collect_observations(path: &Path, attempted_at: Rfc3339) -> DataDirectoryObservations {
+    let never_cancelled = AtomicBool::new(false);
+    collect_observations_cancellable(path, attempted_at, &never_cancelled)
+}
+
+pub fn collect_observations_cancellable(
+    path: &Path,
+    attempted_at: Rfc3339,
+    cancelled: &AtomicBool,
+) -> DataDirectoryObservations {
     DataDirectoryObservations {
-        size_bytes: collect(path, attempted_at),
-        capacity_bytes: collect_capacity(path, attempted_at),
+        size_bytes: collect_cancellable(path, attempted_at, cancelled),
+        capacity_bytes: collect_capacity(path, attempted_at, cancelled),
     }
 }
 
 pub fn collect(path: &Path, attempted_at: Rfc3339) -> ComponentObservation<u64> {
-    match directory_size(path) {
+    let never_cancelled = AtomicBool::new(false);
+    collect_cancellable(path, attempted_at, &never_cancelled)
+}
+
+fn collect_cancellable(
+    path: &Path,
+    attempted_at: Rfc3339,
+    cancelled: &AtomicBool,
+) -> ComponentObservation<u64> {
+    match directory_size(path, cancelled) {
         Ok(bytes) if bytes <= i64::MAX as u64 => ComponentObservation {
             status: ComponentStatus::Ok,
             attempted_at: Some(attempted_at),
@@ -83,7 +102,14 @@ pub fn collect(path: &Path, attempted_at: Rfc3339) -> ComponentObservation<u64> 
     }
 }
 
-fn collect_capacity(path: &Path, attempted_at: Rfc3339) -> ComponentObservation<u64> {
+fn collect_capacity(
+    path: &Path,
+    attempted_at: Rfc3339,
+    cancelled: &AtomicBool,
+) -> ComponentObservation<u64> {
+    if cancelled.load(Ordering::Acquire) {
+        return capacity_failed(attempted_at);
+    }
     match file_system_capacity(path) {
         Ok(bytes) if bytes <= i64::MAX as u64 => ComponentObservation {
             status: ComponentStatus::Ok,
@@ -149,9 +175,9 @@ fn validate_directory(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn directory_size(path: &Path) -> io::Result<u64> {
+fn directory_size(path: &Path, cancelled: &AtomicBool) -> io::Result<u64> {
     validate_directory(path)?;
-    sum_directory(path)
+    sum_directory(path, cancelled)
 }
 
 #[cfg(unix)]
@@ -172,9 +198,15 @@ fn file_system_capacity(_path: &Path) -> io::Result<u64> {
     ))
 }
 
-fn sum_directory(path: &Path) -> io::Result<u64> {
+fn sum_directory(path: &Path, cancelled: &AtomicBool) -> io::Result<u64> {
+    if cancelled.load(Ordering::Acquire) {
+        return Err(io::Error::new(io::ErrorKind::Interrupted, "scan cancelled"));
+    }
     let mut total = 0_u64;
     for entry in fs::read_dir(path)? {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "scan cancelled"));
+        }
         let entry = entry?;
         let entry_path = entry.path();
         let metadata = fs::symlink_metadata(&entry_path)?;
@@ -184,7 +216,7 @@ fn sum_directory(path: &Path) -> io::Result<u64> {
         }
         if file_type.is_dir() {
             total = total
-                .checked_add(sum_directory(&entry_path)?)
+                .checked_add(sum_directory(&entry_path, cancelled)?)
                 .ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidData, "data directory size overflow")
                 })?;

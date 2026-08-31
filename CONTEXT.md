@@ -116,6 +116,10 @@ _Avoid_: Mutable heartbeat, Partial state patch
 The Server's durable idempotency record for one Agent Report, including its content hash and exact acceptance result. The result is report-level — accepted or rejected with a stable rejection code — with no per-Node partial result matrix. It does not retain the complete report body indefinitely.
 _Avoid_: Raw report archive, Access log
 
+**Applied Receipt Record**:
+A bounded Agent-local terminal marker showing that one Report Receipt was transactionally applied before its Agent Report left the Durable Spool. It retains only the identity and outcome needed to detect a recent duplicate or conflict; it is not Report History, a Receipt archive, or a user-facing audit record.
+_Avoid_: Report Receipt, Receipt archive, Agent audit event
+
 **Report Ingestion**:
 The Server's atomic acceptance of one authenticated Agent Report, including idempotency, invariants, projection updates, recent block history, invalidation, and its exact Report Receipt.
 _Avoid_: HTTP handler update, Partial projection write

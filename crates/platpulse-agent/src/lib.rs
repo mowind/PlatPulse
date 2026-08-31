@@ -25,8 +25,8 @@ pub mod shutdown;
 pub mod time_exchange;
 
 pub use database::{
-    AGENT_MIGRATOR, AGENT_SCHEMA_VERSION, AgentDatabaseConfig, AgentDatabaseError, AgentStore,
-    DEFAULT_BUSY_TIMEOUT, JournalMode, SqlitePragmas, initialize,
+    AGENT_MIGRATOR, AGENT_SCHEMA_VERSION, AgentDatabaseConfig, AgentDatabaseError,
+    AgentRuntimeLock, AgentRuntimeLockError, DEFAULT_BUSY_TIMEOUT, JournalMode, SqlitePragmas,
 };
 
 /// Name of the agent binary, as declared in `Cargo.toml`.

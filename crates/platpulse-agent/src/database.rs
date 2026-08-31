@@ -5,8 +5,11 @@
 //! and the integrity check. The migration source is deliberately local to
 //! this crate; it is not shared with the Server.
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 
@@ -14,6 +17,9 @@ use sqlx::migrate::{MigrateError, Migrator};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
 use sqlx::{Connection, SqliteConnection};
 use thiserror::Error;
+#[cfg(test)]
+use tokio::sync::Notify;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// The Agent's embedded migration source.
 ///
@@ -22,7 +28,7 @@ use thiserror::Error;
 pub static AGENT_MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 /// The latest migration version compiled into the Agent binary.
-pub const AGENT_SCHEMA_VERSION: i64 = 12;
+pub const AGENT_SCHEMA_VERSION: i64 = 13;
 
 /// Explicit timeout used for SQLite lock contention unless a caller chooses a
 /// tighter or more generous value for a test/deployment.
@@ -141,6 +147,230 @@ pub enum AgentDatabaseError {
     },
 }
 
+/// A write permit shared explicitly by the purpose-specific Agent Store
+/// connections that participate in one runtime. Writes acquire it before
+/// beginning their transaction or autocommit statement.
+#[derive(Clone)]
+pub(crate) struct AgentStoreWritePermit {
+    semaphore: Arc<Semaphore>,
+    #[cfg(test)]
+    acquisition_attempts: Arc<AtomicUsize>,
+    #[cfg(test)]
+    acquisition_notify: Arc<Notify>,
+}
+
+impl AgentStoreWritePermit {
+    pub(crate) fn new() -> Self {
+        Self {
+            semaphore: Arc::new(Semaphore::new(1)),
+            #[cfg(test)]
+            acquisition_attempts: Arc::new(AtomicUsize::new(0)),
+            #[cfg(test)]
+            acquisition_notify: Arc::new(Notify::new()),
+        }
+    }
+
+    pub(crate) fn try_acquire(&self) -> Option<OwnedSemaphorePermit> {
+        self.semaphore.clone().try_acquire_owned().ok()
+    }
+
+    pub(crate) async fn acquire(&self) -> OwnedSemaphorePermit {
+        #[cfg(test)]
+        {
+            self.acquisition_attempts.fetch_add(1, Ordering::SeqCst);
+            self.acquisition_notify.notify_one();
+        }
+        self.semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("Agent Store write permit is never closed")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_acquisition_attempts(&self) -> usize {
+        self.acquisition_attempts.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_acquisition_notify(&self) -> Arc<Notify> {
+        self.acquisition_notify.clone()
+    }
+}
+
+impl Default for AgentStoreWritePermit {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Errors raised while establishing the operating-system runtime ownership
+/// lock. The lock is advisory and held by an open file descriptor, so process
+/// termination releases ownership without a PID file or stale cleanup.
+#[derive(Debug, Error)]
+pub enum AgentRuntimeLockError {
+    #[error("failed to open Agent runtime lock {path}: {source}")]
+    Open {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("Agent runtime lock {path} must be a private regular file owned by the Agent user")]
+    Unsafe { path: PathBuf },
+    #[error("Agent Store is already owned by another runtime: {path}")]
+    AlreadyOwned { path: PathBuf },
+    #[error("failed to acquire Agent runtime lock {path}: {source}")]
+    Acquire {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("Agent runtime ownership locks are unsupported on this platform")]
+    Unsupported,
+}
+
+/// An operating-system lock held for the complete Agent runtime lifecycle.
+#[derive(Debug)]
+pub struct AgentRuntimeLock {
+    #[cfg(unix)]
+    #[allow(dead_code)]
+    file: nix::fcntl::Flock<std::fs::File>,
+    #[cfg(not(unix))]
+    #[allow(dead_code)]
+    file: std::fs::File,
+    path: PathBuf,
+}
+
+impl AgentRuntimeLock {
+    pub fn path_for(state_db: &Path) -> PathBuf {
+        let mut path = state_db.as_os_str().to_os_string();
+        path.push(".lock");
+        PathBuf::from(path)
+    }
+
+    pub fn acquire(state_db: impl AsRef<Path>) -> Result<Self, AgentRuntimeLockError> {
+        #[cfg(unix)]
+        let path = runtime_lock_path(state_db.as_ref())?;
+        #[cfg(not(unix))]
+        let path = Self::path_for(state_db.as_ref());
+        acquire_runtime_lock(path)
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+#[cfg(unix)]
+fn runtime_lock_path(state_db: &Path) -> Result<PathBuf, AgentRuntimeLockError> {
+    use std::os::unix::fs::MetadataExt;
+
+    let configured_metadata = match std::fs::symlink_metadata(state_db) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let parent = state_db.parent().unwrap_or_else(|| Path::new("."));
+            let parent = if parent.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                parent
+            };
+            let file_name = state_db
+                .file_name()
+                .ok_or_else(|| AgentRuntimeLockError::Open {
+                    path: AgentRuntimeLock::path_for(state_db),
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "state database path has no file name",
+                    ),
+                })?;
+            let canonical_parent =
+                std::fs::canonicalize(parent).map_err(|source| AgentRuntimeLockError::Open {
+                    path: AgentRuntimeLock::path_for(state_db),
+                    source,
+                })?;
+            let database = canonical_parent.join(file_name);
+            let mut lock = database.as_os_str().to_os_string();
+            lock.push(".lock");
+            return Ok(PathBuf::from(lock));
+        }
+        Err(source) => {
+            return Err(AgentRuntimeLockError::Open {
+                path: AgentRuntimeLock::path_for(state_db),
+                source,
+            });
+        }
+    };
+    if !configured_metadata.file_type().is_file() || configured_metadata.nlink() > 1 {
+        return Err(AgentRuntimeLockError::Unsafe {
+            path: AgentRuntimeLock::path_for(state_db),
+        });
+    }
+    let canonical =
+        std::fs::canonicalize(state_db).map_err(|source| AgentRuntimeLockError::Open {
+            path: AgentRuntimeLock::path_for(state_db),
+            source,
+        })?;
+    let canonical_metadata =
+        std::fs::metadata(&canonical).map_err(|source| AgentRuntimeLockError::Open {
+            path: AgentRuntimeLock::path_for(state_db),
+            source,
+        })?;
+    if !canonical_metadata.file_type().is_file() || canonical_metadata.nlink() > 1 {
+        return Err(AgentRuntimeLockError::Unsafe {
+            path: AgentRuntimeLock::path_for(state_db),
+        });
+    }
+    let mut lock = canonical.as_os_str().to_os_string();
+    lock.push(".lock");
+    Ok(PathBuf::from(lock))
+}
+
+#[cfg(unix)]
+fn acquire_runtime_lock(path: PathBuf) -> Result<AgentRuntimeLock, AgentRuntimeLockError> {
+    use nix::errno::Errno;
+    use nix::fcntl::{Flock, FlockArg, OFlag};
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    restrict_umask();
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .custom_flags((OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK).bits())
+        .mode(0o600)
+        .open(&path)
+        .map_err(|source| AgentRuntimeLockError::Open {
+            path: path.clone(),
+            source,
+        })?;
+    let metadata = file
+        .metadata()
+        .map_err(|source| AgentRuntimeLockError::Open {
+            path: path.clone(),
+            source,
+        })?;
+    if !metadata.file_type().is_file()
+        || metadata.nlink() > 1
+        || metadata.uid() != nix::unistd::geteuid().as_raw()
+        || metadata.mode() & 0o077 != 0
+    {
+        return Err(AgentRuntimeLockError::Unsafe { path });
+    }
+    match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
+        Ok(file) => Ok(AgentRuntimeLock { file, path }),
+        Err((_, Errno::EAGAIN)) => Err(AgentRuntimeLockError::AlreadyOwned { path }),
+        Err((_, error)) => Err(AgentRuntimeLockError::Acquire {
+            path,
+            source: std::io::Error::from_raw_os_error(error as i32),
+        }),
+    }
+}
+
+#[cfg(not(unix))]
+fn acquire_runtime_lock(_path: PathBuf) -> Result<AgentRuntimeLock, AgentRuntimeLockError> {
+    Err(AgentRuntimeLockError::Unsupported)
+}
+
 /// An initialized Agent Store with exactly one writer connection.
 ///
 /// No collection code is run by this type. Callers receive the store only
@@ -148,17 +378,29 @@ pub enum AgentDatabaseError {
 /// collection/store operations that need it.
 pub struct AgentStore {
     connection: SqliteConnection,
+    write_permit: AgentStoreWritePermit,
 }
 
 impl AgentStore {
     /// Open the Agent database, migrate it, validate required pragmas, and
     /// run integrity checks before returning a store to the collector.
-    pub async fn open(config: AgentDatabaseConfig) -> Result<Self, AgentDatabaseError> {
+    #[cfg(test)]
+    pub(crate) async fn open(config: AgentDatabaseConfig) -> Result<Self, AgentDatabaseError> {
+        Self::open_with_write_permit(config, AgentStoreWritePermit::new()).await
+    }
+
+    /// Open a purpose-specific connection sharing the caller's explicitly
+    /// injected write permit with the other Agent Store connections.
+    pub(crate) async fn open_with_write_permit(
+        config: AgentDatabaseConfig,
+        write_permit: AgentStoreWritePermit,
+    ) -> Result<Self, AgentDatabaseError> {
         // Design §8.2: the credential file AND the state DB must only allow
         // the Agent OS user to read. Umask 077 keeps SQLite WAL/SHM
         // siblings private; the explicit 0600 chmod below pins the file
         // itself even when a permissive umask was inherited.
         restrict_umask();
+        let _write_permit = write_permit.acquire().await;
         let options = sqlite_options(&config);
         let mut connection = SqliteConnection::connect_with(&options)
             .await
@@ -168,6 +410,7 @@ impl AgentStore {
             .run_direct(&mut connection)
             .await
             .map_err(AgentDatabaseError::Migration)?;
+        drop(_write_permit);
 
         let pragmas = read_pragmas(&mut connection)
             .await
@@ -184,11 +427,19 @@ impl AgentStore {
 
         verify_integrity(&mut connection).await?;
         secure_store_file(config.path())?;
-        Ok(Self { connection })
+        Ok(Self {
+            connection,
+            write_permit,
+        })
+    }
+
+    /// Acquire the injected permit before any Agent Store write.
+    pub(crate) async fn acquire_write(&self) -> OwnedSemaphorePermit {
+        self.write_permit.acquire().await
     }
 
     /// Access the sole Agent write connection for typed SQL operations.
-    pub fn connection(&mut self) -> &mut SqliteConnection {
+    pub(crate) fn connection(&mut self) -> &mut SqliteConnection {
         &mut self.connection
     }
 
@@ -211,11 +462,6 @@ impl AgentStore {
     pub async fn close(self) -> Result<(), sqlx::Error> {
         self.connection.close().await
     }
-}
-
-/// Initialize the Agent Store before any collector is started.
-pub async fn initialize(config: AgentDatabaseConfig) -> Result<AgentStore, AgentDatabaseError> {
-    AgentStore::open(config).await
 }
 
 /// Restrict the Agent Store file to the Agent OS user (0600) after open.
@@ -346,6 +592,146 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn runtime_lock_is_exclusive_and_releases_with_the_file_handle() {
+        use std::os::unix::fs::MetadataExt;
+
+        let directory = tempdir().unwrap();
+        let database = directory.path().join("agent.db");
+        let first = AgentRuntimeLock::acquire(&database).unwrap();
+        assert_eq!(first.path(), AgentRuntimeLock::path_for(&database));
+        assert_eq!(
+            std::fs::metadata(first.path()).unwrap().mode() & 0o777,
+            0o600
+        );
+        assert!(matches!(
+            AgentRuntimeLock::acquire(&database),
+            Err(AgentRuntimeLockError::AlreadyOwned { .. })
+        ));
+        drop(first);
+        let second = AgentRuntimeLock::acquire(&database).unwrap();
+        drop(second);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_lock_rejects_unsafe_existing_artifacts() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().unwrap();
+        let database = directory.path().join("agent.db");
+        let lock_path = AgentRuntimeLock::path_for(&database);
+        std::fs::write(&lock_path, b"").unwrap();
+        std::fs::set_permissions(&lock_path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let error = AgentRuntimeLock::acquire(&database).unwrap_err();
+        assert!(
+            matches!(error, AgentRuntimeLockError::Unsafe { .. }),
+            "{error:?}"
+        );
+
+        std::fs::remove_file(&lock_path).unwrap();
+        std::fs::create_dir(&lock_path).unwrap();
+        assert!(matches!(
+            AgentRuntimeLock::acquire(&database),
+            Err(AgentRuntimeLockError::Unsafe { .. }) | Err(AgentRuntimeLockError::Open { .. })
+        ));
+
+        std::fs::remove_dir(&lock_path).unwrap();
+        let hard_link_target = directory.path().join("lock-hard-link-target");
+        std::fs::write(&hard_link_target, b"").unwrap();
+        std::fs::hard_link(&hard_link_target, &lock_path).unwrap();
+        assert!(matches!(
+            AgentRuntimeLock::acquire(&database),
+            Err(AgentRuntimeLockError::Unsafe { .. })
+        ));
+
+        std::fs::remove_file(&lock_path).unwrap();
+        let target = directory.path().join("lock-target");
+        std::fs::write(&target, b"").unwrap();
+        std::os::unix::fs::symlink(&target, &lock_path).unwrap();
+        assert!(matches!(
+            AgentRuntimeLock::acquire(&database),
+            Err(AgentRuntimeLockError::Open { .. }) | Err(AgentRuntimeLockError::Unsafe { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_lock_rejects_database_path_aliases() {
+        let directory = tempdir().unwrap();
+        let database = directory.path().join("agent.db");
+        std::fs::write(&database, b"").unwrap();
+
+        let symlink = directory.path().join("symlink.db");
+        std::os::unix::fs::symlink(&database, &symlink).unwrap();
+        assert!(matches!(
+            AgentRuntimeLock::acquire(&symlink),
+            Err(AgentRuntimeLockError::Unsafe { .. })
+        ));
+
+        let hard_link = directory.path().join("hard-link.db");
+        std::fs::hard_link(&database, &hard_link).unwrap();
+        assert!(matches!(
+            AgentRuntimeLock::acquire(&database),
+            Err(AgentRuntimeLockError::Unsafe { .. })
+        ));
+        assert!(matches!(
+            AgentRuntimeLock::acquire(&hard_link),
+            Err(AgentRuntimeLockError::Unsafe { .. })
+        ));
+    }
+
+    #[test]
+    fn runtime_lock_accepts_fresh_bare_relative_database_path() {
+        let database = format!("platpulse-agent-test-{}.db", uuid::Uuid::new_v4());
+        let lock_path = format!("{database}.lock");
+        let lock = AgentRuntimeLock::acquire(&database).unwrap();
+        assert!(lock.path().ends_with(&lock_path));
+        drop(lock);
+        std::fs::remove_file(&lock_path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn explicitly_shared_write_permit_serializes_store_connections() {
+        let directory = tempdir().unwrap();
+        let database = directory.path().join("agent.db");
+        let permit = AgentStoreWritePermit::new();
+        let first = AgentStore::open_with_write_permit(config(&database), permit.clone())
+            .await
+            .unwrap();
+        let second = AgentStore::open_with_write_permit(config(&database), permit)
+            .await
+            .unwrap();
+        let held = first.acquire_write().await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), second.acquire_write())
+                .await
+                .is_err()
+        );
+        drop(held);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), second.acquire_write())
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn default_store_connections_do_not_share_hidden_write_permits() {
+        let directory = tempdir().unwrap();
+        let database = directory.path().join("agent.db");
+        let first = AgentStore::open(config(&database)).await.unwrap();
+        let second = AgentStore::open(config(&database)).await.unwrap();
+        let held = first.acquire_write().await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), second.acquire_write())
+                .await
+                .is_ok()
+        );
+        drop(held);
+    }
+
     #[tokio::test]
     async fn fresh_database_runs_all_agent_migrations_and_required_pragmas() {
         let directory = tempdir().unwrap();
@@ -421,6 +807,44 @@ mod tests {
 
         let mut store = AgentStore::open(config(&path)).await.unwrap();
         assert_eq!(store.schema_version().await.unwrap(), AGENT_SCHEMA_VERSION);
+    }
+
+    #[tokio::test]
+    async fn receipt_archive_migrates_to_bounded_markers() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("agent.db");
+        let options = sqlite_options(&config(&path));
+        let mut connection = SqliteConnection::connect_with(&options).await.unwrap();
+        migrations_through(12)
+            .run_direct(&mut connection)
+            .await
+            .unwrap();
+        for index in 0..300_u128 {
+            sqlx::query("INSERT INTO report_receipts (report_id, report_body_sha256, disposition, receipt_body, applied_at) VALUES (?, ?, 'accepted', ?, ?)")
+                .bind(uuid::Uuid::from_u128(index + 1).to_string())
+                .bind("0x0000000000000000000000000000000000000000000000000000000000000000")
+                .bind(br#"{"receipt":{}}"# as &[u8])
+                .bind(format!("2026-01-01T00:00:{index:02}Z"))
+                .execute(&mut connection)
+                .await
+                .unwrap();
+        }
+        connection.close().await.unwrap();
+
+        let mut store = AgentStore::open(config(&path)).await.unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM report_receipts")
+            .fetch_one(store.connection())
+            .await
+            .unwrap();
+        let body_columns: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('report_receipts') WHERE name='receipt_body'",
+        )
+        .fetch_one(store.connection())
+        .await
+        .unwrap();
+        assert_eq!(count, 256);
+        assert_eq!(body_columns, 0);
+        store.close().await.unwrap();
     }
 
     #[tokio::test]
