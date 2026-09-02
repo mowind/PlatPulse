@@ -2243,12 +2243,19 @@ pub async fn apply_receipt(
     .fetch_optional(&mut *tx)
     .await?
     {
-        tx.rollback().await?;
         let reason = if marker_hash == body_sha256 && marker_disposition == disposition {
             "duplicate receipt identity"
         } else {
             "receipt identity conflicts with an Applied Receipt Record"
         };
+        sqlx::query(
+            "UPDATE spool_state SET store_fatal=1, store_error=?, updated_at=? WHERE singleton=1",
+        )
+        .bind(reason)
+        .bind(applied_at)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
         return Err(sqlx::Error::Protocol(reason.to_owned()));
     }
     let transaction_result: Result<(), sqlx::Error> = async {
@@ -3587,7 +3594,30 @@ mod tests {
                 .unwrap(),
             1
         );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT store_fatal FROM spool_state WHERE singleton = 1")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            1
+        );
         store.close().await.unwrap();
+
+        let mut reopened = AgentStore::open(AgentDatabaseConfig::new(dir.path().join("agent.db")))
+            .await
+            .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT store_fatal FROM spool_state WHERE singleton = 1")
+                .fetch_one(reopened.connection())
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(matches!(
+            crate::reporting::ensure_spool_healthy(&mut reopened).await,
+            Err(ReportStoreError::StoreFatal(_))
+        ));
+        reopened.close().await.unwrap();
     }
 
     #[tokio::test]

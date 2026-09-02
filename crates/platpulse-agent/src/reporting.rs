@@ -15,7 +15,10 @@ use serde::Deserialize;
 use crate::collector::{SpoolCleanupSummary, SpoolPolicy, apply_receipt};
 use crate::config::{AgentConfig, AgentConfigError};
 use crate::credential::{CredentialError, load_credential_file};
-use crate::database::{AgentDatabaseConfig, AgentDatabaseError, AgentStore, now_rfc3339};
+use crate::database::{
+    AgentDatabaseConfig, AgentDatabaseError, AgentStore, cleanup_expired_receipt_markers,
+    now_rfc3339,
+};
 
 #[derive(Debug, sqlx::FromRow)]
 struct SpoolReportRow {
@@ -622,7 +625,12 @@ async fn deliver_periodic_inner<T: ReportTransport>(
         }?;
         match result {
             Some(_) => delivered += 1,
-            None => break,
+            None => {
+                if delivered == 0 {
+                    cleanup_expired_receipt_markers(store, &now_rfc3339()).await?;
+                }
+                break;
+            }
         }
     }
     Ok(delivered)
@@ -1103,6 +1111,122 @@ mod delivery_tests {
         AgentStore::open(AgentDatabaseConfig::new(dir.keep().join("agent.db")))
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn large_receipt_history_keeps_empty_spool_hot_paths_bounded() {
+        const SEEDED_RECEIPT_COUNT: i64 = 100_000;
+        let directory = tempdir().unwrap();
+        let database = directory.path().join("agent.db");
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(&database))
+            .await
+            .unwrap();
+        let applied_at = now_rfc3339();
+
+        sqlx::query(
+            "WITH digits(n) AS (VALUES (0), (1), (2), (3), (4), (5), (6), (7), (8), (9))
+             INSERT INTO report_receipts (report_id, report_body_sha256, disposition, applied_at)
+             SELECT printf('0195f2a1-0013-4013-8013-%012x', a.n + 10 * b.n + 100 * c.n + 1000 * d.n + 10000 * e.n),
+                    '0x0000000000000000000000000000000000000000000000000000000000000000',
+                    'accepted',
+                    ?
+             FROM digits AS a
+             CROSS JOIN digits AS b
+             CROSS JOIN digits AS c
+             CROSS JOIN digits AS d
+             CROSS JOIN digits AS e",
+        )
+        .bind(&applied_at)
+        .execute(store.connection())
+        .await
+        .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM report_receipts")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            SEEDED_RECEIPT_COUNT
+        );
+        store.close().await.unwrap();
+
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(&database))
+            .await
+            .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM report_receipts")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            SEEDED_RECEIPT_COUNT
+        );
+        validate_receipt_history(&mut store).await.unwrap();
+        let transport = FakeTransport {
+            bodies: Arc::new(Mutex::new(Vec::new())),
+            responses: Arc::new(Mutex::new(Vec::new())),
+        };
+        assert!(deliver_one(&mut store, &transport).await.unwrap().is_none());
+        assert_eq!(
+            enforce_spool_policy(&mut store, &SpoolPolicy::default(), &applied_at)
+                .await
+                .unwrap()
+                .dropped_reports,
+            0
+        );
+
+        let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
+            "EXPLAIN QUERY PLAN
+             SELECT receipt.report_id, receipt.report_body_sha256, receipt.disposition, receipt.applied_at
+             FROM reports
+             CROSS JOIN report_receipts AS receipt
+             WHERE receipt.report_id = reports.report_id
+             ORDER BY receipt.applied_at, receipt.report_id",
+        )
+        .fetch_all(store.connection())
+        .await
+        .unwrap();
+        let details = plan
+            .iter()
+            .map(|(_, _, _, detail)| detail)
+            .collect::<Vec<_>>();
+        assert!(details.iter().any(|step| step.contains("SCAN reports")));
+        assert!(details.iter().any(|step| step.contains("SEARCH receipt")));
+        assert!(!details.iter().any(|step| step.contains("SCAN receipt")));
+
+        store.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn empty_periodic_delivery_expires_one_marker_batch() {
+        let mut store = test_store().await;
+        for _ in 0..65 {
+            sqlx::query(
+                "INSERT INTO report_receipts (report_id, report_body_sha256, disposition, applied_at) VALUES (?, ?, 'accepted', '2000-01-01T00:00:00Z')",
+            )
+            .bind(uuid::Uuid::new_v4().to_string())
+            .bind("0x0000000000000000000000000000000000000000000000000000000000000000")
+            .execute(store.connection())
+            .await
+            .unwrap();
+        }
+        let transport = FakeTransport {
+            bodies: Arc::new(Mutex::new(Vec::new())),
+            responses: Arc::new(Mutex::new(Vec::new())),
+        };
+
+        assert_eq!(
+            deliver_periodic(&mut store, &transport, &SpoolPolicy::default())
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM report_receipts")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            1
+        );
+        store.close().await.unwrap();
     }
 
     #[tokio::test]
