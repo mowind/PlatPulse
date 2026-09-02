@@ -36,7 +36,10 @@ use crate::block::{
     HeadSubscription, NodeSubscriptions, WebSocketBlockTransport, load_block_summaries,
 };
 use crate::config::AgentConfig;
-use crate::database::{AgentDatabaseConfig, AgentStore, AgentStoreWritePermit};
+use crate::database::{
+    AgentDatabaseConfig, AgentStore, AgentStoreWritePermit, applied_receipt_expiry_cutoff,
+    delete_expired_receipt_markers,
+};
 use crate::reporting::ReportStoreError;
 pub const MAX_SPOOL_BYTES: u64 = 2 * 1024 * 1024;
 pub const MAX_SPOOL_AGE_SECONDS: u64 = 24 * 60 * 60;
@@ -2198,6 +2201,12 @@ pub(crate) async fn current_spool_diagnostics(
     })
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReceiptEnvelope {
+    receipt: ReportReceipt,
+}
+
 /// Apply a stored receipt and delete its report only after all receipt
 /// dispositions have been durably processed, in one Agent Store transaction.
 pub async fn apply_receipt(
@@ -2208,15 +2217,9 @@ pub async fn apply_receipt(
     receipt_body: &[u8],
     applied_at: &str,
 ) -> Result<(), sqlx::Error> {
-    let envelope: serde_json::Value = serde_json::from_slice(receipt_body)
-        .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
-    let receipt: ReportReceipt = serde_json::from_value(
-        envelope
-            .get("receipt")
-            .cloned()
-            .ok_or_else(|| sqlx::Error::Protocol("receipt envelope missing receipt".to_owned()))?,
-    )
-    .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+    let receipt = serde_json::from_slice::<ReceiptEnvelope>(receipt_body)
+        .map_err(|error| sqlx::Error::Protocol(error.to_string()))?
+        .receipt;
     receipt
         .validate()
         .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
@@ -2230,88 +2233,54 @@ pub async fn apply_receipt(
         ));
     }
 
-    let (raw_report, stored_body_sha256, stored_body_bytes): (Vec<u8>, String, i64) =
-        sqlx::query_as("SELECT body, body_sha256, body_bytes FROM reports WHERE report_id = ?")
-            .bind(report_id)
-            .fetch_optional(store.connection())
-            .await?
-            .ok_or_else(|| sqlx::Error::Protocol("report is not in the Agent spool".to_owned()))?;
-    let actual_hash = format!("0x{}", hex::encode(sha2::Sha256::digest(&raw_report)));
-    if stored_body_bytes < 0
-        || stored_body_bytes as usize != raw_report.len()
-        || stored_body_sha256 != actual_hash
-        || body_sha256 != actual_hash
-    {
-        return Err(sqlx::Error::Protocol(
-            "stored report failed integrity validation".to_owned(),
-        ));
-    }
-    let parsed_report: AgentReport = serde_json::from_slice(&raw_report)
-        .map_err(|error| sqlx::Error::Protocol(format!("stored report is invalid: {error}")))?;
-    parsed_report
-        .validate()
-        .map_err(|error| sqlx::Error::Protocol(format!("stored report is invalid: {error}")))?;
-    if parsed_report.report_id.to_string() != report_id {
-        return Err(sqlx::Error::Protocol(
-            "stored report id mismatch".to_owned(),
-        ));
-    }
-
+    let expiry_cutoff = applied_receipt_expiry_cutoff(applied_at)?;
     let _write_permit = store.acquire_write().await;
     let mut tx = store.connection().begin().await?;
-    let existing_receipt: Option<(String, String)> = match sqlx::query_as(
+    if let Some((marker_hash, marker_disposition)) = sqlx::query_as::<_, (String, String)>(
         "SELECT report_body_sha256, disposition FROM report_receipts WHERE report_id = ?",
     )
     .bind(report_id)
     .fetch_optional(&mut *tx)
-    .await
+    .await?
     {
-        Ok(value) => value,
-        Err(error) => {
-            tx.rollback().await?;
-            return Err(error);
-        }
-    };
-    if existing_receipt.is_some() {
-        let fatal_update = sqlx::query(
-            "UPDATE spool_state SET store_fatal = 1, store_error = ?, updated_at = ? WHERE singleton = 1",
-        )
-        .bind("pending report has a pre-existing receipt")
-        .bind(applied_at)
-        .execute(&mut *tx)
-        .await;
-        return match fatal_update {
-            Ok(_) => {
-                tx.commit().await?;
-                Err(sqlx::Error::Protocol(
-                    "pending report has a pre-existing receipt".to_owned(),
-                ))
-            }
-            Err(error) => match tx.rollback().await {
-                Ok(()) => Err(error),
-                Err(rollback_error) => Err(rollback_error),
-            },
+        tx.rollback().await?;
+        let reason = if marker_hash == body_sha256 && marker_disposition == disposition {
+            "duplicate receipt identity"
+        } else {
+            "receipt identity conflicts with an Applied Receipt Record"
         };
+        return Err(sqlx::Error::Protocol(reason.to_owned()));
     }
     let transaction_result: Result<(), sqlx::Error> = async {
-        let current_report: Option<(Vec<u8>, String, i64)> =
-        sqlx::query_as("SELECT body, body_sha256, body_bytes FROM reports WHERE report_id = ?")
-            .bind(report_id)
-            .fetch_optional(&mut *tx)
-            .await?;
-    let Some((current_body, current_body_sha256, current_body_bytes)) = current_report else {
-        return Err(sqlx::Error::Protocol(
-            "report is not in the Agent spool".to_owned(),
-        ));
-    };
-    if current_body != raw_report
-        || current_body_sha256 != stored_body_sha256
-        || current_body_bytes != stored_body_bytes
-    {
-        return Err(sqlx::Error::Protocol(
-            "stored report changed during receipt application".to_owned(),
-        ));
-    }
+        let (raw_report, stored_body_sha256, stored_body_bytes): (Vec<u8>, String, i64) =
+            sqlx::query_as("SELECT body, body_sha256, body_bytes FROM reports WHERE report_id = ?")
+                .bind(report_id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or_else(|| {
+                    sqlx::Error::Protocol("report is not in the Agent spool".to_owned())
+                })?;
+        let actual_hash = format!("0x{}", hex::encode(sha2::Sha256::digest(&raw_report)));
+        if stored_body_bytes < 0
+            || stored_body_bytes as usize != raw_report.len()
+            || stored_body_sha256 != actual_hash
+            || body_sha256 != actual_hash
+        {
+            return Err(sqlx::Error::Protocol(
+                "stored report failed integrity validation".to_owned(),
+            ));
+        }
+        let parsed_report: AgentReport = serde_json::from_slice(&raw_report).map_err(|error| {
+            sqlx::Error::Protocol(format!("stored report is invalid: {error}"))
+        })?;
+        parsed_report.validate().map_err(|error| {
+            sqlx::Error::Protocol(format!("stored report is invalid: {error}"))
+        })?;
+        if parsed_report.report_id.to_string() != report_id {
+            return Err(sqlx::Error::Protocol(
+                "stored report id mismatch".to_owned(),
+            ));
+        }
     let mut expected_nodes = std::collections::HashSet::new();
     for node in &parsed_report.inventory.nodes {
         expected_nodes.insert(node.node_id);
@@ -2454,7 +2423,7 @@ pub async fn apply_receipt(
         }
     }
 
-    sqlx::query("INSERT INTO report_receipts (report_id, report_body_sha256, disposition, applied_at) VALUES (?, ?, ?, ?) ON CONFLICT(report_id) DO NOTHING")
+    sqlx::query("INSERT INTO report_receipts (report_id, report_body_sha256, disposition, applied_at) VALUES (?, ?, ?, ?)")
         .bind(report_id)
         .bind(body_sha256)
         .bind(disposition)
@@ -2466,12 +2435,7 @@ pub async fn apply_receipt(
         .bind(report_id)
         .execute(&mut *tx)
         .await?;
-    sqlx::query(
-        "DELETE FROM report_receipts WHERE report_id NOT IN (SELECT report_id FROM report_receipts ORDER BY applied_at DESC, report_id DESC LIMIT ?)",
-    )
-    .bind(crate::reporting::MAX_APPLIED_RECEIPT_MARKERS as i64)
-    .execute(&mut *tx)
-    .await?;
+    delete_expired_receipt_markers(&mut *tx, &expiry_cutoff).await?;
     if parsed_report.boot_transition == BootTransition::Closing {
         let new_boot_id =
             BootId::from_str(&Uuid::new_v4().to_string()).expect("UUID is valid");
@@ -3287,17 +3251,26 @@ mod tests {
         reopened.close().await.unwrap();
     }
     #[tokio::test]
-    async fn receipt_application_prunes_terminal_markers_to_a_bounded_set() {
+    async fn receipt_application_expires_only_one_bounded_batch_of_old_markers() {
         let dir = tempdir().unwrap();
         let mut store = AgentStore::open(AgentDatabaseConfig::new(dir.path().join("agent.db")))
             .await
             .unwrap();
         let marker_hash = "0x0000000000000000000000000000000000000000000000000000000000000000";
-        for _ in 0..crate::reporting::MAX_APPLIED_RECEIPT_MARKERS {
+        for _ in 0..129 {
             sqlx::query("INSERT INTO report_receipts (report_id, report_body_sha256, disposition, applied_at) VALUES (?, ?, 'accepted', ?)")
                 .bind(Uuid::new_v4().to_string())
                 .bind(marker_hash)
-                .bind("2026-01-01T00:00:00Z")
+                .bind("2025-12-31T23:59:59Z")
+                .execute(store.connection())
+                .await
+                .unwrap();
+        }
+        for applied_at in ["2026-01-01T00:00:00Z", "2026-01-01T00:00:01Z"] {
+            sqlx::query("INSERT INTO report_receipts (report_id, report_body_sha256, disposition, applied_at) VALUES (?, ?, 'accepted', ?)")
+                .bind(Uuid::new_v4().to_string())
+                .bind(marker_hash)
+                .bind(applied_at)
                 .execute(store.connection())
                 .await
                 .unwrap();
@@ -3326,7 +3299,7 @@ mod tests {
             &hash,
             "rejected",
             receipt_body.as_bytes(),
-            "2099-01-01T00:00:00Z",
+            "2026-01-02T00:00:00Z",
         )
         .await
         .unwrap();
@@ -3336,13 +3309,78 @@ mod tests {
                 .fetch_one(store.connection())
                 .await
                 .unwrap(),
-            crate::reporting::MAX_APPLIED_RECEIPT_MARKERS as i64
+            68
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM report_receipts WHERE applied_at < '2026-01-01T00:00:00Z'",
+            )
+            .fetch_one(store.connection())
+            .await
+            .unwrap(),
+            65
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
                 "SELECT COUNT(*) FROM report_receipts WHERE report_id = ?",
             )
             .bind(report_id)
+            .fetch_one(store.connection())
+            .await
+            .unwrap(),
+            1
+        );
+        store.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn receipt_application_keeps_a_marker_at_the_exact_retention_boundary() {
+        let dir = tempdir().unwrap();
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(dir.path().join("agent.db")))
+            .await
+            .unwrap();
+        let boundary_id = Uuid::new_v4().to_string();
+        let marker_hash = "0x0000000000000000000000000000000000000000000000000000000000000000";
+        sqlx::query("INSERT INTO report_receipts (report_id, report_body_sha256, disposition, applied_at) VALUES (?, ?, 'accepted', ?)")
+            .bind(&boundary_id)
+            .bind(marker_hash)
+            .bind("2026-01-01T00:00:00Z")
+            .execute(store.connection())
+            .await
+            .unwrap();
+
+        let report_id = "0195f2a1-0013-4013-8013-000000000013";
+        let body = include_bytes!("../../platpulse-core/tests/fixtures/report_v1_minimal.json");
+        let hash = format!("0x{}", hex::encode(sha2::Sha256::digest(body)));
+        let receipt_body = format!(
+            r#"{{"receipt":{{"report_id":"{report_id}","disposition":"rejected","report_body_sha256":"{hash}","server_version":"test","supported_protocol_majors":[1],"server_time":"2026-01-01T00:00:00Z","inventory":"rejected","rejections":[{{"code":"invalid_envelope","retryable":false,"reason":"test"}}],"nodes":[],"samples":[]}}}}"#
+        );
+        sqlx::query("INSERT INTO reports (report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes, created_at) VALUES (?, 1, ?, 1, ?, ?, ?, ?, ?)")
+            .bind(report_id)
+            .bind("0195f2a1-0012-4012-8012-000000000012")
+            .bind("2026-08-12T09:00:00Z")
+            .bind(&body[..])
+            .bind(&hash)
+            .bind(body.len() as i64)
+            .bind("2026-08-12T09:00:00Z")
+            .execute(store.connection())
+            .await
+            .unwrap();
+        apply_receipt(
+            &mut store,
+            report_id,
+            &hash,
+            "rejected",
+            receipt_body.as_bytes(),
+            "2026-01-02T00:00:00Z",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM report_receipts WHERE report_id = ?"
+            )
+            .bind(boundary_id)
             .fetch_one(store.connection())
             .await
             .unwrap(),
@@ -3363,6 +3401,7 @@ mod tests {
         let receipt_body = format!(
             r#"{{"receipt":{{"report_id":"{report_id}","disposition":"rejected","report_body_sha256":"{hash}","server_version":"test","supported_protocol_majors":[1],"server_time":"2026-01-01T00:00:00Z","inventory":"rejected","rejections":[{{"code":"invalid_envelope","retryable":false,"reason":"test"}}],"nodes":[],"samples":[]}}}}"#
         );
+        let applied_at = crate::database::now_rfc3339();
         sqlx::query("INSERT INTO reports (report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes, created_at) VALUES (?,1,?,1,?, ?, ?, ?, ?)")
             .bind(report_id)
             .bind("0195f2a1-0012-4012-8012-000000000012")
@@ -3374,13 +3413,53 @@ mod tests {
             .execute(store.connection())
             .await
             .unwrap();
+        sqlx::query(
+            "CREATE TRIGGER abort_receipt_marker BEFORE INSERT ON report_receipts BEGIN SELECT RAISE(ABORT, 'injected receipt marker failure'); END",
+        )
+        .execute(store.connection())
+        .await
+        .unwrap();
+        assert!(
+            apply_receipt(
+                &mut store,
+                report_id,
+                &hash,
+                "rejected",
+                receipt_body.as_bytes(),
+                &applied_at,
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports WHERE report_id = ?")
+                .bind(report_id)
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM report_receipts WHERE report_id = ?"
+            )
+            .bind(report_id)
+            .fetch_one(store.connection())
+            .await
+            .unwrap(),
+            0
+        );
+        sqlx::query("DROP TRIGGER abort_receipt_marker")
+            .execute(store.connection())
+            .await
+            .unwrap();
         apply_receipt(
             &mut store,
             report_id,
             &hash,
             "rejected",
             receipt_body.as_bytes(),
-            "now",
+            &applied_at,
         )
         .await
         .unwrap();
@@ -3390,6 +3469,124 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 0);
+        let marker: (String, String, String) = sqlx::query_as(
+            "SELECT report_body_sha256, disposition, applied_at FROM report_receipts WHERE report_id = ?",
+        )
+        .bind(report_id)
+        .fetch_one(store.connection())
+        .await
+        .unwrap();
+        assert_eq!(
+            marker,
+            (hash.clone(), "rejected".to_owned(), applied_at.clone())
+        );
+        store.close().await.unwrap();
+
+        let mut reopened = AgentStore::open(AgentDatabaseConfig::new(dir.path().join("agent.db")))
+            .await
+            .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports WHERE report_id = ?")
+                .bind(report_id)
+                .fetch_one(reopened.connection())
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM report_receipts WHERE report_id = ? AND report_body_sha256 = ? AND disposition = 'rejected'",
+            )
+            .bind(report_id)
+            .bind(hash)
+            .fetch_one(reopened.connection())
+            .await
+            .unwrap(),
+            1
+        );
+        reopened.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn duplicate_and_conflicting_receipts_preserve_the_queued_report() {
+        let dir = tempdir().unwrap();
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(dir.path().join("agent.db")))
+            .await
+            .unwrap();
+        let report_id = "0195f2a1-0013-4013-8013-000000000013";
+        let body = include_bytes!("../../platpulse-core/tests/fixtures/report_v1_minimal.json");
+        let hash = format!("0x{}", hex::encode(sha2::Sha256::digest(body)));
+        let receipt_body = format!(
+            r#"{{"receipt":{{"report_id":"{report_id}","disposition":"rejected","report_body_sha256":"{hash}","server_version":"test","supported_protocol_majors":[1],"server_time":"2026-01-01T00:00:00Z","inventory":"rejected","rejections":[{{"code":"invalid_envelope","retryable":false,"reason":"test"}}],"nodes":[],"samples":[]}}}}"#
+        );
+        sqlx::query("INSERT INTO reports (report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes, created_at) VALUES (?, 1, ?, 1, ?, ?, ?, ?, ?)")
+            .bind(report_id)
+            .bind("0195f2a1-0012-4012-8012-000000000012")
+            .bind("2026-08-12T09:00:00Z")
+            .bind(&body[..])
+            .bind(&hash)
+            .bind(body.len() as i64)
+            .bind("2026-08-12T09:00:00Z")
+            .execute(store.connection())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO report_receipts (report_id, report_body_sha256, disposition, applied_at) VALUES (?, ?, 'accepted', ?)")
+            .bind(report_id)
+            .bind(&hash)
+            .bind("2026-01-01T00:00:00Z")
+            .execute(store.connection())
+            .await
+            .unwrap();
+
+        let conflict = apply_receipt(
+            &mut store,
+            report_id,
+            &hash,
+            "rejected",
+            receipt_body.as_bytes(),
+            "2026-01-02T00:00:00Z",
+        )
+        .await
+        .unwrap_err();
+        assert!(conflict.to_string().contains("conflicts"));
+
+        let conflicting_hash = "0x0000000000000000000000000000000000000000000000000000000000000000";
+        let hash_conflict = apply_receipt(
+            &mut store,
+            report_id,
+            conflicting_hash,
+            "rejected",
+            receipt_body.replace(&hash, conflicting_hash).as_bytes(),
+            "2026-01-02T00:00:00Z",
+        )
+        .await
+        .unwrap_err();
+        assert!(hash_conflict.to_string().contains("conflicts"));
+
+        sqlx::query("UPDATE report_receipts SET disposition = 'rejected' WHERE report_id = ?")
+            .bind(report_id)
+            .execute(store.connection())
+            .await
+            .unwrap();
+        let duplicate = apply_receipt(
+            &mut store,
+            report_id,
+            &hash,
+            "rejected",
+            receipt_body.as_bytes(),
+            "2026-01-02T00:00:00Z",
+        )
+        .await
+        .unwrap_err();
+        assert!(duplicate.to_string().contains("duplicate"));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports WHERE report_id = ?")
+                .bind(report_id)
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            1
+        );
         store.close().await.unwrap();
     }
 
@@ -3472,6 +3669,40 @@ mod tests {
             }
         })
         .to_string();
+        sqlx::query(
+            "CREATE TRIGGER abort_accepted_marker BEFORE INSERT ON report_receipts BEGIN SELECT RAISE(ABORT, 'injected receipt marker failure'); END",
+        )
+        .execute(store.connection())
+        .await
+        .unwrap();
+        assert!(
+            apply_receipt(
+                &mut store,
+                report_id,
+                &body_hash,
+                "accepted",
+                receipt_body.as_bytes(),
+                &created_at,
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM block_summaries WHERE node_id=? AND block_number=? AND block_hash=?",
+            )
+            .bind(node_id.to_string())
+            .bind(9_i64)
+            .bind(sample.block_hash.to_string())
+            .fetch_one(store.connection())
+            .await
+            .unwrap(),
+            1
+        );
+        sqlx::query("DROP TRIGGER abort_accepted_marker")
+            .execute(store.connection())
+            .await
+            .unwrap();
         apply_receipt(
             &mut store,
             report_id,

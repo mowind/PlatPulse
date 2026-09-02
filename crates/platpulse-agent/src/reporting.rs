@@ -10,15 +10,12 @@ use platpulse_core::hex::Sha256Hex;
 use platpulse_core::identity::ReportId;
 use platpulse_core::{AgentReport, BootTransition, ReceiptDisposition, ReportReceipt};
 
-/// The Agent retains only enough terminal receipt markers for recent duplicate
-/// or conflict detection; the exact receipt remains a Server-side record.
-pub const MAX_APPLIED_RECEIPT_MARKERS: usize = 256;
 use serde::Deserialize;
 
 use crate::collector::{SpoolCleanupSummary, SpoolPolicy, apply_receipt};
 use crate::config::{AgentConfig, AgentConfigError};
 use crate::credential::{CredentialError, load_credential_file};
-use crate::database::{AgentDatabaseConfig, AgentDatabaseError, AgentStore};
+use crate::database::{AgentDatabaseConfig, AgentDatabaseError, AgentStore, now_rfc3339};
 
 #[derive(Debug, sqlx::FromRow)]
 struct SpoolReportRow {
@@ -299,14 +296,6 @@ async fn deliver_one_inner<T: ReportTransport>(
     .await
     .map_err(ReportStoreError::Database)?;
     Ok(Some(report))
-}
-
-fn now_rfc3339() -> String {
-    time::OffsetDateTime::now_utc()
-        .replace_nanosecond(0)
-        .expect("valid timestamp")
-        .format(&time::format_description::well_known::Rfc3339)
-        .expect("valid timestamp")
 }
 
 /// Claim the durable block and gap samples included in a report.
@@ -674,24 +663,13 @@ pub async fn ensure_spool_healthy(store: &mut AgentStore) -> Result<(), ReportSt
     Ok(())
 }
 
-/// Validate the bounded Agent-local terminal marker set once at a process
-/// startup boundary. Hot collection and delivery paths only validate markers
-/// that still have a queued report; applied markers no longer participate in
-/// runtime decisions.
+/// Validate only markers joined to queued reports at startup.
+///
+/// Applied Receipt Records have already received bounded expiry cleanup during
+/// Agent Store open and do not otherwise affect runtime decisions. Reading the
+/// entire recent retention window here would make startup history-sized work.
 pub async fn validate_receipt_history(store: &mut AgentStore) -> Result<(), ReportStoreError> {
-    ensure_spool_healthy(store).await?;
-    if let Some(reason) = validate_receipt_rows(
-        store,
-        "SELECT receipt.report_id, receipt.report_body_sha256, receipt.disposition, receipt.applied_at
-         FROM report_receipts AS receipt
-         ORDER BY receipt.applied_at, receipt.report_id",
-    )
-    .await?
-    {
-        mark_spool_fatal_store(store, &now_rfc3339(), &reason).await?;
-        return Err(ReportStoreError::StoreFatal(reason));
-    }
-    Ok(())
+    ensure_spool_healthy(store).await
 }
 
 async fn validate_receipt_rows(
@@ -1125,6 +1103,57 @@ mod delivery_tests {
         AgentStore::open(AgentDatabaseConfig::new(dir.keep().join("agent.db")))
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn successful_delivery_expires_only_its_transactional_cleanup_batch() {
+        let mut store = test_store().await;
+        let marker_hash = "0x0000000000000000000000000000000000000000000000000000000000000000";
+        for _ in 0..129 {
+            sqlx::query("INSERT INTO report_receipts (report_id, report_body_sha256, disposition, applied_at) VALUES (?, ?, 'accepted', ?)")
+                .bind(uuid::Uuid::new_v4().to_string())
+                .bind(marker_hash)
+                .bind("2000-01-01T00:00:00Z")
+                .execute(store.connection())
+                .await
+                .unwrap();
+        }
+        let body = report_body(1);
+        let id = report_id(1);
+        persist_immutable_report(
+            &mut store,
+            &id,
+            1,
+            "0195f2a1-0012-4012-8012-000000000012",
+            1,
+            "2026-08-12T09:00:00Z",
+            &body,
+        )
+        .await
+        .unwrap();
+        let transport = FakeTransport {
+            bodies: Arc::new(Mutex::new(Vec::new())),
+            responses: Arc::new(Mutex::new(vec![Ok(receipt_body(&id, &body))])),
+        };
+
+        assert!(deliver_one(&mut store, &transport).await.unwrap().is_some());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM report_receipts")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            66
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM report_receipts WHERE applied_at < '2026-09-01T00:00:00Z'",
+            )
+            .fetch_one(store.connection())
+            .await
+            .unwrap(),
+            65
+        );
+        store.close().await.unwrap();
     }
 
     #[tokio::test]

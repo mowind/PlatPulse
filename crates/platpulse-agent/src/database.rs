@@ -15,7 +15,7 @@ use std::{
 
 use sqlx::migrate::{MigrateError, Migrator};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
-use sqlx::{Connection, SqliteConnection};
+use sqlx::{Connection, Executor, Sqlite, SqliteConnection};
 use thiserror::Error;
 #[cfg(test)]
 use tokio::sync::Notify;
@@ -29,6 +29,11 @@ pub static AGENT_MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 /// The latest migration version compiled into the Agent binary.
 pub const AGENT_SCHEMA_VERSION: i64 = 13;
+
+/// Applied Receipt Records are retained for a recent duplicate/conflict window.
+pub(crate) const APPLIED_RECEIPT_RETENTION: time::Duration = time::Duration::hours(24);
+/// Every cleanup invocation is fixed-size, including receipt application and startup.
+pub(crate) const APPLIED_RECEIPT_EXPIRY_BATCH_SIZE: i64 = 64;
 
 /// Explicit timeout used for SQLite lock contention unless a caller chooses a
 /// tighter or more generous value for a test/deployment.
@@ -426,11 +431,15 @@ impl AgentStore {
         }
 
         verify_integrity(&mut connection).await?;
-        secure_store_file(config.path())?;
-        Ok(Self {
+        let mut store = Self {
             connection,
             write_permit,
-        })
+        };
+        cleanup_expired_receipt_markers(&mut store, &now_rfc3339())
+            .await
+            .map_err(AgentDatabaseError::IntegrityQuery)?;
+        secure_store_file(config.path())?;
+        Ok(store)
     }
 
     /// Acquire the injected permit before any Agent Store write.
@@ -499,6 +508,60 @@ fn sqlite_options(config: &AgentDatabaseConfig) -> SqliteConnectOptions {
         .journal_mode(SqliteJournalMode::Wal)
         .synchronous(SqliteSynchronous::Full)
         .busy_timeout(config.busy_timeout())
+}
+
+/// Calculate the exclusive receipt-marker expiry boundary from application time.
+pub(crate) fn applied_receipt_expiry_cutoff(applied_at: &str) -> Result<String, sqlx::Error> {
+    let applied_at =
+        time::OffsetDateTime::parse(applied_at, &time::format_description::well_known::Rfc3339)
+            .map_err(|error| {
+                sqlx::Error::Protocol(format!("invalid receipt application time: {error}"))
+            })?;
+    applied_at
+        .checked_sub(APPLIED_RECEIPT_RETENTION)
+        .ok_or_else(|| sqlx::Error::Protocol("receipt expiry cutoff is out of range".to_owned()))?
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|error| sqlx::Error::Protocol(format!("invalid receipt expiry cutoff: {error}")))
+}
+
+/// Run one bounded expiry batch outside a receipt-application transaction.
+///
+/// Startup executes this once, and subsequent delivery ticks continue draining
+/// the same fixed-size batches without making startup depend on receipt history.
+pub(crate) async fn cleanup_expired_receipt_markers(
+    store: &mut AgentStore,
+    applied_at: &str,
+) -> Result<u64, sqlx::Error> {
+    let cutoff = applied_receipt_expiry_cutoff(applied_at)?;
+    let _write_permit = store.acquire_write().await;
+    delete_expired_receipt_markers(store.connection(), &cutoff).await
+}
+
+/// Delete at most one indexed batch of expired Applied Receipt Records.
+pub(crate) async fn delete_expired_receipt_markers<'e, E>(
+    executor: E,
+    cutoff: &str,
+) -> Result<u64, sqlx::Error>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    Ok(sqlx::query(
+        "DELETE FROM report_receipts WHERE report_id IN (SELECT report_id FROM report_receipts WHERE applied_at < ? ORDER BY applied_at, report_id LIMIT ?)",
+    )
+    .bind(cutoff)
+    .bind(APPLIED_RECEIPT_EXPIRY_BATCH_SIZE)
+    .execute(executor)
+    .await?
+    .rows_affected())
+}
+
+/// Return the Agent-local application time in canonical UTC form.
+pub(crate) fn now_rfc3339() -> String {
+    time::OffsetDateTime::now_utc()
+        .replace_nanosecond(0)
+        .expect("zero nanoseconds is valid")
+        .format(&time::format_description::well_known::Rfc3339)
+        .expect("UTC timestamp is valid")
 }
 
 async fn read_pragmas(connection: &mut SqliteConnection) -> Result<SqlitePragmas, sqlx::Error> {
@@ -810,7 +873,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn receipt_archive_migrates_to_bounded_markers() {
+    async fn receipt_archive_migration_and_repeated_startup_cleanup_are_bounded() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("agent.db");
         let options = sqlite_options(&config(&path));
@@ -842,9 +905,19 @@ mod tests {
         .fetch_one(store.connection())
         .await
         .unwrap();
-        assert_eq!(count, 256);
+        assert_eq!(count, 192);
         assert_eq!(body_columns, 0);
         store.close().await.unwrap();
+
+        for expected_count in [128, 64, 0] {
+            let mut reopened = AgentStore::open(config(&path)).await.unwrap();
+            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM report_receipts")
+                .fetch_one(reopened.connection())
+                .await
+                .unwrap();
+            assert_eq!(count, expected_count);
+            reopened.close().await.unwrap();
+        }
     }
 
     #[tokio::test]
