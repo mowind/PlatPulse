@@ -8,11 +8,15 @@
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{
+    borrow::Cow,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
 
+use futures_util::TryStreamExt;
+use platpulse_core::{ReceiptDisposition, ReportReceipt, Rfc3339};
+use serde::Deserialize;
 use sqlx::migrate::{MigrateError, Migrator};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
 use sqlx::{Connection, Executor, Sqlite, SqliteConnection};
@@ -144,6 +148,10 @@ pub enum AgentDatabaseError {
     IntegrityQuery(#[source] sqlx::Error),
     #[error("Agent SQLite integrity check failed: {0}")]
     IntegrityFailed(String),
+    #[error("Agent legacy receipt preflight query failed: {0}")]
+    LegacyReceiptQuery(#[source] sqlx::Error),
+    #[error("Agent legacy receipt validation failed for {report_id}: {reason}")]
+    LegacyReceiptValidation { report_id: String, reason: String },
     #[error("failed to secure Agent Store file {path}: {source}")]
     SecureStore {
         path: PathBuf,
@@ -376,6 +384,203 @@ fn acquire_runtime_lock(_path: PathBuf) -> Result<AgentRuntimeLock, AgentRuntime
     Err(AgentRuntimeLockError::Unsupported)
 }
 
+fn migrations_through(version: i64) -> Migrator {
+    Migrator {
+        migrations: Cow::Owned(
+            AGENT_MIGRATOR
+                .iter()
+                .filter(|migration| migration.version <= version)
+                .cloned()
+                .collect(),
+        ),
+        ignore_missing: false,
+        locking: true,
+        no_tx: false,
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct LegacyReceiptRow {
+    report_id: String,
+    report_body_sha256: String,
+    disposition: String,
+    receipt_body: Vec<u8>,
+    applied_at: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyReceiptEnvelope {
+    receipt: ReportReceipt,
+}
+
+async fn has_legacy_receipt_archive(
+    connection: &mut SqliteConnection,
+) -> Result<bool, AgentDatabaseError> {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM pragma_table_info('report_receipts') WHERE name = 'receipt_body'",
+    )
+    .fetch_one(connection)
+    .await
+    .map(|count| count != 0)
+    .map_err(AgentDatabaseError::LegacyReceiptQuery)
+}
+
+fn receipt_disposition_name(disposition: ReceiptDisposition) -> &'static str {
+    match disposition {
+        ReceiptDisposition::Accepted => "accepted",
+        ReceiptDisposition::PartiallyAccepted => "partially_accepted",
+        ReceiptDisposition::Rejected => "rejected",
+    }
+}
+
+async fn validate_legacy_receipts(
+    connection: &mut SqliteConnection,
+) -> Result<(), AgentDatabaseError> {
+    let mut rows = sqlx::query_as::<_, LegacyReceiptRow>(
+        "SELECT report_id, report_body_sha256, disposition, receipt_body, applied_at
+         FROM report_receipts ORDER BY rowid",
+    )
+    .fetch(&mut *connection);
+
+    while let Some(row) = rows
+        .try_next()
+        .await
+        .map_err(AgentDatabaseError::LegacyReceiptQuery)?
+    {
+        let invalid = |reason: String| AgentDatabaseError::LegacyReceiptValidation {
+            report_id: row.report_id.clone(),
+            reason,
+        };
+        row.report_id
+            .parse::<platpulse_core::identity::ReportId>()
+            .map_err(|error| invalid(format!("invalid stored report identity: {error}")))?;
+        row.report_body_sha256
+            .parse::<platpulse_core::hex::Sha256Hex>()
+            .map_err(|error| invalid(format!("invalid stored report hash: {error}")))?;
+        let applied_at = row
+            .applied_at
+            .parse::<Rfc3339>()
+            .map_err(|error| invalid(format!("invalid stored application time: {error}")))?;
+        if applied_at.to_string() != row.applied_at {
+            return Err(invalid(
+                "stored application time is not canonical RFC3339 UTC".to_owned(),
+            ));
+        }
+        if !matches!(
+            row.disposition.as_str(),
+            "accepted" | "partially_accepted" | "rejected"
+        ) {
+            return Err(invalid("invalid stored disposition".to_owned()));
+        }
+        let receipt = serde_json::from_slice::<LegacyReceiptEnvelope>(&row.receipt_body)
+            .map_err(|error| invalid(format!("invalid receipt JSON: {error}")))?
+            .receipt;
+        receipt
+            .validate()
+            .map_err(|error| invalid(format!("invalid receipt protocol data: {error}")))?;
+        if receipt.report_id.to_string() != row.report_id
+            || receipt.report_body_sha256.to_string() != row.report_body_sha256
+            || receipt_disposition_name(receipt.disposition) != row.disposition
+        {
+            return Err(invalid(
+                "receipt metadata does not match its stored row".to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn convert_legacy_receipt_archive(
+    connection: &mut SqliteConnection,
+) -> Result<(), AgentDatabaseError> {
+    validate_legacy_receipts(connection).await?;
+    migrations_through(12)
+        .run_direct(&mut *connection)
+        .await
+        .map_err(AgentDatabaseError::Migration)?;
+
+    let now = now_rfc3339();
+    let cutoff =
+        applied_receipt_expiry_cutoff(&now).map_err(AgentDatabaseError::LegacyReceiptQuery)?;
+    let migration = AGENT_MIGRATOR
+        .iter()
+        .find(|migration| migration.version == 13)
+        .expect("embedded Agent migration 13 must exist");
+    let mut transaction = connection
+        .begin()
+        .await
+        .map_err(AgentDatabaseError::LegacyReceiptQuery)?;
+    let conversion: Result<(), sqlx::Error> = async {
+        sqlx::query(
+            "CREATE TABLE report_receipts_bounded (
+                report_id TEXT PRIMARY KEY NOT NULL,
+                report_body_sha256 TEXT NOT NULL,
+                disposition TEXT NOT NULL CHECK (
+                    disposition IN ('accepted', 'partially_accepted', 'rejected')
+                ),
+                applied_at TEXT NOT NULL
+            )",
+        )
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "INSERT INTO report_receipts_bounded (report_id, report_body_sha256, disposition, applied_at)
+             SELECT report_id, report_body_sha256, disposition, applied_at
+             FROM report_receipts WHERE applied_at >= ? AND applied_at <= ?",
+        )
+        .bind(cutoff)
+        .bind(now)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query("DROP TABLE report_receipts")
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("ALTER TABLE report_receipts_bounded RENAME TO report_receipts")
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query(
+            "CREATE INDEX report_receipts_applied_at_idx ON report_receipts (applied_at, report_id)",
+        )
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
+             VALUES (?, ?, TRUE, ?, -1)",
+        )
+        .bind(migration.version)
+        .bind(&*migration.description)
+        .bind(&*migration.checksum)
+        .execute(&mut *transaction)
+        .await?;
+        Ok(())
+    }
+    .await;
+    match conversion {
+        Ok(()) => transaction
+            .commit()
+            .await
+            .map_err(AgentDatabaseError::LegacyReceiptQuery),
+        Err(error) => {
+            transaction
+                .rollback()
+                .await
+                .map_err(AgentDatabaseError::LegacyReceiptQuery)?;
+            Err(AgentDatabaseError::LegacyReceiptQuery(error))
+        }
+    }
+}
+
+async fn migrate_agent_store(connection: &mut SqliteConnection) -> Result<(), AgentDatabaseError> {
+    if has_legacy_receipt_archive(connection).await? {
+        convert_legacy_receipt_archive(connection).await?;
+    }
+    AGENT_MIGRATOR
+        .run_direct(connection)
+        .await
+        .map_err(AgentDatabaseError::Migration)
+}
+
 /// An initialized Agent Store with exactly one writer connection.
 ///
 /// No collection code is run by this type. Callers receive the store only
@@ -411,10 +616,7 @@ impl AgentStore {
             .await
             .map_err(AgentDatabaseError::Connect)?;
 
-        AGENT_MIGRATOR
-            .run_direct(&mut connection)
-            .await
-            .map_err(AgentDatabaseError::Migration)?;
+        migrate_agent_store(&mut connection).await?;
         drop(_write_permit);
 
         let pragmas = read_pragmas(&mut connection)
@@ -431,13 +633,10 @@ impl AgentStore {
         }
 
         verify_integrity(&mut connection).await?;
-        let mut store = Self {
+        let store = Self {
             connection,
             write_permit,
         };
-        cleanup_expired_receipt_markers(&mut store, &now_rfc3339())
-            .await
-            .map_err(AgentDatabaseError::IntegrityQuery)?;
         secure_store_file(config.path())?;
         Ok(store)
     }
@@ -526,8 +725,8 @@ pub(crate) fn applied_receipt_expiry_cutoff(applied_at: &str) -> Result<String, 
 
 /// Run one bounded expiry batch outside a receipt-application transaction.
 ///
-/// Startup executes this once, and subsequent delivery ticks continue draining
-/// the same fixed-size batches without making startup depend on receipt history.
+/// Startup invokes this repeatedly only after semantic validation; runtime receipt
+/// application invokes it once inside its own transaction.
 pub(crate) async fn cleanup_expired_receipt_markers(
     store: &mut AgentStore,
     applied_at: &str,
@@ -629,30 +828,12 @@ async fn verify_integrity(connection: &mut SqliteConnection) -> Result<(), Agent
 
 #[cfg(test)]
 mod tests {
-    use std::borrow::Cow;
-
-    use sqlx::migrate::Migrator;
     use tempfile::tempdir;
 
     use super::*;
 
     fn config(path: &Path) -> AgentDatabaseConfig {
         AgentDatabaseConfig::new(path).with_busy_timeout(Duration::from_millis(1_234))
-    }
-
-    fn migrations_through(version: i64) -> Migrator {
-        Migrator {
-            migrations: Cow::Owned(
-                AGENT_MIGRATOR
-                    .iter()
-                    .filter(|migration| migration.version <= version)
-                    .cloned()
-                    .collect(),
-            ),
-            ignore_missing: false,
-            locking: true,
-            no_tx: false,
-        }
     }
 
     #[cfg(unix)]
@@ -873,7 +1054,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn receipt_archive_migration_and_repeated_startup_cleanup_are_bounded() {
+    async fn receipt_archive_migration_streams_valid_legacy_receipts() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("agent.db");
         let options = sqlite_options(&config(&path));
@@ -882,12 +1063,21 @@ mod tests {
             .run_direct(&mut connection)
             .await
             .unwrap();
-        for index in 0..300_u128 {
+        let receipt: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../platpulse-core/tests/fixtures/receipt_v1_accepted.json"
+        ))
+        .unwrap();
+        let applied_at = now_rfc3339();
+        for index in 1..=300_u128 {
+            let report_id = uuid::Uuid::from_u128(index).to_string();
+            let mut receipt = receipt.clone();
+            receipt["report_id"] = serde_json::Value::String(report_id.clone());
+            let body = serde_json::to_vec(&serde_json::json!({ "receipt": receipt })).unwrap();
             sqlx::query("INSERT INTO report_receipts (report_id, report_body_sha256, disposition, receipt_body, applied_at) VALUES (?, ?, 'accepted', ?, ?)")
-                .bind(uuid::Uuid::from_u128(index + 1).to_string())
-                .bind("0x0000000000000000000000000000000000000000000000000000000000000000")
-                .bind(br#"{"receipt":{}}"# as &[u8])
-                .bind(format!("2026-01-01T00:00:{index:02}Z"))
+                .bind(report_id)
+                .bind("0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+                .bind(body)
+                .bind(&applied_at)
                 .execute(&mut connection)
                 .await
                 .unwrap();
@@ -895,29 +1085,89 @@ mod tests {
         connection.close().await.unwrap();
 
         let mut store = AgentStore::open(config(&path)).await.unwrap();
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM report_receipts")
+        assert_eq!(store.schema_version().await.unwrap(), AGENT_SCHEMA_VERSION);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM report_receipts")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            300
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM pragma_table_info('report_receipts') WHERE name='receipt_body'",
+            )
             .fetch_one(store.connection())
             .await
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT [notnull] FROM pragma_table_info('report_receipts') WHERE name='report_id'",
+            )
+            .fetch_one(store.connection())
+            .await
+            .unwrap(),
+            1
+        );
+        assert!(
+            sqlx::query(
+                "INSERT INTO report_receipts (report_id, report_body_sha256, disposition, applied_at) VALUES (?, ?, 'invalid', ?)",
+            )
+            .bind(uuid::Uuid::new_v4().to_string())
+            .bind("0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+            .bind(&applied_at)
+            .execute(store.connection())
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_legacy_receipt_leaves_legacy_schema_untouched() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("agent.db");
+        let options = sqlite_options(&config(&path));
+        let mut connection = SqliteConnection::connect_with(&options).await.unwrap();
+        migrations_through(2)
+            .run_direct(&mut connection)
+            .await
             .unwrap();
-        let body_columns: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM pragma_table_info('report_receipts') WHERE name='receipt_body'",
+        sqlx::query(
+            "INSERT INTO report_receipts (report_id, report_body_sha256, disposition, receipt_body, applied_at) VALUES (?, ?, 'accepted', ?, ?)",
         )
-        .fetch_one(store.connection())
+        .bind("0195f2a1-0003-4003-8003-000000000003")
+        .bind("0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+        .bind(br#"{"receipt":{}}"# as &[u8])
+        .bind(now_rfc3339())
+        .execute(&mut connection)
         .await
         .unwrap();
-        assert_eq!(count, 192);
-        assert_eq!(body_columns, 0);
-        store.close().await.unwrap();
+        connection.close().await.unwrap();
 
-        for expected_count in [128, 64, 0] {
-            let mut reopened = AgentStore::open(config(&path)).await.unwrap();
-            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM report_receipts")
-                .fetch_one(reopened.connection())
+        assert!(matches!(
+            AgentStore::open(config(&path)).await,
+            Err(AgentDatabaseError::LegacyReceiptValidation { .. })
+        ));
+
+        let mut connection = SqliteConnection::connect_with(&options).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM pragma_table_info('report_receipts') WHERE name='receipt_body'",
+            )
+            .fetch_one(&mut connection)
+            .await
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(version), 0) FROM _sqlx_migrations")
+                .fetch_one(&mut connection)
                 .await
-                .unwrap();
-            assert_eq!(count, expected_count);
-            reopened.close().await.unwrap();
-        }
+                .unwrap(),
+            2
+        );
     }
 
     #[tokio::test]

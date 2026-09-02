@@ -3484,6 +3484,7 @@ dependencies = [
  "alloy",
  "axum",
  "clap",
+ "futures-util",
  "hex",
  "nix",
  "platpulse-core",

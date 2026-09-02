@@ -1,3 +1,4 @@
+use futures_util::TryStreamExt;
 use sha2::{Digest, Sha256};
 use sqlx::{Connection, Sqlite, Transaction};
 use std::collections::HashMap;
@@ -8,7 +9,7 @@ use thiserror::Error;
 
 use platpulse_core::hex::Sha256Hex;
 use platpulse_core::identity::ReportId;
-use platpulse_core::{AgentReport, BootTransition, ReceiptDisposition, ReportReceipt};
+use platpulse_core::{AgentReport, BootTransition, ReceiptDisposition, ReportReceipt, Rfc3339};
 
 use serde::Deserialize;
 
@@ -625,12 +626,7 @@ async fn deliver_periodic_inner<T: ReportTransport>(
         }?;
         match result {
             Some(_) => delivered += 1,
-            None => {
-                if delivered == 0 {
-                    cleanup_expired_receipt_markers(store, &now_rfc3339()).await?;
-                }
-                break;
-            }
+            None => break,
         }
     }
     Ok(delivered)
@@ -638,6 +634,7 @@ async fn deliver_periodic_inner<T: ReportTransport>(
 
 /// Refuse new collection/delivery when durable spool corruption was observed.
 pub async fn ensure_spool_healthy(store: &mut AgentStore) -> Result<(), ReportStoreError> {
+    let _write_permit = store.acquire_write().await;
     let fatal: i64 = sqlx::query_scalar("SELECT store_fatal FROM spool_state WHERE singleton=1")
         .fetch_one(store.connection())
         .await?;
@@ -652,55 +649,70 @@ pub async fn ensure_spool_healthy(store: &mut AgentStore) -> Result<(), ReportSt
     .fetch_all(store.connection())
     .await?;
     if let Some(reason) = rows.iter().find_map(validate_spool_report) {
-        mark_spool_fatal_store(store, &now_rfc3339(), &reason).await?;
+        mark_spool_fatal_under_permit(store, &now_rfc3339(), &reason).await?;
         return Err(ReportStoreError::StoreFatal(reason));
     }
-    if let Some(reason) = validate_receipt_rows(
-        store,
-        "SELECT receipt.report_id, receipt.report_body_sha256, receipt.disposition, receipt.applied_at
+    let collision: Option<String> = sqlx::query_scalar(
+        "SELECT receipt.report_id
          FROM reports
          CROSS JOIN report_receipts AS receipt
          WHERE receipt.report_id = reports.report_id
-         ORDER BY receipt.applied_at, receipt.report_id",
+         ORDER BY receipt.applied_at, receipt.report_id
+         LIMIT 1",
     )
-    .await?
-    {
-        mark_spool_fatal_store(store, &now_rfc3339(), &reason).await?;
+    .fetch_optional(store.connection())
+    .await?;
+    if let Some(report_id) = collision {
+        let reason =
+            format!("queued Agent Report {report_id} conflicts with an Applied Receipt Record");
+        mark_spool_fatal_under_permit(store, &now_rfc3339(), &reason).await?;
         return Err(ReportStoreError::StoreFatal(reason));
     }
     Ok(())
 }
 
-/// Validate only markers joined to queued reports at startup.
-///
-/// Applied Receipt Records have already received bounded expiry cleanup during
-/// Agent Store open and do not otherwise affect runtime decisions. Reading the
-/// entire recent retention window here would make startup history-sized work.
-pub async fn validate_receipt_history(store: &mut AgentStore) -> Result<(), ReportStoreError> {
-    ensure_spool_healthy(store).await
-}
-
-async fn validate_receipt_rows(
+async fn validate_historical_receipt_markers(
     store: &mut AgentStore,
-    query: &str,
-) -> Result<Option<String>, ReportStoreError> {
-    let receipts = sqlx::query_as::<_, (String, String, String, String)>(query)
-        .fetch_all(store.connection())
-        .await?;
-    for (report_id, body_sha256, disposition, _applied_at) in receipts {
-        let valid_identity = report_id.parse::<ReportId>().is_ok();
-        let valid_hash = body_sha256.parse::<Sha256Hex>().is_ok();
-        let valid_disposition = matches!(
-            disposition.as_str(),
-            "accepted" | "partially_accepted" | "rejected"
-        );
-        if !valid_identity || !valid_hash || !valid_disposition {
-            return Ok(Some(format!(
-                "stored receipt marker for report {report_id} is invalid"
-            )));
+) -> Result<(), ReportStoreError> {
+    let _write_permit = store.acquire_write().await;
+    let mut markers = sqlx::query_as::<_, (String, String, String, String)>(
+        "SELECT report_id, report_body_sha256, disposition, applied_at
+         FROM report_receipts ORDER BY applied_at, report_id",
+    )
+    .fetch(store.connection());
+    while let Some((report_id, body_sha256, disposition, applied_at)) = markers.try_next().await? {
+        let canonical_time = applied_at
+            .parse::<Rfc3339>()
+            .ok()
+            .is_some_and(|time| time.to_string() == applied_at);
+        let valid = report_id.parse::<ReportId>().is_ok()
+            && body_sha256.parse::<Sha256Hex>().is_ok()
+            && canonical_time
+            && matches!(
+                disposition.as_str(),
+                "accepted" | "partially_accepted" | "rejected"
+            );
+        if !valid {
+            let reason = format!("Applied Receipt Record {report_id} is invalid");
+            drop(markers);
+            mark_spool_fatal_under_permit(store, &now_rfc3339(), &reason).await?;
+            return Err(ReportStoreError::StoreFatal(reason));
         }
     }
-    Ok(None)
+    Ok(())
+}
+
+/// Perform the one-time startup validation of current Agent Store state.
+/// Runtime delivery and collection use the bounded health gate instead, so
+/// they never rescan historical Applied Receipt Records.
+pub async fn validate_receipt_history(store: &mut AgentStore) -> Result<(), ReportStoreError> {
+    ensure_spool_healthy(store).await?;
+    validate_historical_receipt_markers(store).await?;
+    loop {
+        if cleanup_expired_receipt_markers(store, &now_rfc3339()).await? < 64 {
+            return Ok(());
+        }
+    }
 }
 
 /// Apply a bounded, transactional spool policy. In-flight and newest complete
@@ -899,6 +911,14 @@ async fn mark_spool_fatal_store(
     message: &str,
 ) -> Result<(), ReportStoreError> {
     let _write_permit = store.acquire_write().await;
+    mark_spool_fatal_under_permit(store, now, message).await
+}
+
+async fn mark_spool_fatal_under_permit(
+    store: &mut AgentStore,
+    now: &str,
+    message: &str,
+) -> Result<(), ReportStoreError> {
     sqlx::query(
         "UPDATE spool_state SET store_fatal=1, store_error=?, updated_at=? WHERE singleton=1",
     )
@@ -1196,9 +1216,9 @@ mod delivery_tests {
     }
 
     #[tokio::test]
-    async fn empty_periodic_delivery_expires_one_marker_batch() {
+    async fn startup_drains_expiry_batches_without_idle_delivery_history_work() {
         let mut store = test_store().await;
-        for _ in 0..65 {
+        for _ in 0..129 {
             sqlx::query(
                 "INSERT INTO report_receipts (report_id, report_body_sha256, disposition, applied_at) VALUES (?, ?, 'accepted', '2000-01-01T00:00:00Z')",
             )
@@ -1224,9 +1244,16 @@ mod delivery_tests {
                 .fetch_one(store.connection())
                 .await
                 .unwrap(),
-            1
+            129
         );
-        store.close().await.unwrap();
+        validate_receipt_history(&mut store).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM report_receipts")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            0
+        );
     }
 
     #[tokio::test]
@@ -1619,6 +1646,69 @@ mod delivery_tests {
             .await
             .unwrap(),
             0
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_marks_a_queued_report_and_marker_collision_fatal() {
+        let mut store = test_store().await;
+        let id = report_id(7);
+        let body = report_body(7);
+        persist_immutable_report(
+            &mut store,
+            &id,
+            1,
+            "0195f2a1-0012-4012-8012-000000000012",
+            7,
+            "2026-08-12T09:00:00Z",
+            &body,
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO report_receipts (report_id, report_body_sha256, disposition, applied_at) VALUES (?, ?, 'accepted', '2026-08-12T10:00:00Z')",
+        )
+        .bind(&id)
+        .bind(format!("0x{}", hex::encode(Sha256::digest(&body))))
+        .execute(store.connection())
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            validate_receipt_history(&mut store).await,
+            Err(ReportStoreError::StoreFatal(_))
+        ));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT store_fatal FROM spool_state WHERE singleton = 1")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_marks_an_invalid_historical_marker_fatal() {
+        let mut store = test_store().await;
+        sqlx::query(
+            "INSERT INTO report_receipts (report_id, report_body_sha256, disposition, applied_at) VALUES (?, ?, 'accepted', '2026-08-12T10:00:00Z')",
+        )
+        .bind("not-a-report-id")
+        .bind("not-a-hash")
+        .execute(store.connection())
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            validate_receipt_history(&mut store).await,
+            Err(ReportStoreError::StoreFatal(_))
+        ));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT store_fatal FROM spool_state WHERE singleton = 1")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            1
         );
     }
 

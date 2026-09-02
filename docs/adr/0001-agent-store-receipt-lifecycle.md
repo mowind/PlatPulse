@@ -49,13 +49,16 @@ markers and verifies the empty-spool paths retain the indexed identity lookup.
 
 ### Migration failure semantics
 
-Legacy conversion runs through the Agent's transactional SQLx migration path.
-It creates the minimal Applied Receipt Record table and application-time index,
-retains only the most recent bounded legacy marker fields, removes complete
-receipt bodies, and advances the schema. A migration or SQLite error leaves the
-Agent Store unopened and prevents worker startup; the migration transaction
-must not advance the schema partially. Recovery is an explicit operator
-decision rather than an automatic reset.
+Before destructive conversion, startup streams every legacy complete Receipt
+and validates its protocol structure, report identity, body hash, disposition,
+and stored application time. Only after the full preflight succeeds does one
+transaction create the minimal Applied Receipt Record table and application-time
+index, retain records in the 24-hour window, remove complete receipt bodies, and
+advance the schema. Validation, migration, or SQLite failure leaves the legacy
+schema and evidence untouched and prevents worker startup. The compatibility
+path records the unchanged embedded migration checksum so existing converted
+Stores remain openable; recovery is an explicit operator decision rather than
+an automatic reset.
 
 ### Ownership and writes
 
