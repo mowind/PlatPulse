@@ -256,13 +256,9 @@ test.describe('PAGE-ACCESS-AUDIT (Audit review)', () => {
 })
 
 test.describe('Anonymous Home (Guest) toggle', () => {
-  test('enabling Guest access opens Home anonymously; disabling closes it', async (
-    { page, browser },
-    testInfo,
-  ) => {
-    // Mutates the shared Guest setting; only the desktop project runs it
-    // and always restores the default (disabled) state afterwards.
-    test.skip(testInfo.project.name !== 'desktop-1280', 'guest toggle runs once')
+  test('enabling Guest access opens Home anonymously; disabling closes it', async ({ page, browser }) => {
+    // The setting is restored in finally so each fixed viewport verifies the
+    // same Public/Private transition without leaking state to later tests.
 
     // Default: anonymous visits are guided to login.
     const guest = await browser.newContext()

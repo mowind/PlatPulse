@@ -41,8 +41,7 @@ test.describe('Admin Settings workflows (issues #111 and #113)', () => {
     await expectNoHorizontalOverflow(page)
   })
 
-  test('History Window completes impact preview, typed confirmation, save, and Audit feedback', async ({ page }, testInfo) => {
-    test.skip(testInfo.project.name !== 'desktop-1280', 'History Window mutation runs once on the desktop fixture')
+  test('History Window completes impact preview, typed confirmation, save, and Audit feedback', async ({ page }) => {
     await openAdmin(page, 'Settings')
 
     const card = page.locator('article.settings-card').filter({ hasText: 'History Window' })
