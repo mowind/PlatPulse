@@ -724,7 +724,7 @@ async fn public_validator_insights(
 ) -> Result<Vec<PublicValidatorInsight>, sqlx::Error> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     let rows = sqlx::query_as::<_, PublicValidatorRow>(
-        "SELECT v.validator_id, v.validator_node_id, v.display_name, (SELECT n2.node_id FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.visibility = 'public' AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1) AS node_id, (SELECT l2.role FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.visibility = 'public' AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1) AS link_role, i.source, i.outcome, i.provider_timestamp, i.activity, i.last_good_received_at, i.rank, i.stake_amount, i.reward_amount, i.reward_rate, i.delegator_count, i.epoch, i.block_count, i.counter_state FROM validators v LEFT JOIN current_validator_insights i ON i.validator_id = v.validator_id WHERE v.network_key = ? AND EXISTS (SELECT 1 FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = v.validator_id AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.visibility = 'public' AND n.lifecycle = 'active') ORDER BY v.validator_node_id, v.validator_id",
+        "SELECT v.validator_id, v.validator_node_id, v.display_name, (SELECT n2.node_id FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1) AS node_id, (SELECT l2.role FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1) AS link_role, i.source, i.outcome, i.provider_timestamp, i.activity, i.last_good_received_at, i.rank, i.stake_amount, i.reward_amount, i.reward_rate, i.delegator_count, i.epoch, i.block_count, i.counter_state FROM validators v LEFT JOIN current_validator_insights i ON i.validator_id = v.validator_id WHERE v.network_key = ? AND EXISTS (SELECT 1 FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = v.validator_id AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.lifecycle = 'active') ORDER BY v.validator_node_id, v.validator_id",
     )
     .bind(&now)
     .bind(&now)
@@ -791,7 +791,7 @@ async fn effective_public_links(
 ) -> Result<Vec<EffectiveLinkRow>, sqlx::Error> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     let mut sql = String::from(
-        "SELECT l.node_id, l.validator_id, l.role FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.visibility = 'public' AND n.lifecycle = 'active'",
+        "SELECT l.node_id, l.validator_id, l.role FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.lifecycle = 'active'",
     );
     if node_id.is_some() {
         sql.push_str(" AND l.node_id = ?");
@@ -941,10 +941,10 @@ pub(crate) async fn public_node_history(
         Err(response) => return *response,
     };
     let limit = params.limit.unwrap_or(50).clamp(1, 200);
-    // Check visibility before reading history so a guessed private/retired
-    // Node ID is indistinguishable from a missing representation.
+    // Check lifecycle before reading history so a guessed retired Node ID is
+    // indistinguishable from a missing representation.
     let visible = sqlx::query_scalar::<_, i64>(
-        "SELECT 1 FROM nodes WHERE node_id = ? AND visibility = 'public' AND lifecycle = 'active'",
+        "SELECT 1 FROM nodes WHERE node_id = ? AND lifecycle = 'active'",
     )
     .bind(&node_id)
     .fetch_optional(state.db().pool())
@@ -984,7 +984,7 @@ pub(crate) async fn public_node_history(
         crate::auth::now_utc(),
         raw_retention_days,
     ));
-    let rows = sqlx::query_as::<_, PublicHistoryRow>("SELECT block_number, block_timestamp_ms, transaction_count, source, coinbase, seal_signer_match, protocol_proposer, observed_at, from_height, to_height, gap_kind, divergence_kind FROM (SELECT block_number, block_timestamp_ms, transaction_count, source, coinbase, seal_signer_match, CASE WHEN protocol_proposer_kind = 'verified' THEN protocol_proposer_identity ELSE NULL END AS protocol_proposer, observed_at, NULL AS from_height, NULL AS to_height, NULL AS gap_kind, NULL AS divergence_kind FROM block_summaries WHERE node_id = ? AND accepted_at >= ? AND EXISTS (SELECT 1 FROM nodes WHERE node_id = block_summaries.node_id AND visibility = 'public' AND lifecycle = 'active') UNION ALL SELECT NULL AS block_number, NULL AS block_timestamp_ms, NULL AS transaction_count, NULL AS source, NULL AS coinbase, NULL AS seal_signer_match, NULL AS protocol_proposer, created_at AS observed_at, from_height, to_height, kind AS gap_kind, NULL AS divergence_kind FROM block_history_gaps WHERE node_id = ? AND EXISTS (SELECT 1 FROM nodes WHERE node_id = block_history_gaps.node_id AND visibility = 'public' AND lifecycle = 'active') UNION ALL SELECT NULL AS block_number, NULL AS block_timestamp_ms, NULL AS transaction_count, NULL AS source, NULL AS coinbase, NULL AS seal_signer_match, NULL AS protocol_proposer, retained_observed_at AS observed_at, height AS from_height, height AS to_height, NULL AS gap_kind, 'chain_divergence' AS divergence_kind FROM chain_divergence_observations WHERE node_id = ? AND EXISTS (SELECT 1 FROM nodes WHERE node_id = chain_divergence_observations.node_id AND visibility = 'public' AND lifecycle = 'active')) WHERE (? IS NULL OR COALESCE(block_number, to_height) >= ?) AND (? IS NULL OR COALESCE(block_number, from_height) <= ?) ORDER BY COALESCE(block_number, from_height) DESC LIMIT ?")
+    let rows = sqlx::query_as::<_, PublicHistoryRow>("SELECT block_number, block_timestamp_ms, transaction_count, source, coinbase, seal_signer_match, protocol_proposer, observed_at, from_height, to_height, gap_kind, divergence_kind FROM (SELECT block_number, block_timestamp_ms, transaction_count, source, coinbase, seal_signer_match, CASE WHEN protocol_proposer_kind = 'verified' THEN protocol_proposer_identity ELSE NULL END AS protocol_proposer, observed_at, NULL AS from_height, NULL AS to_height, NULL AS gap_kind, NULL AS divergence_kind FROM block_summaries WHERE node_id = ? AND accepted_at >= ? AND EXISTS (SELECT 1 FROM nodes WHERE node_id = block_summaries.node_id AND lifecycle = 'active') UNION ALL SELECT NULL AS block_number, NULL AS block_timestamp_ms, NULL AS transaction_count, NULL AS source, NULL AS coinbase, NULL AS seal_signer_match, NULL AS protocol_proposer, created_at AS observed_at, from_height, to_height, kind AS gap_kind, NULL AS divergence_kind FROM block_history_gaps WHERE node_id = ? AND EXISTS (SELECT 1 FROM nodes WHERE node_id = block_history_gaps.node_id AND lifecycle = 'active') UNION ALL SELECT NULL AS block_number, NULL AS block_timestamp_ms, NULL AS transaction_count, NULL AS source, NULL AS coinbase, NULL AS seal_signer_match, NULL AS protocol_proposer, retained_observed_at AS observed_at, height AS from_height, height AS to_height, NULL AS gap_kind, 'chain_divergence' AS divergence_kind FROM chain_divergence_observations WHERE node_id = ? AND EXISTS (SELECT 1 FROM nodes WHERE node_id = chain_divergence_observations.node_id AND lifecycle = 'active')) WHERE (? IS NULL OR COALESCE(block_number, to_height) >= ?) AND (? IS NULL OR COALESCE(block_number, from_height) <= ?) ORDER BY COALESCE(block_number, from_height) DESC LIMIT ?")
         .bind(&node_id).bind(&cutoff).bind(&node_id).bind(&node_id)
         .bind(from).bind(from).bind(to).bind(to).bind(limit)
         .fetch_all(state.db().pool()).await;
@@ -1067,7 +1067,7 @@ pub(crate) async fn public_node_metrics(
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
     let agent_id = sqlx::query_scalar::<_, String>(
-        "SELECT agent_id FROM nodes WHERE node_id=? AND visibility='public' AND lifecycle='active'",
+        "SELECT agent_id FROM nodes WHERE node_id=? AND lifecycle='active'",
     )
     .bind(&node_id)
     .fetch_optional(state.db().pool())
@@ -1188,12 +1188,11 @@ pub(crate) async fn public_node_peer_history(
     Path(node_id): Path<String>,
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
-    let visible = sqlx::query_scalar::<_, i64>(
-        "SELECT 1 FROM nodes WHERE node_id=? AND visibility='public' AND lifecycle='active'",
-    )
-    .bind(&node_id)
-    .fetch_optional(state.db().pool())
-    .await;
+    let visible =
+        sqlx::query_scalar::<_, i64>("SELECT 1 FROM nodes WHERE node_id=? AND lifecycle='active'")
+            .bind(&node_id)
+            .fetch_optional(state.db().pool())
+            .await;
     match visible {
         Ok(Some(_)) => {}
         Ok(None) => {
@@ -1640,7 +1639,7 @@ async fn public_country_distribution(state: &AppState, network_key: &str) -> Pub
     let now = crate::auth::format_rfc3339(now_utc);
     let rebuild_before = crate::geo::cache_rebuild_cutoff(&now);
     let rows = sqlx::query_as::<_, (String, i64)>(
-        "SELECT g.country_code, COUNT(*) FROM current_node_peers p JOIN geo_location_cache g ON g.canonical_ip = p.remote_ip JOIN nodes n ON n.node_id = p.node_id WHERE n.network_key=? AND n.visibility='public' AND n.lifecycle='active' AND g.expires_at > ? AND g.created_at > ? GROUP BY g.country_code ORDER BY g.country_code",
+        "SELECT g.country_code, COUNT(*) FROM current_node_peers p JOIN geo_location_cache g ON g.canonical_ip = p.remote_ip JOIN nodes n ON n.node_id = p.node_id WHERE n.network_key=? AND n.lifecycle='active' AND g.expires_at > ? AND g.created_at > ? GROUP BY g.country_code ORDER BY g.country_code",
     )
     .bind(network_key)
     .bind(now)
@@ -1924,7 +1923,7 @@ pub(crate) async fn public_validator_analytics(
     };
     let now = format_rfc3339(crate::auth::now_utc());
     let visible = sqlx::query_scalar::<_, i64>(
-        "SELECT 1 FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = ? AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.visibility = 'public' AND n.lifecycle = 'active' LIMIT 1",
+        "SELECT 1 FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = ? AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.lifecycle = 'active' LIMIT 1",
     )
     .bind(&validator_id)
     .bind(&now)
@@ -2065,7 +2064,7 @@ pub(crate) async fn public_validator_history(
     };
     let now = format_rfc3339(crate::auth::now_utc());
     let visible = sqlx::query_scalar::<_, i64>(
-        "SELECT 1 FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = ? AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.visibility = 'public' AND n.lifecycle = 'active' LIMIT 1",
+        "SELECT 1 FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = ? AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.lifecycle = 'active' LIMIT 1",
     )
     .bind(&validator_id)
     .bind(&now)
@@ -2188,7 +2187,7 @@ pub(crate) async fn public_validator_history(
 )]
 pub(crate) async fn public_networks(State(state): State<AppState>) -> Response {
     let rows = sqlx::query_as::<_, PublicNodeRow>(&public_node_query(
-        "n.visibility = 'public' AND n.lifecycle = 'active'",
+        "n.lifecycle = 'active'",
         "r.network_key, n.node_id",
     ))
     .fetch_all(state.db().pool())
@@ -2270,7 +2269,7 @@ pub(crate) async fn public_network(
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
     let rows = sqlx::query_as::<_, PublicNodeRow>(&public_node_query(
-        "n.network_key = ? AND n.visibility = 'public' AND n.lifecycle = 'active'",
+        "n.network_key = ? AND n.lifecycle = 'active'",
         "n.node_id",
     ))
     .bind(&network_key)
@@ -2349,7 +2348,7 @@ pub(crate) async fn public_node_detail(
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
     let row = sqlx::query_as::<_, PublicNodeRow>(&public_node_query(
-        "n.node_id = ? AND n.visibility = 'public' AND n.lifecycle = 'active'",
+        "n.node_id = ? AND n.lifecycle = 'active'",
         "n.node_id",
     ))
     .bind(&node_id)
@@ -2704,13 +2703,13 @@ mod tests {
         assert_eq!(history["blockIntervalMs"][0]["value"], 2000.0);
         assert_eq!(history["transactionCount"][1]["value"], 7.0);
 
-        let hidden = public_node_metrics(
+        let legacy_private = public_node_metrics(
             State(state),
             Path("node-private".to_owned()),
-            Extension(RequestId(std::sync::Arc::from("metric-history-hidden"))),
+            Extension(RequestId(std::sync::Arc::from("metric-history-active"))),
         )
         .await;
-        assert_eq!(hidden.status(), StatusCode::NOT_FOUND);
+        assert_eq!(legacy_private.status(), StatusCode::OK);
     }
 
     async fn seed_exact_head_transaction_fixtures(state: &AppState) {
@@ -2990,7 +2989,12 @@ mod tests {
         let response = public_networks(State(state.clone())).await;
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let node = &value[0]["nodes"][0];
+        let node = value[0]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["nodeId"] == "node-public")
+            .unwrap();
         let peers = &node["peers"];
         assert_eq!(peers["state"], "ok");
         assert_eq!(peers["freshness"], "current");
@@ -3003,7 +3007,11 @@ mod tests {
         assert!(peers.get("peerId").is_none());
         assert!(peers.get("remoteIp").is_none());
         assert!(peers.get("clientName").is_none());
-        assert_eq!(value[0]["peers"]["peerCount"], 2);
+        // Network aggregates remain unknown when any Active Node has never
+        // produced a Peer Snapshot; known Node values are not presented as
+        // a complete Network total.
+        assert_eq!(value[0]["peers"]["state"], "unknown");
+        assert!(value[0]["peers"]["peerCount"].is_null());
         assert_eq!(value[0]["geo"]["state"], "disabled");
         assert!(value[0]["geo"]["countries"].is_null());
         assert!(String::from_utf8_lossy(&body).find("203.0.113.7").is_none());
@@ -3071,7 +3079,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn public_peer_projection_does_not_expose_private_node_data() {
+    async fn public_peer_projection_includes_all_active_nodes_without_raw_peer_data() {
         let (_dir, state) = test_state().await;
         seed_public_data(&state).await;
         sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES ('agent-public-test', 'node', 'node-private', 'node-private', 'peers', 'ok', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 1)")
@@ -3085,14 +3093,14 @@ mod tests {
         let response = public_networks(State(state.clone())).await;
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(value[0]["nodes"].as_array().unwrap().len(), 1);
-        let private = public_node_detail(
+        assert_eq!(value[0]["nodes"].as_array().unwrap().len(), 2);
+        let legacy_private = public_node_detail(
             State(state.clone()),
             Path("node-private".to_owned()),
             Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
         )
         .await;
-        assert_eq!(private.status(), StatusCode::NOT_FOUND);
+        assert_eq!(legacy_private.status(), StatusCode::OK);
 
         let network = public_network(
             State(state.clone()),
@@ -3102,7 +3110,7 @@ mod tests {
         .await;
         let body = to_bytes(network.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(value["nodes"].as_array().unwrap().len(), 1);
+        assert_eq!(value["nodes"].as_array().unwrap().len(), 2);
         assert!(
             String::from_utf8_lossy(&body)
                 .find("private-peer")
@@ -3110,6 +3118,11 @@ mod tests {
         );
 
         for node_id in ["node-private", "node-retired", "node-unknown"] {
+            let expected = if node_id == "node-private" {
+                StatusCode::OK
+            } else {
+                StatusCode::NOT_FOUND
+            };
             let history = public_node_history(
                 State(state.clone()),
                 Path(node_id.to_owned()),
@@ -3123,8 +3136,8 @@ mod tests {
             .await;
             assert_eq!(
                 history.status(),
-                StatusCode::NOT_FOUND,
-                "history leaked {node_id}"
+                expected,
+                "unexpected history visibility for {node_id}"
             );
 
             let export = public_node_history_export(
@@ -3140,8 +3153,8 @@ mod tests {
             .await;
             assert_eq!(
                 export.status(),
-                StatusCode::NOT_FOUND,
-                "export leaked {node_id}"
+                expected,
+                "unexpected export visibility for {node_id}"
             );
 
             let peer_history = public_node_peer_history(
@@ -3152,8 +3165,8 @@ mod tests {
             .await;
             assert_eq!(
                 peer_history.status(),
-                StatusCode::NOT_FOUND,
-                "peer history leaked {node_id}"
+                expected,
+                "unexpected peer history visibility for {node_id}"
             );
         }
     }
@@ -3201,7 +3214,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn public_projection_filters_private_and_retired_nodes_and_is_allowlisted() {
+    async fn public_projection_includes_every_active_node_and_is_allowlisted() {
         let (_dir, state) = test_state().await;
         seed_public_data(&state).await;
         let response = public_networks(State(state.clone())).await;
@@ -3214,9 +3227,11 @@ mod tests {
             String::from_utf8_lossy(&bytes)
         );
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        let node = &value[0]["nodes"][0];
-        assert_eq!(value[0]["nodes"].as_array().unwrap().len(), 1);
-        assert_eq!(node["nodeId"], "node-public");
+        let nodes = value[0]["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0]["nodeId"], "node-private");
+        assert_eq!(nodes[1]["nodeId"], "node-public");
+        let node = &nodes[1];
         sqlx::query("INSERT INTO peer_aggregate_5m (node_id, bucket_start, sample_count, total_peers, inbound_count, outbound_count, trusted_count, static_count, consensus_count, known_country_count, unknown_country_count, arrivals, departures, cbft_lag_count, cbft_lag_sum, cbft_lag_min, cbft_lag_max, first_observed_at, last_observed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
             .bind("node-public")
             .bind("2026-08-12T10:05:00Z")
@@ -3297,13 +3312,13 @@ mod tests {
             );
         }
 
-        let private = public_node_detail(
+        let legacy_private = public_node_detail(
             State(state.clone()),
             Path("node-private".to_owned()),
             Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
         )
         .await;
-        assert_eq!(private.status(), StatusCode::NOT_FOUND);
+        assert_eq!(legacy_private.status(), StatusCode::OK);
         let retired = public_node_detail(
             State(state),
             Path("node-retired".to_owned()),
@@ -3714,7 +3729,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn public_network_detail_excludes_private_and_retired_nodes() {
+    async fn public_network_detail_includes_every_active_node_and_excludes_retired_nodes() {
         let (_dir, state) = test_state().await;
         seed_public_data(&state).await;
         let response = public_network(
@@ -3725,8 +3740,10 @@ mod tests {
         .await;
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(value["nodes"].as_array().unwrap().len(), 1);
-        assert_eq!(value["nodes"][0]["nodeId"], "node-public");
+        let nodes = value["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0]["nodeId"], "node-private");
+        assert_eq!(nodes[1]["nodeId"], "node-public");
     }
 
     async fn seed_public_analytics_row(state: &AppState, validator_id: &str, node_id: &str) {
@@ -3760,6 +3777,15 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
+        sqlx::query("INSERT INTO validator_ranking_history (history_id, validator_id, previous_rank, current_rank, observed_at, provider_timestamp, observation_key) VALUES (?, ?, 6, 5, ?, ?, ?)")
+            .bind(format!("rank-{validator_id}"))
+            .bind(validator_id)
+            .bind(&now)
+            .bind(&now)
+            .bind(format!("rank-observation-{validator_id}"))
+            .execute(state.db().pool())
+            .await
+            .unwrap();
         sqlx::query("INSERT INTO validator_daily_snapshots (snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, provider_timestamp, source, observation_key, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count) VALUES (?, ?, 'UTC', '2026-01-01', '2026-01', ?, ?, ?, 'explorer', 'obs-1', 5, '1000', '10', '0.05', 8, 42, 100)")
             .bind(format!("snap-{validator_id}"))
             .bind(validator_id)
@@ -3781,7 +3807,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn public_validator_analytics_is_sanitized_and_visibility_filtered() {
+    async fn public_validator_analytics_is_sanitized_and_active_node_scoped() {
         let (_dir, state) = test_state().await;
         seed_public_data(&state).await;
         seed_public_analytics_row(&state, "validator-public", "node-public").await;
@@ -3807,19 +3833,35 @@ mod tests {
         assert!(value["daily"][0].get("source").is_none());
         assert!(value["monthly"][0].get("updatedAt").is_none());
 
-        for hidden in ["validator-private", "validator-unknown"] {
+        for (validator_id, expected) in [
+            ("validator-private", StatusCode::OK),
+            ("validator-unknown", StatusCode::NOT_FOUND),
+        ] {
             let response = public_validator_analytics(
                 State(state.clone()),
-                Path(hidden.to_owned()),
+                Path(validator_id.to_owned()),
                 Query(ValidatorHistoryQuery { limit: None }),
                 Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
             )
             .await;
             assert_eq!(
                 response.status(),
-                StatusCode::NOT_FOUND,
-                "analytics leaked {hidden}"
+                expected,
+                "unexpected analytics visibility for {validator_id}"
             );
         }
+
+        let history = public_validator_history(
+            State(state),
+            Path("validator-private".to_owned()),
+            Query(ValidatorHistoryQuery { limit: None }),
+            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
+        )
+        .await;
+        assert_eq!(history.status(), StatusCode::OK);
+        let body = to_bytes(history.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["entries"][0]["kind"], "ranking_changed");
+        assert_eq!(value["entries"][0]["linkRoles"][0], "primary");
     }
 }

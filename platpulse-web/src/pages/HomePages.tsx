@@ -55,7 +55,7 @@ export function NetworkPage() {
     </>}
     <h2 className="public-section-heading">PlatON Nodes</h2>
     {network.nodes.length === 0
-      ? <p className="public-empty-state" role="status">Empty: no Active Nodes are published for this Network.</p>
+      ? <p className="public-empty-state" role="status">Empty: this Network has no Active Nodes.</p>
       : <div className="node-grid">{network.nodes.map((node) => <NodeCard node={node} key={node.nodeId} />)}</div>}
   </section>
 }

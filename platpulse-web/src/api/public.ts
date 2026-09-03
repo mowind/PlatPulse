@@ -86,7 +86,7 @@ export async function fetchNetworks(signal?: AbortSignal, generation?: number): 
   const context = contextOf(signal, generation)
   return requestGenerated(
     () => publicNetworks({ signal: context.signal, headers: headersOf(context) }),
-    'Unable to load published Nodes',
+    'Unable to load Active Nodes',
   )
 }
 

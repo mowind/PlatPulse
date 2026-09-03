@@ -1356,13 +1356,13 @@ pub async fn list_link_context_at(
     db: &ServerDatabase,
     validator_id: &str,
     observed_at: &str,
-    public_only: bool,
+    active_only: bool,
 ) -> Result<Vec<ValidatorLinkContextRecord>, ValidatorError> {
     let mut sql = String::from(
         "SELECT l.link_id, l.node_id, l.role, l.valid_from, l.valid_until FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = ? AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?)",
     );
-    if public_only {
-        sql.push_str(" AND n.visibility = 'public' AND n.lifecycle = 'active'");
+    if active_only {
+        sql.push_str(" AND n.lifecycle = 'active'");
     }
     sql.push_str(" ORDER BY l.node_id, l.link_id");
     Ok(sqlx::query_as::<_, ValidatorLinkContextRecord>(&sql)

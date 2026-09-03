@@ -18,7 +18,7 @@ test.describe('Authenticated shell', () => {
 
   test('Home dashboard exposes the public scan controls at every fixed viewport', async ({ page }) => {
     await loginAs(page)
-    await expect(page.getByText('Published Nodes', { exact: true })).toBeVisible()
+    await expect(page.getByText('Active Nodes', { exact: true })).toBeVisible()
     await expect(page.getByText('Healthy Nodes', { exact: true })).toBeVisible()
     await expect(page.getByText('Attention', { exact: true })).toBeVisible()
     await expect(page.getByText('Networks', { exact: true })).toBeVisible()

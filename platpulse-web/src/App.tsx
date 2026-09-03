@@ -180,7 +180,7 @@ function HomeIndex() {
       error={networks.error
         ? networks.data
           ? 'Home refresh failed; showing the last successful Home data.'
-          : 'Unable to load published Nodes'
+          : 'Unable to load Active Nodes'
         : null}
       hasLastGood={networks.data !== undefined}
       loading={networks.isPending}

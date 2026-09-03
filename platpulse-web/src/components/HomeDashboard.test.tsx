@@ -46,7 +46,7 @@ describe('Public Home dashboard', () => {
   it('summarizes Server-owned Nodes and preserves authoritative zero peer count', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
-    expect(screen.getByText('Published Nodes').nextElementSibling?.textContent).toBe('2')
+    expect(screen.getByText('Active Nodes').nextElementSibling?.textContent).toBe('2')
     expect(screen.getByText('Healthy Nodes').nextElementSibling?.textContent).toBe('1')
     expect(screen.getByText('Attention').nextElementSibling?.textContent).toBe('1')
     const alphaCard = cardOf(nodeCardLink('Alpha'))
@@ -362,7 +362,7 @@ describe('Public Home dashboard', () => {
   it('keeps transport and authorization state explicit', () => {
     render(<BrowserRouter><HomeDashboard networks={[]} realtimeStatus="disconnected" online={false} resetting={false} error={null} loading={false} /></BrowserRouter>)
     expect(screen.getByText('You are offline')).toBeTruthy()
-    expect(screen.getByText('No published Nodes in this view.')).toBeTruthy()
+    expect(screen.getByText('No Active Nodes in this view.')).toBeTruthy()
   })
 
   it('sorts an unhealthy Server Health Summary ahead of healthy Nodes', () => {
@@ -378,13 +378,13 @@ describe('Public Home dashboard', () => {
   it('does not render loading as fabricated zero-valued summary data', () => {
     render(<BrowserRouter><HomeDashboard networks={[]} realtimeStatus="connecting" online loading resetting={false} error={null} /></BrowserRouter>)
     expect(screen.getAllByText('—')).toHaveLength(4)
-    expect(screen.queryByText('No published Nodes in this view.')).toBeNull()
+    expect(screen.queryByText('No Active Nodes in this view.')).toBeNull()
   })
 
   it('preserves an authoritative empty projection when a refresh fails', () => {
-    render(<BrowserRouter><HomeDashboard networks={[]} realtimeStatus="connected" online resetting={false} error="Unable to load published Nodes" hasLastGood loading={false} /></BrowserRouter>)
-    expect(screen.getByText('Unable to load published Nodes')).toBeTruthy()
-    expect(screen.getByText('No published Nodes in this view.')).toBeTruthy()
-    expect(screen.getByText('Published Nodes').nextElementSibling?.textContent).toBe('0')
+    render(<BrowserRouter><HomeDashboard networks={[]} realtimeStatus="connected" online resetting={false} error="Unable to load Active Nodes" hasLastGood loading={false} /></BrowserRouter>)
+    expect(screen.getByText('Unable to load Active Nodes')).toBeTruthy()
+    expect(screen.getByText('No Active Nodes in this view.')).toBeTruthy()
+    expect(screen.getByText('Active Nodes').nextElementSibling?.textContent).toBe('0')
   })
 })

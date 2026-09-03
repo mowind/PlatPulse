@@ -52,10 +52,10 @@ cargo run -q -p platpulse-server -- init --config "$CONFIG" >/dev/null
 printf '%s\n' "$PASSWORD" | cargo run -q -p platpulse-server -- owner create --config "$CONFIG" --username admin >/dev/null
 printf '%s\n' "$VIEWER_PASSWORD" | cargo run -q -p platpulse-server -- viewer create --config "$CONFIG" --username viewer >/dev/null
 
-# Seed two independent Nodes only for the local Playwright release-candidate
-# run. Node A is explicitly public; Node B remains private and must never
-# appear in the Public projection. This uses the temporary SQLite database
-# created by `init`, not a production bootstrap shortcut.
+# Seed independent Nodes for the local Playwright release-candidate run.
+# Every Active Node appears in the Public Projection; Node B retains a legacy
+# private value to guard against accidental per-Node filtering. This uses the
+# temporary SQLite database created by `init`, not a bootstrap shortcut.
 python3 - "$STATE_DIR/platpulse.db" <<'PY'
 import sqlite3
 import sys

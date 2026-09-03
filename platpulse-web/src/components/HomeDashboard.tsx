@@ -62,7 +62,7 @@ export default function HomeDashboard({
         <div className="dashboard-heading-copy">
           <p className="dashboard-kicker">PLATPULSE / NETWORK OBSERVATORY</p>
           <h1 id="home-dashboard-title">Home</h1>
-          <p className="dashboard-subtitle">A live operational view of every published PlatON Node.</p>
+          <p className="dashboard-subtitle">A live operational view of every Active PlatON Node.</p>
         </div>
         <div className="dashboard-connection-state">
           <p className={`dashboard-live dashboard-live-${toneFor(liveMessage)}`} role="status" aria-live="polite">
@@ -76,7 +76,7 @@ export default function HomeDashboard({
       {loading && <p role="status">Starting Home…</p>}
 
       <div className="dashboard-summary-grid" aria-label="Home summary">
-        <SummaryCard label="Published Nodes" value={hasProjection ? records.length : null} tone="indigo" />
+        <SummaryCard label="Active Nodes" value={hasProjection ? records.length : null} tone="indigo" />
         <SummaryCard label="Healthy Nodes" value={healthyCount} tone="green" />
         <SummaryCard label="Attention" value={healthyCount === null ? null : records.length - healthyCount} tone={healthyCount !== null && records.length === healthyCount ? 'green' : 'red'} />
         <SummaryCard label="Networks" value={hasProjection ? networks.length : null} tone="violet" />
@@ -101,7 +101,7 @@ export default function HomeDashboard({
       {loading || (error && !hasLastGood)
         ? null
         : visibleRecords.length === 0
-        ? <div className="dashboard-empty" role="status" aria-label="Empty: no published Nodes in this view."><strong>No published Nodes in this view.</strong><span>Private and retired Nodes are not listed on Home.</span></div>
+        ? <div className="dashboard-empty" role="status" aria-label="Empty: no Active Nodes in this view."><strong>No Active Nodes in this view.</strong><span>Retired Nodes are not listed on Home.</span></div>
         : <div className="dashboard-node-grid" aria-label="Active Nodes">{visibleRecords.map(({ network, node }) => <HomeNodeCard key={node.nodeId} network={network} node={node} />)}</div>}
     </section>
   )

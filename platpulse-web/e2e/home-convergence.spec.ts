@@ -80,9 +80,9 @@ test.describe('Converged Public Home (issue #102)', () => {
 
     // Summary cards: marker, title, number only, approximately 6rem high.
     const summaryFacts: Array<{ label: string; value: string }> = [
-      { label: 'Published Nodes', value: '7' },
+      { label: 'Active Nodes', value: '12' },
       { label: 'Healthy Nodes', value: '5' },
-      { label: 'Attention', value: '2' },
+      { label: 'Attention', value: '7' },
       { label: 'Networks', value: '2' },
     ]
     for (const { label, value } of summaryFacts) {
@@ -184,6 +184,10 @@ test.describe('Converged Public Home (issue #102)', () => {
 
     await page.getByRole('button', { name: 'All Networks', exact: true }).click()
     await expect(nodeCard(page, /Node A/)).toBeVisible()
+    // An authenticated Owner sees every Active Node on Home. The legacy
+    // per-Node visibility value must not hide Node B from the site-wide Home
+    // projection (Site Access Mode controls access to Home as a whole).
+    await expect(nodeCard(page, /Node B \(private\)/)).toBeVisible()
 
     // Current Head sorting descends by the projected HEAD; never-observed
     // Nodes (Unknown) sort last instead of fabricating zero.

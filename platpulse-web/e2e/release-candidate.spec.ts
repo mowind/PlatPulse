@@ -8,10 +8,10 @@ import {
 } from './helpers'
 
 test.describe('Phase 1 release-candidate vertical slice', () => {
-  test('public projection isolates a private Node and Node detail works at fixed viewports', async ({ page }) => {
+  test('site-wide projection includes every Active Node and Node detail works at fixed viewports', async ({ page }) => {
     await loginAs(page)
     await expect(page.getByRole('link', { name: /Node A/ })).toBeVisible()
-    await expect(page.getByText('Node B (private)', { exact: true })).toHaveCount(0)
+    await expect(page.getByRole('link', { name: /Node B \(private\)/ })).toBeVisible()
 
     await page.getByRole('link', { name: /Node A/ }).click()
     await expect(page).toHaveURL(/\/nodes\/0195f2a1-0014-4014-8014-000000000014$/)
@@ -37,11 +37,11 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await setPageZoom(page, 2)
     await expectNoHorizontalOverflow(page)
 
-    // A guessed private Node URL must be indistinguishable from a missing
-    // public representation; no private label or diagnostics may leak.
-    await page.goto('/nodes/0195f2a1-0015-4015-8015-000000000015')
+    // A guessed retired Node URL must be indistinguishable from a missing
+    // public representation; no retired label or diagnostics may leak.
+    await page.goto('/nodes/0195f2a1-0017-4017-8017-000000000017')
     await expect(page.getByRole('alert')).toContainText('resource not found')
-    await expect(page.getByText('Node B (private)', { exact: true })).toHaveCount(0)
+    await expect(page.getByText('Node D (retired)', { exact: true })).toHaveCount(0)
   })
 
   test('Public Peer insight exposes bounded summaries without peer identities', async ({ page }) => {

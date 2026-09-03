@@ -286,6 +286,9 @@ test.describe('Anonymous Home (Guest) toggle', () => {
       await guestPage2.goto('/')
       await expect(guestPage2.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible()
       await expect(guestPage2.getByText('Node A')).toBeVisible()
+      // Site Access Mode gates Home as a whole; the legacy private value on
+      // an Active Node must not create a second visibility layer.
+      await expect(guestPage2.getByText('Node B (private)')).toBeVisible()
       await expect(guestPage2.getByText('Current', { exact: true }).first()).toBeVisible({ timeout: 15_000 })
       await expectNoHorizontalOverflow(guestPage2)
       // Guests never see Admin or Sign out.
