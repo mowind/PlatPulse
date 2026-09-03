@@ -197,7 +197,7 @@ function NodePanel({
   return (
     <article className="panel">
       <div className="panel-heading">
-        <h2>Node health</h2>
+        <h2>Node Health Summary</h2>
         {nodes.length > 0 && <span className="panel-count">{nodes.length}</span>}
       </div>
       {!nodeQuery.data && nodeQuery.isPending && (
@@ -451,7 +451,7 @@ function ComponentRow({
           <span className="component-error"> {errorMessage}</span>
         )}
         {detail && <span className="muted"> {detail}</span>}
-        {observedAt && <small className="muted"> · {formatObservedAt(observedAt)}</small>}
+        <small className="muted"> · {formatObservedAt(observedAt)}</small>
       </dd>
     </div>
   )
@@ -462,7 +462,7 @@ function AgentPanel({ query }: { query: DiagnosticsQuery }) {
   return (
     <article className="panel">
       <div className="panel-heading">
-        <h2>Agents</h2>
+        <h2>Agent inventory</h2>
         {agents.length > 0 && <span className="panel-count">{agents.length}</span>}
       </div>
       {!query.data && query.isPending && (

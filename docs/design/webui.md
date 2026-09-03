@@ -112,6 +112,10 @@ Admin covers configuration and diagnostics; it must not duplicate Home's full No
 
 Every Admin render begins with `Checking access…` when authorization is unresolved. It never flashes data from a previous session.
 
+The Admin shell shares Home's accepted dark operational visual language: an immersive dark canvas, translucent glass surfaces, soft borders, restrained blur, high-contrast primary text, quiet secondary copy, and indigo/violet accents. The Owner-only shell keeps its management information architecture: a persistent desktop sidebar and an accessible tablet/phone drawer with focus entry, Tab trapping, Escape and scrim close, body scroll lock, and focus restoration. Header and navigation controls remain at least 44×44 CSS pixels.
+
+The first shared-theme proof is `PAGE-ADMIN-OVERVIEW` at `/admin`. It presents the Server-owned attention queue, Node Health Summary, and Agent inventory as independent Admin query/realtime surfaces. Starting, Empty, Error, Stale, last-good, Unknown, never-observed, Disabled, and Unsupported states remain explicit in text plus an icon/shape or equivalent explanation; no state is represented only by color or converted to a zero, false, or Healthy value.
+
 ### 3.3 Authorization generation
 
 Authorization changes create a new access generation:
@@ -565,6 +569,7 @@ A page is ready for production implementation only when:
 | MVP scope convergence: Komari-like Home/Admin separation, no Admin duplicate Node Detail, Server-only bounded Block History, no History Gap/Backfill, report-level Receipt, Peer Count only | Confirmed design review; see `docs/design/platpulse.md` |
 | Site-level access mode (Komari-like), Owner-only principals, per-Node visibility removed | Confirmed design review; see `docs/design/platpulse.md` |
 | Accepted Home / Node Detail visual direction, responsive baseline, public-data contract, and production test seam | Issue #75 and accepted branch `prototype/home-node-detail` |
+| Unified dark Admin shell and Overview shared-theme foundation | Issue #110 |
 | Prototype cleanup and production-only route boundary | Issue #89 |
 
 Changes to a settled contract require a new decision record and must update the affected `PAGE-*`, `PATTERN-*`, and `SCN-*` references together. OpenAPI or Server policy changes do not silently change WebUI semantics; they require an explicit design review when the user-visible contract changes.

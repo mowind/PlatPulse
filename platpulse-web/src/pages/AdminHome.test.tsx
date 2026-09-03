@@ -173,7 +173,7 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     expect(screen.getByText('Critical')).toBeTruthy()
 
     // Node Health Summary with its own table row per Node.
-    expect(screen.getByRole('heading', { level: 2, name: 'Node health' })).toBeTruthy()
+    expect(screen.getByRole('heading', { level: 2, name: 'Node Health Summary' })).toBeTruthy()
     const nodeRow = await screen.findByRole('row', { name: /Node A/ })
     expect(nodeRow.textContent).toContain('healthy')
     expect(nodeRow.textContent).toContain('Current')
@@ -184,7 +184,7 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     expect(screen.getByText('12.0 GiB')).toBeTruthy()
 
     // Agent inventory stays an independent panel (one Agent, its own card).
-    expect(screen.getByRole('heading', { level: 2, name: 'Agents' })).toBeTruthy()
+    expect(screen.getByRole('heading', { level: 2, name: 'Agent inventory' })).toBeTruthy()
     expect(screen.getByRole('heading', { level: 3, name: 'agent-1' })).toBeTruthy()
 
     // Geo database status is absent from the Overview page (issue #93).
@@ -201,6 +201,59 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
 
     // The browser never asks the Server for Geo status on this page.
     expectNoGeoRequests(fetchMock)
+  })
+
+  it('keeps stale, unknown, never-observed, disabled, unsupported, and last-good states distinct', async () => {
+    const diagnosticNode = {
+      ...AGENT.nodes[0],
+      health: 'unknown',
+      health_reason: 'The Server has not observed enough current components',
+      freshness: 'stale',
+      rpc: undefined,
+      sync: {
+        state: 'error',
+        error_message: 'sync collector timed out',
+        current_block: 120,
+        highest_block: 128,
+        received_at: '2026-08-12T07:55:00Z',
+      },
+      consensus: { state: 'unsupported', received_at: null },
+      peers: undefined,
+      process: { state: 'disabled', received_at: null },
+      data_directory: { state: 'starting', received_at: null },
+    }
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/overview': () => jsonResponse(OVERVIEW, 200),
+      '/api/admin/v1/nodes': () =>
+        jsonResponse(
+          [{ ...NODE, health: 'unknown', freshness: 'stale', current_head: null }],
+          200,
+        ),
+      '/api/admin/v1/agents': () =>
+        jsonResponse([{ ...AGENT, liveness: 'unknown', nodes: [diagnosticNode] }], 200),
+    })
+    await renderAt('/admin')
+
+    const nodeRow = await screen.findByRole('row', { name: /Node A/ })
+    expect(nodeRow.textContent).toContain('unknown')
+    expect(nodeRow.textContent).toContain('Stale')
+    expect(nodeRow.textContent).toContain('Unknown')
+
+    const nodeToggle = screen.getByRole('button', { name: /Node A/ })
+    await act(async () => {
+      nodeToggle.click()
+    })
+    const detailId = nodeToggle.getAttribute('aria-controls')
+    const details = detailId ? document.getElementById(detailId) : null
+    expect(details).toBeTruthy()
+    expect(details?.textContent).toContain('Error')
+    expect(details?.textContent).toContain('sync collector timed out')
+    expect(details?.textContent).toContain('last-good head 120')
+    expect(details?.textContent).toContain('Disabled')
+    expect(details?.textContent).toContain('Unsupported')
+    expect(details?.textContent).toContain('Unknown')
+    expect(details?.textContent).toContain('Never observed')
   })
 
   it('keeps Node health available when Agent diagnostics fail independently', async () => {

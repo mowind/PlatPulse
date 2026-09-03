@@ -356,6 +356,35 @@ describe('App shell with private Home', () => {
     expect(screen.getByRole('link', { name: 'Admin' })).toBeTruthy()
   })
 
+  it('renders the unified Admin brand link and retained header actions', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/public/v1/networks': () => jsonResponse([], 200),
+    })
+
+    render(<App />)
+    await screen.findByRole('region', { name: 'Home' })
+    await goToAdmin()
+    await screen.findByRole('heading', { level: 1, name: 'Overview' })
+
+    try {
+      const brand = screen.getByRole('link', { name: 'PlatPulse' })
+      expect(brand.getAttribute('href')).toBe('/')
+      expect(brand.querySelector('img')?.getAttribute('src')).toContain('platpulse-mark')
+      expect(brand.querySelector('img')?.getAttribute('alt')).toBe('')
+      expect(screen.getByRole('link', { name: 'Home' }).getAttribute('href')).toBe('/')
+      expect(screen.getByRole('button', { name: 'Sign out' })).toBeTruthy()
+      expect(screen.getByRole('link', { name: 'Overview' }).getAttribute('aria-current')).toBe('page')
+    } finally {
+      await act(async () => {
+        window.history.pushState({}, '', '/')
+        window.dispatchEvent(new PopStateEvent('popstate'))
+        await Promise.resolve()
+      })
+      await screen.findByRole('region', { name: 'Home' })
+    }
+  })
+
   it('signs in and returns to Home', async () => {
     mockFetch({
       '/api/public/v1/session': () => errorBody('auth_required'),

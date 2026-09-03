@@ -57,10 +57,8 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
     await openOverview(page)
 
     // Server-provided attention: Node B has an RPC collection failure.
-    await expect(page.locator('.attention-list')).toContainText(
-      'RPC collection failed',
-      { timeout: 15_000 },
-    )
+    const attentionPanel = page.getByRole('heading', { level: 2, name: 'Attention queue' }).locator('xpath=ancestor::article[1]')
+    await expect(attentionPanel).toContainText('RPC collection failed', { timeout: 15_000 })
 
     // Node Health Summary comes from the Server (health + reason), with the
     // fixed freshness vocabulary and last-good values.
@@ -75,7 +73,7 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
     await expect(nodeBRow).toContainText('12842018')
 
     // The Agent dimension stays independent of Node state.
-    await expect(page.getByRole('heading', { level: 2, name: 'Agents' })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 2, name: 'Agent inventory' })).toBeVisible()
     await expect(page.getByRole('heading', { level: 2, name: 'Attention queue' })).toBeVisible()
     // Legacy Geo and per-Node publication content is gone from Overview.
     await expect(page.getByRole('heading', { level: 2, name: 'Geo database' })).toHaveCount(0)
@@ -140,19 +138,19 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
 
   test('overview remains usable at 200% zoom', async ({ page }) => {
     await openOverview(page)
-    await expect(page.locator('.attention-list')).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByRole('heading', { level: 2, name: 'Attention queue' })).toBeVisible({ timeout: 15_000 })
     await expectVisibleInteractiveTargets(page)
 
     await setPageZoom(page, 2)
     await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
-    await expect(page.getByRole('heading', { level: 2, name: 'Node health' })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 2, name: 'Node Health Summary' })).toBeVisible()
     const overflow = await page.evaluate(
       () => document.documentElement.scrollWidth - window.innerWidth,
     )
     expect(overflow).toBeLessThanOrEqual(1)
   })
 
-  test('mobile Admin drawer traps focus and closes on Escape', async ({ page }, testInfo) => {
+  test('mobile Admin drawer locks scroll, traps focus, and closes predictably', async ({ page }, testInfo) => {
     // The drawer is the tablet/mobile navigation; desktop has a sidebar.
     test.skip(testInfo.project.name === 'desktop-1280', 'desktop uses the sidebar')
     await openOverview(page)
@@ -162,7 +160,13 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
     await menu.click()
     const adminNav = page.getByRole('navigation', { name: 'Admin' })
     await expect(adminNav).toBeVisible()
+    await expect.poll(() => page.evaluate(() => document.body.style.overflow)).toBe('hidden')
     // Opening moves focus inside the drawer.
+    await expect(page.getByRole('link', { name: 'Overview' })).toBeFocused()
+    // Reverse Tab wraps from the first retained page group to the last.
+    await page.keyboard.press('Shift+Tab')
+    await expect(page.getByRole('link', { name: 'Audit' })).toBeFocused()
+    await page.keyboard.press('Tab')
     await expect(page.getByRole('link', { name: 'Overview' })).toBeFocused()
     // Tab stays inside the drawer and wraps at the last item (issue #92:
     // the MVP navigation holds exactly the eight retained page groups).
@@ -183,10 +187,33 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
     for (const deferred of ['Validators', 'Alert Rules', 'Operations', 'Data', 'People']) {
       await expect(page.getByRole('link', { name: deferred })).toHaveCount(0)
     }
-// Escape closes the drawer and restores focus to the opener.
+    // Escape closes the drawer, unlocks the body, and restores focus.
     await page.keyboard.press('Escape')
     await expect(menu).toBeFocused()
     await expect(adminNav).not.toBeInViewport()
+    await expect.poll(() => page.evaluate(() => document.body.style.overflow)).toBe('')
+
+    // Clicking the visible overlay outside the drawer follows the same close path.
+    await menu.click()
+    await expect(adminNav).toBeVisible()
+    const viewport = page.viewportSize()
+    if (!viewport) throw new Error('fixed Playwright viewport is required')
+    await page.mouse.click(viewport.width - 4, Math.floor(viewport.height / 2))
+    await expect(adminNav).not.toBeInViewport()
+    await expect(menu).toBeFocused()
+    await expect.poll(() => page.evaluate(() => document.body.style.overflow)).toBe('')
+    await expectNoHorizontalOverflow(page)
+  })
+
+  test('desktop Admin sidebar stays visible with the current route identified', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'desktop-1280', 'desktop-only sidebar contract')
+    await openOverview(page)
+
+    await expect(page.getByRole('button', { name: 'Menu' })).toBeHidden()
+    const adminNav = page.getByRole('navigation', { name: 'Admin' })
+    await expect(adminNav).toBeVisible()
+    await expect(adminNav.getByRole('link', { name: 'Overview' })).toHaveAttribute('aria-current', 'page')
+    await expect(page.getByRole('heading', { level: 2, name: 'Node Health Summary' })).toBeVisible()
     await expectNoHorizontalOverflow(page)
   })
 })

@@ -12,6 +12,7 @@ import {
   type RealtimeState,
 } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
+import platpulseMark from '../../../assets/platpulse-mark.png'
 
 /**
  * Admin shell: Owner-only management layout with its own query cache and
@@ -123,7 +124,8 @@ export default function AdminLayout() {
     <div className="app-shell admin-shell">
       <header className="app-header admin-header">
         <Link to="/" className="app-brand" aria-label="PlatPulse">
-          PlatPulse
+          <img className="app-brand-logo" src={platpulseMark} alt="" />
+          <span>PlatPulse</span>
         </Link>
         <nav className="app-nav" aria-label="Global">
           <NavLink to="/">Home</NavLink>
