@@ -282,6 +282,10 @@ describe('Public Home dashboard', () => {
     expect(screen.queryByText('Server-owned health')).toBeNull()
     expect(screen.queryByText('Unknown and degraded included')).toBeNull()
     expect(screen.queryByText('Published Network groups')).toBeNull()
+    expect(screen.queryByText('PLATPULSE / NETWORK OBSERVATORY')).toBeNull()
+    expect(screen.queryByText('A live operational view of every Active PlatON Node.')).toBeNull()
+    expect(screen.queryByText('Current', { exact: true })).toBeNull()
+    expect(screen.queryByRole('heading', { level: 1, name: 'Home' })).toBeNull()
     const cards = screen.getAllByRole('article').filter((card) => card.className.includes('dashboard-summary-card'))
     expect(cards).toHaveLength(4)
     for (const card of cards) {

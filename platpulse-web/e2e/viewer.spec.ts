@@ -12,7 +12,7 @@ test.describe('Viewer role boundary', () => {
     await loginAs(page, E2E_VIEWER_USERNAME, E2E_VIEWER_PASSWORD)
 
     await expect(
-      page.getByRole('heading', { level: 1, name: 'Home' }),
+      page.getByRole('region', { name: 'Home' }),
     ).toBeVisible()
     await expect(page.getByRole('link', { name: 'Admin', exact: true })).toHaveCount(0)
     await expectNoHorizontalOverflow(page)
@@ -28,7 +28,7 @@ test.describe('Viewer role boundary', () => {
 
     // The Home shell stays reachable from the blocked panel.
     await page.goto('/')
-    await expect(page.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()
   })
 
   test('the Admin API refuses a Viewer session with a stable 403', async ({ page }) => {
@@ -53,6 +53,6 @@ test.describe('Viewer role boundary', () => {
     await expect(page.getByRole('button', { name: 'All Networks' })).toBeFocused()
     await expectFocusedElementHasVisibleFocus(page)
     await page.keyboard.press('Enter')
-    await expect(page.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()
   })
 })

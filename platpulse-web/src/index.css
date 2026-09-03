@@ -2632,29 +2632,24 @@ button {
 }
 
 .home-shell .app-brand {
+  min-width: 44px;
+  justify-content: center;
+  gap: 0.65rem;
   color: #fff;
   letter-spacing: -0.035em;
 }
 
-.home-shell .app-brand::before {
-  color: #fff;
-  background:
-    linear-gradient(145deg, rgba(255, 255, 255, 0.2), transparent 45%),
-    linear-gradient(135deg, #8a75ff, #5d47cf);
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  border-radius: 11px 11px 11px 4px;
-  box-shadow: 0 0.55rem 1.5rem rgba(94, 69, 205, 0.28);
+.app-brand-logo {
+  display: block;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  object-fit: contain;
 }
 
+.home-shell .app-brand::before,
 .home-shell .app-brand::after {
-  content: 'NODE OBSERVATORY';
-  margin-left: 0.35rem;
-  padding-left: 1rem;
-  color: rgba(247, 247, 251, 0.38);
-  border-left: 1px solid rgba(255, 255, 255, 0.14);
-  font-size: 0.62rem;
-  font-weight: 750;
-  letter-spacing: 0.14em;
+  display: none;
 }
 
 .home-shell .app-main {
@@ -2686,6 +2681,7 @@ button {
 
 .home-dashboard {
   max-width: 82rem;
+  padding-top: clamp(1.25rem, 3vw, 2.5rem);
 }
 
 .dashboard-heading {
@@ -3067,7 +3063,6 @@ button {
 
 @media (max-width: 48rem) {
   .dashboard-node-grid { grid-template-columns: 1fr; }
-  .home-shell .app-brand::after { display: none; }
   .dashboard-heading { align-items: flex-start; flex-direction: column; margin-top: 1.7rem; }
   .dashboard-connection-state { justify-content: flex-start; }
   .dashboard-toolbar { grid-template-columns: 1fr auto; }

@@ -159,7 +159,7 @@ test.describe('SCN-ACCESS-ROLE-CHANGE', () => {
     const opsContext = await browser.newContext()
     const opsPage = await opsContext.newPage()
     await loginAs(opsPage, OPS_USERNAME, OPS_PASSWORD)
-    await expect(opsPage.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible()
+    await expect(opsPage.getByRole('region', { name: 'Home' })).toBeVisible()
     await opsPage.goto('/admin')
     await expect(opsPage.getByRole('heading', { level: 1, name: 'Owner access required' })).toBeVisible()
 
@@ -284,12 +284,12 @@ test.describe('Anonymous Home (Guest) toggle', () => {
       const guest2 = await browser.newContext()
       const guestPage2 = await guest2.newPage()
       await guestPage2.goto('/')
-      await expect(guestPage2.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible()
+      await expect(guestPage2.getByRole('region', { name: 'Home' })).toBeVisible()
       await expect(guestPage2.getByText('Node A')).toBeVisible()
       // Site Access Mode gates Home as a whole; the legacy private value on
       // an Active Node must not create a second visibility layer.
       await expect(guestPage2.getByText('Node B (private)')).toBeVisible()
-      await expect(guestPage2.getByText('Current', { exact: true }).first()).toBeVisible({ timeout: 15_000 })
+      await expect(guestPage2.getByText('Active Nodes', { exact: true })).toBeVisible({ timeout: 15_000 })
       await expectNoHorizontalOverflow(guestPage2)
       // Guests never see Admin or Sign out.
       await expect(guestPage2.getByRole('link', { name: 'Admin' })).toHaveCount(0)
@@ -303,7 +303,7 @@ test.describe('Anonymous Home (Guest) toggle', () => {
       await expect(guestPage2.getByRole('navigation', { name: 'Admin' })).toHaveCount(0)
       await expectNoHorizontalOverflow(guestPage2)
       await guestPage2.goto('/')
-      await expect(guestPage2.getByText('Current', { exact: true }).first()).toBeVisible({ timeout: 15_000 })
+      await expect(guestPage2.getByText('Active Nodes', { exact: true })).toBeVisible({ timeout: 15_000 })
 
       // Disabling closes the open Guest stream: the anonymous tab lands on
       // the login page without flashing prior data.

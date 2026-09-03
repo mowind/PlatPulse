@@ -38,7 +38,7 @@ test.describe('Private Home login', () => {
 
     await page.getByRole('link', { name: 'Home', exact: true }).click()
     await expect(page).toHaveURL(/\/$/)
-    await expect(page.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()
 
     await page.getByRole('link', { name: 'Admin', exact: true }).click()
     await page.getByRole('button', { name: 'Sign out' }).click()
@@ -62,7 +62,7 @@ test.describe('Private Home login', () => {
     await page.getByLabel('Password').fill(E2E_PASSWORD)
     await page.keyboard.press('Enter')
     await expect(page).toHaveURL(/\/$/)
-    await expect(page.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()
   })
 
   test('login, Home, and Admin stay operable at 200% zoom', async ({ page }) => {
@@ -77,7 +77,7 @@ test.describe('Private Home login', () => {
     await page.getByLabel('Username').fill('admin')
     await page.getByLabel('Password').fill(E2E_PASSWORD)
     await page.getByRole('button', { name: 'Sign in' }).click()
-    await expect(page.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()
     await expectNoHorizontalOverflow(page)
 
     await page.getByRole('link', { name: 'Admin', exact: true }).click()

@@ -148,7 +148,7 @@ test.describe('SCN-HOME-RESPONSIVE-ACCESSIBILITY / live refresh transport state'
   test('SCN-HOME-VALIDATOR-ACTIVITY-REFRESH refetches Home through one layout-owned stream', async ({ page }) => {
     await installControlledRealtime(page)
     await loginAs(page)
-    await expect(page.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()
     // Wait until the seeded projection is rendered before installing the
     // REST spy so only invalidation-driven refetches are counted.
     await expect(page.getByRole('link', { name: /Node H/ })).toBeVisible({ timeout: 15_000 })

@@ -39,7 +39,7 @@ async function nodeCardNames(page: Page): Promise<string[]> {
 test.describe('Converged Public Home (issue #102)', () => {
   test('final card header, both metric rows, summary shell, and viewport grid', async ({ page }, testInfo) => {
     await loginAs(page)
-    await expect(page.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()
 
     const hCard = nodeCard(page, /Node H/)
     await expect(hCard).toBeVisible({ timeout: 15_000 })
@@ -235,7 +235,7 @@ test.describe('Converged Public Home (issue #102)', () => {
 
     // Home still works for the Owner session after returning.
     await page.getByRole('link', { name: 'PlatPulse', exact: true }).click()
-    await expect(page.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()
     await expectNoHorizontalOverflow(page)
   })
 })

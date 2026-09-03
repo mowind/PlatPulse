@@ -28,7 +28,6 @@ export default function HomeDashboard({
   networks,
   realtimeStatus,
   online,
-  resetting,
   error,
   hasLastGood = true,
   loading,
@@ -52,28 +51,12 @@ export default function HomeDashboard({
 
   const hasProjection = !loading && (error === null || hasLastGood)
   const healthyCount = hasProjection ? records.filter(({ node }) => isHealthy(node.health)).length : null
-  const liveMessage = resetting
-    ? 'Revalidating Home access…'
-    : realtimeStreamLabel(realtimeStatus)
-
   return (
-    <section className="page home-dashboard" aria-labelledby="home-dashboard-title">
-      <header className="dashboard-heading">
-        <div className="dashboard-heading-copy">
-          <p className="dashboard-kicker">PLATPULSE / NETWORK OBSERVATORY</p>
-          <h1 id="home-dashboard-title">Home</h1>
-          <p className="dashboard-subtitle">A live operational view of every Active PlatON Node.</p>
-        </div>
-        <div className="dashboard-connection-state">
-          <p className={`dashboard-live dashboard-live-${toneFor(liveMessage)}`} role="status" aria-live="polite">
-            <span aria-hidden="true" /> {liveMessage}
-          </p>
-          {!online && <p className="dashboard-live dashboard-live-warning" role="status" aria-live="polite"><span aria-hidden="true" /> You are offline</p>}
-        </div>
-      </header>
-
+    <section className="page home-dashboard" aria-label="Home">
       {error && <p className="dashboard-error" role="alert">{error}</p>}
       {loading && <p role="status">Starting Home…</p>}
+      {realtimeStatus !== 'connected' && <p className={`dashboard-live dashboard-live-${toneFor(realtimeStreamLabel(realtimeStatus))}`} role="status" aria-live="polite"><span aria-hidden="true" /> {realtimeStreamLabel(realtimeStatus)}</p>}
+      {!online && <p className="dashboard-live dashboard-live-warning" role="status" aria-live="polite"><span aria-hidden="true" /> You are offline</p>}
 
       <div className="dashboard-summary-grid" aria-label="Home summary">
         <SummaryCard label="Active Nodes" value={hasProjection ? records.length : null} tone="indigo" />

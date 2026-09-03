@@ -27,7 +27,7 @@ export async function loginAs(
   await page.getByLabel('Username').fill(username)
   await page.getByLabel('Password').fill(password)
   await page.getByRole('button', { name: 'Sign in' }).click()
-  await expect(page.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()
 }
 
 /** The document must never overflow the viewport horizontally. */

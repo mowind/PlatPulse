@@ -6,7 +6,11 @@ import {
 } from './helpers'
 
 async function expectShellFitsViewport(page: Page, heading: string) {
-  await expect(page.getByRole('heading', { level: 1, name: heading })).toBeVisible()
+  if (heading === 'Home') {
+    await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()
+  } else {
+    await expect(page.getByRole('heading', { level: 1, name: heading })).toBeVisible()
+  }
   await expectNoHorizontalOverflow(page)
 }
 

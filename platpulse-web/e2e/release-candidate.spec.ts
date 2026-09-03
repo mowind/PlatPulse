@@ -185,7 +185,7 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await page.getByLabel('Username').fill('admin')
     await page.getByLabel('Password').fill(E2E_PASSWORD)
     await page.keyboard.press('Enter')
-    await expect(page.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()
     const reduced = await page.evaluate(() => {
       const style = getComputedStyle(document.documentElement)
       return matchMedia('(prefers-reduced-motion: reduce)').matches && style.scrollBehavior !== 'smooth'

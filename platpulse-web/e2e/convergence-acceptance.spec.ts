@@ -146,7 +146,7 @@ async function openAdminNavLink(page: Page, linkName: string) {
 test.describe('Converged WebUI acceptance (issue #95)', () => {
   test('Public Home → Node Detail → Network works at every fixed viewport', async ({ page }) => {
     await loginAs(page)
-    await expect(page.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()
 
     // Home → Node Detail via the one whole-card link (issue #97).
     await page.getByRole('link', { name: new RegExp(PUBLIC_NODE_NAME) }).click()
@@ -182,13 +182,13 @@ test.describe('Converged WebUI acceptance (issue #95)', () => {
 
     // The flow returns home; the shell stays intact.
     await page.getByRole('link', { name: 'PlatPulse', exact: true }).click()
-    await expect(page.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()
     await expectNoHorizontalOverflow(page)
   })
 
   test('compact Home node cards keep one whole-card navigation target at every fixed viewport', async ({ page }) => {
     await loginAs(page)
-    await expect(page.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()
 
     const cardLink = page.getByRole('link', { name: new RegExp(PUBLIC_NODE_NAME) }).first()
     await expect(cardLink).toBeVisible({ timeout: 15_000 })
@@ -225,14 +225,14 @@ test.describe('Converged WebUI acceptance (issue #95)', () => {
     // The fixture-specific Node A card is still a single whole-card target
     // reachable from Home.
     await page.getByRole('link', { name: 'PlatPulse', exact: true }).click()
-    await expect(page.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()
     const nodeACard = page.getByRole('link', { name: new RegExp(PUBLIC_NODE_NAME) })
     await expect(nodeACard).toHaveCount(1)
     expect(await nodeACard.getAttribute('href')).toBe(`/nodes/${PUBLIC_NODE_ID}`)
 
     // Back Home; the compact shell must not overflow at the fixed viewport.
     await page.getByRole('link', { name: 'PlatPulse', exact: true }).click()
-    await expect(page.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()
     await expectNoHorizontalOverflow(page)
   })
 

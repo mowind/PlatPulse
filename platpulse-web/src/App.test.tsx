@@ -66,7 +66,7 @@ async function signIn(username = 'admin', password = 'correct horse battery') {
   fireEvent.change(screen.getByLabelText('Password'), { target: { value: password } })
   fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
   await waitFor(() =>
-    expect(screen.getByRole('heading', { level: 1, name: 'Home' })).toBeTruthy(),
+    expect(screen.getByRole('region', { name: 'Home' })).toBeTruthy(),
   )
 }
 
@@ -142,7 +142,7 @@ describe('App shell with private Home', () => {
     })
 
     render(<App />)
-    await screen.findByRole('heading', { level: 1, name: 'Home' })
+    await screen.findByRole('region', { name: 'Home' })
     await waitFor(() => expect(FakeEventSource.latest?.url).toBe('/api/public/v1/events?after=0'))
 
     await goToAdmin()
@@ -156,7 +156,7 @@ describe('App shell with private Home', () => {
       window.dispatchEvent(new PopStateEvent('popstate'))
       await Promise.resolve()
     })
-    await screen.findByRole('heading', { level: 1, name: 'Home' })
+    await screen.findByRole('region', { name: 'Home' })
   })
 
   it('renders the production public Node Detail contract and switches tabs by keyboard', async () => {
@@ -256,7 +256,7 @@ describe('App shell with private Home', () => {
     })
 
     render(<App />)
-    await screen.findByRole('heading', { level: 1, name: 'Home' })
+    await screen.findByRole('region', { name: 'Home' })
     expect(screen.queryByRole('navigation', { name: 'Prototype variants' })).toBeNull()
 
     for (const variant of ['signal-stack', 'mission-control', 'evidence-ledger']) {
@@ -265,7 +265,7 @@ describe('App shell with private Home', () => {
         window.dispatchEvent(new PopStateEvent('popstate'))
         await Promise.resolve()
       })
-      expect(screen.getByRole('heading', { level: 1, name: 'Home' })).toBeTruthy()
+      expect(screen.getByRole('region', { name: 'Home' })).toBeTruthy()
       expect(screen.queryByRole('navigation', { name: 'Prototype variants' })).toBeNull()
     }
 
@@ -349,7 +349,10 @@ describe('App shell with private Home', () => {
     mockFetch({ '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200) })
 
     render(<App />)
-    expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeTruthy()
+    expect(await screen.findByRole('region', { name: 'Home' })).toBeTruthy()
+    const brand = screen.getByRole('link', { name: 'PlatPulse' })
+    expect(brand.querySelector('img')?.getAttribute('src')).toContain('platpulse-mark')
+    expect(brand.textContent).toBe('PlatPulse')
     expect(screen.getByRole('link', { name: 'Admin' })).toBeTruthy()
   })
 
@@ -389,7 +392,7 @@ describe('App shell with private Home', () => {
     })
 
     render(<App />)
-    await screen.findByRole('heading', { level: 1, name: 'Home' })
+    await screen.findByRole('region', { name: 'Home' })
     await goToAdmin()
     await screen.findByRole('heading', { level: 1, name: 'Overview' })
     fireEvent.click(screen.getByRole('button', { name: 'Sign out' }))
@@ -416,7 +419,7 @@ describe('App shell with private Home', () => {
     })
 
     render(<App />)
-    await screen.findByRole('heading', { level: 1, name: 'Home' })
+    await screen.findByRole('region', { name: 'Home' })
     await goToAdmin()
     await screen.findByRole('heading', { level: 1, name: 'Overview' })
     fireEvent.click(screen.getByRole('button', { name: 'Sign out' }))
@@ -433,7 +436,7 @@ describe('App shell with private Home', () => {
       window.dispatchEvent(new PopStateEvent('popstate'))
       await Promise.resolve()
     })
-    await screen.findByRole('heading', { level: 1, name: 'Home' })
+    await screen.findByRole('region', { name: 'Home' })
     // Viewers are not offered an Admin entry point; the Server remains the
     // enforcement boundary for anyone who navigates there anyway.
     expect(screen.queryByRole('link', { name: 'Admin' })).toBeNull()
@@ -496,7 +499,7 @@ describe('App shell with private Home', () => {
     render(<App />)
     const homeLink = await screen.findByRole('link', { name: 'Home' })
     fireEvent.click(homeLink)
-    expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeTruthy()
+    expect(await screen.findByRole('region', { name: 'Home' })).toBeTruthy()
     // The whole-card Node link names the Node; the Network stays plain text.
     const nodeCard = await screen.findByRole('link', { name: /Validator A/ })
     expect(nodeCard.getAttribute('href')).toBe('/nodes/node-1')
@@ -760,7 +763,7 @@ describe('App shell with private Home', () => {
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'pw' } })
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
     await waitFor(() =>
-      expect(screen.getByRole('heading', { level: 1, name: 'Home' })).toBeTruthy(),
+      expect(screen.getByRole('region', { name: 'Home' })).toBeTruthy(),
     )
     await goToAdmin()
     await waitFor(() => expect(overviewCalls).toBe(2))
@@ -787,7 +790,7 @@ describe('App shell with private Home', () => {
       window.dispatchEvent(new PopStateEvent('popstate'))
       await Promise.resolve()
     })
-    await screen.findByRole('heading', { level: 1, name: 'Home' })
+    await screen.findByRole('region', { name: 'Home' })
     await goToAdmin()
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Owner access required' }),
@@ -818,7 +821,7 @@ describe('App shell with private Home', () => {
     expect(form).toBeTruthy()
     fireEvent.submit(form!)
     await waitFor(() =>
-      expect(screen.getByRole('heading', { level: 1, name: 'Home' })).toBeTruthy(),
+      expect(screen.getByRole('region', { name: 'Home' })).toBeTruthy(),
     )
   })
 })
@@ -860,7 +863,7 @@ describe('Admin MVP route inventory (issue #92)', () => {
     })
     render(<App />)
     await renderAt('/')
-    await screen.findByRole('heading', { level: 1, name: 'Home' })
+    await screen.findByRole('region', { name: 'Home' })
     await renderAt('/admin')
     await screen.findByRole('heading', { level: 1, name: 'Overview' })
 
@@ -916,7 +919,7 @@ describe('Admin MVP route inventory (issue #92)', () => {
     })
     render(<App />)
     await renderAt('/')
-    await screen.findByRole('heading', { level: 1, name: 'Home' })
+    await screen.findByRole('region', { name: 'Home' })
     await renderAt('/admin')
     await screen.findByRole('heading', { level: 1, name: 'Overview' })
 
@@ -940,7 +943,7 @@ describe('Admin MVP route inventory (issue #92)', () => {
     })
     render(<App />)
     await renderAt('/')
-    await screen.findByRole('heading', { level: 1, name: 'Home' })
+    await screen.findByRole('region', { name: 'Home' })
     await renderAt('/admin')
     await screen.findByRole('heading', { level: 1, name: 'Overview' })
 

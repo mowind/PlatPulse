@@ -12,6 +12,7 @@ import {
   usePublicRealtime,
 } from '../api/public'
 import { ServerStatusNotice } from '../components/ServerStatusNotice'
+import platpulseMark from '../../../assets/platpulse-mark.png'
 
 /**
  * Home shell: reads only the Public Projection. Anonymous Guests may use
@@ -86,7 +87,7 @@ function HomeLayoutContent() {
   return (
     <div className="app-shell home-shell">
       <header className="app-header">
-        <Link to="/" className="app-brand" aria-label="PlatPulse">PlatPulse</Link>
+        <Link to="/" className="app-brand" aria-label="PlatPulse"><img className="app-brand-logo" src={platpulseMark} alt="" /><span>PlatPulse</span></Link>
         {isOwner && <Link to="/admin" className="admin-icon-link" aria-label="Admin" title="Open Admin dashboard"><span aria-hidden="true">⚙</span></Link>}
       </header>
       <main className="app-main">
