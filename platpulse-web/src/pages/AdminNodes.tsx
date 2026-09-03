@@ -206,16 +206,16 @@ export default function AdminNodesList() {
             </caption>
             <thead>
               <tr>
-                <th scope="col">
+                <th scope="col" aria-sort={sort === 'name' ? 'ascending' : 'none'}>
                   <SortButton label="Node" column="name" sort={sort} onSort={setSort} />
                 </th>
-                <th scope="col">
+                <th scope="col" aria-sort={sort === 'network' ? 'ascending' : 'none'}>
                   <SortButton label="Network" column="network" sort={sort} onSort={setSort} />
                 </th>
-                <th scope="col">
+                <th scope="col" aria-sort={sort === 'health' ? 'ascending' : 'none'}>
                   <SortButton label="Health" column="health" sort={sort} onSort={setSort} />
                 </th>
-                <th scope="col">
+                <th scope="col" aria-sort={sort === 'freshness' ? 'ascending' : 'none'}>
                   <SortButton label="Freshness" column="freshness" sort={sort} onSort={setSort} />
                 </th>
                 <th scope="col">Identity</th>
@@ -257,7 +257,7 @@ function SortButton({
     <button
       type="button"
       className="sort-button"
-      aria-sort={active ? (column === 'name' || column === 'network' ? 'ascending' : 'ascending') : 'none'}
+      aria-pressed={active}
       onClick={() => onSort(column)}
     >
       {label} <span aria-hidden="true">{active ? '↑' : '⇅'}</span>

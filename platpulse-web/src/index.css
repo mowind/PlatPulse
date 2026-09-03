@@ -3912,6 +3912,139 @@ button {
   }
 }
 
+/* Remaining Admin routes use the same glass treatment as Overview. Keep
+ * tables readable on wide screens, then let the existing priority-card rules
+ * take over on narrow screens without forcing page-level horizontal scroll. */
+.admin-shell .summary-strip {
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.045);
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow: 0 1rem 2.5rem rgba(0, 0, 0, 0.16);
+}
+
+.admin-shell .summary-strip dt {
+  color: var(--muted);
+}
+
+.admin-shell .summary-strip dd {
+  color: #fff;
+}
+
+.admin-shell .success-panel,
+.admin-shell .secret-panel {
+  margin-top: 1rem;
+  padding: clamp(1rem, 2.5vw, 1.4rem);
+  border: 1px solid rgba(101, 221, 165, 0.2);
+  border-radius: 1.15rem;
+  background: linear-gradient(145deg, rgba(64, 211, 142, 0.09), rgba(14, 14, 23, 0.76));
+  box-shadow: 0 1.2rem 3.2rem rgba(0, 0, 0, 0.2);
+}
+
+.admin-shell .warning-copy,
+.admin-shell .secret-warning {
+  color: #f0c76e;
+  overflow-wrap: anywhere;
+}
+
+.admin-shell .progress-track {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.admin-shell .node-list li {
+  border-color: rgba(255, 255, 255, 0.075);
+}
+
+.admin-shell .confirm-copy,
+.admin-shell .session-others-actions,
+.admin-shell .credential-actions {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.admin-shell .table-wrap {
+  min-width: 0;
+  margin-top: 1rem;
+  overflow-x: auto;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 1rem;
+  background: rgba(6, 7, 12, 0.32);
+}
+
+.admin-shell .filter-bar,
+.admin-shell .audit-filters {
+  margin-block: 1rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.admin-shell .filter-bar label,
+.admin-shell .audit-filters label {
+  color: var(--muted);
+}
+
+.admin-shell .sort-button {
+  color: rgba(247, 247, 251, 0.72);
+  background: rgba(255, 255, 255, 0.035);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.admin-shell .sort-button[aria-pressed='true'] {
+  color: #fff;
+  background: rgba(151, 124, 255, 0.15);
+  border-color: rgba(190, 172, 255, 0.28);
+}
+
+.admin-shell .page a,
+.admin-shell button {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.admin-shell .page a {
+  display: inline-flex;
+  align-items: center;
+}
+
+.admin-shell .detail-list dd,
+.admin-shell .component-row dd,
+.admin-shell .audit-details pre,
+.admin-shell .agent-link,
+.admin-shell .network-key,
+.admin-shell .node-id {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.admin-shell code {
+  color: #e1d8ff;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.35rem;
+  padding: 0.08rem 0.28rem;
+}
+
+.admin-shell .pagination,
+.admin-shell .page-actions,
+.admin-shell .action-row {
+  flex-wrap: wrap;
+}
+
+@media (max-width: 40rem) {
+  .admin-shell .table-wrap {
+    overflow-x: visible;
+    border: 0;
+    background: transparent;
+  }
+
+  .admin-shell .filter-bar,
+  .admin-shell .audit-filters {
+    padding: 0.8rem;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .admin-shell .admin-nav,
   .admin-shell .admin-nav-open,

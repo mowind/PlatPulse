@@ -106,11 +106,6 @@ export default function AdminAgentsList() {
         and diagnostics stay separate dimensions. Agent Offline is not Node
         Retired.
       </p>
-      <div className="page-actions">
-        <Link className="primary-action" to="/admin/agents/enroll">
-          Enroll a new Agent
-        </Link>
-      </div>
       {!query.data && query.isPending && (
         <p className="panel-state" role="status">
           <StatusBadge status="Starting" tone="neutral" /> Loading Agent
@@ -134,10 +129,8 @@ export default function AdminAgentsList() {
       )}
       {query.data && agents.length === 0 && (
         <p className="panel-state">
-          <StatusBadge status="Empty" tone="ok" /> No Agents enrolled yet.{' '}
-          <Link className="text-action" to="/admin/agents/enroll">
-            Enroll the first Agent
-          </Link>
+          <StatusBadge status="Empty" tone="ok" /> No Agents enrolled yet.
+          Enrollment is not available in this Admin surface.
         </p>
       )}
       {query.data && agents.length > 0 && (
@@ -200,7 +193,13 @@ function AgentListRow({ agent }: { agent: AgentDiagnostic }) {
       </td>
       <td data-label="Boot / shutdown">
         <span>
-          {agent.boot_status} {agent.active_boot_id ? `· ${shortId(agent.active_boot_id)}` : ''}
+          {agent.boot_status}{' '}
+          {agent.active_boot_id && (
+            <span title={`Full boot ID: ${agent.active_boot_id}`}>
+              · <span aria-hidden="true">{shortId(agent.active_boot_id)}</span>
+              <span className="sr-only">Full active boot ID: {agent.active_boot_id}</span>
+            </span>
+          )}
         </span>
         <small className="muted">{agent.shutdown_state}</small>
       </td>
@@ -273,14 +272,6 @@ export function AdminAgentDetail() {
               successful Agent values.
             </p>
           )}
-          <div className="page-actions">
-            <Link className="primary-action" to={`/admin/agents/${agent.data.agent_id}/rotate`}>
-              Rotate credential
-            </Link>
-            <Link className="secondary-action" to={`/admin/agents/${agent.data.agent_id}/recover`}>
-              Recover agent
-            </Link>
-          </div>
           <IdentityPanel agent={agent.data} />
           <LivenessPanel agent={agent.data} />
           <BootReportPanel agent={agent.data} />
@@ -386,7 +377,10 @@ function InventoryPanel({ nodes }: { nodes: NodeDiagnostic[] }) {
             <li key={node.node_id} className="inventory-item">
               <span>
                 <strong>{node.display_name ?? node.node_id}</strong>{' '}
-                <small className="muted">{shortId(node.node_id)}</small>
+                <small className="muted" title={`Full Node ID: ${node.node_id}`}>
+                  <span aria-hidden="true">{shortId(node.node_id)}</span>
+                  <span className="sr-only">Full Node ID: {node.node_id}</span>
+                </small>
               </span>
               <span className="muted">{node.network_key}</span>
               <span>{node.lifecycle}</span>

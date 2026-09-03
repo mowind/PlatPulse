@@ -242,9 +242,20 @@ test.describe('Converged WebUI acceptance (issue #95)', () => {
     for (const section of MVP_ADMIN_SECTIONS) {
       await openAdminNavLink(page, section.link)
       await expect(page).toHaveURL(section.url)
+      await openAdminNav(page)
       await expect(page.getByRole('heading', { level: 1, name: section.heading })).toBeVisible({
         timeout: 15_000,
       })
+      await expect(page.getByRole('link', { name: 'PlatPulse' })).toBeVisible()
+      await expect(page.getByRole('link', { name: 'Home', exact: true })).toBeVisible()
+      await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible()
+      await expect(page.getByRole('navigation', { name: 'Global' })).toBeVisible()
+      const adminNav = page.getByRole('navigation', { name: 'Admin' })
+      await expect(adminNav.getByRole('link')).toHaveCount(MVP_ADMIN_SECTIONS.length)
+      await expect(adminNav.getByRole('link', { name: section.link, exact: true })).toHaveAttribute(
+        'aria-current',
+        'page',
+      )
       if (section.primaryButton) {
         await expect(page.getByRole('button', { name: section.primaryButton })).toBeVisible()
       }
@@ -252,6 +263,11 @@ test.describe('Converged WebUI acceptance (issue #95)', () => {
         await expect(page.getByRole('heading', { level: 2, name: section.primaryHeading })).toBeVisible()
       }
       await expectNoHorizontalOverflow(page)
+      if (test.info().project.name.includes('phone') || test.info().project.name.includes('tablet')) {
+        await expectVisibleInteractiveTargets(page)
+        const menu = page.getByRole('button', { name: 'Menu' })
+        if ((await menu.getAttribute('aria-expanded')) === 'true') await menu.click()
+      }
     }
 
     // Touch drawer keyboard cycle (design §10.1): Enter opens the drawer and

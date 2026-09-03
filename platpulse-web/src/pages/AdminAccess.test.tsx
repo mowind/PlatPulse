@@ -216,7 +216,10 @@ describe('PAGE-ACCESS-AUDIT (Audit review)', () => {
     expect(list()).toContain('session_revoked')
     expect(screen.getByRole('link', { name: 'viewer' })).toBeTruthy()
 
-    fireEvent.click(screen.getAllByRole('button', { name: 'Show details' })[0])
+    const disclosure = screen.getAllByRole('button', { name: 'Show details' })[0]
+    fireEvent.click(disclosure)
+    expect(disclosure.getAttribute('aria-controls')).toMatch(/^audit-details-/)
+    expect(await screen.findByRole('region', { name: /Redacted details for Audit event/ })).toBeTruthy()
     expect(await screen.findByText('username')).toBeTruthy()
     // Redaction: the listing and its details carry no password, token, or
     // credential material (filter labels may name the kinds, so the list
@@ -259,6 +262,9 @@ describe('PAGE-ACCESS-AUDIT (Audit review)', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Load older events' }))
     await waitFor(() => expect(queriedBefore).toBe('6'))
     expect(await screen.findByText('ghost')).toBeTruthy()
+    // Loading an older cursor appends to the current page; it must not erase
+    // the newest events that are still part of this Audit view.
+    expect(list()).toContain('viewer_created')
   })
 })
 

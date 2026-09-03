@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { onlineManager } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
@@ -878,6 +878,7 @@ describe('Admin MVP route inventory (issue #92)', () => {
     ['/admin/nodes/node-1', /node-1/],
     ['/admin/networks', /Networks/],
     ['/admin/networks/mainnet', /mainnet/],
+    ['/admin/networks/no-such-network', /Network unavailable/],
     ['/admin/settings', /Settings/],
     ['/admin/access/sessions', /Sessions/],
     ['/admin/access/audit', /Audit log/],
@@ -898,6 +899,39 @@ describe('Admin MVP route inventory (issue #92)', () => {
     for (const [path, heading] of MVP_ROUTES) {
       await renderAt(path)
       await screen.findByRole('heading', { level: 1, name: heading })
+
+      // Every retained Admin route shares the same accessible shell. The
+      // parent collection link stays current on detail routes so navigation
+      // remains oriented without coupling this contract to CSS classes.
+      expect(screen.getByRole('navigation', { name: 'Global' })).toBeTruthy()
+      expect(screen.getByRole('main')).toBeTruthy()
+      const adminNav = screen.getByRole('navigation', { name: 'Admin' })
+      expect(within(adminNav).getAllByRole('link')).toHaveLength(7)
+      const activeHref = path.startsWith('/admin/agents')
+        ? '/admin/agents'
+        : path.startsWith('/admin/nodes')
+          ? '/admin/nodes'
+          : path.startsWith('/admin/networks')
+            ? '/admin/networks'
+            : path.startsWith('/admin/access/sessions')
+              ? '/admin/access/sessions'
+              : path.startsWith('/admin/access/audit')
+                ? '/admin/access/audit'
+                : path === '/admin/settings'
+                  ? '/admin/settings'
+                  : '/admin'
+      const activeLabel = {
+        '/admin': 'Overview',
+        '/admin/agents': 'Agents',
+        '/admin/nodes': 'Nodes',
+        '/admin/networks': 'Networks',
+        '/admin/settings': 'Settings',
+        '/admin/access/sessions': 'Sessions',
+        '/admin/access/audit': 'Audit',
+      }[activeHref]
+      expect(within(adminNav).getByRole('link', { name: activeLabel }).getAttribute('aria-current')).toBe(
+        'page',
+      )
     }
   })
 

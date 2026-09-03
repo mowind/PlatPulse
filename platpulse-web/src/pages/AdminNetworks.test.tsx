@@ -248,6 +248,8 @@ describe('PAGE-ADMIN-NETWORKS (Network Registry)', () => {
     const rowB = screen.getByRole('row', { name: /Node B \(private\)/ })
     expect(rowB.textContent).toContain('Mismatched')
     expect(rowB.textContent).toContain('chain_id')
+    expect(rowB.textContent).toContain('Observed: genesis hash')
+    expect(rowB.textContent).toContain('chain id 999999')
   })
 
   it('updates the Registry tuple with an audited confirmation and refetches', async () => {

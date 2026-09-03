@@ -164,10 +164,10 @@ describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
     expect(row.textContent).toContain('Spool: 3 queued · delivery in flight')
     expect(row.textContent).toContain('dropped reports #7–#9')
     expect(row.textContent).toContain('last delivery error: server unavailable')
-    expect(screen.getByRole('link', { name: 'Enroll a new Agent' })).toBeTruthy()
+    expect(screen.queryByRole('link', { name: 'Enroll a new Agent' })).toBeNull()
   })
 
-  it('shows the Empty state with an enroll action when no Agents exist', async () => {
+  it('shows the Empty state without an unavailable enrollment action', async () => {
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       '/api/admin/v1/agents': () => jsonResponse([], 200),
@@ -175,8 +175,8 @@ describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
     renderAt('/admin/agents')
 
     await screen.findByRole('heading', { level: 1, name: 'Agents' })
-    expect(await screen.findByText('No Agents enrolled yet.')).toBeTruthy()
-    expect(screen.getByRole('link', { name: 'Enroll the first Agent' })).toBeTruthy()
+    expect(await screen.findByText(/No Agents enrolled yet\./)).toBeTruthy()
+    expect(screen.queryByRole('link', { name: 'Enroll the first Agent' })).toBeNull()
   })
 
 
@@ -224,8 +224,8 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
     expect(screen.getByText('agent_credential_rotated')).toBeTruthy()
     expect(screen.getByText(/overlap_hours: 24/)).toBeTruthy()
     // Actions are offered as links, not executed remotely.
-    expect(screen.getByRole('link', { name: 'Rotate credential' })).toBeTruthy()
-    expect(screen.getByRole('link', { name: 'Recover agent' })).toBeTruthy()
+    expect(screen.queryByRole('link', { name: 'Rotate credential' })).toBeNull()
+    expect(screen.queryByRole('link', { name: 'Recover agent' })).toBeNull()
   })
 
   it('revokes a credential through explicit confirmation and refetches state', async () => {

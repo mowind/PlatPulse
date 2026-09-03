@@ -59,6 +59,7 @@ export default function AdminNetworksList() {
           className="primary-action"
           onClick={() => setCreating((value) => !value)}
           aria-expanded={creating}
+          aria-controls="network-create-form"
         >
           {creating ? 'Close form' : 'Register a Network'}
         </button>
@@ -149,7 +150,10 @@ function NetworkRow({ network }: { network: AdminNetwork }) {
       </td>
       <td data-label="Mismatches">
         {network.mismatched_node_count > 0 ? (
-          <StatusBadge status="Mismatched" tone="error" />
+          <>
+            <StatusBadge status="Mismatched" tone="error" />
+            <span className="muted">{network.mismatched_node_count} Node{network.mismatched_node_count === 1 ? '' : 's'}</span>
+          </>
         ) : (
           <StatusBadge status="Current" tone="ok" />
         )}
@@ -199,9 +203,9 @@ function NetworkCreateForm({ onRegistered }: { onRegistered: (displayName: strin
   }
 
   return (
-    <article className="panel">
+    <article id="network-create-form" className="panel" aria-labelledby="network-create-heading">
       <div className="panel-heading">
-        <h2>Register a Network</h2>
+        <h2 id="network-create-heading">Register a Network</h2>
       </div>
       <p className="panel-copy">
         The complete identity tuple is required and audited. The Server never creates a
@@ -402,12 +406,13 @@ function IdentityTuplePanel({
           className="text-action"
           onClick={() => setEditing((value) => !value)}
           aria-expanded={editing}
+          aria-controls="network-edit-form"
         >
           {editing ? 'Close editor' : 'Edit tuple'}
         </button>
       </div>
       {editing ? (
-        <form onSubmit={submit} className="stack-form">
+        <form id="network-edit-form" onSubmit={submit} className="stack-form">
           <div className="field">
             <label htmlFor="network-edit-name">Display name</label>
             <input
@@ -628,7 +633,18 @@ function NetworkNodeRow({ node }: { node: AdminNetworkNode }) {
       <td data-label="Identity">
         <StatusBadge status={identity.label} tone={identity.tone} />
         {node.identity.mismatched_fields.length > 0 && (
-          <small className="muted">{node.identity.mismatched_fields.join(', ')}</small>
+          <>
+            <small className="muted">{node.identity.mismatched_fields.join(', ')}</small>
+            {node.identity.observed && (
+              <small className="muted">
+                Observed:{' '}
+                {Object.entries(node.identity.observed)
+                  .filter(([, value]) => value != null)
+                  .map(([key, value]) => `${key.replaceAll('_', ' ')} ${value}`)
+                  .join(' · ')}
+              </small>
+            )}
+          </>
         )}
       </td>
       <td data-label="Health">

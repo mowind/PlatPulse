@@ -154,13 +154,13 @@ export default function AdminLayout() {
           <NavLink to="/admin" end onClick={closeNav}>
             Overview
           </NavLink>
-          <NavLink to="/admin/agents" end onClick={closeNav}>
+          <NavLink to="/admin/agents" onClick={closeNav}>
             Agents
           </NavLink>
-          <NavLink to="/admin/nodes" end onClick={closeNav}>
+          <NavLink to="/admin/nodes" onClick={closeNav}>
             Nodes
           </NavLink>
-          <NavLink to="/admin/networks" end onClick={closeNav}>
+          <NavLink to="/admin/networks" onClick={closeNav}>
             Networks
           </NavLink>
           <NavLink to="/admin/settings" end onClick={closeNav}>

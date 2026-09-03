@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router'
 import { useAdminAudit, type AuditFilters } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
@@ -25,10 +25,29 @@ export default function AdminAudit() {
     before,
   }
   const query = useAdminAudit(generation, filters)
+  const filterKey = `${eventKind}\u0000${targetKind}`
+  const [history, setHistory] = useState<{ filterKey: string; items: AuditItem[] }>({
+    filterKey,
+    items: [],
+  })
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const [error, setError] = useState<string | null>(null)
 
-  const items = query.data?.items ?? []
+  useEffect(() => {
+    if (!query.data || query.isFetching) return
+    setHistory((current) => {
+      if (current.filterKey !== filterKey || before == null) {
+        return { filterKey, items: query.data.items }
+      }
+      const known = new Set(current.items.map((item) => item.auditEventId))
+      return {
+        filterKey,
+        items: [...current.items, ...query.data.items.filter((item) => !known.has(item.auditEventId))],
+      }
+    })
+  }, [before, filterKey, query.data, query.isFetching])
+
+  const items = history.filterKey === filterKey ? history.items : []
 
   function loadOlder() {
     setError(null)
@@ -185,6 +204,7 @@ function AuditRow({
   onToggle: () => void
 }) {
   const target = targetLink(item)
+  const detailsId = `audit-details-${item.auditEventId}`
   return (
     <li className="audit-item">
       <div className="audit-main">
@@ -208,11 +228,22 @@ function AuditRow({
           <dd>{formatObservedAt(item.createdAt)}</dd>
         </div>
       </dl>
-      <button type="button" className="text-action" onClick={onToggle} aria-expanded={expanded}>
+      <button
+        type="button"
+        className="text-action"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        aria-controls={detailsId}
+      >
         {expanded ? 'Hide details' : 'Show details'}
       </button>
       {expanded && (
-        <div className="audit-details">
+        <div
+          id={detailsId}
+          className="audit-details"
+          role="region"
+          aria-label={`Redacted details for Audit event ${item.auditEventId}`}
+        >
           {item.details == null ? (
             <p className="muted">No redacted detail was recorded for this event.</p>
           ) : (
