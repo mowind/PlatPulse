@@ -52,10 +52,11 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expect(page.getByRole('heading', { level: 1, name: 'PlatON E2E Network' })).toBeVisible()
     const networkPeer = page.getByRole('region', { name: 'Peer insight' }).first()
     await expect(networkPeer).toContainText('Peer insight')
-    await expect(networkPeer).toContainText('Current')
-    await expect(networkPeer).toContainText('3')
-    await expect(networkPeer).toContainText('Inbound')
-    await expect(networkPeer).toContainText('Outbound')
+    // Network aggregation is Unknown when any Active Node has never produced
+    // a successful Peer Snapshot; Node A's known value is not a complete total.
+    await expect(networkPeer).toContainText('Unknown')
+    await expect(networkPeer).toContainText('no usable successful Peer snapshot is available yet')
+    await expect(networkPeer.getByText('3', { exact: true })).toHaveCount(0)
     await expect(page.getByText('203.0.113.9')).toHaveCount(0)
     await expect(page.getByText('peer-a-inbound')).toHaveCount(0)
 

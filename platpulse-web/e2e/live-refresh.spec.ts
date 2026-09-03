@@ -113,6 +113,12 @@ test.describe('SCN-HOME-RESPONSIVE-ACCESSIBILITY / live refresh transport state'
     await page.goto(`/nodes/${PUBLIC_NODE_ID}`)
     await expect(page.getByRole('heading', { level: 1, name: 'Node A' })).toBeVisible()
     const closedBefore = await realtimeClosed(page)
+    // Hold one authoritative revalidation request briefly so the transient
+    // privacy-clearing state is deterministic even on a fast CI runner.
+    await page.route('**/api/public/v1/access', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      await route.continue()
+    })
     await emitRealtime(page, 'reset', { reset: true })
     await expect(page.getByText('Revalidating Home access…')).toBeVisible()
     await expect.poll(async () => realtimeClosed(page)).toBeGreaterThan(closedBefore)

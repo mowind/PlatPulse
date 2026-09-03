@@ -96,15 +96,16 @@ test.describe('Converged Public Home (issue #102)', () => {
       expect(height, 'summary card must stay approximately 6rem high').toBeLessThanOrEqual(120)
     }
 
-    // Desktop 1280 renders two columns; tablet and phones render one. The
-    // Node grid is read through card positions: the second card in a row
-    // shares the first card's top on desktop, never on single-column layouts.
-    const hBox = (await nodeCard(page, /Node H/).boundingBox())!
-    const kBox = (await nodeCard(page, /Node K/).boundingBox())!
+    // Desktop 1280 renders two columns; tablet and phones render one. Read
+    // the first two cards after the active Health sort instead of naming a
+    // pair: adding another Active Node may legitimately shift row pairing.
+    const activeNodeLinks = page.getByLabel('Active Nodes', { exact: true }).getByRole('link')
+    const firstBox = (await activeNodeLinks.first().boundingBox())!
+    const secondBox = (await activeNodeLinks.nth(1).boundingBox())!
     if (testInfo.project.name === 'desktop-1280') {
-      expect(Math.abs(hBox.y - kBox.y)).toBeLessThanOrEqual(1)
+      expect(Math.abs(firstBox.y - secondBox.y)).toBeLessThanOrEqual(1)
     } else {
-      expect(Math.abs(hBox.y - kBox.y)).toBeGreaterThan(1)
+      expect(Math.abs(firstBox.y - secondBox.y)).toBeGreaterThan(1)
     }
 
     // The whole card is a 44px+ touch target and every visible control stays
@@ -194,7 +195,12 @@ test.describe('Converged Public Home (issue #102)', () => {
     await page.getByRole('combobox', { name: 'Sort' }).selectOption('head')
     let names = await nodeCardNames(page)
     expect(names[0]).toContain('Node H — Producing Card')
-    expect(names.at(-1)).toContain('Node P — Never Observed')
+    const observedNodeIndex = names.findIndex((name) => name.includes('Node A'))
+    expect(observedNodeIndex).toBeGreaterThanOrEqual(0)
+    // Multiple Active Nodes can have an Unknown HEAD. Their relative order
+    // is not part of Current Head sorting, but all stay below observed Nodes.
+    expect(names.findIndex((name) => name.includes('Node G (transferred)'))).toBeGreaterThan(observedNodeIndex)
+    expect(names.findIndex((name) => name.includes('Node P — Never Observed'))).toBeGreaterThan(observedNodeIndex)
 
     // Name sorting keeps the same whole-card navigation targets.
     await page.getByRole('combobox', { name: 'Sort' }).selectOption('name')

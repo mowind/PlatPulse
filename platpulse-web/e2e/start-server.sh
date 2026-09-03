@@ -654,7 +654,7 @@ from datetime import datetime, timedelta, timezone
 path = sys.argv[1]
 node_a = "0195f2a1-0014-4014-8014-000000000014"
 while True:
-    time.sleep(45)
+    time.sleep(25)
     fresh = (datetime.now(timezone.utc) - timedelta(seconds=20)).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
         with sqlite3.connect(path, timeout=5) as db:
@@ -670,13 +670,20 @@ while True:
                 (fresh, "0195f2a1-0011-4011-8011-000000000011"),
             )
             # Keep the discrete Block Summary fixture inside the one-minute
-            # chart window during the complete multi-viewport run.
+            # chart window during the complete multi-viewport run. The stamps
+            # (5..23s old) plus the 25s cadence guarantee at least one sample
+            # is always inside the window: with the old 45s cadence the
+            # samples all aged past 60s just before each refresh.
             for index, height in enumerate(range(12842010, 12842020)):
-                observed_at = (datetime.now(timezone.utc) - timedelta(seconds=38 - index * 2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                observed_at = (datetime.now(timezone.utc) - timedelta(seconds=23 - index * 2)).strftime("%Y-%m-%dT%H:%M:%SZ")
                 db.execute(
                     "UPDATE block_summaries SET observed_at = ?, accepted_at = ? WHERE node_id = ? AND block_number = ?",
                     (observed_at, observed_at, node_a, height),
                 )
+    except sqlite3.OperationalError:
+        # A transient SQLITE_BUSY must not kill the long-run fixture refresher;
+        # otherwise the one-minute chart samples age out during the CI matrix.
+        continue
     except Exception:
         break
 REFRESH
