@@ -39,7 +39,7 @@ test.describe('Owner Network Registry (PAGE-ADMIN-NETWORKS)', () => {
     await expect(page.getByRole('heading', { level: 1, name: /PlatON E2E Network/ })).toBeVisible({ timeout: 15_000 })
 
     await expect(page.getByRole('heading', { level: 2, name: 'Expected identity tuple' })).toBeVisible({ timeout: 15_000 })
-    await expect(page.getByText(/0x1{64}/)).toBeVisible()
+    await expect(page.getByText('0x' + '1'.repeat(64), { exact: true })).toBeVisible()
 
     // Per-Node dispositions: A matched, B mismatched on chain_id.
     await expect(page.getByRole('heading', { level: 2, name: 'Nodes on this Network' })).toBeVisible()

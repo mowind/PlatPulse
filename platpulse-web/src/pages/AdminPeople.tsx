@@ -5,8 +5,6 @@ import {
   createPersonEntry,
   resetPersonPasswordEntry,
   setPersonDisabled,
-  updateAccessSettings,
-  useAdminAccess,
   useAdminPeople,
 } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
@@ -15,7 +13,7 @@ import type { Person } from '../api/generated'
 
 /**
  * PAGE-ACCESS-PEOPLE (design §12.1, issue #47): People and role management
- * plus the Site Access Mode control. Rows show role, disabled state,
+ * Rows show role, disabled state,
  * and active Session count — never passwords or credential material. All
  * mutations are authoritative (no optimistic state); the Server protects
  * the final valid Owner and revokes the affected user's Sessions on role,
@@ -25,7 +23,6 @@ export default function AdminPeople() {
   const { status, generation } = useAuth()
   const csrfToken = status.state === 'authenticated' ? status.csrfToken : ''
   const people = useAdminPeople(generation)
-  const access = useAdminAccess(generation)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -47,99 +44,9 @@ export default function AdminPeople() {
           {error}
         </p>
       )}
-      <SiteAccessModePanel query={access} csrfToken={csrfToken} />
       <PeoplePanel query={people} csrfToken={csrfToken} onMessage={setMessage} onError={setError} />
       <CreatePersonForm csrfToken={csrfToken} onMessage={setMessage} onError={setError} />
     </section>
-  )
-}
-
-function SiteAccessModePanel({
-  query,
-  csrfToken,
-}: {
-  query: ReturnType<typeof useAdminAccess>
-  csrfToken: string
-}) {
-  const [busy, setBusy] = useState(false)
-  const [message, setMessage] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const mode = query.data?.mode
-
-  async function toggle() {
-    if (mode === undefined || busy) return
-    const nextMode = mode === 'public' ? 'private' : 'public'
-    if (!window.confirm(
-      nextMode === 'public'
-        ? 'Make Home Public? Unauthenticated visitors will be able to read Home projections.'
-        : 'Make Home Private? Unauthenticated visitors will lose access to Home projections.',
-    )) {
-      return
-    }
-    setBusy(true)
-    setMessage(null)
-    setError(null)
-    try {
-      const result = await updateAccessSettings(nextMode, csrfToken)
-      setMessage(
-        result.mode === 'public'
-          ? 'Site Access Mode is now Public. Visitors can view Home without signing in.'
-          : 'Site Access Mode is now Private. Visitors must sign in.',
-      )
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Unable to update access')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <article className="panel">
-      <div className="panel-heading">
-        <h2>Site Access Mode</h2>
-        {mode === 'public' && (
-          <span className="account-state account-state-enabled">
-            <span aria-hidden="true">✓</span> Public
-          </span>
-        )}
-        {mode === 'private' && <StatusBadge status="Private" tone="neutral" />}
-      </div>
-      <p className="muted">
-        Public lets unauthenticated visitors read the Home Public Projection;
-        Private requires a Human Session. Every transition closes affected
-        streams and starts a new authorization generation.
-      </p>
-      {!query.data && query.isPending && (
-        <p className="panel-state" role="status">
-          <StatusBadge status="Starting" tone="neutral" /> Loading access settings…
-        </p>
-      )}
-      {!query.data && query.isError && (
-        <p className="panel-state" role="alert">
-          <StatusBadge status="Error" tone="error" /> Unable to load access settings.
-        </p>
-      )}
-      {query.data && (
-        <button
-          type="button"
-          className="primary-action"
-          disabled={busy}
-          onClick={() => void toggle()}
-        >
-          {busy ? 'Updating…' : mode === 'public' ? 'Make Home Private' : 'Make Home Public'}
-        </button>
-      )}
-      {message && (
-        <p className="form-success" role="status">
-          {message}
-        </p>
-      )}
-      {error && (
-        <p className="form-error" role="alert">
-          {error}
-        </p>
-      )}
-    </article>
   )
 }
 

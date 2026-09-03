@@ -421,8 +421,10 @@ Home 不展示：凭证、RPC Endpoint 原文、内部错误堆栈、Agent/Host 
 2. Agents；
 3. Nodes；
 4. Networks；
-5. History Window；
-6. Site Access、Sessions 与 Audit。
+5. Settings（按顺序包含 History Window 与 Site Access Mode）；
+6. Sessions、People 与 Audit。
+
+Settings 是全局配置的唯一 canonical route（`/admin/settings`）；旧的 `/admin/history-window` 与 `/admin/site-access` 不重定向，而是进入 Admin 的 Section not found fallback。
 
 Admin 的 Node 页面聚焦配置与诊断（显示名、RPC Endpoint 诊断、Node Inventory/生命周期、freshness 摘要），不复刻 Home 的完整 Node Detail。Admin 不执行远程 Node 操作。
 

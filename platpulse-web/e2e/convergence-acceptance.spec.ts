@@ -4,6 +4,7 @@ import {
   expectNoHorizontalOverflow,
   expectVisibleInteractiveTargets,
   loginAs,
+  setPageZoom,
 } from './helpers'
 
 /**
@@ -314,6 +315,34 @@ test.describe('Converged WebUI acceptance (issue #95)', () => {
     await page.goto('/admin/not-a-real-section')
     await expect(page.getByRole('heading', { level: 1, name: 'Section not found' })).toBeVisible()
     await expectNoHorizontalOverflow(page)
+  })
+
+  test('Settings keeps one canonical route and ordered independent configuration cards', async ({ page }) => {
+    await openAdmin(page)
+    await openAdminNavLink(page, 'Settings')
+    await expect(page).toHaveURL('/admin/settings')
+    await expect(page.getByRole('heading', { level: 1, name: 'Settings' })).toHaveCount(1)
+
+    const sectionHeadings = await page.locator('main h2').allTextContents()
+    expect(sectionHeadings.slice(0, 2)).toEqual(['History Window', 'Site Access Mode'])
+    await expect(page.getByRole('button', { name: 'Save History Window' })).toBeVisible()
+    await expect(page.getByRole('button', { name: /Make Home (Private|Public)/ })).toBeVisible()
+    await expectNoHorizontalOverflow(page)
+
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await setPageZoom(page, 2)
+    await expect(page.getByRole('heading', { level: 1, name: 'Settings' })).toBeVisible()
+    await expectVisibleInteractiveTargets(page)
+    await expectNoHorizontalOverflow(page)
+
+    await page.goto('/admin/history-window')
+    await expect(page.getByRole('heading', { level: 1, name: 'Section not found' })).toBeVisible()
+    await expect(page).toHaveURL('/admin/history-window')
+    await page.goBack()
+    await expect(page).toHaveURL('/admin/settings')
+    await expect(page.getByRole('heading', { level: 1, name: 'Settings' })).toBeVisible()
+    await page.goForward()
+    await expect(page.getByRole('heading', { level: 1, name: 'Section not found' })).toBeVisible()
   })
 
   test('Unknown, Stale, Error and paused-live states remain semantically visible', async ({ page }) => {

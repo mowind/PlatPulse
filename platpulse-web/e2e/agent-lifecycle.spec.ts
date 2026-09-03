@@ -42,7 +42,8 @@ test.describe('Agent inventory and detail (PAGE-ADMIN-AGENTS)', () => {
     await expect(row).toContainText('6 Nodes')
     await expect(row).toContainText(/active/)
     await expect(row).toContainText('0 gaps · 0 security events')
-    await expect(page.getByRole('link', { name: 'Enroll a new Agent' })).toBeVisible()
+    // Enrollment is deferred; no unavailable action is exposed in the MVP shell.
+    await expect(page.getByRole('link', { name: 'Enroll a new Agent' })).toHaveCount(0)
     await expectNoHorizontalOverflow(page)
   })
 })
@@ -66,13 +67,15 @@ test.describe('Agent detail (PAGE-ADMIN-AGENT-DETAIL)', () => {
     await expect(page.getByRole('heading', { level: 2, name: 'Audit trail' })).toBeVisible()
 
     // Credential dimension shows the non-sensitive id and active state.
-    await expect(page.getByText(CREDENTIAL_ID)).toBeVisible()
+    await expect(page.getByText(CREDENTIAL_ID, { exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Revoke' })).toBeVisible()
     // Inventory stays per-Node, never merged at Agent level.
     await expect(page.getByText('Node A')).toBeVisible()
     // Actions are dedicated high-risk routes, not remote control.
-    await expect(page.getByRole('link', { name: 'Rotate credential' })).toBeVisible()
-    await expect(page.getByRole('link', { name: 'Recover agent' })).toBeVisible()
+    // Recovery and credential rotation are deferred; no unavailable actions
+    // are exposed from the retained Agent detail surface.
+    await expect(page.getByRole('link', { name: 'Rotate credential' })).toHaveCount(0)
+    await expect(page.getByRole('link', { name: 'Recover agent' })).toHaveCount(0)
     await expectNoHorizontalOverflow(page)
   })
 

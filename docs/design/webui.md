@@ -330,7 +330,21 @@ Every `PAGE-*` entry must specify the following before production coding:
 - switching Site Access Mode requires confirmation, records Audit, and performs the Public access-generation transition by closing affected streams, aborting old requests, clearing sensitive caches, discarding older responses, and reloading authoritative state;
 - the Settings cards stack on narrow viewports, preserve 44×44 CSS pixel targets, and never cause primary horizontal page overflow.
 
-The retired `/admin/history-window` and `/admin/site-access` routes are not redirected; they resolve through the Admin Section not found fallback.
+The retired `/admin/history-window` and `/admin/site-access` routes are not redirected; they resolve through the Admin Section not found fallback. This is a page-level SPA outcome and does not guarantee an HTTP 404 response from the Server.
+
+#### 8.3.1 Settings integration acceptance
+
+The Settings route is the single canonical configuration surface. The accepted scenarios map to `/admin/settings` as follows:
+
+| Scenario | Route and outcome |
+|---|---|
+| `SCN-SETTINGS-ROUTE` | `/admin/settings` renders one logical `Settings` h1, ordered `History Window` then `Site Access Mode` sections, and no obsolete navigation entries; the retired URLs remain on the Admin Section not found fallback without redirecting. |
+| `SCN-HISTORY-WINDOW-SHORTEN` | Through the History Window card, show Server bounds and impact, require typed confirmation, report the returned Audit Event, and retain asynchronous deletion consequences. |
+| `SCN-HISTORY-WINDOW-BOUNDS` | Through the History Window card, reject blank, non-integer, and out-of-bounds values with field-level errors; never clamp or submit an invalid value. |
+| `SCN-SITE-ACCESS-PUBLIC` | Through the Site Access Mode card, confirm and apply Public, clear affected Public state, reload the new authorization generation, and permit anonymous Home reads while Admin remains Owner-only. |
+| `SCN-SITE-ACCESS-PRIVATE` | Through the Site Access Mode card, confirm and apply Private, close affected Public streams, clear old Public state, and require Owner login for Home reads. |
+
+Each Settings card keeps independent loading, mutation, success, field-error, page-error, confirmation, and recovery states. Browser back/forward preserves the canonical route context, while the Public/Admin DTO, cache, realtime, and Owner authorization boundaries remain separate.
 
 ### 8.4 Overview (`PAGE-ADMIN-OVERVIEW`)
 
@@ -403,6 +417,7 @@ Scenario IDs:
 ```text
 SCN-AUTH-OWNER-LOGIN
 SCN-AUTH-SESSION-REVOKED
+SCN-SETTINGS-ROUTE
 SCN-SITE-ACCESS-PRIVATE
 SCN-HOME-NETWORK-LIST
 SCN-HOME-NODE-DETAIL
@@ -522,15 +537,16 @@ desktop-1280
 |---|---|
 | `SCN-AUTH-OWNER-LOGIN` | safe return, checking state, success, no password in URL/history |
 | `SCN-AUTH-SESSION-REVOKED` | old stream closes, Admin data clears, no stale flash, login/revalidation path |
-| `SCN-SITE-ACCESS-PRIVATE` | switch to Private closes public streams, Home requires login, old public cache cleared, audit row |
+| `SCN-SITE-ACCESS-PRIVATE` | from `/admin/settings`, switch to Private, close public streams, require Home login, clear old Public cache, preserve Admin Owner-only access, and record an Audit Event |
+| `SCN-SETTINGS-ROUTE` | canonical `/admin/settings` route, one h1, History Window before Site Access Mode, Settings-only navigation, removed-route fallback, and browser back/forward context |
 | `SCN-HOME-NETWORK-LIST` | network list from Public Projection, all Active Nodes visible, anonymous access follows Site Access Mode |
 | `SCN-HOME-NODE-DETAIL` | compact Komari-density Node card with no coloured edge strip, compact process CPU/process memory/Node Data progress, four equal-height compact detail cards containing two 60-second line charts and two bar charts backed by real retained samples, neutral card borders, no rendered Bounded Block History, derived consecutive-block interval, Peer Count only |
 | `SCN-HOME-UNAVAILABLE-NODE` | non-leaking unavailable copy for retired/unknown; no internal detail |
 | `SCN-OVERVIEW-FRESH` | independent Node rows, Server Health Summary, current timestamps |
 | `SCN-OVERVIEW-STALE-LAST-GOOD` | last-good remains, Error/Stale reason and age visible, no zero substitution |
 | `SCN-OVERVIEW-UNKNOWN-UNSUPPORTED` | Unknown/Unsupported/Disabled/Empty remain distinct |
-| `SCN-SITE-ACCESS-PUBLIC` | switch to Public allows anonymous Home reads, Admin still requires Owner login, no admin data leaks, audit row |
-| `SCN-HISTORY-WINDOW-SHORTEN` | confirmation, old/new shown, expired history removed asynchronously, audit row |
+| `SCN-SITE-ACCESS-PUBLIC` | from `/admin/settings`, switch to Public, allow anonymous Home reads, keep Admin Owner-only, clear affected state, discard stale responses, and record an Audit Event |
+| `SCN-HISTORY-WINDOW-SHORTEN` | from `/admin/settings`, require confirmation, show old/new and impact, remove expired history asynchronously, and record an Audit Event |
 | `SCN-HISTORY-WINDOW-BOUNDS` | out-of-bounds values rejected with field errors, bounds shown |
 
 For each core scenario, test semantic content rather than screenshot alone, and verify no horizontal overflow at all four viewports. Test keyboard navigation, focus return, Escape, mobile drawer behavior, 200% zoom, reduced motion, accessible names, and preservation of URL/filter/scroll/expanded/draft state after refetch.
@@ -569,6 +585,8 @@ A page is ready for production implementation only when:
 | Accepted Home / Node Detail visual direction, responsive baseline, public-data contract, and production test seam | Issue #75 and accepted branch `prototype/home-node-detail` |
 | Unified dark Admin shell and Overview shared-theme foundation | Issue #110 |
 | Unified Owner Settings page for History Window and Site Access Mode | Issue #111 |
+| Admin visual convergence across retained pages | Issue #112 |
+| Unified Admin experience integration contract, canonical Settings route, and fixed-viewport verification | Issue #113, parent Issue #109 |
 | Prototype cleanup and production-only route boundary | Issue #89 |
 
 Changes to a settled contract require a new decision record and must update the affected `PAGE-*`, `PATTERN-*`, and `SCN-*` references together. OpenAPI or Server policy changes do not silently change WebUI semantics; they require an explicit design review when the user-visible contract changes.
