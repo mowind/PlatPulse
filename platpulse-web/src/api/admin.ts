@@ -1129,7 +1129,7 @@ export function useHistoryWindowImpact(generation: number, days: number, csrfTok
           }),
         'Unable to preview the History Window consequences',
       ),
-    enabled: days >= 0 && csrfToken.length > 0,
+    enabled: Number.isInteger(days) && days >= 0 && csrfToken.length > 0,
   })
 }
 
@@ -1147,10 +1147,21 @@ export async function updateHistoryWindowEntry(
         }),
       'Unable to update the History Window',
     )
-    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    adminQueryClient.setQueriesData<HistoryWindowResponse>(
+      { predicate: (query) => isHistoryWindowCurrentQuery(query.queryKey) },
+      response.window,
+    )
+    await Promise.all([
+      adminQueryClient.invalidateQueries({
+        predicate: (query) => isHistoryWindowCurrentQuery(query.queryKey),
+      }),
+      adminQueryClient.invalidateQueries({ queryKey: ['admin', 'history-window', 'impact'] }),
+    ])
     return response
   } catch (error) {
-    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    await adminQueryClient.invalidateQueries({
+      predicate: (query) => isHistoryWindowCurrentQuery(query.queryKey),
+    })
     throw error
   }
 }
@@ -1170,10 +1181,14 @@ export async function updateAccessSettings(
       }),
     mode === 'public' ? 'Unable to make Home Public' : 'Unable to make Home Private',
   )
-  void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
   const settings = normalizeAccessSettings(response)
+  adminQueryClient.setQueriesData<SiteAccessSettings>(
+    { queryKey: adminKeys.access },
+    settings,
+  )
   applySiteAccessSettings(settings)
   resetPublicCache(settings.authorizationGeneration)
+  await adminQueryClient.invalidateQueries({ queryKey: adminKeys.access })
   return settings
 }
 
@@ -1182,6 +1197,10 @@ export type RealtimeState = { status: RealtimeStatus; online: boolean }
 
 function samePrefix(queryKey: readonly unknown[], prefix: readonly unknown[]): boolean {
   return prefix.every((part, index) => queryKey[index] === part)
+}
+
+function isHistoryWindowCurrentQuery(queryKey: readonly unknown[]): boolean {
+  return samePrefix(queryKey, adminKeys.historyWindow) && queryKey.length === 3
 }
 
 function invalidateAdminResource(resource: string, resourceId: string | undefined, generation: number): void {

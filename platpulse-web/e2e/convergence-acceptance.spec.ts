@@ -38,16 +38,11 @@ const MVP_ADMIN_SECTIONS: Array<{
   { link: 'Nodes', url: '/admin/nodes', heading: 'Nodes' },
   { link: 'Networks', url: '/admin/networks', heading: 'Networks' },
   {
-    link: 'History Window',
-    url: '/admin/history-window',
-    heading: 'History Window',
-    primaryButton: 'Save History Window',
-  },
-  {
-    link: 'Site Access',
-    url: '/admin/site-access',
-    heading: 'Site Access',
+    link: 'Settings',
+    url: '/admin/settings',
+    heading: 'Settings',
     primaryButton: /Make Home (Private|Public)/,
+    primaryHeading: 'History Window',
   },
   {
     link: 'Sessions',
@@ -66,6 +61,8 @@ const MVP_ADMIN_SECTIONS: Array<{
 /** Deferred/legacy Admin nav labels (issue #92): none may be linked from the
  * MVP navigation. Mirrors the removed-labels list in App.test.tsx. */
 const REMOVED_ADMIN_LABELS = [
+  'History Window',
+  'Site Access',
   'Validators',
   'People',
   'Alert Rules',
@@ -90,6 +87,8 @@ const REMOVED_ADMIN_LABELS = [
  * direct-URL fallback check; a representative legacy heading proves the old
  * page is not rendered behind the safe fallback. */
 const REMOVED_ADMIN_ROUTES: Array<{ route: string; heading?: string | RegExp }> = [
+  { route: '/admin/history-window', heading: /History Window/ },
+  { route: '/admin/site-access', heading: /Site Access/ },
   { route: '/admin/validators', heading: 'Validators' },
   { route: '/admin/validators/v-1', heading: /Validators/ },
   { route: '/admin/access/people', heading: 'People' },
@@ -139,6 +138,7 @@ async function openAdminNav(page: Page) {
  * (desktop clicks the persistent sidebar directly).
  */
 async function openAdminNavLink(page: Page, linkName: string) {
+  if (linkName === 'Overview' && new URL(page.url()).pathname === '/admin') return
   await openAdminNav(page)
   await page.getByRole('link', { name: linkName, exact: true }).click()
 }
@@ -270,7 +270,7 @@ test.describe('Converged WebUI acceptance (issue #95)', () => {
       await openAdminNav(page)
     }
 
-    // The MVP nav holds exactly the eight retained groups and nothing else.
+    // The MVP nav holds exactly the seven retained groups and nothing else.
     // Re-open the drawer on touch viewports so the closed navigation cannot
     // leave the accessibility tree mid-transition during the assertion.
     await expect(adminNav.getByRole('link')).toHaveCount(MVP_ADMIN_SECTIONS.length)

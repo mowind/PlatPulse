@@ -163,13 +163,10 @@ export default function AdminLayout() {
           <NavLink to="/admin/networks" end onClick={closeNav}>
             Networks
           </NavLink>
-          <NavLink to="/admin/history-window" end onClick={closeNav}>
-            History Window
+          <NavLink to="/admin/settings" end onClick={closeNav}>
+            Settings
           </NavLink>
           <p className="admin-nav-label">Access</p>
-          <NavLink to="/admin/site-access" end onClick={closeNav}>
-            Site Access
-          </NavLink>
           <NavLink to="/admin/access/sessions" end onClick={closeNav}>
             Sessions
           </NavLink>

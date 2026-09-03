@@ -865,9 +865,9 @@ describe('Admin MVP route inventory (issue #92)', () => {
     })
   }
 
-  // Complete MVP Admin inventory (issue #92): Overview, Agents, Agent
-  // Detail, Nodes, Node Detail, Networks, Network Detail, History Window,
-  // Site Access, Sessions and Audit. Each route renders its own page shell
+  // Complete MVP Admin inventory (issues #92 and #111): Overview, Agents,
+  // Agent Detail, Nodes, Node Detail, Networks, Network Detail, Settings,
+  // Sessions and Audit. Each route renders its own page shell
   // under the Owner gate; the Server REST mock answers 404s so the pages'
   // headings are asserted without seeding page data.
   const MVP_ROUTES: Array<[path: string, heading: RegExp]> = [
@@ -878,8 +878,7 @@ describe('Admin MVP route inventory (issue #92)', () => {
     ['/admin/nodes/node-1', /node-1/],
     ['/admin/networks', /Networks/],
     ['/admin/networks/mainnet', /mainnet/],
-    ['/admin/history-window', /History Window/],
-    ['/admin/site-access', /Site Access/],
+    ['/admin/settings', /Settings/],
     ['/admin/access/sessions', /Sessions/],
     ['/admin/access/audit', /Audit log/],
   ]
@@ -911,6 +910,8 @@ describe('Admin MVP route inventory (issue #92)', () => {
   // generic `agents/:agentId` detail route and resolves to the normal
   // unknown-Agent outcome instead of the removed enrollment page.
   const REMOVED_ROUTES: Array<[path: string, legacyHeading: RegExp]> = [
+    ['/admin/history-window', /History Window/],
+    ['/admin/site-access', /Site Access/],
     ['/admin/validators', /Validators/],
     ['/admin/validators/v-1', /Validators/],
     ['/admin/access/people', /People/],
@@ -987,12 +988,11 @@ describe('Admin MVP route inventory (issue #92)', () => {
       { name: 'Agents', href: '/admin/agents' },
       { name: 'Nodes', href: '/admin/nodes' },
       { name: 'Networks', href: '/admin/networks' },
-      { name: 'History Window', href: '/admin/history-window' },
-      { name: 'Site Access', href: '/admin/site-access' },
+      { name: 'Settings', href: '/admin/settings' },
       { name: 'Sessions', href: '/admin/access/sessions' },
       { name: 'Audit', href: '/admin/access/audit' },
     ])
-    for (const removed of ['Validators', 'People', 'Alert Rules', 'Incidents', 'Silences', 'Maintenance', 'Deliveries', 'Channels', 'Operations', 'Data', 'Retention', 'Backups', 'Restore', 'Doctor', 'Enroll', 'Recover', 'Rotate']) {
+    for (const removed of ['History Window', 'Site Access', 'Validators', 'People', 'Alert Rules', 'Incidents', 'Silences', 'Maintenance', 'Deliveries', 'Channels', 'Operations', 'Data', 'Retention', 'Backups', 'Restore', 'Doctor', 'Enroll', 'Recover', 'Rotate']) {
       expect(
         Array.from(adminNav.querySelectorAll('a')).some((element) =>
           element.textContent?.includes(removed),

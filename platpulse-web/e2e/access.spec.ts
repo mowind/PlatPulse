@@ -272,8 +272,8 @@ test.describe('Anonymous Home (Guest) toggle', () => {
     await guest.close()
 
     await loginAs(page)
-    await page.goto('/admin/site-access')
-    await expect(page.getByRole('heading', { level: 1, name: 'Site Access' })).toBeVisible()
+    await page.goto('/admin/settings')
+    await expect(page.getByRole('heading', { level: 1, name: 'Settings' })).toBeVisible()
 
     try {
       page.on('dialog', (dialog) => void dialog.accept())
@@ -317,8 +317,8 @@ test.describe('Anonymous Home (Guest) toggle', () => {
       await guest2.close()
 
       // The Owner session is unaffected by the Guest toggle.
-      await page.goto('/admin/site-access')
-      await expect(page.getByRole('heading', { level: 1, name: 'Site Access' })).toBeVisible()
+      await page.goto('/admin/settings')
+      await expect(page.getByRole('heading', { level: 1, name: 'Settings' })).toBeVisible()
     } finally {
       // Always restore the default so parallel suites keep their contract.
       const access = await page.request.get('/api/admin/v1/access-mode')

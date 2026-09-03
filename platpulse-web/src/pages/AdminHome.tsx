@@ -28,8 +28,8 @@ import type {
  * values stay visible with explicit Error and freshness context. The
  * Server computes health, freshness, and attention; the browser only
  * formats them. This page carries no per-Node visibility/publication or
- * Geo database content: Site Access Mode on its own page remains the
- * single site-level Public/Private authority (issue #93).
+ * Geo database content: Site Access Mode in Settings remains the single
+ * site-level Public/Private authority (issues #93 and #111).
  */
 export default function AdminHome() {
   const { generation } = useAuth()

@@ -105,8 +105,8 @@ Admin groups:
 2. Agents;
 3. Nodes;
 4. Networks;
-5. History Window;
-6. Site Access, Sessions, and Audit.
+5. Settings;
+6. Sessions and Audit.
 
 Admin covers configuration and diagnostics; it must not duplicate Home's full Node Detail. The Admin Node page shows Server-owned administrative fields (display name, redacted RPC Endpoint diagnostics, Node Inventory/lifecycle, freshness summary) instead of the full Home observation cards.
 
@@ -162,8 +162,7 @@ Each page has a stable ID. IDs are semantic and do not prescribe React filenames
 | `PAGE-ADMIN-NODE-DETAIL` | `/admin/nodes/:nodeId` | Administrative detail and diagnostics (never a duplicate of Home's Node Detail) | Owner |
 | `PAGE-ADMIN-NETWORKS` | `/admin/networks` | Network Registry metadata and Nodes | Owner |
 | `PAGE-ADMIN-NETWORK-DETAIL` | `/admin/networks/:networkKey` | Expected identity, metadata, mismatch diagnostics | Owner |
-| `PAGE-ADMIN-HISTORY-WINDOW` | `/admin/history-window` | Global Block History window with safe bounds | Owner |
-| `PAGE-ADMIN-SITE-ACCESS` | `/admin/site-access` | Site Access Mode (Public/Private) with confirmation and Audit | Owner |
+| `PAGE-ADMIN-SETTINGS` | `/admin/settings` | Global Block History window and Site Access Mode configuration | Owner |
 
 Deferred groups (later phases only, no MVP page contracts): Agent enrollment/recovery/rotation, Node Transfer, Alerts and Operations, Data and Maintenance.
 
@@ -320,25 +319,24 @@ Every `PAGE-*` entry must specify the following before production coding:
 - must not reproduce Home's full observation cards;
 - every mutation is audited.
 
-### 8.3 History Window (`PAGE-ADMIN-HISTORY-WINDOW`)
+### 8.3 Settings (`PAGE-ADMIN-SETTINGS`)
 
-- shows the current window, its default, and its min/max bounds;
-- mutation requires confirmation, and the Server records old/new values plus actor in Audit;
-- copy states the consequences: changes apply immediately; shortening asynchronously deletes expired history; lengthening cannot recover already deleted or missed data;
-- out-of-bounds values are rejected by the Server and shown as field errors, never clamped silently.
+- renders one Settings heading with ordered History Window and Site Access Mode cards;
+- each card loads, mutates, and reports success or errors independently;
+- History Window shows the current window, default, min/max bounds, and last update;
+- History Window requires an integer in the Server bounds, a successful Server-authoritative impact preview, and typed confirmation before mutation; values are rejected rather than clamped;
+- History Window copy states that shortening asynchronously deletes expired history and lengthening cannot recover deleted or missed history; success includes its Audit Event identifier;
+- Site Access Mode uses text plus icon/equivalent semantics for Public or Private: Public permits anonymous Home reads, while Private requires Owner login;
+- switching Site Access Mode requires confirmation, records Audit, and performs the Public access-generation transition by closing affected streams, aborting old requests, clearing sensitive caches, discarding older responses, and reloading authoritative state;
+- the Settings cards stack on narrow viewports, preserve 44×44 CSS pixel targets, and never cause primary horizontal page overflow.
+
+The retired `/admin/history-window` and `/admin/site-access` routes are not redirected; they resolve through the Admin Section not found fallback.
 
 ### 8.4 Overview (`PAGE-ADMIN-OVERVIEW`)
 
 - prioritizes an attention queue, Server-owned Node Health Summary, freshness, and next actions;
 - independent panels may fail independently;
 - an Agent monitoring multiple Nodes shows separate Node rows/cards; Host metrics are not duplicated.
-
-### 8.5 Site Access Mode (`PAGE-ADMIN-SITE-ACCESS`)
-
-- shows the current mode and its consequences: Public lets everyone read Home without login; Private requires Owner login;
-- switching requires confirmation, and the Server records old/new values plus actor in Audit;
-- a mode change is an access-generation transition: close old streams, abort requests, clear affected caches, reload under the new mode;
-- Admin is never anonymous; the mode gates Home only.
 
 ## 9. Content, privacy, and redaction
 
@@ -570,6 +568,7 @@ A page is ready for production implementation only when:
 | Site-level access mode (Komari-like), Owner-only principals, per-Node visibility removed | Confirmed design review; see `docs/design/platpulse.md` |
 | Accepted Home / Node Detail visual direction, responsive baseline, public-data contract, and production test seam | Issue #75 and accepted branch `prototype/home-node-detail` |
 | Unified dark Admin shell and Overview shared-theme foundation | Issue #110 |
+| Unified Owner Settings page for History Window and Site Access Mode | Issue #111 |
 | Prototype cleanup and production-only route boundary | Issue #89 |
 
 Changes to a settled contract require a new decision record and must update the affected `PAGE-*`, `PATTERN-*`, and `SCN-*` references together. OpenAPI or Server policy changes do not silently change WebUI semantics; they require an explicit design review when the user-visible contract changes.

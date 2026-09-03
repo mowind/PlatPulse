@@ -169,14 +169,13 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
     await page.keyboard.press('Tab')
     await expect(page.getByRole('link', { name: 'Overview' })).toBeFocused()
     // Tab stays inside the drawer and wraps at the last item (issue #92:
-    // the MVP navigation holds exactly the eight retained page groups).
+    // the MVP navigation holds exactly the seven retained page groups).
     const mvpNav = [
       'Overview',
       'Agents',
       'Nodes',
       'Networks',
-      'History Window',
-      'Site Access',
+      'Settings',
       'Sessions',
       'Audit',
     ]
