@@ -1,0 +1,178 @@
+.admin-overview {
+  --overview-panel: rgba(18, 19, 29, 0.82);
+  --overview-line: rgba(255, 255, 255, 0.1);
+  max-width: 92rem !important;
+  padding-bottom: 3rem;
+  color: #f7f7fb;
+}
+.admin-overview * { min-width: 0; }
+.admin-overview a { color: inherit; }
+.admin-overview h1,
+.admin-overview h2,
+.admin-overview h3,
+.admin-overview p { margin-top: 0; }
+.admin-overview .eyebrow {
+  display: block;
+  color: rgba(247, 247, 251, 0.46);
+  font-size: 0.64rem;
+  font-weight: 850;
+  letter-spacing: 0.13em;
+  line-height: 1.3;
+  text-transform: uppercase;
+}
+.admin-overview-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 2rem;
+  margin-bottom: 1.5rem;
+}
+.admin-overview-header h1 {
+  margin: 0.2rem 0 0.3rem !important;
+  font-size: clamp(2.2rem, 5vw, 4.25rem) !important;
+  line-height: 0.96;
+  letter-spacing: -0.07em !important;
+}
+.admin-overview-header p {
+  max-width: 42rem;
+  margin-bottom: 0;
+  color: rgba(247, 247, 251, 0.58);
+  font-size: clamp(0.9rem, 1.4vw, 1rem);
+}
+.admin-overview .header-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  color: rgba(247, 247, 251, 0.54);
+  font-size: 0.75rem;
+}
+.admin-overview .live-dot {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  flex: 0 0 auto;
+  background: #65dda5;
+  border-radius: 50%;
+  box-shadow: 0 0 0 0.25rem rgba(101, 221, 165, 0.09);
+}
+.admin-overview .refresh-button,
+.admin-overview .quiet-button,
+.admin-overview .node-expand {
+  min-height: 44px;
+  padding: 0.42rem 0.75rem;
+  color: rgba(247, 247, 251, 0.76);
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid var(--overview-line);
+  border-radius: 0.55rem;
+  font-size: 0.72rem;
+  font-weight: 750;
+}
+.admin-overview .refresh-button:hover,
+.admin-overview .quiet-button:hover,
+.admin-overview .node-expand:hover { background: rgba(151, 124, 255, 0.14); }
+.admin-overview .overview-panel,
+.admin-overview .agent-card {
+  background: linear-gradient(145deg, rgba(255,255,255,0.038), rgba(255,255,255,0.012)), var(--overview-panel);
+  border: 1px solid var(--overview-line);
+  border-radius: 0.75rem;
+}
+.admin-overview .overview-panel { padding: clamp(0.95rem, 2vw, 1.35rem); }
+.admin-overview .setup-guide {
+  margin-top: 0.8rem;
+  padding: clamp(1rem, 2vw, 1.35rem);
+  border-color: rgba(151, 124, 255, 0.32);
+  background: linear-gradient(145deg, rgba(151, 124, 255, 0.10), rgba(255, 255, 255, 0.018)), var(--overview-panel);
+}
+.admin-overview .setup-guide p { max-width: 62rem; color: rgba(247, 247, 251, 0.68); }
+.admin-overview .setup-guide ol { display: grid; gap: 0.55rem; margin: 0.85rem 0 0; padding-left: 1.35rem; color: rgba(247, 247, 251, 0.82); }
+.admin-overview .setup-guide a,
+.admin-overview .text-action { color: #c5aeff !important; font-weight: 750; }
+.admin-overview .panel-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 1rem; }
+.admin-overview .panel-heading h2 { margin: 0.2rem 0 0; font-size: clamp(1.05rem, 2vw, 1.32rem); }
+.admin-overview .panel-count { min-width: 1.75rem; padding: 0.2rem 0.45rem; color: #fff; background: rgba(151,124,255,0.18); border-radius: 999px; text-align: center; font-size: 0.72rem; font-weight: 800; }
+.admin-overview .panel-state { color: rgba(247,247,251,0.68); }
+.admin-overview .attention-counts { color: rgba(247,247,251,0.5); font-size: 0.75rem; }
+.admin-overview .attention-panel { margin-bottom: 0.8rem; }
+.admin-overview .attention-list { display: grid; gap: 0.5rem; margin: 1rem 0 0; padding: 0; list-style: none; }
+.admin-overview .attention-item { display: flex; align-items: flex-start; gap: 0.75rem; padding: 0.75rem; background: rgba(255,255,255,0.025); border: 1px solid var(--overview-line); border-radius: 0.62rem; }
+.admin-overview .attention-item.critical { border-left: 2px solid #ff8e8e; }
+.admin-overview .attention-item.warning { border-left: 2px solid #f0c76e; }
+.admin-overview .attention-body { flex: 1; min-width: 0; }
+.admin-overview .attention-body p { margin-bottom: 0.25rem; }
+.admin-overview .attention-body ul { margin: 0.5rem 0 0; padding-left: 1.2rem; color: rgba(247,247,251,0.68); font-size: 0.8rem; }
+.admin-overview .attention-body .quiet-button { margin-top: 0.45rem; }
+.admin-overview .summary-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.65rem; margin-bottom: 0.8rem; }
+.admin-overview .summary-card { position: relative; min-height: 8.4rem; display: flex; flex-direction: column; justify-content: flex-end; padding: 0.95rem; overflow: hidden; color: #fff !important; background: var(--overview-panel); border: 1px solid var(--overview-line); border-radius: 0.75rem; text-decoration: none; }
+.admin-overview .summary-card::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 2px; background: #8874ed; }
+.admin-overview .summary-card.accent-green::before { background: #65dda5; }
+.admin-overview .summary-card.accent-red::before { background: #ff8e8e; }
+.admin-overview .summary-card.accent-slate::before { background: #6d7486; }
+.admin-overview .summary-card > strong { margin: 0.5rem 0 0.25rem; font-size: clamp(2rem, 4vw, 3rem); line-height: 0.9; letter-spacing: -0.06em; }
+.admin-overview .summary-card > span:not(.eyebrow):not(.card-arrow) { color: rgba(247,247,251,0.48); font-size: 0.7rem; }
+.admin-overview .card-arrow { position: absolute; top: 0.75rem; right: 0.8rem; color: rgba(247,247,251,0.38); }
+.admin-overview .summary-card:hover { background: rgba(151,124,255,0.08); border-color: rgba(197,174,255,0.28); }
+.admin-overview .node-panel { margin-bottom: 1.3rem; }
+.admin-overview .table-wrap { overflow-x: auto; }
+.admin-overview .node-table { width: 100%; border-collapse: collapse; }
+.admin-overview .node-table th,
+.admin-overview .node-table td { padding: 0.75rem 0.5rem; border-top: 1px solid rgba(255,255,255,0.065); text-align: left; vertical-align: top; font-size: 0.78rem; }
+.admin-overview .node-table thead th { color: rgba(247,247,251,0.35); font-size: 0.62rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+.admin-overview .node-table small { display: block; color: rgba(247,247,251,0.42); font-size: 0.66rem; font-weight: 600; }
+.admin-overview .node-toggle { min-height: 44px; padding: 0; color: #fff; background: transparent; border: 0; font-weight: 800; text-align: left; }
+.admin-overview .health-reason { display: block; color: rgba(247,247,251,0.55); font-size: 0.7rem; }
+.admin-overview .node-detail-row td { padding: 0.85rem; background: rgba(0,0,0,0.18); }
+.admin-overview .node-detail { display: grid; gap: 0.75rem; }
+.admin-overview .detail-list { display: grid; gap: 0.55rem; margin: 0; }
+.admin-overview .component-row { display: grid; grid-template-columns: 7rem 1fr; gap: 0.75rem; padding-top: 0.55rem; border-top: 1px solid rgba(255,255,255,0.065); }
+.admin-overview .component-row dt { color: rgba(247,247,251,0.58); font-weight: 750; }
+.admin-overview .component-row dd { margin: 0; }
+.admin-overview .component-error,
+.admin-overview .diagnostic-critical { color: #ffb0b0; font-weight: 800; }
+.admin-overview .agent-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.65rem; }
+.admin-overview .agent-card { min-width: 0; padding: 0.95rem; }
+.admin-overview .agent-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; }
+.admin-overview .agent-card-heading h3 { margin: 0; overflow-wrap: anywhere; }
+.admin-overview .agent-card .detail-list { margin-top: 0.75rem; }
+.admin-overview .agent-card .detail-list dd { margin: 0; overflow-wrap: anywhere; }
+.admin-overview .agent-card-critical { border-color: rgba(255, 142, 142, 0.42); box-shadow: 0 0 0 1px rgba(255, 142, 142, 0.08); }
+.admin-overview .agent-node-context { display: grid; gap: 0.35rem; }
+.admin-overview .agent-node-context ul { display: grid; gap: 0.25rem; margin: 0.35rem 0 0; padding-left: 1rem; }
+.admin-overview .agent-node-context li { display: flex; justify-content: space-between; gap: 0.75rem; color: rgba(247,247,251,0.72); }
+.admin-overview .agent-node-context li span:last-child { color: rgba(247,247,251,0.5); text-align: right; }
+.admin-overview .muted { color: rgba(247,247,251,0.5); }
+@media (max-width: 52rem) {
+  .admin-overview-header { align-items: flex-start; flex-direction: column; gap: 0.8rem; }
+  .admin-overview .header-status { justify-content: flex-start; }
+  .admin-overview .summary-cards { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  .admin-overview .summary-card { min-height: 7.1rem; }
+  .admin-overview .node-table thead { display: none; }
+  .admin-overview .node-table,
+  .admin-overview .node-table tbody,
+  .admin-overview .node-table tr,
+  .admin-overview .node-table th,
+  .admin-overview .node-table td { display: block; width: auto; }
+  .admin-overview .node-table tr:not(.node-detail-row) { display: grid; grid-template-columns: 1fr 1fr; gap: 0.55rem 0.75rem; margin-bottom: 0.55rem; padding: 0.8rem; background: rgba(255,255,255,0.025); border: 1px solid var(--overview-line); border-radius: 0.65rem; }
+  .admin-overview .node-table tr:not(.node-detail-row) > * { padding: 0; border: 0; }
+  .admin-overview .node-table tr:not(.node-detail-row) > th { grid-column: 1 / -1; }
+  .admin-overview .node-table tr:not(.node-detail-row) > td:nth-child(2) { grid-column: 1 / -1; }
+  .admin-overview .node-table tr:not(.node-detail-row) > td:nth-child(3),
+  .admin-overview .node-table tr:not(.node-detail-row) > td:nth-child(4),
+  .admin-overview .node-table tr:not(.node-detail-row) > td:nth-child(5) { grid-column: span 1; }
+  .admin-overview .node-detail-row td { padding: 0.85rem; }
+  .admin-overview .agent-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 29rem) {
+  .admin-overview .summary-cards { gap: 0.45rem; }
+  .admin-overview .summary-card { min-height: 7.5rem; padding: 0.7rem; }
+  .admin-overview .summary-card > strong { font-size: 2rem; }
+  .admin-overview .summary-card > span:not(.eyebrow):not(.card-arrow) { font-size: 0.62rem; }
+  .admin-overview .panel-heading { align-items: flex-start; flex-direction: column; gap: 0.4rem; }
+  .admin-overview .component-row { grid-template-columns: 1fr; gap: 0.25rem; }
+  .admin-overview .agent-node-context li { align-items: flex-start; flex-direction: column; gap: 0.1rem; }
+  .admin-overview .agent-node-context li span:last-child { text-align: left; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .admin-overview * { scroll-behavior: auto !important; transition: none !important; }
+}

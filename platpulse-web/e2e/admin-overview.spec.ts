@@ -56,19 +56,15 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
   test('shows the Server-owned attention queue and Node Health Summary', async ({ page }) => {
     await openOverview(page)
 
-    // Server-provided attention: Node B has an RPC collection failure.
+    // Server-provided attention includes Node B's identity mismatch.
     const attentionPanel = page.getByRole('heading', { level: 2, name: 'Attention queue' }).locator('xpath=ancestor::article[1]')
-    await expect(attentionPanel).toContainText('RPC collection failed', { timeout: 15_000 })
+    await expect(attentionPanel).toContainText('identity mismatches', { timeout: 15_000 })
 
     // Node Health Summary comes from the Server (health + reason), with the
     // fixed freshness vocabulary and last-good values.
-    const nodeARow = page.getByRole('row', { name: /Node A/ })
-    await expect(nodeARow).toContainText('healthy')
-    await expect(nodeARow).toContainText('Current')
-    await expect(nodeARow).toContainText('12842019')
-
     const nodeBRow = page.getByRole('row', { name: /Node B \(private\)/ })
     await expect(nodeBRow).toContainText('unhealthy')
+    await expect(nodeBRow).toContainText('Stale')
     // Last-good head remains visible next to the Error state.
     await expect(nodeBRow).toContainText('12842018')
 
@@ -88,10 +84,10 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
     test.skip(testInfo.project.name !== 'desktop-1280', 'metadata mutation runs once')
     await openOverview(page)
 
-    // Expand Node A's component details.
-    await page.getByRole('button', { name: 'Node A' }).click()
+    // Expand Node B (private)'s component details.
+    await page.getByRole('button', { name: 'Node B (private)' }).click()
     await expect(page.getByText('Collapse details')).toBeVisible()
-    await expect(page.getByText('platon/1.5.1 · 3 namespaces')).toBeVisible()
+    await expect(page.getByText('platon/1.5.1 · 0 namespaces')).toBeVisible()
 
     try {
       // Rename Node E through the real Admin API: the Server publishes an
@@ -108,10 +104,10 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
       await expect(page).toHaveURL(/\/admin$/)
 
       // Escape collapses the detail row; focus stays on the toggle.
-      await page.getByRole('button', { name: 'Node A' }).focus()
+      await page.getByRole('button', { name: 'Node B (private)' }).focus()
       await page.keyboard.press('Escape')
       await expect(page.getByText('Collapse details')).toHaveCount(0)
-      await expect(page.getByRole('button', { name: 'Node A' })).toBeFocused()
+      await expect(page.getByRole('button', { name: 'Node B (private)' })).toBeFocused()
       await expectNoHorizontalOverflow(page)
     } finally {
       // Restore Node E's seeded display name so repeated runs and parallel

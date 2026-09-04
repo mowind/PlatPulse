@@ -205,6 +205,22 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     expectNoGeoRequests(fetchMock)
   })
 
+  it('keeps variant query parameters on the canonical production Overview', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/overview': () => jsonResponse(OVERVIEW, 200),
+      '/api/admin/v1/nodes': () => jsonResponse([NODE], 200),
+      '/api/admin/v1/agents': () => jsonResponse([AGENT], 200),
+    })
+
+    await renderAt('/admin?variant=C')
+    expect(await screen.findByRole('heading', { level: 1, name: 'Overview' })).toBeTruthy()
+    expect(screen.queryByRole('navigation', { name: 'Prototype variants' })).toBeNull()
+    expect(screen.queryByText('Standalone prototype · no login')).toBeNull()
+    expect(screen.queryByText('System posture')).toBeNull()
+    expect(screen.queryByText('Fleet overview')).toBeNull()
+  })
+
   it('prioritizes Active Nodes before limiting the ledger and keeps deterministic ties stable', async () => {
     const activeNodes = [
       { ...NODE, node_id: 'healthy-1', display_name: 'Healthy 1', health: 'healthy', freshness: 'current' },

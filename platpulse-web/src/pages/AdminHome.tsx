@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { Link } from 'react-router'
-import './AdminOverviewPrototype.css'
+import './AdminOverview.css'
 import {
   useAdminDiagnostics,
   useAdminNodes,
@@ -41,7 +41,7 @@ export default function AdminHome() {
   const snapshot = overview.data
 
   return (
-    <section className="page admin-overview prototype-a">
+    <section className="page admin-overview">
       <OverviewHeader snapshot={snapshot} query={overview} />
       <AttentionPanel query={overview} />
       {snapshot && <SummaryCards summary={snapshot.summary} />}
@@ -71,7 +71,7 @@ function OverviewHeader({
   query: OverviewQuery
 }) {
   return (
-    <header className="prototype-header">
+    <header className="admin-overview-header">
       <div>
         <span className="eyebrow">Owner triage</span>
         <h1>Overview</h1>
@@ -217,7 +217,7 @@ function AttentionPanel({ query }: { query: OverviewQuery }) {
   const hiddenCount = Math.max(0, groups.length - 6)
   const criticalCount = (data?.attention ?? []).filter((item) => item.severity === "critical").length
   return (
-    <article className="panel overview-panel a-attention">
+    <article className="panel overview-panel attention-panel">
       <div className="panel-heading"><div><span className="eyebrow">01 · Attention</span><h2>Attention queue</h2></div>{data && <span className="panel-count">{data.attention.length}</span>}</div>
       <p className="sr-only" role="status">{announcement}</p>
       {!data && query.isPending && <p className="panel-state" role="status"><StatusBadge status="Starting" tone="neutral" /> Checking the Server for attention…</p>}
@@ -289,7 +289,7 @@ function NodePanel({
   }
 
   return (
-    <article className="panel">
+    <article className="panel overview-panel node-panel">
       <div className="panel-heading">
         <h2>Node Health Summary</h2>
         {activeNodes.length > 0 && <span className="panel-count">{activeNodes.length}</span>}
