@@ -130,6 +130,22 @@
 
 .overview-panel { padding: clamp(0.95rem, 2vw, 1.35rem); }
 
+.setup-guide {
+  margin-top: 0.8rem;
+  padding: clamp(1rem, 2vw, 1.35rem);
+  border-color: rgba(151, 124, 255, 0.32);
+  background: linear-gradient(145deg, rgba(151, 124, 255, 0.10), rgba(255, 255, 255, 0.018)), var(--proto-panel);
+}
+.setup-guide p { max-width: 62rem; color: rgba(247, 247, 251, 0.68); }
+.setup-guide ol {
+  display: grid;
+  gap: 0.55rem;
+  margin: 0.85rem 0 0;
+  padding-left: 1.35rem;
+  color: rgba(247, 247, 251, 0.82);
+}
+.setup-guide a { color: #c5aeff; font-weight: 750; }
+
 .prototype-panel-title,
 .c-ledger-head {
   display: flex;

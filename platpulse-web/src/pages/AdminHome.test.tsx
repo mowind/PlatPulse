@@ -449,6 +449,23 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     ).toBeTruthy()
     expect(screen.getByText('No Nodes observed yet.')).toBeTruthy()
     expect(screen.getByText('No Agents enrolled yet.')).toBeTruthy()
+    expect(screen.getByRole('heading', { level: 2, name: 'Set up your first observation' })).toBeTruthy()
+    expect(screen.getByRole('link', { name: 'Register the expected Network identity' }).getAttribute('href')).toBe('/admin/networks')
+    expect(screen.getByRole('link', { name: "Configure the Agent's local Node Inventory" }).getAttribute('href')).toBe('/admin/settings')
+    expect(screen.queryByText(/RPC Endpoint|Enrollment|fake data|one-click/i)).toBeNull()
+  })
+
+  it('does not show setup guidance until all three surfaces prove authoritative emptiness', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/overview': () => jsonResponse({ ...OVERVIEW, summary: { ...OVERVIEW.summary, agents: { total: 0, online: 0, offline: 0, unknown: 0 }, nodes: { ...OVERVIEW.summary.nodes, total: 0, active: 0, healthy: 0, unhealthy: 0, unknown: 0, retired: 0 }, networks: { total: 0, with_identity_mismatch: 0 }, }, attention: [] }, 200),
+      '/api/admin/v1/nodes': () => jsonResponse([NODE], 200),
+      '/api/admin/v1/agents': () => jsonResponse([], 200),
+    })
+    await renderAt('/admin')
+    await screen.findByRole('heading', { level: 1, name: 'Overview' })
+    expect(screen.queryByRole('heading', { level: 2, name: 'Set up your first observation' })).toBeNull()
+    expect(screen.getByRole('row', { name: /Node A/ })).toBeTruthy()
   })
 
   it('shows an explicit loading state while the overview is in flight', async () => {

@@ -47,6 +47,16 @@ export default function AdminHome() {
       {snapshot && <SummaryCards summary={snapshot.summary} />}
       <NodePanel nodeQuery={nodes} diagnosticsQuery={diagnostics} />
       <AgentPanel query={diagnostics} nodeQuery={nodes} />
+      {snapshot &&
+        nodes.data &&
+        diagnostics.data &&
+        !overview.isError &&
+        !nodes.isError &&
+        !diagnostics.isError &&
+        !overview.isFetching &&
+        !nodes.isFetching &&
+        !diagnostics.isFetching &&
+        isAuthoritativelyEmpty(snapshot, nodes.data, diagnostics.data) && <SetupGuide />}
     </section>
   )
 }
@@ -117,6 +127,34 @@ function formatRelativeTime(value: Date, now: Date): string {
   return formatter.format(Math.round(seconds / 86_400), 'day')
 }
 
+function isAuthoritativelyEmpty(snapshot: AdminOverview, nodes: AdminNodeListItem[], agents: AgentDiagnostic[]): boolean {
+  return snapshot.summary.agents.total === 0 &&
+    snapshot.summary.nodes.total === 0 &&
+    snapshot.summary.networks.total === 0 &&
+    nodes.length === 0 &&
+    agents.length === 0
+}
+
+function SetupGuide() {
+  return (
+    <aside className="panel setup-guide" aria-labelledby="setup-guide-title">
+      <div className="panel-heading">
+        <div>
+          <span className="eyebrow">Next steps</span>
+          <h2 id="setup-guide-title">Set up your first observation</h2>
+        </div>
+      </div>
+      <p>There are no Agents, Nodes, or Networks yet. Complete these steps to begin receiving authoritative observations.</p>
+      <ol>
+        <li><Link to="/admin/networks">Register the expected Network identity</Link>.</li>
+        <li>Provision and start an Agent.</li>
+        <li><Link to="/admin/settings">Configure the Agent's local Node Inventory</Link>.</li>
+        <li>Wait for the first accepted Agent Report.</li>
+      </ol>
+    </aside>
+  )
+}
+
 function SummaryCards({ summary }: { summary: AdminOverview['summary'] }) {
   const cards = [
     {
@@ -184,7 +222,7 @@ function AttentionPanel({ query }: { query: OverviewQuery }) {
       <p className="sr-only" role="status">{announcement}</p>
       {!data && query.isPending && <p className="panel-state" role="status"><StatusBadge status="Starting" tone="neutral" /> Checking the Server for attention…</p>}
       {!data && query.isError && <p className="panel-state" role="alert"><StatusBadge status="Error" tone="error" /> {query.error instanceof Error ? query.error.message : "Unable to load attention"} <button type="button" className="text-action" onClick={() => void query.refetch()}>Try again</button></p>}
-      {data && query.isRefetchError && <p className="panel-state" role="alert"><StatusBadge status="Error" tone="error" /> Failed to refresh; showing the last successful attention queue.</p>}
+      {data && query.isRefetchError && <p className="panel-state" role="alert"><StatusBadge status="Error" tone="error" /> Failed to refresh; showing the last successful attention queue. <button type="button" className="text-action" onClick={() => void query.refetch()}>Try again</button></p>}
       {data && data.attention.length === 0 && <p className="panel-state"><StatusBadge status="Empty" tone="ok" /> No attention items. Nothing needs an Owner right now.</p>}
       {data && data.attention.length > 0 && <><p className="attention-counts">{data.attention.length} items across {groups.length} subjects · {criticalCount} Critical</p><ul className="attention-list">{visibleGroups.map((group) => <AttentionGroup key={group.key} group={group} expanded={expanded.has(group.key)} onToggle={() => setExpanded((current) => { const next = new Set(current); if (next.has(group.key)) { next.delete(group.key) } else { next.add(group.key) } return next })} />)}</ul>{hiddenCount > 0 && <button type="button" className="quiet-button" onClick={() => setExpanded((current) => { const next = new Set(current); if (next.has("__all__")) { next.delete("__all__") } else { next.add("__all__") } return next })}>{showAll ? "Collapse" : `Show ${hiddenCount} more`}</button>}</>}
     </article>
@@ -275,6 +313,7 @@ function NodePanel({
         <p className="panel-state" role="alert">
           <StatusBadge status="Error" tone="error" /> Failed to refresh; showing the last
           successful Node values.
+          <button type="button" className="text-action" onClick={() => void nodeQuery.refetch()}>Try again</button>
         </p>
       )}
       {nodeQuery.data && activeNodes.length === 0 && (
@@ -619,6 +658,7 @@ function AgentPanel({ query, nodeQuery }: { query: DiagnosticsQuery; nodeQuery: 
         <p className="panel-state" role="alert">
           <StatusBadge status="Error" tone="error" /> Failed to refresh; showing the last
           successful Agent values.
+          <button type="button" className="text-action" onClick={() => void query.refetch()}>Try again</button>
         </p>
       )}
       {query.data && agents.length === 0 && (

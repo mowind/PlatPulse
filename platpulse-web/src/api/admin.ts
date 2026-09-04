@@ -1211,6 +1211,12 @@ function invalidateAdminResource(resource: string, resourceId: string | undefine
         return [adminKeys.overview, adminKeys.diagnostics, adminKeys.nodes, adminKeys.networks]
       case 'peer':
         return [adminKeys.overview, adminKeys.nodes, adminKeys.networks]
+      case 'agent':
+        // Agent lifecycle and report changes affect the overview, the
+        // diagnostics-backed Agent inventory, and any open Agent detail or
+        // audit view, but not the independent Node registry query unless the
+        // Server emits a Node invalidation too.
+        return [adminKeys.overview, adminKeys.diagnostics, ...(resourceId ? [adminKeys.agentDetail(resourceId), adminKeys.agentAudit(resourceId)] : [])]
       case 'geo':
         // The Geo database surface is deferred beyond the MVP WebUI
         // (issue #93), but the Server still publishes geo invalidations
@@ -1325,6 +1331,8 @@ export function useAdminRealtime(
   const hasRealtimeCursor = realtimeCursor !== null
   const accessReset = useRef(onAccessReset)
   accessReset.current = onAccessReset
+  const hasConnected = useRef(false)
+  const reconnectAttempt = useRef(0)
 
   // Keep transport mutation out of render. During a reset this hook can
   // still receive the retired AuthContext generation while the shell has
@@ -1357,6 +1365,7 @@ export function useAdminRealtime(
     // transition. Every `invalidation` (including buffered replay resets)
     // only refetches the authoritative Admin REST namespace.
     const onReset = () => {
+      reconnectAttempt.current += 1
       events.close()
       setStatus('connecting')
       accessReset.current()
@@ -1365,11 +1374,33 @@ export function useAdminRealtime(
       const message = event as MessageEvent<string>
       if (handleAdminInvalidation(message.data, accessGeneration)) onReset()
     }
-    events.onopen = () => setStatus('connected')
-    events.onerror = () => setStatus('disconnected')
+    events.onopen = () => {
+      if (!hasConnected.current) {
+        hasConnected.current = true
+        setStatus('connected')
+        return
+      }
+      // EventSource reconnects after a transport interruption. Keep the
+      // stream in Starting until authoritative REST recovery completes, so
+      // Current never claims fresher data than the page has received.
+      const attempt = ++reconnectAttempt.current
+      setStatus('connecting')
+      void adminQueryClient
+        .invalidateQueries({ queryKey: adminKeys.all, refetchType: 'active' })
+        .then(() => {
+          if (reconnectAttempt.current === attempt) setStatus('connected')
+        })
+    }
+    events.onerror = () => {
+      reconnectAttempt.current += 1
+      setStatus('disconnected')
+    }
     events.addEventListener('invalidation', onInvalidation)
     events.addEventListener('reset', onReset)
     return () => {
+      // Invalidate any reconnect recovery promise from this retired stream so
+      // it cannot mark a later generation or stream Current.
+      reconnectAttempt.current += 1
       adminRealtimeClosers.delete(closeStream)
       events.removeEventListener('invalidation', onInvalidation)
       events.removeEventListener('reset', onReset)

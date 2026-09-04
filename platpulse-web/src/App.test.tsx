@@ -663,6 +663,42 @@ describe('App shell with private Home', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'Overview' })).toBeTruthy()
   })
 
+  it('refetches authoritative Admin REST after SSE reconnect without clearing the page', async () => {
+    let overviewCalls = 0
+    const fetchMock = mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/overview': () => {
+        overviewCalls += 1
+        return jsonResponse({
+          generated_at: '2026-08-12T00:00:00Z',
+          summary: {
+            agents: { total: 0, online: 0, offline: 0, unknown: 0 },
+            nodes: { total: 0, active: 0, healthy: 0, unhealthy: 0, unknown: 0, retired: 0, published: 0 },
+            networks: { total: 0, with_identity_mismatch: 0 },
+          },
+          attention: [],
+        }, 200)
+      },
+      '/api/admin/v1/nodes': () => jsonResponse([], 200),
+      '/api/admin/v1/agents': () => jsonResponse([], 200),
+    })
+    vi.stubGlobal('EventSource', FakeEventSource)
+    render(<App />)
+    await goToAdmin()
+    await screen.findByRole('heading', { level: 1, name: 'Overview' })
+    await waitFor(() => expect(overviewCalls).toBe(1))
+    const stream = FakeEventSource.latest
+    expect(stream).toBeTruthy()
+
+    await act(async () => stream?.onopen?.())
+    await act(async () => stream?.onerror?.())
+    expect(await screen.findByText('Live updates paused')).toBeTruthy()
+    await act(async () => stream?.onopen?.())
+    await waitFor(() => expect(overviewCalls).toBe(2))
+    expect(screen.getByRole('heading', { level: 1, name: 'Overview' })).toBeTruthy()
+    expect(fetchMock).toHaveBeenCalled()
+  })
+
   it('refetches Network Registry surfaces and Overview after a Network invalidation', async () => {
     let overviewCalls = 0
     let networkCalls = 0
