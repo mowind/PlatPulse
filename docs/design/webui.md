@@ -38,7 +38,7 @@ PlatPulse WebUI presents operational truth from the Server and gives the Owner s
 
 ## 2. Authorities and vocabulary
 
-Use the exact domain terms in `CONTEXT.md`. MVP-relevant terms include: Host, Agent, PlatON Node, Node ID, RPC Endpoint, Network, Network Identity, Network Registry, Node Inventory, Active Node, Retired Node, Component Observation, Agent Report, Report Receipt, Current Projection, Block Summary, Peer Count Observation, Host Observation, Node Process Observation, Node Chain Observation, Node Observation, Node Health Summary, Public Projection, Site Access Mode, Invalidation Event, Home Dashboard, Admin Dashboard, Audit Event, and Owner.
+Use the exact domain terms in `CONTEXT.md`. MVP-relevant terms include: Host, Agent, PlatON Node, Node ID, RPC Endpoint, Network, Network Identity, Network Registry, Node Inventory, Active Node, Retired Node, Component Observation, Agent Report, Report Receipt, Current Projection, Block Summary, Peer Count Observation, Host Observation, Node Process Observation, Node Chain Observation, Node Observation, Node Health Summary, Attention Item, Public Projection, Site Access Mode, Invalidation Event, Home Dashboard, Admin Dashboard, Audit Event, and Owner.
 
 The WebUI must not invent synonyms that blur boundaries. In particular:
 
@@ -348,9 +348,158 @@ Each Settings card keeps independent loading, mutation, success, field-error, pa
 
 ### 8.4 Overview (`PAGE-ADMIN-OVERVIEW`)
 
-- prioritizes an attention queue, Server-owned Node Health Summary, freshness, and next actions;
-- independent panels may fail independently;
-- an Agent monitoring multiple Nodes shows separate Node rows/cards; Host metrics are not duplicated.
+The Overview is the Owner's triage surface, not a second copy of the Nodes or Agents inventory and not a remote-control console. It borrows Komari's compact scanning density, dark operational canvas, restrained borders, strong primary numbers, and quiet secondary copy without importing Komari's database, subscription, traffic-ranking, pricing, latency-probe, or remote-operation model. The accepted order is `Attention -> Summary -> Node Health -> Agent inventory`.
+
+#### 8.4.1 Composition and navigation
+
+1. `Attention queue` is the first full-width panel. It presents current Server-derived Attention Items and their safe next actions.
+2. Four compact summary cards follow: `Agents`, `Active Nodes`, `Retired Nodes`, and `Networks`. The cards use explicit counts and text legends, optionally with an accessible segmented bar; they do not use a single online/healthy percentage or circular score that can hide Unknown or Retired state.
+3. `Node Health Summary` presents at most the ten highest-priority Active Nodes. The complete inventory remains at `/admin/nodes`.
+4. `Agent inventory` presents at most the six highest-priority Agents. The complete inventory remains at `/admin/agents`.
+
+Each summary card is one semantic link with a visible focus state and no nested action:
+
+```text
+Agents        -> /admin/agents
+Active Nodes  -> /admin/nodes?lifecycle=active
+Retired Nodes -> /admin/nodes?lifecycle=retired
+Networks      -> /admin/networks
+```
+
+The primary values are:
+
+```text
+Agents:       total; online / offline / unknown
+Active Nodes: active; healthy / unhealthy / unknown
+Retired Nodes: retired
+Networks:     total; with Network Identity Mismatch
+```
+
+`Active Nodes = healthy + unhealthy + unknown` and `total Nodes = active + retired`. Retired Nodes are excluded from live health buckets and Attention Items. A compatibility-only published/visibility count is not a primary Overview metric; Site Access Mode is the site-wide Home authority and every Active Node appears on Home.
+
+#### 8.4.2 Attention queue
+
+An Attention Item is a current Server-derived prompt, not an Alert Incident, Notification, Audit Event, or browser-computed warning. The REST DTO keeps each problem independent with a stable `kind + subject` identity. The typed kinds are:
+
+```text
+agent_offline
+agent_spool_fatal
+agent_spool_overflow
+agent_report_gap
+agent_security_event
+agent_shutdown_incomplete
+node_unhealthy
+node_health_unknown
+node_resync
+node_identity_mismatch
+```
+
+Typed severities are `critical` and `warning`. Critical means a confirmed availability, data-integrity, or security risk:
+
+```text
+agent_spool_fatal
+agent_spool_overflow
+agent_security_event
+node_unhealthy
+node_identity_mismatch
+```
+
+Warning means investigation is required without a confirmed critical loss:
+
+```text
+agent_offline
+agent_report_gap
+agent_shutdown_incomplete
+node_health_unknown
+node_resync
+```
+
+A new Agent with no accepted report is Unknown rather than Offline. A new Active Node remains Starting during the Server-owned first-observation grace period and does not produce `node_health_unknown` until that grace period expires. Unsupported, Disabled, stale, never-observed, and other incomplete states do not automatically become Critical. Network Identity Mismatch remains distinct from RPC Error and produces its own critical item because mismatched Block History must not merge into the registered Network.
+
+The Server orders individual items by severity (`critical`, then `warning`), most recent authoritative `observed_at`, stable subject label, and stable identity. The WebUI groups items visually by `subject_kind + subject_id` without discarding or recomputing any item. A group uses its highest severity, exposes its primary issue, and offers expansion for additional issues. The panel reports both counts, for example `6 issues across 3 subjects`. Group order is highest severity, latest authoritative observation, subject label, and stable subject identity.
+
+The first six subject groups are visible by default. `Show N more` and `Collapse` reveal or hide the remainder without losing the current items. Safe navigation is derived only from typed subject kinds and known same-origin Admin routes; the Server does not supply arbitrary URLs. Unknown future kinds remain visible with an Unknown fallback and no guessed link.
+
+#### 8.4.3 Node Health Summary
+
+Each row/card is exactly one Active Node and preserves Node scope. An Agent monitoring multiple Nodes produces separate Node rows/cards; block, transaction, consensus, peer, and error observations never merge into an Agent-level chain view.
+
+The compact row keeps these priority fields visible:
+
+```text
+Node display name and shortened Node ID
+Network
+Server-owned Node Health Summary and primary reason
+Freshness
+Current Head / Sync
+Resync state
+Show diagnostics
+View Node
+```
+
+The default priority is unhealthy, unknown health, stale, then healthy/current, with stable Network and Node-name tie-breakers. Timestamp-only invalidations do not reorder the list. At most ten Active Nodes are shown, followed by `Showing N of M Active Nodes` and `View all Nodes`. Retired Nodes remain in their summary card and the filtered Nodes inventory, not this live table.
+
+`Show diagnostics` expands RPC, Sync, Consensus, Peers, Process, and Node Data in place; `View Node` opens the administrative Node Detail. Only one Node is expanded at a time, Escape collapses it, and an SSE-driven REST refetch preserves expansion by Node ID while that Node remains in the rendered set. Expansion shows collection, value, freshness, LastGood, time, and safe error context; it does not reproduce Home charts or the complete Home Node Detail.
+
+#### 8.4.4 Agent inventory
+
+Each Agent card represents one Agent and its one Host. Host Observation is shown once on that card and is never copied into every Node. The compact Node rows are joined from the already-loaded Admin Node list by stable `agent_id`; they preserve each Node's independent state rather than creating an Agent-level chain aggregate. The compact card may show:
+
+```text
+Agent identity and liveness
+Last accepted report and sequence
+Active / unhealthy / unknown Node counts
+Compact Host CPU and memory values
+Durable Spool queued reports, capacity, overflow, and fatal state
+Clock status
+Report sequence gaps and security-event count
+Separate compact rows for the Agent's Nodes
+View Agent
+```
+
+Unknown Host CPU, memory, or Spool values remain Unknown rather than zero. CPU and memory may use small current-value progress tracks, but Overview has no Host rankings, 24-hour charts, or duplicated Host metrics. Normal Spool state stays quiet; fatal storage, discarded reports, delivery backlog, and other exceptional states are prominent. Boot IDs, complete credential state, shutdown evidence, complete Host observations, and detailed diagnostics belong to Agent Detail.
+
+The default priority is Agents with critical diagnostics, then offline, unknown, and online Agents, with stable Agent ID tie-breaking. At most six cards are shown, followed by `View all Agents`.
+
+#### 8.4.5 Data, time, and partial states
+
+The page retains three independent Admin query surfaces:
+
+```text
+GET /api/admin/v1/overview -> Attention and the atomic summary snapshot
+GET /api/admin/v1/nodes    -> Node Health Summary
+GET /api/admin/v1/agents   -> Agent inventory and Host diagnostics
+```
+
+Failure of one surface never hides successful data from another. Attention and summary fail together because they are one atomic Overview snapshot. Initial loading uses explicit `Starting` text, optionally accompanied by static skeleton shapes. A refetch failure preserves LastGood content and says that the last successful values remain visible. Each failed surface owns its own `Try again`. SSE carries only invalidation/reset; `Live updates paused` or `You are offline` never clears valid REST content.
+
+Visible timestamps are relative, such as `2 minutes ago`, with an accessible absolute UTC value. Agent reports may show `Report #128 - 5 seconds ago`. The WebUI formats Server timestamps but never uses browser time to derive Freshness, liveness, grace periods, Health, or Attention severity.
+
+When Agents, Nodes, and Networks are all empty, the page retains authoritative zero and Empty states and adds a compact setup guide: register the expected Network identity, provision and start an Agent, configure its local Node Inventory, and wait for the first accepted Agent Report. It may link to Networks and Settings, but it cannot configure an RPC Endpoint, start an Agent, create a local Node Inventory, expose an Enrollment workflow, enable fake data, or offer one-click initialization.
+
+#### 8.4.6 Page boundaries
+
+Overview owns triage, compact counts, priority subsets, and safe navigation. The Nodes page owns the full inventory, lifecycle/Network/health/freshness filters, stable sorting, inventory revision, identity disposition, redacted RPC Endpoint diagnostics, metadata editing, and Audit links. Admin Node Detail owns full administrative Component diagnostics and must not reproduce Home's observation-card and chart deck.
+
+The Agents page owns the complete Agent inventory, epoch, boot/report state, Node Inventory, credential state, Spool diagnostics, clock diagnostics, sequence gaps, and security events. Agent Detail owns full identity, credential, Host, Inventory, diagnostic evidence, and Audit context. Overview never displays complete credentials, complete RPC Endpoints, Boot IDs, internal paths, stack traces, or remote controls.
+
+#### 8.4.7 Responsive and visual acceptance
+
+The visual balance is PlatPulse's dark operational system first and Komari-inspired density second: near-black translucent surfaces, neutral one-pixel borders, restrained 10-14px radii, reduced blur and large shadows, high-contrast counts, quiet labels, indigo/violet navigation accents, and semantic green/amber/red/neutral status treatments. No status depends on color alone. The production UI remains English for the MVP; localization is a separate whole-application capability rather than a mixed-language Overview.
+
+At `1280x800`, the Admin sidebar is persistent, Attention and Node Health are full-width, summary cards form four columns, and Agent cards form two columns. At `768x1024`, navigation uses the accessible drawer, summary cards form a two-by-two grid, and Node/Agent content is single-column. At `360x800` and `390x844`, summary cards remain a compact two-by-two grid when legible and may fall to one column when content requires it; Node tables become priority cards and Agent cards stack. Health/Freshness and Head/Sync remain paired, secondary evidence moves into expansion, controls remain at least 44x44 CSS pixels, and no primary horizontal page scrolling is allowed. The page remains functional at 200% zoom, in portrait and landscape, and with reduced motion.
+
+Overview acceptance scenarios include:
+
+```text
+SCN-OVERVIEW-FRESH
+SCN-OVERVIEW-STALE-LAST-GOOD
+SCN-OVERVIEW-UNKNOWN-UNSUPPORTED
+SCN-OVERVIEW-ATTENTION-GROUPING
+SCN-OVERVIEW-PARTIAL-FAILURE
+SCN-OVERVIEW-EMPTY-SETUP
+SCN-OVERVIEW-RESPONSIVE
+```
 
 ## 9. Content, privacy, and redaction
 
@@ -425,6 +574,10 @@ SCN-HOME-UNAVAILABLE-NODE
 SCN-OVERVIEW-FRESH
 SCN-OVERVIEW-STALE-LAST-GOOD
 SCN-OVERVIEW-UNKNOWN-UNSUPPORTED
+SCN-OVERVIEW-ATTENTION-GROUPING
+SCN-OVERVIEW-PARTIAL-FAILURE
+SCN-OVERVIEW-EMPTY-SETUP
+SCN-OVERVIEW-RESPONSIVE
 SCN-SITE-ACCESS-PUBLIC
 SCN-HISTORY-WINDOW-SHORTEN
 SCN-HISTORY-WINDOW-BOUNDS
@@ -451,11 +604,11 @@ The Home route is a read-only operational overview composed in this order:
 
 1. A compact header with the PlatPulse brand link at left and one circular Admin icon link at right. The brand returns to Home; the Admin icon enters the Admin route and does not expose Admin data inside Home.
 2. A page kicker, the Home heading, explanatory Public Projection copy, and a server-authoritative live/realtime indicator.
-3. Four summary cards for published Node count, Server-owned healthy Node count, Nodes needing attention, and published Network count. These are projections of already-loaded Public data; they are not new health policy.
+3. Four summary cards for Active Node count, Server-owned healthy Node count, Nodes needing attention, and registered Network count. These are projections of already-loaded Public data; they are not new health policy or per-Node visibility.
 4. A toolbar containing Network filter pills and a clearly labelled sort control. Unsupported future views are not rendered as usable production actions.
 5. A responsive collection of compact Active Node cards. Each whole card is one semantic link to Node Detail; the Network name is plain text and the card contains no nested Network link. The header shows Node identity, Validator Activity, and Node Health without `ACTIVITY` or `HEALTH` labels; missing Validator Activity is `Observing`. Healthy Nodes omit routine component rows, health prose, Last Observed, and no-op Resync copy; an exceptional Node may show one short diagnostic line.
 6. Each compact card presents three ordered metric rows: sanitized Host `CPU / MEMORY / STORAGE / ↑ UP / ↓ DOWN`; Node `HEAD / TXS / PEERS`; and Consensus `QC / LOCKED / COMMITTED / VALIDATOR`. HEAD remains Sync Current Head, TXS is the transaction count from that Node's latest persisted Block Summary, and PEERS retains its independent observation-state cue. Missing values remain unavailable rather than becoming zero.
-7. An explicit empty state when the selected Network has no published Nodes, without implying that missing data is zero or healthy.
+7. An explicit empty state when the selected Network has no Active Nodes, without implying that missing data is zero or healthy.
 
 Network hierarchy remains Network -> PlatON Node -> Node Detail. Home never reorganizes the view around Agent or Host topology.
 
@@ -542,9 +695,13 @@ desktop-1280
 | `SCN-HOME-NETWORK-LIST` | network list from Public Projection, all Active Nodes visible, anonymous access follows Site Access Mode |
 | `SCN-HOME-NODE-DETAIL` | compact Komari-density Node card with no coloured edge strip, compact process CPU/process memory/Node Data progress, four equal-height compact detail cards containing two 60-second line charts and two bar charts backed by real retained samples, neutral card borders, no rendered Bounded Block History, derived consecutive-block interval, Peer Count only |
 | `SCN-HOME-UNAVAILABLE-NODE` | non-leaking unavailable copy for retired/unknown; no internal detail |
-| `SCN-OVERVIEW-FRESH` | independent Node rows, Server Health Summary, current timestamps |
-| `SCN-OVERVIEW-STALE-LAST-GOOD` | last-good remains, Error/Stale reason and age visible, no zero substitution |
-| `SCN-OVERVIEW-UNKNOWN-UNSUPPORTED` | Unknown/Unsupported/Disabled/Empty remain distinct |
+| `SCN-OVERVIEW-FRESH` | Attention precedes four linked summary cards, priority Node rows remain independently scoped, Agent cards show Host observations once, and Server Health/freshness/timestamps remain authoritative |
+| `SCN-OVERVIEW-STALE-LAST-GOOD` | last-good remains, Error/Stale reason and age visible, no zero substitution, and failed refetch does not clear valid REST content |
+| `SCN-OVERVIEW-UNKNOWN-UNSUPPORTED` | Unknown/Unsupported/Disabled/Empty remain distinct; Starting grace does not become Offline or premature attention |
+| `SCN-OVERVIEW-ATTENTION-GROUPING` | typed critical/warning items remain independent, group by Subject without loss, show issue and Subject counts, preserve safe known-route actions, and expose unknown-kind fallback |
+| `SCN-OVERVIEW-PARTIAL-FAILURE` | Overview, Nodes, and Agents fail/retry independently while Attention and summary remain one atomic snapshot |
+| `SCN-OVERVIEW-EMPTY-SETUP` | authoritative zero/Empty values remain visible, safe Networks/Settings guidance appears, and no remote setup or fake-data action exists |
+| `SCN-OVERVIEW-RESPONSIVE` | fixed 360/390/768/1280 layouts, summary transformation, Node cards, Agent stacking, touch/focus/Escape, 200% zoom, reduced motion, and no primary horizontal overflow |
 | `SCN-SITE-ACCESS-PUBLIC` | from `/admin/settings`, switch to Public, allow anonymous Home reads, keep Admin Owner-only, clear affected state, discard stale responses, and record an Audit Event |
 | `SCN-HISTORY-WINDOW-SHORTEN` | from `/admin/settings`, require confirmation, show old/new and impact, remove expired history asynchronously, and record an Audit Event |
 | `SCN-HISTORY-WINDOW-BOUNDS` | out-of-bounds values rejected with field errors, bounds shown |
@@ -587,6 +744,7 @@ A page is ready for production implementation only when:
 | Unified Owner Settings page for History Window and Site Access Mode | Issue #111 |
 | Admin visual convergence across retained pages | Issue #112 |
 | Unified Admin experience integration contract, canonical Settings route, and fixed-viewport verification | Issue #113, parent Issue #109 |
+| Komari-inspired Admin Overview triage hierarchy, typed Attention Items, shared Server Health policy, responsive limits, and page boundaries | Confirmed `grill-with-docs` design review; see `docs/design/platpulse.md` §8.5 and this document §8.4 |
 | Prototype cleanup and production-only route boundary | Issue #89 |
 
 Changes to a settled contract require a new decision record and must update the affected `PAGE-*`, `PATTERN-*`, and `SCN-*` references together. OpenAPI or Server policy changes do not silently change WebUI semantics; they require an explicit design review when the user-visible contract changes.

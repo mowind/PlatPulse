@@ -41,7 +41,8 @@ const OVERVIEW = {
   generated_at: '2026-08-12T08:00:00Z',
   summary: {
     agents: { total: 1, online: 1, offline: 0, unknown: 0 },
-    nodes: { total: 1, healthy: 1, unhealthy: 0, unknown: 0, retired: 0, published: 1 },
+    nodes: { total: 1, active: 1, healthy: 1, unhealthy: 0, unknown: 0, retired: 0, published: 1 },
+    networks: { total: 2, with_identity_mismatch: 1 },
   },
   attention: [
     {
@@ -197,10 +198,56 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     expect(screen.queryByLabelText('Node ID')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Update visibility' })).toBeNull()
     expect(screen.queryByText(/Nodes are visible on Home/)).toBeNull()
-    expect(screen.getByText(/Site Access Mode/)).toBeTruthy()
 
     // The browser never asks the Server for Geo status on this page.
     expectNoGeoRequests(fetchMock)
+  })
+
+  it('renders one atomic snapshot time and exactly four linked summary cards', async () => {
+    const generatedAt = new Date(Date.now() - 2 * 60 * 1000).toISOString()
+    const fetchMock = mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/overview': () =>
+        jsonResponse({ ...OVERVIEW, generated_at: generatedAt }, 200),
+      '/api/admin/v1/nodes': () => jsonResponse([NODE], 200),
+      '/api/admin/v1/agents': () => jsonResponse([AGENT], 200),
+    })
+    await renderAt('/admin')
+
+    const summary = await screen.findByRole('navigation', { name: 'Overview summaries' })
+    const links = within(summary).getAllByRole('link')
+    expect(links).toHaveLength(4)
+    expect(links.map((link) => link.getAttribute('href'))).toEqual([
+      '/admin/agents',
+      '/admin/nodes?lifecycle=active',
+      '/admin/nodes?lifecycle=retired',
+      '/admin/networks',
+    ])
+    for (const link of links) expect(link.querySelector('a, button')).toBeNull()
+
+    expect(within(summary).getByRole('link', { name: /Agents/ }).textContent).toContain(
+      '1 online · 0 offline · 0 unknown',
+    )
+    expect(within(summary).getByRole('link', { name: /Active Nodes/ }).textContent).toContain(
+      '1 healthy · 0 unhealthy · 0 unknown',
+    )
+    expect(within(summary).getByRole('link', { name: /Retired Nodes/ }).textContent).toContain(
+      'Excluded from live health buckets',
+    )
+    expect(within(summary).getByRole('link', { name: /Networks/ }).textContent).toContain(
+      '1 with Network Identity Mismatch',
+    )
+
+    const snapshotTime = document.querySelector(`time[datetime="${generatedAt}"]`)
+    expect(snapshotTime?.textContent).toBe('2 minutes ago')
+    expect(snapshotTime?.getAttribute('aria-label')).toContain('UTC')
+    expect(snapshotTime?.getAttribute('title')).toContain('UTC')
+
+    const requestedUrls = fetchMock.mock.calls.map(([input]) =>
+      input instanceof Request ? input.url : String(input),
+    )
+    expect(requestedUrls.filter((url) => url.includes('/api/admin/v1/overview'))).toHaveLength(1)
+    expect(requestedUrls.some((url) => url.includes('/api/admin/v1/networks'))).toBe(false)
   })
 
   it('keeps stale, unknown, never-observed, disabled, unsupported, and last-good states distinct', async () => {
@@ -282,7 +329,8 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
             generated_at: '2026-08-12T08:00:00Z',
             summary: {
               agents: { total: 0, online: 0, offline: 0, unknown: 0 },
-              nodes: { total: 0, healthy: 0, unhealthy: 0, unknown: 0, retired: 0, published: 0 },
+              nodes: { total: 0, active: 0, healthy: 0, unhealthy: 0, unknown: 0, retired: 0, published: 0 },
+               networks: { total: 0, with_identity_mismatch: 0 },
             },
             attention: [],
           },

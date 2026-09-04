@@ -197,6 +197,7 @@ export type AdminOverview = {
 
 export type AdminOverviewSummary = {
     agents: AgentSummary;
+    networks: NetworkSummary;
     nodes: NodeSummary;
 };
 
@@ -864,6 +865,11 @@ export type NetworkResponse = {
     networkKey: string;
 };
 
+export type NetworkSummary = {
+    total: number;
+    with_identity_mismatch: number;
+};
+
 /**
  * Owner-only Registry update: display name and/or identity tuple fields.
  * Every field is optional, but at least one must change; the merged tuple
@@ -937,6 +943,7 @@ export type NodeMetadataResponse = {
 };
 
 export type NodeSummary = {
+    active: number;
     healthy: number;
     /**
      * Nodes published to the Public projection.

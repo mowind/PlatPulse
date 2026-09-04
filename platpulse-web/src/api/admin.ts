@@ -1218,7 +1218,7 @@ function invalidateAdminResource(resource: string, resourceId: string | undefine
         // panels instead of falling back to the whole Admin namespace.
         return [adminKeys.nodes, adminKeys.networks]
       case 'network':
-        return [adminKeys.networks, adminKeys.validators, adminKeys.validatorLinks, adminKeys.nodes]
+        return [adminKeys.overview, adminKeys.networks, adminKeys.validators, adminKeys.validatorLinks, adminKeys.nodes]
       case 'validator':
       case 'validator-link':
         return [adminKeys.validators, adminKeys.validatorLinks, adminKeys.nodes]

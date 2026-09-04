@@ -248,6 +248,10 @@ _Avoid_: Public admin, Overview admin
 The authenticated WebUI surface for managing PlatPulse and viewing operational details that are not part of the Home Dashboard.
 _Avoid_: Home settings, Control terminal
 
+**Attention Item**:
+A current Server-derived prompt shown in the Admin Dashboard when an Agent, PlatON Node, Network, or setting needs Owner review. It is reconstructed from authoritative current state, is not a durable Alert Incident, and never replaces the underlying diagnostic dimensions.
+_Avoid_: Alert Incident, Notification, Browser-computed warning
+
 **Audit Event**:
 An immutable record of an administrative mutation or security-sensitive identity action, including who acted, what changed, and when.
 _Avoid_: Debug log, Access log

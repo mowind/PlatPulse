@@ -210,6 +210,7 @@ impl Modify for AgentBearerScheme {
         crate::http::admin::AdminOverviewSummary,
         crate::http::admin::AgentSummary,
         crate::http::admin::NodeSummary,
+        crate::http::admin::NetworkSummary,
         crate::http::admin::AttentionItem,
         crate::http::admin::AgentDiagnostic,
         crate::http::admin::AgentCredentialSummary,

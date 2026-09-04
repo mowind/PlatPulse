@@ -6724,11 +6724,15 @@
         "type": "object",
         "required": [
           "agents",
-          "nodes"
+          "nodes",
+          "networks"
         ],
         "properties": {
           "agents": {
             "$ref": "#/components/schemas/AgentSummary"
+          },
+          "networks": {
+            "$ref": "#/components/schemas/NetworkSummary"
           },
           "nodes": {
             "$ref": "#/components/schemas/NodeSummary"
@@ -9408,6 +9412,23 @@
           }
         }
       },
+      "NetworkSummary": {
+        "type": "object",
+        "required": [
+          "total",
+          "with_identity_mismatch"
+        ],
+        "properties": {
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "with_identity_mismatch": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "NetworkUpdateRequest": {
         "type": "object",
         "description": "Owner-only Registry update: display name and/or identity tuple fields.\nEvery field is optional, but at least one must change; the merged tuple\nis validated and the before/after state is audited. Existing Nodes whose\nobserved identity now contradicts the tuple surface as typed mismatches;\nno Node state is rewritten.",
@@ -9651,6 +9672,7 @@
         "type": "object",
         "required": [
           "total",
+          "active",
           "healthy",
           "unhealthy",
           "unknown",
@@ -9658,6 +9680,10 @@
           "published"
         ],
         "properties": {
+          "active": {
+            "type": "integer",
+            "format": "int64"
+          },
           "healthy": {
             "type": "integer",
             "format": "int64"

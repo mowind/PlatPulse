@@ -395,6 +395,24 @@ DELETE /api/admin/v1/sessions/{session_id}
 GET  /api/admin/v1/audit
 ~~~
 
+### 8.5 Admin Overview 契约
+
+`GET /api/admin/v1/overview` 是 Owner 的当前分诊快照，包含 `generated_at`、`summary` 与当前 `attention[]` 队列；不包含完整 Node Detail、完整 Agent Detail、历史图表或远程操作命令。
+
+`summary` 由 Server 派生，逻辑分组为：
+
+```text
+summary.agents: total, online, offline, unknown
+summary.nodes: total, active, healthy, unhealthy, unknown, retired, published（仅兼容）
+summary.networks: total, with_identity_mismatch
+```
+
+不变量为 `nodes.active = nodes.healthy + nodes.unhealthy + nodes.unknown`、`nodes.total = nodes.active + nodes.retired`。Retired Node 不参与实时健康分桶或当前 Attention Item。现有 `published` 与 per-Node `visibility` 字段可以暂时保留以兼容旧客户端，但 Site Access Mode 是 Home 访问范围的唯一站点级权威；任何新产品行为都不得依赖 per-Node visibility，后续迁移必须删除这组兼容字段与相关界面。
+
+`AttentionItem.kind`、`severity` 与 `subject_kind` 是 typed Server contract，不是浏览器任意字符串。`subject_kind` 限定为 `agent`、`node`、`network`、`settings`。MVP kind 为 `agent_offline`、`agent_spool_fatal`、`agent_spool_overflow`、`agent_report_gap`、`agent_security_event`、`agent_shutdown_incomplete`、`node_unhealthy`、`node_health_unknown`、`node_resync`、`node_identity_mismatch`。severity 只有 `critical` 与 `warning`：Spool fatal/overflow、security event、unhealthy Node 与 Network Identity Mismatch 为 Critical；Agent offline、report gap、incomplete shutdown、unknown Node health 与 resync 为 Warning。新 Agent 在尚无 accepted report 时是 Unknown 而非 Offline；新 Active Node 在 Server-owned first-observation grace period 内是 Starting，不提前产生 unknown-health Attention。Server 按 Critical 优先、权威观察时间与稳定身份排序；WebUI 可以按 Subject 分组展示，但不能丢弃 Item 或重算 severity。
+
+Public 与 Admin Projection 共享一个 canonical Server Node Health evaluator。该 evaluator 将 lifecycle、liveness/reachability、process、freshness、synchronization、consensus、Network Identity 与 Host pressure 作为独立维度。Public/Admin DTO 可以暴露不同字段与脱敏结果，但不得执行互相矛盾的 Health policy。Unknown、Stale、Disabled、Unsupported 与从未观察的输入绝不能因缺省而成为 Healthy。
+
 MVP 不为后续能力预留空路由。
 
 ---

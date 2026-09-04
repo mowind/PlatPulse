@@ -2662,6 +2662,7 @@ pub struct AdminOverview {
 pub struct AdminOverviewSummary {
     pub agents: AgentSummary,
     pub nodes: NodeSummary,
+    pub networks: NetworkSummary,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -2677,6 +2678,7 @@ pub struct AgentSummary {
 #[serde(rename_all = "snake_case")]
 pub struct NodeSummary {
     pub total: i64,
+    pub active: i64,
     pub healthy: i64,
     pub unhealthy: i64,
     pub unknown: i64,
@@ -2685,6 +2687,47 @@ pub struct NodeSummary {
     pub retired: i64,
     /// Nodes published to the Public projection.
     pub published: i64,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct NetworkSummary {
+    pub total: i64,
+    pub with_identity_mismatch: i64,
+}
+
+impl AdminOverviewSummary {
+    fn checked(agents: AgentSummary, nodes: NodeSummary, networks: NetworkSummary) -> Option<Self> {
+        let agent_buckets = agents.online + agents.offline + agents.unknown;
+        let active_node_buckets = nodes.healthy + nodes.unhealthy + nodes.unknown;
+        (agents.total == agent_buckets
+            && nodes.active == active_node_buckets
+            && nodes.total == nodes.active + nodes.retired
+            && networks.with_identity_mismatch <= networks.total)
+            .then_some(Self {
+                agents,
+                nodes,
+                networks,
+            })
+    }
+}
+
+/// Count registered Networks and the distinct subset with confirmed identity
+/// mismatch evidence. A mismatch is confirmed only while the identity
+/// component is ok, has a successful value, and all four identity fields
+/// are present. Retired Nodes and retained last-good values behind a failed,
+/// disabled, unsupported, starting, or otherwise non-ok component do not
+/// contribute.
+async fn overview_network_summary(pool: &sqlx::SqlitePool) -> Result<NetworkSummary, sqlx::Error> {
+    let (total, with_identity_mismatch) = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT (SELECT COUNT(*) FROM networks), (SELECT COUNT(*) FROM networks n WHERE EXISTS (SELECT 1 FROM nodes nd JOIN current_node_chain_observations c ON c.node_id = nd.node_id JOIN component_status identity ON identity.node_id = nd.node_id AND identity.component_key = 'network_identity' WHERE nd.network_key = n.network_key AND nd.lifecycle = 'active' AND identity.state = 'ok' AND identity.value_revision > 0 AND c.network_genesis_hash IS NOT NULL AND c.network_chain_id IS NOT NULL AND c.network_p2p_network_id IS NOT NULL AND c.network_address_hrp IS NOT NULL AND (c.network_genesis_hash != n.genesis_hash OR c.network_chain_id != n.chain_id OR c.network_p2p_network_id != n.p2p_network_id OR c.network_address_hrp != n.address_hrp)))",
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(NetworkSummary {
+        total,
+        with_identity_mismatch,
+    })
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -2726,7 +2769,7 @@ fn severity_rank(severity: &str) -> u8 {
     tag = "admin",
     responses((status = 200, description = "Server-owned attention queue and overview summary", body = AdminOverview))
 )]
-async fn overview(
+pub(crate) async fn overview(
     State(state): State<AppState>,
     Extension(_session): Extension<super::AuthenticatedSession>,
     Extension(request_id): Extension<super::RequestId>,
@@ -2860,6 +2903,17 @@ async fn overview(
             });
         }
     }
+    let network_summary = match overview_network_summary(state.db().pool()).await {
+        Ok(summary) => summary,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    };
     let rows = match sqlx::query_as::<_, (String, String, Option<String>, String, i64, String)>(
         "SELECT node_id, network_key, display_name, lifecycle, inventory_revision, visibility FROM nodes ORDER BY node_id",
     )
@@ -2878,6 +2932,7 @@ async fn overview(
     };
     let mut node_summary = NodeSummary {
         total: rows.len() as i64,
+        active: 0,
         healthy: 0,
         unhealthy: 0,
         unknown: 0,
@@ -2888,7 +2943,7 @@ async fn overview(
         let diagnostic = node_diagnostic(
             &state,
             node_id.clone(),
-            network_key,
+            network_key.clone(),
             display_name.clone(),
             lifecycle.clone(),
             inventory_revision,
@@ -2901,6 +2956,30 @@ async fn overview(
         if lifecycle != "active" {
             node_summary.retired += 1;
             continue;
+        }
+        node_summary.active += 1;
+        let identity = node_identity_status(&state, &node_id, &network_key).await;
+        if identity.state == "mismatched" {
+            let observed_at = sqlx::query_scalar::<_, String>(
+                "SELECT COALESCE((SELECT received_at FROM component_status WHERE node_id = ? AND component_key = 'network_identity'), (SELECT updated_at FROM current_node_chain_observations WHERE node_id = ?))",
+            )
+            .bind(&node_id)
+            .bind(&node_id)
+            .fetch_optional(state.db().pool())
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| generated_at.clone());
+            attention.push(AttentionItem {
+                id: format!("node_identity_mismatch:node:{node_id}"),
+                kind: "node_identity_mismatch".to_owned(),
+                severity: "critical".to_owned(),
+                subject_kind: "node".to_owned(),
+                subject_id: node_id.clone(),
+                subject_label: display_name.clone().unwrap_or_else(|| node_id.clone()),
+                message: "the Node identity mismatches the registered Network".to_owned(),
+                observed_at,
+            });
         }
         let observed_at = diagnostic
             .rpc
@@ -2970,12 +3049,18 @@ async fn overview(
             .cmp(&severity_rank(&b.severity))
             .then_with(|| a.id.cmp(&b.id))
     });
+    let Some(summary) = AdminOverviewSummary::checked(agent_summary, node_summary, network_summary)
+    else {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "overview_invariant_failed",
+            "server overview invariant failed",
+        );
+    };
     Json(AdminOverview {
         generated_at,
-        summary: AdminOverviewSummary {
-            agents: agent_summary,
-            nodes: node_summary,
-        },
+        summary,
         attention,
     })
     .into_response()
@@ -5182,6 +5267,7 @@ mod tests {
             serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
                 .unwrap();
         assert_eq!(value["summary"]["nodes"]["total"], 2);
+        assert_eq!(value["summary"]["nodes"]["active"], 2);
         assert_eq!(value["summary"]["nodes"]["healthy"], 1);
         assert_eq!(value["summary"]["nodes"]["unhealthy"], 1);
         assert_eq!(value["summary"]["nodes"]["unknown"], 0);
@@ -5190,6 +5276,8 @@ mod tests {
         assert_eq!(value["summary"]["agents"]["total"], 1);
         assert_eq!(value["summary"]["agents"]["online"], 1);
         assert_eq!(value["summary"]["agents"]["offline"], 0);
+        assert_eq!(value["summary"]["networks"]["total"], 1);
+        assert_eq!(value["summary"]["networks"]["with_identity_mismatch"], 0);
         let attention = value["attention"].as_array().unwrap();
         assert_eq!(attention.len(), 1);
         assert_eq!(attention[0]["kind"], "node_unhealthy");
@@ -5266,8 +5354,11 @@ mod tests {
         assert_eq!(value["summary"]["agents"]["online"], 0);
         assert_eq!(value["summary"]["agents"]["offline"], 1);
         assert_eq!(value["summary"]["nodes"]["total"], 1);
+        assert_eq!(value["summary"]["nodes"]["active"], 1);
         assert_eq!(value["summary"]["nodes"]["unknown"], 1);
         assert_eq!(value["summary"]["nodes"]["retired"], 0);
+        assert_eq!(value["summary"]["networks"]["total"], 1);
+        assert_eq!(value["summary"]["networks"]["with_identity_mismatch"], 0);
         let kinds = value["attention"]
             .as_array()
             .unwrap()
@@ -5286,6 +5377,141 @@ mod tests {
         assert!(kinds.contains(&("node_health_unknown".to_owned(), "warning".to_owned())));
         // Critical items sort before warnings.
         assert_eq!(value["attention"][0]["severity"], "critical");
+    }
+
+    #[tokio::test]
+    async fn overview_network_summary_counts_distinct_eligible_networks() {
+        let dir = tempdir().unwrap();
+        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let pepper_path = dir.path().join("pepper");
+        crate::secrets::create_pepper_file(&pepper_path).unwrap();
+        let auth = crate::auth::AuthConfig::development(
+            crate::secrets::load_pepper_file(&pepper_path).unwrap(),
+            "http://127.0.0.1:8080".to_owned(),
+        );
+        let state = AppState::new(database, None, auth);
+        let created = "2026-01-01T00:00:00Z";
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('agent-overview-networks', 1, ?, ?)")
+            .bind(created)
+            .bind(created)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        for (network_key, display_name, genesis_hash) in [
+            ("network-distinct", "Distinct", "0xexpected-distinct"),
+            ("network-ineligible", "Ineligible", "0xexpected-ineligible"),
+            ("network-retired", "Retired", "0xexpected-retired"),
+        ] {
+            sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES (?, ?, ?, 1, 1, 'lat', ?, ?)")
+                .bind(network_key)
+                .bind(display_name)
+                .bind(genesis_hash)
+                .bind(created)
+                .bind(created)
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+        }
+        for (node_id, network_key, lifecycle, identity_state) in [
+            ("node-mismatch-a", "network-distinct", "active", "ok"),
+            ("node-mismatch-b", "network-distinct", "active", "ok"),
+            ("node-partial", "network-ineligible", "active", "ok"),
+            (
+                "node-retained-error",
+                "network-ineligible",
+                "active",
+                "error",
+            ),
+            ("node-retired-mismatch", "network-retired", "retired", "ok"),
+        ] {
+            sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES (?, 'agent-overview-networks', ?, 'ws://127.0.0.1:1', ?, 'private', 1, ?, ?)")
+                .bind(node_id)
+                .bind(network_key)
+                .bind(lifecycle)
+                .bind(created)
+                .bind(created)
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES ('agent-overview-networks', 'node', ?, ?, 'network_identity', ?, ?, ?, ?, 1, 1)")
+                .bind(node_id)
+                .bind(node_id)
+                .bind(identity_state)
+                .bind(created)
+                .bind(created)
+                .bind(created)
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+        }
+        for node_id in ["node-mismatch-a", "node-mismatch-b"] {
+            sqlx::query("INSERT INTO current_node_chain_observations (node_id, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, updated_at) VALUES (?, '0xexpected-distinct', 999, 1, 'lat', ?)")
+                .bind(node_id)
+                .bind(created)
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO current_node_chain_observations (node_id, network_chain_id, updated_at) VALUES ('node-partial', 999, ?)")
+            .bind(created)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO current_node_chain_observations (node_id, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, updated_at) VALUES ('node-retained-error', '0xexpected-ineligible', 999, 1, 'lat', ?)")
+            .bind(created)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO current_node_chain_observations (node_id, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, updated_at) VALUES ('node-retired-mismatch', '0xexpected-retired', 999, 1, 'lat', ?)")
+            .bind(created)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let response = overview(
+            State(state),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        let summary = &value["summary"];
+        assert_eq!(summary["networks"]["total"], 3);
+        assert_eq!(summary["networks"]["with_identity_mismatch"], 1);
+        assert_eq!(summary["nodes"]["total"], 5);
+        assert_eq!(summary["nodes"]["active"], 4);
+        assert_eq!(summary["nodes"]["retired"], 1);
+
+        let count = |path: &[&str]| {
+            path.iter()
+                .fold(summary, |value, key| &value[*key])
+                .as_i64()
+                .unwrap()
+        };
+        assert_eq!(
+            count(&["agents", "total"]),
+            count(&["agents", "online"])
+                + count(&["agents", "offline"])
+                + count(&["agents", "unknown"])
+        );
+        assert_eq!(
+            count(&["nodes", "active"]),
+            count(&["nodes", "healthy"])
+                + count(&["nodes", "unhealthy"])
+                + count(&["nodes", "unknown"])
+        );
+        assert_eq!(
+            count(&["nodes", "total"]),
+            count(&["nodes", "active"]) + count(&["nodes", "retired"])
+        );
+        assert!(count(&["networks", "with_identity_mismatch"]) <= count(&["networks", "total"]));
     }
 
     #[tokio::test]
@@ -5342,10 +5568,13 @@ mod tests {
             serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
                 .unwrap();
         assert_eq!(value["summary"]["nodes"]["total"], 1);
+        assert_eq!(value["summary"]["nodes"]["active"], 0);
         assert_eq!(value["summary"]["nodes"]["retired"], 1);
         assert_eq!(value["summary"]["nodes"]["healthy"], 0);
         assert_eq!(value["summary"]["nodes"]["unhealthy"], 0);
         assert_eq!(value["summary"]["nodes"]["unknown"], 0);
+        assert_eq!(value["summary"]["networks"]["total"], 1);
+        assert_eq!(value["summary"]["networks"]["with_identity_mismatch"], 0);
         // Retired Nodes never enter the attention queue.
         assert_eq!(value["attention"].as_array().unwrap().len(), 0);
     }

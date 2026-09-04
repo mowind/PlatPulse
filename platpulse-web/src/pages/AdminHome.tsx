@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { Link } from 'react-router'
+import './AdminOverviewPrototype.css'
 import {
   useAdminDiagnostics,
   useAdminNodes,
@@ -36,17 +38,13 @@ export default function AdminHome() {
   const overview = useAdminOverview(generation)
   const diagnostics = useAdminDiagnostics(generation)
   const nodes = useAdminNodes(generation)
+  const snapshot = overview.data
 
   return (
-    <section className="page">
-      <h1>Overview</h1>
-      <p className="muted">
-        Server-owned attention queue, Node Health Summary and Agent
-        inventory. The Server decides health, freshness and attention; this
-        page only presents them. Home visibility is governed by Site Access
-        Mode.
-      </p>
+    <section className="page admin-overview prototype-a">
+      <OverviewHeader snapshot={snapshot} query={overview} />
       <AttentionPanel query={overview} />
+      {snapshot && <SummaryCards summary={snapshot.summary} />}
       <NodePanel nodeQuery={nodes} diagnosticsQuery={diagnostics} />
       <AgentPanel query={diagnostics} />
     </section>
@@ -54,6 +52,115 @@ export default function AdminHome() {
 }
 
 type OverviewQuery = ReturnType<typeof useAdminOverview>
+
+function OverviewHeader({
+  snapshot,
+  query,
+}: {
+  snapshot: AdminOverview | undefined
+  query: OverviewQuery
+}) {
+  return (
+    <header className="prototype-header">
+      <div>
+        <span className="eyebrow">Owner triage</span>
+        <h1>Overview</h1>
+        <p>A compact read on what needs intervention across your PlatON estate.</p>
+      </div>
+      <div className="header-status">
+        <span className="live-dot" aria-hidden="true" />
+        {snapshot ? (
+          <>
+            Last good snapshot · <SnapshotTime timestamp={snapshot.generated_at} />
+            <button
+              type="button"
+              className="refresh-button"
+              onClick={() => void query.refetch()}
+              disabled={query.isFetching}
+            >
+              {query.isFetching ? 'Refreshing…' : 'Refresh'}
+            </button>
+          </>
+        ) : query.isError ? (
+          'Snapshot unavailable'
+        ) : (
+          'Snapshot loading'
+        )}
+      </div>
+    </header>
+  )
+}
+
+function SnapshotTime({ timestamp }: { timestamp: string }) {
+  const date = new Date(timestamp)
+  if (Number.isNaN(date.getTime())) return <span>Unknown time</span>
+  const relative = formatRelativeTime(date, new Date())
+  const absolute = new Intl.DateTimeFormat('en-GB', {
+    dateStyle: 'medium',
+    timeStyle: 'long',
+    timeZone: 'UTC',
+  }).format(date)
+  return (
+    <time dateTime={timestamp} title={absolute} aria-label={`${relative}; ${absolute}`}>
+      {relative}
+    </time>
+  )
+}
+
+function formatRelativeTime(value: Date, now: Date): string {
+  const seconds = Math.round((value.getTime() - now.getTime()) / 1000)
+  const absoluteSeconds = Math.abs(seconds)
+  const formatter = new Intl.RelativeTimeFormat('en', { numeric: 'auto' })
+  if (absoluteSeconds < 60) return formatter.format(seconds, 'second')
+  if (absoluteSeconds < 3_600) return formatter.format(Math.round(seconds / 60), 'minute')
+  if (absoluteSeconds < 86_400) return formatter.format(Math.round(seconds / 3_600), 'hour')
+  return formatter.format(Math.round(seconds / 86_400), 'day')
+}
+
+function SummaryCards({ summary }: { summary: AdminOverview['summary'] }) {
+  const cards = [
+    {
+      label: 'Agents',
+      value: summary.agents.total,
+      legend: `${summary.agents.online} online · ${summary.agents.offline} offline · ${summary.agents.unknown} unknown`,
+      href: '/admin/agents',
+      accent: 'violet',
+    },
+    {
+      label: 'Active Nodes',
+      value: summary.nodes.active,
+      legend: `${summary.nodes.healthy} healthy · ${summary.nodes.unhealthy} unhealthy · ${summary.nodes.unknown} unknown`,
+      href: '/admin/nodes?lifecycle=active',
+      accent: 'green',
+    },
+    {
+      label: 'Retired Nodes',
+      value: summary.nodes.retired,
+      legend: 'Excluded from live health buckets',
+      href: '/admin/nodes?lifecycle=retired',
+      accent: 'slate',
+    },
+    {
+      label: 'Networks',
+      value: summary.networks.total,
+      legend: `${summary.networks.with_identity_mismatch} with Network Identity Mismatch`,
+      href: '/admin/networks',
+      accent: 'red',
+    },
+  ]
+  return (
+    <nav className="summary-cards" aria-label="Overview summaries">
+      {cards.map((card) => (
+        <Link className={`summary-card accent-${card.accent}`} to={card.href} key={card.label}>
+          <span className="eyebrow">{card.label}</span>
+          <strong>{card.value}</strong>
+          <span>{card.legend}</span>
+          <span className="card-arrow" aria-hidden="true">↗</span>
+        </Link>
+      ))}
+    </nav>
+  )
+}
 
 function AttentionPanel({ query }: { query: OverviewQuery }) {
   const data = query.data
@@ -75,15 +182,17 @@ function AttentionPanel({ query }: { query: OverviewQuery }) {
   }, [attentionLength])
 
   return (
-    <article className="panel">
+    <article className="panel overview-panel a-attention">
       <div className="panel-heading">
-        <h2>Attention queue</h2>
+        <div>
+          <span className="eyebrow">01 · Attention</span>
+          <h2>Attention queue</h2>
+        </div>
         {data && <span className="panel-count">{data.attention.length}</span>}
       </div>
       <p className="sr-only" role="status">
         {announcement}
       </p>
-      {data?.summary && <SummaryStrip summary={data.summary} />}
       {!data && query.isPending && (
         <p className="panel-state" role="status">
           <StatusBadge status="Starting" tone="neutral" /> Checking the Server for
@@ -119,30 +228,6 @@ function AttentionPanel({ query }: { query: OverviewQuery }) {
         </ul>
       )}
     </article>
-  )
-}
-
-function SummaryStrip({ summary }: { summary: AdminOverview['summary'] }) {
-  return (
-    <dl className="summary-strip">
-      <div>
-        <dt>Agents</dt>
-        <dd>
-          {summary.agents.online} online · {summary.agents.offline} offline ·{' '}
-          {summary.agents.unknown} unknown of {summary.agents.total}
-        </dd>
-      </div>
-      <div>
-        <dt>Nodes</dt>
-        <dd>
-          {summary.nodes.healthy} healthy · {summary.nodes.unhealthy} unhealthy ·{' '}
-          {summary.nodes.unknown} unknown of {summary.nodes.total}
-          {summary.nodes.retired > 0
-            ? ` · ${summary.nodes.retired} retired`
-            : ''}
-        </dd>
-      </div>
-    </dl>
   )
 }
 

@@ -630,7 +630,8 @@ describe('App shell with private Home', () => {
             generatedAt: '2026-08-12T00:00:00Z',
             summary: {
               agents: { total: 1, online: 1, offline: 0, unknown: 0 },
-              nodes: { total: 1, healthy: 1, unhealthy: 0, unknown: 0, retired: 0, published: 1 },
+              nodes: { total: 1, active: 1, healthy: 1, unhealthy: 0, unknown: 0, retired: 0, published: 1 },
+        networks: { total: 1, with_identity_mismatch: 0 },
             },
             attention: [],
           },
@@ -662,6 +663,68 @@ describe('App shell with private Home', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'Overview' })).toBeTruthy()
   })
 
+  it('refetches Network Registry surfaces and Overview after a Network invalidation', async () => {
+    let overviewCalls = 0
+    let networkCalls = 0
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/overview': () => {
+        overviewCalls += 1
+        return jsonResponse(
+          {
+            generated_at: '2026-08-12T00:00:00Z',
+            summary: {
+              agents: { total: 0, online: 0, offline: 0, unknown: 0 },
+              nodes: { total: 0, active: 0, healthy: 0, unhealthy: 0, unknown: 0, retired: 0, published: 0 },
+              networks: { total: 0, with_identity_mismatch: 0 },
+            },
+            attention: [],
+          },
+          200,
+        )
+      },
+      '/api/admin/v1/nodes': () => jsonResponse([], 200),
+      '/api/admin/v1/agents': () => jsonResponse([], 200),
+      '/api/admin/v1/networks': () => {
+        networkCalls += 1
+        return jsonResponse([], 200)
+      },
+    })
+    vi.stubGlobal('EventSource', FakeEventSource)
+
+    render(<App />)
+    await goToAdmin()
+    await screen.findByRole('heading', { level: 1, name: 'Overview' })
+    await waitFor(() => expect(overviewCalls).toBe(1))
+
+    await act(async () => {
+      window.history.pushState({}, '', '/admin/networks')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+    await screen.findByRole('heading', { level: 1, name: 'Networks' })
+    await waitFor(() => expect(networkCalls).toBe(1))
+
+    await act(async () => {
+      FakeEventSource.latest?.emit(
+        'invalidation',
+        JSON.stringify({
+          version: 1,
+          eventId: 3,
+          resource: 'network',
+          resourceId: 'platon-mainnet',
+          revision: 3,
+        }),
+      )
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(networkCalls).toBe(2))
+
+    await goToAdmin()
+    await screen.findByRole('heading', { level: 1, name: 'Overview' })
+    await waitFor(() => expect(overviewCalls).toBe(2))
+  })
+
   it('treats an SSE access reset as a session loss without leaking Admin data', async () => {
     let sessionActive = true
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
@@ -678,7 +741,8 @@ describe('App shell with private Home', () => {
               generatedAt: '2026-08-12T00:00:00Z',
               summary: {
                 agents: { total: 1, online: 1, offline: 0, unknown: 0 },
-                nodes: { total: 1, healthy: 1, unhealthy: 0, unknown: 0, retired: 0, published: 1 },
+                nodes: { total: 1, active: 1, healthy: 1, unhealthy: 0, unknown: 0, retired: 0, published: 1 },
+        networks: { total: 1, with_identity_mismatch: 0 },
               },
               attention: [],
             },
@@ -730,7 +794,8 @@ describe('App shell with private Home', () => {
       generated_at: '2026-08-12T00:00:00Z',
       summary: {
         agents: { total: 1, online: 1, offline: 0, unknown: 0 },
-        nodes: { total: 1, healthy: 1, unhealthy: 0, unknown: 0, retired: 0, published: 1 },
+        nodes: { total: 1, active: 1, healthy: 1, unhealthy: 0, unknown: 0, retired: 0, published: 1 },
+        networks: { total: 1, with_identity_mismatch: 0 },
       },
       attention: attention('Node X', 'RPC collection failed'),
     }
