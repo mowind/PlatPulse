@@ -127,9 +127,6 @@ export default function AdminLayout() {
           <img className="app-brand-logo" src={platpulseMark} alt="" />
           <span>PlatPulse</span>
         </Link>
-        <nav className="app-nav" aria-label="Global">
-          <NavLink to="/">Home</NavLink>
-        </nav>
         <button
           ref={navToggleRef}
           type="button"

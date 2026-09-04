@@ -61,7 +61,7 @@ body {
 }
 
 /* ---------------------------------------------------------------------------
- * Shell: Home and Admin topbar, brand, nav, main
+ * Shell: Home and Admin topbar, brand, main
  * ------------------------------------------------------------------------- */
 
 .app-shell {
@@ -113,33 +113,6 @@ body {
   font-size: 0.95rem;
   font-weight: 900;
   letter-spacing: 0;
-}
-
-.app-nav {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.25rem 0.5rem;
-}
-
-.app-nav a {
-  min-height: 44px;
-  display: inline-flex;
-  align-items: center;
-  padding: 0 0.75rem;
-  border-radius: 9px;
-  color: var(--muted);
-  font-weight: 700;
-  text-decoration: none;
-}
-
-.app-nav a:hover {
-  color: var(--ink);
-  background: var(--paper);
-}
-
-.app-nav a[aria-current='page'] {
-  color: var(--indigo-dark);
-  background: color-mix(in srgb, var(--indigo) 9%, transparent);
 }
 
 .app-main {
@@ -2567,10 +2540,6 @@ button {
     height: 28px;
     border-radius: 8px;
   }
-
-  .app-nav a {
-    padding-inline: 0.5rem;
-  }
 }
 
 /* ---------------------------------------------------------------------------
@@ -3549,13 +3518,10 @@ button {
   filter: drop-shadow(0 0.4rem 0.8rem rgba(103, 84, 203, 0.26));
 }
 
-.admin-shell .app-nav a,
 .admin-shell .sign-out {
   color: rgba(247, 247, 251, 0.68);
 }
 
-.admin-shell .app-nav a:hover,
-.admin-shell .app-nav a[aria-current='page'],
 .admin-shell .sign-out:hover {
   color: #fff;
   background: rgba(151, 124, 255, 0.11);

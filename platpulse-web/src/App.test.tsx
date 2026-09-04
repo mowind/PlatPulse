@@ -372,7 +372,7 @@ describe('App shell with private Home', () => {
       expect(brand.getAttribute('href')).toBe('/')
       expect(brand.querySelector('img')?.getAttribute('src')).toContain('platpulse-mark')
       expect(brand.querySelector('img')?.getAttribute('alt')).toBe('')
-      expect(screen.getByRole('link', { name: 'Home' }).getAttribute('href')).toBe('/')
+      expect(screen.queryByRole('link', { name: 'Home' })).toBeNull()
       expect(screen.getByRole('button', { name: 'Sign out' })).toBeTruthy()
       expect(screen.getByRole('link', { name: 'Overview' }).getAttribute('aria-current')).toBe('page')
     } finally {
@@ -526,7 +526,7 @@ describe('App shell with private Home', () => {
     })
 
     render(<App />)
-    const homeLink = await screen.findByRole('link', { name: 'Home' })
+    const homeLink = await screen.findByRole('link', { name: 'PlatPulse' })
     fireEvent.click(homeLink)
     expect(await screen.findByRole('region', { name: 'Home' })).toBeTruthy()
     // The whole-card Node link names the Node; the Network stays plain text.
@@ -900,10 +900,9 @@ describe('Admin MVP route inventory (issue #92)', () => {
       await renderAt(path)
       await screen.findByRole('heading', { level: 1, name: heading })
 
-      // Every retained Admin route shares the same accessible shell. The
-      // parent collection link stays current on detail routes so navigation
-      // remains oriented without coupling this contract to CSS classes.
-      expect(screen.getByRole('navigation', { name: 'Global' })).toBeTruthy()
+      // Every retained Admin route shares the same accessible shell. Parent
+      // collection links stay current on detail routes so navigation remains
+      // oriented without coupling this contract to CSS classes.
       expect(screen.getByRole('main')).toBeTruthy()
       const adminNav = screen.getByRole('navigation', { name: 'Admin' })
       expect(within(adminNav).getAllByRole('link')).toHaveLength(7)
