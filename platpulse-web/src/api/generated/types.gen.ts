@@ -498,14 +498,20 @@ export type AttentionItem = {
      * Stable item key (kind + subject) for list rendering and tests.
      */
     id: string;
-    kind: string;
+    kind: AttentionKind;
     message: string;
     observed_at: string;
-    severity: string;
+    severity: AttentionSeverity;
     subject_id: string;
-    subject_kind: string;
+    subject_kind: AttentionSubjectKind;
     subject_label: string;
 };
+
+export type AttentionKind = 'agent_offline' | 'agent_spool_fatal' | 'agent_spool_overflow' | 'agent_report_gap' | 'agent_security_event' | 'agent_shutdown_incomplete' | 'node_unhealthy' | 'node_health_unknown' | 'node_resync' | 'node_identity_mismatch';
+
+export type AttentionSeverity = 'critical' | 'warning';
+
+export type AttentionSubjectKind = 'agent' | 'node' | 'network' | 'settings';
 
 /**
  * One immutable, redacted Audit row. `details` is the stored `after_json`

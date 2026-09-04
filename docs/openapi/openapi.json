@@ -7925,7 +7925,7 @@
             "description": "Stable item key (kind + subject) for list rendering and tests."
           },
           "kind": {
-            "type": "string"
+            "$ref": "#/components/schemas/AttentionKind"
           },
           "message": {
             "type": "string"
@@ -7934,18 +7934,49 @@
             "type": "string"
           },
           "severity": {
-            "type": "string"
+            "$ref": "#/components/schemas/AttentionSeverity"
           },
           "subject_id": {
             "type": "string"
           },
           "subject_kind": {
-            "type": "string"
+            "$ref": "#/components/schemas/AttentionSubjectKind"
           },
           "subject_label": {
             "type": "string"
           }
         }
+      },
+      "AttentionKind": {
+        "type": "string",
+        "enum": [
+          "agent_offline",
+          "agent_spool_fatal",
+          "agent_spool_overflow",
+          "agent_report_gap",
+          "agent_security_event",
+          "agent_shutdown_incomplete",
+          "node_unhealthy",
+          "node_health_unknown",
+          "node_resync",
+          "node_identity_mismatch"
+        ]
+      },
+      "AttentionSeverity": {
+        "type": "string",
+        "enum": [
+          "critical",
+          "warning"
+        ]
+      },
+      "AttentionSubjectKind": {
+        "type": "string",
+        "enum": [
+          "agent",
+          "node",
+          "network",
+          "settings"
+        ]
       },
       "AuditItem": {
         "type": "object",

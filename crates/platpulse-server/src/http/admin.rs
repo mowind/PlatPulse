@@ -806,6 +806,27 @@ pub struct ComponentDiagnostic {
 }
 
 const FRESHNESS_LIMIT_SECONDS: i64 = 120;
+const FIRST_OBSERVATION_GRACE_SECONDS: i64 = 120;
+
+fn first_observation_in_grace(first_seen_at: &str, diagnostic: &NodeDiagnostic) -> bool {
+    let Some(first_seen) = crate::auth::parse_rfc3339(first_seen_at) else {
+        return false;
+    };
+    let age = (crate::auth::now_utc() - first_seen).whole_seconds();
+    (0..=FIRST_OBSERVATION_GRACE_SECONDS).contains(&age)
+        && diagnostic
+            .rpc
+            .as_ref()
+            .is_none_or(|c| c.value_revision.is_none_or(|value| value <= 0))
+        && diagnostic
+            .sync
+            .as_ref()
+            .is_none_or(|c| c.value_revision <= 0)
+        && diagnostic
+            .consensus
+            .as_ref()
+            .is_none_or(|c| c.value_revision <= 0)
+}
 
 fn current_observation(timestamp: Option<&str>) -> bool {
     timestamp
@@ -2730,14 +2751,46 @@ async fn overview_network_summary(pool: &sqlx::SqlitePool) -> Result<NetworkSumm
     })
 }
 
+#[derive(Debug, Clone, Copy, Serialize, utoipa::ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AttentionKind {
+    AgentOffline,
+    AgentSpoolFatal,
+    AgentSpoolOverflow,
+    AgentReportGap,
+    AgentSecurityEvent,
+    AgentShutdownIncomplete,
+    NodeUnhealthy,
+    NodeHealthUnknown,
+    NodeResync,
+    NodeIdentityMismatch,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, utoipa::ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AttentionSeverity {
+    Critical,
+    Warning,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, Serialize, utoipa::ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AttentionSubjectKind {
+    Agent,
+    Node,
+    Network,
+    Settings,
+}
+
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct AttentionItem {
     /// Stable item key (kind + subject) for list rendering and tests.
     pub id: String,
-    pub kind: String,
-    pub severity: String,
-    pub subject_kind: String,
+    pub kind: AttentionKind,
+    pub severity: AttentionSeverity,
+    pub subject_kind: AttentionSubjectKind,
     pub subject_id: String,
     pub subject_label: String,
     pub message: String,
@@ -2755,11 +2808,10 @@ struct OverviewAgentRow {
     spool_dropped_sequence_to: Option<i64>,
 }
 
-fn severity_rank(severity: &str) -> u8 {
+fn severity_rank(severity: AttentionSeverity) -> u8 {
     match severity {
-        "critical" => 0,
-        "warning" => 1,
-        _ => 2,
+        AttentionSeverity::Critical => 0,
+        AttentionSeverity::Warning => 1,
     }
 }
 
@@ -2810,9 +2862,9 @@ pub(crate) async fn overview(
         if liveness == "offline" {
             attention.push(AttentionItem {
                 id: format!("agent_offline:agent:{}", agent.agent_id),
-                kind: "agent_offline".to_owned(),
-                severity: "warning".to_owned(),
-                subject_kind: "agent".to_owned(),
+                kind: AttentionKind::AgentOffline,
+                severity: AttentionSeverity::Warning,
+                subject_kind: AttentionSubjectKind::Agent,
                 subject_id: agent.agent_id.clone(),
                 subject_label: agent.agent_id.clone(),
                 message: "the Agent has not reported within the liveness window".to_owned(),
@@ -2825,9 +2877,9 @@ pub(crate) async fn overview(
         if agent.spool_store_fatal.is_some_and(|value| value != 0) {
             attention.push(AttentionItem {
                 id: format!("agent_spool_fatal:agent:{}", agent.agent_id),
-                kind: "agent_spool_fatal".to_owned(),
-                severity: "critical".to_owned(),
-                subject_kind: "agent".to_owned(),
+                kind: AttentionKind::AgentSpoolFatal,
+                severity: AttentionSeverity::Critical,
+                subject_kind: AttentionSubjectKind::Agent,
                 subject_id: agent.agent_id.clone(),
                 subject_label: agent.agent_id.clone(),
                 message: "the Agent spool store is in a fatal state; durable reports are at risk"
@@ -2838,9 +2890,9 @@ pub(crate) async fn overview(
         if agent.spool_dropped_sequence_to.is_some() {
             attention.push(AttentionItem {
                 id: format!("agent_spool_overflow:agent:{}", agent.agent_id),
-                kind: "agent_spool_overflow".to_owned(),
-                severity: "warning".to_owned(),
-                subject_kind: "agent".to_owned(),
+                kind: AttentionKind::AgentSpoolOverflow,
+                severity: AttentionSeverity::Critical,
+                subject_kind: AttentionSubjectKind::Agent,
                 subject_id: agent.agent_id.clone(),
                 subject_label: agent.agent_id.clone(),
                 message: "the Agent spool overflowed and discarded queued reports".to_owned(),
@@ -2850,9 +2902,9 @@ pub(crate) async fn overview(
         if agent.sequence_gap_count > 0 {
             attention.push(AttentionItem {
                 id: format!("agent_report_gap:agent:{}", agent.agent_id),
-                kind: "agent_report_gap".to_owned(),
-                severity: "warning".to_owned(),
-                subject_kind: "agent".to_owned(),
+                kind: AttentionKind::AgentReportGap,
+                severity: AttentionSeverity::Warning,
+                subject_kind: AttentionSubjectKind::Agent,
                 subject_id: agent.agent_id.clone(),
                 subject_label: agent.agent_id.clone(),
                 message: format!(
@@ -2870,9 +2922,9 @@ pub(crate) async fn overview(
         if agent.security_event_count > 0 {
             attention.push(AttentionItem {
                 id: format!("agent_security_event:agent:{}", agent.agent_id),
-                kind: "agent_security_event".to_owned(),
-                severity: "critical".to_owned(),
-                subject_kind: "agent".to_owned(),
+                kind: AttentionKind::AgentSecurityEvent,
+                severity: AttentionSeverity::Critical,
+                subject_kind: AttentionSubjectKind::Agent,
                 subject_id: agent.agent_id.clone(),
                 subject_label: agent.agent_id.clone(),
                 message: format!(
@@ -2893,9 +2945,9 @@ pub(crate) async fn overview(
         ) {
             attention.push(AttentionItem {
                 id: format!("agent_shutdown_incomplete:agent:{}", agent.agent_id),
-                kind: "agent_shutdown_incomplete".to_owned(),
-                severity: "warning".to_owned(),
-                subject_kind: "agent".to_owned(),
+                kind: AttentionKind::AgentShutdownIncomplete,
+                severity: AttentionSeverity::Warning,
+                subject_kind: AttentionSubjectKind::Agent,
                 subject_id: agent.agent_id.clone(),
                 subject_label: agent.agent_id.clone(),
                 message: format!("the Agent shutdown is {}", agent.shutdown_state),
@@ -2914,8 +2966,8 @@ pub(crate) async fn overview(
             );
         }
     };
-    let rows = match sqlx::query_as::<_, (String, String, Option<String>, String, i64, String)>(
-        "SELECT node_id, network_key, display_name, lifecycle, inventory_revision, visibility FROM nodes ORDER BY node_id",
+    let rows = match sqlx::query_as::<_, (String, String, Option<String>, String, i64, String, String)>(
+        "SELECT node_id, network_key, display_name, lifecycle, inventory_revision, visibility, first_seen_at FROM nodes ORDER BY node_id",
     )
     .fetch_all(state.db().pool())
     .await
@@ -2939,8 +2991,17 @@ pub(crate) async fn overview(
         retired: 0,
         published: 0,
     };
-    for (node_id, network_key, display_name, lifecycle, inventory_revision, visibility) in rows {
-        let diagnostic = node_diagnostic(
+    for (
+        node_id,
+        network_key,
+        display_name,
+        lifecycle,
+        inventory_revision,
+        visibility,
+        first_seen_at,
+    ) in rows
+    {
+        let mut diagnostic = node_diagnostic(
             &state,
             node_id.clone(),
             network_key.clone(),
@@ -2958,6 +3019,10 @@ pub(crate) async fn overview(
             continue;
         }
         node_summary.active += 1;
+        if first_observation_in_grace(&first_seen_at, &diagnostic) {
+            diagnostic.health = "starting".to_owned();
+            diagnostic.health_reason = "Node is awaiting its first accepted observation".to_owned();
+        }
         let identity = node_identity_status(&state, &node_id, &network_key).await;
         if identity.state == "mismatched" {
             let observed_at = sqlx::query_scalar::<_, String>(
@@ -2972,9 +3037,9 @@ pub(crate) async fn overview(
             .unwrap_or_else(|| generated_at.clone());
             attention.push(AttentionItem {
                 id: format!("node_identity_mismatch:node:{node_id}"),
-                kind: "node_identity_mismatch".to_owned(),
-                severity: "critical".to_owned(),
-                subject_kind: "node".to_owned(),
+                kind: AttentionKind::NodeIdentityMismatch,
+                severity: AttentionSeverity::Critical,
+                subject_kind: AttentionSubjectKind::Node,
                 subject_id: node_id.clone(),
                 subject_label: display_name.clone().unwrap_or_else(|| node_id.clone()),
                 message: "the Node identity mismatches the registered Network".to_owned(),
@@ -3008,22 +3073,25 @@ pub(crate) async fn overview(
                 node_summary.unhealthy += 1;
                 attention.push(AttentionItem {
                     id: format!("node_unhealthy:node:{node_id}"),
-                    kind: "node_unhealthy".to_owned(),
-                    severity: "critical".to_owned(),
-                    subject_kind: "node".to_owned(),
+                    kind: AttentionKind::NodeUnhealthy,
+                    severity: AttentionSeverity::Critical,
+                    subject_kind: AttentionSubjectKind::Node,
                     subject_id: node_id.clone(),
                     subject_label: display_name.unwrap_or_else(|| node_id.clone()),
                     message: diagnostic.health_reason.clone(),
                     observed_at: observed_at.clone(),
                 });
             }
+            "starting" => {
+                node_summary.unknown += 1;
+            }
             _ => {
                 node_summary.unknown += 1;
                 attention.push(AttentionItem {
                     id: format!("node_health_unknown:node:{node_id}"),
-                    kind: "node_health_unknown".to_owned(),
-                    severity: "warning".to_owned(),
-                    subject_kind: "node".to_owned(),
+                    kind: AttentionKind::NodeHealthUnknown,
+                    severity: AttentionSeverity::Warning,
+                    subject_kind: AttentionSubjectKind::Node,
                     subject_id: node_id.clone(),
                     subject_label: display_name.unwrap_or_else(|| node_id.clone()),
                     message: diagnostic.health_reason.clone(),
@@ -3034,9 +3102,9 @@ pub(crate) async fn overview(
         if diagnostic.resync_state != "normal" {
             attention.push(AttentionItem {
                 id: format!("node_resync:node:{node_id}"),
-                kind: "node_resync".to_owned(),
-                severity: "warning".to_owned(),
-                subject_kind: "node".to_owned(),
+                kind: AttentionKind::NodeResync,
+                severity: AttentionSeverity::Warning,
+                subject_kind: AttentionSubjectKind::Node,
                 subject_id: node_id.clone(),
                 subject_label: node_id.clone(),
                 message: format!("the Node resync state is {}", diagnostic.resync_state),
@@ -3045,8 +3113,13 @@ pub(crate) async fn overview(
         }
     }
     attention.sort_by(|a, b| {
-        severity_rank(&a.severity)
-            .cmp(&severity_rank(&b.severity))
+        severity_rank(a.severity)
+            .cmp(&severity_rank(b.severity))
+            .then_with(|| {
+                crate::auth::parse_rfc3339(&b.observed_at)
+                    .cmp(&crate::auth::parse_rfc3339(&a.observed_at))
+            })
+            .then_with(|| a.subject_label.cmp(&b.subject_label))
             .then_with(|| a.id.cmp(&b.id))
     });
     let Some(summary) = AdminOverviewSummary::checked(agent_summary, node_summary, network_summary)
@@ -5373,7 +5446,7 @@ mod tests {
         assert!(kinds.contains(&("agent_security_event".to_owned(), "critical".to_owned())));
         assert!(kinds.contains(&("agent_spool_fatal".to_owned(), "critical".to_owned())));
         assert!(kinds.contains(&("agent_offline".to_owned(), "warning".to_owned())));
-        assert!(kinds.contains(&("agent_spool_overflow".to_owned(), "warning".to_owned())));
+        assert!(kinds.contains(&("agent_spool_overflow".to_owned(), "critical".to_owned())));
         assert!(kinds.contains(&("node_health_unknown".to_owned(), "warning".to_owned())));
         // Critical items sort before warnings.
         assert_eq!(value["attention"][0]["severity"], "critical");

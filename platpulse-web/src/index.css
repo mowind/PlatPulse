@@ -1787,6 +1787,31 @@ button {
   font-size: 0.8rem;
 }
 
+.attention-counts {
+  margin: 0.5rem 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.attention-group {
+  align-items: flex-start;
+  border-left: 3px solid var(--line);
+}
+
+.attention-group.critical { border-left-color: var(--red); }
+.attention-group.warning { border-left-color: var(--amber); }
+.attention-group.unknown { border-left-color: var(--muted); }
+.attention-group .quiet-button {
+  min-height: 2.75rem;
+  margin-top: 0.5rem;
+}
+.attention-group ul {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0.5rem 0 0;
+  padding-left: 1.2rem;
+}
+
 .impact-preview {
   margin: 0 0 1rem;
   padding: 0.75rem 1rem;

@@ -165,89 +165,58 @@ function SummaryCards({ summary }: { summary: AdminOverview['summary'] }) {
 function AttentionPanel({ query }: { query: OverviewQuery }) {
   const data = query.data
   const [announcement, setAnnouncement] = useState('')
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const previousCount = useRef<number | null>(null)
   const attentionLength = data?.attention.length
-
   useEffect(() => {
     if (attentionLength === undefined) return
-    if (
-      previousCount.current !== null &&
-      previousCount.current !== attentionLength
-    ) {
-      setAnnouncement(
-        `Attention queue updated: ${attentionLength} item${attentionLength === 1 ? '' : 's'} need${attentionLength === 1 ? '' : 's'} attention.`,
-      )
-    }
+    if (previousCount.current !== null && previousCount.current !== attentionLength) setAnnouncement(`Attention queue updated: ${attentionLength} items need attention.`)
     previousCount.current = attentionLength
   }, [attentionLength])
-
+  const groups = groupAttention(data?.attention ?? [])
+  const showAll = expanded.has("__all__")
+  const visibleGroups = showAll ? groups : groups.slice(0, 6)
+  const hiddenCount = Math.max(0, groups.length - 6)
+  const criticalCount = (data?.attention ?? []).filter((item) => item.severity === "critical").length
   return (
     <article className="panel overview-panel a-attention">
-      <div className="panel-heading">
-        <div>
-          <span className="eyebrow">01 · Attention</span>
-          <h2>Attention queue</h2>
-        </div>
-        {data && <span className="panel-count">{data.attention.length}</span>}
-      </div>
-      <p className="sr-only" role="status">
-        {announcement}
-      </p>
-      {!data && query.isPending && (
-        <p className="panel-state" role="status">
-          <StatusBadge status="Starting" tone="neutral" /> Checking the Server for
-          attention…
-        </p>
-      )}
-      {!data && query.isError && (
-        <p className="panel-state" role="alert">
-          <StatusBadge status="Error" tone="error" />{' '}
-          {query.error instanceof Error ? query.error.message : 'Unable to load attention'}
-          <button type="button" className="text-action" onClick={() => void query.refetch()}>
-            Try again
-          </button>
-        </p>
-      )}
-      {data && query.isRefetchError && (
-        <p className="panel-state" role="alert">
-          <StatusBadge status="Error" tone="error" /> Failed to refresh; showing the last
-          successful attention queue.
-        </p>
-      )}
-      {data && data.attention.length === 0 && (
-        <p className="panel-state">
-          <StatusBadge status="Empty" tone="ok" /> No attention items. Nothing needs an
-          Owner right now.
-        </p>
-      )}
-      {data && data.attention.length > 0 && (
-        <ul className="attention-list">
-          {data.attention.map((item) => (
-            <AttentionRow key={item.id} item={item} />
-          ))}
-        </ul>
-      )}
+      <div className="panel-heading"><div><span className="eyebrow">01 · Attention</span><h2>Attention queue</h2></div>{data && <span className="panel-count">{data.attention.length}</span>}</div>
+      <p className="sr-only" role="status">{announcement}</p>
+      {!data && query.isPending && <p className="panel-state" role="status"><StatusBadge status="Starting" tone="neutral" /> Checking the Server for attention…</p>}
+      {!data && query.isError && <p className="panel-state" role="alert"><StatusBadge status="Error" tone="error" /> {query.error instanceof Error ? query.error.message : "Unable to load attention"} <button type="button" className="text-action" onClick={() => void query.refetch()}>Try again</button></p>}
+      {data && query.isRefetchError && <p className="panel-state" role="alert"><StatusBadge status="Error" tone="error" /> Failed to refresh; showing the last successful attention queue.</p>}
+      {data && data.attention.length === 0 && <p className="panel-state"><StatusBadge status="Empty" tone="ok" /> No attention items. Nothing needs an Owner right now.</p>}
+      {data && data.attention.length > 0 && <><p className="attention-counts">{data.attention.length} items across {groups.length} subjects · {criticalCount} Critical</p><ul className="attention-list">{visibleGroups.map((group) => <AttentionGroup key={group.key} group={group} expanded={expanded.has(group.key)} onToggle={() => setExpanded((current) => { const next = new Set(current); if (next.has(group.key)) { next.delete(group.key) } else { next.add(group.key) } return next })} />)}</ul>{hiddenCount > 0 && <button type="button" className="quiet-button" onClick={() => setExpanded((current) => { const next = new Set(current); if (next.has("__all__")) { next.delete("__all__") } else { next.add("__all__") } return next })}>{showAll ? "Collapse" : `Show ${hiddenCount} more`}</button>}</>}
     </article>
   )
 }
 
-function AttentionRow({ item }: { item: AttentionItem }) {
-  const tone = item.severity === 'critical' ? 'error' : 'warning'
-  const severityLabel = item.severity === 'critical' ? 'Critical' : 'Warning'
-  return (
-    <li className="attention-item">
-      <StatusBadge status={severityLabel} tone={tone} />
-      <div className="attention-body">
-        <p>
-          <strong>{item.subject_label}</strong> — {item.message}
-        </p>
-        <p className="muted">
-          {item.kind} · {formatObservedAt(item.observed_at)}
-        </p>
-      </div>
-    </li>
-  )
+type AttentionGroupData = { key: string; subjectKind: string; subjectId: string; label: string; items: AttentionItem[] }
+function groupAttention(items: AttentionItem[]): AttentionGroupData[] {
+  const groups = new Map<string, AttentionGroupData>()
+  for (const item of items) { const key = item.subject_kind + ":" + item.subject_id; const group = groups.get(key); if (group) group.items.push(item); else groups.set(key, { key, subjectKind: item.subject_kind, subjectId: item.subject_id, label: item.subject_label, items: [item] }) }
+  return [...groups.values()]
 }
+
+function safeAttentionRoute(group: AttentionGroupData): string | null {
+  if (!group.subjectId || group.subjectId.includes("/") || group.subjectId.includes("\\")) return null
+  if (group.subjectKind === "agent") return "/admin/agents/" + encodeURIComponent(group.subjectId)
+  if (group.subjectKind === "node") return "/admin/nodes/" + encodeURIComponent(group.subjectId)
+  if (group.subjectKind === "network") return "/admin/networks/" + encodeURIComponent(group.subjectId)
+  if (group.subjectKind === "settings" && group.subjectId === "settings") return "/admin/settings"
+  return null
+}
+
+function AttentionGroup({ group, expanded, onToggle }: { group: AttentionGroupData; expanded: boolean; onToggle: () => void }) {
+  const primary = group.items[0]
+  const known = primary.severity === "critical" || primary.severity === "warning"
+  const severity = known ? primary.severity : "unknown"
+  const route = safeAttentionRoute(group)
+  return <li className={`attention-item attention-group ${severity}`}><StatusBadge status={severity === "critical" ? "Critical" : severity === "warning" ? "Warning" : "Unknown"} tone={severity === "critical" ? "error" : severity === "warning" ? "warning" : "neutral"} /><div className="attention-body"><p><strong>{route ? <Link to={route}>{group.label}</Link> : group.label}</strong> — {primary.message}</p><p className="muted">{primary.kind} · {formatObservedAt(primary.observed_at)}</p>{group.items.length > 1 && <><button type="button" className="quiet-button" aria-expanded={expanded} onClick={onToggle}>{expanded ? "Hide additional issues" : `Show ${group.items.length - 1} additional issues`}</button>{expanded && <ul>{group.items.slice(1).map((item) => <li key={item.id}>{item.severity === "critical" ? "Critical" : item.severity === "warning" ? "Warning" : "Unknown"} · {item.message} · {item.kind}</li>)}</ul>}</>}</div></li>
+}
+
+
+
 
 type DiagnosticsQuery = ReturnType<typeof useAdminDiagnostics>
 type NodesQuery = ReturnType<typeof useAdminNodes>
@@ -259,8 +228,10 @@ function NodePanel({
   nodeQuery: NodesQuery
   diagnosticsQuery: DiagnosticsQuery
 }) {
-  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [expanded, setExpanded] = useState<string | null>(null)
   const nodes = nodeQuery.data ?? []
+  const activeNodes = nodes.filter((node) => node.lifecycle === 'active')
+  const visibleNodes = activeNodes.slice(0, 10)
   const diagnosticsByNode = new Map(
     (diagnosticsQuery.data ?? [])
       .flatMap((agent) => agent.nodes)
@@ -268,22 +239,14 @@ function NodePanel({
   )
 
   const toggle = (nodeId: string) => {
-    setExpanded((current) => {
-      const next = new Set(current)
-      if (next.has(nodeId)) {
-        next.delete(nodeId)
-      } else {
-        next.add(nodeId)
-      }
-      return next
-    })
+    setExpanded((current) => (current === nodeId ? null : nodeId))
   }
 
   return (
     <article className="panel">
       <div className="panel-heading">
         <h2>Node Health Summary</h2>
-        {nodes.length > 0 && <span className="panel-count">{nodes.length}</span>}
+        {activeNodes.length > 0 && <span className="panel-count">{activeNodes.length}</span>}
       </div>
       {!nodeQuery.data && nodeQuery.isPending && (
         <p className="panel-state" role="status">
@@ -306,12 +269,12 @@ function NodePanel({
           successful Node values.
         </p>
       )}
-      {nodeQuery.data && nodes.length === 0 && (
+      {nodeQuery.data && activeNodes.length === 0 && (
         <p className="panel-state">
           <StatusBadge status="Empty" tone="ok" /> No Nodes observed yet.
         </p>
       )}
-      {nodeQuery.data && nodes.length > 0 && (
+      {nodeQuery.data && activeNodes.length > 0 && (
         <div className="table-wrap">
           <table className="node-table">
             <caption className="sr-only">PlatON Node health, freshness, and sync</caption>
@@ -326,18 +289,24 @@ function NodePanel({
               </tr>
             </thead>
             <tbody>
-              {nodes.map((node) => (
+              {visibleNodes.map((node) => (
                 <NodeRows
                   key={node.node_id}
                   node={node}
                   diagnostic={diagnosticsByNode.get(node.node_id)}
                   diagnosticsQuery={diagnosticsQuery}
-                  expanded={expanded.has(node.node_id)}
+                  expanded={expanded === node.node_id}
                   onToggle={() => toggle(node.node_id)}
                 />
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+      {nodeQuery.data && activeNodes.length > 0 && (
+        <div className="panel-heading">
+          <span className="muted">Showing {visibleNodes.length} of {activeNodes.length} Active Nodes</span>
+          <Link className="text-action" to="/admin/nodes">View all Nodes</Link>
         </div>
       )}
     </article>
@@ -382,6 +351,7 @@ function NodeRows({
           <small className="muted" title={node.node_id}>
             Node ID · {node.node_id.slice(0, 8)}…
           </small>
+          <Link className="text-action" to={`/admin/nodes/${encodeURIComponent(node.node_id)}`}>View Node</Link>
         </th>
         <td data-label="Network">{node.network_key}</td>
         <td data-label="Health">
@@ -544,6 +514,7 @@ function ComponentRow({
 
 function AgentPanel({ query }: { query: DiagnosticsQuery }) {
   const agents = query.data ?? []
+  const visibleAgents = agents.slice(0, 6)
   return (
     <article className="panel">
       <div className="panel-heading">
@@ -577,9 +548,15 @@ function AgentPanel({ query }: { query: DiagnosticsQuery }) {
       )}
       {query.data && agents.length > 0 && (
         <div className="agent-grid">
-          {agents.map((agent) => (
+          {visibleAgents.map((agent) => (
             <AgentCard key={agent.agent_id} agent={agent} />
           ))}
+        </div>
+      )}
+      {query.data && agents.length > 0 && (
+        <div className="panel-heading">
+          <span className="muted">Showing {visibleAgents.length} of {agents.length} Agents</span>
+          <Link className="text-action" to="/admin/agents">View all Agents</Link>
         </div>
       )}
     </article>
