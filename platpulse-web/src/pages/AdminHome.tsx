@@ -39,10 +39,13 @@ export default function AdminHome() {
   const diagnostics = useAdminDiagnostics(generation)
   const nodes = useAdminNodes(generation)
   const snapshot = overview.data
+  const refreshAll = async () => {
+    await Promise.allSettled([overview.refetch(), diagnostics.refetch(), nodes.refetch()])
+  }
 
   return (
     <section className="page admin-overview">
-      <OverviewHeader snapshot={snapshot} query={overview} />
+      <OverviewHeader snapshot={snapshot} query={overview} refreshing={overview.isFetching || diagnostics.isFetching || nodes.isFetching} onRefresh={refreshAll} />
       <AttentionPanel query={overview} />
       {snapshot && <SummaryCards summary={snapshot.summary} />}
       <NodePanel nodeQuery={nodes} diagnosticsQuery={diagnostics} />
@@ -66,9 +69,13 @@ type OverviewQuery = ReturnType<typeof useAdminOverview>
 function OverviewHeader({
   snapshot,
   query,
+  refreshing,
+  onRefresh,
 }: {
   snapshot: AdminOverview | undefined
   query: OverviewQuery
+  refreshing: boolean
+  onRefresh: () => Promise<void>
 }) {
   return (
     <header className="admin-overview-header">
@@ -85,8 +92,8 @@ function OverviewHeader({
             <button
               type="button"
               className="refresh-button"
-              onClick={() => void query.refetch()}
-              disabled={query.isFetching}
+              onClick={() => void onRefresh()}
+              disabled={refreshing}
             >
               {query.isFetching ? 'Refreshing…' : 'Refresh'}
             </button>
@@ -232,7 +239,7 @@ function AttentionPanel({ query }: { query: OverviewQuery }) {
 type AttentionGroupData = { key: string; subjectKind: string; subjectId: string; label: string; items: AttentionItem[] }
 function groupAttention(items: AttentionItem[]): AttentionGroupData[] {
   const groups = new Map<string, AttentionGroupData>()
-  for (const item of items) { const key = item.subject_kind + ":" + item.subject_id; const group = groups.get(key); if (group) group.items.push(item); else groups.set(key, { key, subjectKind: item.subject_kind, subjectId: item.subject_id, label: item.subject_label, items: [item] }) }
+  for (const item of items) { const key = `${item.subject_kind.length}:${item.subject_kind}${item.subject_id}`; const group = groups.get(key); if (group) group.items.push(item); else groups.set(key, { key, subjectKind: item.subject_kind, subjectId: item.subject_id, label: item.subject_label, items: [item] }) }
   return [...groups.values()]
 }
 
@@ -250,7 +257,7 @@ function AttentionGroup({ group, expanded, onToggle }: { group: AttentionGroupDa
   const known = primary.severity === "critical" || primary.severity === "warning"
   const severity = known ? primary.severity : "unknown"
   const route = safeAttentionRoute(group)
-  return <li className={`attention-item attention-group ${severity}`}><StatusBadge status={severity === "critical" ? "Critical" : severity === "warning" ? "Warning" : "Unknown"} tone={severity === "critical" ? "error" : severity === "warning" ? "warning" : "neutral"} /><div className="attention-body"><p><strong>{route ? <Link to={route}>{group.label}</Link> : group.label}</strong> — {primary.message}</p><p className="muted">{primary.kind} · {formatObservedAt(primary.observed_at)}</p>{group.items.length > 1 && <><button type="button" className="quiet-button" aria-expanded={expanded} onClick={onToggle}>{expanded ? "Hide additional issues" : `Show ${group.items.length - 1} additional issues`}</button>{expanded && <ul>{group.items.slice(1).map((item) => <li key={item.id}>{item.severity === "critical" ? "Critical" : item.severity === "warning" ? "Warning" : "Unknown"} · {item.message} · {item.kind}</li>)}</ul>}</>}</div></li>
+  return <li className={`attention-item attention-group ${severity}`}><StatusBadge status={severity === "critical" ? "Critical" : severity === "warning" ? "Warning" : "Unknown"} tone={severity === "critical" ? "error" : severity === "warning" ? "warning" : "neutral"} /><div className="attention-body"><p><strong>{route ? <Link to={route}>{group.label}</Link> : group.label}</strong> — {primary.message}</p><p className="muted">{primary.kind} · <SnapshotTime timestamp={primary.observed_at} /></p>{group.items.length > 1 && <><button type="button" className="quiet-button" aria-expanded={expanded} onClick={onToggle}>{expanded ? "Hide additional issues" : `Show ${group.items.length - 1} additional issues`}</button>{expanded && <ul>{group.items.slice(1).map((item) => <li key={item.id}>{item.severity === "critical" ? "Critical" : item.severity === "warning" ? "Warning" : "Unknown"} · {item.message} · {item.kind}</li>)}</ul>}</>}</div></li>
 }
 
 
@@ -450,9 +457,7 @@ function NodeRows({
         </td>
         <td data-label="Head / Sync">
           {node.current_head ?? 'Unknown'}
-          <small className="muted">
-            Sync {componentStateLabel(diagnostic?.sync?.state)}
-          </small>
+          <small className="muted">{syncSummary(diagnostic)}</small>
         </td>
         <td data-label="Resync">
           {node.resync_state}
@@ -778,6 +783,17 @@ function formatSpoolSummary(host: AgentDiagnostic['host']): string {
     host.spool_pending_history_gaps != null ? `${host.spool_pending_history_gaps} history gaps` : null,
   ].filter((part): part is string => part !== null)
   return parts.length > 0 ? parts.join(' · ') : 'Normal'
+}
+
+function syncSummary(diagnostic: NodeDiagnostic | undefined): string {
+  const state = componentStateLabel(diagnostic?.sync?.state)
+  const current = diagnostic?.sync?.current_block ?? diagnostic?.current_head
+  const highest = diagnostic?.sync?.highest_block
+  if (current == null && highest == null) return `Sync ${state}`
+  if (highest == null || current == null) return `Sync ${state} · ${current ?? highest}`
+  const delta = highest - current
+  const lag = delta === 0 ? '' : ` (${delta} behind)`
+  return `Sync ${state} · ${current} / ${highest}${lag}`
 }
 
 function clockStatusLabel(status: string | null | undefined): string {

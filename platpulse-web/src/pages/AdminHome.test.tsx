@@ -214,6 +214,8 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     })
 
     await renderAt('/admin?variant=C')
+    expect(window.location.pathname).toBe('/admin')
+    expect(window.location.search).toBe('?variant=C')
     expect(await screen.findByRole('heading', { level: 1, name: 'Overview' })).toBeTruthy()
     expect(screen.queryByRole('navigation', { name: 'Prototype variants' })).toBeNull()
     expect(screen.queryByText('Standalone prototype · no login')).toBeNull()

@@ -141,6 +141,7 @@
 .admin-overview .agent-node-context ul { display: grid; gap: 0.25rem; margin: 0.35rem 0 0; padding-left: 1rem; }
 .admin-overview .agent-node-context li { display: flex; justify-content: space-between; gap: 0.75rem; color: rgba(247,247,251,0.72); }
 .admin-overview .agent-node-context li span:last-child { color: rgba(247,247,251,0.5); text-align: right; }
+.admin-overview .agent-node-context small { color: rgba(247,247,251,0.38); }
 .admin-overview .muted { color: rgba(247,247,251,0.5); }
 @media (max-width: 52rem) {
   .admin-overview-header { align-items: flex-start; flex-direction: column; gap: 0.8rem; }
