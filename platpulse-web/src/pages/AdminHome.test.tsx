@@ -1,6 +1,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
+import { prioritizeAgents } from './AdminHome'
+import type { AgentDiagnostic, HostDiagnostic } from '../api/generated'
 import { adminQueryClient } from '../api/admin'
 import { client } from '../api/generated/client.gen'
 
@@ -493,5 +495,92 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
       await Promise.resolve()
     })
     expect(await screen.findByText(/RPC collection failed/)).toBeTruthy()
+  })
+})
+
+describe('Agent inventory risk ordering and evidence', () => {
+  it('sorts critical, offline, unknown, and online Agents before limiting to six', () => {
+    const agent = (id: string, liveness: string, extra: Partial<AgentDiagnostic> = {}): AgentDiagnostic => ({
+      ...AGENT, agent_id: id, liveness, ...extra,
+    }) as AgentDiagnostic
+    const criticalHost: HostDiagnostic = { components: [], updated_at: '2026-08-12T08:00:00Z', spool_store_fatal: true }
+    const ordered = prioritizeAgents([
+      agent('online-z', 'online'),
+      agent('offline', 'offline'),
+      agent('critical', 'online', { security_event_count: 1 }),
+      agent('unknown', 'unknown'),
+      agent('critical-spool', 'online', { host: criticalHost }),
+      agent('online-a', 'online'),
+    ])
+    expect(ordered.map((entry) => entry.agent_id)).toEqual([
+      'critical', 'critical-spool', 'offline', 'unknown', 'online-a', 'online-z',
+    ])
+  })
+
+  it('prioritizes before slicing and keeps the sixth-card boundary deterministic', async () => {
+    const agents = [
+      ...Array.from({ length: 4 }, (_, index) => ({ ...AGENT, agent_id: 'online-' + index, liveness: 'online' })),
+      { ...AGENT, agent_id: 'offline-agent', liveness: 'offline' },
+      { ...AGENT, agent_id: 'unknown-agent', liveness: 'unknown' },
+      { ...AGENT, agent_id: 'critical-agent', security_event_count: 1 },
+    ]
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/overview': () => jsonResponse(OVERVIEW, 200),
+      '/api/admin/v1/nodes': () => jsonResponse([], 200),
+      '/api/admin/v1/agents': () => jsonResponse(agents, 200),
+    })
+    await renderAt('/admin')
+    const headings = await screen.findAllByRole('heading', { level: 3 })
+    expect(headings).toHaveLength(6)
+    expect(headings.map((heading) => heading.textContent)).toEqual([
+      'critical-agent', 'offline-agent', 'unknown-agent', 'online-0', 'online-1', 'online-2',
+    ])
+    expect(screen.queryByRole('heading', { level: 3, name: 'online-3' })).toBeNull()
+    expect(screen.getByText('Showing 6 of 7 Agents')).toBeTruthy()
+    expect(screen.getByRole('link', { name: 'View all Agents' }).getAttribute('href')).toBe('/admin/agents')
+  })
+
+  it('renders risk evidence, Host once, independent Node context, and safe Agent navigation', async () => {
+    const host: HostDiagnostic = {
+      components: [], updated_at: '2026-08-12T08:00:00Z', cpu_percent: 37.5,
+      memory_used_bytes: 4 * 1024 ** 3, memory_total_bytes: 8 * 1024 ** 3,
+      spool_queued_reports: 3, spool_capacity_bytes: 16 * 1024 ** 3,
+      spool_dropped_sequence_from: 10, spool_dropped_sequence_to: 12, spool_pending_history_gaps: 2,
+    }
+    const diagnostic = { ...AGENT, host, security_event_count: 2, sequence_gap_count: 1, clock_status: 'unknown', clock_skew_ms: null }
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/overview': () => jsonResponse(OVERVIEW, 200),
+      '/api/admin/v1/nodes': () => jsonResponse([{ ...NODE, display_name: 'Joined Node', lifecycle: 'active', health: 'unknown', freshness: 'stale' }], 200),
+      '/api/admin/v1/agents': () => jsonResponse([diagnostic], 200),
+    })
+    await renderAt('/admin')
+    const card = (await screen.findByRole('heading', { level: 3, name: 'agent-1' })).closest('article') as HTMLElement
+    expect(card.textContent).toContain('37.5% CPU')
+    expect(card.textContent).toContain('4.00 GiB / 8.00 GiB memory')
+    expect(card.textContent).toContain('3 queued')
+    expect(card.textContent).toContain('discarded reports')
+    expect(card.textContent).toContain('Unknown')
+    expect(card.textContent).toContain('1 report gap')
+    expect(card.textContent).toContain('2 security events')
+    expect(card.textContent).toContain('Joined Node')
+    expect(card.textContent).toContain('Stale')
+    expect(card.textContent).toContain('View Agent')
+    expect(within(card).getByRole('link', { name: 'View Agent' }).getAttribute('href')).toBe('/admin/agents/agent-1')
+    expect(card.textContent).not.toContain('0195f2a1-2b3c-4d5e-8f90-123456789abc')
+    expect(card.querySelectorAll('dt').length).toBe(6)
+  })
+
+  it('keeps Agent cards visible when Nodes fail and reports no observed Nodes when the join is empty', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/overview': () => jsonResponse(OVERVIEW, 200),
+      '/api/admin/v1/nodes': () => jsonResponse({ error: { code: 'unavailable', message: 'Nodes unavailable' } }, 503),
+      '/api/admin/v1/agents': () => jsonResponse([{ ...AGENT, nodes: [] }], 200),
+    })
+    await renderAt('/admin')
+    const card = (await screen.findByRole('heading', { level: 3, name: 'agent-1' })).closest('article') as HTMLElement
+    expect(card.textContent).toContain('Node context unavailable; recover in Nodes')
   })
 })

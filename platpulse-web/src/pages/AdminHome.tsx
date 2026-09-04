@@ -46,7 +46,7 @@ export default function AdminHome() {
       <AttentionPanel query={overview} />
       {snapshot && <SummaryCards summary={snapshot.summary} />}
       <NodePanel nodeQuery={nodes} diagnosticsQuery={diagnostics} />
-      <AgentPanel query={diagnostics} />
+      <AgentPanel query={diagnostics} nodeQuery={nodes} />
     </section>
   )
 }
@@ -586,9 +586,15 @@ function ComponentRow({
   )
 }
 
-function AgentPanel({ query }: { query: DiagnosticsQuery }) {
+function AgentPanel({ query, nodeQuery }: { query: DiagnosticsQuery; nodeQuery: NodesQuery }) {
   const agents = query.data ?? []
-  const visibleAgents = agents.slice(0, 6)
+  const visibleAgents = prioritizeAgents(agents).slice(0, 6)
+  const nodesByAgent = new Map<string, AdminNodeListItem[]>()
+  for (const node of nodeQuery.data ?? []) {
+    const existing = nodesByAgent.get(node.agent_id) ?? []
+    existing.push(node)
+    nodesByAgent.set(node.agent_id, existing)
+  }
   return (
     <article className="panel">
       <div className="panel-heading">
@@ -623,7 +629,7 @@ function AgentPanel({ query }: { query: DiagnosticsQuery }) {
       {query.data && agents.length > 0 && (
         <div className="agent-grid">
           {visibleAgents.map((agent) => (
-            <AgentCard key={agent.agent_id} agent={agent} />
+            <AgentCard key={agent.agent_id} agent={agent} nodes={nodesByAgent.get(agent.agent_id)} nodeQuery={nodeQuery} />
           ))}
         </div>
       )}
@@ -637,47 +643,104 @@ function AgentPanel({ query }: { query: DiagnosticsQuery }) {
   )
 }
 
-function AgentCard({ agent }: { agent: AgentDiagnostic }) {
+export function prioritizeAgents(agents: AgentDiagnostic[]): AgentDiagnostic[] {
+  const rank = (agent: AgentDiagnostic) => {
+    const host = agent.host
+    const critical = hasSpoolRisk(host) || agent.security_event_count > 0
+    if (critical) return 0
+    if (agent.liveness === 'offline') return 1
+    if (agent.liveness !== 'online') return 2
+    return 3
+  }
+  return [...agents].sort((left, right) => rank(left) - rank(right) || left.agent_id.localeCompare(right.agent_id, 'en-US'))
+}
+
+function AgentCard({ agent, nodes, nodeQuery }: { agent: AgentDiagnostic; nodes?: AdminNodeListItem[]; nodeQuery: NodesQuery }) {
   const liveness = livenessLabel(agent.liveness)
-  const livenessTone =
-    agent.liveness === 'online' ? 'ok' : agent.liveness === 'offline' ? 'error' : 'neutral'
-  const spoolFatal = agent.host?.spool_store_fatal === true
+  const livenessTone = agent.liveness === 'online' ? 'ok' : agent.liveness === 'offline' ? 'error' : 'neutral'
+  const host = agent.host
+  const spoolRisk = hasSpoolRisk(host)
+  const spoolText = formatSpoolSummary(host)
+  const memory = host?.memory_used_bytes != null && host.memory_total_bytes != null ? `${formatBytes(host.memory_used_bytes)} / ${formatBytes(host.memory_total_bytes)} memory` : 'Unknown memory'
   return (
-    <article className="agent-card">
-      <h3>{agent.agent_id}</h3>
-      <p>
-        <StatusBadge status={liveness} tone={livenessTone} />
-        {spoolFatal && <StatusBadge status="Error" tone="error" />}
-      </p>
+    <article className={`agent-card${spoolRisk || agent.security_event_count > 0 ? ' agent-card-critical' : ''}`}>
+      <div className="agent-card-heading"><h3>{agent.agent_id}</h3><Link className="text-action" to={`/admin/agents/${encodeURIComponent(agent.agent_id)}`}>View Agent</Link></div>
+      <p><StatusBadge status={liveness} tone={livenessTone} /> {spoolRisk && <StatusBadge status="Critical" tone="error" />}</p>
       <dl className="detail-list">
-        <div>
-          <dt>Last report</dt>
-          <dd>
-            {agent.last_report_sequence == null
-              ? 'None yet'
-              : `#${agent.last_report_sequence} · ${formatObservedAt(agent.last_received_at)}`}
-          </dd>
-        </div>
-        <div>
-          <dt>Boot</dt>
-          <dd>
-            {agent.boot_status} {agent.active_boot_id ? `· ${agent.active_boot_id.slice(0, 8)}…` : ''}
-          </dd>
-        </div>
-        <div>
-          <dt>Shutdown</dt>
-          <dd>{agent.shutdown_state}</dd>
-        </div>
-        <div>
-          <dt>Diagnostics</dt>
-          <dd>
-            {agent.sequence_gap_count} sequence gap{agent.sequence_gap_count === 1 ? '' : 's'} ·{' '}
-            {agent.security_event_count} security event
-            {agent.security_event_count === 1 ? '' : 's'}
-            {spoolFatal ? ' · spool store fatal' : ''}
-          </dd>
-        </div>
+        <div><dt>Last report</dt><dd>{agent.last_report_sequence == null ? 'Unknown' : `#${agent.last_report_sequence} · ${formatObservedAt(agent.last_received_at)}`}</dd></div>
+        <div><dt>Host</dt><dd>{host ? `${host.cpu_percent != null ? `${host.cpu_percent}% CPU` : 'Unknown CPU'} · ${memory}` : 'Unknown CPU · Unknown memory'}</dd></div>
+        <div><dt>Durable Spool</dt><dd className={spoolRisk || host?.spool_store_error ? 'diagnostic-critical' : ''}>{spoolText}</dd></div>
+        <div><dt>Clock</dt><dd>{clockStatusLabel(agent.clock_status)}{agent.clock_skew_ms != null ? ` · ${agent.clock_skew_ms} ms skew` : ''}</dd></div>
+        <div><dt>Evidence</dt><dd>{agent.sequence_gap_count} report gap{agent.sequence_gap_count === 1 ? '' : 's'} · {agent.security_event_count} security event{agent.security_event_count === 1 ? '' : 's'}</dd></div>
+        <div><dt>Nodes</dt><dd><NodeContext nodes={nodes} query={nodeQuery} /></dd></div>
       </dl>
     </article>
   )
+}
+
+function NodeContext({ nodes, query }: { nodes?: AdminNodeListItem[]; query: NodesQuery }) {
+  if (!query.data) {
+    if (query.isPending) return <span className="muted">Loading Node context…</span>
+    if (query.isError) return <span className="diagnostic-critical">Node context unavailable; recover in Nodes</span>
+    return <span className="muted">Node context unavailable</span>
+  }
+  if (!nodes || nodes.length === 0) return <span>No Nodes observed yet.</span>
+  const active = nodes.filter((node) => node.lifecycle === 'active').length
+  const unhealthy = nodes.filter((node) => node.health === 'unhealthy').length
+  const unknown = nodes.filter((node) => node.health === 'unknown').length
+  return (
+    <div className="agent-node-context">
+      <span className="muted">{nodes.length} Node{nodes.length === 1 ? '' : 's'} · {active} active · {unhealthy} unhealthy · {unknown} unknown</span>
+      <ul>
+        {nodes.map((node) => (
+          <li key={node.node_id}>
+            <span>{node.display_name ?? node.node_id} <small>({node.node_id})</small></span>
+            <span>{node.lifecycle} · {nodeHealthLabel(node.health)} · {freshnessLabel(node.freshness)}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function nodeHealthLabel(health: string): string {
+  if (health === 'healthy') return 'Healthy'
+  if (health === 'unhealthy') return 'Unhealthy'
+  return 'Unknown'
+}
+
+function hasSpoolRisk(host: AgentDiagnostic['host']): boolean {
+  return host?.spool_store_fatal === true ||
+    host?.spool_dropped_sequence_from != null ||
+    host?.spool_dropped_sequence_to != null ||
+    host?.spool_dropped_height_from != null ||
+    host?.spool_dropped_height_to != null ||
+    host?.spool_report_too_large === true
+}
+
+function formatSpoolSummary(host: AgentDiagnostic['host']): string {
+  if (!host) return 'Unknown'
+  const observed = [
+    host.spool_capacity_bytes, host.spool_dropped_sequence_from, host.spool_dropped_sequence_to,
+    host.spool_dropped_height_from, host.spool_dropped_height_to, host.spool_in_flight,
+    host.spool_queued_bytes, host.spool_queued_reports, host.spool_report_too_large,
+    host.spool_store_error, host.spool_store_fatal, host.spool_pending_history_gaps,
+  ].some((value) => value != null)
+  if (!observed) return 'Unknown'
+  const parts = [
+    host.spool_queued_reports != null ? `${host.spool_queued_reports} queued` : null,
+    host.spool_queued_bytes != null ? `${formatBytes(host.spool_queued_bytes)} queued bytes` : null,
+    host.spool_capacity_bytes != null ? `capacity ${formatBytes(host.spool_capacity_bytes)}` : null,
+    host.spool_store_fatal ? 'fatal storage' : null,
+    host.spool_store_error ? `store error: ${host.spool_store_error}` : null,
+    hasSpoolRisk(host) && !host.spool_store_fatal ? 'discarded reports' : null,
+    host.spool_report_too_large ? 'report too large' : null,
+    host.spool_pending_history_gaps != null ? `${host.spool_pending_history_gaps} history gaps` : null,
+  ].filter((part): part is string => part !== null)
+  return parts.length > 0 ? parts.join(' · ') : 'Normal'
+}
+
+function clockStatusLabel(status: string | null | undefined): string {
+  if (!status || status === 'unknown') return 'Unknown'
+  return status
 }
