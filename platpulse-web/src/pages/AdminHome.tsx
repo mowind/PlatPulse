@@ -231,7 +231,15 @@ function NodePanel({
   const [expanded, setExpanded] = useState<string | null>(null)
   const nodes = nodeQuery.data ?? []
   const activeNodes = nodes.filter((node) => node.lifecycle === 'active')
-  const visibleNodes = activeNodes.slice(0, 10)
+  const prioritizedNodes = prioritizeActiveNodes(activeNodes)
+  const visibleNodes = prioritizedNodes.slice(0, 10)
+
+  useEffect(() => {
+    if (expanded !== null && !visibleNodes.some((node) => node.node_id === expanded)) {
+      setExpanded(null)
+    }
+  }, [expanded, visibleNodes])
+
   const diagnosticsByNode = new Map(
     (diagnosticsQuery.data ?? [])
       .flatMap((agent) => agent.nodes)
@@ -313,6 +321,28 @@ function NodePanel({
   )
 }
 
+function prioritizeActiveNodes(nodes: AdminNodeListItem[]): AdminNodeListItem[] {
+  const healthRank: Record<string, number> = { unhealthy: 0, unknown: 1, healthy: 3 }
+  const rank = (node: AdminNodeListItem) => {
+    if (node.health === 'unhealthy') return 0
+    if (node.health === 'unknown') return 1
+    if (node.freshness === 'stale') return 2
+    return healthRank[node.health] ?? 1
+  }
+  const compareText = (left: string, right: string) => {
+    const a = left.toLocaleLowerCase('en-US')
+    const b = right.toLocaleLowerCase('en-US')
+    return a < b ? -1 : a > b ? 1 : 0
+  }
+  return [...nodes].sort((left, right) =>
+    rank(left) - rank(right) ||
+    compareText(left.network_display_name, right.network_display_name) ||
+    compareText(left.network_key, right.network_key) ||
+    compareText(left.display_name ?? '', right.display_name ?? '') ||
+    compareText(left.node_id, right.node_id),
+  )
+}
+
 function NodeRows({
   node,
   diagnostic,
@@ -326,8 +356,13 @@ function NodeRows({
   expanded: boolean
   onToggle: () => void
 }) {
+  const toggleRef = useRef<HTMLButtonElement>(null)
+  const nodeLabel = node.display_name ?? node.node_id
   const collapseOnEscape = (event: KeyboardEvent<HTMLElement>) => {
-    if (event.key === 'Escape' && expanded) onToggle()
+    if (event.key !== 'Escape' || !expanded) return
+    event.preventDefault()
+    onToggle()
+    toggleRef.current?.focus()
   }
   const detailId = `node-detail-${node.node_id}`
   const healthTone =
@@ -336,24 +371,36 @@ function NodeRows({
     node.freshness === 'current' ? 'ok' : node.freshness === 'stale' ? 'warning' : 'neutral'
   return (
     <>
-      <tr>
+      <tr onKeyDown={collapseOnEscape}>
         <th scope="row" data-label="Node">
           <button
+            ref={toggleRef}
             type="button"
             className="node-toggle"
             aria-expanded={expanded}
             aria-controls={detailId}
             onClick={onToggle}
-            onKeyDown={collapseOnEscape}
           >
-            <span aria-hidden="true">{expanded ? '▾' : '▸'}</span> {node.display_name ?? node.node_id}
+            <span aria-hidden="true">{expanded ? '▾' : '▸'}</span> {nodeLabel}
           </button>
           <small className="muted" title={node.node_id}>
             Node ID · {node.node_id.slice(0, 8)}…
           </small>
+          <button
+            type="button"
+            className="diagnostics-toggle text-action"
+            aria-expanded={expanded}
+            aria-controls={detailId}
+            onClick={onToggle}
+          >
+            {expanded ? 'Hide diagnostics' : 'Show diagnostics'}
+          </button>
           <Link className="text-action" to={`/admin/nodes/${encodeURIComponent(node.node_id)}`}>View Node</Link>
         </th>
-        <td data-label="Network">{node.network_key}</td>
+        <td data-label="Network">
+          {node.network_display_name}
+          <small className="muted">{node.network_key}</small>
+        </td>
         <td data-label="Health">
           <StatusBadge status={node.health} tone={healthTone} />
           <span className="health-reason">{node.health_reason}</span>
@@ -402,10 +449,12 @@ function NodeRows({
                     label="RPC"
                     state={diagnostic.rpc?.state}
                     errorMessage={diagnostic.rpc?.error_message}
-                    observedAt={diagnostic.rpc?.received_at}
+                    observedAt={diagnostic.rpc?.observed_at}
+                    attemptedAt={diagnostic.rpc?.attempted_at}
+                    receivedAt={diagnostic.rpc?.received_at}
                     detail={
                       diagnostic.rpc?.client_version
-                        ? `${diagnostic.rpc.client_version} · ${diagnostic.rpc.namespaces.length} namespaces`
+                        ? `${diagnostic.rpc.state === 'error' ? 'last-good ' : ''}${diagnostic.rpc.client_version} · ${diagnostic.rpc.namespaces.length} namespaces`
                         : undefined
                     }
                   />
@@ -413,10 +462,12 @@ function NodeRows({
                     label="Sync"
                     state={diagnostic.sync?.state}
                     errorMessage={diagnostic.sync?.error_message}
-                    observedAt={diagnostic.sync?.received_at}
+                    observedAt={diagnostic.sync?.observed_at}
+                    attemptedAt={diagnostic.sync?.attempted_at}
+                    receivedAt={diagnostic.sync?.received_at}
                     detail={
                       diagnostic.sync?.current_block != null
-                        ? `last-good head ${diagnostic.sync.current_block}${
+                        ? `${diagnostic.sync.state === 'error' ? 'last-good ' : ''}head ${diagnostic.sync.current_block}${
                             diagnostic.sync.highest_block != null
                               ? ` · highest ${diagnostic.sync.highest_block}`
                               : ''
@@ -428,10 +479,12 @@ function NodeRows({
                     label="Consensus"
                     state={diagnostic.consensus?.state}
                     errorMessage={diagnostic.consensus?.error_message}
-                    observedAt={diagnostic.consensus?.received_at}
+                    observedAt={diagnostic.consensus?.observed_at}
+                    attemptedAt={diagnostic.consensus?.attempted_at}
+                    receivedAt={diagnostic.consensus?.received_at}
                     detail={
                       diagnostic.consensus?.highest_commit_block != null
-                        ? `last-good commit ${diagnostic.consensus.highest_commit_block}`
+                        ? `${diagnostic.consensus.state === 'error' ? 'last-good ' : ''}commit ${diagnostic.consensus.highest_commit_block}`
                         : undefined
                     }
                   />
@@ -439,10 +492,12 @@ function NodeRows({
                     label="Peers"
                     state={diagnostic.peers?.state}
                     errorMessage={diagnostic.peers?.error_message}
-                    observedAt={diagnostic.peers?.received_at}
+                    observedAt={diagnostic.peers?.observed_at}
+                    attemptedAt={diagnostic.peers?.attempted_at}
+                    receivedAt={diagnostic.peers?.received_at}
                     detail={
                       diagnostic.peers?.peer_count != null
-                        ? `${diagnostic.peers.peer_count} peers · ${diagnostic.peers.freshness}`
+                        ? `${diagnostic.peers.state === 'error' ? 'last-good ' : ''}${diagnostic.peers.peer_count} peers · ${diagnostic.peers.freshness}`
                         : undefined
                     }
                   />
@@ -450,19 +505,25 @@ function NodeRows({
                     label="Process"
                     state={diagnostic.process?.state}
                     errorMessage={diagnostic.process?.error_message}
-                    observedAt={diagnostic.process?.received_at}
+                    observedAt={diagnostic.process?.observed_at}
+                    attemptedAt={diagnostic.process?.attempted_at}
+                    receivedAt={diagnostic.process?.received_at}
                     detail={
-                      diagnostic.process?.pid != null ? `pid ${diagnostic.process.pid}` : undefined
+                      diagnostic.process?.pid != null
+                        ? `${diagnostic.process.state === 'error' ? 'last-good ' : ''}pid ${diagnostic.process.pid}`
+                        : undefined
                     }
                   />
                   <ComponentRow
                     label="Node Data"
                     state={diagnostic.data_directory?.state}
                     errorMessage={diagnostic.data_directory?.error_message}
-                    observedAt={diagnostic.data_directory?.received_at}
+                    observedAt={diagnostic.data_directory?.observed_at}
+                    attemptedAt={diagnostic.data_directory?.attempted_at}
+                    receivedAt={diagnostic.data_directory?.received_at}
                     detail={
                       diagnostic.data_directory?.size_bytes != null
-                        ? formatBytes(diagnostic.data_directory.size_bytes)
+                        ? `${diagnostic.data_directory.state === 'error' ? 'last-good ' : ''}${formatBytes(diagnostic.data_directory.size_bytes)}`
                         : undefined
                     }
                   />
@@ -487,12 +548,16 @@ function ComponentRow({
   state,
   errorMessage,
   observedAt,
+  attemptedAt,
+  receivedAt,
   detail,
 }: {
   label: string
   state: string | null | undefined
   errorMessage?: string | null
   observedAt?: string | null
+  attemptedAt?: string | null
+  receivedAt?: string | null
   detail?: string
 }) {
   const tone =
@@ -506,7 +571,16 @@ function ComponentRow({
           <span className="component-error"> {errorMessage}</span>
         )}
         {detail && <span className="muted"> {detail}</span>}
-        <small className="muted"> · {formatObservedAt(observedAt)}</small>
+        <small className="muted">
+          · {state === 'error'
+            ? observedAt
+              ? `Last good · ${formatObservedAt(observedAt)}`
+              : 'Never observed'
+            : formatObservedAt(observedAt)}
+          {state === 'error' && (attemptedAt ?? receivedAt)
+            ? ` · Attempted ${formatObservedAt(attemptedAt ?? receivedAt)}`
+            : ''}
+        </small>
       </dd>
     </div>
   )

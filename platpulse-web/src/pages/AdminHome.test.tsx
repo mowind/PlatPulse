@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
 import { adminQueryClient } from '../api/admin'
@@ -201,6 +201,106 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
 
     // The browser never asks the Server for Geo status on this page.
     expectNoGeoRequests(fetchMock)
+  })
+
+  it('prioritizes Active Nodes before limiting the ledger and keeps deterministic ties stable', async () => {
+    const activeNodes = [
+      { ...NODE, node_id: 'healthy-1', display_name: 'Healthy 1', health: 'healthy', freshness: 'current' },
+      { ...NODE, node_id: 'retired', display_name: 'Retired Node', lifecycle: 'retired' },
+      { ...NODE, node_id: 'unhealthy-b', display_name: 'Unhealthy B', health: 'unhealthy', network_key: 'zeta' },
+      { ...NODE, node_id: 'healthy-2', display_name: 'Healthy 2', health: 'healthy', freshness: 'current' },
+      { ...NODE, node_id: 'unknown', display_name: 'Unknown Node', health: 'unknown', freshness: 'current' },
+      { ...NODE, node_id: 'stale', display_name: 'Stale Node', health: 'healthy', freshness: 'stale' },
+      { ...NODE, node_id: 'unhealthy-a', display_name: 'Unhealthy A', health: 'unhealthy', network_key: 'alpha' },
+      { ...NODE, node_id: 'healthy-3', display_name: 'Healthy 3', health: 'healthy', freshness: 'current' },
+      { ...NODE, node_id: 'healthy-4', display_name: 'Healthy 4', health: 'healthy', freshness: 'current' },
+      { ...NODE, node_id: 'healthy-5', display_name: 'Healthy 5', health: 'healthy', freshness: 'current' },
+      { ...NODE, node_id: 'healthy-6', display_name: 'Healthy 6', health: 'healthy', freshness: 'current' },
+      { ...NODE, node_id: 'healthy-7', display_name: 'Healthy 7', health: 'healthy', freshness: 'current' },
+      { ...NODE, node_id: 'healthy-8', display_name: 'Healthy 8', health: 'healthy', freshness: 'current' },
+    ]
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/overview': () => jsonResponse(OVERVIEW, 200),
+      '/api/admin/v1/nodes': () => jsonResponse(activeNodes, 200),
+      '/api/admin/v1/agents': () => jsonResponse([], 200),
+    })
+    await renderAt('/admin')
+
+    const ledger = (await screen.findByRole('heading', { name: 'Node Health Summary' })).closest('article')
+    const rows = within(ledger as HTMLElement).getAllByRole('row').slice(1)
+    expect(rows).toHaveLength(10)
+    expect(rows.map((row) => row.textContent)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('Unhealthy A'),
+        expect.stringContaining('Unhealthy B'),
+        expect.stringContaining('Unknown Node'),
+        expect.stringContaining('Stale Node'),
+      ]),
+    )
+    expect(rows.slice(0, 4).map((row) => row.textContent)).toEqual([
+      expect.stringContaining('Unhealthy A'),
+      expect.stringContaining('Unhealthy B'),
+      expect.stringContaining('Unknown Node'),
+      expect.stringContaining('Stale Node'),
+    ])
+    expect(screen.queryByText('Retired Node')).toBeNull()
+    expect(screen.getByText('Showing 10 of 12 Active Nodes')).toBeTruthy()
+    expect(screen.getByRole('link', { name: 'View all Nodes' }).getAttribute('href')).toBe('/admin/nodes')
+    expect(within(rows[0]).getByRole('link', { name: 'View Node' }).getAttribute('href')).toBe('/admin/nodes/unhealthy-a')
+  })
+
+  it('keeps one Node disclosure open and returns focus to its toggle on Escape', async () => {
+    const secondNode = { ...NODE, node_id: 'node-2', display_name: 'Node B' }
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/overview': () => jsonResponse(OVERVIEW, 200),
+      '/api/admin/v1/nodes': () => jsonResponse([NODE, secondNode], 200),
+      '/api/admin/v1/agents': () => jsonResponse([{ ...AGENT, nodes: [AGENT.nodes[0], { ...AGENT.nodes[0], node_id: 'node-2', display_name: 'Node B' }] }], 200),
+    })
+    await renderAt('/admin')
+
+    const [firstDisclosure, secondDisclosure] = await screen.findAllByRole('button', { name: 'Show diagnostics' })
+    await act(async () => firstDisclosure.click())
+    expect(screen.getByRole('button', { name: 'Hide diagnostics' })).toBeTruthy()
+    await act(async () => secondDisclosure.click())
+    expect(screen.getByRole('button', { name: 'Node A' }).getAttribute('aria-expanded')).toBe('false')
+    const secondToggle = screen.getByRole('button', { name: 'Node B' })
+    expect(secondToggle.getAttribute('aria-expanded')).toBe('true')
+
+    const collapseButton = screen.getByRole('button', { name: 'Collapse details' })
+    collapseButton.focus()
+    fireEvent.keyDown(collapseButton, { key: 'Escape' })
+    expect(screen.queryByRole('button', { name: 'Collapse details' })).toBeNull()
+    expect(document.activeElement).toBe(secondToggle)
+  })
+
+  it('preserves expansion across Node refetches and closes when the Node leaves the visible set', async () => {
+    const peerNode = { ...NODE, node_id: 'node-2', display_name: 'Node B' }
+    let currentNodes = [peerNode, NODE]
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/overview': () => jsonResponse(OVERVIEW, 200),
+      '/api/admin/v1/nodes': () => jsonResponse(currentNodes, 200),
+      '/api/admin/v1/agents': () => jsonResponse([AGENT], 200),
+    })
+    await renderAt('/admin')
+    const diagnosticsToggle = (await screen.findAllByRole('button', { name: 'Show diagnostics' }))[0]
+    await act(async () => diagnosticsToggle.click())
+    expect(screen.getByText('Collapse details')).toBeTruthy()
+    const initialRows = screen.getAllByRole('row').filter((row) => row.textContent?.includes('Node A') || row.textContent?.includes('Node B'))
+    expect(initialRows[0].textContent).toContain('Node A')
+    currentNodes = [{ ...peerNode, updated_at: '2026-08-12T08:02:00Z' }, { ...NODE, updated_at: '2026-08-12T08:03:00Z' }]
+    await act(async () => { adminQueryClient.setQueriesData({ queryKey: ['admin', 'nodes'] }, currentNodes) })
+    const stableRows = screen.getAllByRole('row').filter((row) => row.textContent?.includes('Node A') || row.textContent?.includes('Node B'))
+    expect(stableRows[0].textContent).toContain('Node A')
+    currentNodes = [{ ...NODE, display_name: 'Node A (renamed)' }]
+    await act(async () => { adminQueryClient.setQueriesData({ queryKey: ['admin', 'nodes'] }, currentNodes) })
+    expect(await screen.findByRole('row', { name: /Node A \(renamed\)/ })).toBeTruthy()
+    expect(screen.getByText('Collapse details')).toBeTruthy()
+    currentNodes = Array.from({ length: 10 }, (_, index) => ({ ...NODE, node_id: 'urgent-' + index, display_name: 'Urgent ' + index, health: 'unhealthy' }))
+    await act(async () => { adminQueryClient.setQueriesData({ queryKey: ['admin', 'nodes'] }, currentNodes) })
+    await waitFor(() => expect(screen.queryByText('Collapse details')).toBeNull())
   })
 
   it('renders one atomic snapshot time and exactly four linked summary cards', async () => {
