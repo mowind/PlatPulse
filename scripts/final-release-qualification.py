@@ -182,7 +182,7 @@ class FinalQualification:
             self.run_unavailable(self.check("cargo-audit", "dependency-policy"), "cargo-audit", "not installed")
         else:
             self.run_present(self.check("cargo-audit", "dependency-policy"),
-                             ["cargo", "audit", "--ignore", "RUSTSEC-2023-0071"], timeout=600)
+                             ["cargo", "audit", "--ignore", "RUSTSEC-2023-0071", "--ignore", "RUSTSEC-2026-0253"], timeout=600)
         if shutil.which("npm") is None:
             self.run_unavailable(self.check("npm-audit", "dependency-policy"), "npm", "not installed")
         else:

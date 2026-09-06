@@ -262,7 +262,8 @@ AUDIT_FAILED=0
       if ! (cd "$ROOT" && cargo deny check); then printf 'cargo deny exited non-zero\n'; AUDIT_FAILED=1; fi
     else printf 'cargo deny: unavailable in build environment\n'; AUDIT_FAILED=1; fi
     if command -v cargo-audit >/dev/null 2>&1; then
-      if ! (cd "$ROOT" && cargo audit --ignore RUSTSEC-2023-0071); then printf 'cargo audit exited non-zero\n'; AUDIT_FAILED=1; fi
+      # rsa is lockfile-only; lru has no fixed release in the current graph.
+      if ! (cd "$ROOT" && cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0253); then printf 'cargo audit exited non-zero\n'; AUDIT_FAILED=1; fi
     else printf 'cargo audit: unavailable in build environment\n'; AUDIT_FAILED=1; fi
     if command -v npm >/dev/null 2>&1; then
       if ! (cd "$ROOT/platpulse-web" && npm audit --audit-level=critical); then printf 'npm audit exited non-zero\n'; AUDIT_FAILED=1; fi

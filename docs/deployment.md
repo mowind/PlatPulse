@@ -301,8 +301,11 @@ Every release set contains `SHA256SUMS`, an SPDX inventory, and recorded Rust/np
 audit evidence. Normal release builds fail when cargo-deny, cargo-audit, or npm audit
 is unavailable or exits non-zero; only fixture/harness builds use the explicit audit
 skip. `RUSTSEC-2023-0071` is ignored because `rsa` is lockfile-only behind disabled
-SQLx features (`cargo tree -i rsa` is empty), while all audit warnings remain visible
-in the evidence for release signoff. Checksums and SBOMs are
+SQLx features (`cargo tree -i rsa` is empty). `RUSTSEC-2026-0253` is ignored because
+the current `lru` release has no fixed upgrade; `RUSTSEC-2024-0436` (`paste`) is
+ignored only by cargo-deny because Alloy's proc-macro graph has no maintained
+compatible replacement yet. The remaining cargo-audit warnings stay visible in
+the evidence for release signoff. Checksums and SBOMs are
 integrity and inventory metadata only;
 they are not artifact signatures. Until an artifact-signing workflow is added,
 unsigned artifacts must not be described as a verified supply chain.

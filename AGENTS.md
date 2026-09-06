@@ -35,7 +35,7 @@ platpulse-web/          # React SPA; generated API client lives in src/api/gener
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --workspace
-cargo deny check && cargo audit
+cargo deny check && cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0253
 
 # Web (platpulse-web)
 npm run lint && npm run typecheck && npm test && npm run build

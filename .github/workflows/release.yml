@@ -50,8 +50,8 @@ jobs:
       - name: Run dependency policy gates
         run: |
           cargo deny check
-          # rsa is lockfile-only through disabled SQLx features (`cargo tree -i rsa` is empty).
-          cargo audit --ignore RUSTSEC-2023-0071
+          # rsa is lockfile-only through disabled SQLx features; lru has no fixed release in the current graph.
+          cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0253
           npm --prefix platpulse-web audit --audit-level=critical
       - name: Run WebUI quality gates
         working-directory: platpulse-web

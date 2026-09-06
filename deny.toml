@@ -1,6 +1,9 @@
 [advisories]
 # `rsa` is lockfile-only behind disabled SQLx features; `cargo tree -i rsa` is empty.
-ignore = ["RUSTSEC-2023-0071"]
+# `paste` is pulled by Alloy's proc-macro dependency graph; no maintained
+# compatible Alloy release removes it yet. Keep the advisory visible to the
+# separate cargo-audit evidence, but do not fail the dependency policy gate.
+ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2024-0436"]
 
 [licenses]
 allow = [
