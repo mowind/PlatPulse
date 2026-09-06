@@ -253,11 +253,15 @@ function safeAttentionRoute(group: AttentionGroupData): string | null {
 }
 
 function AttentionGroup({ group, expanded, onToggle }: { group: AttentionGroupData; expanded: boolean; onToggle: () => void }) {
-  const primary = group.items[0]
+  const primary = group.items.reduce((best, item) => {
+    const rank = item.severity === 'critical' ? 0 : item.severity === 'warning' ? 1 : 2
+    const bestRank = best.severity === 'critical' ? 0 : best.severity === 'warning' ? 1 : 2
+    return rank < bestRank ? item : best
+  })
   const known = primary.severity === "critical" || primary.severity === "warning"
   const severity = known ? primary.severity : "unknown"
   const route = safeAttentionRoute(group)
-  return <li className={`attention-item attention-group ${severity}`}><StatusBadge status={severity === "critical" ? "Critical" : severity === "warning" ? "Warning" : "Unknown"} tone={severity === "critical" ? "error" : severity === "warning" ? "warning" : "neutral"} /><div className="attention-body"><p><strong>{route ? <Link to={route}>{group.label}</Link> : group.label}</strong> — {primary.message}</p><p className="muted">{primary.kind} · <SnapshotTime timestamp={primary.observed_at} /></p>{group.items.length > 1 && <><button type="button" className="quiet-button" aria-expanded={expanded} onClick={onToggle}>{expanded ? "Hide additional issues" : `Show ${group.items.length - 1} additional issues`}</button>{expanded && <ul>{group.items.slice(1).map((item) => <li key={item.id}>{item.severity === "critical" ? "Critical" : item.severity === "warning" ? "Warning" : "Unknown"} · {item.message} · {item.kind}</li>)}</ul>}</>}</div></li>
+  return <li className={`attention-item attention-group ${severity}`}><StatusBadge status={severity === "critical" ? "Critical" : severity === "warning" ? "Warning" : "Unknown"} tone={severity === "critical" ? "error" : severity === "warning" ? "warning" : "neutral"} /><div className="attention-body"><p><strong>{route ? <Link to={route}>{group.label}</Link> : group.label}</strong> — {primary.message}</p><p className="muted">{primary.kind} · <SnapshotTime timestamp={primary.observed_at} /></p>{group.items.length > 1 && <><button type="button" className="quiet-button" aria-expanded={expanded} aria-controls={`attention-details-${group.key}`} onClick={onToggle}>{expanded ? "Hide additional issues" : `Show ${group.items.length - 1} additional issues`}</button>{expanded && <ul id={`attention-details-${group.key}`}>{group.items.slice(1).map((item) => <li key={item.id}>{item.severity === "critical" ? "Critical" : item.severity === "warning" ? "Warning" : "Unknown"} · {item.message} · {item.kind}</li>)}</ul>}</>}</div></li>
 }
 
 
@@ -432,15 +436,6 @@ function NodeRows({
           <small className="muted" title={node.node_id}>
             Node ID · {node.node_id.slice(0, 8)}…
           </small>
-          <button
-            type="button"
-            className="diagnostics-toggle text-action"
-            aria-expanded={expanded}
-            aria-controls={detailId}
-            onClick={onToggle}
-          >
-            {expanded ? 'Hide diagnostics' : 'Show diagnostics'}
-          </button>
           <Link className="text-action" to={`/admin/nodes/${encodeURIComponent(node.node_id)}`}>View Node</Link>
         </th>
         <td data-label="Network">
@@ -470,9 +465,6 @@ function NodeRows({
         <tr className="node-detail-row">
           <td colSpan={6} id={detailId} onKeyDown={collapseOnEscape}>
             <div className="node-detail">
-              <button type="button" className="text-action" onClick={onToggle}>
-                Collapse details <span aria-hidden="true">▴</span>
-              </button>
               {!diagnostic && diagnosticsQuery.isPending && (
                 <p className="panel-state" role="status">
                   <StatusBadge status="Starting" tone="neutral" /> Loading Node diagnostics…

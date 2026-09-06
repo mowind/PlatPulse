@@ -9707,8 +9707,7 @@
           "healthy",
           "unhealthy",
           "unknown",
-          "retired",
-          "published"
+          "retired"
         ],
         "properties": {
           "active": {
@@ -9718,11 +9717,6 @@
           "healthy": {
             "type": "integer",
             "format": "int64"
-          },
-          "published": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Nodes published to the Public projection."
           },
           "retired": {
             "type": "integer",

@@ -952,10 +952,6 @@ export type NodeSummary = {
     active: number;
     healthy: number;
     /**
-     * Nodes published to the Public projection.
-     */
-    published: number;
-    /**
      * Nodes in a non-active lifecycle (e.g. retired); not part of the
      * health buckets because no observation policy applies to them.
      */

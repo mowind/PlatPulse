@@ -1429,21 +1429,45 @@ async fn node_identity_status(
     node_id: &str,
     network_key: &str,
 ) -> NodeIdentityStatus {
-    let observed = sqlx::query_as::<_, (Option<String>, Option<i64>, Option<i64>, Option<String>)>(
-        "SELECT network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp FROM current_node_chain_observations WHERE node_id = ?",
+    let observed = sqlx::query_as::<_, (Option<String>, Option<i64>, Option<i64>, Option<String>, Option<String>, Option<i64>)>(
+        "SELECT c.network_genesis_hash, c.network_chain_id, c.network_p2p_network_id, c.network_address_hrp, s.state, s.value_revision FROM current_node_chain_observations c LEFT JOIN component_status s ON s.node_id = c.node_id AND s.component_key = 'network_identity' WHERE c.node_id = ?",
     )
     .bind(node_id)
     .fetch_optional(state.db().pool())
     .await
     .ok()
     .flatten();
-    let Some((genesis_hash, chain_id, p2p_network_id, address_hrp)) = observed else {
+    let Some((
+        genesis_hash,
+        chain_id,
+        p2p_network_id,
+        address_hrp,
+        identity_state,
+        identity_value_revision,
+    )) = observed
+    else {
         return NodeIdentityStatus {
             state: "unknown".to_owned(),
             observed: None,
             mismatched_fields: Vec::new(),
         };
     };
+    let observed_identity = ObservedNetworkIdentity {
+        genesis_hash: genesis_hash.clone(),
+        chain_id,
+        p2p_network_id,
+        address_hrp: address_hrp.clone(),
+    };
+    // A mismatch is actionable only when the dedicated identity component
+    // confirms a complete successful observation. Retained values behind an
+    // error, disabled component, or missing receipt remain Unknown.
+    if identity_state.as_deref() != Some("ok") || identity_value_revision.unwrap_or_default() == 0 {
+        return NodeIdentityStatus {
+            state: "unknown".to_owned(),
+            observed: Some(observed_identity),
+            mismatched_fields: Vec::new(),
+        };
+    }
     let observed_fields = [
         genesis_hash.as_deref().is_some(),
         chain_id.is_some(),
@@ -1468,12 +1492,7 @@ async fn node_identity_status(
     let Some((expected_genesis, expected_chain, expected_p2p, expected_hrp)) = expected else {
         return NodeIdentityStatus {
             state: "unknown".to_owned(),
-            observed: Some(ObservedNetworkIdentity {
-                genesis_hash,
-                chain_id,
-                p2p_network_id,
-                address_hrp,
-            }),
+            observed: Some(observed_identity),
             mismatched_fields: Vec::new(),
         };
     };
@@ -2706,8 +2725,6 @@ pub struct NodeSummary {
     /// Nodes in a non-active lifecycle (e.g. retired); not part of the
     /// health buckets because no observation policy applies to them.
     pub retired: i64,
-    /// Nodes published to the Public projection.
-    pub published: i64,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -2801,6 +2818,8 @@ pub struct AttentionItem {
 struct OverviewAgentRow {
     agent_id: String,
     last_received_at: Option<String>,
+    shutdown_updated_at: Option<String>,
+    host_updated_at: Option<String>,
     shutdown_state: String,
     security_event_count: i64,
     sequence_gap_count: i64,
@@ -2830,7 +2849,7 @@ pub(crate) async fn overview(
     // A database failure is a Server failure: it must surface as an error
     // envelope, never as an authoritative empty queue (webui.md §5.3).
     let agents = match sqlx::query_as::<_, OverviewAgentRow>(
-        "SELECT a.agent_id, a.last_received_at, a.shutdown_state, a.security_event_count, (SELECT COUNT(*) FROM report_sequence_gaps g WHERE g.agent_id = a.agent_id) AS sequence_gap_count, h.spool_store_fatal, h.spool_dropped_sequence_to FROM agents a LEFT JOIN current_host_observations h ON h.agent_id = a.agent_id ORDER BY a.agent_id",
+        "SELECT a.agent_id, a.last_received_at, a.shutdown_updated_at, h.updated_at AS host_updated_at, a.shutdown_state, a.security_event_count, (SELECT COUNT(*) FROM report_sequence_gaps g WHERE g.agent_id = a.agent_id) AS sequence_gap_count, h.spool_store_fatal, h.spool_dropped_sequence_to FROM agents a LEFT JOIN current_host_observations h ON h.agent_id = a.agent_id ORDER BY a.agent_id",
     )
     .fetch_all(state.db().pool())
     .await
@@ -2853,6 +2872,13 @@ pub(crate) async fn overview(
     };
     let mut attention: Vec<AttentionItem> = Vec::new();
     for agent in &agents {
+        let agent_observed_at = agent
+            .host_updated_at
+            .as_ref()
+            .or(agent.last_received_at.as_ref())
+            .or(agent.shutdown_updated_at.as_ref())
+            .cloned()
+            .unwrap_or_else(|| generated_at.clone());
         let liveness = agent_liveness(agent.last_received_at.as_deref());
         match liveness {
             "online" => agent_summary.online += 1,
@@ -2884,7 +2910,7 @@ pub(crate) async fn overview(
                 subject_label: agent.agent_id.clone(),
                 message: "the Agent spool store is in a fatal state; durable reports are at risk"
                     .to_owned(),
-                observed_at: generated_at.clone(),
+                observed_at: agent_observed_at.clone(),
             });
         }
         if agent.spool_dropped_sequence_to.is_some() {
@@ -2896,7 +2922,7 @@ pub(crate) async fn overview(
                 subject_id: agent.agent_id.clone(),
                 subject_label: agent.agent_id.clone(),
                 message: "the Agent spool overflowed and discarded queued reports".to_owned(),
-                observed_at: generated_at.clone(),
+                observed_at: agent_observed_at.clone(),
             });
         }
         if agent.sequence_gap_count > 0 {
@@ -2916,7 +2942,7 @@ pub(crate) async fn overview(
                         "s were"
                     }
                 ),
-                observed_at: generated_at.clone(),
+                observed_at: agent_observed_at.clone(),
             });
         }
         if agent.security_event_count > 0 {
@@ -2936,7 +2962,7 @@ pub(crate) async fn overview(
                         "s were"
                     }
                 ),
-                observed_at: generated_at.clone(),
+                observed_at: agent_observed_at.clone(),
             });
         }
         if matches!(
@@ -2951,7 +2977,7 @@ pub(crate) async fn overview(
                 subject_id: agent.agent_id.clone(),
                 subject_label: agent.agent_id.clone(),
                 message: format!("the Agent shutdown is {}", agent.shutdown_state),
-                observed_at: generated_at.clone(),
+                observed_at: agent_observed_at.clone(),
             });
         }
     }
@@ -2989,7 +3015,6 @@ pub(crate) async fn overview(
         unhealthy: 0,
         unknown: 0,
         retired: 0,
-        published: 0,
     };
     for (
         node_id,
@@ -3011,9 +3036,6 @@ pub(crate) async fn overview(
             visibility.clone(),
         )
         .await;
-        if visibility == "public" {
-            node_summary.published += 1;
-        }
         if lifecycle != "active" {
             node_summary.retired += 1;
             continue;
@@ -3026,7 +3048,7 @@ pub(crate) async fn overview(
         let identity = node_identity_status(&state, &node_id, &network_key).await;
         if identity.state == "mismatched" {
             let observed_at = sqlx::query_scalar::<_, String>(
-                "SELECT COALESCE((SELECT received_at FROM component_status WHERE node_id = ? AND component_key = 'network_identity'), (SELECT updated_at FROM current_node_chain_observations WHERE node_id = ?))",
+                "SELECT COALESCE((SELECT observed_at FROM component_status WHERE node_id = ? AND component_key = 'network_identity'), (SELECT updated_at FROM current_node_chain_observations WHERE node_id = ?))",
             )
             .bind(&node_id)
             .bind(&node_id)
@@ -3049,19 +3071,19 @@ pub(crate) async fn overview(
         let observed_at = diagnostic
             .rpc
             .as_ref()
-            .and_then(|c| c.received_at.as_deref())
+            .and_then(|c| c.observed_at.as_deref())
             .into_iter()
             .chain(
                 diagnostic
                     .sync
                     .as_ref()
-                    .and_then(|c| c.received_at.as_deref()),
+                    .and_then(|c| c.observed_at.as_deref()),
             )
             .chain(
                 diagnostic
                     .consensus
                     .as_ref()
-                    .and_then(|c| c.received_at.as_deref()),
+                    .and_then(|c| c.observed_at.as_deref()),
             )
             .filter_map(crate::auth::parse_rfc3339)
             .max()
@@ -5304,7 +5326,7 @@ mod tests {
                 .execute(state.db().pool())
                 .await
                 .unwrap();
-            for component in ["rpc", "sync", "consensus"] {
+            for component in ["rpc", "sync", "consensus", "network_identity"] {
                 let component_state = if component == "rpc" { rpc_state } else { "ok" };
                 sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES ('agent-ov', 'node', ?, ?, ?, ?, ?, ?, ?, 1, 1)")
                     .bind(node_id)
@@ -5345,7 +5367,6 @@ mod tests {
         assert_eq!(value["summary"]["nodes"]["unhealthy"], 1);
         assert_eq!(value["summary"]["nodes"]["unknown"], 0);
         assert_eq!(value["summary"]["nodes"]["retired"], 0);
-        assert_eq!(value["summary"]["nodes"]["published"], 1);
         assert_eq!(value["summary"]["agents"]["total"], 1);
         assert_eq!(value["summary"]["agents"]["online"], 1);
         assert_eq!(value["summary"]["agents"]["offline"], 0);
@@ -5980,7 +6001,7 @@ mod tests {
         .execute(state.db().pool())
         .await
         .unwrap();
-        for component in ["rpc", "sync", "consensus"] {
+        for component in ["rpc", "sync", "consensus", "network_identity"] {
             sqlx::query(
                 "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES ('agent-lifecycle-test', 'node', 'node-healthy', 'node-healthy', ?, 'ok', ?, ?, ?, 1, 1)",
             )
@@ -6032,7 +6053,7 @@ mod tests {
         .execute(state.db().pool())
         .await
         .unwrap();
-        for component in ["rpc", "sync", "consensus"] {
+        for component in ["rpc", "sync", "consensus", "network_identity"] {
             let (component_state, error_code, error_message) = if component == "rpc" {
                 ("error", "rpc_unreachable", "RPC probe failed")
             } else {

@@ -43,7 +43,7 @@ const OVERVIEW = {
   generated_at: '2026-08-12T08:00:00Z',
   summary: {
     agents: { total: 1, online: 1, offline: 0, unknown: 0 },
-    nodes: { total: 1, active: 1, healthy: 1, unhealthy: 0, unknown: 0, retired: 0, published: 1 },
+    nodes: { total: 1, active: 1, healthy: 1, unhealthy: 0, unknown: 0, retired: 0 },
     networks: { total: 2, with_identity_mismatch: 1 },
   },
   attention: [
@@ -205,6 +205,32 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     expectNoGeoRequests(fetchMock)
   })
 
+  it('associates additional Attention issues with their disclosure list', async () => {
+    const multiItemOverview = {
+      ...OVERVIEW,
+      attention: [
+        { ...OVERVIEW.attention[0], id: 'node_resync:node:node-1', kind: 'node_resync', severity: 'warning', message: 'resync is pending' },
+        OVERVIEW.attention[0],
+      ],
+    }
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/overview': () => jsonResponse(multiItemOverview, 200),
+      '/api/admin/v1/nodes': () => jsonResponse([NODE], 200),
+      '/api/admin/v1/agents': () => jsonResponse([AGENT], 200),
+    })
+    await renderAt('/admin')
+    const toggle = await screen.findByRole('button', { name: /Show 1 additional issues?/ })
+    const detailsId = toggle.getAttribute('aria-controls')
+    expect(detailsId).toBeTruthy()
+    expect(screen.getByText(/RPC collection failed/)).toBeTruthy()
+    expect(screen.queryByText('resync is pending')).toBeNull()
+    expect(document.getElementById(detailsId as string)).toBeNull()
+    await act(async () => toggle.click())
+    expect(document.getElementById(detailsId as string)).toBeTruthy()
+    expect(document.getElementById(detailsId as string)?.textContent).toContain('RPC collection failed')
+  })
+
   it('keeps variant query parameters on the canonical production Overview', async () => {
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
@@ -280,18 +306,18 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     })
     await renderAt('/admin')
 
-    const [firstDisclosure, secondDisclosure] = await screen.findAllByRole('button', { name: 'Show diagnostics' })
+    const [firstDisclosure, secondDisclosure] = await screen.findAllByRole('button', { name: /Node [AB]/ })
     await act(async () => firstDisclosure.click())
-    expect(screen.getByRole('button', { name: 'Hide diagnostics' })).toBeTruthy()
+    expect(firstDisclosure.getAttribute('aria-expanded')).toBe('true')
     await act(async () => secondDisclosure.click())
     expect(screen.getByRole('button', { name: 'Node A' }).getAttribute('aria-expanded')).toBe('false')
     const secondToggle = screen.getByRole('button', { name: 'Node B' })
     expect(secondToggle.getAttribute('aria-expanded')).toBe('true')
 
-    const collapseButton = screen.getByRole('button', { name: 'Collapse details' })
-    collapseButton.focus()
-    fireEvent.keyDown(collapseButton, { key: 'Escape' })
-    expect(screen.queryByRole('button', { name: 'Collapse details' })).toBeNull()
+    expect(screen.getAllByRole('button', { name: 'Node B' })).toHaveLength(1)
+    secondToggle.focus()
+    fireEvent.keyDown(secondToggle, { key: 'Escape' })
+    expect(secondToggle.getAttribute('aria-expanded')).toBe('false')
     expect(document.activeElement).toBe(secondToggle)
   })
 
@@ -305,9 +331,9 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
       '/api/admin/v1/agents': () => jsonResponse([AGENT], 200),
     })
     await renderAt('/admin')
-    const diagnosticsToggle = (await screen.findAllByRole('button', { name: 'Show diagnostics' }))[0]
+    const diagnosticsToggle = (await screen.findAllByRole('button', { name: /Node A/ }))[0]
     await act(async () => diagnosticsToggle.click())
-    expect(screen.getByText('Collapse details')).toBeTruthy()
+    expect(screen.getByText('Node Data')).toBeTruthy()
     const initialRows = screen.getAllByRole('row').filter((row) => row.textContent?.includes('Node A') || row.textContent?.includes('Node B'))
     expect(initialRows[0].textContent).toContain('Node A')
     currentNodes = [{ ...peerNode, updated_at: '2026-08-12T08:02:00Z' }, { ...NODE, updated_at: '2026-08-12T08:03:00Z' }]
@@ -317,10 +343,10 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     currentNodes = [{ ...NODE, display_name: 'Node A (renamed)' }]
     await act(async () => { adminQueryClient.setQueriesData({ queryKey: ['admin', 'nodes'] }, currentNodes) })
     expect(await screen.findByRole('row', { name: /Node A \(renamed\)/ })).toBeTruthy()
-    expect(screen.getByText('Collapse details')).toBeTruthy()
+    expect(screen.getByText('Node Data')).toBeTruthy()
     currentNodes = Array.from({ length: 10 }, (_, index) => ({ ...NODE, node_id: 'urgent-' + index, display_name: 'Urgent ' + index, health: 'unhealthy' }))
     await act(async () => { adminQueryClient.setQueriesData({ queryKey: ['admin', 'nodes'] }, currentNodes) })
-    await waitFor(() => expect(screen.queryByText('Collapse details')).toBeNull())
+    await waitFor(() => expect(screen.queryByText('Node Data')).toBeNull())
   })
 
   it('renders one atomic snapshot time and exactly four linked summary cards', async () => {
@@ -449,7 +475,7 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
             generated_at: '2026-08-12T08:00:00Z',
             summary: {
               agents: { total: 0, online: 0, offline: 0, unknown: 0 },
-              nodes: { total: 0, active: 0, healthy: 0, unhealthy: 0, unknown: 0, retired: 0, published: 0 },
+              nodes: { total: 0, active: 0, healthy: 0, unhealthy: 0, unknown: 0, retired: 0 },
                networks: { total: 0, with_identity_mismatch: 0 },
             },
             attention: [],
