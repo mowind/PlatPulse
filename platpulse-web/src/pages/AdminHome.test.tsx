@@ -225,10 +225,10 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     expect(detailsId).toBeTruthy()
     expect(screen.getByText(/RPC collection failed/)).toBeTruthy()
     expect(screen.queryByText('resync is pending')).toBeNull()
-    expect(document.getElementById(detailsId as string)).toBeNull()
+    expect(document.getElementById(detailsId as string)?.hasAttribute('hidden')).toBe(true)
     await act(async () => toggle.click())
     expect(document.getElementById(detailsId as string)).toBeTruthy()
-    expect(document.getElementById(detailsId as string)?.textContent).toContain('RPC collection failed')
+    expect(document.getElementById(detailsId as string)?.textContent).toContain('resync is pending')
   })
 
   it('keeps variant query parameters on the canonical production Overview', async () => {

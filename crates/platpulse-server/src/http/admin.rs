@@ -1474,10 +1474,10 @@ async fn node_identity_status(
         p2p_network_id.is_some(),
         address_hrp.as_deref().is_some(),
     ];
-    if !observed_fields.contains(&true) {
+    if !observed_fields.iter().all(|observed| *observed) {
         return NodeIdentityStatus {
             state: "unknown".to_owned(),
-            observed: None,
+            observed: Some(observed_identity),
             mismatched_fields: Vec::new(),
         };
     }
@@ -3122,6 +3122,15 @@ pub(crate) async fn overview(
             }
         }
         if diagnostic.resync_state != "normal" {
+            let resync_observed_at = sqlx::query_scalar::<_, String>(
+                "SELECT COALESCE(resync_last_progress_at, updated_at) FROM block_history_state WHERE node_id = ?",
+            )
+            .bind(&node_id)
+            .fetch_optional(state.db().pool())
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| observed_at.clone());
             attention.push(AttentionItem {
                 id: format!("node_resync:node:{node_id}"),
                 kind: AttentionKind::NodeResync,
@@ -3130,7 +3139,7 @@ pub(crate) async fn overview(
                 subject_id: node_id.clone(),
                 subject_label: node_id.clone(),
                 message: format!("the Node resync state is {}", diagnostic.resync_state),
-                observed_at: observed_at.clone(),
+                observed_at: resync_observed_at,
             });
         }
     }
@@ -6347,6 +6356,61 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn partial_identity_mismatch_is_not_actionable_in_overview() {
+        let (_dir, state) = node_inventory_state().await;
+        sqlx::query(
+            "UPDATE current_node_chain_observations SET network_genesis_hash = NULL, network_chain_id = 999999, network_p2p_network_id = NULL, network_address_hrp = NULL WHERE node_id = 'node-mismatched'",
+        )
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE component_status SET state = 'ok', value_revision = 1 WHERE node_id = 'node-mismatched' AND component_key = 'network_identity'",
+        )
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+
+        let detail = admin_node_detail(
+            State(state.clone()),
+            Path("node-mismatched".to_owned()),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        let detail_value: Value =
+            serde_json::from_slice(&to_bytes(detail.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(detail_value["identity"]["state"], "unknown");
+        assert!(
+            detail_value["identity"]["mismatched_fields"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+
+        let overview_response = overview(
+            State(state),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        let overview_value: Value = serde_json::from_slice(
+            &to_bytes(overview_response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            !overview_value["attention"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| { item["id"] == "node_identity_mismatch:node:node-mismatched" })
         );
     }
 
