@@ -56,16 +56,16 @@ test.describe('Converged Public Home (issue #102)', () => {
     ).toHaveCount(0)
 
     // Both compact metric rows carry exactly the required labels and values:
-    // HEAD / TXS / PEERS and QC / LOCKED / COMMITTED / VALIDATOR.
-    for (const label of ['HEAD', 'TXS', 'PEERS', 'QC', 'LOCKED', 'COMMITTED', 'VALIDATOR']) {
+    // Head / Transactions / Peers and QC / Locked / Committed / Validator.
+    for (const label of ['Head', 'Transactions', 'Peers', 'QC', 'Locked', 'Committed', 'Validator']) {
       await expect(hCard.getByText(label, { exact: true })).toBeVisible()
     }
-    // HEAD, QC, and COMMITTED share the height; each appears once per row.
+    // Head, QC, and Committed share the height; each appears once per row.
     await expect(hCard.getByText('12,842,025', { exact: true })).toHaveCount(3)
     await expect(hCard.getByText('12,842,024', { exact: true })).toHaveCount(1)
     await expect(hCard.getByText('21', { exact: true })).toHaveCount(1)
     await expect(hCard.getByText('3', { exact: true })).toHaveCount(1)
-    await expect(hCard.getByText('True', { exact: true })).toHaveCount(1)
+    await expect(hCard.getByText('Yes', { exact: true })).toHaveCount(1)
 
     await expectNoVerboseHomeSurface(page)
 
@@ -113,6 +113,40 @@ test.describe('Converged Public Home (issue #102)', () => {
     const box = (await hCard.boundingBox())!
     expect(box.width).toBeGreaterThanOrEqual(44)
     expect(box.height).toBeGreaterThanOrEqual(44)
+
+    // Status badges remain inside the card and never overlap. The short Node A
+    // card keeps Observing and Healthy on one row even on phones; long names may wrap.
+    const badgeCard = nodeCard(page, /Node A/)
+    await expect(badgeCard).toBeVisible({ timeout: 15_000 })
+    const badgeCardBox = (await badgeCard.boundingBox())!
+    const badgeBoxes = await Promise.all(
+      ['Observing', 'Healthy'].map(async (label) => {
+        const badge = badgeCard.getByText(label, { exact: true })
+        await expect(badge).toBeVisible()
+        return badge.boundingBox()
+      }),
+    )
+    expect(badgeBoxes.every(Boolean)).toBe(true)
+    const [firstBadge, secondBadge] = badgeBoxes
+    if (!firstBadge || !secondBadge) throw new Error('Home card status badges have no layout box')
+    for (const badge of badgeBoxes) {
+      if (!badge) continue
+      expect(badge.x).toBeGreaterThanOrEqual(badgeCardBox.x - 1)
+      expect(badge.x + badge.width).toBeLessThanOrEqual(badgeCardBox.x + badgeCardBox.width + 1)
+    }
+    const firstBadgeRight = firstBadge.x + firstBadge.width
+    const secondBadgeRight = secondBadge.x + secondBadge.width
+    const firstBadgeBottom = firstBadge.y + firstBadge.height
+    const secondBadgeBottom = secondBadge.y + secondBadge.height
+    expect(
+      firstBadgeRight <= secondBadge.x + 1 ||
+      secondBadgeRight <= firstBadge.x + 1 ||
+      firstBadgeBottom <= secondBadge.y + 1 ||
+      secondBadgeBottom <= firstBadge.y + 1,
+    ).toBe(true)
+    if (testInfo.project.name === 'desktop-1280' || testInfo.project.name === 'tablet-768-touch') {
+      expect(Math.abs(firstBadge.y - secondBadge.y)).toBeLessThanOrEqual(1)
+    }
     await expectVisibleInteractiveTargets(page)
     await expectNoHorizontalOverflow(page)
   })
@@ -120,9 +154,9 @@ test.describe('Converged Public Home (issue #102)', () => {
   test('production-like states stay explicit with readable text across viewports', async ({ page }) => {
     await loginAs(page)
 
-    // Node K: missing Current Head Block Summary keeps TXS Unknown, an
+    // Node K: missing Current Head Block Summary keeps Transactions Unknown, an
     // authoritative empty peer set stays 0, current non-membership stays
-    // False, and a Node without an effective Link has Unknown Activity.
+    // No, and a Node without an effective Link has Unknown Activity.
     const kCard = nodeCard(page, /Node K/)
     await expect(kCard).toBeVisible({ timeout: 15_000 })
     await expect(kCard.getByText('Unknown', { exact: true })).toHaveCount(1)
@@ -130,7 +164,7 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(kCard.getByText('12,842,023', { exact: true })).toHaveCount(1)
     await expect(kCard.getByText('0', { exact: true })).toHaveCount(1)
     await expect(kCard.getByText('Empty; authoritative zero')).toBeVisible()
-    await expect(kCard.getByText('False', { exact: true })).toHaveCount(1)
+    await expect(kCard.getByText('No', { exact: true })).toHaveCount(1)
     await expect(kCard.getByText('Healthy', { exact: true })).toBeVisible()
 
     // Node L: stale last-good consensus keeps the values and marks them.
@@ -138,7 +172,7 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(lCard.getByText('13', { exact: true })).toHaveCount(1)
     await expect(lCard.getByText('12,842,023', { exact: true })).toHaveCount(3)
     await expect(lCard.getByText('12,842,022', { exact: true })).toHaveCount(1)
-    await expect(lCard.getByText('True', { exact: true })).toHaveCount(1)
+    await expect(lCard.getByText('Yes', { exact: true })).toHaveCount(1)
     await expect(lCard.getByText('Stale', { exact: true })).toHaveCount(4)
 
     // Node M: effective Link with an authoritative no-live-validator result.
@@ -156,14 +190,14 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(nodeCard(page, /Node N/).getByText('Locked (Stale)', { exact: true })).toHaveCount(1)
 
     // Node P has no Node observation; only the Agent-shared Host network
-    // observation is known, and missing Node values never become 0 or False.
+    // observation is known, and missing Node values never become 0 or No.
     const pCard = nodeCard(page, /Node P/)
     await expect(pCard.getByText('Unknown', { exact: true })).toHaveCount(8)
     await expect(pCard.getByText('0', { exact: true })).toHaveCount(0)
-    await expect(pCard.getByText('False', { exact: true })).toHaveCount(0)
+    await expect(pCard.getByText('No', { exact: true })).toHaveCount(0)
     await expect(pCard.getByText('one or more observations are stale or unknown')).toHaveCount(1)
 
-    // Node A: the exact Current Head Block Summary proves TXS while the
+    // Node A: the exact Current Head Block Summary proves Transactions while the
     // current process, data-directory, and shared Host metrics stay explicit.
     const aCard = nodeCard(page, /Node A/)
     await expect(aCard.getByText('7', { exact: true })).toHaveCount(1)
@@ -190,14 +224,14 @@ test.describe('Converged Public Home (issue #102)', () => {
     // projection (Site Access Mode controls access to Home as a whole).
     await expect(nodeCard(page, /Node B \(private\)/)).toBeVisible()
 
-    // Current Head sorting descends by the projected HEAD; never-observed
+    // Current Head sorting descends by the projected Head; never-observed
     // Nodes (Unknown) sort last instead of fabricating zero.
     await page.getByRole('combobox', { name: 'Sort' }).selectOption('head')
     let names = await nodeCardNames(page)
     expect(names[0]).toContain('Node H — Producing Card')
     const observedNodeIndex = names.findIndex((name) => name.includes('Node A'))
     expect(observedNodeIndex).toBeGreaterThanOrEqual(0)
-    // Multiple Active Nodes can have an Unknown HEAD. Their relative order
+    // Multiple Active Nodes can have an Unknown Head. Their relative order
     // is not part of Current Head sorting, but all stay below observed Nodes.
     expect(names.findIndex((name) => name.includes('Node G (transferred)'))).toBeGreaterThan(observedNodeIndex)
     expect(names.findIndex((name) => name.includes('Node P — Never Observed'))).toBeGreaterThan(observedNodeIndex)

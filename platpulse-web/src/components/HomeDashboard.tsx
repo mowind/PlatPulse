@@ -122,9 +122,9 @@ function HomeNodeCard({ network, node }: NodeRecord) {
         </header>
         <ResourceRow node={node} />
         <div className="dashboard-node-primary" aria-label="Node highlights">
-          <Metric label="HEAD" value={formatNumber(node.currentHead)} />
-          <Metric label="TXS" value={formatNumber(node.latestBlockTransactionCount)} />
-          <Metric label="PEERS" value={formatPeerCount(node)} detail={formatPeerObservation(node)} />
+          <Metric label="Head" value={formatNumber(node.currentHead)} />
+          <Metric label="Transactions" value={formatNumber(node.latestBlockTransactionCount)} />
+          <Metric label="Peers" value={formatPeerCount(node)} detail={formatPeerObservation(node)} />
         </div>
         <ConsensusRow consensus={node.consensus} />
         {diagnostic && <p className="dashboard-node-diagnostic">{diagnostic}</p>}
@@ -138,18 +138,18 @@ function ResourceRow({ node }: { node: PublicNode }) {
     <div className="dashboard-node-resources" aria-label="Node process and host network resources">
       <div className="dashboard-node-resource-group dashboard-node-resource-compute" role="group" aria-label="CPU and memory">
         <Metric label="CPU" value={formatPercent(node.processCpuPercent)} progress={node.processCpuPercent} />
-        <Metric label="MEMORY" value={formatPercent(node.processMemoryPercent)} progress={node.processMemoryPercent} />
+        <Metric label="Memory" value={formatPercent(node.processMemoryPercent)} progress={node.processMemoryPercent} />
       </div>
       <Metric
         className="dashboard-node-resource-data"
-        label="NODE DATA"
+        label="Node data"
         value={formatBytes(node.nodeDataDirectorySizeBytes)}
         detail={nodeDataDetail(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)}
         progress={nodeDataProgress(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)}
       />
       <div className="dashboard-node-resource-group dashboard-node-resource-rates" role="group" aria-label="Network transfer rates">
-        <RateMetric label="↑ UP" value={node.hostNetworkTxBytesPerSec} />
-        <RateMetric label="↓ DOWN" value={node.hostNetworkRxBytesPerSec} />
+        <RateMetric label="↑ Up" value={node.hostNetworkTxBytesPerSec} />
+        <RateMetric label="↓ Down" value={node.hostNetworkRxBytesPerSec} />
       </div>
     </div>
   )
@@ -211,10 +211,10 @@ function RateMetric({ label, value }: { label: string; value: number | null | un
 }
 
 /**
- * The final compact metric row: QC, LOCKED, COMMITTED, and VALIDATOR come
+ * The final compact metric row: QC, Locked, Committed, and Validator come
  * from the Node-scoped last-good consensus observation (issue #99). Missing,
  * unsupported, disabled, and never-observed values render Unknown, never
- * zero or False; failed or stale collections keep the last-good values and
+ * zero or No; failed or stale collections keep the last-good values and
  * visibly mark them Stale.
  */
 function ConsensusRow({ consensus }: { consensus: PublicConsensusInsight | undefined }) {
@@ -223,9 +223,9 @@ function ConsensusRow({ consensus }: { consensus: PublicConsensusInsight | undef
   return (
     <div className="dashboard-node-consensus" role="group" aria-label="Consensus and validator values">
       <Metric label="QC" value={formatConsensusBlock(consensus?.highestQcBlock, status)} detail={detail} />
-      <Metric label="LOCKED" value={formatConsensusBlock(consensus?.highestLockBlock, status)} detail={detail} />
-      <Metric label="COMMITTED" value={formatConsensusBlock(consensus?.highestCommitBlock, status)} detail={detail} />
-      <Metric label="VALIDATOR" value={formatConsensusValidator(consensus, status)} detail={detail} />
+      <Metric label="Locked" value={formatConsensusBlock(consensus?.highestLockBlock, status)} detail={detail} />
+      <Metric label="Committed" value={formatConsensusBlock(consensus?.highestCommitBlock, status)} detail={detail} />
+      <Metric label="Validator" value={formatConsensusValidator(consensus, status)} detail={detail} />
     </div>
   )
 }
@@ -251,7 +251,7 @@ function formatConsensusBlock(value: number | null | undefined, status: 'current
 
 function formatConsensusValidator(insight: PublicConsensusInsight | undefined, status: 'current' | 'stale' | 'unknown'): string {
   if (status === 'unknown' || insight?.validator == null) return 'Unknown'
-  return insight.validator ? 'True' : 'False'
+  return insight.validator ? 'Yes' : 'No'
 }
 
 /** One sanitized diagnostic line for exceptional Nodes only (issue #97). */
