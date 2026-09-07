@@ -136,16 +136,21 @@ function HomeNodeCard({ network, node }: NodeRecord) {
 function ResourceRow({ node }: { node: PublicNode }) {
   return (
     <div className="dashboard-node-resources" aria-label="Node process and host network resources">
-      <Metric label="CPU" value={formatPercent(node.processCpuPercent)} progress={node.processCpuPercent} />
-      <Metric label="MEMORY" value={formatPercent(node.processMemoryPercent)} progress={node.processMemoryPercent} />
+      <div className="dashboard-node-resource-group dashboard-node-resource-compute" role="group" aria-label="CPU and memory">
+        <Metric label="CPU" value={formatPercent(node.processCpuPercent)} progress={node.processCpuPercent} />
+        <Metric label="MEMORY" value={formatPercent(node.processMemoryPercent)} progress={node.processMemoryPercent} />
+      </div>
       <Metric
+        className="dashboard-node-resource-data"
         label="NODE DATA"
         value={formatBytes(node.nodeDataDirectorySizeBytes)}
         detail={nodeDataDetail(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)}
         progress={nodeDataProgress(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)}
       />
-      <Metric label="↑ UP" value={formatRate(node.hostNetworkTxBytesPerSec)} />
-      <Metric label="↓ DOWN" value={formatRate(node.hostNetworkRxBytesPerSec)} />
+      <div className="dashboard-node-resource-group dashboard-node-resource-rates" role="group" aria-label="Network transfer rates">
+        <RateMetric label="↑ UP" value={node.hostNetworkTxBytesPerSec} />
+        <RateMetric label="↓ DOWN" value={node.hostNetworkRxBytesPerSec} />
+      </div>
     </div>
   )
 }
@@ -164,8 +169,8 @@ function formatPercent(value: number | null | undefined) {
   return value == null ? '—' : `${value.toFixed(1)}%`
 }
 
-function formatRate(value: number | null | undefined) {
-  if (value == null) return '—'
+function formatRateParts(value: number | null | undefined) {
+  if (value == null) return { amount: '—', unit: '', label: '—' }
   const units = ['B/s', 'KiB/s', 'MiB/s', 'GiB/s']
   let scaled = value
   let unit = 0
@@ -174,18 +179,33 @@ function formatRate(value: number | null | undefined) {
     unit += 1
   }
   const digits = scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2
-  return `${scaled.toFixed(digits)} ${units[unit]}`
+  const amount = scaled.toFixed(digits)
+  return { amount, unit: units[unit], label: `${amount} ${units[unit]}` }
 }
 
-function Metric({ label, value, detail, progress }: { label: string; value: string; detail?: string; progress?: number | null }) {
+function Metric({ label, value, detail, progress, className = '' }: { label: string; value: string; detail?: string; progress?: number | null; className?: string }) {
   const boundedProgress = progress == null ? null : Math.max(0, Math.min(100, progress))
   const style = boundedProgress == null ? undefined : { '--metric-progress': `${boundedProgress}%` } as CSSProperties
   return (
-    <div className={`dashboard-node-primary-metric${boundedProgress == null ? '' : ' dashboard-node-primary-metric-progress'}`} style={style}>
+    <div className={`dashboard-node-primary-metric${boundedProgress == null ? '' : ' dashboard-node-primary-metric-progress'}${className ? ` ${className}` : ''}`} style={style}>
       <span>{label}</span>
       <strong>{value}</strong>
       {boundedProgress != null && <i aria-hidden="true" />}
       {detail && <small>{detail}</small>}
+    </div>
+  )
+}
+
+function RateMetric({ label, value }: { label: string; value: number | null | undefined }) {
+  const formatted = formatRateParts(value)
+  return (
+    <div className="dashboard-node-primary-metric dashboard-node-rate-metric">
+      <span>{label}</span>
+      <strong>
+        <span aria-hidden="true" className="dashboard-metric-number">{formatted.amount}</span>
+        {formatted.unit && <small aria-hidden="true" className="dashboard-metric-unit">{formatted.unit}</small>}
+        <span className="sr-only">{formatted.label}</span>
+      </strong>
     </div>
   )
 }
@@ -201,7 +221,7 @@ function ConsensusRow({ consensus }: { consensus: PublicConsensusInsight | undef
   const status = consensusValueStatus(consensus)
   const detail = status === 'stale' ? 'Stale' : undefined
   return (
-    <div className="dashboard-node-consensus" aria-label="Consensus progress">
+    <div className="dashboard-node-consensus" role="group" aria-label="Consensus and validator values">
       <Metric label="QC" value={formatConsensusBlock(consensus?.highestQcBlock, status)} detail={detail} />
       <Metric label="LOCKED" value={formatConsensusBlock(consensus?.highestLockBlock, status)} detail={detail} />
       <Metric label="COMMITTED" value={formatConsensusBlock(consensus?.highestCommitBlock, status)} detail={detail} />

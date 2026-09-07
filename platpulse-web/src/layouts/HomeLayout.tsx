@@ -12,6 +12,7 @@ import {
   usePublicRealtime,
 } from '../api/public'
 import { ServerStatusNotice } from '../components/ServerStatusNotice'
+import BackgroundDecoration from '../components/BackgroundDecoration'
 import platpulseMark from '../../../assets/platpulse-mark.png'
 
 /**
@@ -86,14 +87,19 @@ function HomeLayoutContent() {
   const realtime = usePublicRealtime(handleReset, !resetting, generation)
   return (
     <div className="app-shell home-shell">
+      <BackgroundDecoration />
       <header className="app-header">
-        <Link to="/" className="app-brand" aria-label="PlatPulse"><img className="app-brand-logo" src={platpulseMark} alt="" /><span>PlatPulse</span></Link>
-        {isOwner && <Link to="/admin" className="admin-icon-link" aria-label="Admin" title="Open Admin dashboard"><span aria-hidden="true">⚙</span></Link>}
+        <div className="home-shell-container app-header-inner">
+          <Link to="/" className="app-brand" aria-label="PlatPulse"><img className="app-brand-logo" src={platpulseMark} alt="" /><span>PlatPulse</span></Link>
+          {isOwner && <Link to="/admin" className="admin-icon-link" aria-label="Admin" title="Open Admin dashboard"><span aria-hidden="true">⚙</span></Link>}
+        </div>
       </header>
       <main className="app-main">
-        <ServerStatusNotice />
-        {networksQuery.data && networksQuery.isRefetchError && <p role="status" className="form-error">Partial: showing the last successful Home data while refresh is unavailable.</p>}
-        {resetting ? <p role="status">Revalidating Home access…</p> : <Outlet context={{ resetting, generation, networks: networksQuery, realtime }} />}
+        <div className="home-shell-container app-main-inner">
+          <ServerStatusNotice />
+          {networksQuery.data && networksQuery.isRefetchError && <p role="status" className="form-error">Partial: showing the last successful Home data while refresh is unavailable.</p>}
+          {resetting ? <p role="status">Revalidating Home access…</p> : <Outlet context={{ resetting, generation, networks: networksQuery, realtime }} />}
+        </div>
       </main>
     </div>
   )
