@@ -349,6 +349,7 @@ describe('Public Home dashboard', () => {
     // Healthy Node with an active resync: progress is the single line.
     const gammaCard = cardOf(nodeCardLink('Gamma'))
     expect(within(gammaCard).getByText('Backfilling 10,000 blocks')).toBeTruthy()
+    expect(within(gammaCard).queryByText('Current observation')).toBeNull()
     expect(gammaCard.querySelectorAll('.dashboard-node-diagnostic')).toHaveLength(1)
   })
 

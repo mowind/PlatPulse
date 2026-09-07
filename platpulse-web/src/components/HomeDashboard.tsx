@@ -285,7 +285,9 @@ function formatPeerObservation(node: PublicNode) {
   if (peer.peerCount == null || peer.state === 'unknown') return 'Unknown observation'
   if (peer.freshness === 'stale') return 'Stale; showing last-good value'
   if (peer.peerCount === 0) return 'Empty; authoritative zero'
-  return 'Current observation'
+  // A fresh peer count is self-explanatory; exceptional observation details
+  // remain visible below the value.
+  return undefined
 }
 function statusTone(tone: ReturnType<typeof toneFor>): 'ok' | 'warning' | 'error' | 'neutral' {
   return tone === 'good' ? 'ok' : tone === 'bad' ? 'error' : tone === 'warn' ? 'warning' : 'neutral'
