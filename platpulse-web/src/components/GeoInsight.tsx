@@ -47,7 +47,7 @@ export function GeoInsight({ insight }: { insight: PublicGeoInsight | undefined 
   const state = insight?.state ?? 'unknown'
   const countries = insight?.countries ?? null
   return (
-    <section className="geo-insight" aria-labelledby={headingId}>
+    <section className="geo-insight" data-state={state} aria-labelledby={headingId}>
       <div className="geo-insight-heading">
         <h3 id={headingId}>Peer countries</h3>
         <StatusBadge status={label(state)} tone={tone(state)} />

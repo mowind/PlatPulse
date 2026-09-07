@@ -32,19 +32,22 @@ export function NetworkPage() {
 
   const network = query.data
   return <section className="page public-network-page" aria-labelledby="network-page-title">
+    <nav className="public-page-breadcrumb" aria-label="Breadcrumb">
+      <Link to="/">← All Networks</Link>
+      <span aria-hidden="true">/</span>
+      <span>Network overview</span>
+    </nav>
     <header className="public-page-heading">
-      <div>
-        <p className="dashboard-kicker">PLATPULSE / NETWORK OVERVIEW</p>
-        <h1 id="network-page-title">{network.displayName}</h1>
+      <div className="public-page-title">
+        <div className="public-page-title-row">
+          <h1 id="network-page-title">{network.displayName}</h1>
+          <RealtimeNotice realtime={realtime} />
+        </div>
         <p className="public-page-subtitle">Active PlatON Nodes and network-level public observations.</p>
+        <p className="public-page-key">Network key <code>{network.networkKey}</code></p>
       </div>
-      <RealtimeNotice realtime={realtime} />
     </header>
     {query.isRefetchError && <p role="status" className="form-error">Network refresh failed; showing the last successful Network data.</p>}
-    <div className="public-network-context">
-      <Link to="/">← All Networks</Link>
-      <span>Network key <code>{network.networkKey}</code></span>
-    </div>
     <div className="public-network-insights">
       <PeerInsight insight={network.peers} />
       <GeoInsight insight={network.geo} />
@@ -110,34 +113,37 @@ export function NodePage() {
     <section className="node-hero-card" aria-labelledby="node-detail-title">
       <header className="node-hero-header">
         <div>
-          <p className="dashboard-kicker">PLATPULSE / {node.networkKey}</p>
           <h1 id="node-detail-title">{node.displayName ?? 'Node detail'}</h1>
           <p className="node-id-line">Node ID <code>{node.nodeId}</code></p>
         </div>
-        <div className="node-hero-badges" aria-label="Node status">
-          <div><span>Health</span><StatusBadge status={nodeHealthLabel(node.health)} tone={nodeHealthTone(node.health)} /></div>
-          <div><span>Node status</span><StatusBadge status={activity.label} tone={activity.tone} /></div>
-          <div className="node-uptime"><span>Process uptime</span><strong>{formatDuration(node.processUptimeMs)}</strong></div>
+        <div className="node-hero-facts" aria-label="Node status">
+          <div className="node-hero-fact"><span>Health</span><StatusBadge status={nodeHealthLabel(node.health)} tone={nodeHealthTone(node.health)} /></div>
+          <div className="node-hero-fact"><span>Node status</span><StatusBadge status={activity.label} tone={activity.tone} /></div>
+          <div className="node-hero-fact node-uptime"><span>Process uptime</span><strong>{formatDuration(node.processUptimeMs)}</strong></div>
         </div>
       </header>
 
       {nodeHealthTone(node.health) !== 'ok' && <p className="node-hero-reason">{node.healthReason}</p>}
       <div className="node-hero-resources" aria-label="Node process and storage resources">
         <HeroResourceMetric label="CPU" value={formatPercent(node.processCpuPercent)} progress={node.processCpuPercent} />
-        <HeroResourceMetric label="MEMORY" value={formatPercent(node.processMemoryPercent)} progress={node.processMemoryPercent} />
+        <HeroResourceMetric label="Memory" value={formatPercent(node.processMemoryPercent)} progress={node.processMemoryPercent} />
         <HeroResourceMetric
-          label="NODE DATA"
+          label="Node data"
           value={formatBytes(node.nodeDataDirectorySizeBytes)}
           detail={diskDetail(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)}
           progress={diskProgress(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)}
         />
       </div>
-      <div className="node-consensus-runway" aria-label="Node chain and consensus progress">
-        <HeroMetric label="HEAD" value={formatNumber(node.currentHead)} />
-        <HeroMetric label="QC" value={formatConsensusValue(node.consensus?.highestQcBlock, node.consensus)} />
-        <HeroMetric label="LOCKED" value={formatConsensusValue(node.consensus?.highestLockBlock, node.consensus)} />
-        <HeroMetric label="COMMITTED" value={formatConsensusValue(node.consensus?.highestCommitBlock, node.consensus)} />
-        <HeroMetric label="VALIDATOR" value={formatValidatorMembership(node)} />
+      <div className="node-consensus-summary" aria-label="Node chain and consensus progress">
+        <div className="node-height-metrics" aria-label="Node height metrics">
+          <HeroMetric label="Head" value={formatNumber(node.currentHead)} />
+          <HeroMetric label="QC" value={formatConsensusValue(node.consensus?.highestQcBlock, node.consensus)} />
+          <HeroMetric label="Locked" value={formatConsensusValue(node.consensus?.highestLockBlock, node.consensus)} />
+          <HeroMetric label="Committed" value={formatConsensusValue(node.consensus?.highestCommitBlock, node.consensus)} />
+        </div>
+        <div className="node-validator-role" aria-label="Validator role">
+          <HeroMetric label="Validator" value={formatValidatorMembership(node)} />
+        </div>
       </div>
       <footer className="node-hero-footer">
         <div><span>Started</span><strong>{formatDateTime(node.processStartedAt)}</strong></div>
@@ -180,6 +186,7 @@ export function NodePage() {
             { label: 'Inbound', points: metricHistory?.peerInboundCount ?? [] },
             { label: 'Outbound', points: metricHistory?.peerOutboundCount ?? [], secondary: true },
           ]}
+          showLegend
           from={metricHistory?.from}
           to={metricHistory?.to}
           axisFormat={formatCountAxis}
@@ -261,12 +268,13 @@ type MetricChartProps = {
   kind?: MetricChartKind
 }
 
-function NodeMetricCard({ label, value, detail, tone, series, from, to, fixedMax, axisFormat, historyMessage, chartKind = 'line', className = '' }: {
+function NodeMetricCard({ label, value, detail, tone, series, showLegend = false, from, to, fixedMax, axisFormat, historyMessage, chartKind = 'line', className = '' }: {
   label: string
   value: string
   detail?: string
   tone: 'blue' | 'violet' | 'amber'
   series: MetricSeries[]
+  showLegend?: boolean
   from?: string
   to?: string
   fixedMax?: number
@@ -281,8 +289,15 @@ function NodeMetricCard({ label, value, detail, tone, series, from, to, fixedMax
       <strong className="node-metric-value">{value}</strong>
     </div>
     {detail && <p>{detail}</p>}
+    {showLegend && <MetricSeriesLegend label={label} series={series} />}
     <MetricChart label={label} series={series} from={from} to={to} fixedMax={fixedMax} axisFormat={axisFormat} message={historyMessage} kind={chartKind} />
   </article>
+}
+
+function MetricSeriesLegend({ label, series }: { label: string; series: MetricSeries[] }) {
+  return <div className="node-metric-legend" aria-label={`${label} chart legend`}>
+    {series.map((item) => <span key={item.label}><i className={item.secondary ? 'node-chart-key node-chart-key-secondary' : 'node-chart-key'} aria-hidden="true" />{item.label}</span>)}
+  </div>
 }
 
 function MetricChart({ label, series, from, to, fixedMax, axisFormat, message, kind = 'line' }: MetricChartProps) {
@@ -414,7 +429,7 @@ function formatConsensusValue(value: number | null | undefined, consensus: Publi
 function formatValidatorMembership(node: PublicNode): string {
   const consensus = node.consensus
   if (!consensus || consensus.validator == null || consensus.freshness === 'unknown' || ['starting', 'disabled', 'unsupported'].includes(consensus.state)) return 'Unknown'
-  return consensus.validator ? 'True' : 'False'
+  return consensus.validator ? 'Yes' : 'No'
 }
 
 function formatDuration(value: number | null | undefined): string {

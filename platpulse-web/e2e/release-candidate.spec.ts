@@ -16,7 +16,7 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await page.getByRole('link', { name: /Node A/ }).click()
     await expect(page).toHaveURL(/\/nodes\/0195f2a1-0014-4014-8014-000000000014$/)
     await expect(page.getByRole('heading', { level: 1, name: 'Node A' })).toBeVisible({ timeout: 15_000 })
-    await expect(page.getByText('HEAD', { exact: true })).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText('Head', { exact: true })).toBeVisible({ timeout: 15_000 })
     await expect(page.getByText('Process uptime', { exact: true })).toBeVisible()
     await expect(page.getByLabel('Node process and storage resources').getByText('CPU', { exact: true })).toBeVisible()
     await expect(page.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true')
@@ -140,17 +140,17 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
       children: [...card.children].map((child) => ({ className: child.className, height: Math.round(child.getBoundingClientRect().height) })),
     }))
     expect(heroLayout.height, JSON.stringify(heroLayout)).toBeLessThanOrEqual(500)
-    await expect(page.getByText('HEAD')).toBeVisible()
+    await expect(page.getByText('Head')).toBeVisible()
     await expect(page.getByText('QC')).toBeVisible()
-    await expect(page.getByText('LOCKED')).toBeVisible()
-    await expect(page.getByText('COMMITTED')).toBeVisible()
-    await expect(page.getByText('VALIDATOR')).toBeVisible()
-    await expect(page.getByText('True', { exact: true })).toBeVisible()
-    await expect(page.getByText('Yes', { exact: true })).toHaveCount(0)
+    await expect(page.getByText('Locked')).toBeVisible()
+    await expect(page.getByText('Committed')).toBeVisible()
+    await expect(page.getByText('Validator')).toBeVisible()
+    await expect(page.getByText('Yes', { exact: true })).toBeVisible()
+    await expect(page.getByText('True', { exact: true })).toHaveCount(0)
     await expect(page.getByText('Server updates arrive as invalidations; REST data stays authoritative.', { exact: true })).toHaveCount(0)
     await expect(page.getByText('RPC, sync, and consensus are current', { exact: true })).toHaveCount(0)
     const resources = page.getByLabel('Node process and storage resources')
-    for (const label of ['CPU', 'MEMORY', 'NODE DATA']) {
+    for (const label of ['CPU', 'Memory', 'Node data']) {
       await expect(resources.getByText(label, { exact: true })).toBeVisible()
     }
     await expect(resources.locator('.node-hero-resource-progress')).toHaveCount(3)
