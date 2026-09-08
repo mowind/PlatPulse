@@ -20,7 +20,7 @@ import {
  * discipline as the Owner Overview visibility mutation).
  */
 const AGENT_ID = '0195f2a1-0011-4011-8011-000000000011'
-const TARGET_AGENT_ID = '0195f2a1-0021-4021-8021-000000000021'
+const NO_HOST_AGENT_ID = '0195f2a1-0021-4021-8021-000000000021'
 const CREDENTIAL_ID = '0195f2a1-0021-4021-8021-000000000021'
 
 async function openAgents(page: Parameters<typeof loginAs>[0]) {
@@ -75,8 +75,13 @@ test.describe('Agent inventory and detail (PAGE-ADMIN-AGENTS)', () => {
     await expect(row).toContainText('Delivery error')
     await expect(row).toContainText('Host snapshot')
     await expect(row).not.toContainText('delivery timeout retained after bounded retry')
+    if ((page.viewportSize()?.width ?? 1280) < 768) {
+      const diagnosticCell = row.locator('td[data-label="Diagnostics"]')
+      await expect(diagnosticCell).toHaveCSS('flex-direction', 'column')
+      await expect(diagnosticCell.locator('.agent-diagnostic-evidence')).toBeVisible()
+    }
 
-    const noHostRow = page.locator('tr').filter({ has: page.locator('a[href="/admin/agents/' + TARGET_AGENT_ID + '"]') })
+    const noHostRow = page.locator('tr').filter({ has: page.locator('a[href="/admin/agents/' + NO_HOST_AGENT_ID + '"]') })
     await expect(noHostRow).toBeVisible({ timeout: 15_000 })
     await expect(noHostRow).toContainText('Host observation')
     await expect(noHostRow).toContainText('Not observed yet')

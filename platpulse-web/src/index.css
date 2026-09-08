@@ -2174,6 +2174,12 @@ button {
     align-items: flex-start;
   }
 
+  .agent-table tbody td[data-label='Diagnostics'] {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.55rem;
+  }
+
   .agent-table .agent-identity-access,
   .agent-table .agent-summary-diagnostics {
     flex: 1 1 12rem;
