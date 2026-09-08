@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { Navigate, useLocation, useNavigate } from 'react-router'
 import { useAuth } from '../auth/AuthContext'
 import { AuthApiError } from '../api/auth'
+import BackgroundDecoration from '../components/BackgroundDecoration'
 
 /**
  * Login page (design §12.2/§12.4): username + password form with labels,
@@ -45,6 +46,7 @@ export default function LoginPage() {
 
   return (
     <main className="login-page">
+      <BackgroundDecoration />
       <section className="login-card page" aria-labelledby="login-heading">
         <h1 id="login-heading">Sign in to PlatPulse</h1>
         <p className="login-hint">
