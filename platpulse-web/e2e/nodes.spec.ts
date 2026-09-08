@@ -8,7 +8,8 @@ async function openAdminNav(page: Parameters<typeof loginAs>[0], linkName: strin
   await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible({ timeout: 15_000 })
   const menu = page.getByRole('button', { name: 'Menu' })
   if (await menu.isVisible()) await menu.click()
-  await page.getByRole('link', { name: linkName }).click()
+  const adminNav = page.getByRole('navigation', { name: 'Admin' })
+  await adminNav.getByRole('link', { name: linkName, exact: true }).click()
 }
 
 async function openNodes(page: Parameters<typeof loginAs>[0]) {

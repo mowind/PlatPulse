@@ -81,10 +81,14 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
   test('groups additional Attention items with an accessible disclosure at every fixed viewport', async ({ page }) => {
     await openOverview(page)
     const additional = page.getByRole('button', { name: /Show \d+ additional issues?/ })
-    await expect(additional).toHaveCount(1)
-    const detailsId = await additional.getAttribute('aria-controls')
+    // Multiple subjects may each have grouped findings; verify the first
+    // disclosure rather than assuming the fixture has only one group.
+    await expect(additional.first()).toBeVisible()
+    expect(await additional.count()).toBeGreaterThan(0)
+    const firstAdditional = additional.first()
+    const detailsId = await firstAdditional.getAttribute('aria-controls')
     expect(detailsId).toBeTruthy()
-    await additional.click()
+    await firstAdditional.click()
     await expect(page.locator(`[id="${detailsId}"]`)).toBeVisible()
     await expect(page.locator(`[aria-controls="${detailsId}"]`)).toHaveAttribute('aria-expanded', 'true')
     await expectVisibleInteractiveTargets(page)
@@ -184,12 +188,12 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
     await expect(adminNav).toBeVisible()
     await expect.poll(() => page.evaluate(() => document.body.style.overflow)).toBe('hidden')
     // Opening moves focus inside the drawer.
-    await expect(page.getByRole('link', { name: 'Overview' })).toBeFocused()
+    await expect(adminNav.getByRole('link', { name: 'Overview', exact: true })).toBeFocused()
     // Reverse Tab wraps from the first retained page group to the last.
     await page.keyboard.press('Shift+Tab')
-    await expect(page.getByRole('link', { name: 'Audit' })).toBeFocused()
+    await expect(adminNav.getByRole('link', { name: 'Audit', exact: true })).toBeFocused()
     await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: 'Overview' })).toBeFocused()
+    await expect(adminNav.getByRole('link', { name: 'Overview', exact: true })).toBeFocused()
     // Tab stays inside the drawer and wraps at the last item (issue #92:
     // the MVP navigation holds exactly the seven retained page groups).
     const mvpNav = [
@@ -203,10 +207,10 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
     ]
     for (const item of [...mvpNav.slice(1), 'Overview']) {
       await page.keyboard.press('Tab')
-      await expect(page.getByRole('link', { name: item })).toBeFocused()
+      await expect(adminNav.getByRole('link', { name: item, exact: true })).toBeFocused()
     }
     for (const deferred of ['Validators', 'Alert Rules', 'Operations', 'Data', 'People']) {
-      await expect(page.getByRole('link', { name: deferred })).toHaveCount(0)
+      await expect(adminNav.getByRole('link', { name: deferred, exact: true })).toHaveCount(0)
     }
     // Escape closes the drawer, unlocks the body, and restores focus.
     await page.keyboard.press('Escape')

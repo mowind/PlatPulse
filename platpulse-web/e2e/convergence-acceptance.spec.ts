@@ -247,10 +247,11 @@ test.describe('Converged WebUI acceptance (issue #95)', () => {
       await expect(page.getByRole('heading', { level: 1, name: section.heading })).toBeVisible({
         timeout: 15_000,
       })
-      await expect(page.getByRole('link', { name: 'PlatPulse' })).toBeVisible()
-      await expect(page.getByRole('link', { name: 'Home', exact: true })).toBeVisible()
+      // The current Admin shell returns Home through the shared brand link;
+      // it intentionally has no duplicate Global/Home navigation entry.
+      await expect(page.getByRole('link', { name: 'PlatPulse', exact: true })).toHaveAttribute('href', '/')
       await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible()
-      await expect(page.getByRole('navigation', { name: 'Global' })).toBeVisible()
+      await expect(page.getByRole('navigation', { name: 'Admin' })).toBeVisible()
       const adminNav = page.getByRole('navigation', { name: 'Admin' })
       await expect(adminNav.getByRole('link')).toHaveCount(MVP_ADMIN_SECTIONS.length)
       await expect(adminNav.getByRole('link', { name: section.link, exact: true })).toHaveAttribute(
@@ -267,7 +268,12 @@ test.describe('Converged WebUI acceptance (issue #95)', () => {
       if (test.info().project.name.includes('phone') || test.info().project.name.includes('tablet')) {
         await expectVisibleInteractiveTargets(page)
         const menu = page.getByRole('button', { name: 'Menu' })
-        if ((await menu.getAttribute('aria-expanded')) === 'true') await menu.click()
+        if ((await menu.getAttribute('aria-expanded')) === 'true') {
+          // The open drawer intentionally owns the overlay; close it through
+          // its keyboard contract rather than clicking beneath the scrim.
+          await page.keyboard.press('Escape')
+          await expect(menu).toHaveAttribute('aria-expanded', 'false')
+        }
       }
     }
 

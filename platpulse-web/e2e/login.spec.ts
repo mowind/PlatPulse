@@ -36,7 +36,8 @@ test.describe('Private Home login', () => {
     await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
     await expectNoHorizontalOverflow(page)
 
-    await page.getByRole('link', { name: 'Home', exact: true }).click()
+    // Admin returns to Home through the shared brand link.
+    await page.getByRole('link', { name: 'PlatPulse', exact: true }).click()
     await expect(page).toHaveURL(/\/$/)
     await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()
 

@@ -4121,6 +4121,7 @@ button {
 .admin-shell .settings-consequence, .admin-shell .impact-preview { padding: 0.8rem 1rem; border: 1px solid var(--line); border-radius: 0.6rem; background: rgba(241, 245, 249, 0.76); }
 .admin-shell .settings-card-heading h2, .admin-shell .impact-preview h3 { color: var(--ink); }
 .admin-shell .summary-strip { color: var(--ink); background: rgba(255, 255, 255, 0.68); border-color: rgba(148, 163, 184, 0.22); box-shadow: none; }
+.admin-shell .audit-list a { display: inline-flex; min-width: 44px; min-height: 44px; align-items: center; }
 .admin-shell .summary-strip dt { color: var(--muted); }
 .admin-shell .summary-strip dd { color: var(--ink); }
 .admin-shell .success-panel, .admin-shell .secret-panel { margin-top: 1rem; padding: clamp(1rem, 1.6vw, 1.25rem); border-radius: 0.6rem; background: var(--green-bg); border: 1px solid rgba(5, 150, 105, 0.2); box-shadow: none; }
@@ -4130,6 +4131,9 @@ button {
 .admin-shell .filter-bar, .admin-shell .audit-filters { margin-block: 1rem; padding: 0.9rem 1rem; border: 1px solid rgba(148, 163, 184, 0.22); border-radius: 0.6rem; background: rgba(255, 255, 255, 0.58); }
 .admin-shell .filter-bar label, .admin-shell .audit-filters label { color: var(--muted); }
 .admin-shell .sort-button { color: var(--muted); background: #ffffff; border-color: rgba(148, 163, 184, 0.28); }
+.admin-shell .node-table .sort-button,
+.admin-shell .node-table .node-toggle,
+.admin-shell .node-table .agent-link { min-width: 44px; }
 .admin-shell .sort-button[aria-pressed='true'] { color: var(--brand-strong); background: rgba(16, 185, 129, 0.1); border-color: rgba(5, 150, 105, 0.2); }
 .admin-shell .detail-list dd, .admin-shell .component-row dd, .admin-shell .audit-details pre, .admin-shell .agent-link, .admin-shell .network-key, .admin-shell .node-id { overflow-wrap: anywhere; word-break: normal; }
 .admin-shell table thead th { overflow-wrap: normal; word-break: normal; hyphens: none; }
