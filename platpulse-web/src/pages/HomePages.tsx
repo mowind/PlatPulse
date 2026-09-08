@@ -429,7 +429,7 @@ function formatConsensusValue(value: number | null | undefined, consensus: Publi
 function formatValidatorMembership(node: PublicNode): string {
   const consensus = node.consensus
   if (!consensus || consensus.validator == null || consensus.freshness === 'unknown' || ['starting', 'disabled', 'unsupported'].includes(consensus.state)) return 'Unknown'
-  return consensus.validator ? 'Yes' : 'No'
+  return consensus.validator ? 'True' : 'False'
 }
 
 function formatDuration(value: number | null | undefined): string {

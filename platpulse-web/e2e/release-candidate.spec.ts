@@ -145,7 +145,7 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expect(page.getByText('Locked')).toBeVisible()
     await expect(page.getByText('Committed')).toBeVisible()
     await expect(page.getByText('Validator')).toBeVisible()
-    await expect(page.getByText('Yes', { exact: true })).toBeVisible()
+    await expect(page.getByText('True', { exact: true })).toBeVisible()
     await expect(page.getByText('True', { exact: true })).toHaveCount(0)
     await expect(page.getByText('Server updates arrive as invalidations; REST data stays authoritative.', { exact: true })).toHaveCount(0)
     await expect(page.getByText('RPC, sync, and consensus are current', { exact: true })).toHaveCount(0)
