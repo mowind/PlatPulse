@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type KeyboardEvent } from 'react'
 import { Link } from 'react-router'
 import { useAdminAudit, type AuditFilters } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
@@ -210,6 +210,10 @@ const EVENT_KINDS = [
   'node_transfer_cancelled',
 ]
 
+/** PAGE-ACCESS-AUDIT row: the five summary columns stay in one table row;
+ * the redacted detail opens in its own full-width row below the record, the
+ * same disclosure pattern as the Nodes inventory. Long values therefore wrap
+ * inside the detail row instead of widening or crushing the action column. */
 function AuditRow({
   item,
   expanded,
@@ -221,46 +225,55 @@ function AuditRow({
 }) {
   const target = targetLink(item)
   const detailsId = `audit-details-${item.auditEventId}`
+  const collapseOnEscape = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key === 'Escape' && expanded) onToggle()
+  }
   return (
-    <tr>
-      <td data-label="Time">
-        <time dateTime={item.createdAt}>{formatObservedAt(item.createdAt)}</time>
-      </td>
-      <th scope="row" data-label="Event">
-        <span className="audit-event-kind">{item.eventKind}</span>
-        <small className="muted">event #{item.auditEventId}</small>
-      </th>
-      <td data-label="Actor">{item.actorUsername ?? 'local-cli'}</td>
-      <td data-label="Target">
-        {target ? <Link to={target.to}>{target.label}</Link> : item.targetId}
-        <small className="muted">{item.targetKind}</small>
-      </td>
-      <td data-label="Details">
-        <button
-          type="button"
-          className="text-action audit-details-toggle"
-          onClick={onToggle}
-          aria-expanded={expanded}
-          aria-controls={detailsId}
-        >
-          {expanded ? 'Hide details' : 'Show details'}
-        </button>
-        {expanded && (
-          <div
-            id={detailsId}
-            className="audit-details"
-            role="region"
-            aria-label={'Redacted details for Audit event ' + item.auditEventId}
+    <>
+      <tr>
+        <td data-label="Time">
+          <time dateTime={item.createdAt}>{formatObservedAt(item.createdAt)}</time>
+        </td>
+        <th scope="row" data-label="Event">
+          <span className="audit-event-kind">{item.eventKind}</span>
+          <small className="muted">event #{item.auditEventId}</small>
+        </th>
+        <td data-label="Actor">{item.actorUsername ?? 'local-cli'}</td>
+        <td data-label="Target">
+          {target ? <Link to={target.to}>{target.label}</Link> : item.targetId}
+          <small className="muted">{item.targetKind}</small>
+        </td>
+        <td data-label="Details">
+          <button
+            type="button"
+            className="text-action audit-details-toggle"
+            onClick={onToggle}
+            onKeyDown={collapseOnEscape}
+            aria-expanded={expanded}
+            aria-controls={detailsId}
           >
-            {item.details == null ? (
-              <p className="muted">No redacted detail was recorded for this event.</p>
-            ) : (
-              <RedactedDetails details={item.details} />
-            )}
-          </div>
-        )}
-      </td>
-    </tr>
+            {expanded ? 'Hide details' : 'Show details'}
+          </button>
+        </td>
+      </tr>
+      {expanded && (
+        <tr className="node-detail-row">
+          <td colSpan={5} id={detailsId} onKeyDown={collapseOnEscape}>
+            <div
+              className="audit-details"
+              role="region"
+              aria-label={'Redacted details for Audit event ' + item.auditEventId}
+            >
+              {item.details == null ? (
+                <p className="muted">No redacted detail was recorded for this event.</p>
+              ) : (
+                <RedactedDetails details={item.details} />
+              )}
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   )
 }
 

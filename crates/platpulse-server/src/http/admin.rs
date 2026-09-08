@@ -2811,7 +2811,12 @@ pub struct AttentionItem {
     pub subject_id: String,
     pub subject_label: String,
     pub message: String,
-    pub observed_at: String,
+    /// Last authoritative observation time for this item. `None` means the
+    /// Server has no observation timestamp for the evidence; it is never
+    /// replaced with the snapshot generation time, which is not an event or
+    /// observation time.
+    #[schema(required = true)]
+    pub observed_at: Option<String>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -2823,6 +2828,7 @@ struct OverviewAgentRow {
     shutdown_state: String,
     security_event_count: i64,
     sequence_gap_count: i64,
+    latest_gap_at: Option<String>,
     spool_store_fatal: Option<i64>,
     spool_dropped_sequence_to: Option<i64>,
 }
@@ -2849,7 +2855,7 @@ pub(crate) async fn overview(
     // A database failure is a Server failure: it must surface as an error
     // envelope, never as an authoritative empty queue (webui.md §5.3).
     let agents = match sqlx::query_as::<_, OverviewAgentRow>(
-        "SELECT a.agent_id, a.last_received_at, a.shutdown_updated_at, h.updated_at AS host_updated_at, a.shutdown_state, a.security_event_count, (SELECT COUNT(*) FROM report_sequence_gaps g WHERE g.agent_id = a.agent_id) AS sequence_gap_count, h.spool_store_fatal, h.spool_dropped_sequence_to FROM agents a LEFT JOIN current_host_observations h ON h.agent_id = a.agent_id ORDER BY a.agent_id",
+        "SELECT a.agent_id, a.last_received_at, a.shutdown_updated_at, h.updated_at AS host_updated_at, a.shutdown_state, a.security_event_count, (SELECT COUNT(*) FROM report_sequence_gaps g WHERE g.agent_id = a.agent_id) AS sequence_gap_count, (SELECT MAX(g.created_at) FROM report_sequence_gaps g WHERE g.agent_id = a.agent_id) AS latest_gap_at, h.spool_store_fatal, h.spool_dropped_sequence_to FROM agents a LEFT JOIN current_host_observations h ON h.agent_id = a.agent_id ORDER BY a.agent_id",
     )
     .fetch_all(state.db().pool())
     .await
@@ -2872,13 +2878,6 @@ pub(crate) async fn overview(
     };
     let mut attention: Vec<AttentionItem> = Vec::new();
     for agent in &agents {
-        let agent_observed_at = agent
-            .host_updated_at
-            .as_ref()
-            .or(agent.last_received_at.as_ref())
-            .or(agent.shutdown_updated_at.as_ref())
-            .cloned()
-            .unwrap_or_else(|| generated_at.clone());
         let liveness = agent_liveness(agent.last_received_at.as_deref());
         match liveness {
             "online" => agent_summary.online += 1,
@@ -2894,10 +2893,7 @@ pub(crate) async fn overview(
                 subject_id: agent.agent_id.clone(),
                 subject_label: agent.agent_id.clone(),
                 message: "the Agent has not reported within the liveness window".to_owned(),
-                observed_at: agent
-                    .last_received_at
-                    .clone()
-                    .unwrap_or_else(|| generated_at.clone()),
+                observed_at: agent.last_received_at.clone(),
             });
         }
         if agent.spool_store_fatal.is_some_and(|value| value != 0) {
@@ -2910,7 +2906,7 @@ pub(crate) async fn overview(
                 subject_label: agent.agent_id.clone(),
                 message: "the Agent spool store is in a fatal state; durable reports are at risk"
                     .to_owned(),
-                observed_at: agent_observed_at.clone(),
+                observed_at: agent.host_updated_at.clone(),
             });
         }
         if agent.spool_dropped_sequence_to.is_some() {
@@ -2922,7 +2918,7 @@ pub(crate) async fn overview(
                 subject_id: agent.agent_id.clone(),
                 subject_label: agent.agent_id.clone(),
                 message: "the Agent spool overflowed and discarded queued reports".to_owned(),
-                observed_at: agent_observed_at.clone(),
+                observed_at: agent.host_updated_at.clone(),
             });
         }
         if agent.sequence_gap_count > 0 {
@@ -2942,7 +2938,7 @@ pub(crate) async fn overview(
                         "s were"
                     }
                 ),
-                observed_at: agent_observed_at.clone(),
+                observed_at: agent.latest_gap_at.clone(),
             });
         }
         if agent.security_event_count > 0 {
@@ -2962,7 +2958,9 @@ pub(crate) async fn overview(
                         "s were"
                     }
                 ),
-                observed_at: agent_observed_at.clone(),
+                // The accumulated counter has no per-event timestamp; an
+                // unrelated later report must not make it look recent.
+                observed_at: None,
             });
         }
         if matches!(
@@ -2977,7 +2975,7 @@ pub(crate) async fn overview(
                 subject_id: agent.agent_id.clone(),
                 subject_label: agent.agent_id.clone(),
                 message: format!("the Agent shutdown is {}", agent.shutdown_state),
-                observed_at: agent_observed_at.clone(),
+                observed_at: agent.shutdown_updated_at.clone(),
             });
         }
     }
@@ -3055,8 +3053,7 @@ pub(crate) async fn overview(
             .fetch_optional(state.db().pool())
             .await
             .ok()
-            .flatten()
-            .unwrap_or_else(|| generated_at.clone());
+            .flatten();
             attention.push(AttentionItem {
                 id: format!("node_identity_mismatch:node:{node_id}"),
                 kind: AttentionKind::NodeIdentityMismatch,
@@ -3087,8 +3084,7 @@ pub(crate) async fn overview(
             )
             .filter_map(crate::auth::parse_rfc3339)
             .max()
-            .map(crate::auth::format_rfc3339)
-            .unwrap_or_else(|| generated_at.clone());
+            .map(crate::auth::format_rfc3339);
         match diagnostic.health.as_str() {
             "healthy" => node_summary.healthy += 1,
             "unhealthy" => {
@@ -3130,7 +3126,7 @@ pub(crate) async fn overview(
             .await
             .ok()
             .flatten()
-            .unwrap_or_else(|| observed_at.clone());
+            .or(observed_at.clone());
             attention.push(AttentionItem {
                 id: format!("node_resync:node:{node_id}"),
                 kind: AttentionKind::NodeResync,
@@ -3146,10 +3142,18 @@ pub(crate) async fn overview(
     attention.sort_by(|a, b| {
         severity_rank(a.severity)
             .cmp(&severity_rank(b.severity))
-            .then_with(|| {
-                crate::auth::parse_rfc3339(&b.observed_at)
-                    .cmp(&crate::auth::parse_rfc3339(&a.observed_at))
-            })
+            .then_with(
+                || match (a.observed_at.as_deref(), b.observed_at.as_deref()) {
+                    (Some(left), Some(right)) => {
+                        crate::auth::parse_rfc3339(right).cmp(&crate::auth::parse_rfc3339(left))
+                    }
+                    // Items with an authoritative observation time sort before
+                    // items whose observation time is unknown.
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                },
+            )
             .then_with(|| a.subject_label.cmp(&b.subject_label))
             .then_with(|| a.id.cmp(&b.id))
     });
@@ -5421,6 +5425,14 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
+        // The recorded gap interval has its own event time, distinct from the
+        // Host observation, so the Server must not reuse one Agent-wide clock.
+        let gap_time = crate::auth::format_rfc3339(now - time::Duration::hours(2));
+        sqlx::query("INSERT INTO report_sequence_gaps (agent_id, boot_id, from_sequence, to_sequence, created_at) VALUES ('agent-ov2', 'boot-ov2', 3, 4, ?)")
+            .bind(&gap_time)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
         sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('mainnet', 'Main', '0xgenesis', 1, 1, 'lat', ?, ?)")
             .bind(created)
             .bind(created)
@@ -5477,9 +5489,45 @@ mod tests {
         assert!(kinds.contains(&("agent_spool_fatal".to_owned(), "critical".to_owned())));
         assert!(kinds.contains(&("agent_offline".to_owned(), "warning".to_owned())));
         assert!(kinds.contains(&("agent_spool_overflow".to_owned(), "critical".to_owned())));
+        assert!(kinds.contains(&("agent_report_gap".to_owned(), "warning".to_owned())));
         assert!(kinds.contains(&("node_health_unknown".to_owned(), "warning".to_owned())));
         // Critical items sort before warnings.
         assert_eq!(value["attention"][0]["severity"], "critical");
+        let item = |kind: &str| {
+            value["attention"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["kind"] == kind)
+                .unwrap()
+        };
+        // The unknown Node has no observation timestamp: the Server reports
+        // null instead of substituting the snapshot generation time, so the
+        // WebUI cannot present a snapshot refresh as an event time.
+        let unknown = item("node_health_unknown");
+        assert!(unknown["observed_at"].is_null());
+        assert_ne!(unknown["observed_at"], value["generated_at"]);
+        // Each item carries its own evidence time, not one Agent-wide clock:
+        // the gap interval uses its recorded event time, the spool items use
+        // the Host observation, and the shutdown item uses its own update.
+        assert_eq!(
+            item("agent_report_gap")["observed_at"],
+            serde_json::json!(gap_time)
+        );
+        assert_eq!(
+            item("agent_spool_fatal")["observed_at"],
+            serde_json::json!(stale)
+        );
+        assert_eq!(
+            item("agent_spool_overflow")["observed_at"],
+            serde_json::json!(stale)
+        );
+        assert_eq!(
+            item("agent_offline")["observed_at"],
+            serde_json::json!(stale)
+        );
+        // The accumulated security counter has no per-event timestamp.
+        assert!(item("agent_security_event")["observed_at"].is_null());
     }
 
     #[tokio::test]

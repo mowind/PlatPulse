@@ -173,6 +173,19 @@ async function renderAt(path: string) {
   })
 }
 
+/** Expand one row's Diagnostics disclosure and return the cross-column detail
+ * row that must follow it. The item row keeps its six cells. */
+function expandDiagnostics(row: HTMLElement): HTMLElement {
+  const toggle = within(row).getByRole('button', { name: 'Show diagnostics' })
+  fireEvent.click(toggle)
+  expect(toggle.getAttribute('aria-expanded')).toBe('true')
+  const detail = row.nextElementSibling as HTMLElement | null
+  expect(detail?.classList.contains('node-detail-row')).toBe(true)
+  expect(toggle.getAttribute('aria-controls')).toBe(detail?.querySelector('td')?.id)
+  expect(row.children).toHaveLength(6)
+  return detail as HTMLElement
+}
+
 beforeEach(() => {
   window.history.replaceState({}, '', '/')
   client.setConfig({ baseUrl: TEST_ORIGIN })
@@ -231,26 +244,42 @@ describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
       'Credentials',
       'Diagnostics',
     ])
-    expect(row.textContent).toContain('Server liveness')
-    expect(row.textContent).toContain('Current')
-    expect(row.textContent).toContain('Server receipt time')
-    expect(row.textContent).toContain('2026-08-12 08:00:00 UTC')
-    expect(row.textContent).toContain('2 retained Nodes')
-    expect(row.textContent).toContain('Active + Retired')
-    expect(row.textContent).toContain('Server validity')
-    expect(row.textContent).toContain('1 active · 0 revoked · 1 inactive (not revoked) · 2 total')
-    const gapEvidence = within(row).getByText('Recorded gap intervals', { exact: true }).parentElement
-    const securityEvidence = within(row).getByText('Accumulated recorded security events', { exact: true }).parentElement
-    const queuedEvidence = within(row).getByText('Queued reports', { exact: true }).parentElement
-    const deliveryEvidence = within(row).getByText('Delivery state', { exact: true }).parentElement
-    expect(gapEvidence?.textContent).toContain('0')
-    expect(securityEvidence?.textContent).toContain('0')
-    expect(queuedEvidence?.textContent).toContain('3')
-    expect(deliveryEvidence?.textContent).toContain('In flight')
-    expect(row.textContent).toContain('Dropped sequence range')
-    expect(row.textContent).toContain('#7–#9 recorded')
-    expect(row.textContent).toContain('Delivery error')
-    expect(row.textContent).not.toContain('server unavailable')
+    // One cell per dimension, in header order: no summary field is merged
+    // into a neighbouring cell and no placeholder cell is added.
+    const cells = Array.from(row.children)
+    expect(cells.map((cell) => cell.getAttribute('data-label'))).toEqual([
+      'Agent',
+      'Reporting status',
+      'Last received',
+      'Node Inventory',
+      'Credentials',
+      'Diagnostics',
+    ])
+    expect(cells[1].textContent).toContain('Server liveness')
+    expect(cells[1].textContent).toContain('Current')
+    expect(cells[2].textContent).toContain('Server receipt time')
+    expect(cells[2].textContent).toContain('2026-08-12 08:00:00 UTC')
+    expect(cells[3].textContent).toContain('2 retained Nodes')
+    expect(cells[3].textContent).toContain('Active + Retired')
+    expect(cells[4].textContent).toContain('Server validity')
+    expect(cells[4].textContent).toContain('1 active · 0 revoked · 1 inactive (not revoked) · 2 total')
+    expect(cells[5].textContent).toContain('Recorded gap intervals')
+    expect(cells[5].textContent).toContain('Accumulated recorded security events')
+    expect(cells[5].textContent).toContain('3 queued')
+    expect(cells[5].textContent).toContain('delivery in flight')
+    expect(cells[5].textContent).toContain('store not fatal')
+    expect(cells[5].textContent).toContain('delivery error recorded')
+    expect(cells[5].textContent).toContain('dropped sequence range recorded')
+    // The full findings stay behind the disclosure, not in the summary cell.
+    expect(row.textContent).not.toContain('Dropped sequence range')
+    expect(row.textContent).not.toContain('Host snapshot')
+    const detail = expandDiagnostics(row as HTMLElement)
+    expect(detail.querySelector('td')?.getAttribute('colspan')).toBe('6')
+    expect(detail.textContent).toContain('Dropped sequence range')
+    expect(detail.textContent).toContain('#7–#9 recorded')
+    expect(detail.textContent).toContain('Delivery error')
+    expect(detail.textContent).toContain('Host snapshot')
+    expect(detail.textContent).not.toContain('server unavailable')
     expect(row.textContent).not.toContain('#42')
     expect(screen.queryByRole('link', { name: 'Enroll a new Agent' })).toBeNull()
   })
@@ -371,15 +400,24 @@ describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
     expect(row.textContent).toContain('Current')
     expect(within(row).getByText('Recorded gap intervals', { exact: true }).parentElement?.textContent).toContain('2')
     expect(within(row).getByText('Accumulated recorded security events', { exact: true }).parentElement?.textContent).toContain('3')
-    expect(within(row).getByText('Queued reports', { exact: true }).parentElement?.textContent).toContain('0')
-    expect(within(row).getByText('Delivery state', { exact: true }).parentElement?.textContent).toContain('Idle')
-    expect(within(row).getByText('Store fatal', { exact: true }).parentElement?.textContent).toContain('Yes')
-    expect(within(row).getByText('Delivery error', { exact: true }).parentElement?.textContent).toContain('Recorded')
-    expect(within(row).getByText('Report size', { exact: true }).parentElement?.textContent).toContain('Too large')
-    expect(within(row).getByText('Pending history gaps', { exact: true }).parentElement?.textContent).toContain('4')
-    expect(row.textContent).toContain('Host snapshot')
+    const summary = within(row).getByText('Recorded evidence', { exact: true }).parentElement
+    expect(summary?.textContent).toContain('0 queued')
+    expect(summary?.textContent).toContain('delivery idle')
+    expect(summary?.textContent).toContain('store fatal')
+    expect(summary?.textContent).toContain('delivery error recorded')
+    expect(summary?.textContent).toContain('report too large')
+    expect(summary?.textContent).toContain('4 pending history gaps')
     expect(row.textContent).not.toContain(longDeliveryError)
-    expect(row.textContent).not.toContain('store error retained for detail')
+    const detail = expandDiagnostics(row as HTMLElement)
+    expect(within(detail).getByText('Queued reports', { exact: true }).parentElement?.textContent).toContain('0')
+    expect(within(detail).getByText('Delivery state', { exact: true }).parentElement?.textContent).toContain('Idle')
+    expect(within(detail).getByText('Store fatal', { exact: true }).parentElement?.textContent).toContain('Yes')
+    expect(within(detail).getByText('Delivery error', { exact: true }).parentElement?.textContent).toContain('Recorded')
+    expect(within(detail).getByText('Report size', { exact: true }).parentElement?.textContent).toContain('Too large')
+    expect(within(detail).getByText('Pending history gaps', { exact: true }).parentElement?.textContent).toContain('4')
+    expect(detail.textContent).toContain('Host snapshot')
+    expect(detail.textContent).not.toContain(longDeliveryError)
+    expect(detail.textContent).not.toContain('store error retained for detail')
   })
 
   it('distinguishes no Host observation from an unobserved spool', async () => {
@@ -390,8 +428,11 @@ describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
     renderAt('/admin/agents')
 
     const row = await screen.findByRole('row', { name: /0195f2a1/ })
-    expect(within(row).getByText('Host observation', { exact: true }).parentElement?.textContent).toContain('Not observed yet')
+    expect(within(row).getByText('Recorded evidence', { exact: true }).parentElement?.textContent).toContain('No Host observation yet')
     expect(within(row).queryByText('Spool observation', { exact: true })).toBeNull()
+    const detail = expandDiagnostics(row as HTMLElement)
+    expect(within(detail).getByText('Host observation', { exact: true }).parentElement?.textContent).toContain('Not observed yet')
+    expect(within(detail).queryByText('Spool observation', { exact: true })).toBeNull()
   })
 
   it('distinguishes an unobserved spool from an authoritative zero queue', async () => {
@@ -403,8 +444,10 @@ describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
     renderAt('/admin/agents')
 
     let row = await screen.findByRole('row', { name: /0195f2a1/ })
-    expect(within(row).getByText('Spool observation', { exact: true }).parentElement?.textContent).toContain('Not observed yet')
-    expect(within(row).queryByText('Queued reports', { exact: true })).toBeNull()
+    expect(within(row).getByText('Recorded evidence', { exact: true }).parentElement?.textContent).toContain('Spool not observed yet')
+    let detail = expandDiagnostics(row as HTMLElement)
+    expect(within(detail).getByText('Spool observation', { exact: true }).parentElement?.textContent).toContain('Not observed yet')
+    expect(within(detail).queryByText('Queued reports', { exact: true })).toBeNull()
 
     cleanup()
     adminQueryClient.clear()
@@ -424,9 +467,12 @@ describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
     await renderAt('/admin/agents')
 
     row = await screen.findByRole('row', { name: /0195f2a1/ })
-    expect(within(row).getByText('Queued reports', { exact: true }).parentElement?.textContent).toContain('0')
-    expect(within(row).getByText('Delivery state', { exact: true }).parentElement?.textContent).toContain('Idle')
-    expect(within(row).getByText('Spool observation', { exact: true }).parentElement?.textContent).toContain('Observed')
+    expect(within(row).getByText('Recorded evidence', { exact: true }).parentElement?.textContent).toContain('0 queued')
+    expect(within(row).getByText('Recorded evidence', { exact: true }).parentElement?.textContent).toContain('delivery idle')
+    detail = expandDiagnostics(row as HTMLElement)
+    expect(within(detail).getByText('Queued reports', { exact: true }).parentElement?.textContent).toContain('0')
+    expect(within(detail).getByText('Delivery state', { exact: true }).parentElement?.textContent).toContain('Idle')
+    expect(within(detail).getByText('Spool observation', { exact: true }).parentElement?.textContent).toContain('Observed')
   })
 
   it('qualifies retained delivery timestamps and metadata-only spool evidence', async () => {
@@ -445,9 +491,10 @@ describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
 
     const row = await screen.findByRole('row', { name: /0195f2a1/ })
     expect(row.textContent).toContain('Current')
-    expect(within(row).getByText('Spool observation', { exact: true }).parentElement?.textContent).toContain('Observed')
-    expect(within(row).getByText('Last delivery', { exact: true }).parentElement?.textContent).toContain('2026-08-12 07:00:00 UTC')
     expect(row.textContent).not.toContain('Spool not observed yet')
+    const detail = expandDiagnostics(row as HTMLElement)
+    expect(within(detail).getByText('Spool observation', { exact: true }).parentElement?.textContent).toContain('Observed')
+    expect(within(detail).getByText('Last delivery', { exact: true }).parentElement?.textContent).toContain('2026-08-12 07:00:00 UTC')
   })
 })
 

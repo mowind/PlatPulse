@@ -209,7 +209,7 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     const multiItemOverview = {
       ...OVERVIEW,
       attention: [
-        { ...OVERVIEW.attention[0], id: 'node_resync:node:node-1', kind: 'node_resync', severity: 'warning', message: 'resync is pending' },
+        { ...OVERVIEW.attention[0], id: 'node_resync:node:node-1', kind: 'node_resync', severity: 'warning', message: 'resync is pending', observed_at: null },
         OVERVIEW.attention[0],
       ],
     }
@@ -227,8 +227,14 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     expect(screen.queryByText('resync is pending')).toBeNull()
     expect(document.getElementById(detailsId as string)?.hasAttribute('hidden')).toBe(true)
     await act(async () => toggle.click())
-    expect(document.getElementById(detailsId as string)).toBeTruthy()
-    expect(document.getElementById(detailsId as string)?.textContent).toContain('resync is pending')
+    const details = document.getElementById(detailsId as string)
+    expect(details).toBeTruthy()
+    expect(details?.textContent).toContain('resync is pending')
+    // The primary item labels its own observation time; the grouped item has
+    // no timestamp and stays explicitly unknown instead of borrowing one.
+    const group = toggle.closest('.attention-item') as HTMLElement
+    expect(group.textContent).toContain('Last observed')
+    expect(details?.textContent).toContain('Observation time unknown')
   })
 
   it('keeps variant query parameters on the canonical production Overview', async () => {
@@ -394,6 +400,57 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     )
     expect(requestedUrls.filter((url) => url.includes('/api/admin/v1/overview'))).toHaveLength(1)
     expect(requestedUrls.some((url) => url.includes('/api/admin/v1/networks'))).toBe(false)
+  })
+
+  it('separates the snapshot refresh time from the attention observation time', async () => {
+    const generatedAt = new Date(Date.now() - 30 * 1000).toISOString()
+    const observedAt = new Date(Date.now() - 4 * 60 * 1000).toISOString()
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/overview': () =>
+        jsonResponse(
+          {
+            ...OVERVIEW,
+            generated_at: generatedAt,
+            attention: [
+              { ...OVERVIEW.attention[0], observed_at: observedAt },
+              {
+                ...OVERVIEW.attention[0],
+                id: 'agent_security_event:agent:agent-2',
+                kind: 'agent_security_event',
+                severity: 'warning',
+                subject_kind: 'agent',
+                subject_id: 'agent-2',
+                subject_label: 'Agent Two',
+                message: '1 security event was recorded',
+                observed_at: null,
+              },
+            ],
+          },
+          200,
+        ),
+      '/api/admin/v1/nodes': () => jsonResponse([NODE], 200),
+      '/api/admin/v1/agents': () => jsonResponse([AGENT], 200),
+    })
+    await renderAt('/admin')
+
+    // A recorded observation renders its own time, explicitly labelled.
+    const knownItem = (await screen.findByText(/RPC collection failed/)).closest('.attention-item') as HTMLElement
+    expect(knownItem.textContent).toContain('Last observed')
+    const observedTime = knownItem.querySelector('time')
+    expect(observedTime?.getAttribute('datetime')).toBe(observedAt)
+    expect(observedTime?.textContent).toBe('4 minutes ago')
+
+    // No observation timestamp: Unknown stays Unknown and never borrows the
+    // snapshot refresh time.
+    const unknownItem = (await screen.findByText(/1 security event was recorded/)).closest('.attention-item') as HTMLElement
+    expect(unknownItem.textContent).toContain('Observation time unknown')
+    expect(unknownItem.querySelector('time')).toBeNull()
+    expect(unknownItem.textContent).not.toContain('ago')
+
+    const header = screen.getByText(/Last good snapshot/).closest('.header-status') as HTMLElement
+    expect(header.querySelector('time')?.getAttribute('datetime')).toBe(generatedAt)
+    expect(header.textContent).toContain('30 seconds ago')
   })
 
   it('keeps stale, unknown, never-observed, disabled, unsupported, and last-good states distinct', async () => {

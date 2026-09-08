@@ -89,7 +89,7 @@ function OverviewHeader({
       <div className="header-status">
         {snapshot ? (
           <>
-            Last good snapshot · <SnapshotTime timestamp={snapshot.generated_at} />
+            Last good snapshot · <RelativeTime timestamp={snapshot.generated_at} />
             <button
               type="button"
               className="refresh-button"
@@ -109,7 +109,10 @@ function OverviewHeader({
   )
 }
 
-function SnapshotTime({ timestamp }: { timestamp: string }) {
+/** Relative rendering for one Server-owned timestamp. The caller supplies
+ * the semantic label (snapshot generation vs last observation); the component
+ * never substitutes a different clock source. */
+function RelativeTime({ timestamp }: { timestamp: string }) {
   const date = new Date(timestamp)
   if (Number.isNaN(date.getTime())) return <span>Unknown time</span>
   const relative = formatRelativeTime(date, new Date())
@@ -253,6 +256,18 @@ function safeAttentionRoute(group: AttentionGroupData): string | null {
   return null
 }
 
+/** One Server-supplied observation time, explicitly labelled. A missing
+ * timestamp stays Unknown; the snapshot generation time is never substituted. */
+function attentionObservedText(observedAt: string | null | undefined) {
+  return observedAt ? (
+    <>
+      Last observed <RelativeTime timestamp={observedAt} />
+    </>
+  ) : (
+    'Observation time unknown'
+  )
+}
+
 function AttentionGroup({ group, expanded, onToggle }: { group: AttentionGroupData; expanded: boolean; onToggle: () => void }) {
   const primary = group.items.reduce((best, item) => {
     const rank = item.severity === 'critical' ? 0 : item.severity === 'warning' ? 1 : 2
@@ -262,7 +277,44 @@ function AttentionGroup({ group, expanded, onToggle }: { group: AttentionGroupDa
   const known = primary.severity === "critical" || primary.severity === "warning"
   const severity = known ? primary.severity : "unknown"
   const route = safeAttentionRoute(group)
-  return <li className={`attention-item attention-group ${severity}`}><StatusBadge status={severity === "critical" ? "Critical" : severity === "warning" ? "Warning" : "Unknown"} tone={severity === "critical" ? "error" : severity === "warning" ? "warning" : "neutral"} /><div className="attention-body"><p><strong>{route ? <Link to={route}>{group.label}</Link> : group.label}</strong> — {primary.message}</p><p className="muted">{primary.kind} · <SnapshotTime timestamp={primary.observed_at} /></p>{group.items.length > 1 && <><button type="button" className="quiet-button" aria-expanded={expanded} aria-controls={`attention-details-${group.key}`} onClick={onToggle}>{expanded ? "Hide additional issues" : `Show ${group.items.length - 1} additional issues`}</button><ul id={`attention-details-${group.key}`} hidden={!expanded}>{group.items.filter((item) => item.id !== primary.id).map((item) => <li key={item.id}>{item.severity === "critical" ? "Critical" : item.severity === "warning" ? "Warning" : "Unknown"} · {item.message} · {item.kind}</li>)}</ul></>}</div></li>
+  const additional = group.items.filter((item) => item.id !== primary.id)
+  return (
+    <li className={`attention-item attention-group ${severity}`}>
+      <StatusBadge
+        status={severity === 'critical' ? 'Critical' : severity === 'warning' ? 'Warning' : 'Unknown'}
+        tone={severity === 'critical' ? 'error' : severity === 'warning' ? 'warning' : 'neutral'}
+      />
+      <div className="attention-body">
+        <p>
+          <strong>{route ? <Link to={route}>{group.label}</Link> : group.label}</strong> — {primary.message}
+        </p>
+        <p className="muted">
+          {primary.kind} · {attentionObservedText(primary.observed_at)}
+        </p>
+        {additional.length > 0 && (
+          <>
+            <button
+              type="button"
+              className="quiet-button"
+              aria-expanded={expanded}
+              aria-controls={`attention-details-${group.key}`}
+              onClick={onToggle}
+            >
+              {expanded ? 'Hide additional issues' : `Show ${additional.length} additional issue${additional.length === 1 ? '' : 's'}`}
+            </button>
+            <ul id={`attention-details-${group.key}`} hidden={!expanded}>
+              {additional.map((item) => (
+                <li key={item.id}>
+                  {item.severity === 'critical' ? 'Critical' : item.severity === 'warning' ? 'Warning' : 'Unknown'} ·{' '}
+                  {item.message} · {item.kind} · {attentionObservedText(item.observed_at)}
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </div>
+    </li>
+  )
 }
 
 

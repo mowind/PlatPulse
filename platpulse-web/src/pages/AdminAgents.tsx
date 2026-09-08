@@ -1,4 +1,4 @@
-import { useId, useState, type FormEvent } from 'react'
+import { useId, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { Link, useParams } from 'react-router'
 import {
   AdminApiError,
@@ -337,57 +337,137 @@ export default function AdminAgentsList() {
   )
 }
 
+/** Concise recorded-evidence brief for the summary column. It is derived from
+ * the same findings the expanded detail renders, so the summary and the detail
+ * cannot drift; raw error text still stays off the summary row, and recorded
+ * evidence never becomes a current liveness or health verdict. */
+function diagnosticBrief(host: HostDiagnostic | null | undefined): string {
+  const findings = diagnosticFindings(host)
+  const byKey = new Map(findings.map((finding) => [finding.key, finding.value]))
+  if (byKey.has('host-not-observed')) return 'No Host observation yet'
+  if (byKey.has('spool-not-observed')) return 'Spool not observed yet'
+  const parts: string[] = []
+  if (byKey.has('queued-reports')) parts.push(`${byKey.get('queued-reports')} queued`)
+  if (byKey.has('delivery-state')) {
+    parts.push(byKey.get('delivery-state') === 'In flight' ? 'delivery in flight' : 'delivery idle')
+  }
+  if (byKey.has('store-fatal')) {
+    parts.push(byKey.get('store-fatal') === 'Yes' ? 'store fatal' : 'store not fatal')
+  }
+  if (byKey.has('store-error')) parts.push('store error recorded')
+  if (byKey.has('delivery-error')) parts.push('delivery error recorded')
+  if (byKey.has('dropped-sequence')) parts.push('dropped sequence range recorded')
+  if (byKey.has('dropped-height')) parts.push('dropped height range recorded')
+  if (byKey.has('dropped-time')) parts.push('dropped time range recorded')
+  if (byKey.get('report-size') === 'Too large recorded') parts.push('report too large')
+  const pendingGaps = byKey.get('pending-history-gaps')
+  if (pendingGaps != null && pendingGaps !== '0') {
+    parts.push(`${pendingGaps} pending history gap${pendingGaps === '1' ? '' : 's'}`)
+  }
+  const componentIssues = findings.filter((finding) => finding.key.startsWith('component-')).length
+  if (componentIssues > 0) {
+    parts.push(`${componentIssues} Host component issue${componentIssues === 1 ? '' : 's'}`)
+  }
+  return parts.length > 0 ? parts.join(' · ') : 'Spool observed; no additional evidence'
+}
+
+/** PAGE-ADMIN-AGENTS row: one table cell per summary dimension so the six
+ * columns stay aligned. The flex-column layout lives on inner wrappers, never
+ * on the `<td>` itself, because a flex `<td>` drops out of the table layout
+ * and collapses the remaining columns. */
 function AgentListRow({ agent }: { agent: AgentDiagnostic }) {
   const liveness = livenessLabel(agent.liveness)
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
+  const detailId = `agent-diagnostics-${agent.agent_id}`
+  const collapseOnEscape = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key === 'Escape' && diagnosticsOpen) setDiagnosticsOpen(false)
+  }
   return (
-    <tr>
-      <th scope="row" data-label="Agent">
-        <AgentIdentityAccess agentId={agent.agent_id} />
-      </th>
-      <td data-label="Reporting status" className="agent-summary-status">
-        <span className="dimension-label">Server liveness</span>
-        <StatusBadge status={liveness} tone={livenessTone(agent.liveness)} />
-      </td>
-      <td data-label="Last received" className="agent-summary-receipt">
-        <span className="dimension-label">Server receipt time</span>
-        <span>{receiptTimeText(agent.last_received_at)}</span>
-      </td>
-      <td data-label="Node Inventory" className="agent-summary-inventory">
-        <strong>{agent.nodes.length} retained Node{agent.nodes.length === 1 ? '' : 's'}</strong>
-        <small className="muted">Active + Retired</small>
-      </td>
-      <td data-label="Credentials" className="agent-summary-credentials">
-        <span className="dimension-label">Server validity</span>
-        <span>{credentialSummaryText(agent.credentials)}</span>
-      </td>
-      <td data-label="Diagnostics" className="agent-summary-diagnostics">
-        <dl className="agent-diagnostic-summary">
-          <div>
-            <dt>Recorded gap intervals</dt>
-            <dd>{agent.sequence_gap_count}</dd>
+    <>
+      <tr>
+        <th scope="row" data-label="Agent">
+          <AgentIdentityAccess agentId={agent.agent_id} />
+        </th>
+        <td data-label="Reporting status">
+          <div className="agent-summary-status">
+            <span className="dimension-label">Server liveness</span>
+            <StatusBadge status={liveness} tone={livenessTone(agent.liveness)} />
           </div>
-          <div>
-            <dt>Accumulated recorded security events</dt>
-            <dd>{agent.security_event_count}</dd>
+        </td>
+        <td data-label="Last received">
+          <div className="agent-summary-receipt">
+            <span className="dimension-label">Server receipt time</span>
+            <span>{receiptTimeText(agent.last_received_at)}</span>
           </div>
-        </dl>
-        <div className="agent-diagnostic-evidence">
-          <span className="dimension-label">Recorded evidence</span>
-          <ul className="agent-diagnostic-findings" aria-label="Recorded diagnostic evidence">
-            {diagnosticFindings(agent.host).map((finding) => (
-              <li key={finding.key}>
-                <span className="diagnostic-finding-label">{finding.label}</span>
-                <span>{finding.value}</span>
-              </li>
-            ))}
-          </ul>
-          <p className="agent-diagnostic-note">
-            Recorded evidence; Server liveness remains separate.
-            {agent.host ? ` Host snapshot: ${formatObservedAt(agent.host.updated_at)}` : ' No Host snapshot.'}
-          </p>
-        </div>
-      </td>
-    </tr>
+        </td>
+        <td data-label="Node Inventory">
+          <div className="agent-summary-inventory">
+            <strong>{agent.nodes.length} retained Node{agent.nodes.length === 1 ? '' : 's'}</strong>
+            <small className="muted">Active + Retired</small>
+          </div>
+        </td>
+        <td data-label="Credentials">
+          <div className="agent-summary-credentials">
+            <span className="dimension-label">Server validity</span>
+            <span>{credentialSummaryText(agent.credentials)}</span>
+          </div>
+        </td>
+        <td data-label="Diagnostics">
+          <div className="agent-summary-diagnostics">
+            <dl className="agent-diagnostic-summary">
+              <div>
+                <dt>Recorded gap intervals</dt>
+                <dd>{agent.sequence_gap_count}</dd>
+              </div>
+              <div>
+                <dt>Accumulated recorded security events</dt>
+                <dd>{agent.security_event_count}</dd>
+              </div>
+            </dl>
+            <p className="agent-diagnostic-brief">
+              <span className="dimension-label">Recorded evidence</span>
+              <span>{diagnosticBrief(agent.host)}</span>
+            </p>
+            <button
+              type="button"
+              className="text-action"
+              aria-expanded={diagnosticsOpen}
+              aria-controls={detailId}
+              onClick={() => setDiagnosticsOpen((value) => !value)}
+              onKeyDown={collapseOnEscape}
+            >
+              {diagnosticsOpen ? 'Hide diagnostics' : 'Show diagnostics'}
+            </button>
+          </div>
+        </td>
+      </tr>
+      {diagnosticsOpen && (
+        <tr className="node-detail-row">
+          <td colSpan={6} id={detailId} onKeyDown={collapseOnEscape}>
+            <div className="agent-diagnostic-detail">
+              <div className="agent-diagnostic-detail-heading">
+                <strong>Recorded diagnostic evidence</strong>
+                <button type="button" className="text-action" onClick={() => setDiagnosticsOpen(false)}>
+                  Collapse diagnostics <span aria-hidden="true">▴</span>
+                </button>
+              </div>
+              <ul className="agent-diagnostic-findings" aria-label="Recorded diagnostic evidence">
+                {diagnosticFindings(agent.host).map((finding) => (
+                  <li key={finding.key}>
+                    <span className="diagnostic-finding-label">{finding.label}</span>
+                    <span>{finding.value}</span>
+                  </li>
+                ))}
+              </ul>
+              <p className="agent-diagnostic-note">
+                Recorded evidence; Server liveness remains separate.
+                {agent.host ? ` Host snapshot: ${formatObservedAt(agent.host.updated_at)}` : ' No Host snapshot.'}
+              </p>
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   )
 }
 

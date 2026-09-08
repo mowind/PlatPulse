@@ -195,7 +195,7 @@ test.describe('PAGE-ACCESS-AUDIT (Audit review)', () => {
     await page.goto('/admin/access/audit')
     await expect(page.getByRole('heading', { level: 1, name: 'Audit log' })).toBeVisible()
 
-    const auditItems = page.locator('.audit-list tbody tr')
+    const auditItems = page.locator('.audit-list tbody tr:not(.node-detail-row)')
     // The unfiltered listing is the newest 50 events; the whole parallel
     // suite generates hundreds of session_created events, so the seeded
     // and suite mutations are asserted through the Server-side filters
@@ -237,8 +237,14 @@ test.describe('PAGE-ACCESS-AUDIT (Audit review)', () => {
     // (e.g. sign-out revocations) legitimately carry no detail body, so
     // either the redacted key/value list or the explicit no-detail note
     // must render — never a token or hash.
-    await auditItems.first().getByRole('button', { name: 'Show details' }).click()
-    const details = auditItems.first().locator('.audit-details')
+    const firstItem = auditItems.first()
+    const actionCell = firstItem.locator('td[data-label="Details"]')
+    const actionWidthBefore = (await actionCell.boundingBox())?.width ?? 0
+    await firstItem.getByRole('button', { name: 'Show details' }).click()
+    const detailRow = firstItem.locator('xpath=following-sibling::tr[1]')
+    await expect(detailRow).toHaveClass(/node-detail-row/)
+    await expect(detailRow.locator('td')).toHaveAttribute('colspan', '5')
+    const details = detailRow.locator('.audit-details')
     await expect(details).toBeVisible()
     await expect(details.getByText(/pp_session_/)).toHaveCount(0)
     await expect(details.getByText(/\$argon2id/)).toHaveCount(0)
@@ -247,6 +253,9 @@ test.describe('PAGE-ACCESS-AUDIT (Audit review)', () => {
       .getByText('No redacted detail was recorded for this event.')
       .count()
     expect(hasValues + hasNote).toBeGreaterThan(0)
+    // The cross-column detail row never widens the action column.
+    const actionWidthAfter = (await actionCell.boundingBox())?.width ?? 0
+    expect(Math.abs(actionWidthAfter - actionWidthBefore)).toBeLessThanOrEqual(1)
     await expectNoHorizontalOverflow(page)
 
     // Clearing the filter restores the full newest-first listing.
@@ -259,11 +268,17 @@ test.describe('PAGE-ACCESS-AUDIT (Audit review)', () => {
     await page.goto('/admin/access/audit')
     await expect(page.getByRole('heading', { level: 1, name: 'Audit log' })).toBeVisible()
 
-    const rows = page.locator('.audit-list tbody tr')
+    const rows = page.locator('.audit-list tbody tr:not(.node-detail-row)')
     await expect(rows.first()).toBeVisible({ timeout: 15_000 })
     await expect(rows.first().getByRole('button', { name: 'Show details' })).toBeVisible()
     await rows.first().getByRole('button', { name: 'Show details' }).click()
-    await expect(rows.first().locator('.audit-details')).toBeVisible()
+    const detailRow = rows.first().locator('xpath=following-sibling::tr[1]')
+    await expect(detailRow).toHaveClass(/node-detail-row/)
+    await expect(detailRow.locator('td')).toHaveAttribute('colspan', '5')
+    await expect(detailRow.locator('.audit-details')).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(rows.first().getByRole('button', { name: 'Show details' })).toBeVisible()
+    await expect(page.locator('.audit-list tr.node-detail-row')).toHaveCount(0)
 
     // Filters size to their content instead of spanning the reading width.
     const widths = await page

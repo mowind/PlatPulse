@@ -53,6 +53,39 @@ test.describe('Agent inventory and detail (PAGE-ADMIN-AGENTS)', () => {
     expect(headers).not.toContain('Boot / shutdown')
     expect(headers).not.toContain('View')
 
+    // Six real cells per row in header order, and at table widths every cell
+    // box must align with its column header (regression guard for the flex
+    // <td> layout collapse).
+    const structure = await row.evaluate((element) => {
+      const row = element as HTMLElement
+      const table = row.closest('table') as HTMLTableElement
+      const box = (cell: Element) => {
+        const rect = cell.getBoundingClientRect()
+        return { left: Math.round(rect.left), width: Math.round(rect.width) }
+      }
+      return {
+        labels: [...row.children].map((cell) => cell.getAttribute('data-label')),
+        cellCount: row.children.length,
+        cells: [...row.children].map(box),
+        headers: [...table.querySelectorAll('thead th')].map(box),
+      }
+    })
+    expect(structure.cellCount).toBe(6)
+    expect(structure.labels).toEqual([
+      'Agent',
+      'Reporting status',
+      'Last received',
+      'Node Inventory',
+      'Credentials',
+      'Diagnostics',
+    ])
+    if ((page.viewportSize()?.width ?? 1280) >= 768) {
+      for (let index = 0; index < structure.cells.length; index += 1) {
+        expect(Math.abs(structure.cells[index].left - structure.headers[index].left)).toBeLessThanOrEqual(1)
+        expect(Math.abs(structure.cells[index].width - structure.headers[index].width)).toBeLessThanOrEqual(1)
+      }
+    }
+
     await expect(row).toContainText('Current', { timeout: 15_000 })
     await expect(row).toContainText('Server liveness')
     const receipt = row.locator('td[data-label="Last received"]')
@@ -64,29 +97,46 @@ test.describe('Agent inventory and detail (PAGE-ADMIN-AGENTS)', () => {
     await expect(row).toContainText('Recorded gap intervals')
     await expect(row).toContainText('Accumulated recorded security events')
     await expect(row).toContainText('Recorded evidence')
-    await expect(row).toContainText('Queued reports')
-    await expect(row).toContainText('0')
-    await expect(row).toContainText('Delivery state')
-    await expect(row).toContainText('Idle')
-    await expect(row).toContainText('Store fatal')
-    await expect(row).toContainText('No')
-    await expect(row).toContainText('Dropped sequence range')
-    await expect(row).toContainText('#40–#42 recorded')
-    await expect(row).toContainText('Delivery error')
-    await expect(row).toContainText('Host snapshot')
-    await expect(row).not.toContainText('delivery timeout retained after bounded retry')
+    await expect(row).toContainText('0 queued')
+    await expect(row).toContainText('delivery idle')
+    await expect(row).toContainText('store not fatal')
+    await expect(row).toContainText('delivery error recorded')
+    await expect(row).toContainText('dropped sequence range recorded')
+    // Long evidence stays behind the disclosure, never in the summary cell.
+    await expect(row).not.toContainText('Dropped sequence range')
+    await expect(row).not.toContainText('Host snapshot')
+
+    const diagnosticsToggle = row.getByRole('button', { name: /diagnostics/ })
+    await diagnosticsToggle.click()
+    await expect(diagnosticsToggle).toHaveAttribute('aria-expanded', 'true')
+    const diagnosticsRow = row.locator('xpath=following-sibling::tr[1]')
+    await expect(diagnosticsRow).toHaveClass(/node-detail-row/)
+    await expect(diagnosticsRow.locator('td')).toHaveAttribute('colspan', '6')
+    await expect(diagnosticsRow).toContainText('Dropped sequence range')
+    await expect(diagnosticsRow).toContainText('#40–#42 recorded')
+    await expect(diagnosticsRow).toContainText('Delivery error')
+    await expect(diagnosticsRow).toContainText('Host snapshot')
+    await expect(diagnosticsRow).not.toContainText('delivery timeout retained after bounded retry')
+    await expect(row.locator('> *')).toHaveCount(6)
+    await page.keyboard.press('Escape')
+    await expect(diagnosticsToggle).toHaveAttribute('aria-expanded', 'false')
+    await expect(page.locator('table.agent-table tr.node-detail-row')).toHaveCount(0)
     if ((page.viewportSize()?.width ?? 1280) < 768) {
       const diagnosticCell = row.locator('td[data-label="Diagnostics"]')
       await expect(diagnosticCell).toHaveCSS('flex-direction', 'column')
-      await expect(diagnosticCell.locator('.agent-diagnostic-evidence')).toBeVisible()
+      await expect(diagnosticCell.getByRole('button', { name: 'Show diagnostics' })).toBeVisible()
     }
 
     const noHostRow = page.locator('tr').filter({ has: page.locator('a[href="/admin/agents/' + NO_HOST_AGENT_ID + '"]') })
     await expect(noHostRow).toBeVisible({ timeout: 15_000 })
-    await expect(noHostRow).toContainText('Host observation')
-    await expect(noHostRow).toContainText('Not observed yet')
-    await expect(noHostRow).toContainText('No Host snapshot')
-    await expect(noHostRow).not.toContainText('Spool observation')
+    await expect(noHostRow).toContainText('No Host observation yet')
+    await noHostRow.getByRole('button', { name: 'Show diagnostics' }).click()
+    const noHostDetail = noHostRow.locator('xpath=following-sibling::tr[1]')
+    await expect(noHostDetail).toContainText('Host observation')
+    await expect(noHostDetail).toContainText('Not observed yet')
+    await expect(noHostDetail).toContainText('No Host snapshot')
+    await expect(noHostDetail).not.toContainText('Spool observation')
+    await noHostRow.getByRole('button', { name: 'Hide diagnostics' }).click()
 
     if (page.viewportSize()?.width === 768) {
       const headersReadable = await page.locator('table.agent-table thead th').evaluateAll((cells) =>

@@ -7931,7 +7931,11 @@
             "type": "string"
           },
           "observed_at": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Last authoritative observation time for this item. `None` means the\nServer has no observation timestamp for the evidence; it is never\nreplaced with the snapshot generation time, which is not an event or\nobservation time."
           },
           "severity": {
             "$ref": "#/components/schemas/AttentionSeverity"

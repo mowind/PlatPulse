@@ -500,7 +500,13 @@ export type AttentionItem = {
     id: string;
     kind: AttentionKind;
     message: string;
-    observed_at: string;
+    /**
+     * Last authoritative observation time for this item. `None` means the
+     * Server has no observation timestamp for the evidence; it is never
+     * replaced with the snapshot generation time, which is not an event or
+     * observation time.
+     */
+    observed_at: string | null;
     severity: AttentionSeverity;
     subject_id: string;
     subject_kind: AttentionSubjectKind;

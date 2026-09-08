@@ -2171,6 +2171,7 @@ button {
 
   .agent-table tbody th[data-label],
   .agent-table tbody td[data-label] {
+    flex-direction: column;
     align-items: flex-start;
   }
 
@@ -2182,8 +2183,8 @@ button {
 
   .agent-table .agent-identity-access,
   .agent-table .agent-summary-diagnostics {
-    flex: 1 1 12rem;
     width: 100%;
+    min-width: 0;
   }
 }
 
@@ -2419,6 +2420,7 @@ button {
 .agent-full-id,
 .agent-copy-status,
 .agent-diagnostic-summary dd,
+.agent-diagnostic-brief,
 .agent-diagnostic-findings,
 .agent-diagnostic-note,
 .diagnostic-evidence-note,
@@ -2447,8 +2449,43 @@ button {
   text-transform: uppercase;
 }
 
-.agent-summary-diagnostics {
+.agent-table tbody th,
+.agent-table tbody td {
   vertical-align: top;
+}
+
+.agent-summary-diagnostics {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.agent-diagnostic-brief {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+  margin: 0;
+}
+
+.agent-diagnostic-detail {
+  display: grid;
+  gap: 0.6rem;
+  margin: 0.2rem 0.4rem 0.7rem;
+  padding: 0.9rem;
+  background: rgba(241, 245, 249, 0.76);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 0.5rem;
+}
+
+.agent-diagnostic-detail-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+}
+
+.agent-diagnostic-detail-heading strong {
+  font-size: 0.9rem;
 }
 
 .agent-diagnostic-summary {
@@ -2472,13 +2509,6 @@ button {
 .agent-diagnostic-summary dd {
   min-width: 0;
   margin: 0;
-}
-
-.agent-diagnostic-evidence {
-  display: grid;
-  min-width: 0;
-  gap: 0.3rem;
-  margin-top: 0.55rem;
 }
 
 .agent-diagnostic-findings {
@@ -4241,7 +4271,16 @@ button {
   font-weight: 500;
 }
 .admin-shell .audit-table .audit-details-toggle { white-space: nowrap; }
-.admin-shell .audit-table .audit-details { margin-top: 0.55rem; }
+.admin-shell .audit-table .node-detail-row td { padding: 0; border-top: 0; }
+.admin-shell .audit-table .audit-details {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0.2rem 0.4rem 0.7rem;
+  padding: 0.9rem;
+  background: rgba(241, 245, 249, 0.76);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 0.5rem;
+}
 .admin-shell .audit-table .audit-details .detail-list { margin: 0; }
 
 .admin-shell .settings-surface {
@@ -4454,12 +4493,24 @@ button {
   }
   .admin-shell .audit-table td[data-label='Details'] {
     flex-direction: column;
-    align-items: stretch;
+    align-items: flex-start;
     gap: 0.55rem;
   }
-  .admin-shell .audit-table td[data-label='Details'] .audit-details {
+  .admin-shell .audit-table .node-detail-row {
+    margin-bottom: 0.75rem;
+    padding: 0;
+    background: transparent;
+    border: 0;
+    box-shadow: none;
+  }
+  .admin-shell .audit-table .node-detail-row td {
+    display: block;
     width: 100%;
-    margin-top: 0;
+    padding: 0;
+  }
+  .admin-shell .audit-table .audit-details {
+    width: 100%;
+    margin: 0;
   }
   .admin-shell .agent-summary-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .admin-shell .agent-overview-table td[data-label],
