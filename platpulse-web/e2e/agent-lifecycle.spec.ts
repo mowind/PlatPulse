@@ -20,6 +20,7 @@ import {
  * discipline as the Owner Overview visibility mutation).
  */
 const AGENT_ID = '0195f2a1-0011-4011-8011-000000000011'
+const TARGET_AGENT_ID = '0195f2a1-0021-4021-8021-000000000021'
 const CREDENTIAL_ID = '0195f2a1-0021-4021-8021-000000000021'
 
 async function openAgents(page: Parameters<typeof loginAs>[0]) {
@@ -60,9 +61,28 @@ test.describe('Agent inventory and detail (PAGE-ADMIN-AGENTS)', () => {
     await expect(row).toContainText(/6 retained Nodes?/)
     await expect(row).not.toContainText(/Active Nodes|healthy Nodes/)
     await expect(row).toContainText(/1 active/)
-    await expect(row).toContainText('Historical gap intervals')
-    await expect(row).toContainText('Recorded security events')
-    await expect(row).toContainText('Spool evidence')
+    await expect(row).toContainText('Recorded gap intervals')
+    await expect(row).toContainText('Accumulated recorded security events')
+    await expect(row).toContainText('Recorded evidence')
+    await expect(row).toContainText('Queued reports')
+    await expect(row).toContainText('0')
+    await expect(row).toContainText('Delivery state')
+    await expect(row).toContainText('Idle')
+    await expect(row).toContainText('Store fatal')
+    await expect(row).toContainText('No')
+    await expect(row).toContainText('Dropped sequence range')
+    await expect(row).toContainText('#40–#42 recorded')
+    await expect(row).toContainText('Delivery error')
+    await expect(row).toContainText('Host snapshot')
+    await expect(row).not.toContainText('delivery timeout retained after bounded retry')
+
+    const noHostRow = page.locator('tr').filter({ has: page.locator('a[href="/admin/agents/' + TARGET_AGENT_ID + '"]') })
+    await expect(noHostRow).toBeVisible({ timeout: 15_000 })
+    await expect(noHostRow).toContainText('Host observation')
+    await expect(noHostRow).toContainText('Not observed yet')
+    await expect(noHostRow).toContainText('No Host snapshot')
+    await expect(noHostRow).not.toContainText('Spool observation')
+
     if (page.viewportSize()?.width === 768) {
       const headersReadable = await page.locator('table.agent-table thead th').evaluateAll((cells) =>
         cells.every((cell) => {
@@ -184,6 +204,12 @@ test.describe('Agent detail (PAGE-ADMIN-AGENT-DETAIL)', () => {
     await expect(page.getByText('Node A')).toBeVisible()
     await expect(page.getByText('Node D')).toBeVisible()
     await expect(page.getByText('Dropped sequence range')).toBeVisible()
+    await expect(page.getByText('Last delivery error', { exact: true })).toBeVisible()
+    await expect(page.getByText('delivery timeout retained after bounded retry', { exact: true })).toBeVisible()
+    await expect(page.getByText(/Recorded evidence from the latest Host observation/)).toBeVisible()
+    await expect(page.getByText('Host CPU')).toBeVisible()
+    await expect(page.getByText('Host memory used / total')).toBeVisible()
+    await expect(page.getByText('Host network RX / TX')).toBeVisible()
     await expect(page.getByText('Audit trail')).toBeVisible()
     await expectNoHorizontalOverflow(page)
   })

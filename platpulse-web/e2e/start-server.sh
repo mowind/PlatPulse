@@ -153,6 +153,24 @@ with sqlite3.connect(path) as db:
         "INSERT INTO current_host_observations (agent_id, cpu_percent, memory_total_bytes, memory_used_bytes, network_rx_bytes_per_sec, network_tx_bytes_per_sec, updated_at) VALUES (?, 31.0, 34359738368, 17179869184, 892416, 245760, ?)",
         (agent_id, fresh),
     )
+    # Agent diagnostics intentionally combine a current Server receipt with
+    # retained Host evidence: the UI must show the evidence without turning
+    # an older delivery error or dropped range into a current liveness state.
+    db.execute(
+        "UPDATE agents SET security_event_count = 2 WHERE agent_id = ?",
+        (agent_id,),
+    )
+    db.executemany(
+        "INSERT INTO report_sequence_gaps (agent_id, boot_id, from_sequence, to_sequence, created_at) VALUES (?, 'boot-e2e', ?, ?, ?)",
+        [
+            (agent_id, 43, 44, stale),
+            (agent_id, 51, 53, stale),
+        ],
+    )
+    db.execute(
+        "UPDATE current_host_observations SET load1 = 0.42, load5 = 0.31, load15 = 0.27, spool_queued_bytes = 0, spool_queued_reports = 0, spool_in_flight = 0, spool_last_delivery_error = 'delivery timeout retained after bounded retry', spool_last_delivery_at = ?, spool_capacity_bytes = 1073741824, spool_max_age_seconds = 3600, spool_dropped_sequence_from = 40, spool_dropped_sequence_to = 42, spool_dropped_time_from = ?, spool_dropped_time_to = ?, spool_dropped_height_from = 12842000, spool_dropped_height_to = 12842005, spool_pending_history_gaps = 1, spool_report_too_large = 0, spool_store_fatal = 0 WHERE agent_id = ?",
+        (stale, stale, stale, agent_id),
+    )
     db.execute(
         "INSERT INTO current_node_process_observations (node_id, pid, started_at, cpu_percent, memory_bytes, uptime_ms, updated_at) VALUES (?, 4242, ?, 18.4, 4294967296, 356400000, ?)",
         (node_a, process_started, fresh),

@@ -128,9 +128,14 @@ function AgentIdentityAccess({ agentId }: { agentId: string }) {
   )
 }
 
-function spoolDiagnosticText(spool: HostDiagnostic | null | undefined): string {
-  if (!spool) return 'No host observation yet'
-  const hasSpoolObservation = [
+type DiagnosticFinding = {
+  key: string
+  label: string
+  value: string
+}
+
+function hasSpoolObservation(spool: HostDiagnostic): boolean {
+  return [
     spool.spool_capacity_bytes,
     spool.spool_dropped_height_from,
     spool.spool_dropped_height_to,
@@ -150,27 +155,107 @@ function spoolDiagnosticText(spool: HostDiagnostic | null | undefined): string {
     spool.spool_store_error,
     spool.spool_store_fatal,
   ].some((value) => value != null)
-  if (!hasSpoolObservation) return 'Unknown'
+}
+
+function diagnosticFindings(host: HostDiagnostic | null | undefined): DiagnosticFinding[] {
+  if (!host) {
+    return [{ key: 'host-not-observed', label: 'Host observation', value: 'Not observed yet' }]
+  }
+
+  const findings: DiagnosticFinding[] = []
+  if (!hasSpoolObservation(host)) {
+    findings.push({ key: 'spool-not-observed', label: 'Spool observation', value: 'Not observed yet' })
+  } else {
+    findings.push({ key: 'spool-observed', label: 'Spool observation', value: 'Observed' })
+    if (host.spool_queued_reports != null) {
+      findings.push({ key: 'queued-reports', label: 'Queued reports', value: String(host.spool_queued_reports) })
+    }
+    if (host.spool_queued_bytes != null && host.spool_queued_reports == null) {
+      findings.push({ key: 'queued-bytes', label: 'Queued bytes', value: diagnosticBytesText(host.spool_queued_bytes) })
+    }
+    if (host.spool_in_flight != null) {
+      findings.push({ key: 'delivery-state', label: 'Delivery state', value: host.spool_in_flight ? 'In flight' : 'Idle' })
+    }
+    if (host.spool_store_fatal != null) {
+      findings.push({ key: 'store-fatal', label: 'Store fatal', value: host.spool_store_fatal ? 'Yes' : 'No' })
+    }
+    if (host.spool_dropped_sequence_from != null || host.spool_dropped_sequence_to != null) {
+      findings.push({
+        key: 'dropped-sequence',
+        label: 'Dropped sequence range',
+        value: diagnosticSequenceRangeText(host.spool_dropped_sequence_from, host.spool_dropped_sequence_to) + ' recorded',
+      })
+    }
+    if (host.spool_dropped_height_from != null || host.spool_dropped_height_to != null) {
+      findings.push({
+        key: 'dropped-height',
+        label: 'Dropped height range',
+        value: diagnosticRangeText(host.spool_dropped_height_from, host.spool_dropped_height_to) + ' recorded',
+      })
+    }
+    if (host.spool_dropped_time_from != null || host.spool_dropped_time_to != null) {
+      findings.push({
+        key: 'dropped-time',
+        label: 'Dropped time range',
+        value: diagnosticRangeText(host.spool_dropped_time_from, host.spool_dropped_time_to, formatObservedAt) + ' recorded',
+      })
+    }
+    if (host.spool_last_delivery_at) {
+      findings.push({ key: 'last-delivery', label: 'Last delivery', value: formatObservedAt(host.spool_last_delivery_at) })
+    }
+    if (host.spool_last_delivery_error) {
+      findings.push({ key: 'delivery-error', label: 'Delivery error', value: 'Recorded' })
+    }
+    if (host.spool_store_error) {
+      findings.push({ key: 'store-error', label: 'Store error', value: 'Recorded' })
+    }
+    if (host.spool_report_too_large != null) {
+      findings.push({
+        key: 'report-size',
+        label: 'Report size',
+        value: host.spool_report_too_large ? 'Too large recorded' : 'Within limit recorded',
+      })
+    }
+    if (host.spool_pending_history_gaps != null) {
+      findings.push({ key: 'pending-history-gaps', label: 'Pending history gaps', value: String(host.spool_pending_history_gaps) })
+    }
+  }
+
+  host.components.forEach((component) => {
+    if (component.state !== 'ok' || component.error_code || component.error_message) {
+      findings.push({
+        key: 'component-' + component.component,
+        label: 'Host component',
+        value: component.component + ': ' + component.state,
+      })
+    }
+  })
+  return findings
+}
+
+function spoolDiagnosticText(spool: HostDiagnostic | null | undefined): string {
+  if (!spool) return 'No host observation yet'
+  if (!hasSpoolObservation(spool)) return 'Spool not observed yet'
   const parts: string[] = []
-  if (spool.spool_queued_reports != null) parts.push(`${spool.spool_queued_reports} queued`)
+  if (spool.spool_queued_reports != null) parts.push('queued reports: ' + spool.spool_queued_reports)
   if (spool.spool_in_flight === true) parts.push('delivery in flight')
   if (spool.spool_in_flight === false) parts.push('delivery idle')
-  if (spool.spool_store_fatal === true) parts.push('store fatal')
+  if (spool.spool_store_fatal === true) parts.push('store fatal: yes')
   if (spool.spool_store_fatal === false) parts.push('store fatal: no')
-  if (spool.spool_dropped_sequence_from != null && spool.spool_dropped_sequence_to != null) {
-    parts.push(`dropped reports #${spool.spool_dropped_sequence_from}–#${spool.spool_dropped_sequence_to}`)
+  if (spool.spool_dropped_sequence_from != null || spool.spool_dropped_sequence_to != null) {
+    parts.push('dropped sequence ' + diagnosticRangeText(spool.spool_dropped_sequence_from, spool.spool_dropped_sequence_to))
   }
-  if (spool.spool_last_delivery_error) {
-    parts.push(`last delivery error: ${spool.spool_last_delivery_error}`)
+  if (spool.spool_dropped_height_from != null || spool.spool_dropped_height_to != null) {
+    parts.push('dropped height ' + diagnosticRangeText(spool.spool_dropped_height_from, spool.spool_dropped_height_to))
   }
-  if (spool.spool_store_error) parts.push(`store error: ${spool.spool_store_error}`)
-  if (spool.spool_report_too_large === true) parts.push('report too large')
-  if (spool.spool_pending_history_gaps != null && spool.spool_pending_history_gaps > 0) {
-    parts.push(
-      `${spool.spool_pending_history_gaps} pending history gap${spool.spool_pending_history_gaps === 1 ? '' : 's'}`,
-    )
+  if (spool.spool_dropped_time_from != null || spool.spool_dropped_time_to != null) {
+    parts.push('dropped time ' + diagnosticRangeText(spool.spool_dropped_time_from, spool.spool_dropped_time_to, formatObservedAt))
   }
-  return parts.length > 0 ? parts.join(' · ') : 'Observed; no additional spool evidence'
+  if (spool.spool_last_delivery_error) parts.push('last delivery error: ' + spool.spool_last_delivery_error)
+  if (spool.spool_store_error) parts.push('store error: ' + spool.spool_store_error)
+  if (spool.spool_report_too_large != null) parts.push('report size: ' + (spool.spool_report_too_large ? 'too large' : 'within limit'))
+  if (spool.spool_pending_history_gaps != null) parts.push('pending history gaps: ' + spool.spool_pending_history_gaps)
+  return parts.length > 0 ? parts.join(' · ') : 'Spool observed; no additional evidence'
 }
 
 function diagnosticRangeText<T extends number | string>(
@@ -180,6 +265,11 @@ function diagnosticRangeText<T extends number | string>(
 ): string {
   if (from == null && to == null) return 'Unknown'
   return `${from == null ? 'Unknown' : format(from)}–${to == null ? 'Unknown' : format(to)}`
+}
+
+function diagnosticSequenceRangeText(from: number | null | undefined, to: number | null | undefined): string {
+  if (from == null && to == null) return 'Unknown'
+  return `#${from == null ? 'Unknown' : from}–#${to == null ? 'Unknown' : to}`
 }
 
 function diagnosticBytesText(value: number | null | undefined): string {
@@ -286,18 +376,29 @@ function AgentListRow({ agent }: { agent: AgentDiagnostic }) {
       <td data-label="Diagnostics" className="agent-summary-diagnostics">
         <dl className="agent-diagnostic-summary">
           <div>
-            <dt>Historical gap intervals</dt>
+            <dt>Recorded gap intervals</dt>
             <dd>{agent.sequence_gap_count}</dd>
           </div>
           <div>
-            <dt>Recorded security events</dt>
+            <dt>Accumulated recorded security events</dt>
             <dd>{agent.security_event_count}</dd>
           </div>
-          <div>
-            <dt>Spool evidence</dt>
-            <dd>{spoolDiagnosticText(agent.host)}</dd>
-          </div>
         </dl>
+        <div className="agent-diagnostic-evidence">
+          <span className="dimension-label">Recorded evidence</span>
+          <ul className="agent-diagnostic-findings" aria-label="Recorded diagnostic evidence">
+            {diagnosticFindings(agent.host).map((finding) => (
+              <li key={finding.key}>
+                <span className="diagnostic-finding-label">{finding.label}</span>
+                <span>{finding.value}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="agent-diagnostic-note">
+            Recorded evidence; Server liveness remains separate.
+            {agent.host ? ` Host snapshot: ${formatObservedAt(agent.host.updated_at)}` : ' No Host snapshot.'}
+          </p>
+        </div>
       </td>
     </tr>
   )
@@ -529,10 +630,13 @@ function CredentialsPanel({
   const { status } = useAuth()
   const csrfToken = status.state === 'authenticated' ? status.csrfToken : ''
   const [confirmingId, setConfirmingId] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   async function revoke(credentialId: string) {
+    if (busy) return
+    setBusy(true)
     setMessage(null)
     setError(null)
     try {
@@ -549,6 +653,8 @@ function CredentialsPanel({
       }
       setError(caught instanceof Error ? caught.message : 'Unable to revoke the credential')
       setConfirmingId(null)
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -604,13 +710,15 @@ function CredentialsPanel({
                           type="button"
                           className="danger-action"
                           onClick={() => void revoke(credential.credential_id)}
+                          disabled={busy}
                         >
-                          Confirm revoke
+                          {busy ? 'Revoking…' : 'Confirm revoke'}
                         </button>
                         <button
                           type="button"
                           className="text-action"
                           onClick={() => setConfirmingId(null)}
+                          disabled={busy}
                         >
                           Cancel
                         </button>
@@ -620,6 +728,7 @@ function CredentialsPanel({
                         type="button"
                         className="text-action"
                         onClick={() => setConfirmingId(credential.credential_id)}
+                        disabled={busy}
                       >
                         Revoke
                       </button>
@@ -640,6 +749,11 @@ function DiagnosticsPanel({ agent }: { agent: AgentDiagnostic }) {
   return (
     <article className="panel">
       <h2>Diagnostics</h2>
+      <p className="muted diagnostic-evidence-note">
+        {host
+          ? 'Recorded evidence from the latest Host observation; it does not infer current failure or recovery. Server liveness remains independent.'
+          : 'No Host observation is available; absent diagnostic fields remain unknown.'}
+      </p>
       <dl className="detail-list diagnostic-detail-list">
         <div>
           <dt>Clock</dt>
@@ -649,11 +763,11 @@ function DiagnosticsPanel({ agent }: { agent: AgentDiagnostic }) {
           </dd>
         </div>
         <div>
-          <dt>Historical gap intervals</dt>
+          <dt>Recorded gap intervals</dt>
           <dd>{agent.sequence_gap_count}</dd>
         </div>
         <div>
-          <dt>Recorded security events</dt>
+          <dt>Accumulated recorded security events</dt>
           <dd>{agent.security_event_count}</dd>
         </div>
         {!host && (
@@ -669,6 +783,22 @@ function DiagnosticsPanel({ agent }: { agent: AgentDiagnostic }) {
               <dd>{formatObservedAt(host.updated_at)}</dd>
             </div>
             <div>
+              <dt>Host CPU</dt>
+              <dd>{host.cpu_percent == null ? 'Unknown' : host.cpu_percent + '%'}</dd>
+            </div>
+            <div>
+              <dt>Host memory used / total</dt>
+              <dd>{diagnosticBytesText(host.memory_used_bytes)} / {diagnosticBytesText(host.memory_total_bytes)}</dd>
+            </div>
+            <div>
+              <dt>Host load (1 / 5 / 15)</dt>
+              <dd>{host.load1 == null ? 'Unknown' : host.load1} / {host.load5 == null ? 'Unknown' : host.load5} / {host.load15 == null ? 'Unknown' : host.load15}</dd>
+            </div>
+            <div>
+              <dt>Host network RX / TX</dt>
+              <dd>{diagnosticBytesText(host.network_rx_bytes_per_sec)} / {diagnosticBytesText(host.network_tx_bytes_per_sec)} per second</dd>
+            </div>
+            <div>
               <dt>Host components</dt>
               <dd>
                 {host.components.length === 0 ? 'None observed' : (
@@ -678,11 +808,18 @@ function DiagnosticsPanel({ agent }: { agent: AgentDiagnostic }) {
                         <strong>{component.component}</strong>: {component.state}
                         {component.error_code ? ' · ' + component.error_code : ''}
                         {component.error_message ? ' · ' + component.error_message : ''}
+                        <small className="muted diagnostic-component-meta">
+                          attempted {formatObservedAt(component.attempted_at)} · observed {formatObservedAt(component.observed_at)} · received {formatObservedAt(component.received_at)} · state revision {component.state_revision} · value revision {component.value_revision}
+                        </small>
                       </li>
                     ))}
                   </ul>
                 )}
               </dd>
+            </div>
+            <div>
+              <dt>Spool observation</dt>
+              <dd>{hasSpoolObservation(host) ? 'Observed' : 'Not observed yet'}</dd>
             </div>
             <div>
               <dt>Spool evidence</dt>
@@ -709,6 +846,10 @@ function DiagnosticsPanel({ agent }: { agent: AgentDiagnostic }) {
             <div>
               <dt>Last spool delivery</dt>
               <dd>{host.spool_last_delivery_at == null ? 'Unknown' : formatObservedAt(host.spool_last_delivery_at)}</dd>
+            </div>
+            <div>
+              <dt>Last delivery error</dt>
+              <dd>{diagnosticMessageText(host.spool_last_delivery_error)}</dd>
             </div>
             <div>
               <dt>Dropped sequence range</dt>

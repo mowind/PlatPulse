@@ -2413,6 +2413,9 @@ button {
 .agent-full-id,
 .agent-copy-status,
 .agent-diagnostic-summary dd,
+.agent-diagnostic-findings,
+.agent-diagnostic-note,
+.diagnostic-evidence-note,
 .diagnostic-component-list {
   overflow-wrap: anywhere;
   word-break: normal;
@@ -2465,6 +2468,41 @@ button {
   margin: 0;
 }
 
+.agent-diagnostic-evidence {
+  display: grid;
+  min-width: 0;
+  gap: 0.3rem;
+  margin-top: 0.55rem;
+}
+
+.agent-diagnostic-findings {
+  display: grid;
+  gap: 0.3rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-diagnostic-findings li {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  gap: 0.35rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.diagnostic-finding-label {
+  font-weight: 700;
+}
+
+.agent-diagnostic-note,
+.diagnostic-evidence-note {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
 .diagnostic-detail-list > div {
   min-width: 0;
 }
@@ -2472,6 +2510,12 @@ button {
 .diagnostic-component-list {
   margin: 0;
   padding-left: 1.1rem;
+}
+
+.diagnostic-component-meta {
+  display: block;
+  margin-top: 0.2rem;
+  overflow-wrap: anywhere;
 }
 
 .inventory-list,

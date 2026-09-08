@@ -61,7 +61,19 @@ const AGENT_DIAGNOSTIC = {
     },
   ],
   host: {
-    components: [],
+    components: [
+      {
+        component: 'memory',
+        state: 'ok',
+        error_code: null,
+        error_message: null,
+        attempted_at: '2026-08-12T07:59:58Z',
+        observed_at: '2026-08-12T07:59:59Z',
+        received_at: '2026-08-12T08:00:00Z',
+        state_revision: 7,
+        value_revision: 11,
+      },
+    ],
     updated_at: '2026-08-12T08:00:00Z',
     spool_queued_reports: 3,
     spool_in_flight: true,
@@ -227,14 +239,18 @@ describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
     expect(row.textContent).toContain('Active + Retired')
     expect(row.textContent).toContain('Server validity')
     expect(row.textContent).toContain('1 active · 0 revoked · 1 inactive (not revoked) · 2 total')
-    const gapEvidence = within(row).getByText('Historical gap intervals', { exact: true }).parentElement
-    const securityEvidence = within(row).getByText('Recorded security events', { exact: true }).parentElement
-    const spoolEvidence = within(row).getByText('Spool evidence', { exact: true }).parentElement
+    const gapEvidence = within(row).getByText('Recorded gap intervals', { exact: true }).parentElement
+    const securityEvidence = within(row).getByText('Accumulated recorded security events', { exact: true }).parentElement
+    const queuedEvidence = within(row).getByText('Queued reports', { exact: true }).parentElement
+    const deliveryEvidence = within(row).getByText('Delivery state', { exact: true }).parentElement
     expect(gapEvidence?.textContent).toContain('0')
     expect(securityEvidence?.textContent).toContain('0')
-    expect(spoolEvidence?.textContent).toContain('3 queued · delivery in flight')
-    expect(row.textContent).toContain('dropped reports #7–#9')
-    expect(row.textContent).toContain('last delivery error: server unavailable')
+    expect(queuedEvidence?.textContent).toContain('3')
+    expect(deliveryEvidence?.textContent).toContain('In flight')
+    expect(row.textContent).toContain('Dropped sequence range')
+    expect(row.textContent).toContain('#7–#9 recorded')
+    expect(row.textContent).toContain('Delivery error')
+    expect(row.textContent).not.toContain('server unavailable')
     expect(row.textContent).not.toContain('#42')
     expect(screen.queryByRole('link', { name: 'Enroll a new Agent' })).toBeNull()
   })
@@ -326,6 +342,113 @@ describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
     expect(screen.queryByRole('link', { name: 'Enroll the first Agent' })).toBeNull()
   })
 
+
+  it('keeps Current reporting separate from multiple recorded diagnostics', async () => {
+    const longDeliveryError =
+      'delivery attempt retained after a bounded retry exhausted the configured server timeout'
+    const diagnostic = {
+      ...AGENT_DIAGNOSTIC,
+      sequence_gap_count: 2,
+      security_event_count: 3,
+      host: {
+        ...AGENT_DIAGNOSTIC.host,
+        spool_queued_reports: 0,
+        spool_in_flight: false,
+        spool_store_fatal: true,
+        spool_report_too_large: true,
+        spool_pending_history_gaps: 4,
+        spool_last_delivery_error: longDeliveryError,
+        spool_store_error: 'store error retained for detail',
+      },
+    }
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/agents': () => jsonResponse([diagnostic], 200),
+    })
+    renderAt('/admin/agents')
+
+    const row = await screen.findByRole('row', { name: /0195f2a1/ })
+    expect(row.textContent).toContain('Current')
+    expect(within(row).getByText('Recorded gap intervals', { exact: true }).parentElement?.textContent).toContain('2')
+    expect(within(row).getByText('Accumulated recorded security events', { exact: true }).parentElement?.textContent).toContain('3')
+    expect(within(row).getByText('Queued reports', { exact: true }).parentElement?.textContent).toContain('0')
+    expect(within(row).getByText('Delivery state', { exact: true }).parentElement?.textContent).toContain('Idle')
+    expect(within(row).getByText('Store fatal', { exact: true }).parentElement?.textContent).toContain('Yes')
+    expect(within(row).getByText('Delivery error', { exact: true }).parentElement?.textContent).toContain('Recorded')
+    expect(within(row).getByText('Report size', { exact: true }).parentElement?.textContent).toContain('Too large')
+    expect(within(row).getByText('Pending history gaps', { exact: true }).parentElement?.textContent).toContain('4')
+    expect(row.textContent).toContain('Host snapshot')
+    expect(row.textContent).not.toContain(longDeliveryError)
+    expect(row.textContent).not.toContain('store error retained for detail')
+  })
+
+  it('distinguishes no Host observation from an unobserved spool', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/agents': () => jsonResponse([{ ...AGENT_DIAGNOSTIC, host: null }], 200),
+    })
+    renderAt('/admin/agents')
+
+    const row = await screen.findByRole('row', { name: /0195f2a1/ })
+    expect(within(row).getByText('Host observation', { exact: true }).parentElement?.textContent).toContain('Not observed yet')
+    expect(within(row).queryByText('Spool observation', { exact: true })).toBeNull()
+  })
+
+  it('distinguishes an unobserved spool from an authoritative zero queue', async () => {
+    const host = { components: [], updated_at: '2026-08-12T08:00:00Z' }
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/agents': () => jsonResponse([{ ...AGENT_DIAGNOSTIC, host }], 200),
+    })
+    renderAt('/admin/agents')
+
+    let row = await screen.findByRole('row', { name: /0195f2a1/ })
+    expect(within(row).getByText('Spool observation', { exact: true }).parentElement?.textContent).toContain('Not observed yet')
+    expect(within(row).queryByText('Queued reports', { exact: true })).toBeNull()
+
+    cleanup()
+    adminQueryClient.clear()
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/agents': () =>
+        jsonResponse(
+          [
+            {
+              ...AGENT_DIAGNOSTIC,
+              host: { ...host, spool_queued_reports: 0, spool_in_flight: false },
+            },
+          ],
+          200,
+        ),
+    })
+    await renderAt('/admin/agents')
+
+    row = await screen.findByRole('row', { name: /0195f2a1/ })
+    expect(within(row).getByText('Queued reports', { exact: true }).parentElement?.textContent).toContain('0')
+    expect(within(row).getByText('Delivery state', { exact: true }).parentElement?.textContent).toContain('Idle')
+    expect(within(row).getByText('Spool observation', { exact: true }).parentElement?.textContent).toContain('Observed')
+  })
+
+  it('qualifies retained delivery timestamps and metadata-only spool evidence', async () => {
+    const host = {
+      components: [],
+      updated_at: '2026-08-12T08:00:00Z',
+      spool_capacity_bytes: 1024,
+      spool_last_delivery_at: '2026-08-12T07:00:00Z',
+      spool_oldest_queued_age_ms: 120000,
+    }
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/agents': () => jsonResponse([{ ...AGENT_DIAGNOSTIC, host }], 200),
+    })
+    renderAt('/admin/agents')
+
+    const row = await screen.findByRole('row', { name: /0195f2a1/ })
+    expect(row.textContent).toContain('Current')
+    expect(within(row).getByText('Spool observation', { exact: true }).parentElement?.textContent).toContain('Observed')
+    expect(within(row).getByText('Last delivery', { exact: true }).parentElement?.textContent).toContain('2026-08-12 07:00:00 UTC')
+    expect(row.textContent).not.toContain('Spool not observed yet')
+  })
 })
 
 describe('PAGE-ADMIN-AGENT-DETAIL', () => {
@@ -362,6 +485,10 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
     expect(screen.getByText('Inventory')).toBeTruthy()
     expect(screen.getByText('Credentials')).toBeTruthy()
     expect(screen.getByText('Diagnostics')).toBeTruthy()
+    expect(screen.getByText('Host CPU')).toBeTruthy()
+    expect(screen.getByText('Host memory used / total')).toBeTruthy()
+    expect(screen.getByText('memory', { exact: true })).toBeTruthy()
+    expect(screen.getByText(/state revision 7 · value revision 11/)).toBeTruthy()
     expect(screen.getByText('Audit trail')).toBeTruthy()
     expect(screen.getAllByText(AGENT_ID, { exact: true }).length).toBeGreaterThan(0)
     expect(screen.getByRole('button', { name: 'Copy Agent ID' })).toBeTruthy()
@@ -369,9 +496,12 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
     expect(screen.getByText('Server receipt time')).toBeTruthy()
     expect(screen.getByText('Full active boot ID')).toBeTruthy()
     expect(screen.getByText('boot-1', { exact: true })).toBeTruthy()
-    expect(screen.getByText('Historical gap intervals')).toBeTruthy()
+    expect(screen.getByText('Recorded gap intervals')).toBeTruthy()
     const droppedSequence = screen.getByText('Dropped sequence range', { exact: true }).parentElement
     expect(droppedSequence?.textContent).toContain('7–9')
+    const deliveryError = screen.getByText('Last delivery error', { exact: true }).parentElement
+    expect(deliveryError?.textContent).toContain('server unavailable')
+    expect(screen.getByText(/Recorded evidence from the latest Host observation/)).toBeTruthy()
     const storeError = screen.getByText('Spool store error', { exact: true }).parentElement
     expect(storeError?.textContent).toContain('Unknown')
     const reportSize = screen.getByText('Report size state', { exact: true }).parentElement
@@ -428,6 +558,41 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
     expect(screen.queryByRole('button', { name: 'Revoke' })).toBeNull()
   })
 
+  it('preserves Cancel and blocks duplicate revoke requests while busy', async () => {
+    let resolveRevoke!: (response: Response) => void
+    let revokeCalls = 0
+    const pendingRevoke = new Promise<Response>((resolve) => {
+      resolveRevoke = resolve
+    })
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}`]: () => jsonResponse(AGENT_DIAGNOSTIC, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/audit`]: () => jsonResponse({ agent_id: AGENT_ID, items: [] }, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/credentials/${CREDENTIAL_ID}/revoke`]: () => {
+        revokeCalls += 1
+        return pendingRevoke
+      },
+    })
+    renderAt(`/admin/agents/${AGENT_ID}`)
+
+    await screen.findByRole('heading', { level: 1, name: /Agent 0195f2a1/ })
+    fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }))
+    expect(screen.getByRole('button', { name: 'Confirm revoke' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('button', { name: 'Confirm revoke' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Revoke' }))
+    const confirm = screen.getByRole('button', { name: 'Confirm revoke' })
+    fireEvent.click(confirm)
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Revoking…' }) as HTMLButtonElement).disabled).toBe(true))
+    expect((screen.getByRole('button', { name: 'Cancel' }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(confirm)
+    expect(revokeCalls).toBe(1)
+
+    resolveRevoke(jsonResponse({ agent_id: AGENT_ID, credential_id: CREDENTIAL_ID, revoked_at: '2026-08-12T09:00:00Z', request_id: 'req-revoke' }, 200))
+    await screen.findByText(/Credential revoked at/)
+  })
   it('shows a typed conflict and reloads the authoritative state', async () => {
     let detailCalls = 0
     mockFetch({
