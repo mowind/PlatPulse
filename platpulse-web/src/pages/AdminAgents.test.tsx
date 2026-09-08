@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
 import { adminQueryClient } from '../api/admin'
@@ -52,6 +52,13 @@ const AGENT_DIAGNOSTIC = {
       revoke_after: null,
       active: true,
     },
+    {
+      credential_id: '0195f2a1-0021-4021-8021-000000000022',
+      created_at: '2026-08-10T07:00:00Z',
+      revoked_at: null,
+      revoke_after: '2026-08-11T07:00:00Z',
+      active: false,
+    },
   ],
   host: {
     components: [],
@@ -75,6 +82,26 @@ const AGENT_DIAGNOSTIC = {
       freshness: 'current',
       current_head: 12842019,
       historical_high_watermark: 12842019,
+      resync_state: 'idle',
+      resync_progress: null,
+      network_reference_head: null,
+      network_reference_confidence: 'unknown',
+      rpc: null,
+      sync: null,
+      consensus: null,
+      process: null,
+    },
+    {
+      node_id: 'node-2',
+      network_key: 'platon-e2e',
+      display_name: 'Retired Node',
+      lifecycle: 'retired',
+      visibility: 'private',
+      health: 'unknown',
+      health_reason: 'Retired Nodes are not evaluated for live health',
+      freshness: 'unknown',
+      current_head: null,
+      historical_high_watermark: 12841000,
       resync_state: 'idle',
       resync_progress: null,
       network_reference_head: null,
@@ -146,7 +173,35 @@ afterEach(() => {
 })
 
 describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
-  it('lists identity, liveness, boot/report, inventory, credentials, and diagnostics as separate dimensions', async () => {
+  it('shows Starting while the Server summary is loading', async () => {
+    let resolveAgents!: (response: Response) => void
+    const pendingAgents = new Promise<Response>((resolve) => {
+      resolveAgents = resolve
+    })
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/agents': () => pendingAgents,
+    })
+    renderAt('/admin/agents')
+
+    await waitFor(() => expect(screen.getByText(/Loading Agent inventory/)).toBeTruthy())
+    resolveAgents(jsonResponse([AGENT_DIAGNOSTIC], 200))
+    await screen.findByRole('row', { name: /0195f2a1/ })
+  })
+
+  it('shows an Error state when the Server summary fails initially', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/agents': () => errorBody('diagnostics_unavailable', 503),
+    })
+    renderAt('/admin/agents')
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('diagnostics_unavailable')
+    expect(alert.textContent).toContain('Try again')
+  })
+
+  it('shows the six-column priority summary with independent evidence', async () => {
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       '/api/admin/v1/agents': () => jsonResponse([AGENT_DIAGNOSTIC], 200),
@@ -155,16 +210,108 @@ describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
 
     await screen.findByRole('heading', { level: 1, name: 'Agents' })
     const row = await screen.findByRole('row', { name: /0195f2a1/ })
-    expect(row.textContent).toContain('Current') // liveness dimension
-    expect(row.textContent).toContain('1') // epoch
-    expect(row.textContent).toContain('#42') // last report
-    expect(row.textContent).toContain('1 Node') // inventory
-    expect(row.textContent).toContain('1 active · 0 revoked · 1 total') // credentials
-    expect(row.textContent).toContain('0 gaps · 0 security events') // diagnostics
-    expect(row.textContent).toContain('Spool: 3 queued · delivery in flight')
+    const headers = screen.getAllByRole('columnheader').map((header) => header.textContent)
+    expect(headers).toEqual([
+      'Agent',
+      'Reporting status',
+      'Last received',
+      'Node Inventory',
+      'Credentials',
+      'Diagnostics',
+    ])
+    expect(row.textContent).toContain('Server liveness')
+    expect(row.textContent).toContain('Current')
+    expect(row.textContent).toContain('Server receipt time')
+    expect(row.textContent).toContain('2026-08-12 08:00:00 UTC')
+    expect(row.textContent).toContain('2 retained Nodes')
+    expect(row.textContent).toContain('Active + Retired')
+    expect(row.textContent).toContain('Server validity')
+    expect(row.textContent).toContain('1 active · 0 revoked · 1 inactive (not revoked) · 2 total')
+    const gapEvidence = within(row).getByText('Historical gap intervals', { exact: true }).parentElement
+    const securityEvidence = within(row).getByText('Recorded security events', { exact: true }).parentElement
+    const spoolEvidence = within(row).getByText('Spool evidence', { exact: true }).parentElement
+    expect(gapEvidence?.textContent).toContain('0')
+    expect(securityEvidence?.textContent).toContain('0')
+    expect(spoolEvidence?.textContent).toContain('3 queued · delivery in flight')
     expect(row.textContent).toContain('dropped reports #7–#9')
     expect(row.textContent).toContain('last delivery error: server unavailable')
+    expect(row.textContent).not.toContain('#42')
     expect(screen.queryByRole('link', { name: 'Enroll a new Agent' })).toBeNull()
+  })
+
+  it('keeps last-good Agent values visible after a failed refresh', async () => {
+    let failed = false
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/agents': () =>
+        failed ? errorBody('diagnostics_unavailable', 503) : jsonResponse([AGENT_DIAGNOSTIC], 200),
+    })
+    renderAt('/admin/agents')
+
+    const row = await screen.findByRole('row', { name: /0195f2a1/ })
+    failed = true
+    await act(async () => {
+      await adminQueryClient.refetchQueries({ queryKey: ['admin', 'diagnostics'] })
+    })
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('last successful'))
+    expect(row.textContent).toContain('Current')
+    expect(row.textContent).toContain('2 retained Nodes')
+  })
+
+  it('distinguishes an omitted Server receipt time as Unknown', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/agents': () =>
+        jsonResponse([{ ...AGENT_DIAGNOSTIC, last_received_at: undefined }], 200),
+    })
+    renderAt('/admin/agents')
+
+    const row = await screen.findByRole('row', { name: /0195f2a1/ })
+    const receipt = within(row).getByText('Server receipt time', { exact: true }).parentElement
+    expect(receipt?.textContent).toContain('Unknown')
+  })
+
+  it('distinguishes an explicit null Server receipt time as Never received', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/agents': () =>
+        jsonResponse([{ ...AGENT_DIAGNOSTIC, liveness: 'unknown', last_received_at: null }], 200),
+    })
+    renderAt('/admin/agents')
+
+    const row = await screen.findByRole('row', { name: /0195f2a1/ })
+    const liveness = within(row).getByText('Server liveness', { exact: true }).parentElement
+    expect(liveness?.textContent).toContain('Unknown')
+    const receipt = within(row).getByText('Server receipt time', { exact: true }).parentElement
+    expect(receipt?.textContent).toContain('Never received')
+  })
+
+  it('reveals the complete Agent ID and reports clipboard failure without claiming success', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/agents': () => jsonResponse([AGENT_DIAGNOSTIC], 200),
+    })
+    renderAt('/admin/agents')
+
+    const row = await screen.findByRole('row', { name: /0195f2a1/ })
+    expect(within(row).getByRole('link', { name: '0195f2a1…0011' })).toBeTruthy()
+    fireEvent.click(within(row).getByRole('button', { name: 'Show full Agent ID' }))
+    expect(within(row).getByText(AGENT_ID, { exact: true })).toBeTruthy()
+
+    const previousClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error('clipboard denied')) },
+    })
+    try {
+      fireEvent.click(within(row).getByRole('button', { name: 'Copy Agent ID' }))
+      expect(await within(row).findByText('Copy unavailable; select the full Agent ID above.')).toBeTruthy()
+      expect(within(row).queryByText('Copied to clipboard.')).toBeNull()
+    } finally {
+      if (previousClipboard) Object.defineProperty(navigator, 'clipboard', previousClipboard)
+      else delete (navigator as unknown as { clipboard?: unknown }).clipboard
+    }
   })
 
   it('shows the Empty state without an unavailable enrollment action', async () => {
@@ -178,7 +325,6 @@ describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
     expect(await screen.findByText(/No Agents enrolled yet\./)).toBeTruthy()
     expect(screen.queryByRole('link', { name: 'Enroll the first Agent' })).toBeNull()
   })
-
 
 })
 
@@ -217,6 +363,19 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
     expect(screen.getByText('Credentials')).toBeTruthy()
     expect(screen.getByText('Diagnostics')).toBeTruthy()
     expect(screen.getByText('Audit trail')).toBeTruthy()
+    expect(screen.getAllByText(AGENT_ID, { exact: true }).length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: 'Copy Agent ID' })).toBeTruthy()
+    expect(screen.getByText('sequence #42')).toBeTruthy()
+    expect(screen.getByText('Server receipt time')).toBeTruthy()
+    expect(screen.getByText('Full active boot ID')).toBeTruthy()
+    expect(screen.getByText('boot-1', { exact: true })).toBeTruthy()
+    expect(screen.getByText('Historical gap intervals')).toBeTruthy()
+    const droppedSequence = screen.getByText('Dropped sequence range', { exact: true }).parentElement
+    expect(droppedSequence?.textContent).toContain('7–9')
+    const storeError = screen.getByText('Spool store error', { exact: true }).parentElement
+    expect(storeError?.textContent).toContain('Unknown')
+    const reportSize = screen.getByText('Report size state', { exact: true }).parentElement
+    expect(reportSize?.textContent).toContain('Unknown')
     // Credential state is Server-owned; the revoke action is explicit.
     expect(screen.getByText(CREDENTIAL_ID)).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Revoke' })).toBeTruthy()

@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useId, useState, type FormEvent } from 'react'
 import { Link, useParams } from 'react-router'
 import {
   AdminApiError,
@@ -11,6 +11,7 @@ import {
   useAdminDiagnostics,
 } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
+import { formatBytes } from '../formatBytes'
 import {
   StatusBadge,
   formatObservedAt,
@@ -35,7 +36,7 @@ import type {
  */
 
 function shortId(id: string): string {
-  return id.length > 11 ? `${id.slice(0, 8)}…` : id
+  return id.length > 14 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id
 }
 
 /** Credential state maps onto the fixed WebUI vocabulary (`Current`,
@@ -54,28 +55,108 @@ function credentialStatus(credential: AgentCredentialSummary): {
 function credentialSummaryText(credentials: AgentCredentialSummary[]): string {
   const active = credentials.filter((credential) => credential.active).length
   const revoked = credentials.filter((credential) => credential.revoked_at).length
+  const inactive = credentials.filter((credential) => !credential.active && !credential.revoked_at).length
   if (credentials.length === 0) return 'None issued'
-  return `${active} active · ${revoked} revoked · ${credentials.length} total`
+  return `${active} active · ${revoked} revoked · ${inactive} inactive (not revoked) · ${credentials.length} total`
+}
+
+function livenessTone(liveness: string): 'ok' | 'error' | 'neutral' {
+  return liveness === 'online' ? 'ok' : liveness === 'offline' ? 'error' : 'neutral'
+}
+
+function receiptTimeText(receivedAt: string | null | undefined): string {
+  if (receivedAt === undefined) return 'Unknown'
+  if (receivedAt === null) return 'Never received'
+  return formatObservedAt(receivedAt)
+}
+
+function AgentIdCopyControl({ agentId }: { agentId: string }) {
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+
+  async function copyAgentId() {
+    if (!navigator.clipboard?.writeText) {
+      setCopyState('failed')
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(agentId)
+      setCopyState('copied')
+    } catch {
+      setCopyState('failed')
+    }
+  }
+
+  return (
+    <span className="agent-copy-control">
+      <button type="button" className="text-action" onClick={() => void copyAgentId()}>
+        Copy Agent ID
+      </button>
+      {copyState === 'copied' && <span className="agent-copy-status" role="status">Copied to clipboard.</span>}
+      {copyState === 'failed' && (
+        <span className="agent-copy-status" role="status">
+          Copy unavailable; select the full Agent ID above.
+        </span>
+      )}
+    </span>
+  )
+}
+
+function AgentIdentityAccess({ agentId }: { agentId: string }) {
+  const [revealed, setRevealed] = useState(false)
+  const fullIdPanelId = useId()
+  return (
+    <div className="agent-identity-access">
+      <Link className="agent-link" to={`/admin/agents/${encodeURIComponent(agentId)}`}>
+        {shortId(agentId)}
+      </Link>
+      <button
+        type="button"
+        className="text-action agent-identity-toggle"
+        aria-expanded={revealed}
+        aria-controls={fullIdPanelId}
+        onClick={() => setRevealed((value) => !value)}
+      >
+        {revealed ? 'Hide full Agent ID' : 'Show full Agent ID'}
+      </button>
+      {revealed && (
+        <div id={fullIdPanelId} className="agent-identity-details">
+          <code className="agent-full-id">{agentId}</code>
+          <AgentIdCopyControl agentId={agentId} />
+        </div>
+      )}
+    </div>
+  )
 }
 
 function spoolDiagnosticText(spool: HostDiagnostic | null | undefined): string {
   if (!spool) return 'No host observation yet'
   const hasSpoolObservation = [
-    spool.spool_store_fatal,
-    spool.spool_queued_reports,
-    spool.spool_in_flight,
+    spool.spool_capacity_bytes,
+    spool.spool_dropped_height_from,
+    spool.spool_dropped_height_to,
     spool.spool_dropped_sequence_from,
     spool.spool_dropped_sequence_to,
+    spool.spool_dropped_time_from,
+    spool.spool_dropped_time_to,
+    spool.spool_in_flight,
+    spool.spool_last_delivery_at,
     spool.spool_last_delivery_error,
-    spool.spool_store_error,
-    spool.spool_report_too_large,
+    spool.spool_max_age_seconds,
+    spool.spool_oldest_queued_age_ms,
     spool.spool_pending_history_gaps,
+    spool.spool_queued_bytes,
+    spool.spool_queued_reports,
+    spool.spool_report_too_large,
+    spool.spool_store_error,
+    spool.spool_store_fatal,
   ].some((value) => value != null)
   if (!hasSpoolObservation) return 'Unknown'
   const parts: string[] = []
-  if (spool.spool_store_fatal) parts.push('store fatal')
   if (spool.spool_queued_reports != null) parts.push(`${spool.spool_queued_reports} queued`)
-  if (spool.spool_in_flight) parts.push('delivery in flight')
+  if (spool.spool_in_flight === true) parts.push('delivery in flight')
+  if (spool.spool_in_flight === false) parts.push('delivery idle')
+  if (spool.spool_store_fatal === true) parts.push('store fatal')
+  if (spool.spool_store_fatal === false) parts.push('store fatal: no')
   if (spool.spool_dropped_sequence_from != null && spool.spool_dropped_sequence_to != null) {
     parts.push(`dropped reports #${spool.spool_dropped_sequence_from}–#${spool.spool_dropped_sequence_to}`)
   }
@@ -83,13 +164,30 @@ function spoolDiagnosticText(spool: HostDiagnostic | null | undefined): string {
     parts.push(`last delivery error: ${spool.spool_last_delivery_error}`)
   }
   if (spool.spool_store_error) parts.push(`store error: ${spool.spool_store_error}`)
-  if (spool.spool_report_too_large) parts.push('report too large')
-  if (spool.spool_pending_history_gaps != null) {
+  if (spool.spool_report_too_large === true) parts.push('report too large')
+  if (spool.spool_pending_history_gaps != null && spool.spool_pending_history_gaps > 0) {
     parts.push(
       `${spool.spool_pending_history_gaps} pending history gap${spool.spool_pending_history_gaps === 1 ? '' : 's'}`,
     )
   }
-  return parts.length > 0 ? parts.join(' · ') : 'No queued reports'
+  return parts.length > 0 ? parts.join(' · ') : 'Observed; no additional spool evidence'
+}
+
+function diagnosticRangeText<T extends number | string>(
+  from: T | null | undefined,
+  to: T | null | undefined,
+  format: (value: T) => string = String,
+): string {
+  if (from == null && to == null) return 'Unknown'
+  return `${from == null ? 'Unknown' : format(from)}–${to == null ? 'Unknown' : format(to)}`
+}
+
+function diagnosticBytesText(value: number | null | undefined): string {
+  return value == null ? 'Unknown' : formatBytes(value)
+}
+
+function diagnosticMessageText(value: string | null | undefined): string {
+  return value == null ? 'Unknown' : value
 }
 
 /** PAGE-ADMIN-AGENTS: Agent inventory with independent dimensions. */
@@ -102,9 +200,9 @@ export default function AdminAgentsList() {
     <section className="page">
       <h1>Agents</h1>
       <p className="muted">
-        Agent identity, liveness, boot/report state, Inventory, credentials,
-        and diagnostics stay separate dimensions. Agent Offline is not Node
-        Retired.
+        Server reporting status, receipt time, retained Node inventory, credential validity,
+        and diagnostics stay separate dimensions. Detailed boot/report state remains on each
+        Agent detail page; Agent Offline is not Node Retired.
       </p>
       {!query.data && query.isPending && (
         <p className="panel-state" role="status">
@@ -137,17 +235,15 @@ export default function AdminAgentsList() {
         <div className="table-wrap">
           <table className="node-table agent-table">
             <caption className="sr-only">
-              Agent identity, liveness, epoch, boot/report state, inventory, credentials,
-              and diagnostics
+              Agent, Server reporting status, receipt time, retained Node inventory, credential validity,
+              and diagnostic evidence
             </caption>
             <thead>
               <tr>
                 <th scope="col">Agent</th>
-                <th scope="col">Liveness</th>
-                <th scope="col">Epoch</th>
-                <th scope="col">Last report</th>
-                <th scope="col">Boot / shutdown</th>
-                <th scope="col">Inventory</th>
+                <th scope="col">Reporting status</th>
+                <th scope="col">Last received</th>
+                <th scope="col">Node Inventory</th>
                 <th scope="col">Credentials</th>
                 <th scope="col">Diagnostics</th>
               </tr>
@@ -166,50 +262,42 @@ export default function AdminAgentsList() {
 
 function AgentListRow({ agent }: { agent: AgentDiagnostic }) {
   const liveness = livenessLabel(agent.liveness)
-  const livenessTone =
-    agent.liveness === 'online' ? 'ok' : agent.liveness === 'offline' ? 'error' : 'neutral'
-  const spoolFatal = agent.host?.spool_store_fatal === true
   return (
     <tr>
       <th scope="row" data-label="Agent">
-        <Link className="agent-link" to={`/admin/agents/${agent.agent_id}`}>
-          {agent.agent_id}
-        </Link>
-        <small className="muted" title={agent.agent_id}>
-          Full Agent ID
-        </small>
+        <AgentIdentityAccess agentId={agent.agent_id} />
       </th>
-      <td data-label="Liveness">
-        <StatusBadge status={liveness} tone={livenessTone} />
-        <small className="muted">
-          {formatObservedAt(agent.last_received_at)}
-        </small>
+      <td data-label="Reporting status" className="agent-summary-status">
+        <span className="dimension-label">Server liveness</span>
+        <StatusBadge status={liveness} tone={livenessTone(agent.liveness)} />
       </td>
-      <td data-label="Epoch">{agent.agent_epoch}</td>
-      <td data-label="Last report">
-        {agent.last_report_sequence == null
-          ? 'None yet'
-          : `#${agent.last_report_sequence}`}
+      <td data-label="Last received" className="agent-summary-receipt">
+        <span className="dimension-label">Server receipt time</span>
+        <span>{receiptTimeText(agent.last_received_at)}</span>
       </td>
-      <td data-label="Boot / shutdown">
-        <span>
-          {agent.boot_status}{' '}
-          {agent.active_boot_id && (
-            <span title={`Full boot ID: ${agent.active_boot_id}`}>
-              · <span aria-hidden="true">{shortId(agent.active_boot_id)}</span>
-              <span className="sr-only">Full active boot ID: {agent.active_boot_id}</span>
-            </span>
-          )}
-        </span>
-        <small className="muted">{agent.shutdown_state}</small>
+      <td data-label="Node Inventory" className="agent-summary-inventory">
+        <strong>{agent.nodes.length} retained Node{agent.nodes.length === 1 ? '' : 's'}</strong>
+        <small className="muted">Active + Retired</small>
       </td>
-      <td data-label="Inventory">{agent.nodes.length} Node{agent.nodes.length === 1 ? '' : 's'}</td>
-      <td data-label="Credentials">{credentialSummaryText(agent.credentials)}</td>
-      <td data-label="Diagnostics">
-        {agent.sequence_gap_count} gap{agent.sequence_gap_count === 1 ? '' : 's'} ·{' '}
-        {agent.security_event_count} security event{agent.security_event_count === 1 ? '' : 's'}
-        {spoolFatal ? ' · spool store fatal' : ''}
-        <small className="muted">Spool: {spoolDiagnosticText(agent.host)}</small>
+      <td data-label="Credentials" className="agent-summary-credentials">
+        <span className="dimension-label">Server validity</span>
+        <span>{credentialSummaryText(agent.credentials)}</span>
+      </td>
+      <td data-label="Diagnostics" className="agent-summary-diagnostics">
+        <dl className="agent-diagnostic-summary">
+          <div>
+            <dt>Historical gap intervals</dt>
+            <dd>{agent.sequence_gap_count}</dd>
+          </div>
+          <div>
+            <dt>Recorded security events</dt>
+            <dd>{agent.security_event_count}</dd>
+          </div>
+          <div>
+            <dt>Spool evidence</dt>
+            <dd>{spoolDiagnosticText(agent.host)}</dd>
+          </div>
+        </dl>
       </td>
     </tr>
   )
@@ -292,7 +380,10 @@ function IdentityPanel({ agent }: { agent: AgentDiagnostic }) {
       <dl className="detail-list">
         <div>
           <dt>Agent ID</dt>
-          <dd>{agent.agent_id}</dd>
+          <dd className="agent-detail-identity">
+            <code className="agent-full-id">{agent.agent_id}</code>
+            <AgentIdCopyControl agentId={agent.agent_id} />
+          </dd>
         </div>
         <div>
           <dt>Agent Epoch</dt>
@@ -311,16 +402,19 @@ function IdentityPanel({ agent }: { agent: AgentDiagnostic }) {
 
 function LivenessPanel({ agent }: { agent: AgentDiagnostic }) {
   const liveness = livenessLabel(agent.liveness)
-  const tone = agent.liveness === 'online' ? 'ok' : agent.liveness === 'offline' ? 'error' : 'neutral'
   return (
     <article className="panel">
       <h2>Liveness</h2>
-      <p className="panel-state">
-        <StatusBadge status={liveness} tone={tone} />
-        <span className="muted">
-          Last report {formatObservedAt(agent.last_received_at)}
-        </span>
-      </p>
+      <dl className="detail-list">
+        <div>
+          <dt>Server liveness</dt>
+          <dd><StatusBadge status={liveness} tone={livenessTone(agent.liveness)} /></dd>
+        </div>
+        <div>
+          <dt>Server receipt time</dt>
+          <dd>{receiptTimeText(agent.last_received_at)}</dd>
+        </div>
+      </dl>
     </article>
   )
 }
@@ -332,30 +426,59 @@ function BootReportPanel({ agent }: { agent: AgentDiagnostic }) {
       <dl className="detail-list">
         <div>
           <dt>Boot status</dt>
-          <dd>
-            {agent.boot_status}{' '}
-            {agent.active_boot_id ? `· ${agent.active_boot_id}` : ''}
-          </dd>
+          <dd>{agent.boot_status}</dd>
         </div>
         <div>
-          <dt>Previous boot</dt>
-          <dd>{agent.previous_boot_id ?? 'None'}</dd>
+          <dt>Full active boot ID</dt>
+          <dd><code>{agent.active_boot_id ?? 'Unknown'}</code></dd>
         </div>
         <div>
-          <dt>Last report</dt>
-          <dd>
-            {agent.last_report_sequence == null
-              ? 'None yet'
-              : `sequence #${agent.last_report_sequence} · ${formatObservedAt(agent.last_received_at)}`}
-          </dd>
+          <dt>Previous boot ID</dt>
+          <dd><code>{agent.previous_boot_id ?? 'None'}</code></dd>
         </div>
         <div>
-          <dt>Shutdown</dt>
+          <dt>Close report ID</dt>
+          <dd><code>{agent.close_report_id ?? 'None'}</code></dd>
+        </div>
+        <div>
+          <dt>Report sequence</dt>
+          <dd>{agent.last_report_sequence == null ? 'Never received' : `sequence #${agent.last_report_sequence}`}</dd>
+        </div>
+        <div>
+          <dt>Shutdown state</dt>
           <dd>
             {agent.shutdown_state}
             {agent.shutdown_forced ? ' · forced' : ''}
             {agent.shutdown_last_error ? ` · ${agent.shutdown_last_error}` : ''}
           </dd>
+        </div>
+        <div>
+          <dt>Shutdown report ID</dt>
+          <dd><code>{agent.shutdown_report_id ?? 'None'}</code></dd>
+        </div>
+        <div>
+          <dt>Shutdown report sequence</dt>
+          <dd>{agent.shutdown_report_sequence ?? 'None'}</dd>
+        </div>
+        <div>
+          <dt>Shutdown started</dt>
+          <dd>{formatObservedAt(agent.shutdown_started_at)}</dd>
+        </div>
+        <div>
+          <dt>Shutdown deadline</dt>
+          <dd>{formatObservedAt(agent.shutdown_deadline_at)}</dd>
+        </div>
+        <div>
+          <dt>Shutdown finished</dt>
+          <dd>{formatObservedAt(agent.shutdown_finished_at)}</dd>
+        </div>
+        <div>
+          <dt>Unresolved shutdown range</dt>
+          <dd>{agent.shutdown_unresolved_range ? agent.shutdown_unresolved_range.join('–') : 'None'}</dd>
+        </div>
+        <div>
+          <dt>Shutdown updated</dt>
+          <dd>{formatObservedAt(agent.shutdown_updated_at)}</dd>
         </div>
       </dl>
     </article>
@@ -508,19 +631,16 @@ function CredentialsPanel({
           })}
         </ul>
       )}
-      <p className="muted">
-        Rotate a credential with an overlap window, or recover the Agent to issue a fresh
-        credential with an Epoch advance.
-      </p>
     </article>
   )
 }
 
 function DiagnosticsPanel({ agent }: { agent: AgentDiagnostic }) {
+  const host = agent.host
   return (
     <article className="panel">
       <h2>Diagnostics</h2>
-      <dl className="detail-list">
+      <dl className="detail-list diagnostic-detail-list">
         <div>
           <dt>Clock</dt>
           <dd>
@@ -529,19 +649,97 @@ function DiagnosticsPanel({ agent }: { agent: AgentDiagnostic }) {
           </dd>
         </div>
         <div>
-          <dt>Report continuity</dt>
-          <dd>
-            {agent.sequence_gap_count} sequence gap{agent.sequence_gap_count === 1 ? '' : 's'}
-          </dd>
+          <dt>Historical gap intervals</dt>
+          <dd>{agent.sequence_gap_count}</dd>
         </div>
         <div>
-          <dt>Security events</dt>
+          <dt>Recorded security events</dt>
           <dd>{agent.security_event_count}</dd>
         </div>
-        <div>
-          <dt>Spool</dt>
-          <dd>{spoolDiagnosticText(agent.host)}</dd>
-        </div>
+        {!host && (
+          <div>
+            <dt>Host observation</dt>
+            <dd>No host observation yet</dd>
+          </div>
+        )}
+        {host && (
+          <>
+            <div>
+              <dt>Host observation</dt>
+              <dd>{formatObservedAt(host.updated_at)}</dd>
+            </div>
+            <div>
+              <dt>Host components</dt>
+              <dd>
+                {host.components.length === 0 ? 'None observed' : (
+                  <ul className="diagnostic-component-list">
+                    {host.components.map((component) => (
+                      <li key={component.component}>
+                        <strong>{component.component}</strong>: {component.state}
+                        {component.error_code ? ' · ' + component.error_code : ''}
+                        {component.error_message ? ' · ' + component.error_message : ''}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt>Spool evidence</dt>
+              <dd>{spoolDiagnosticText(host)}</dd>
+            </div>
+            <div>
+              <dt>Spool queued reports</dt>
+              <dd>{host.spool_queued_reports ?? 'Unknown'}</dd>
+            </div>
+            <div>
+              <dt>Spool delivery state</dt>
+              <dd>{host.spool_in_flight == null ? 'Unknown' : host.spool_in_flight ? 'In flight' : 'Idle'}</dd>
+            </div>
+            <div>
+              <dt>Spool bytes / capacity</dt>
+              <dd>{diagnosticBytesText(host.spool_queued_bytes)} / {diagnosticBytesText(host.spool_capacity_bytes)}</dd>
+            </div>
+            <div>
+              <dt>Spool oldest / maximum age</dt>
+              <dd>
+                {host.spool_oldest_queued_age_ms == null ? 'Unknown' : host.spool_oldest_queued_age_ms + ' ms'} / {host.spool_max_age_seconds == null ? 'Unknown' : host.spool_max_age_seconds + ' s'}
+              </dd>
+            </div>
+            <div>
+              <dt>Last spool delivery</dt>
+              <dd>{host.spool_last_delivery_at == null ? 'Unknown' : formatObservedAt(host.spool_last_delivery_at)}</dd>
+            </div>
+            <div>
+              <dt>Dropped sequence range</dt>
+              <dd>{diagnosticRangeText(host.spool_dropped_sequence_from, host.spool_dropped_sequence_to)}</dd>
+            </div>
+            <div>
+              <dt>Dropped height range</dt>
+              <dd>{diagnosticRangeText(host.spool_dropped_height_from, host.spool_dropped_height_to)}</dd>
+            </div>
+            <div>
+              <dt>Dropped time range</dt>
+              <dd>{diagnosticRangeText(host.spool_dropped_time_from, host.spool_dropped_time_to, formatObservedAt)}</dd>
+            </div>
+            <div>
+              <dt>Pending history gaps</dt>
+              <dd>{host.spool_pending_history_gaps ?? 'Unknown'}</dd>
+            </div>
+            <div>
+              <dt>Report size state</dt>
+              <dd>{host.spool_report_too_large == null ? 'Unknown' : host.spool_report_too_large ? 'Too large' : 'Within limit'}</dd>
+            </div>
+            <div>
+              <dt>Spool store fatal</dt>
+              <dd>{host.spool_store_fatal == null ? 'Unknown' : host.spool_store_fatal ? 'Yes' : 'No'}</dd>
+            </div>
+            <div>
+              <dt>Spool store error</dt>
+              <dd>{diagnosticMessageText(host.spool_store_error)}</dd>
+            </div>
+          </>
+        )}
       </dl>
     </article>
   )

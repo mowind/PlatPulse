@@ -2153,6 +2153,32 @@ button {
   .node-detail-row td {
     padding: 0;
   }
+
+  /* The Agent summary keeps one table DOM tree but presents mobile priorities
+     in the product order: identity, reporting/receipt, evidence, inventory,
+     then credentials. */
+  .agent-table tbody tr {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .agent-table tbody th[data-label='Agent'] { order: 1; }
+  .agent-table tbody td[data-label='Reporting status'],
+  .agent-table tbody td[data-label='Last received'] { order: 2; }
+  .agent-table tbody td[data-label='Diagnostics'] { order: 3; }
+  .agent-table tbody td[data-label='Node Inventory'] { order: 4; }
+  .agent-table tbody td[data-label='Credentials'] { order: 5; }
+
+  .agent-table tbody th[data-label],
+  .agent-table tbody td[data-label] {
+    align-items: flex-start;
+  }
+
+  .agent-table .agent-identity-access,
+  .agent-table .agent-summary-diagnostics {
+    flex: 1 1 12rem;
+    width: 100%;
+  }
 }
 
 /* ---------------------------------------------------------------------------
@@ -2324,10 +2350,128 @@ button {
  * Agent lifecycle: links, credentials, audit
  * ------------------------------------------------------------------------- */
 
+.agent-table {
+  table-layout: fixed;
+}
+
+.agent-table thead th {
+  overflow-wrap: normal;
+  word-break: normal;
+  hyphens: none;
+}
+
+.agent-table thead th:nth-child(1) { width: 18%; }
+.agent-table thead th:nth-child(2) { width: 15%; }
+.agent-table thead th:nth-child(3) { width: 17%; }
+.agent-table thead th:nth-child(4) { width: 14%; }
+.agent-table thead th:nth-child(5) { width: 18%; }
+.agent-table thead th:nth-child(6) { width: 18%; }
+
 .agent-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  max-width: 100%;
   font-weight: 800;
   color: inherit;
   overflow-wrap: anywhere;
+}
+
+.agent-identity-access,
+.agent-summary-status,
+.agent-summary-receipt,
+.agent-summary-inventory,
+.agent-summary-credentials,
+.agent-summary-diagnostics {
+  min-width: 0;
+}
+
+.agent-identity-access,
+.agent-summary-status,
+.agent-summary-receipt,
+.agent-summary-inventory,
+.agent-summary-credentials {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
+}
+
+.agent-identity-toggle {
+  width: fit-content;
+  max-width: 100%;
+  text-align: left;
+}
+
+.agent-identity-details,
+.agent-detail-identity {
+  display: grid;
+  min-width: 0;
+  gap: 0.45rem;
+}
+
+.agent-full-id,
+.agent-copy-status,
+.agent-diagnostic-summary dd,
+.diagnostic-component-list {
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.agent-copy-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.7rem;
+}
+
+.agent-copy-status {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.dimension-label {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.agent-summary-diagnostics {
+  vertical-align: top;
+}
+
+.agent-diagnostic-summary {
+  display: grid;
+  min-width: 0;
+  gap: 0.35rem;
+  margin: 0;
+}
+
+.agent-diagnostic-summary > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.agent-diagnostic-summary dt {
+  font-weight: 700;
+}
+
+.agent-diagnostic-summary dd {
+  min-width: 0;
+  margin: 0;
+}
+
+.diagnostic-detail-list > div {
+  min-width: 0;
+}
+
+.diagnostic-component-list {
+  margin: 0;
+  padding-left: 1.1rem;
 }
 
 .inventory-list,
