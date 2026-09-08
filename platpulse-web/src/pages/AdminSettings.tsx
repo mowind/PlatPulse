@@ -20,7 +20,7 @@ export default function AdminSettings() {
     <section className="page settings-page">
       <p><Link to="/admin">← Admin overview</Link></p>
       <h1>Settings</h1>
-      <div className="settings-sections">
+      <div className="settings-sections settings-surface">
         <HistoryWindowSettings generation={generation} csrfToken={csrfToken} />
         <SiteAccessSettings generation={generation} csrfToken={csrfToken} />
       </div>
@@ -92,8 +92,8 @@ function HistoryWindowSettings({ generation, csrfToken }: SettingsSectionProps) 
   }
 
   return (
-    <article className="panel settings-card" aria-labelledby="history-window-heading">
-      <div className="settings-card-heading">
+    <article className="settings-block" aria-labelledby="history-window-heading">
+      <div className="settings-block-heading">
         <div>
           <h2 id="history-window-heading">History Window</h2>
           <p className="muted">Bounded retention for Block Summaries.</p>
@@ -115,8 +115,12 @@ function HistoryWindowSettings({ generation, csrfToken }: SettingsSectionProps) 
           <dl className="detail-list settings-detail-list">
             <div><dt>Current</dt><dd>{formatDayCount(currentWindow.windowDays)}</dd></div>
             <div><dt>Default</dt><dd>{formatDayCount(currentWindow.defaultDays)}</dd></div>
-            <div><dt>Minimum</dt><dd>{formatDayCount(currentWindow.minDays)}</dd></div>
-            <div><dt>Maximum</dt><dd>{formatDayCount(currentWindow.maxDays)}</dd></div>
+            <div>
+              <dt>Allowed range</dt>
+              <dd>
+                <span>{formatDayCount(currentWindow.minDays)}</span>–<span>{formatDayCount(currentWindow.maxDays)}</span>
+              </dd>
+            </div>
             <div>
               <dt>Last updated</dt>
               <dd>
@@ -134,6 +138,7 @@ function HistoryWindowSettings({ generation, csrfToken }: SettingsSectionProps) 
             <label htmlFor="history-window-days">New window (days)</label>
             <input
               id="history-window-days"
+              className="settings-number-input"
               type="number"
               min={currentWindow.minDays}
               max={currentWindow.maxDays}
@@ -235,8 +240,8 @@ function SiteAccessSettings({ generation, csrfToken }: SettingsSectionProps) {
   }
 
   return (
-    <article className="panel settings-card" aria-labelledby="site-access-heading">
-      <div className="settings-card-heading">
+    <article className="settings-block" aria-labelledby="site-access-heading">
+      <div className="settings-block-heading">
         <div>
           <h2 id="site-access-heading">Site Access Mode</h2>
           <p className="muted">Public permits anonymous Home reads. Private requires Owner login.</p>

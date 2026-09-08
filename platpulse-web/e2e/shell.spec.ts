@@ -248,7 +248,7 @@ test.describe('Authenticated shell', () => {
     expect(metrics.heading.x - metrics.main.x).toBeLessThanOrEqual(expectedPadding + 1)
 
     if (metrics.viewport >= 768) {
-      await expect(page.getByRole('columnheader', { name: 'Node' })).toBeVisible()
+      await expect(page.getByRole('columnheader', { name: 'Node', exact: true })).toBeVisible()
     }
 
     if (metrics.viewport >= 1024) {

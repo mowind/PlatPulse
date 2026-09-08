@@ -11,7 +11,8 @@ import {
   useAdminDiagnostics,
 } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
-import { formatBytes } from '../formatBytes'
+import { formatBytesUnknown, formatBytesPerSecond, formatIdentifier, formatPercent } from '../formatBytes'
+import { hasSpoolRisk, livenessTone, receiptTimeText } from '../agentDiagnostics'
 import {
   StatusBadge,
   formatObservedAt,
@@ -58,16 +59,6 @@ function credentialSummaryText(credentials: AgentCredentialSummary[]): string {
   const inactive = credentials.filter((credential) => !credential.active && !credential.revoked_at).length
   if (credentials.length === 0) return 'None issued'
   return `${active} active · ${revoked} revoked · ${inactive} inactive (not revoked) · ${credentials.length} total`
-}
-
-function livenessTone(liveness: string): 'ok' | 'error' | 'neutral' {
-  return liveness === 'online' ? 'ok' : liveness === 'offline' ? 'error' : 'neutral'
-}
-
-function receiptTimeText(receivedAt: string | null | undefined): string {
-  if (receivedAt === undefined) return 'Unknown'
-  if (receivedAt === null) return 'Never received'
-  return formatObservedAt(receivedAt)
 }
 
 function AgentIdCopyControl({ agentId }: { agentId: string }) {
@@ -171,7 +162,7 @@ function diagnosticFindings(host: HostDiagnostic | null | undefined): Diagnostic
       findings.push({ key: 'queued-reports', label: 'Queued reports', value: String(host.spool_queued_reports) })
     }
     if (host.spool_queued_bytes != null && host.spool_queued_reports == null) {
-      findings.push({ key: 'queued-bytes', label: 'Queued bytes', value: diagnosticBytesText(host.spool_queued_bytes) })
+      findings.push({ key: 'queued-bytes', label: 'Queued bytes', value: formatBytesUnknown(host.spool_queued_bytes) })
     }
     if (host.spool_in_flight != null) {
       findings.push({ key: 'delivery-state', label: 'Delivery state', value: host.spool_in_flight ? 'In flight' : 'Idle' })
@@ -270,10 +261,6 @@ function diagnosticRangeText<T extends number | string>(
 function diagnosticSequenceRangeText(from: number | null | undefined, to: number | null | undefined): string {
   if (from == null && to == null) return 'Unknown'
   return `#${from == null ? 'Unknown' : from}–#${to == null ? 'Unknown' : to}`
-}
-
-function diagnosticBytesText(value: number | null | undefined): string {
-  return value == null ? 'Unknown' : formatBytes(value)
 }
 
 function diagnosticMessageText(value: string | null | undefined): string {
@@ -461,29 +448,179 @@ export function AdminAgentDetail() {
               successful Agent values.
             </p>
           )}
-          <IdentityPanel agent={agent.data} />
-          <LivenessPanel agent={agent.data} />
-          <BootReportPanel agent={agent.data} />
-          <InventoryPanel nodes={agent.data.nodes} />
-          <CredentialsPanel agent={agent.data} onConflictReload={() => void agent.refetch()} />
-          <DiagnosticsPanel agent={agent.data} />
-          <AuditTrailPanel audit={audit} agentId={agentId} />
+          <AgentDetailSummary agent={agent.data} />
+          <section className="agent-detail-section" aria-labelledby="agent-overview-heading">
+            <div className="agent-detail-section-heading">
+              <span className="eyebrow">01</span>
+              <h2 id="agent-overview-heading">Overview</h2>
+              <p className="muted">Identity and the Agent-declared Node Inventory.</p>
+            </div>
+            <div className="agent-detail-grid">
+              <IdentityPanel agent={agent.data} />
+              <InventoryPanel nodes={agent.data.nodes} />
+            </div>
+          </section>
+          <section className="agent-detail-section" aria-labelledby="agent-runtime-heading">
+            <div className="agent-detail-section-heading">
+              <span className="eyebrow">02</span>
+              <h2 id="agent-runtime-heading">Runtime and reporting</h2>
+              <p className="muted">Server liveness remains separate from boot and report lifecycle.</p>
+            </div>
+            <div className="agent-detail-grid">
+              <LivenessPanel agent={agent.data} />
+              <BootReportPanel agent={agent.data} />
+            </div>
+          </section>
+          <section className="agent-detail-section" aria-labelledby="agent-credentials-heading">
+            <div className="agent-detail-section-heading">
+              <span className="eyebrow">03</span>
+              <h2 id="agent-credentials-heading">Credentials</h2>
+              <p className="muted">Server-owned credential validity and explicit revocation.</p>
+            </div>
+            <CredentialsPanel agent={agent.data} onConflictReload={() => void agent.refetch()} />
+          </section>
+          <section className="agent-detail-section" aria-labelledby="agent-diagnostics-heading">
+            <div className="agent-detail-section-heading">
+              <span className="eyebrow">04</span>
+              <h2 id="agent-diagnostics-heading">Diagnostics</h2>
+              <p className="muted">Recorded evidence is shown without inferring current recovery or failure.</p>
+            </div>
+            <DiagnosticsPanel agent={agent.data} />
+          </section>
+          <section className="agent-detail-section" aria-labelledby="agent-audit-heading">
+            <div className="agent-detail-section-heading">
+              <span className="eyebrow">05</span>
+              <h2 id="agent-audit-heading">Audit</h2>
+              <p className="muted">Immutable, redacted lifecycle events for this Agent.</p>
+            </div>
+            <AuditTrailPanel audit={audit} agentId={agentId} />
+          </section>
         </>
       )}
     </section>
   )
 }
 
+type AgentSummaryWarning = {
+  kind: 'current' | 'recorded' | 'unknown'
+  message: string
+}
+
+function AgentDetailSummary({ agent }: { agent: AgentDiagnostic }) {
+  const liveness = livenessLabel(agent.liveness)
+  const warnings = agentSummaryWarnings(agent)
+  const activeCredentials = agent.credentials.filter((credential) => credential.active).length
+  const bootStatus = agent.boot_status && agent.boot_status !== 'unknown' ? agent.boot_status : 'Unknown'
+  return (
+    <section className="agent-summary" aria-labelledby="agent-summary-heading">
+      <div className="agent-summary-header">
+        <div>
+          <span className="eyebrow">Agent summary</span>
+          <h2 id="agent-summary-heading">{shortId(agent.agent_id)}</h2>
+          <p className="agent-summary-id">
+            <code title={agent.agent_id}>{formatIdentifier(agent.agent_id)}</code>
+            <span className="sr-only">Full Agent ID: {agent.agent_id}</span>
+            <AgentIdCopyControl agentId={agent.agent_id} />
+          </p>
+        </div>
+        <div className="agent-summary-statuses" aria-label="Current Agent dimensions">
+          <div>
+            <span className="dimension-label">Server liveness</span>
+            <StatusBadge status={liveness} tone={livenessTone(agent.liveness)} />
+          </div>
+          <div>
+            <span className="dimension-label">Boot status</span>
+            <strong className="agent-summary-plain-status">{bootStatus}</strong>
+          </div>
+          <div>
+            <span className="dimension-label">Active credentials</span>
+            <strong>{activeCredentials} active · {agent.credentials.length} total</strong>
+          </div>
+        </div>
+      </div>
+      <dl className="agent-summary-facts">
+        <div>
+          <dt>Agent Epoch</dt>
+          <dd>{agent.agent_epoch}</dd>
+        </div>
+        <div>
+          <dt>Last received</dt>
+          <dd>{receiptTimeText(agent.last_received_at)}</dd>
+        </div>
+        <div>
+          <dt>Report sequence</dt>
+          <dd>{agent.last_report_sequence == null ? 'Never received' : '#' + agent.last_report_sequence}</dd>
+        </div>
+        <div>
+          <dt>Declared Nodes</dt>
+          <dd>{agent.nodes.length}</dd>
+        </div>
+      </dl>
+      {warnings.length > 0 && (
+        <div className="agent-summary-warnings" role="note" aria-label="Important Agent warnings">
+          <h3>Important warnings</h3>
+          <ul>
+            {warnings.map((warning, index) => (
+              <li key={warning.kind + '-' + index} className={'agent-summary-warning-' + warning.kind}>
+                <strong>{warning.kind === 'current' ? 'Current state' : warning.kind === 'recorded' ? 'Recorded history' : 'Unknown'}</strong>
+                <span>{warning.message}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </section>
+  )
+}
+
+function agentSummaryWarnings(agent: AgentDiagnostic): AgentSummaryWarning[] {
+  const warnings: AgentSummaryWarning[] = []
+  if (agent.liveness === 'offline') {
+    warnings.push({ kind: 'current', message: 'Server liveness is Error; the Agent is not reporting now.' })
+  } else if (agent.liveness !== 'online') {
+    warnings.push({ kind: 'unknown', message: 'Server liveness is Unknown; no current reporting state is known.' })
+  }
+  if (!agent.boot_status || agent.boot_status === 'unknown') {
+    warnings.push({ kind: 'unknown', message: 'Boot status is Unknown.' })
+  }
+  if (agent.shutdown_forced) {
+    warnings.push({ kind: 'recorded', message: 'A forced shutdown was recorded; this is separate from current liveness.' })
+  }
+  if (agent.shutdown_last_error) {
+    warnings.push({ kind: 'recorded', message: 'Shutdown error: ' + agent.shutdown_last_error })
+  }
+  if (agent.sequence_gap_count > 0) {
+    warnings.push({ kind: 'recorded', message: agent.sequence_gap_count + ' report gap' + (agent.sequence_gap_count === 1 ? '' : 's') + ' recorded.' })
+  }
+  if (agent.security_event_count > 0) {
+    warnings.push({ kind: 'recorded', message: agent.security_event_count + ' security event' + (agent.security_event_count === 1 ? '' : 's') + ' recorded.' })
+  }
+  if (!agent.host) {
+    warnings.push({ kind: 'unknown', message: 'Host observation is not available yet; absent diagnostic values remain Unknown.' })
+  } else {
+    if (hasSpoolRisk(agent.host)) {
+      warnings.push({ kind: 'recorded', message: 'Recorded spool evidence includes dropped, oversized, or fatal-storage state; it does not by itself replace Server liveness.' })
+    }
+    if (agent.host.spool_last_delivery_error || agent.host.spool_store_error || (agent.host.spool_pending_history_gaps ?? 0) > 0) {
+      warnings.push({ kind: 'recorded', message: 'Recorded spool delivery or storage errors remain available in Diagnostics.' })
+    }
+    const componentIssues = agent.host.components.filter((component) => component.state !== 'ok' || component.error_code || component.error_message)
+    if (componentIssues.length > 0) {
+      warnings.push({ kind: 'recorded', message: componentIssues.length + ' Host component issue' + (componentIssues.length === 1 ? '' : 's') + ' recorded.' })
+    }
+  }
+  return warnings
+}
+
 function IdentityPanel({ agent }: { agent: AgentDiagnostic }) {
   return (
     <article className="panel">
-      <h2>Identity</h2>
+      <h3>Identity</h3>
       <dl className="detail-list">
         <div>
           <dt>Agent ID</dt>
           <dd className="agent-detail-identity">
             <code className="agent-full-id">{agent.agent_id}</code>
-            <AgentIdCopyControl agentId={agent.agent_id} />
           </dd>
         </div>
         <div>
@@ -505,7 +642,7 @@ function LivenessPanel({ agent }: { agent: AgentDiagnostic }) {
   const liveness = livenessLabel(agent.liveness)
   return (
     <article className="panel">
-      <h2>Liveness</h2>
+      <h3>Liveness</h3>
       <dl className="detail-list">
         <div>
           <dt>Server liveness</dt>
@@ -523,7 +660,7 @@ function LivenessPanel({ agent }: { agent: AgentDiagnostic }) {
 function BootReportPanel({ agent }: { agent: AgentDiagnostic }) {
   return (
     <article className="panel">
-      <h2>Boot and report state</h2>
+      <h3>Boot and report state</h3>
       <dl className="detail-list">
         <div>
           <dt>Boot status</dt>
@@ -589,7 +726,7 @@ function BootReportPanel({ agent }: { agent: AgentDiagnostic }) {
 function InventoryPanel({ nodes }: { nodes: NodeDiagnostic[] }) {
   return (
     <article className="panel">
-      <h2>Inventory</h2>
+      <h3>Inventory</h3>
       {nodes.length === 0 && (
         <p className="panel-state">
           <StatusBadge status="Empty" tone="ok" /> No PlatON Nodes declared by this Agent yet.
@@ -660,7 +797,7 @@ function CredentialsPanel({
 
   return (
     <article className="panel" id="credentials">
-      <h2>Credentials</h2>
+      <h3>Credential records</h3>
       <p className="muted">
         Only non-sensitive credential ids and lifecycle instants are shown; secrets are
         never stored or displayed again.
@@ -748,7 +885,7 @@ function DiagnosticsPanel({ agent }: { agent: AgentDiagnostic }) {
   const host = agent.host
   return (
     <article className="panel">
-      <h2>Diagnostics</h2>
+      <h3>Host and component evidence</h3>
       <p className="muted diagnostic-evidence-note">
         {host
           ? 'Recorded evidence from the latest Host observation; it does not infer current failure or recovery. Server liveness remains independent.'
@@ -784,11 +921,11 @@ function DiagnosticsPanel({ agent }: { agent: AgentDiagnostic }) {
             </div>
             <div>
               <dt>Host CPU</dt>
-              <dd>{host.cpu_percent == null ? 'Unknown' : host.cpu_percent + '%'}</dd>
+              <dd>{formatPercent(host.cpu_percent)}</dd>
             </div>
             <div>
               <dt>Host memory used / total</dt>
-              <dd>{diagnosticBytesText(host.memory_used_bytes)} / {diagnosticBytesText(host.memory_total_bytes)}</dd>
+              <dd>{formatBytesUnknown(host.memory_used_bytes)} / {formatBytesUnknown(host.memory_total_bytes)}</dd>
             </div>
             <div>
               <dt>Host load (1 / 5 / 15)</dt>
@@ -796,7 +933,7 @@ function DiagnosticsPanel({ agent }: { agent: AgentDiagnostic }) {
             </div>
             <div>
               <dt>Host network RX / TX</dt>
-              <dd>{diagnosticBytesText(host.network_rx_bytes_per_sec)} / {diagnosticBytesText(host.network_tx_bytes_per_sec)} per second</dd>
+              <dd>{formatBytesPerSecond(host.network_rx_bytes_per_sec)} / {formatBytesPerSecond(host.network_tx_bytes_per_sec)}</dd>
             </div>
             <div>
               <dt>Host components</dt>
@@ -835,7 +972,7 @@ function DiagnosticsPanel({ agent }: { agent: AgentDiagnostic }) {
             </div>
             <div>
               <dt>Spool bytes / capacity</dt>
-              <dd>{diagnosticBytesText(host.spool_queued_bytes)} / {diagnosticBytesText(host.spool_capacity_bytes)}</dd>
+              <dd>{formatBytesUnknown(host.spool_queued_bytes)} / {formatBytesUnknown(host.spool_capacity_bytes)}</dd>
             </div>
             <div>
               <dt>Spool oldest / maximum age</dt>
@@ -896,7 +1033,7 @@ function AuditTrailPanel({
   const items = audit.data?.items ?? []
   return (
     <article className="panel" id="audit">
-      <h2>Audit trail</h2>
+      <h3>Audit trail</h3>
       <p className="muted">
         Redacted immutable events for this Agent. One-time secrets never appear in Audit.
       </p>

@@ -188,7 +188,7 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
 
     // Agent inventory stays an independent panel (one Agent, its own card).
     expect(screen.getByRole('heading', { level: 2, name: 'Agent inventory' })).toBeTruthy()
-    expect(screen.getByRole('heading', { level: 3, name: 'agent-1' })).toBeTruthy()
+    expect(await screen.findByRole('row', { name: /agent-1/ })).toBeTruthy()
 
     // Geo database status is absent from the Overview page (issue #93).
     expect(screen.queryByRole('heading', { level: 2, name: 'Geo database' })).toBeNull()
@@ -592,12 +592,19 @@ describe('Agent inventory risk ordering and evidence', () => {
       '/api/admin/v1/agents': () => jsonResponse(agents, 200),
     })
     await renderAt('/admin')
-    const headings = await screen.findAllByRole('heading', { level: 3 })
-    expect(headings).toHaveLength(6)
-    expect(headings.map((heading) => heading.textContent)).toEqual([
-      'critical-agent', 'offline-agent', 'unknown-agent', 'online-0', 'online-1', 'online-2',
+    await screen.findByRole('row', { name: /critical-agent/ })
+    const agentPanel = screen.getByRole('heading', { level: 2, name: 'Agent inventory' }).closest('article') as HTMLElement
+    const agentRows = within(agentPanel).getAllByRole('row').slice(1)
+    expect(agentRows).toHaveLength(6)
+    expect(agentRows.map((row) => row.textContent)).toEqual([
+      expect.stringContaining('critical-agent'),
+      expect.stringContaining('offline-agent'),
+      expect.stringContaining('unknown-agent'),
+      expect.stringContaining('online-0'),
+      expect.stringContaining('online-1'),
+      expect.stringContaining('online-2'),
     ])
-    expect(screen.queryByRole('heading', { level: 3, name: 'online-3' })).toBeNull()
+    expect(screen.queryByText('online-3', { exact: true })).toBeNull()
     expect(screen.getByText('Showing 6 of 7 Agents')).toBeTruthy()
     expect(screen.getByRole('link', { name: 'View all Agents' }).getAttribute('href')).toBe('/admin/agents')
   })
@@ -617,20 +624,20 @@ describe('Agent inventory risk ordering and evidence', () => {
       '/api/admin/v1/agents': () => jsonResponse([diagnostic], 200),
     })
     await renderAt('/admin')
-    const card = (await screen.findByRole('heading', { level: 3, name: 'agent-1' })).closest('article') as HTMLElement
-    expect(card.textContent).toContain('37.5% CPU')
-    expect(card.textContent).toContain('4.00 GiB / 8.00 GiB memory')
-    expect(card.textContent).toContain('3 queued')
-    expect(card.textContent).toContain('discarded reports')
-    expect(card.textContent).toContain('Unknown')
-    expect(card.textContent).toContain('1 report gap')
-    expect(card.textContent).toContain('2 security events')
-    expect(card.textContent).toContain('Joined Node')
-    expect(card.textContent).toContain('Stale')
-    expect(card.textContent).toContain('View Agent')
-    expect(within(card).getByRole('link', { name: 'View Agent' }).getAttribute('href')).toBe('/admin/agents/agent-1')
-    expect(card.textContent).not.toContain('0195f2a1-2b3c-4d5e-8f90-123456789abc')
-    expect(card.querySelectorAll('dt').length).toBe(6)
+    const row = await screen.findByRole('row', { name: /agent-1/ })
+    expect(row.textContent).toContain('CPU37.5%')
+    expect(row.textContent).toContain('Memory4.00 GiB / 8.00 GiB')
+    expect(row.textContent).toContain('3 queued')
+    expect(row.textContent).toContain('discarded reports')
+    expect(row.textContent).toContain('Unknown')
+    expect(row.textContent).toContain('1 report gap')
+    expect(row.textContent).toContain('2 security events')
+    expect(row.textContent).toContain('1 retained Node')
+    expect(row.textContent).toContain('1 unknown')
+    expect(row.textContent).toContain('View Agent')
+    expect(within(row).getByRole('link', { name: 'View Agent' }).getAttribute('href')).toBe('/admin/agents/agent-1')
+    expect(row.textContent).not.toContain('0195f2a1-2b3c-4d5e-8f90-123456789abc')
+    expect(row.querySelectorAll('dt').length).toBe(7)
   })
 
   it('keeps Agent cards visible when Nodes fail and reports no observed Nodes when the join is empty', async () => {
@@ -641,7 +648,7 @@ describe('Agent inventory risk ordering and evidence', () => {
       '/api/admin/v1/agents': () => jsonResponse([{ ...AGENT, nodes: [] }], 200),
     })
     await renderAt('/admin')
-    const card = (await screen.findByRole('heading', { level: 3, name: 'agent-1' })).closest('article') as HTMLElement
-    expect(card.textContent).toContain('Node context unavailable; recover in Nodes')
+    const row = await screen.findByRole('row', { name: /agent-1/ })
+    expect(row.textContent).toContain('Node context unavailable; recover in Nodes')
   })
 })

@@ -183,24 +183,26 @@ test.describe('Agent detail (PAGE-ADMIN-AGENT-DETAIL)', () => {
 
     // Separate dimension panels (data-dependent; the Server is shared by
     // all parallel projects, so allow for load).
-    await expect(page.getByRole('heading', { level: 2, name: 'Identity' })).toBeVisible({
+    await expect(page.getByRole('heading', { level: 2, name: 'Overview' })).toBeVisible({
       timeout: 15_000,
     })
-    await expect(page.getByRole('heading', { level: 2, name: 'Liveness' })).toBeVisible()
-    await expect(page.getByRole('heading', { level: 2, name: 'Boot and report state' })).toBeVisible()
-    await expect(page.getByRole('heading', { level: 2, name: 'Inventory' })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 2, name: 'Runtime and reporting' })).toBeVisible()
     await expect(page.getByRole('heading', { level: 2, name: 'Credentials' })).toBeVisible()
     await expect(page.getByRole('heading', { level: 2, name: 'Diagnostics' })).toBeVisible()
-    await expect(page.getByRole('heading', { level: 2, name: 'Audit trail' })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 2, name: 'Audit' })).toBeVisible()
+    for (const heading of ['Identity', 'Liveness', 'Boot and report state', 'Inventory', 'Credential records', 'Host and component evidence', 'Audit trail']) {
+      await expect(page.getByRole('heading', { level: 3, name: heading })).toBeVisible()
+    }
 
     await expect(page.getByText(AGENT_ID, { exact: true }).first()).toBeVisible()
     await expect(page.getByRole('button', { name: 'Copy Agent ID' })).toBeVisible()
-    await expect(page.getByText('Agent Epoch')).toBeVisible()
+    // The summary repeats these key facts above the category panels.
+    await expect(page.getByText('Agent Epoch').first()).toBeVisible()
     await expect(page.getByText('1', { exact: true }).first()).toBeVisible()
-    await expect(page.getByText('Report sequence', { exact: true })).toBeVisible()
+    await expect(page.getByText('Report sequence', { exact: true }).first()).toBeVisible()
     await expect(page.getByText('sequence #42')).toBeVisible()
     await expect(page.getByText('Full active boot ID', { exact: true })).toBeVisible()
-    await expect(page.getByText('Boot status', { exact: true })).toBeVisible()
+    await expect(page.getByText('Boot status', { exact: true }).first()).toBeVisible()
     await expect(page.getByText('Shutdown state')).toBeVisible()
     await expect(page.getByText('running', { exact: true })).toBeVisible()
     await expect(page.getByText(CREDENTIAL_ID, { exact: true })).toBeVisible()

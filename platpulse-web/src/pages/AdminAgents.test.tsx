@@ -478,6 +478,9 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
     await screen.findByRole('heading', { level: 1, name: /Agent 0195f2a1/ })
     // The panels arrive with the authoritative REST data.
     await screen.findByText('Identity')
+    for (const heading of ['Overview', 'Runtime and reporting', 'Credentials', 'Diagnostics', 'Audit']) {
+      expect(screen.getByRole('heading', { level: 2, name: heading })).toBeTruthy()
+    }
     // Independent dimensions.
     expect(screen.getByText('Identity')).toBeTruthy()
     expect(screen.getByText('Liveness')).toBeTruthy()
@@ -491,7 +494,7 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
     expect(screen.getByText(/state revision 7 · value revision 11/)).toBeTruthy()
     expect(screen.getByText('Audit trail')).toBeTruthy()
     expect(screen.getAllByText(AGENT_ID, { exact: true }).length).toBeGreaterThan(0)
-    expect(screen.getByRole('button', { name: 'Copy Agent ID' })).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: 'Copy Agent ID' }).length).toBeGreaterThan(0)
     expect(screen.getByText('sequence #42')).toBeTruthy()
     expect(screen.getByText('Server receipt time')).toBeTruthy()
     expect(screen.getByText('Full active boot ID')).toBeTruthy()

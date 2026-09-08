@@ -214,6 +214,10 @@ describe('PAGE-ACCESS-AUDIT (Audit review)', () => {
     const list = () => document.querySelector('.audit-list')?.textContent ?? ''
     await waitFor(() => expect(list()).toContain('viewer_created'))
     expect(list()).toContain('session_revoked')
+    expect(screen.getByRole('table')).toBeTruthy()
+    for (const heading of ['Time', 'Event', 'Actor', 'Target', 'Details']) {
+      expect(screen.getByRole('columnheader', { name: heading })).toBeTruthy()
+    }
     expect(screen.getByRole('link', { name: 'viewer' })).toBeTruthy()
 
     const disclosure = screen.getAllByRole('button', { name: 'Show details' })[0]

@@ -7,7 +7,9 @@ import {
   useAdminOverview,
 } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
-import { formatBytes } from '../formatBytes'
+import { formatBytes, formatBytesUnknown, formatBytesPerSecond, formatIdentifier, formatPercent } from '../formatBytes'
+import { hasSpoolRisk, livenessTone, receiptTimeText } from '../agentDiagnostics'
+import { freshnessTone, healthTone } from '../nodeLabels'
 import {
   StatusBadge,
   componentStateLabel,
@@ -414,10 +416,6 @@ function NodeRows({
     toggleRef.current?.focus()
   }
   const detailId = `node-detail-${node.node_id}`
-  const healthTone =
-    node.health === 'healthy' ? 'ok' : node.health === 'unhealthy' ? 'error' : 'neutral'
-  const freshnessTone =
-    node.freshness === 'current' ? 'ok' : node.freshness === 'stale' ? 'warning' : 'neutral'
   return (
     <>
       <tr onKeyDown={collapseOnEscape}>
@@ -433,7 +431,7 @@ function NodeRows({
             <span aria-hidden="true">{expanded ? '▾' : '▸'}</span> {nodeLabel}
           </button>
           <small className="muted" title={node.node_id}>
-            Node ID · {node.node_id.slice(0, 8)}…
+            Node ID · {formatIdentifier(node.node_id)}
           </small>
           <Link className="text-action" to={`/admin/nodes/${encodeURIComponent(node.node_id)}`}>View Node</Link>
         </th>
@@ -442,11 +440,11 @@ function NodeRows({
           <small className="muted">{node.network_key}</small>
         </td>
         <td data-label="Health">
-          <StatusBadge status={node.health} tone={healthTone} />
+          <StatusBadge status={node.health} tone={healthTone(node.health)} />
           <span className="health-reason">{node.health_reason}</span>
         </td>
         <td data-label="Freshness">
-          <StatusBadge status={freshnessLabel(node.freshness)} tone={freshnessTone} />
+          <StatusBadge status={freshnessLabel(node.freshness)} tone={freshnessTone(node.freshness)} />
           <small className="muted">Server-owned freshness</small>
         </td>
         <td data-label="Head / Sync">
@@ -631,9 +629,12 @@ function AgentPanel({ query, nodeQuery }: { query: DiagnosticsQuery; nodeQuery: 
     nodesByAgent.set(node.agent_id, existing)
   }
   return (
-    <article className="panel">
+    <article className="panel overview-panel agent-panel">
       <div className="panel-heading">
-        <h2>Agent inventory</h2>
+        <div>
+          <h2>Agent inventory</h2>
+          <p className="panel-copy">Compact Server-owned reporting, host, evidence, and retained Node summaries.</p>
+        </div>
         {agents.length > 0 && <span className="panel-count">{agents.length}</span>}
       </div>
       {!query.data && query.isPending && (
@@ -663,10 +664,32 @@ function AgentPanel({ query, nodeQuery }: { query: DiagnosticsQuery; nodeQuery: 
         </p>
       )}
       {query.data && agents.length > 0 && (
-        <div className="agent-grid">
-          {visibleAgents.map((agent) => (
-            <AgentCard key={agent.agent_id} agent={agent} nodes={nodesByAgent.get(agent.agent_id)} nodeQuery={nodeQuery} />
-          ))}
+        <div className="table-wrap agent-overview-table-wrap">
+          <table className="node-table agent-overview-table">
+            <caption className="sr-only">
+              Agent inventory overview with reporting, receipt, host resources, evidence, and retained Node summaries
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">Agent</th>
+                <th scope="col">Reporting</th>
+                <th scope="col">Last received</th>
+                <th scope="col">Host resources</th>
+                <th scope="col">Evidence</th>
+                <th scope="col">Nodes</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleAgents.map((agent) => (
+                <AgentOverviewRow
+                  key={agent.agent_id}
+                  agent={agent}
+                  nodes={nodesByAgent.get(agent.agent_id)}
+                  nodeQuery={nodeQuery}
+                />
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
       {query.data && agents.length > 0 && (
@@ -691,30 +714,70 @@ export function prioritizeAgents(agents: AgentDiagnostic[]): AgentDiagnostic[] {
   return [...agents].sort((left, right) => rank(left) - rank(right) || left.agent_id.localeCompare(right.agent_id, 'en-US'))
 }
 
-function AgentCard({ agent, nodes, nodeQuery }: { agent: AgentDiagnostic; nodes?: AdminNodeListItem[]; nodeQuery: NodesQuery }) {
+function AgentOverviewRow({
+  agent,
+  nodes,
+  nodeQuery,
+}: {
+  agent: AgentDiagnostic
+  nodes?: AdminNodeListItem[]
+  nodeQuery: NodesQuery
+}) {
   const liveness = livenessLabel(agent.liveness)
-  const livenessTone = agent.liveness === 'online' ? 'ok' : agent.liveness === 'offline' ? 'error' : 'neutral'
   const host = agent.host
   const spoolRisk = hasSpoolRisk(host)
-  const spoolText = formatSpoolSummary(host)
-  const memory = host?.memory_used_bytes != null && host.memory_total_bytes != null ? `${formatBytes(host.memory_used_bytes)} / ${formatBytes(host.memory_total_bytes)} memory` : 'Unknown memory'
+  const memory = host && (host.memory_used_bytes != null || host.memory_total_bytes != null)
+    ? formatBytesUnknown(host.memory_used_bytes) + ' / ' + formatBytesUnknown(host.memory_total_bytes)
+    : 'Unknown'
   return (
-    <article className={`agent-card${spoolRisk || agent.security_event_count > 0 ? ' agent-card-critical' : ''}`}>
-      <div className="agent-card-heading"><h3>{agent.agent_id}</h3><Link className="text-action" to={`/admin/agents/${encodeURIComponent(agent.agent_id)}`}>View Agent</Link></div>
-      <p><StatusBadge status={liveness} tone={livenessTone} /> {spoolRisk && <StatusBadge status="Critical" tone="error" />}</p>
-      <dl className="detail-list">
-        <div><dt>Last report</dt><dd>{agent.last_report_sequence == null ? 'Unknown' : `#${agent.last_report_sequence} · ${formatObservedAt(agent.last_received_at)}`}</dd></div>
-        <div><dt>Host</dt><dd>{host ? `${host.cpu_percent != null ? `${host.cpu_percent}% CPU` : 'Unknown CPU'} · ${memory}` : 'Unknown CPU · Unknown memory'}</dd></div>
-        <div><dt>Durable Spool</dt><dd className={spoolRisk || host?.spool_store_error ? 'diagnostic-critical' : ''}>{spoolText}</dd></div>
-        <div><dt>Clock</dt><dd>{clockStatusLabel(agent.clock_status)}{agent.clock_skew_ms != null ? ` · ${agent.clock_skew_ms} ms skew` : ''}</dd></div>
-        <div><dt>Evidence</dt><dd>{agent.sequence_gap_count} report gap{agent.sequence_gap_count === 1 ? '' : 's'} · {agent.security_event_count} security event{agent.security_event_count === 1 ? '' : 's'}</dd></div>
-        <div><dt>Nodes</dt><dd><NodeContext nodes={nodes} query={nodeQuery} /></dd></div>
-      </dl>
-    </article>
+    <tr className={spoolRisk || agent.security_event_count > 0 ? 'agent-overview-risk-row' : undefined}>
+      <th scope="row" data-label="Agent">
+        <Link
+          className="agent-link"
+          aria-label="View Agent"
+          to={'/admin/agents/' + encodeURIComponent(agent.agent_id)}
+        >
+          <code title={agent.agent_id}>{formatIdentifier(agent.agent_id)}</code>
+          <span className="sr-only">View Agent</span>
+        </Link>
+        <small className="muted" title={agent.agent_id}>Agent ID · {agent.agent_id}</small>
+      </th>
+      <td data-label="Reporting">
+        <StatusBadge status={liveness} tone={livenessTone(agent.liveness)} />
+        <small className="muted">Server liveness</small>
+      </td>
+      <td data-label="Last received">
+        {agent.last_received_at ? (
+          <time dateTime={agent.last_received_at}>{formatObservedAt(agent.last_received_at)}</time>
+        ) : (
+          <span>{receiptTimeText(agent.last_received_at)}</span>
+        )}
+        <small className="muted">{agent.last_report_sequence == null ? 'Never received' : 'Report #' + agent.last_report_sequence}</small>
+      </td>
+      <td data-label="Host resources" className="agent-overview-resources">
+        <dl>
+          <div><dt>CPU</dt><dd>{formatPercent(host?.cpu_percent)}</dd></div>
+          <div><dt>Memory</dt><dd>{memory}</dd></div>
+          <div><dt>RX / TX</dt><dd>{formatBytesPerSecond(host?.network_rx_bytes_per_sec)} / {formatBytesPerSecond(host?.network_tx_bytes_per_sec)}</dd></div>
+        </dl>
+        <small className="muted">{host ? 'Host snapshot · ' + formatObservedAt(host.updated_at) : 'No Host observation'}</small>
+      </td>
+      <td data-label="Evidence" className="agent-overview-evidence">
+        <dl>
+          <div><dt>Report gaps</dt><dd>{agent.sequence_gap_count} report gap{agent.sequence_gap_count === 1 ? '' : 's'}</dd></div>
+          <div><dt>Security events</dt><dd>{agent.security_event_count} security event{agent.security_event_count === 1 ? '' : 's'}</dd></div>
+          <div><dt>Spool</dt><dd className={spoolRisk || host?.spool_store_error ? 'diagnostic-critical' : undefined}>{formatSpoolSummary(host)}</dd></div>
+          <div><dt>Clock</dt><dd>{clockStatusLabel(agent.clock_status)}{agent.clock_skew_ms != null ? ' · ' + agent.clock_skew_ms + ' ms skew' : ''}</dd></div>
+        </dl>
+      </td>
+      <td data-label="Nodes" className="agent-overview-nodes">
+        <AgentNodeSummary nodes={nodes} query={nodeQuery} />
+      </td>
+    </tr>
   )
 }
 
-function NodeContext({ nodes, query }: { nodes?: AdminNodeListItem[]; query: NodesQuery }) {
+function AgentNodeSummary({ nodes, query }: { nodes?: AdminNodeListItem[]; query: NodesQuery }) {
   if (!query.data) {
     if (query.isPending) return <span className="muted">Loading Node context…</span>
     if (query.isError) return <span className="diagnostic-critical">Node context unavailable; recover in Nodes</span>
@@ -725,33 +788,11 @@ function NodeContext({ nodes, query }: { nodes?: AdminNodeListItem[]; query: Nod
   const unhealthy = nodes.filter((node) => node.health === 'unhealthy').length
   const unknown = nodes.filter((node) => node.health === 'unknown').length
   return (
-    <div className="agent-node-context">
-      <span className="muted">{nodes.length} Node{nodes.length === 1 ? '' : 's'} · {active} active · {unhealthy} unhealthy · {unknown} unknown</span>
-      <ul>
-        {nodes.map((node) => (
-          <li key={node.node_id}>
-            <span>{node.display_name ?? node.node_id} <small>({node.node_id})</small></span>
-            <span>{node.lifecycle} · {nodeHealthLabel(node.health)} · {freshnessLabel(node.freshness)}</span>
-          </li>
-        ))}
-      </ul>
+    <div>
+      <strong>{nodes.length} retained Node{nodes.length === 1 ? '' : 's'}</strong>
+      <small className="muted">{active} active · {unhealthy} unhealthy · {unknown} unknown</small>
     </div>
   )
-}
-
-function nodeHealthLabel(health: string): string {
-  if (health === 'healthy') return 'Healthy'
-  if (health === 'unhealthy') return 'Unhealthy'
-  return 'Unknown'
-}
-
-function hasSpoolRisk(host: AgentDiagnostic['host']): boolean {
-  return host?.spool_store_fatal === true ||
-    host?.spool_dropped_sequence_from != null ||
-    host?.spool_dropped_sequence_to != null ||
-    host?.spool_dropped_height_from != null ||
-    host?.spool_dropped_height_to != null ||
-    host?.spool_report_too_large === true
 }
 
 function formatSpoolSummary(host: AgentDiagnostic['host']): string {

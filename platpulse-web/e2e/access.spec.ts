@@ -195,7 +195,7 @@ test.describe('PAGE-ACCESS-AUDIT (Audit review)', () => {
     await page.goto('/admin/access/audit')
     await expect(page.getByRole('heading', { level: 1, name: 'Audit log' })).toBeVisible()
 
-    const auditItems = page.locator('.audit-item')
+    const auditItems = page.locator('.audit-list tbody tr')
     // The unfiltered listing is the newest 50 events; the whole parallel
     // suite generates hundreds of session_created events, so the seeded
     // and suite mutations are asserted through the Server-side filters
@@ -252,6 +252,27 @@ test.describe('PAGE-ACCESS-AUDIT (Audit review)', () => {
     // Clearing the filter restores the full newest-first listing.
     await page.getByLabel('Event kind').selectOption('')
     await expect(auditItems.first()).toBeVisible()
+  })
+
+  test('keeps the compact Audit table and expandable details usable at every fixed viewport', async ({ page }) => {
+    await loginAs(page)
+    await page.goto('/admin/access/audit')
+    await expect(page.getByRole('heading', { level: 1, name: 'Audit log' })).toBeVisible()
+
+    const rows = page.locator('.audit-list tbody tr')
+    await expect(rows.first()).toBeVisible({ timeout: 15_000 })
+    await expect(rows.first().getByRole('button', { name: 'Show details' })).toBeVisible()
+    await rows.first().getByRole('button', { name: 'Show details' }).click()
+    await expect(rows.first().locator('.audit-details')).toBeVisible()
+
+    // Filters size to their content instead of spanning the reading width.
+    const widths = await page
+      .locator('.audit-filters select')
+      .evaluateAll((selects) => selects.map((select) => select.getBoundingClientRect().width))
+    expect(widths.length).toBeGreaterThan(0)
+    for (const width of widths) expect(width).toBeLessThan(420)
+
+    await expectNoHorizontalOverflow(page)
   })
 })
 

@@ -144,16 +144,32 @@ export default function AdminAudit() {
           </p>
         )}
         {items.length > 0 && (
-          <ul className="audit-list">
-            {items.map((item) => (
-              <AuditRow
-                key={item.auditEventId}
-                item={item}
-                expanded={expanded.has(item.auditEventId)}
-                onToggle={() => toggle(item.auditEventId)}
-              />
-            ))}
-          </ul>
+          <div className="audit-list audit-table-wrap">
+            <table className="audit-table table-static">
+              <caption className="sr-only">
+                Immutable redacted Audit events with time, event, actor, target, and details
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">Time</th>
+                  <th scope="col">Event</th>
+                  <th scope="col">Actor</th>
+                  <th scope="col">Target</th>
+                  <th scope="col">Details</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((item) => (
+                  <AuditRow
+                    key={item.auditEventId}
+                    item={item}
+                    expanded={expanded.has(item.auditEventId)}
+                    onToggle={() => toggle(item.auditEventId)}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
         {query.data?.nextBefore != null && (
           <button type="button" className="text-action" onClick={loadOlder}>
@@ -206,52 +222,45 @@ function AuditRow({
   const target = targetLink(item)
   const detailsId = `audit-details-${item.auditEventId}`
   return (
-    <li className="audit-item">
-      <div className="audit-main">
+    <tr>
+      <td data-label="Time">
+        <time dateTime={item.createdAt}>{formatObservedAt(item.createdAt)}</time>
+      </td>
+      <th scope="row" data-label="Event">
         <span className="audit-event-kind">{item.eventKind}</span>
         <small className="muted">event #{item.auditEventId}</small>
-      </div>
-      <dl className="detail-list audit-detail-list">
-        <div>
-          <dt>Actor</dt>
-          <dd>{item.actorUsername ?? 'local-cli'}</dd>
-        </div>
-        <div>
-          <dt>Target</dt>
-          <dd>
-            {target ? <Link to={target.to}>{target.label}</Link> : item.targetId}
-            <small className="muted"> · {item.targetKind}</small>
-          </dd>
-        </div>
-        <div>
-          <dt>When</dt>
-          <dd>{formatObservedAt(item.createdAt)}</dd>
-        </div>
-      </dl>
-      <button
-        type="button"
-        className="text-action"
-        onClick={onToggle}
-        aria-expanded={expanded}
-        aria-controls={detailsId}
-      >
-        {expanded ? 'Hide details' : 'Show details'}
-      </button>
-      {expanded && (
-        <div
-          id={detailsId}
-          className="audit-details"
-          role="region"
-          aria-label={`Redacted details for Audit event ${item.auditEventId}`}
+      </th>
+      <td data-label="Actor">{item.actorUsername ?? 'local-cli'}</td>
+      <td data-label="Target">
+        {target ? <Link to={target.to}>{target.label}</Link> : item.targetId}
+        <small className="muted">{item.targetKind}</small>
+      </td>
+      <td data-label="Details">
+        <button
+          type="button"
+          className="text-action audit-details-toggle"
+          onClick={onToggle}
+          aria-expanded={expanded}
+          aria-controls={detailsId}
         >
-          {item.details == null ? (
-            <p className="muted">No redacted detail was recorded for this event.</p>
-          ) : (
-            <RedactedDetails details={item.details} />
-          )}
-        </div>
-      )}
-    </li>
+          {expanded ? 'Hide details' : 'Show details'}
+        </button>
+        {expanded && (
+          <div
+            id={detailsId}
+            className="audit-details"
+            role="region"
+            aria-label={'Redacted details for Audit event ' + item.auditEventId}
+          >
+            {item.details == null ? (
+              <p className="muted">No redacted detail was recorded for this event.</p>
+            ) : (
+              <RedactedDetails details={item.details} />
+            )}
+          </div>
+        )}
+      </td>
+    </tr>
   )
 }
 

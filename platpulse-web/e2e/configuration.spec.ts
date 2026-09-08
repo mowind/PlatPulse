@@ -44,7 +44,7 @@ test.describe('Admin Settings workflows (issues #111 and #113)', () => {
   test('History Window completes impact preview, typed confirmation, save, and Audit feedback', async ({ page }) => {
     await openAdmin(page, 'Settings')
 
-    const card = page.locator('article.settings-card').filter({ hasText: 'History Window' })
+    const card = page.locator('article.settings-block').filter({ hasText: 'History Window' })
     const days = card.getByLabel('New window (days)')
     const save = card.getByRole('button', { name: 'Save History Window' })
     const confirmation = card.getByLabel('Type the change to confirm')

@@ -9,7 +9,8 @@ import {
 } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
 import { StatusBadge, formatObservedAt, freshnessLabel } from '../components/StatusBadge'
-import type { AdminNetwork, AdminNetworkNode, NodeIdentityStatus } from '../api/generated'
+import { identityBadge, lifecycleLabel, visibilityBadge } from '../nodeLabels'
+import type { AdminNetwork, AdminNetworkNode } from '../api/generated'
 
 /**
  * PAGE-ADMIN-NETWORKS and PAGE-ADMIN-NETWORK-DETAIL (design §4.3, §7.1):
@@ -22,20 +23,6 @@ import type { AdminNetwork, AdminNetworkNode, NodeIdentityStatus } from '../api/
 
 function shortId(id: string): string {
   return id.length > 11 ? `${id.slice(0, 8)}…` : id
-}
-
-function identityBadge(identity: NodeIdentityStatus): {
-  label: string
-  tone: 'ok' | 'warning' | 'error' | 'neutral'
-} {
-  switch (identity.state) {
-    case 'matched':
-      return { label: 'Matched', tone: 'ok' }
-    case 'mismatched':
-      return { label: 'Mismatched', tone: 'error' }
-    default:
-      return { label: 'Unknown', tone: 'neutral' }
-  }
 }
 
 /** PAGE-ADMIN-NETWORKS: Registry list plus the explicit create workflow. */
@@ -155,7 +142,7 @@ function NetworkRow({ network }: { network: AdminNetwork }) {
             <span className="muted">{network.mismatched_node_count} Node{network.mismatched_node_count === 1 ? '' : 's'}</span>
           </>
         ) : (
-          <StatusBadge status="Current" tone="ok" />
+          <span className="muted">No mismatch reported</span>
         )}
       </td>
     </tr>
@@ -508,19 +495,13 @@ function IdentityTuplePanel({
       ) : (
         <dl className="detail-list">
           <div>
-            <dt>Network key</dt>
-            <dd>
-              <code>{network.network_key}</code>
-            </dd>
-          </div>
-          <div>
             <dt>Display name</dt>
             <dd>{network.display_name}</dd>
           </div>
           <div>
-            <dt>Genesis hash</dt>
+            <dt>Network key</dt>
             <dd>
-              <code>{network.genesis_hash}</code>
+              <code>{network.network_key}</code>
             </dd>
           </div>
           <div>
@@ -534,6 +515,12 @@ function IdentityTuplePanel({
           <div>
             <dt>Address HRP</dt>
             <dd>{network.address_hrp}</dd>
+          </div>
+          <div>
+            <dt>Genesis hash</dt>
+            <dd>
+              <code>{network.genesis_hash}</code>
+            </dd>
           </div>
           <div>
             <dt>Registered</dt>
@@ -595,12 +582,12 @@ function NetworkNodesPanel({
             <thead>
               <tr>
                 <th scope="col">Node</th>
-                <th scope="col">Identity</th>
                 <th scope="col">Health</th>
                 <th scope="col">Freshness</th>
-                <th scope="col">Head</th>
-                <th scope="col">Lifecycle</th>
+                <th scope="col">Identity</th>
                 <th scope="col">Visibility</th>
+                <th scope="col">Lifecycle</th>
+                <th scope="col">Head</th>
               </tr>
             </thead>
             <tbody>
@@ -630,6 +617,13 @@ function NetworkNodeRow({ node }: { node: AdminNetworkNode }) {
           Node ID · {shortId(node.node_id)}
         </small>
       </th>
+      <td data-label="Health">
+        <StatusBadge status={node.health} tone={health} />
+        <small className="muted">{node.health_reason}</small>
+      </td>
+      <td data-label="Freshness">
+        <StatusBadge status={freshnessLabel(node.freshness)} tone={freshness} />
+      </td>
       <td data-label="Identity">
         <StatusBadge status={identity.label} tone={identity.tone} />
         {node.identity.mismatched_fields.length > 0 && (
@@ -640,25 +634,16 @@ function NetworkNodeRow({ node }: { node: AdminNetworkNode }) {
                 Observed:{' '}
                 {Object.entries(node.identity.observed)
                   .filter(([, value]) => value != null)
-                  .map(([key, value]) => `${key.replaceAll('_', ' ')} ${value}`)
+                  .map(([key, value]) => key.replaceAll('_', ' ') + ' ' + value)
                   .join(' · ')}
               </small>
             )}
           </>
         )}
       </td>
-      <td data-label="Health">
-        <StatusBadge status={node.health} tone={health} />
-        <small className="muted">{node.health_reason}</small>
-      </td>
-      <td data-label="Freshness">
-        <StatusBadge status={freshnessLabel(node.freshness)} tone={freshness} />
-      </td>
+      <td data-label="Visibility">{visibilityBadge(node.visibility).label}</td>
+      <td data-label="Lifecycle">{lifecycleLabel(node.lifecycle).label}</td>
       <td data-label="Head">{node.current_head ?? 'Unknown'}</td>
-      <td data-label="Lifecycle">{node.lifecycle === 'retired' ? 'Retired' : 'Active'}</td>
-      <td data-label="Visibility">
-        {node.visibility === 'public' ? 'Public' : 'Private'}
-      </td>
     </tr>
   )
 }

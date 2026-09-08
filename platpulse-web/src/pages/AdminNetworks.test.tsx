@@ -143,6 +143,18 @@ describe('PAGE-ADMIN-NETWORKS (Network Registry)', () => {
     expect(row.textContent).toContain('Mismatched')
   })
 
+  it('does not present zero reported mismatches as Current or verified identity', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/networks': () => jsonResponse([{ ...NETWORK, mismatched_node_count: 0 }], 200),
+    })
+    renderAt('/admin/networks')
+
+    const row = await screen.findByRole('row', { name: /PlatON E2E Network/ })
+    expect(row.textContent).toContain('No mismatch reported')
+    expect(row.textContent).not.toContain('Current')
+  })
+
   it('registers a Network only through the explicit Owner workflow with the full tuple', async () => {
     let created = false
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

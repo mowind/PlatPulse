@@ -9,6 +9,13 @@ import {
 import { useAuth } from '../auth/AuthContext'
 import { formatBytes } from '../formatBytes'
 import {
+  freshnessTone,
+  healthTone,
+  identityBadge,
+  lifecycleLabel,
+  visibilityBadge,
+} from '../nodeLabels'
+import {
   StatusBadge,
   componentStateLabel,
   formatObservedAt,
@@ -17,7 +24,6 @@ import {
 import type {
   AdminNodeDetail as AdminNodeDetailDto,
   AdminNodeListItem,
-  NodeIdentityStatus,
 } from '../api/generated'
 
 /**
@@ -33,44 +39,6 @@ import type {
 
 function shortId(value: string): string {
   return value.length > 12 ? `${value.slice(0, 8)}…${value.slice(-4)}` : value
-}
-
-function healthTone(health: string): 'ok' | 'error' | 'neutral' {
-  return health === 'healthy' ? 'ok' : health === 'unhealthy' ? 'error' : 'neutral'
-}
-
-/** Server freshness dimension → badge tone (current/stale/unknown). */
-function freshnessTone(freshness: string): 'ok' | 'warning' | 'neutral' {
-  return freshness === 'current' ? 'ok' : freshness === 'stale' ? 'warning' : 'neutral'
-}
-
-function identityBadge(identity: NodeIdentityStatus): {
-  label: string
-  tone: 'ok' | 'warning' | 'error' | 'neutral'
-} {
-  switch (identity.state) {
-    case 'matched':
-      return { label: 'Matched', tone: 'ok' }
-    case 'mismatched':
-      return { label: 'Mismatched', tone: 'error' }
-    default:
-      return { label: 'Unknown', tone: 'neutral' }
-  }
-}
-
-function visibilityBadge(visibility: string): { label: string; tone: 'ok' | 'neutral' } {
-  return visibility === 'public'
-    ? { label: 'Public', tone: 'ok' }
-    : { label: 'Private', tone: 'neutral' }
-}
-
-/** Lifecycle follows the latest Agent Inventory with a fixed vocabulary:
- * only `active` and `retired` are known states — anything else renders as
- * Unknown rather than as a definite lifecycle (preserve-last-good). */
-function lifecycleLabel(lifecycle: string): { label: string; tone: 'ok' | 'neutral' } {
-  if (lifecycle === 'active') return { label: 'Active', tone: 'ok' }
-  if (lifecycle === 'retired') return { label: 'Retired', tone: 'neutral' }
-  return { label: 'Unknown', tone: 'neutral' }
 }
 
 /** URL-state filters (design §10.1: back/forward preserves them). */
@@ -220,8 +188,8 @@ export default function AdminNodesList() {
                 </th>
                 <th scope="col">Identity</th>
                 <th scope="col">Visibility</th>
-                <th scope="col">Head / Sync</th>
                 <th scope="col">Lifecycle</th>
+                <th scope="col">Head / Sync</th>
               </tr>
             </thead>
             <tbody>
@@ -401,13 +369,13 @@ function NodeListRow({
         <td data-label="Visibility">
           <StatusBadge status={visibility.label} tone={visibility.tone} />
         </td>
-        <td data-label="Head / Sync">
-          {node.current_head ?? 'Unknown'}
-          <small className="muted">{node.resync_state}</small>
-        </td>
         <td data-label="Lifecycle">
           <span>{lifecycleLabel(node.lifecycle).label}</span>
           <small className="muted">rev {node.inventory_revision}</small>
+        </td>
+        <td data-label="Head / Sync">
+          {node.current_head ?? 'Unknown'}
+          <small className="muted">{node.resync_state}</small>
         </td>
       </tr>
       {expanded && (

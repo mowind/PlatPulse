@@ -322,7 +322,7 @@ Every `PAGE-*` entry must specify the following before production coding:
 
 ### 8.3 Settings (`PAGE-ADMIN-SETTINGS`)
 
-- renders one Settings heading with ordered History Window and Site Access Mode cards;
+- renders one Settings heading with an ordered History Window then Site Access Mode module inside one left-aligned constrained surface (see §8.6);
 - each card loads, mutates, and reports success or errors independently;
 - History Window shows the current window, default, min/max bounds, and last update;
 - History Window requires an integer in the Server bounds, a successful Server-authoritative impact preview, and typed confirmation before mutation; values are rejected rather than clamped;
@@ -444,7 +444,7 @@ The default priority is unhealthy, unknown health, stale, then healthy/current, 
 
 #### 8.4.4 Agent inventory
 
-Each Agent card represents one Agent and its one Host. Host Observation is shown once on that card and is never copied into every Node. The compact Node rows are joined from the already-loaded Admin Node list by stable `agent_id`; they preserve each Node's independent state rather than creating an Agent-level chain aggregate. The compact card may show:
+Each compact inventory row represents one Agent and its one Host (see §8.6 for the summary-table delivery). Host Observation is shown once on that row and is never copied into every Node. The compact Node counts are joined from the already-loaded Admin Node list by stable `agent_id`; they preserve each Node's independent state rather than creating an Agent-level chain aggregate, and per-Node identity/health/freshness detail stays on the Nodes page and Agent Detail. The compact row may show:
 
 ```text
 Agent identity and liveness
@@ -454,7 +454,7 @@ Compact Host CPU and memory values
 Durable Spool queued reports, capacity, overflow, and fatal state
 Clock status
 Report sequence gaps and security-event count
-Separate compact rows for the Agent's Nodes
+Retained, active, unhealthy, and unknown Node counts
 View Agent
 ```
 
@@ -488,7 +488,7 @@ The Agents page owns the complete Agent inventory, epoch, boot/report state, Nod
 
 The visual balance is PlatPulse's Emerald light system first and Komari-inspired density second: Slate-50-like background, translucent-white surfaces, quiet one-pixel borders, restrained 8-10px radii, no default blur, minimal shadows, high-contrast counts, quiet labels, neutral primary controls, measured Emerald selection accents, and semantic green/amber/red/blue/neutral status treatments. No status depends on color alone. The production UI remains English for the MVP; localization is a separate whole-application capability rather than a mixed-language Overview.
 
-At `1280x800`, the Admin sidebar is persistent, Attention and Node Health are full-width, summary cards form four columns, and Agent cards form two columns. At `768x1024`, navigation uses the accessible drawer, summary cards form a two-by-two grid, and Node/Agent content is single-column. At `360x800` and `390x844`, summary cards remain a compact two-by-two grid when legible and may fall to one column when content requires it; Node tables become priority cards and Agent cards stack. Health/Freshness and Head/Sync remain paired, secondary evidence moves into expansion, controls remain at least 44x44 CSS pixels, and no primary horizontal page scrolling is allowed. The page remains functional at 200% zoom, in portrait and landscape, and with reduced motion.
+At `1280x800`, the Admin sidebar is persistent, Attention and Node Health are full-width, summary cards form four columns, and the Agent inventory summary table spans the full width. At `768x1024`, navigation uses the accessible drawer, summary cards form a two-by-two grid, and Node/Agent content is single-column. At `360x800` and `390x844`, summary cards remain a compact two-by-two grid when legible and may fall to one column when content requires it; Node, Audit, and Agent inventory tables become priority cards. Health/Freshness and Head/Sync remain paired, secondary evidence moves into expansion, controls remain at least 44x44 CSS pixels, and no primary horizontal page scrolling is allowed. The page remains functional at 200% zoom, in portrait and landscape, and with reduced motion.
 
 Overview acceptance scenarios include:
 
@@ -511,7 +511,7 @@ SCN-OVERVIEW-RESPONSIVE
 The first delivery changes the shared Admin shell and the Agents summary, with regression coverage across all retained Admin routes and isolation checks for Home. Preserve the Emerald brand and existing business rules; borrow compact spatial organization, not another product's dark theme, small text, or data model.
 
 - In scope: Admin background, sidebar, header, content origin, heading scale, shrink/overflow boundaries, Agents summary organization, and existing Agent Detail access to secondary evidence.
-- Out of scope: Server/API expansion, new client-derived state or severity, global status renaming, Settings/Audit internal restructuring, Overview module reordering, a comprehensive restyle of other page controls, and restoration of removed routes or features.
+- Out of scope for this first delivery: Server/API expansion, new client-derived state or severity, global status renaming, Settings/Audit internal restructuring, Overview module reordering, a comprehensive restyle of other page controls, and restoration of removed routes or features. The follow-up §8.6 delivery now covers the Settings/Audit/Overview/Agent Detail information-architecture changes explicitly.
 - This section governs the shared Admin container and Agents presentation. Settings §8.3 and Overview §8.4 retain their internal composition and behavior; only their shared shell changes in this delivery. Home and Login presentation remain unchanged.
 - Authorization, Public/Admin separation, redaction, last-good semantics, REST authority, query namespaces, SSE invalidation/reset, URL/back-navigation context, and mutation contracts in §§3–7 remain in force. Do not introduce new API operations or optimistic business state.
 
@@ -591,6 +591,17 @@ Run coverage at the fixed 360×800, 390×844, 768×1024, and 1280×800 projects;
 Update existing Agent summary tests that require all old verbose evidence in one row to assert the new priority summary AND retained detail evidence. Preserve independent-state, authorization, redaction, and confirmation coverage. Shared shell tests must cover every retained route, not only Agents. Verify the generated operation/DTO references and current query/reset wiring during implementation handoff rather than adding new API behavior.
 
 **Separately tracked source/test drift, not feature scope:** read-only inspection found Home/Global navigation assertions inconsistent with the current shell; a legacy People entry inconsistent with retained routes; legacy per-Node visibility and rotate/recover guidance in Agent Detail; and an Audit target link/filter list referring to removed or outdated surfaces/events. Resolve authority before updating affected assertions, and record unrelated follow-up work separately. Do not restore removed features to satisfy old tests. No baseline test pass, measured browser layout, or completed implementation is asserted by this review.
+
+### 8.6 Admin information architecture pass (`PAGE-ACCESS-AUDIT`, `PAGE-ADMIN-SETTINGS`, `PAGE-ADMIN-AGENT-DETAIL`, `PAGE-ADMIN-OVERVIEW`, `PAGE-ADMIN-NETWORKS`, `PAGE-ADMIN-NODES`)
+
+**Decision status:** Accepted by explicit product direction after the §8.5 shell delivery. It supersedes the §8.5.1 deferral of Settings/Audit restructuring and Overview module reordering for the surfaces below. The shared Admin shell, authorization, REST/cache/SSE, redaction, confirmation, last-good, and mutation contracts are unchanged.
+
+- `PAGE-ACCESS-AUDIT` renders the immutable redacted events as one compact table with Time, Event, Actor, Target, and Details columns. Redacted details stay collapsed behind an accessible `Show details` disclosure (`aria-expanded`/`aria-controls`, per-event region label); the listing, Server-side filters, cursor pagination, and append-on-load-older behavior are unchanged. Event-kind and Target filters size to their content instead of spanning the row, and the table becomes priority cards below the responsive breakpoint rather than a clipped or shrunk table.
+- `PAGE-ADMIN-SETTINGS` keeps one left-aligned constrained surface with two independent modules (History Window, then Site Access Mode). Current value, default, and the allowed range are grouped; the numeric input keeps its label, bounds, and 44px target at a natural width; action buttons keep normal width. All risk copy, the Server-authoritative impact preview, typed confirmation, CSRF, error isolation, and submit behavior are unchanged.
+- `PAGE-ADMIN-AGENT-DETAIL` opens with a key summary (shortened ID with copy control, Server liveness, boot status, credential counts, Epoch, receipt time, report sequence, declared Node count, and classified important warnings) followed by Overview, Runtime and reporting, Credentials, Diagnostics, and Audit categories. Every pre-existing field remains reachable; summary warnings distinguish current state, recorded history, and unknown values and never replace Server liveness, health, freshness, or attention policy.
+- `PAGE-ADMIN-OVERVIEW` Agent inventory is a compact summary table (Agent, Reporting, Last received, Host resources, Evidence, Nodes) instead of large half-width detail cards. It keeps the six-Agent priority limit, the `Showing N of M Agents` line, `View all Agents`, independent query failure, and raw Server values; per-Node identity/health/freshness detail stays on the Nodes page and Agent Detail.
+- `PAGE-ADMIN-NETWORKS` renders zero reported mismatches as plain `No mismatch reported` text, never as `Current` or as verified identity; freshness, identity state, and mismatch count remain separate dimensions. Network detail and the Nodes inventory share one column order (identity-relevant fields before lifecycle and head) and one focus-visible treatment for sort buttons, row toggles, and sidebar selection.
+- Shared formatting: CPU uses `formatPercent`, memory and byte rates use the binary byte units (`formatBytes`/`formatBytesUnknown`, `formatBytesPerSecond`), timestamps use the existing UTC `formatObservedAt`, and stable IDs use `formatIdentifier` with the complete value kept in the DOM and title. Unknown values remain `Unknown` rather than `0`, `false`, or a blank cell.
 
 ## 9. Content, privacy, and redaction
 
@@ -844,6 +855,7 @@ A page is ready for production implementation only when:
 | Admin visual convergence across retained pages | Issue #112 |
 | Unified Admin experience integration contract, canonical Settings route, and fixed-viewport verification | Issue #113, parent Issue #109 |
 | Komari-inspired Admin Overview triage hierarchy, typed Attention Items, shared Server Health policy, responsive limits, and page boundaries | Confirmed `grill-with-docs` design review; see `docs/design/platpulse.md` §8.5 and this document §8.4 |
+| Admin information architecture pass: Audit event table, Settings consolidation, Agent Detail summary and categories, Overview Agent inventory summary, Network mismatch wording, shared formatting/focus | Explicit product direction after §8.5; see this document §8.6 |
 | Prototype cleanup and production-only route boundary | Issue #89 |
 
 Changes to a settled contract require a new decision record and must update the affected `PAGE-*`, `PATTERN-*`, and `SCN-*` references together. OpenAPI or Server policy changes do not silently change WebUI semantics; they require an explicit design review when the user-visible contract changes.
