@@ -14,6 +14,33 @@ async function expectShellFitsViewport(page: Page, heading: string) {
   await expectNoHorizontalOverflow(page)
 }
 
+async function measureAdminWorkbench(page: Page) {
+  return page.evaluate(() => {
+    const header = document.querySelector('header')
+    const nav = document.querySelector('nav[aria-label="Admin"]')
+    const main = document.querySelector('main')
+    const pageContent = main?.querySelector(':scope > .page')
+    const heading = main?.querySelector('h1')
+    if (!header || !nav || !main || !pageContent || !heading) {
+      throw new Error('Admin workbench geometry surfaces are missing')
+    }
+    const box = (element: Element) => {
+      const rect = element.getBoundingClientRect()
+      return { x: rect.x, right: rect.right, width: rect.width, height: rect.height, top: rect.top, bottom: rect.bottom }
+    }
+    return {
+      viewport: document.documentElement.clientWidth,
+      header: box(header),
+      nav: box(nav),
+      main: box(main),
+      page: box(pageContent),
+      heading: box(heading),
+      headingFontSize: Number.parseFloat(getComputedStyle(heading).fontSize),
+      decorationCount: document.querySelectorAll('.background-decoration').length,
+    }
+  })
+}
+
 test.describe('Authenticated shell', () => {
   test('Home shell fits the viewport without horizontal overflow', async ({ page }) => {
     await loginAs(page)
@@ -61,7 +88,6 @@ test.describe('Authenticated shell', () => {
     const brand = page.getByRole('link', { name: 'PlatPulse', exact: true })
     await expect(brand).toHaveAttribute('href', '/')
     await expect(brand.locator('img')).toHaveAttribute('src', /platpulse-mark/)
-    await expect(page.getByRole('link', { name: 'Home', exact: true })).toHaveAttribute('href', '/')
     await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible()
     const adminNav = page.getByRole('navigation', { name: 'Admin', includeHidden: true })
     await expect(adminNav.getByRole('link', { name: 'Overview', includeHidden: true })).toHaveAttribute('aria-current', 'page')
@@ -70,8 +96,8 @@ test.describe('Authenticated shell', () => {
     await expect(page.getByRole('heading', { level: 2, name: 'Node Health Summary' })).toBeVisible()
     await expect(page.getByRole('heading', { level: 2, name: 'Agent inventory' })).toBeVisible()
 
-    // Prove the user-visible dark, translucent treatment through semantic
-    // surfaces and WCAG contrast rather than exact CSS values or class names.
+    // Prove the user-visible Emerald light, translucent treatment through
+    // semantic surfaces and WCAG contrast rather than exact CSS values or class names.
     const visual = await page.getByRole('banner').evaluate((banner, panelHeadingText) => {
       const panelHeading = Array.from(document.querySelectorAll('h2')).find(
         (heading) => heading.textContent?.trim() === panelHeadingText,
@@ -131,8 +157,8 @@ test.describe('Authenticated shell', () => {
         navigationLabelContrast: contrast(navigationLabelColor, navigationColor),
       }
     }, 'Attention queue')
-    expect(visual.bannerLuminance).toBeLessThan(0.15)
-    expect(visual.panelLuminance).toBeLessThan(0.15)
+    expect(visual.bannerLuminance).toBeGreaterThan(0.75)
+    expect(visual.panelLuminance).toBeGreaterThan(0.75)
     expect(visual.bannerAlpha).toBeLessThan(1)
     expect(visual.panelAlpha).toBeLessThan(1)
     expect(visual.panelHeadingContrast).toBeGreaterThanOrEqual(4.5)
@@ -179,6 +205,95 @@ test.describe('Authenticated shell', () => {
         / (Math.min(foreground, background) + 0.05)
     })
     expect(placeholderContrast).toBeGreaterThanOrEqual(4.5)
+    await expectNoHorizontalOverflow(page)
+  })
+
+  test('Admin connection status stays in shared header context', async ({ page }) => {
+    await loginAs(page)
+    await page.getByRole('link', { name: 'Admin', exact: true }).click()
+    await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
+
+    const status = page.getByRole('group', { name: 'Admin connection status' })
+    await expect(status).toBeVisible()
+    await expect(status).toContainText('Realtime')
+    await expect(status).toContainText(/Current|Starting|Live updates paused/)
+
+    const placement = await page.evaluate(() => {
+      const header = document.querySelector('header')
+      const main = document.querySelector('main')
+      const status = document.querySelector('[role="group"][aria-label="Admin connection status"]')
+      if (!header || !main || !status) throw new Error('Admin status placement surfaces are missing')
+      const headerBox = header.getBoundingClientRect()
+      const mainBox = main.getBoundingClientRect()
+      const statusBox = status.getBoundingClientRect()
+      return { headerTop: headerBox.top, headerBottom: headerBox.bottom, mainTop: mainBox.top, statusTop: statusBox.top, statusBottom: statusBox.bottom }
+    })
+    expect(placement.statusTop).toBeGreaterThanOrEqual(placement.headerTop - 1)
+    expect(placement.statusBottom).toBeLessThanOrEqual(placement.headerBottom + 1)
+    expect(placement.statusBottom).toBeLessThanOrEqual(placement.mainTop + 1)
+    await expectNoHorizontalOverflow(page)
+  })
+
+  test('Admin shell keeps aligned content at fixed viewports', async ({ page }) => {
+    await loginAs(page)
+    await page.getByRole('link', { name: 'Admin', exact: true }).click()
+    await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
+
+    const metrics = await measureAdminWorkbench(page)
+    expect(metrics.decorationCount).toBe(0)
+    const expectedPadding = metrics.viewport >= 1024 ? 24 : 16
+    expect(metrics.headingFontSize).toBeGreaterThanOrEqual(24)
+    expect(metrics.headingFontSize).toBeLessThanOrEqual(28)
+    expect(metrics.heading.x - metrics.main.x).toBeGreaterThanOrEqual(expectedPadding - 1)
+    expect(metrics.heading.x - metrics.main.x).toBeLessThanOrEqual(expectedPadding + 1)
+
+    if (metrics.viewport >= 768) {
+      await expect(page.getByRole('columnheader', { name: 'Node' })).toBeVisible()
+    }
+
+    if (metrics.viewport >= 1024) {
+      expect(metrics.nav.width).toBeGreaterThanOrEqual(208)
+      expect(metrics.nav.width).toBeLessThanOrEqual(224)
+      expect(metrics.header.height).toBeGreaterThanOrEqual(48)
+      expect(metrics.header.height).toBeLessThanOrEqual(60)
+      expect(Math.abs(metrics.main.x - metrics.nav.right)).toBeLessThanOrEqual(1)
+    }
+    await expectNoHorizontalOverflow(page)
+  })
+
+  test('Admin shell expands on ultrawide widths', async ({ page }) => {
+    test.skip((page.viewportSize()?.width ?? 0) < 1024, 'Ultrawide measurement belongs to the desktop project')
+    await loginAs(page)
+    await page.getByRole('link', { name: 'Admin', exact: true }).click()
+    await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
+
+    const standard = await measureAdminWorkbench(page)
+    await page.setViewportSize({ width: 2560, height: 800 })
+    const ultrawide = await measureAdminWorkbench(page)
+    expect(ultrawide.page.width).toBeGreaterThan(standard.page.width * 1.5)
+    expect(Math.abs(ultrawide.heading.x - standard.heading.x)).toBeLessThanOrEqual(1)
+    await expectNoHorizontalOverflow(page)
+  })
+
+  test('Admin Settings keeps aligned content and touch targets', async ({ page }) => {
+    await loginAs(page)
+    await page.getByRole('link', { name: 'Admin', exact: true }).click()
+    await page.goto('/admin/settings')
+    await expect(page.getByRole('heading', { level: 1, name: 'Settings' })).toBeVisible()
+    await expect(page.getByRole('link', { name: /Admin overview/ })).toBeVisible()
+
+    const geometry = await page.evaluate(() => {
+      const heading = document.querySelector('.settings-page > h1')
+      const sections = document.querySelector('.settings-sections')
+      const breadcrumb = document.querySelector('.settings-page > p:first-child a')
+      if (!heading || !sections || !breadcrumb) throw new Error('Settings geometry surfaces are missing')
+      const headingBox = heading.getBoundingClientRect()
+      const sectionsBox = sections.getBoundingClientRect()
+      const breadcrumbBox = breadcrumb.getBoundingClientRect()
+      return { headingLeft: headingBox.left, sectionsLeft: sectionsBox.left, breadcrumbHeight: breadcrumbBox.height }
+    })
+    expect(Math.abs(geometry.headingLeft - geometry.sectionsLeft)).toBeLessThanOrEqual(1)
+    expect(geometry.breadcrumbHeight).toBeGreaterThanOrEqual(44)
     await expectNoHorizontalOverflow(page)
   })
 

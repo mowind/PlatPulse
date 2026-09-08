@@ -127,17 +127,25 @@ export default function AdminLayout() {
           <img className="app-brand-logo" src={platpulseMark} alt="" />
           <span>PlatPulse</span>
         </Link>
-        <button
-          ref={navToggleRef}
-          type="button"
-          className="nav-toggle"
-          aria-expanded={navOpen}
-          aria-controls="admin-nav"
-          onClick={() => setNavOpen((value) => !value)}
-        >
-          <span aria-hidden="true">☰</span> Menu
-        </button>
-        <SignOutButton />
+        <div className="admin-header-controls">
+          <div className="admin-header-context" role="group" aria-label="Admin connection status">
+            <span className="admin-header-context-label">Realtime</span>
+            {!resetting && <RealtimeNotice realtime={realtime} />}
+            {resetting && <span className="admin-header-context-state">Checking access…</span>}
+            <ServerStatusNotice />
+          </div>
+          <button
+            ref={navToggleRef}
+            type="button"
+            className="nav-toggle"
+            aria-expanded={navOpen}
+            aria-controls="admin-nav"
+            onClick={() => setNavOpen((value) => !value)}
+          >
+            <span aria-hidden="true">☰</span> Menu
+          </button>
+          <SignOutButton />
+        </div>
       </header>
       <div className="admin-body">
         <nav
@@ -181,8 +189,6 @@ export default function AdminLayout() {
         />
         <QueryClientProvider client={adminQueryClient}>
           <main className="app-main">
-            <ServerStatusNotice />
-            {!resetting && <RealtimeNotice realtime={realtime} />}
             {resetting ? <p role="status">Revalidating Admin access…</p> : <Outlet context={{ realtime }} />}
           </main>
         </QueryClientProvider>

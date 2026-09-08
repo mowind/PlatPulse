@@ -85,7 +85,6 @@ function OverviewHeader({
         <p>A compact read on what needs intervention across your PlatON estate.</p>
       </div>
       <div className="header-status">
-        <span className="live-dot" aria-hidden="true" />
         {snapshot ? (
           <>
             Last good snapshot · <SnapshotTime timestamp={snapshot.generated_at} />

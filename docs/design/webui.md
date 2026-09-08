@@ -112,7 +112,7 @@ Admin covers configuration and diagnostics; it must not duplicate Home's full No
 
 Every Admin render begins with `Checking access…` when authorization is unresolved. It never flashes data from a previous session.
 
-The Admin shell shares Home's accepted dark operational visual language: an immersive dark canvas, translucent glass surfaces, soft borders, restrained blur, high-contrast primary text, quiet secondary copy, and indigo/violet accents. The Owner-only shell keeps its management information architecture: a persistent desktop sidebar and an accessible tablet/phone drawer with focus entry, Tab trapping, Escape and scrim close, body scroll lock, and focus restoration. Header and navigation controls remain at least 44×44 CSS pixels.
+The Admin shell shares Home's accepted Emerald light visual language: a Slate-50-like canvas, quiet white surfaces, light borders, restrained shadow, high-contrast primary text, quiet secondary copy, and measured Emerald selection accents. The Owner-only shell keeps its management information architecture: a persistent desktop sidebar and an accessible tablet/phone drawer with focus entry, Tab trapping, Escape and scrim close, body scroll lock, and focus restoration. Header and navigation controls remain at least 44×44 CSS pixels.
 
 The first shared-theme proof is `PAGE-ADMIN-OVERVIEW` at `/admin`. It presents the Server-owned attention queue, Node Health Summary, and Agent inventory as independent Admin query/realtime surfaces. Starting, Empty, Error, Stale, last-good, Unknown, never-observed, Disabled, and Unsupported states remain explicit in text plus an icon/shape or equivalent explanation; no state is represented only by color or converted to a zero, false, or Healthy value.
 
@@ -282,7 +282,8 @@ Stable semantic pattern references:
 | `PATTERN-ACCESS-CHECK` | First protected render is `Checking access…`; no old-data flash. |
 | `PATTERN-AUTH-GENERATION` | Close old streams, abort requests, clear cache, discard old generation. |
 | `PATTERN-CONFIRMATION` | High-risk actions use explicit confirmation, typed phrases where required, and no optimistic result. |
-| `PATTERN-RESPONSIVE-TABLE` | Desktop table becomes priority cards; detail remains available without primary horizontal scroll. |
+| `PATTERN-RESPONSIVE-TABLE` | Desktop table becomes priority cards; detail remains available without primary horizontal scroll. Agents uses the summary/detail split in §8.5. |
+| `PATTERN-ADMIN-WORKBENCH` | Admin-scoped left alignment, available-width lists, contextual realtime status, independent selection/focus, and no page-level horizontal overflow (§8.5). |
 | `PATTERN-LIVE-REGION` | Announce meaningful transitions only; do not announce high-frequency SSE. |
 | `PATTERN-CONFLICT-RELOAD` | Show current server state and preserve user draft. |
 | `PATTERN-REDACTED-DETAIL` | RPC Endpoints, credentials, raw Peer addresses, tokens, and complete bodies remain redacted. |
@@ -348,7 +349,7 @@ Each Settings card keeps independent loading, mutation, success, field-error, pa
 
 ### 8.4 Overview (`PAGE-ADMIN-OVERVIEW`)
 
-The Overview is the Owner's triage surface, not a second copy of the Nodes or Agents inventory and not a remote-control console. It borrows Komari's compact scanning density, dark operational canvas, restrained borders, strong primary numbers, and quiet secondary copy without importing Komari's database, subscription, traffic-ranking, pricing, latency-probe, or remote-operation model. The accepted order is `Attention -> Summary -> Node Health -> Agent inventory`.
+The Overview is the Owner's triage surface, not a second copy of the Nodes or Agents inventory and not a remote-control console. It borrows Komari's compact scanning density, light operational canvas, restrained borders, strong primary numbers, and quiet secondary copy without importing Komari's database, subscription, traffic-ranking, pricing, latency-probe, or remote-operation model. The accepted order is `Attention -> Summary -> Node Health -> Agent inventory`.
 
 #### 8.4.1 Composition and navigation
 
@@ -485,7 +486,7 @@ The Agents page owns the complete Agent inventory, epoch, boot/report state, Nod
 
 #### 8.4.7 Responsive and visual acceptance
 
-The visual balance is PlatPulse's dark operational system first and Komari-inspired density second: near-black translucent surfaces, neutral one-pixel borders, restrained 10-14px radii, reduced blur and large shadows, high-contrast counts, quiet labels, indigo/violet navigation accents, and semantic green/amber/red/neutral status treatments. No status depends on color alone. The production UI remains English for the MVP; localization is a separate whole-application capability rather than a mixed-language Overview.
+The visual balance is PlatPulse's Emerald light system first and Komari-inspired density second: Slate-50-like background, translucent-white surfaces, quiet one-pixel borders, restrained 8-10px radii, no default blur, minimal shadows, high-contrast counts, quiet labels, neutral primary controls, measured Emerald selection accents, and semantic green/amber/red/blue/neutral status treatments. No status depends on color alone. The production UI remains English for the MVP; localization is a separate whole-application capability rather than a mixed-language Overview.
 
 At `1280x800`, the Admin sidebar is persistent, Attention and Node Health are full-width, summary cards form four columns, and Agent cards form two columns. At `768x1024`, navigation uses the accessible drawer, summary cards form a two-by-two grid, and Node/Agent content is single-column. At `360x800` and `390x844`, summary cards remain a compact two-by-two grid when legible and may fall to one column when content requires it; Node tables become priority cards and Agent cards stack. Health/Freshness and Head/Sync remain paired, secondary evidence moves into expansion, controls remain at least 44x44 CSS pixels, and no primary horizontal page scrolling is allowed. The page remains functional at 200% zoom, in portrait and landscape, and with reduced motion.
 
@@ -500,6 +501,96 @@ SCN-OVERVIEW-PARTIAL-FAILURE
 SCN-OVERVIEW-EMPTY-SETUP
 SCN-OVERVIEW-RESPONSIVE
 ```
+
+### 8.5 Compact Admin workbench — first delivery (`PAGE-ADMIN-AGENTS`, `PAGE-ADMIN-AGENT-DETAIL`)
+
+**Decision status:** Accepted through the confirmed `grill-with-docs` review. This records the next implementation contract, not a claim that the current UI or tests already satisfy it. This documentation delivery does not authorize production code changes; implementation requires a separate explicit request.
+
+#### 8.5.1 Scope and precedence
+
+The first delivery changes the shared Admin shell and the Agents summary, with regression coverage across all retained Admin routes and isolation checks for Home. Preserve the Emerald brand and existing business rules; borrow compact spatial organization, not another product's dark theme, small text, or data model.
+
+- In scope: Admin background, sidebar, header, content origin, heading scale, shrink/overflow boundaries, Agents summary organization, and existing Agent Detail access to secondary evidence.
+- Out of scope: Server/API expansion, new client-derived state or severity, global status renaming, Settings/Audit internal restructuring, Overview module reordering, a comprehensive restyle of other page controls, and restoration of removed routes or features.
+- This section governs the shared Admin container and Agents presentation. Settings §8.3 and Overview §8.4 retain their internal composition and behavior; only their shared shell changes in this delivery. Home and Login presentation remain unchanged.
+- Authorization, Public/Admin separation, redaction, last-good semantics, REST authority, query namespaces, SSE invalidation/reset, URL/back-navigation context, and mutation contracts in §§3–7 remain in force. Do not introduce new API operations or optimistic business state.
+
+#### 8.5.2 Shared shell and density
+
+Use an Admin-scoped layout rather than modifying the shared public page container. Desktop content begins approximately 24 CSS pixels after the sidebar; page headings, filters, and primary lists share one left alignment line. Wide lists use the remaining horizontal space, including on ultrawide screens, rather than a uniformly centered, capped Admin wrapper. Settings keeps a reasonable inner form width aligned left beneath its normally aligned page heading.
+
+Suggested geometry is a baseline, not a rigid height constraint or a measurement inferred from screenshots:
+
+| Element | Baseline |
+|---|---|
+| Desktop sidebar | 208–224 CSS px |
+| Header | 48–56 CSS px, without clipping controls |
+| Content padding | 24 CSS px desktop; 16 CSS px narrow |
+| Page title | 24–28 CSS px |
+| Body / primary table text | About 14 CSS px |
+| Secondary text | 12–13 CSS px with sufficient contrast |
+| Ordinary desktop content controls | About 36 CSS px visual height |
+| Header/navigation and primary touch controls | At least 44×44 CSS px hit targets |
+| Panel | 16–20 CSS px padding, about 8 CSS px radius |
+| Module spacing | 16–24 CSS px |
+| Typical rows | About 48 CSS px single-line / 64 CSS px two-line, growing for important content |
+
+Admin uses a stable Slate-50-like background and quiet white panels, without the public gradient/grid crossing its reading surface. Emerald remains a measured accent. Sidebar selection uses a light Emerald background, stronger text, and a thin side marker; keyboard focus remains separately visible, for example through `:focus-visible`. Do not remove outlines without an accessible replacement. This delivery does not recolor every existing primary button.
+
+Measure actual container bounds before changing CSS: source inspection found centering and maximum-width rules, but the Admin maximum width need not bind at 1280 CSS pixels. Do not assume every large gap has the same cause. Check combined sidebar reservation, margins, padding, and the correct Flex/Grid shrink boundaries. Apply `min-width: 0` where needed; do not globally break words. Table headers may wrap between words, not split letters. Necessary two-dimensional overflow belongs to the table container, never the page, heading, or action area.
+
+Retain §2.1 vocabulary, including `Current`, with a visible, accurate dimension label. Place global realtime status in a compact shared status area near the header/page context, not an isolated pre-heading row. SSE connectivity does not certify data freshness, Agent liveness, Node health, or credential validity. Do not invent update timestamps or refresh capabilities.
+
+#### 8.5.3 Agents summary and existing detail
+
+The Owner scans Agent reporting, inventory, credentials, and diagnostic evidence, then opens the existing `/admin/agents/:agentId` route for investigation. Keep `/admin/agents` as the list route and preserve existing access checks, query/realtime behavior, safe return, and authoritative error handling. Use existing `AgentDiagnostic` data; this is a presentation-only change.
+
+Desktop uses six summary columns:
+
+| Column | Default content and limits |
+|---|---|
+| Agent | Shortened Agent ID linked to the existing detail route. The current DTO has no Agent display name or hostname; do not manufacture one from Node names. |
+| Reporting status | Existing Server liveness with its dimension explicit; not Node health, browser connectivity, clock reliability, or credential status. |
+| Last received | Server `last_received_at`, explicitly labelled as receipt time, with never-received/unknown preserved; not the report sequence. |
+| Node Inventory | Total retained Nodes assigned to the Agent. `nodes.length` includes Active and Retired Nodes; do not label this Active, online, or healthy Nodes. |
+| Credentials | Server-provided validity and necessary counts, never secrets. Active and explicitly revoked counts need not sum to total: expired credentials can be neither. Do not recalculate validity in the browser. |
+| Diagnostics | Separately labelled historical counters and available spool/reporting evidence, not one healthy/failed rollup. |
+
+Do not add a separate View-only action column or new inline expansion. The identity link provides detail access. Full Agent ID must be viewable and copyable through keyboard and touch, not only a hover tooltip. Epoch, full boot/shutdown identifiers, report sequence, and complete safe diagnostic evidence belong in the existing detail sections. Retain redaction: “complete” means the existing authorized, redacted evidence, not raw secret-bearing errors or report bodies.
+
+The existing detail separates Identity, Liveness, Boot/report state, Inventory, Credentials, Diagnostics, and Audit. Preserve independent states and evidence reachability. Credential revocation stays there with its explicit warning, Confirm/Cancel flow, busy guard, conflict reload, and authoritative refetch; no destructive quick action is added to the list. No new gap timeline, resolve/reset operation, or recovery workflow is promised.
+
+#### 8.5.4 Diagnostic evidence semantics
+
+- `sequence_gap_count` counts recorded sequence-gap intervals, not missing reports, currently unresolved gaps, or active failures. Label the historical interval count explicitly.
+- `security_event_count` is an accumulated recorded-event count without per-event resolution/timestamps in this summary. It does not prove an ongoing incident or credential failure.
+- Queue, in-flight, fatal, dropped-range, and delivery-error evidence remain distinguishable. The latest Host snapshot can retain a last error or historical dropped range; that alone does not prove a current failure. Use available observation metadata without inventing per-field recovery/freshness or client severity rules.
+- No Host observation, spool not yet observed, and an authoritative zero queued count are different states. Unknown is never converted to zero or normal.
+- Keep concise indications of important diagnostic evidence in the summary; move long safe error text and secondary details to the existing detail route. Do not suppress critical evidence because reporting status is `Current`.
+- Historical counters remain visibly historical. Do not infer “resolved” from a recent successful report or present stale evidence as a current fault. Multiple important findings may increase row height; a two-line limit must not hide them.
+
+Information hierarchy follows decision relevance: key state and restrictions remain visible; consequences and confirmation requirements stay beside their operation; implementation mechanisms and complete safe evidence move to help/detail. This does not weaken Settings preview/typed confirmation or Site Access Mode confirmation, and Audit stays immutable and read-only.
+
+#### 8.5.5 Narrow-screen behavior
+
+Reuse and improve the existing priority-card transformation rather than rendering duplicate desktop and mobile copies. A phone user must identify the Agent, read its reporting status, and enter detail without horizontal scrolling or hover. Card order is identity/detail link; reporting status and last receipt; important diagnostic evidence or explicit unknown; Node Inventory and credential summary. Full identifiers and long evidence remain accessible through detail.
+
+Choose the table/card breakpoint from available content width, not blind preservation of the current breakpoint. Explicitly test 768 CSS pixels, where the existing UI uses a table and a navigation drawer. Preserve table/card semantics, predictable keyboard order, visible focus, touch targets, and the existing drawer's focus trap, Escape/scrim close, scroll lock, and focus restoration.
+
+#### 8.5.6 Acceptance and implementation checks
+
+The scenario IDs below specify required coverage, not already passing tests:
+
+- `SCN-ADMIN-WORKBENCH-LAYOUT`: every retained Admin route has aligned headings/content, no unexplained sidebar-to-content gap, usable remaining width, and no page-level horizontal overflow. Settings retains its left-aligned inner width; Home has no shared-style regression.
+- `SCN-AGENTS-PRIORITY-SUMMARY`: six-column summary, accurate retained-Node and credential counts, shortened identity with full-value access, correct receipt-time semantics, and secondary evidence reachable in existing detail. Include an expired-but-not-revoked credential and mixed Active/Retired inventory.
+- `SCN-AGENTS-DIAGNOSTIC-EVIDENCE`: distinguish historical gap intervals/security counters from reporting liveness; cover no Host observation, unobserved spool, explicit zero, retained delivery errors/dropped ranges, stale evidence, long safe error strings, and multiple important findings without false normal/current-failure rollups.
+- `SCN-AGENTS-RESPONSIVE-DETAIL`: identify/status/detail without primary horizontal scroll on phones, tablet table/card usability, accessible full-ID view/copy, and preserved detail privacy and explicit revocation confirmation.
+
+Run coverage at the fixed 360×800, 390×844, 768×1024, and 1280×800 projects; additionally inspect an ultrawide desktop and actual 200% browser zoom/reflow. A viewport-shrinking helper alone is not evidence of actual browser zoom verification. Check portrait/landscape, keyboard and touch, contrast (at least 4.5:1 ordinary text and 3:1 large text), focus, and reduced motion. Use long identifiers, long errors, populated, empty, Starting, Error, Stale, Unknown, and last-good cases. Clipping or an overflow helper passing is not proof of readable columns or reachable controls.
+
+Update existing Agent summary tests that require all old verbose evidence in one row to assert the new priority summary AND retained detail evidence. Preserve independent-state, authorization, redaction, and confirmation coverage. Shared shell tests must cover every retained route, not only Agents. Verify the generated operation/DTO references and current query/reset wiring during implementation handoff rather than adding new API behavior.
+
+**Separately tracked source/test drift, not feature scope:** read-only inspection found Home/Global navigation assertions inconsistent with the current shell; a legacy People entry inconsistent with retained routes; legacy per-Node visibility and rotate/recover guidance in Agent Detail; and an Audit target link/filter list referring to removed or outdated surfaces/events. Resolve authority before updating affected assertions, and record unrelated follow-up work separately. Do not restore removed features to satisfy old tests. No baseline test pass, measured browser layout, or completed implementation is asserted by this review.
 
 ## 9. Content, privacy, and redaction
 
@@ -564,6 +655,10 @@ mock operation → response DTO → error cases → invalidation → expected re
 Scenario IDs:
 
 ```text
+SCN-ADMIN-WORKBENCH-LAYOUT
+SCN-AGENTS-PRIORITY-SUMMARY
+SCN-AGENTS-DIAGNOSTIC-EVIDENCE
+SCN-AGENTS-RESPONSIVE-DETAIL
 SCN-AUTH-OWNER-LOGIN
 SCN-AUTH-SESSION-REVOKED
 SCN-SETTINGS-ROUTE
@@ -587,16 +682,17 @@ Scenario state is memory-only. No credentials, secrets, production API origins, 
 
 ## 11.1 Accepted Home and Node Detail visual contract (Issues #75 and #97)
 
-The accepted direction from Issue #75 and the compact Home contract from Issue #97 are the production visual baseline for the public Home surface. It borrows the supplied Nezha references' operational hierarchy and dark glass treatment without importing their server, pricing, or remote-control data model.
+The accepted direction from Issue #75 and the compact Home contract from Issue #97 remain the production structural baseline for the public Home surface. The visual layer now adopts the supplied Emerald reference and the inspected Tokinx/komari-theme-emerald source at commit b7baf4535939cfdda063d731943fc36e3ead4c51, without importing its server, pricing, or remote-control data model.
 
 ### Visual language
 
-- Home and public Node Detail use a dark, immersive shell with near-black translucent panels, soft borders, rounded corners, restrained blur, and indigo/violet accents.
-- The visual treatment is subordinate to operational truth. Decorative artwork or gradients may sit behind the shell, but the interface remains readable when the artwork is absent, blocked, or reduced.
-- Primary numbers and page titles use high contrast and strong weight. Secondary labels, timestamps, identifiers, and explanatory copy are visibly quieter.
-- Green, amber, red, violet/indigo, and neutral tones communicate good, attention, error, contextual accent, and unavailable/unknown states respectively. Every status also has text or an equivalent accessible explanation; color is never the sole signal.
-- Cards, pills, separators, progress bars, and focus states share one spacing and radius system. Hover elevation is optional decoration and must not be required to discover an action.
+- Home, public Node Detail, and Login use a Slate-50-like light canvas with a restrained Emerald-to-Lime top gradient and low-contrast inclined geometric grid. The background is decorative, pointer-inert, absent from the accessibility tree, and fades before the lower reading surface. Admin retains the Emerald light brand but uses the stable, undecorated workbench background specified in §8.5; this exception does not change Home or Login.
+- Surfaces are quiet white or translucent-white panels with approximately 8px radius, light borders, compact spacing, and minimal shadow. Default panels do not require `backdrop-filter`; menus, forms, dialogs, and other overlays may use more opaque surfaces.
+- Primary numbers and page titles use high contrast and strong weight. Secondary labels, timestamps, identifiers, and explanatory copy are quieter without being reduced below readable body sizes. Important values use tabular numerals where appropriate.
+- Emerald is a measured brand accent and selection cue, not a replacement for every primary action. Neutral primary controls, blue chart series, amber warnings, red destructive/error states, and neutral Unknown/Unsupported states remain distinct.
+- Cards, pills, separators, fine 4px progress tracks, and focus states share one spacing and radius system. Clickable cards may use a 150–200ms hover lift of about 2px and a faint Emerald shadow only on hover-capable devices; static containers do not imply interactivity. Reduced motion removes the lift and non-essential transitions.
 - The visual contract does not authorize fields that are absent from the Public Projection. Node Detail may show the monitored PlatON process CPU/memory, process start/uptime, last Agent report time, Node Data usage/capacity, and sampled Host network receive/transmit rates supplied by the Server; it does not add pricing, raw Peer identity, Host identity, or RPC Endpoint text.
+- The default geometry is adapted from the Emerald repository's inline `Background.vue` SVG under its MIT license. Keep the copyright and license notice with the adaptation; do not copy Komari branding, logo assets, external flags, fonts, or theme-management behavior.
 
 ### Home composition (PAGE-HOME-NETWORKS and PAGE-HOME-NETWORK)
 
@@ -656,7 +752,7 @@ The UI keeps collection state, freshness state, value state, and authorization s
 - Whole-card Node links, Node Detail Network links, the Network back link, and Details/Network tabs are reachable by keyboard in a predictable order. Browser back/forward preserves route context.
 - Tabs use tab/list semantics with a single selected tab, a labelled panel, visible focus, and keyboard activation. Switching tabs preserves Node identity and summary state.
 - Pages expose one logical h1, ordered headings, semantic lists/tables where appropriate, meaningful empty/error regions, and polite live regions only for meaningful transitions.
-- Status uses text plus icon, shape, or an equivalent explanation. Focus rings remain visible against the dark shell. Reduced motion removes non-essential transitions and does not remove state information.
+- Status uses text plus icon, shape, or an equivalent explanation. Focus rings remain visible against the light canvas and composed surfaces. Reduced motion removes non-essential transitions and does not remove state information.
 
 ### Exploration disposition and production boundary
 
@@ -664,9 +760,7 @@ The three throwaway variants (Signal stack, Mission control, Evidence ledger)
 remain historical exploration evidence only. Issue #89 completed the cleanup:
 the production WebUI contains no variant switcher, prototype route branch, or
 prototype-only module, and historical `variant` query parameters do not alter
-the production Home or Node Detail routes. The untracked Nezha reference
-images remain local evidence and are not bundled, imported, or referenced by
-runtime code. The accepted production contract and its routed regression
+the production Home or Node Detail routes. The supplied Emerald reference image remains local evidence and is not bundled, imported, or referenced by runtime code. The accepted production contract and its routed regression
 coverage are the only supported Home and Node Detail implementation.
 
 ### Production seam and test intent
@@ -688,6 +782,10 @@ desktop-1280
 
 | Scenario | Required assertions |
 |---|---|
+| `SCN-ADMIN-WORKBENCH-LAYOUT` | Required assertions and edge cases in §8.5.6; preserve shared access/state/confirmation contracts. |
+| `SCN-AGENTS-PRIORITY-SUMMARY` | Required assertions and edge cases in §8.5.6; preserve shared access/state/confirmation contracts. |
+| `SCN-AGENTS-DIAGNOSTIC-EVIDENCE` | Required assertions and edge cases in §8.5.6; preserve shared access/state/confirmation contracts. |
+| `SCN-AGENTS-RESPONSIVE-DETAIL` | Required assertions and edge cases in §8.5.6; preserve shared access/state/confirmation contracts. |
 | `SCN-AUTH-OWNER-LOGIN` | safe return, checking state, success, no password in URL/history |
 | `SCN-AUTH-SESSION-REVOKED` | old stream closes, Admin data clears, no stale flash, login/revalidation path |
 | `SCN-SITE-ACCESS-PRIVATE` | from `/admin/settings`, switch to Private, close public streams, require Home login, clear old Public cache, preserve Admin Owner-only access, and record an Audit Event |
@@ -730,6 +828,7 @@ A page is ready for production implementation only when:
 
 | Decision | Source |
 |---|---|
+| Compact Admin workbench first delivery: Admin-only left-aligned shell, six-column Agents summary with existing detail, precise evidence/count semantics, responsive acceptance; Settings/Audit restructuring deferred | Confirmed `grill-with-docs` Q1–Q12 and final documentation approval; §8.5. Accepted design, not an implementation/test-completion claim. |
 | Admin visual shell and responsive baseline | Issue #35, accepted prototype branch `prototype/ui-shell-variants` |
 | Home/Admin route and scope boundaries | Issue #34 |
 | Shared freshness, realtime, and authorization | Issue #36 |
@@ -740,7 +839,7 @@ A page is ready for production implementation only when:
 | MVP scope convergence: Komari-like Home/Admin separation, no Admin duplicate Node Detail, Server-only bounded Block History, no History Gap/Backfill, report-level Receipt, Peer Count only | Confirmed design review; see `docs/design/platpulse.md` |
 | Site-level access mode (Komari-like), Owner-only principals, per-Node visibility removed | Confirmed design review; see `docs/design/platpulse.md` |
 | Accepted Home / Node Detail visual direction, responsive baseline, public-data contract, and production test seam | Issue #75 and accepted branch `prototype/home-node-detail` |
-| Unified dark Admin shell and Overview shared-theme foundation | Issue #110 |
+| Unified light Admin shell and Overview shared-theme foundation | Issue #110 plus Emerald visual refit |
 | Unified Owner Settings page for History Window and Site Access Mode | Issue #111 |
 | Admin visual convergence across retained pages | Issue #112 |
 | Unified Admin experience integration contract, canonical Settings route, and fixed-viewport verification | Issue #113, parent Issue #109 |
