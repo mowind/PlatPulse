@@ -64,14 +64,14 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expectNoHorizontalOverflow(page)
 
     if (page.viewportSize()?.width === 360) {
-      const keyBox = await metadata.locator('span').first().boundingBox()
+      const keyBox = await metadata.getByText('Network key', { exact: false }).boundingBox()
       const statusBox = await metadata.getByRole('status', { name: 'Live updates connected' }).boundingBox()
       expect(keyBox).not.toBeNull()
       expect(statusBox).not.toBeNull()
       expect(statusBox!.y).toBeGreaterThan(keyBox!.y + keyBox!.height - 1)
     }
 
-    if (testInfo.project.name.includes('touch')) {
+    if (testInfo.project.use.hasTouch) {
       await adminLink.tap()
     } else {
       await adminLink.press('Enter')
