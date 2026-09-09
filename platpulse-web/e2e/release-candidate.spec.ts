@@ -82,12 +82,32 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
 
   test('Public Network Node cards keep compact facts, UTC receipt time, and touch-safe links', async ({ page }, testInfo) => {
     await loginAs(page)
+    const longNodeName = 'Node H — Producing Card With A Very Long Display Name That Must Not Overflow'
+    const longHealthReason = 'ServerOwnedHealthReasonThatMustWrapWithoutTruncationAtNarrowWidths0123456789abcdefghijklmnopqrstuvwxyz'
+    await page.route('**/api/public/v1/networks/home-convergence', async (route) => {
+      const response = await route.fetch()
+      const payload = (await response.json()) as {
+        nodes: Array<{ nodeId: string; healthReason?: string | null }>
+      }
+      await route.fulfill({
+        response,
+        body: JSON.stringify({
+          ...payload,
+          nodes: payload.nodes.map((node) =>
+            node.nodeId === '0195f2a1-0062-4062-8062-000000000062'
+              ? { ...node, healthReason: longHealthReason }
+              : node,
+          ),
+        }),
+      })
+    })
     await page.goto('/networks/home-convergence')
 
     await expect(page.getByRole('heading', { level: 1, name: 'Home Convergence Network With An Extremely Long Display Name' })).toBeVisible()
     const hCard = page.getByRole('article', { name: /Node H/ })
     await expect(hCard).toBeVisible()
     const hTitleLink = hCard.getByRole('link', { name: /Node H/ })
+    await expect(hTitleLink).toHaveText(longNodeName)
     await expect(hTitleLink).toHaveAttribute('href', '/nodes/0195f2a1-0060-4060-8060-000000000060')
     const detailsLink = hCard.getByRole('link', { name: 'View details' })
     await expect(detailsLink).toHaveAttribute('href', '/nodes/0195f2a1-0060-4060-8060-000000000060')
@@ -118,7 +138,9 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     }
     const hNode = networkPayload.nodes.find((node) => node.nodeId === '0195f2a1-0060-4060-8060-000000000060')
     if (!hNode?.freshness || !hNode.lastReportAt) throw new Error('Node H receipt timestamps are missing')
-    expect(Date.parse(hNode.freshness)).toBeLessThan(Date.parse(hNode.lastReportAt))
+    const reportLeadMs = Date.parse(hNode.lastReportAt) - Date.parse(hNode.freshness)
+    expect(reportLeadMs).toBeGreaterThan(40_000)
+    await expect(hCard.locator('time').first()).toHaveAttribute('dateTime', hNode.freshness)
 
     // The long public Node name remains visible inside its card without
     // creating page overflow at any fixed viewport.
@@ -129,7 +151,17 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
 
     const lCard = page.getByRole('article', { name: /Node L/ })
     await expect(lCard).toBeVisible()
-    await expect(lCard.getByText('one or more observations are stale or unknown', { exact: true })).toBeVisible()
+    const lReason = lCard.getByText(longHealthReason, { exact: true })
+    await expect(lReason).toBeVisible()
+    const lReasonLayout = await lReason.evaluate((element) => ({
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+    }))
+    expect(lReasonLayout.clientWidth).toBeGreaterThan(0)
+    expect(lReasonLayout.scrollWidth).toBeLessThanOrEqual(lReasonLayout.clientWidth)
+    expect(lReasonLayout.scrollHeight).toBeLessThanOrEqual(lReasonLayout.clientHeight)
     await expect(lCard.getByText('Oldest component update', { exact: true })).toBeVisible()
     await expect(lCard.locator('time')).toHaveCount(2)
 
@@ -155,13 +187,18 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
 
     await activate(hTitleLink)
     await expect(page).toHaveURL(/\/nodes\/0195f2a1-0060-4060-8060-000000000060$/)
-    await expect(page.getByRole('heading', { level: 1, name: /Node H/ })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 1, name: /Node H/ })).toHaveText(longNodeName)
+    await expect(page.locator('.node-hero-footer')).toContainText('Last report')
+    await expect(page.locator('.node-hero-footer')).toContainText('UTC')
+    await expectNoHorizontalOverflow(page)
 
     await page.goto('/networks/home-convergence')
     const reloadedCard = page.getByRole('article', { name: /Node H/ })
     await expect(reloadedCard).toBeVisible()
     await activate(reloadedCard.getByRole('link', { name: 'View details' }))
     await expect(page).toHaveURL(/\/nodes\/0195f2a1-0060-4060-8060-000000000060$/)
+    await expect(page.getByRole('heading', { level: 1, name: /Node H/ })).toHaveText(longNodeName)
+    await expectNoHorizontalOverflow(page)
   })
 
   test('Public Peer insight exposes bounded summaries without peer identities', async ({ page }) => {

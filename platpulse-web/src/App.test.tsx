@@ -716,6 +716,7 @@ describe('App shell with private Home', () => {
 
     const longName = 'Node with a very long name that remains readable on narrow screens'
     const longReason = 'One or more observations are unavailable while this Node is starting and waiting for a complete Server-owned snapshot.'
+    const unbrokenReason = 'ServerOwnedHealthReasonThatMustWrapWithoutTruncationAtNarrowWidths0123456789'
     const healthyNode = {
       nodeId: 'node-healthy',
       displayName: 'Healthy Node',
@@ -755,6 +756,18 @@ describe('App shell with private Home', () => {
       consensus: { state: 'unknown', freshness: 'unknown' },
       validator: null,
     }
+    const unbrokenReasonNode = {
+      ...startingNode,
+      nodeId: 'node-unbroken-reason',
+      displayName: 'Node With An Unbroken Health Reason',
+      healthReason: unbrokenReason,
+    }
+    const healthyWithUnknownReceiptNode = {
+      ...healthyNode,
+      nodeId: 'node-healthy-unknown-receipt',
+      displayName: 'Healthy Node With Unknown Receipt',
+      freshness: 'not-a-timestamp',
+    }
 
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
@@ -762,7 +775,7 @@ describe('App shell with private Home', () => {
       '/api/public/v1/networks/mainnet': () => jsonResponse({
         networkKey: 'mainnet',
         displayName: 'Mainnet',
-        nodes: [healthyNode, startingNode],
+        nodes: [healthyNode, startingNode, unbrokenReasonNode, healthyWithUnknownReceiptNode],
         peers: { state: 'ok', freshness: 'current', peerCount: 30 },
         geo: { state: 'disabled' },
         validators: [],
@@ -807,6 +820,16 @@ describe('App shell with private Home', () => {
     expect(within(startingCard).getByText(/RPC, Sync, and Consensus receipt time is unavailable/i)).toBeTruthy()
     expect(within(startingCard).getAllByText('Starting', { exact: true }).length).toBe(3)
     expect(within(startingCard).getByLabelText('Node component status').textContent).toContain('Starting')
+
+    const unbrokenReasonCard = (await screen.findByRole('heading', { level: 2, name: 'Node With An Unbroken Health Reason' })).closest('article')
+    if (!unbrokenReasonCard) throw new Error('Unbroken-reason Node card is missing')
+    expect(within(unbrokenReasonCard).getByText(unbrokenReason, { exact: true })).toBeTruthy()
+
+    const healthyWithUnknownReceiptCard = (await screen.findByRole('heading', { level: 2, name: 'Healthy Node With Unknown Receipt' })).closest('article')
+    if (!healthyWithUnknownReceiptCard) throw new Error('Healthy Node with unknown receipt card is missing')
+    expect(within(healthyWithUnknownReceiptCard).getByText('Healthy', { exact: true })).toBeTruthy()
+    expect(within(healthyWithUnknownReceiptCard).getByText('Oldest component update', { exact: true })).toBeTruthy()
+    expect(healthyWithUnknownReceiptCard.querySelector('.network-node-time strong')?.textContent).toBe('Unknown')
   })
 
   it('treats an invalid calendar timestamp as unavailable on public Node cards', async () => {

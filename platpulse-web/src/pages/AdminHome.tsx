@@ -14,8 +14,6 @@ import {
   StatusBadge,
   componentStateLabel,
   formatObservedAt,
-  formatRelativeTime,
-  formatUtcDateTime,
   freshnessLabel,
   livenessLabel,
 } from '../components/StatusBadge'
@@ -118,7 +116,11 @@ function RelativeTime({ timestamp }: { timestamp: string }) {
   const date = new Date(timestamp)
   if (Number.isNaN(date.getTime())) return <span>Unknown time</span>
   const relative = formatRelativeTime(date, new Date())
-  const absolute = formatUtcDateTime(date)
+  const absolute = new Intl.DateTimeFormat('en-GB', {
+    dateStyle: 'medium',
+    timeStyle: 'long',
+    timeZone: 'UTC',
+  }).format(date)
   return (
     <time dateTime={timestamp} title={absolute} aria-label={`${relative}; ${absolute}`}>
       {relative}
@@ -126,6 +128,15 @@ function RelativeTime({ timestamp }: { timestamp: string }) {
   )
 }
 
+function formatRelativeTime(value: Date, now: Date): string {
+  const seconds = Math.round((value.getTime() - now.getTime()) / 1000)
+  const absoluteSeconds = Math.abs(seconds)
+  const formatter = new Intl.RelativeTimeFormat('en', { numeric: 'auto' })
+  if (absoluteSeconds < 60) return formatter.format(seconds, 'second')
+  if (absoluteSeconds < 3_600) return formatter.format(Math.round(seconds / 60), 'minute')
+  if (absoluteSeconds < 86_400) return formatter.format(Math.round(seconds / 3_600), 'hour')
+  return formatter.format(Math.round(seconds / 86_400), 'day')
+}
 
 function isAuthoritativelyEmpty(snapshot: AdminOverview, nodes: AdminNodeListItem[], agents: AgentDiagnostic[]): boolean {
   return snapshot.summary.agents.total === 0 &&

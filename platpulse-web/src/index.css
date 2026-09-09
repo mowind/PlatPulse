@@ -3691,7 +3691,11 @@ button {
 }
 
 .home-shell .network-node-card .health-reason {
+  min-width: 0;
+  max-width: 100%;
   line-height: 1.35;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .home-shell .network-node-highlights {
