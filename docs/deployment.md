@@ -81,8 +81,10 @@ scripts/release-recovery-rehearsal.sh
 
 The command creates private schema fixtures under `target/recovery-rehearsal/`,
 starts each one so the compiled forward migrations run before serving, and records
-sanitized JSON/Markdown evidence. It also verifies the supported online backup path,
-checksum and integrity failures, stopped-Server confirmation, atomic restore and
+sanitized JSON/Markdown evidence. It also verifies the supported backup-artifact
+path through the packaged CLI while the Server is stopped; concurrent/live-write
+backup is not covered. It then checks checksum and integrity failures,
+stopped-Server confirmation, atomic restore and
 safety-copy behavior, secret-file preservation, corrupt input refusal, and higher
 schema refusal. Use `--self-test` for the fast fixture-generation check.
 
@@ -94,9 +96,12 @@ Server resolves the installed default `/usr/share/platpulse/web`. A configured
 `web_root`, or `serve --web-assets`, takes precedence over that default.
 
 The Server may start when the default or configured WebUI directory is
-missing/incomplete, but `/health/ready` reports the `web_assets_missing`
-component as not ready. `init` emits a warning instead of creating or
-modifying WebUI files.
+missing/incomplete, but `/health/ready` reports the `web_assets` component as
+not ready with reason `web_assets_missing`. Readiness evaluates six components:
+`sqlite`, `owner`, `web_assets`, `shutdown`, `critical_workers`, and `corruption`;
+any `not_ready` component makes the endpoint return HTTP 503. `/health/live`
+only proves that the event loop responds. `init` emits a warning instead of
+creating or modifying WebUI files.
 
 ```bash
 platpulse-server init --config /etc/platpulse/server.toml
@@ -110,6 +115,33 @@ platpulse-server serve --config /etc/platpulse/server.toml
 development, and custom installations. It has higher precedence than the
 `web_root` value in `server.toml`, which has higher precedence than the
 built-in default.
+
+The current production provider is Telegram. If no channel is configured,
+Notification Events are still recorded but no Delivery rows are created; configure
+a channel with a path to a secret file and a destination:
+
+```toml
+[notifications.telegram]
+enabled = true
+token_file = "/etc/platpulse/secrets/telegram-token"
+chat_id = "123456789"
+max_attempts = 5
+retry_base_seconds = 60
+```
+
+The token file must be a regular file readable by the `platpulse-server` service
+user (mode `0600` is recommended when its owner/group is that service account).
+The provider reads and trims it for each send, so controlled token rotation takes
+effect without a restart. For a queued Delivery, an unreadable or empty token file
+or a disabled/missing channel produces `state = failed` with
+`last_error_kind = config`, without calling Telegram or consuming an attempt; a
+new Owner test-send action rejects a disabled channel before creating its Event or
+Delivery. Provider/API transport failures retry with bounded exponential backoff;
+exhaustion becomes `dead_letter`. An Owner can manually retry a `failed`,
+`retry_scheduled`, or `dead_letter` Delivery after correcting the configuration.
+Delivery destination is masked; the full token and directory path never enter
+DTOs, Audit, or logs, while the Channel DTO intentionally exposes only the
+secret-file basename as `providerRef`.
 
 ## Transport modes
 
@@ -319,6 +351,6 @@ The checked-in deployment assets are:
 
 ## Upgrade and rollback
 
-Before upgrading, stop the Server, take an online backup with the packaged `backup` command, and copy the backup plus the pepper and TLS secret files to protected storage. Verify the release `SHA256SUMS` file and keep the previous binary/archive available. Start the new Server and confirm `/health/live`, `/health/ready`, migrations, and the Admin audit surface before returning traffic.
+Before upgrading, stop the Server, take a backup with the packaged `backup` command, and copy the backup plus the pepper and TLS secret files to protected storage. Verify the release `SHA256SUMS` file and keep the previous binary/archive available. Start the new Server and confirm `/health/live`, `/health/ready`, migrations, and the Admin audit surface before returning traffic.
 
 If readiness or a post-upgrade smoke check fails, stop the new process, restore the previous matching Server/Agent artifacts, and start the previous version against the unchanged state directory. Do not delete or downgrade the database in place: a schema migration is forward-only. If the new version has already migrated the database, restore the pre-upgrade backup into a fresh state directory, restore the pepper and secret files with their private permissions, and validate the restored instance before switching the service back. Keep the failed release logs and recovery-rehearsal evidence for incident review.

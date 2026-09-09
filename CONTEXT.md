@@ -41,7 +41,7 @@ The PlatON chain environment to which a Node belongs, such as mainnet or testnet
 _Avoid_: Agent network
 
 **Network Identity**:
-The observed genesis hash, chain ID, and P2P network ID that distinguish a Network. A configured display name alone is not network identity.
+The observed genesis hash, chain ID, and P2P network ID that distinguish a Network, plus an optional bech32 address HRP when the Node exposes it. A configured display name alone is not network identity. The Server validates this identity against the Network Registry; a mismatch does not merge block history into the registered Network.
 _Avoid_: Network label, Chain ID alone
 
 **Network Registry**:
@@ -109,19 +109,19 @@ The status and latest successful value for one independently collected component
 _Avoid_: Latest attempt result, Nullable metric
 
 **Agent Report**:
-An immutable report containing an Agent's complete current observation view. Retries preserve the same report identity and content; the Server derives its current projection and recent block history from accepted reports.
+An immutable report containing an Agent's complete current observation view plus bounded newly collected Block Summaries and History Gaps. Retries preserve the same report identity and content; the Server derives its current projection and recent block history from validated report facts.
 _Avoid_: Mutable heartbeat, Partial state patch
 
 **Report Receipt**:
-The Server's durable idempotency record for one Agent Report, including its content hash and exact acceptance result. The result is report-level — accepted or rejected with a stable rejection code — with no per-Node partial result matrix. It does not retain the complete report body indefinitely.
+The Server's durable idempotency record for one Agent Report, including its content hash and exact acceptance result. The top-level result is `accepted`, `partially_accepted`, or `rejected`; the receipt also carries whole-Inventory, per-Node current, and per-sample/range dispositions with stable rejection codes and retryability. It does not retain the complete report body indefinitely.
 _Avoid_: Raw report archive, Access log
 
 **Applied Receipt Record**:
-A bounded Agent-local terminal marker showing that one Report Receipt was transactionally applied before its Agent Report left the Durable Spool. It retains only the identity and outcome needed to detect a recent duplicate or conflict; it is not Report History, a Receipt archive, or a user-facing audit record.
+A bounded Agent-local terminal marker showing that one Report Receipt—including `accepted`, `partially_accepted`, or `rejected` and its per-item outcomes—was transactionally applied before its Agent Report left the Durable Spool. It retains only the identity and outcome needed to detect a recent duplicate or conflict; it is not Report History, a Receipt archive, or a user-facing audit record.
 _Avoid_: Report Receipt, Receipt archive, Agent audit event
 
 **Report Ingestion**:
-The Server's atomic acceptance of one authenticated Agent Report, including idempotency, invariants, projection updates, recent block history, invalidation, and its exact Report Receipt.
+The Server's transactional acceptance of one authenticated Agent Report, including idempotency, invariants, projection updates, recent block history, and its exact Report Receipt. After a successful commit, the Server emits affected-resource invalidation events; a rollback emits no invalidation.
 _Avoid_: HTTP handler update, Partial projection write
 
 **Current Projection**:
@@ -184,9 +184,9 @@ _Avoid_: Host observation
 The chain-facing operational state observed from one PlatON Node, including block, transaction, synchronization, consensus, and peer information.
 _Avoid_: Agent chain snapshot, Network observation
 
-**Peer Count Observation**:
-The current number of connected Peers observed from one PlatON Node, collected as part of its chain observation. A successful collection may be authoritatively zero, while a collection failure preserves the last successful count and its age.
-_Avoid_: Peer Snapshot, Peer history, IP-deduplicated count
+**Peer Count**:
+The number of entries in a current per-Node Peer Snapshot or Server-supplied aggregate. A successful empty snapshot is authoritative zero; omitted or unsupported peer collection, and failed collection with last-good data, remain distinct states.
+_Avoid_: treating missing peers as zero, IP-deduplicated count
 
 **Peer Snapshot**:
 A complete successful per-Node view of currently connected Peers, keyed by Peer ID. A successful empty snapshot clears the prior set, while collection failure preserves the last successful set and its age.
@@ -283,4 +283,12 @@ _Avoid_: Silence without scope, Health override
 **Owner**:
 A human principal allowed to access the Admin Dashboard and manage PlatPulse.
 _Avoid_: Super viewer, Shared admin
+
+**Viewer**:
+A human principal allowed to authenticate and read the Home Public Projection, including when Site Access Mode is Private, but not allowed to access the Owner-only Admin Dashboard or Admin API.
+_Avoid_: Guest, Read-only Owner
+
+**Guest**:
+An anonymous requester. Guest access is not a human role or credential: it can read selected Public Home routes only when Site Access Mode is Public.
+_Avoid_: Viewer, Anonymous Owner
 

@@ -14,7 +14,7 @@ The harness is the executable evidence for the matrix below; the checked-in disp
 
 | Area | Executable evidence | Disposition |
 | --- | --- | --- |
-| Public/Admin/Agent route authorization | Packaged HTTP requests with Guest, Viewer, Owner, and Agent credentials | PASS: route groups reject the wrong principal and do not cross credential boundaries. |
+| Public/Admin/Agent route authorization | Packaged HTTP requests with anonymous requests while Guest access is disabled, Viewer/Owner Sessions, and Agent Credentials | PASS: route groups reject the wrong principal and do not cross credential boundaries. |
 | Guest access and private projections | Anonymous requests with Guest access disabled plus authenticated Public projection assertions | PASS for the packaged default-private boundary; Guest-enabled transition remains a residual fixture gap. |
 | Session fixation and revocation | Packaged login with an existing cookie and logout; focused role/disable tests | PASS for rotation and logout. Role/disable transitions remain an explicit nonblocking residual risk. |
 | CSRF, exact Origin, cookie policy | Missing/wrong CSRF, wrong Origin, Secure/HttpOnly/SameSite cookie and TLS header checks | PASS: mutations and login require the configured security signals. |
@@ -24,7 +24,7 @@ The harness is the executable evidence for the matrix below; the checked-in disp
 | Injection and routing | SQL-shaped identifiers, encoded traversal, API-not-found versus SPA fallback, and external redirect probes | PASS: identifiers remain data; no traversal or redirect was observed. |
 | Redaction and operations | Metrics, backup mode, recovery rehearsal, and sanitized error probes | PASS for exercised outputs; recursive logs/Doctor/package/restore scan remains NOT_RUN. |
 | Dependencies and package contents | Package validation and configured audit commands | Per-finding dependency disposition is a release-environment residual risk and is not claimed as run here. |
-| Optional integrations | Geo, Validator Provider, notifications, and individual Agent failure checks | PASS: failures remain degraded and do not cross trust/readiness boundaries. |
+| Optional integrations | Geo, Validator Provider, notifications, and individual Agent failure checks | NOT_RUN: these environment-dependent failure fixtures remain residual risk; the intended degradation boundary is documented but not evidence of a completed run. |
 
 ## Residual risks and owners
 

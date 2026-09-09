@@ -7,8 +7,10 @@
 ## Context
 
 A Server **Report Receipt** is the durable report-level acknowledgement at the
-Server trust boundary. Keeping its complete response body indefinitely in the
-Agent Store turns that acknowledgement into an unbounded Agent-side archive.
+Server trust boundary. It may be `accepted`, `partially_accepted`, or `rejected`
+and can include whole-Inventory, per-Node, and per-sample outcomes. Keeping its
+complete response body indefinitely in the Agent Store turns that acknowledgement
+into an unbounded Agent-side archive.
 It also invites collection and delivery loops to reload and parse receipt
 history at one-second cadence.
 
@@ -27,10 +29,13 @@ disposition, and application time. Records have a 24-hour duplicate/conflict
 window. Expiry is an indexed, fixed-size batch so its memory and lock duration
 do not grow with historical marker count.
 
-Receipt application validates the complete Server response against the exact
-immutable Agent Report before the transaction changes durable state. The
-accepted/rejected disposition effects, Applied Receipt Record insertion, Agent
-Report removal, and the bounded expiry batch commit as one transaction. A
+Receipt application validates the complete Server response—including
+`partially_accepted` and per-Node/per-sample outcomes—against the exact immutable
+Agent Report before the transaction changes durable state. All disposition effects,
+Applied Receipt Record insertion, Agent Report removal, and the bounded expiry
+batch commit as one transaction. Retryable sample rejections are re-queued and
+terminal sample rejections enter the local rejection ledger according to the
+receipt outcome; neither is inferred from a report-level boolean. A
 pending Agent Report and an Applied Receipt Record with the same identity is an
 impossible state: the Agent Store fails closed instead of inferring an outcome.
 
@@ -51,11 +56,13 @@ markers and verifies the empty-spool paths retain the indexed identity lookup.
 
 Before destructive conversion, startup streams every legacy complete Receipt
 and validates its protocol structure, report identity, body hash, disposition,
-and stored application time. Only after the full preflight succeeds does one
-transaction create the minimal Applied Receipt Record table and application-time
-index, retain records in the 24-hour window, remove complete receipt bodies, and
-advance the schema. Validation, migration, or SQLite failure leaves the legacy
-schema and evidence untouched and prevents worker startup. The compatibility
+and stored application time. The compatibility preflight must succeed before the
+destructive conversion transaction starts. That transaction creates the minimal
+Applied Receipt Record table and application-time index, retains records in the
+24-hour window, removes complete receipt bodies, and advances the schema. A
+preflight failure leaves the legacy schema and evidence untouched; a failure after
+the conversion transaction starts is handled by SQLite rollback. Any validation,
+migration, or SQLite failure prevents worker startup. The compatibility
 path records the unchanged embedded migration checksum so existing converted
 Stores remain openable; recovery is an explicit operator decision rather than
 an automatic reset.
@@ -79,8 +86,9 @@ operations remain outside the permit.
   than report age.
 - Startup remains the deliberate integrity boundary; runtime gates are not a
   substitute for historical validation.
-- The Server's Report Receipt ledger, Report Ingestion idempotency, and public
-  APIs are unchanged.
+- The Server's Report Receipt ledger and Report Ingestion idempotency boundary
+  are outside this Agent Store decision; this ADR does not freeze or redefine the
+  Server's public API.
 - Migration or impossible-state failures stop the Agent safely and require
   investigation rather than data deletion or re-enrollment.
 - Release qualification must still measure the deployed Agent and Server on

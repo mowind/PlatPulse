@@ -1,8 +1,8 @@
-# PlatPulse WebUI Design and Implementation Handoff
+# PlatPulse WebUI Design and Current Routed Surface
 
-**Status:** Accepted MVP design contract; production implementation follows this document.
+**Status:** Current routed WebUI contract, reconciled with `platpulse-web/src/App.tsx` and the Server DTOs.
 
-**Scope:** PlatPulse Home Dashboard and Admin Dashboard for the MVP surface described in `docs/design/platpulse.md`.
+**Scope:** The production React SPA surface currently registered in `platpulse-web`, plus the read-only Public projections it consumes. Server/API extensions that have no SPA route are documented as available-but-unrouted, not silently treated as pages.
 
 **Primary sources:**
 
@@ -10,18 +10,18 @@
 - `docs/design/platpulse.md` for Server, Agent, API, security, and deployment boundaries;
 - generated OpenAPI artifacts for DTOs, operations, error envelopes, and client behavior.
 
-This document is the WebUI UX and interaction authority for the MVP. It does not replace OpenAPI and does not define Server policy. Deferred surfaces (Validator, Geo, Alerts, Notifications, Retention, Backup/Restore, Doctor, Node Transfer, Agent Recovery/Rotation) have no MVP page contracts; earlier drafts that covered them are superseded. Code comments referencing older section numbers of this document will be reconciled during the implementation-migration pass.
+This document is the WebUI UX and interaction authority for the current routed surface. It does not replace OpenAPI and does not define Server policy. The current Home consumes country-only Geo Insight, aggregate Peer Insight/selected-Node Peer History, and read-only Validator Activity/history/analytics. Server-side Alert, Notification, Retention, Backup/Restore, Doctor, Node Transfer, People, Validator management, and Agent Enrollment/Recovery/Rotation operations exist, but their management pages are not registered in the current SPA; older page drafts are historical and must not be linked as live routes.
 
 ## 1. Purpose and non-goals
 
-PlatPulse WebUI presents operational truth from the Server and gives the Owner safe, audited configuration. Home is the read-only, Node-first monitoring surface — readable by everyone when Site Access Mode is Public and login-required when Private; Admin is the authenticated overview and configuration surface. It is a monitoring and administration surface, not a remote-control terminal.
+PlatPulse WebUI presents operational truth from the Server and gives the Owner safe, audited configuration. Home is the read-only, Node-first monitoring surface — readable by anonymous Guests when Site Access Mode is Public and by authenticated Owner or Viewer sessions when Private; Admin is the Owner-only overview and configuration surface. It is a monitoring and administration surface, not a remote-control terminal.
 
 ### 1.1 In scope
 
 - Home Dashboard: read-only Public Projections, Network → Node → Node Detail, including a current block interval derived from the latest two consecutive retained Block Summaries;
 - Admin Dashboard: Agent/Node/Network configuration, global history window, Site Access Mode, Sessions, and Audit;
 - responsive behavior at 360×800, 390×844, 768×1024, and 1280×800;
-- current Peer Count display (Peer Snapshots and Peer Presence Intervals are deferred);
+- current aggregate Peer Insight and selected-Node Peer History; Peer Snapshot/Presence data is Server-side and redacted, while raw Peer identities are never displayed;
 - independent collection, freshness, value, and authorization states;
 - REST-authoritative data loading and SSE invalidation;
 - accessible forms, tables/cards, confirmations, errors, conflicts, audit links, and session transitions;
@@ -33,12 +33,13 @@ PlatPulse WebUI presents operational truth from the Server and gives the Owner s
 - a duplicated full Node Detail inside Admin;
 - RPC Endpoint editing, RPC Endpoint failover, remote commands, restart, upgrade, Docker control, or terminal access;
 - TUI, arbitrary scripts, SQL/DSL alert rules, or remote-control UI;
-- Validator, Geo, Alerts/Incidents/Silences/Maintenance, Notifications, Retention, Backup/Restore, Doctor, Node Transfer, Recovery/Rotation, multi-tenant, HA, PostgreSQL, SSO/OIDC/TOTP/WebAuthn;
+- Validator/Geo/Alert/Notification/Retention/Backup/Restore/Doctor/Node Transfer/People/Enrollment/Recovery/Rotation management pages (their Server/API operations exist but are not currently routed);
+- raw Peer identity/addresses, complete Peer Snapshot browsing, multi-tenant, HA, PostgreSQL, SSO/OIDC/TOTP/WebAuthn;
 - runtime theme/script injection or a second frontend framework.
 
 ## 2. Authorities and vocabulary
 
-Use the exact domain terms in `CONTEXT.md`. MVP-relevant terms include: Host, Agent, PlatON Node, Node ID, RPC Endpoint, Network, Network Identity, Network Registry, Node Inventory, Active Node, Retired Node, Component Observation, Agent Report, Report Receipt, Current Projection, Block Summary, Peer Count Observation, Host Observation, Node Process Observation, Node Chain Observation, Node Observation, Node Health Summary, Attention Item, Public Projection, Site Access Mode, Invalidation Event, Home Dashboard, Admin Dashboard, Audit Event, and Owner.
+Use the exact domain terms in `CONTEXT.md`. Current terms include: Host, Agent, PlatON Node, Node ID, RPC Endpoint, Network, Network Identity, Network Registry, Node Inventory, Active Node, Retired Node, Component Observation, Agent Report, Report Receipt, Current Projection, Block Summary, Peer Snapshot, Peer Insight, Peer History, Host Observation, Node Process Observation, Node Chain Observation, Node Observation, Node Health Summary, Validator, Validator Activity, Geo Insight, Attention Item, Public Projection, Site Access Mode, Invalidation Event, Home Dashboard, Admin Dashboard, Audit Event, Owner, Viewer, and Guest.
 
 The WebUI must not invent synonyms that blur boundaries. In particular:
 
@@ -46,8 +47,8 @@ The WebUI must not invent synonyms that blur boundaries. In particular:
 - Node Health Summary is not a WebUI-computed health color;
 - an Agent that stops reporting does not retire its Nodes;
 - an Agent-level page must not merge independent Node chain observations;
-- a successful Peer Count Observation of zero is authoritative, not Unknown;
-- recent Block History is bounded by the Server window and is best-effort: missing blocks are simply absent, never synthesized as zeroes or filled with gap fabrications.
+- a successful Peer Snapshot/aggregate with zero peers is authoritative, not Unknown; omitted or unsupported peer capability is not an empty snapshot;
+- recent Block History is bounded by the Server window and is best-effort: normal missed blocks remain absent, while explicit bounded Gap Backfill may recover eligible heights; neither path synthesizes zeroes or fabricated summaries.
 
 ### 2.1 Fixed status vocabulary
 
@@ -72,7 +73,7 @@ You are offline
 
 ### 3.1 Home Dashboard
 
-Home is a read-only surface for Public Projections:
+Home is a read-only surface for Public Projections. The current Public adapters consume Network/Node history, metric history, selected-Node Peer History, country-only Geo Insight, and Validator history/analytics where the DTO exposes them:
 
 ```text
 Home
@@ -80,7 +81,7 @@ Home
 ├── Network Overview
 │   └── Node list/cards
 └── Node Detail
-    ├── Health, Validator Activity, and process uptime
+    ├── Health, Node status, Validator membership role, and process uptime
     ├── Head, QC, Locked, Committed, and Validator membership
     ├── Process start and last report times
     ├── Process CPU and memory percentages
@@ -91,13 +92,15 @@ Home
 
 Home is organized Network → PlatON Node, never Agent → Node. Agent and Host topology belongs to Admin.
 
-When Site Access Mode is Public, everyone can read Home without logging in; when Private, Home routes require Owner login. Every Active Node appears on Home; there is no per-Node visibility control.
+When Site Access Mode is Public, anonymous Guests can read the allowed Home projection paths; when Private, Home routes require an authenticated Owner or Viewer session. Every Active Node returned by the Public projection appears on Home. The Admin `visibility` field/filter is a legacy compatibility surface and is not used by current Public SQL to hide a Node.
+
+Validator Activity is copied from the Server Public DTO, not inferred in React. `empty`/`not_found` is `observing`; a successful canonical value is `current` or `stale` according to Server freshness; an error with last-good Activity is canonical Activity with `stale`; success without Activity and `unsupported` are `unknown`. Canonical values include `active`, `producing`, `exiting`, `exited`, `verifying`, and `locked`.
 
 For retired, deleted, forbidden, or unknown Nodes, Public routes use non-leaking unavailable semantics such as “This Node is no longer available.” Admin routes may distinguish forbidden from not-found.
 
 ### 3.2 Admin Dashboard
 
-Admin is authenticated and Owner-authorized for management actions. Owner is the only human principal; there are no Viewer or Guest roles.
+Admin requires an authenticated Owner session and is rejected for Viewer sessions. Human roles are Owner and Viewer; Guest is anonymous access, not a role or credential. A Viewer can log in and read Home in Private mode but sees the non-leaking Owner-required Admin outcome.
 
 Admin groups:
 
@@ -108,13 +111,13 @@ Admin groups:
 5. Settings;
 6. Sessions and Audit.
 
-Admin covers configuration and diagnostics; it must not duplicate Home's full Node Detail. The Admin Node page shows Server-owned administrative fields (display name, redacted RPC Endpoint diagnostics, Node Inventory/lifecycle, freshness summary) instead of the full Home observation cards.
+Admin covers configuration and diagnostics; it must not duplicate Home's full Node Detail card/chart deck. The Admin Node endpoint returns the full administrative `AdminNodeDetail` DTO (health, freshness, process/data/RPC/Sync/Consensus/Peer diagnostics, identity, high-watermark/resync, and transfer context); the current page renders the approved administrative/diagnostic subset and does not turn it into a second Home view.
 
 Every Admin render begins with `Checking access…` when authorization is unresolved. It never flashes data from a previous session.
 
 The Admin shell shares Home's accepted Emerald light visual language: a Slate-50-like canvas, quiet white surfaces, light borders, restrained shadow, high-contrast primary text, quiet secondary copy, and measured Emerald selection accents. The Owner-only shell keeps its management information architecture: a persistent desktop sidebar and an accessible tablet/phone drawer with focus entry, Tab trapping, Escape and scrim close, body scroll lock, and focus restoration. Header and navigation controls remain at least 44×44 CSS pixels.
 
-The first shared-theme proof is `PAGE-ADMIN-OVERVIEW` at `/admin`. It presents the Server-owned attention queue, Node Health Summary, and Agent inventory as independent Admin query/realtime surfaces. Starting, Empty, Error, Stale, last-good, Unknown, never-observed, Disabled, and Unsupported states remain explicit in text plus an icon/shape or equivalent explanation; no state is represented only by color or converted to a zero, false, or Healthy value.
+The first shared-theme proof is `PAGE-ADMIN-OVERVIEW` at `/admin`. It presents the Server-owned attention queue, Node Health Summary, and Agent inventory as independent Admin query/realtime surfaces. Starting, Empty, Error, Stale, last-good, Unknown, never-observed, Disabled, and Unsupported states remain explicit in text plus an icon/shape or equivalent explanation; no intended state is represented only by color or converted to a zero, false, or Healthy value. The implementation caveat in §8.4.5 still applies to database failures that are currently masked by some Admin handlers.
 
 ### 3.3 Authorization generation
 
@@ -136,20 +139,20 @@ Each page has a stable ID. IDs are semantic and do not prescribe React filenames
 
 | Page ID | Route | Purpose | Actors |
 |---|---|---|---|
-| `PAGE-HOME-NETWORKS` | `/` | Network list and public availability | Everyone (Public mode); Owner (Private mode) |
-| `PAGE-HOME-NETWORK` | `/networks/:networkKey` | Network overview and Node list/cards | Everyone (Public mode); Owner (Private mode) |
-| `PAGE-HOME-NODE` | `/nodes/:nodeId` | Public Node detail and independent observation dimensions | Everyone (Public mode); Owner (Private mode) |
-| `PAGE-HOME-UNAVAILABLE` | public fallback route/state | Non-leaking retired/deleted/unknown response | Everyone (Public mode); Owner (Private mode) |
+| `PAGE-HOME-NETWORKS` | `/` | Active Node dashboard, Network filters, summary cards, and sort | Anonymous Guest (Public mode); authenticated Owner/Viewer (Private mode) |
+| `PAGE-HOME-NETWORK` | `/networks/:networkKey` | Network overview, aggregate Peer/Geo/Validator modules, and Node cards | Anonymous Guest (Public mode); authenticated Owner/Viewer (Private mode) |
+| `PAGE-HOME-NODE` | `/nodes/:nodeId` | Public Node detail and independent observation dimensions | Anonymous Guest (Public mode); authenticated Owner/Viewer (Private mode) |
+| `PAGE-HOME-UNAVAILABLE` | public fallback route/state | Non-leaking retired/deleted/unknown response | Guest, Owner, or Viewer according to access mode |
 
 ### 4.2 Authentication and access pages
 
 | Page ID | Route | Purpose | Actors |
 |---|---|---|---|
-| `PAGE-AUTH-LOGIN` | `/login` | Human login with safe `returnTo` | Owner |
+| `PAGE-AUTH-LOGIN` | `/login` | Human login with internal router-state `from` redirect | Owner or Viewer |
 | `PAGE-ACCESS-SESSIONS` | `/admin/access/sessions` | Coarse session review and revoke | Owner |
 | `PAGE-ACCESS-AUDIT` | `/admin/access/audit` | Immutable redacted Audit review | Owner |
-| `PAGE-AUTH-REVOKED` | `/session-revoked` or route-preserving state | Explain access generation transition | Owner/expired |
-| `PAGE-AUTH-FORBIDDEN` | protected route state | Explain insufficient access without leaking data | Owner |
+| `PAGE-AUTH-REVOKED` | route-preserving login/revalidation state | Explain access generation transition | Owner/Viewer/expired |
+| `PAGE-AUTH-FORBIDDEN` | protected route state | Explain insufficient access without leaking data | Viewer on Admin or unauthenticated Guest |
 
 ### 4.3 Admin pages
 
@@ -158,15 +161,15 @@ Each page has a stable ID. IDs are semantic and do not prescribe React filenames
 | `PAGE-ADMIN-OVERVIEW` | `/admin` | Owner attention queue and operational overview | Owner |
 | `PAGE-ADMIN-AGENTS` | `/admin/agents` | Agent inventory, liveness, spool diagnostics | Owner |
 | `PAGE-ADMIN-AGENT-DETAIL` | `/admin/agents/:agentId` | Identity, credential status, liveness, inventory, diagnostics | Owner |
-| `PAGE-ADMIN-NODES` | `/admin/nodes` | Node list, health summary, freshness | Owner |
-| `PAGE-ADMIN-NODE-DETAIL` | `/admin/nodes/:nodeId` | Administrative detail and diagnostics (never a duplicate of Home's Node Detail) | Owner |
+| `PAGE-ADMIN-NODES` | `/admin/nodes` | Node list, health summary, freshness, and legacy visibility filter | Owner |
+| `PAGE-ADMIN-NODE-DETAIL` | `/admin/nodes/:nodeId` | Administrative view over the full AdminNodeDetail DTO; UI renders the approved diagnostic subset | Owner |
 | `PAGE-ADMIN-NETWORKS` | `/admin/networks` | Network Registry metadata and Nodes | Owner |
 | `PAGE-ADMIN-NETWORK-DETAIL` | `/admin/networks/:networkKey` | Expected identity, metadata, mismatch diagnostics | Owner |
 | `PAGE-ADMIN-SETTINGS` | `/admin/settings` | Global Block History window and Site Access Mode configuration | Owner |
 
-Deferred groups (later phases only, no MVP page contracts): Agent enrollment/recovery/rotation, Node Transfer, Alerts and Operations, Data and Maintenance.
+The table above is the complete set of concrete SPA page routes; unknown paths under `/admin` use the registered Admin wildcard fallback rather than a legacy page. The Server/Admin APIs additionally expose People, Geo, Validator management/links/analytics, Alerts, Notifications, Operations, Retention, Backups/Restore, Doctor, Node Transfer, and Agent enrollment/recovery/credential operations; these are available DTO/operation surfaces, not current SPA pages.
 
-All mutation routes preserve a safe `returnTo` only after validation: same-origin, expected path, no credentials/secrets, and no external URL. Invalid or absent `returnTo` falls back to the owning list page.
+The current SPA has no generic `returnTo`/`return_to` mutation contract. When a protected Home route sends a Guest to `/login`, it carries the internal router pathname as `location.state.from`; a successful login navigates back to that pathname, or `/` when absent. Admin mutations stay on their current route and invalidate/refetch authoritative data.
 
 ## 5. Shared state model
 
@@ -208,9 +211,9 @@ Current | LastGood | AuthoritativeEmpty | None
 
 Severity and primary reasons are Server-owned. The WebUI presents the Summary and dimension reasons; it does not reimplement health policy or merge Node observations at Agent level.
 
-### 5.5 Deferred state machines
+### 5.5 Server-side state machines without current pages
 
-Alert evaluation/Incident state machines and long-running Operation states belong to later phases and have no MVP page contracts.
+Alert Rule/Incident/Silence/Maintenance evaluation and long-running Operation states are implemented in the Server and exposed through Admin APIs, but the current SPA has no routed management pages for them. They remain independent of the WebUI's Node Health Summary; a future page must consume the typed DTOs rather than recreate those state machines in the browser.
 
 ## 6. REST, query cache, and SSE
 
@@ -259,7 +262,9 @@ route open
 
 SSE contains invalidation/resource identity or collection reset, not authoritative business DTOs. One stream exists per surface shell per browser tab. High-frequency invalidations are coalesced. Hidden tabs reduce non-critical refetch while visible critical changes remain prompt.
 
-SSE connection status is visible but does not cover valid content. Disconnect shows `Live updates paused`; browser/network loss additionally uses `You are offline` when the browser signal is authoritative.
+The Public/Admin event endpoints accept cursor recovery through the `after` query parameter or the `Last-Event-ID` header (the reconnect header takes precedence when both are supplied). Responses are `text/event-stream`; each emitted event uses the `invalidation` event name, a numeric event id/cursor, and JSON `data` with `version`, `eventId`, `resource`, optional `resourceId`, `revision`, and optional `reset`. A first connection without a cursor starts after the current buffered sequence because REST has already supplied the snapshot; the browser should send the last received cursor when reconnecting and discard/reconcile events older than its current authorization generation.
+
+SSE connection status is visible but does not cover valid content. Disconnect shows `Live updates paused`; browser/network loss additionally uses `You are offline` when the browser signal is authoritative. The current generated OpenAPI records the stream operation but does not fully describe every cursor/header/event field; runtime `realtime` behavior is the authority for replay.
 
 SSE updates must preserve filters, sorting, scroll, expansion, and ordinary drafts. They do not reorder a list merely because a timestamp changed.
 
@@ -281,7 +286,7 @@ Stable semantic pattern references:
 | `PATTERN-STATUS-DIMENSIONS` | Collection, freshness, and value are displayed independently. |
 | `PATTERN-ACCESS-CHECK` | First protected render is `Checking access…`; no old-data flash. |
 | `PATTERN-AUTH-GENERATION` | Close old streams, abort requests, clear cache, discard old generation. |
-| `PATTERN-CONFIRMATION` | High-risk actions use explicit confirmation, typed phrases where required, and no optimistic result. |
+| `PATTERN-CONFIRMATION` | High-risk actions use explicit confirmation and no optimistic result. The current History Window and Site Access DTOs accept `{confirmed: bool}`; a typed phrase may be a client-side friction guard but is not Server-authoritative security until a phrase field is added and validated by the Server. |
 | `PATTERN-RESPONSIVE-TABLE` | Desktop table becomes priority cards; detail remains available without primary horizontal scroll. Agents uses the summary/detail split in §8.5. |
 | `PATTERN-ADMIN-WORKBENCH` | Admin-scoped left alignment, available-width lists, contextual realtime status, independent selection/focus, and no page-level horizontal overflow (§8.5). |
 | `PATTERN-LIVE-REGION` | Announce meaningful transitions only; do not announce high-frequency SSE. |
@@ -307,27 +312,27 @@ Every `PAGE-*` entry must specify the following before production coding:
 
 ### 8.1 Home Node Detail (`PAGE-HOME-NODE`)
 
-- the primary Node card uses a compact Komari-inspired density with a neutral one-pixel outline and no coloured edge strip. It shows display name/Node ID, Server-owned Health, explicit Validator Activity (`Observing`, `Verifying`, `Producing`, `Active`, or another canonical activity), process uptime, compact PlatON process CPU/process-memory/Node Data progress, `Head / QC / Locked / Committed / Validator`, process start time, and last Agent report time. Routine Healthy prose is omitted; an exceptional Server-owned health reason remains visible;
+- the primary Node card uses a compact Komari-inspired density with a neutral one-pixel outline and no coloured edge strip. It shows display name/Node ID, Server-owned Health, Node status, the separate `Validator` membership role, process uptime, compact PlatON process CPU/process-memory/Node Data progress, `Head / QC / Locked / Committed / Validator`, process start time, and last Agent report time. Validator Activity/history is a Network Overview module, not the Node hero's `Node status` label. Routine Healthy prose is omitted; an exceptional Server-owned health reason remains visible;
 - Details contains exactly four equal-size one-minute metric cards: shared Host network receive/transmit rates, Peer connections, latest consecutive-block interval, and latest Block Summary transaction count. Network and Connections use line charts; Block time and Transactions use bar charts;
 - the bounded Block History list and public-history export are not rendered on Node Detail. The history endpoint remains a Server boundary; the page reads retained summaries only to derive the consecutive-block interval, and missing/non-consecutive summaries remain `Unknown`;
-- Network shows Peer Insight and aggregate Peer History only; no peer address or identity list is exposed;
+- the Node Detail Network tab shows Peer Insight and the selected Node's aggregate Peer History; Network Overview shows network-level Peer Insight and Geo/Validator modules. No peer address or identity list is exposed;
 - Host CPU and memory are never substituted for PlatON process CPU and memory, and shared Host network rates are labelled as Host observations;
 - retired/deleted/unknown Nodes use the non-leaking unavailable semantics.
 
 ### 8.2 Admin Node Detail (`PAGE-ADMIN-NODE-DETAIL`)
 
-- administrative fields only: display name, redacted RPC Endpoint diagnostics, Node Inventory/lifecycle (Active/Retired), freshness summary, and Audit links;
-- must not reproduce Home's full observation cards;
-- every mutation is audited.
+- consumes the full administrative `AdminNodeDetail` DTO, which includes display name, redacted RPC Endpoint diagnostics, Node Inventory/lifecycle (Active/Retired), health/freshness, process/data/RPC/Sync/Consensus/Peer diagnostics, identity/high-watermark/resync, and transfer context;
+- the current page renders the approved administrative/diagnostic subset and must not reproduce Home's full observation cards/chart deck; it links to the shared `/admin/access/audit` page separately rather than treating Audit links as DTO fields;
+- every mutation is audited; transfer fields are visible as data where supplied but no transfer management page is currently routed.
 
 ### 8.3 Settings (`PAGE-ADMIN-SETTINGS`)
 
 - renders one Settings heading with an ordered History Window then Site Access Mode module inside one left-aligned constrained surface (see §8.6);
 - each card loads, mutates, and reports success or errors independently;
 - History Window shows the current window, default, min/max bounds, and last update;
-- History Window requires an integer in the Server bounds, a successful Server-authoritative impact preview, and typed confirmation before mutation; values are rejected rather than clamped;
+- History Window requires an integer in the Server bounds, a successful Server-authoritative impact preview, and the current mutation body `{confirmed: bool}` before mutation; values are rejected rather than clamped. A typed phrase, if displayed, is client-side friction only; it is not a Server security field;
 - History Window copy states that shortening asynchronously deletes expired history and lengthening cannot recover deleted or missed history; success includes its Audit Event identifier;
-- Site Access Mode uses text plus icon/equivalent semantics for Public or Private: Public permits anonymous Home reads, while Private requires Owner login;
+- Site Access Mode uses text plus icon/equivalent semantics for Public or Private: Public permits anonymous Home reads, while Private requires authenticated Owner or Viewer; its current mutation body likewise uses `{confirmed: bool}`;
 - switching Site Access Mode requires confirmation, records Audit, and performs the Public access-generation transition by closing affected streams, aborting old requests, clearing sensitive caches, discarding older responses, and reloading authoritative state;
 - the Settings cards stack on narrow viewports, preserve 44×44 CSS pixel targets, and never cause primary horizontal page overflow.
 
@@ -340,10 +345,10 @@ The Settings route is the single canonical configuration surface. The accepted s
 | Scenario | Route and outcome |
 |---|---|
 | `SCN-SETTINGS-ROUTE` | `/admin/settings` renders one logical `Settings` h1, ordered `History Window` then `Site Access Mode` sections, and no obsolete navigation entries; the retired URLs remain on the Admin Section not found fallback without redirecting. |
-| `SCN-HISTORY-WINDOW-SHORTEN` | Through the History Window card, show Server bounds and impact, require typed confirmation, report the returned Audit Event, and retain asynchronous deletion consequences. |
+| `SCN-HISTORY-WINDOW-SHORTEN` | Through the History Window card, show Server bounds and impact, require explicit confirmation (the current Server body is `{confirmed: bool}`), report the returned Audit Event, and retain asynchronous deletion consequences. |
 | `SCN-HISTORY-WINDOW-BOUNDS` | Through the History Window card, reject blank, non-integer, and out-of-bounds values with field-level errors; never clamp or submit an invalid value. |
 | `SCN-SITE-ACCESS-PUBLIC` | Through the Site Access Mode card, confirm and apply Public, clear affected Public state, reload the new authorization generation, and permit anonymous Home reads while Admin remains Owner-only. |
-| `SCN-SITE-ACCESS-PRIVATE` | Through the Site Access Mode card, confirm and apply Private, close affected Public streams, clear old Public state, and require Owner login for Home reads. |
+| `SCN-SITE-ACCESS-PRIVATE` | Through the Site Access Mode card, confirm and apply Private, close affected Public streams, clear old Public state, and require authenticated Owner or Viewer login for Home reads. |
 
 Each Settings card keeps independent loading, mutation, success, field-error, page-error, confirmation, and recovery states. Browser back/forward preserves the canonical route context, while the Public/Admin DTO, cache, realtime, and Owner authorization boundaries remain separate.
 
@@ -376,7 +381,7 @@ Retired Nodes: retired
 Networks:     total; with Network Identity Mismatch
 ```
 
-`Active Nodes = healthy + unhealthy + unknown` and `total Nodes = active + retired`. Retired Nodes are excluded from live health buckets and Attention Items. A compatibility-only published/visibility count is not a primary Overview metric; Site Access Mode is the site-wide Home authority and every Active Node appears on Home.
+`Active Nodes = healthy + unhealthy + unknown` and `total Nodes = active + retired`. Retired Nodes are excluded from live health buckets and Attention Items. `AdminOverviewSummary` has no `published` metric. Node list/detail DTOs and the Nodes page retain `visibility` as a legacy compatibility/diagnostic field and filter; current Public SQL does not use it to hide Home Nodes, so Site Access Mode remains the effective site-wide anonymous-access authority.
 
 #### 8.4.2 Attention queue
 
@@ -432,8 +437,8 @@ Node display name and shortened Node ID
 Network
 Server-owned Node Health Summary and primary reason
 Freshness
-Current Head / Sync
-Resync state
+Current Head
+Resync state (full Sync diagnostics are on Node Detail)
 Show diagnostics
 View Node
 ```
@@ -467,16 +472,18 @@ The default priority is Agents with critical diagnostics, then offline, unknown,
 The page retains three independent Admin query surfaces:
 
 ```text
-GET /api/admin/v1/overview -> Attention and the atomic summary snapshot
+GET /api/admin/v1/overview -> Attention and summary response
 GET /api/admin/v1/nodes    -> Node Health Summary
 GET /api/admin/v1/agents   -> Agent inventory and Host diagnostics
 ```
 
-Failure of one surface never hides successful data from another. Attention and summary fail together because they are one atomic Overview snapshot. Initial loading uses explicit `Starting` text, optionally accompanied by static skeleton shapes. A refetch failure preserves LastGood content and says that the last successful values remain visible. Each failed surface owns its own `Try again`. SSE carries only invalidation/reset; `Live updates paused` or `You are offline` never clears valid REST content.
+Failure of one surface never hides successful data from another. Attention and summary are returned together by the Overview handler, but the current handler builds them with independent database reads and provides no cross-resource point-in-time/transaction snapshot guarantee. Initial loading uses explicit `Starting` text, optionally accompanied by static skeleton shapes. A refetch failure can preserve LastGood content and says that the last successful values remain visible. Each failed surface owns its own `Try again`. SSE carries only invalidation/reset; `Live updates paused` or `You are offline` never clears valid REST content.
+
+Implementation caveat: the current `GET /api/admin/v1/agents` handler maps its initial list-query failure to `200 []`, and Agent Detail maps some nested query failures to `0`, `[]`, or `None`. These are degraded implementation behaviors, not authoritative Empty/zero values; the UI must avoid presenting them as healthy or complete, and Server-side error propagation remains follow-up work. Runtime Public/Admin handlers can also return typed 503/500 errors not yet enumerated in every generated OpenAPI operation; clients must handle generic non-2xx responses.
 
 Visible timestamps are relative, such as `2 minutes ago`, with an accessible absolute UTC value. Agent reports may show `Report #128 - 5 seconds ago`. The WebUI formats Server timestamps but never uses browser time to derive Freshness, liveness, grace periods, Health, or Attention severity.
 
-When Agents, Nodes, and Networks are all empty, the page retains authoritative zero and Empty states and adds a compact setup guide: register the expected Network identity, provision and start an Agent, configure its local Node Inventory, and wait for the first accepted Agent Report. It may link to Networks and Settings, but it cannot configure an RPC Endpoint, start an Agent, create a local Node Inventory, expose an Enrollment workflow, enable fake data, or offer one-click initialization.
+When the loaded Agents, Nodes, and Networks projections are empty, the page retains authoritative zero/Empty states and adds a compact setup guide: register the expected Network identity, provision and start an Agent, configure its local Node Inventory outside the WebUI, and wait for the first accepted Agent Report. The current Settings link only manages Server-wide History Window/Site Access Mode; it does not edit an Agent's local inventory. The page cannot configure an RPC Endpoint, start an Agent, create a local Node Inventory, expose an Enrollment workflow, enable fake data, or offer one-click initialization.
 
 #### 8.4.6 Page boundaries
 
@@ -486,9 +493,9 @@ The Agents page owns the complete Agent inventory, epoch, boot/report state, Nod
 
 #### 8.4.7 Responsive and visual acceptance
 
-The visual balance is PlatPulse's Emerald light system first and Komari-inspired density second: Slate-50-like background, translucent-white surfaces, quiet one-pixel borders, restrained 8-10px radii, no default blur, minimal shadows, high-contrast counts, quiet labels, neutral primary controls, measured Emerald selection accents, and semantic green/amber/red/blue/neutral status treatments. No status depends on color alone. The production UI remains English for the MVP; localization is a separate whole-application capability rather than a mixed-language Overview.
+The visual balance is PlatPulse's Emerald light system first and Komari-inspired density second: Slate-50-like background, translucent-white surfaces, quiet one-pixel borders, restrained 8-10px radii, no default blur, minimal shadows, high-contrast counts, quiet labels, neutral primary controls, measured Emerald selection accents, and semantic green/amber/red/blue/neutral status treatments. No status depends on color alone. The current production UI remains English; localization is a separate whole-application capability rather than a mixed-language Overview.
 
-At `1280x800`, the Admin sidebar is persistent, Attention and Node Health are full-width, summary cards form four columns, and the Agent inventory summary table spans the full width. At `768x1024`, navigation uses the accessible drawer, summary cards form a two-by-two grid, and Node/Agent content is single-column. At `360x800` and `390x844`, summary cards remain a compact two-by-two grid when legible and may fall to one column when content requires it; Node, Audit, and Agent inventory tables become priority cards. Health/Freshness and Head/Sync remain paired, secondary evidence moves into expansion, controls remain at least 44x44 CSS pixels, and no primary horizontal page scrolling is allowed. The page remains functional at 200% zoom, in portrait and landscape, and with reduced motion.
+At `1280x800`, the Admin sidebar is persistent, Attention and Node Health are full-width, summary cards form four columns, and the Agent inventory summary table spans the full width. At `768x1024`, navigation uses the accessible drawer, summary cards form a two-by-two grid, and Node/Agent content is single-column while the tables retain their table/local-wrapper layout because the priority-card transform begins below 47.9rem. At `360x800` and `390x844`, summary cards remain a compact two-by-two grid when legible and may fall to one column when content requires it; Node, Audit, and Agent inventory tables become priority cards. Health/Freshness and Head/Sync remain paired where those fields exist, secondary evidence moves into expansion, controls remain at least 44x44 CSS pixels, and no primary horizontal page scrolling is allowed. The page remains functional at 200% zoom, in portrait and landscape, and with reduced motion.
 
 Overview acceptance scenarios include:
 
@@ -502,17 +509,17 @@ SCN-OVERVIEW-EMPTY-SETUP
 SCN-OVERVIEW-RESPONSIVE
 ```
 
-### 8.5 Compact Admin workbench — first delivery (`PAGE-ADMIN-AGENTS`, `PAGE-ADMIN-AGENT-DETAIL`)
+### 8.5 Compact Admin workbench — current presentation contract (`PAGE-ADMIN-AGENTS`, `PAGE-ADMIN-AGENT-DETAIL`)
 
-**Decision status:** Accepted through the confirmed `grill-with-docs` review. This records the next implementation contract, not a claim that the current UI or tests already satisfy it. This documentation delivery does not authorize production code changes; implementation requires a separate explicit request.
+**Status:** Current presentation contract, integrated from the accepted `grill-with-docs` review and reconciled with the routed Admin shell and current Agent pages. The listed scenario IDs remain acceptance coverage; this document does not claim that every visual/browser check has been run.
 
 #### 8.5.1 Scope and precedence
 
-The first delivery changes the shared Admin shell and the Agents summary, with regression coverage across all retained Admin routes and isolation checks for Home. Preserve the Emerald brand and existing business rules; borrow compact spatial organization, not another product's dark theme, small text, or data model.
+The current presentation uses the shared Admin shell and compact Agents summary, with regression coverage across all retained Admin routes and isolation checks for Home. Preserve the Emerald brand and existing business rules; borrow compact spatial organization, not another product's dark theme, small text, or data model.
 
 - In scope: Admin background, sidebar, header, content origin, heading scale, shrink/overflow boundaries, Agents summary organization, and existing Agent Detail access to secondary evidence.
-- Out of scope for this first delivery: Server/API expansion, new client-derived state or severity, global status renaming, Settings/Audit internal restructuring, Overview module reordering, a comprehensive restyle of other page controls, and restoration of removed routes or features. The follow-up §8.6 delivery now covers the Settings/Audit/Overview/Agent Detail information-architecture changes explicitly.
-- This section governs the shared Admin container and Agents presentation. Settings §8.3 and Overview §8.4 retain their internal composition and behavior; only their shared shell changes in this delivery. Home and Login presentation remain unchanged.
+- The current page boundary excludes Server/API expansion, new client-derived state or severity, global status renaming, a comprehensive restyle of unrelated controls, and restoration of removed routes or features. The integrated §8.6 pass covers the Settings/Audit/Overview/Agent Detail information-architecture changes explicitly; Server extensions without SPA routes remain available-but-unrouted.
+- This section governs the shared Admin container and Agents presentation. Settings §8.3 and Overview §8.4 retain their documented internal composition and behavior; the shared shell is consistent across them. Home and Login presentation remain separate contracts.
 - Authorization, Public/Admin separation, redaction, last-good semantics, REST authority, query namespaces, SSE invalidation/reset, URL/back-navigation context, and mutation contracts in §§3–7 remain in force. Do not introduce new API operations or optimistic business state.
 
 #### 8.5.2 Shared shell and density
@@ -535,7 +542,7 @@ Suggested geometry is a baseline, not a rigid height constraint or a measurement
 | Module spacing | 16–24 CSS px |
 | Typical rows | About 48 CSS px single-line / 64 CSS px two-line, growing for important content |
 
-Admin uses a stable Slate-50-like background and quiet white panels, without the public gradient/grid crossing its reading surface. Emerald remains a measured accent. Sidebar selection uses a light Emerald background, stronger text, and a thin side marker; keyboard focus remains separately visible, for example through `:focus-visible`. Do not remove outlines without an accessible replacement. This delivery does not recolor every existing primary button.
+Admin uses a stable Slate-50-like background and quiet white panels, without the public gradient/grid crossing its reading surface. Emerald remains a measured accent. Sidebar selection uses a light Emerald background, stronger text, and a thin side marker; keyboard focus remains separately visible, for example through `:focus-visible`. Do not remove outlines without an accessible replacement. The current contract does not require recoloring every existing primary button.
 
 Measure actual container bounds before changing CSS: source inspection found centering and maximum-width rules, but the Admin maximum width need not bind at 1280 CSS pixels. Do not assume every large gap has the same cause. Check combined sidebar reservation, margins, padding, and the correct Flex/Grid shrink boundaries. Apply `min-width: 0` where needed; do not globally break words. Table headers may wrap between words, not split letters. Necessary two-dimensional overflow belongs to the table container, never the page, heading, or action area.
 
@@ -579,7 +586,7 @@ Choose the table/card breakpoint from available content width, not blind preserv
 
 #### 8.5.6 Acceptance and implementation checks
 
-The scenario IDs below specify required coverage, not already passing tests:
+The scenario IDs below specify required coverage. The repository's current WebUI lint, typecheck, unit tests, and production build pass; fixed-viewport browser coverage is a separate verification step:
 
 - `SCN-ADMIN-WORKBENCH-LAYOUT`: every retained Admin route has aligned headings/content, no unexplained sidebar-to-content gap, usable remaining width, and no page-level horizontal overflow. Settings retains its left-aligned inner width; Home has no shared-style regression.
 - `SCN-AGENTS-PRIORITY-SUMMARY`: six-column summary, accurate retained-Node and credential counts, shortened identity with full-value access, correct receipt-time semantics, and secondary evidence reachable through the summary disclosure and the existing detail. Include an expired-but-not-revoked credential and mixed Active/Retired inventory.
@@ -588,16 +595,16 @@ The scenario IDs below specify required coverage, not already passing tests:
 
 Run coverage at the fixed 360×800, 390×844, 768×1024, and 1280×800 projects; additionally inspect an ultrawide desktop and actual 200% browser zoom/reflow. A viewport-shrinking helper alone is not evidence of actual browser zoom verification. Check portrait/landscape, keyboard and touch, contrast (at least 4.5:1 ordinary text and 3:1 large text), focus, and reduced motion. Use long identifiers, long errors, populated, empty, Starting, Error, Stale, Unknown, and last-good cases. Clipping or an overflow helper passing is not proof of readable columns or reachable controls.
 
-Update existing Agent summary tests that require all old verbose evidence in one row to assert the new priority summary AND retained detail evidence. Preserve independent-state, authorization, redaction, and confirmation coverage. Shared shell tests must cover every retained route, not only Agents. Verify the generated operation/DTO references and current query/reset wiring during implementation handoff rather than adding new API behavior.
+Existing Agent summary tests assert the priority summary and retained detail evidence; preserve that coverage when changing the UI. Preserve independent-state, authorization, redaction, and confirmation coverage. Shared shell tests cover every retained route, not only Agents. Verify the generated operation/DTO references and current query/reset wiring when changing the implementation rather than adding new API behavior.
 
-**Separately tracked source/test drift, not feature scope:** read-only inspection found Home/Global navigation assertions inconsistent with the current shell; a legacy People entry inconsistent with retained routes; legacy per-Node visibility and rotate/recover guidance in Agent Detail; and an Audit target link/filter list referring to removed or outdated surfaces/events. Resolve authority before updating affected assertions, and record unrelated follow-up work separately. Do not restore removed features to satisfy old tests. No baseline test pass, measured browser layout, or completed implementation is asserted by this review.
+**Current verification boundary:** the repository checks cover the routed SPA contract and pass in the current tree; this documentation update does not claim a fresh Playwright run at every fixed viewport or a production deployment smoke test. Server/API extensions without SPA routes, legacy `visibility` compatibility fields, and redacted diagnostic limitations remain intentional boundaries. Do not restore removed routes or features merely to satisfy historical drafts or external tests.
 
 ### 8.6 Admin information architecture pass (`PAGE-ACCESS-AUDIT`, `PAGE-ADMIN-SETTINGS`, `PAGE-ADMIN-AGENT-DETAIL`, `PAGE-ADMIN-OVERVIEW`, `PAGE-ADMIN-NETWORKS`, `PAGE-ADMIN-NODES`)
 
-**Decision status:** Accepted by explicit product direction after the §8.5 shell delivery. It supersedes the §8.5.1 deferral of Settings/Audit restructuring and Overview module reordering for the surfaces below. The shared Admin shell, authorization, REST/cache/SSE, redaction, confirmation, last-good, and mutation contracts are unchanged.
+**Status:** Integrated current information architecture accepted by explicit product direction after the §8.5 shell review. Settings/Audit restructuring and Overview module ordering below are part of the current routed contract. The shared Admin shell, authorization, REST/cache/SSE, redaction, confirmation, last-good, and mutation contracts are unchanged.
 
 - `PAGE-ACCESS-AUDIT` renders the immutable redacted events as one compact table with Time, Event, Actor, Target, and Details columns. Redacted details stay collapsed behind an accessible `Show details` disclosure (`aria-expanded`/`aria-controls`, per-event region label) and open in an independent full-width row below the record (the Nodes inventory pattern), never inside the action cell; the listing, Server-side filters, cursor pagination, and append-on-load-older behavior are unchanged. Event-kind and Target filters size to their content instead of spanning the row, and the table becomes priority cards below the responsive breakpoint rather than a clipped or shrunk table.
-- `PAGE-ADMIN-SETTINGS` keeps one left-aligned constrained surface with two independent modules (History Window, then Site Access Mode). Current value, default, and the allowed range are grouped; the numeric input keeps its label, bounds, and 44px target at a natural width; action buttons keep normal width. All risk copy, the Server-authoritative impact preview, typed confirmation, CSRF, error isolation, and submit behavior are unchanged.
+- `PAGE-ADMIN-SETTINGS` keeps one left-aligned constrained surface with two independent modules (History Window, then Site Access Mode). Current value, default, and the allowed range are grouped; the numeric input keeps its label, bounds, and 44px target at a natural width; action buttons keep normal width. All risk copy, the Server-authoritative impact preview, explicit `{confirmed: bool}` confirmation, CSRF, error isolation, and submit behavior are unchanged; any typed phrase is client-side friction, not a Server security boundary.
 - `PAGE-ADMIN-AGENT-DETAIL` opens with a key summary (shortened ID with copy control, Server liveness, boot status, credential counts, Epoch, receipt time, report sequence, declared Node count, and classified important warnings) followed by Overview, Runtime and reporting, Credentials, Diagnostics, and Audit categories. Every pre-existing field remains reachable; summary warnings distinguish current state, recorded history, and unknown values and never replace Server liveness, health, freshness, or attention policy.
 - `PAGE-ADMIN-OVERVIEW` Agent inventory is a compact summary table (Agent, Reporting, Last received, Host resources, Evidence, Nodes) instead of large half-width detail cards. It keeps the six-Agent priority limit, the `Showing N of M Agents` line, `View all Agents`, independent query failure, and raw Server values; per-Node identity/health/freshness detail stays on the Nodes page and Agent Detail.
 - Attention items label their own Server-supplied observation time ("Last observed …"); when the Server reports no observation timestamp the item reads `Observation time unknown`. The snapshot `generated_at` is labelled only as `Last good snapshot` and is never presented as an event or observation time.
@@ -611,7 +618,7 @@ The WebUI must not display or store in browser state:
 - Agent credentials or any one-time provisioning material;
 - session tokens or CSRF values in URLs;
 - passwords, TLS private keys, or pepper values;
-- raw Peer addresses (Peer Snapshots are deferred; no peer identity data exists in MVP);
+- raw Peer addresses or identity lists. Peer Snapshots and Presence exist behind Server projections, but Public/Admin WebUI surfaces show only redacted current/aggregate data;
 - complete RPC Endpoints, complete request bodies, stack traces, or internal paths.
 
 Errors name the failed user task and next safe action. They do not expose stack traces, secret contents, or internal paths. Confirmation copy states what will and will not change — in particular for the history window: shortening deletes data; lengthening cannot recover it.
@@ -706,32 +713,40 @@ The accepted direction from Issue #75 and the compact Home contract from Issue #
 - The visual contract does not authorize fields that are absent from the Public Projection. Node Detail may show the monitored PlatON process CPU/memory, process start/uptime, last Agent report time, Node Data usage/capacity, and sampled Host network receive/transmit rates supplied by the Server; it does not add pricing, raw Peer identity, Host identity, or RPC Endpoint text.
 - The default geometry is adapted from the Emerald repository's inline `Background.vue` SVG under its MIT license. Keep the copyright and license notice with the adaptation; do not copy Komari branding, logo assets, external flags, fonts, or theme-management behavior.
 
-### Home composition (PAGE-HOME-NETWORKS and PAGE-HOME-NETWORK)
+### Home composition (`PAGE-HOME-NETWORKS` and `PAGE-HOME-NETWORK`)
 
-The Home route is a read-only operational overview composed in this order:
+The two routed Home surfaces are separate: the root dashboard flattens the returned Active Node projection, while Network Overview loads one selected Network DTO and its network-level modules. Both remain read-only and never reorganize the view around Agent or Host topology.
 
-1. A compact header with the PlatPulse brand link at left and one circular Admin icon link at right. The brand returns to Home; the Admin icon enters the Admin route and does not expose Admin data inside Home.
-2. A page kicker, the Home heading, explanatory Public Projection copy, and a server-authoritative live/realtime indicator.
-3. Four summary cards for Active Node count, Server-owned healthy Node count, Nodes needing attention, and registered Network count. These are projections of already-loaded Public data; they are not new health policy or per-Node visibility.
-4. A toolbar containing Network filter pills and a clearly labelled sort control. Unsupported future views are not rendered as usable production actions.
-5. A responsive collection of compact Active Node cards. Each whole card is one semantic link to Node Detail; the Network name is plain text and the card contains no nested Network link. The header shows Node identity, Validator Activity, and Node Health without `ACTIVITY` or `HEALTH` labels; missing Validator Activity is `Observing`. Healthy Nodes omit routine component rows, health prose, Last Observed, and no-op Resync copy; an exceptional Node may show one short diagnostic line.
-6. Each compact card presents three ordered metric rows: sanitized Host `CPU / MEMORY / STORAGE / ↑ UP / ↓ DOWN`; Node `HEAD / TXS / PEERS`; and Consensus `QC / LOCKED / COMMITTED / VALIDATOR`. HEAD remains Sync Current Head, TXS is the transaction count from that Node's latest persisted Block Summary, and PEERS retains its independent observation-state cue. Missing values remain unavailable rather than becoming zero.
-7. An explicit empty state when the selected Network has no Active Nodes, without implying that missing data is zero or healthy.
+**Root `/` (`PAGE-HOME-NETWORKS`):**
 
-Network hierarchy remains Network -> PlatON Node -> Node Detail. Home never reorganizes the view around Agent or Host topology.
+1. A compact header with the PlatPulse brand link at left and one circular Admin icon link at right. The brand returns to Home; the Admin icon enters the Owner-only Admin route and does not expose Admin data inside Home.
+2. A page heading, Public Projection copy, and a Server-authoritative live/realtime indicator.
+3. Four summary cards for Active Node count, Server-owned healthy Node count, Nodes needing attention, and returned Network count. These are projections of already-loaded Public data, not new health policy or visibility filtering.
+4. Network filter pills and a labelled sort control (`Health`, `Name`, or `Current Head`).
+5. Compact Active Node cards. Each whole root-dashboard card is one semantic link to Node Detail; the Network name is plain text and there is no nested Network link. Healthy Nodes omit routine prose; exceptional Nodes may show one short diagnostic line.
+6. Card data ownership is explicit: PlatON process `CPU`/`Memory`, `Node data` size/capacity, Host transfer rates (`↑ Up`/`↓ Down`), Node `Head`/`Transactions`/`Peers`, and Consensus `QC`/`Locked`/`Committed`/`Validator`. Missing values remain unavailable rather than becoming zero.
+7. The dashboard can show `No Active Nodes in this view` when the loaded projection/filter has no cards. This is distinct from a registered Network that the current Server endpoint omits or returns as `404` because it has no Active Node.
+
+**Network Overview `/networks/:networkKey` (`PAGE-HOME-NETWORK`):**
+
+1. Breadcrumb, Network title/key, realtime state, and refetch error/last-good state.
+2. Network-level aggregate Peer Insight and country-only Geo Insight.
+3. Validator cards with read-only Activity, history, and analytics when the Public DTO contains Validators.
+4. An Active PlatON Nodes section. Network Overview cards may contain nested Node links and an explicit `View Node Details` action; they are not the root dashboard's whole-card-only contract.
+5. The current Server returns `404 not_found` when the selected Network has no Active Node, and `/api/public/v1/networks` omits Networks with no Active Node. The component contains an empty-array state for DTO compatibility, but clients must not assume every registered Network is returned as `200 {nodes: []}`.
 
 ### Node Detail composition (PAGE-HOME-NODE)
 
 Node Detail freezes the accepted reference-inspired hierarchy:
 
-1. One compact Komari-inspired Node card owns the page identity. It uses a quiet neutral outline, restrained radius and shadow, no coloured top/edge strip, and shows the Network back context, display name/Node ID, Server-owned Health, canonical Validator Activity, and process uptime. Routine Healthy prose is omitted, while exceptional Server-owned health reasons remain visible.
+1. One compact Komari-inspired Node card owns the page identity. It uses a quiet neutral outline, restrained radius and shadow, no coloured top/edge strip, and shows the Network back context, display name/Node ID, Server-owned Health, visible `Node status`, the separate `Validator` membership role, and process uptime. Validator Activity is a read-only Validator projection on Network Overview, not the hero's Node-status label. Routine Healthy prose is omitted, while exceptional Server-owned health reasons remain visible.
 2. A compact resource row inside that card follows the Home Node-card hierarchy: PlatON process `CPU`, PlatON process `Memory`, and `Node data`, each with a current value and a progress track when a valid percentage exists. Node Data keeps its size and filesystem-capacity detail; unavailable values remain explicit rather than becoming zero.
 3. A chain-specific consensus summary presents the parallel heights `Head / QC / Locked / Committed` and an independent `Validator` role; explicit membership renders `True` or `False`. Process start time and last Agent report time form the card footer. Missing or uncertified values remain `Unknown`.
 4. A centred two-tab control defaults to Details and switches to Network without replacing the large Node card. The selected tab is exposed semantically and visually.
 5. Details presents four equal-size, compact cards in this order: Host network upload/download rates, Peer connections, block interval (`latest block timestamp - previous consecutive block timestamp`), and latest Block Summary transaction count. Every card keeps its current value and a labelled 60-second chart with `1m` and `0s` time bounds; reduced padding, chart height, radius and shadow keep the deck close to Komari's information density.
 6. Network renders upload and download as distinct line series; Connections renders inbound and outbound as distinct line series. Block interval and transaction count use Server-retained Block Summary samples as bars. The Server may include one last-good point immediately before the window as a line chart's starting value, but bar charts render only observations inside the window; neither Server nor WebUI fabricates intermediate samples or substitutes zero for unavailable data.
 7. Details does not render Bounded Block History, History Gaps, public Validator analytics, or history export. The separate two-summary history request is used only for the current block-interval label; two missing or non-consecutive summaries produce `Unknown`, never a fabricated zero. Missing or failed metric history leaves the current card value intact and renders an explicit chart state.
-8. Network presents the Public Peer Insight and Public Peer History modules. It never exposes peer addresses or a peer identity list.
+8. The Network tab presents the selected Node's Public Peer Insight and selected-Node aggregate Peer History. Network Overview presents network-level Peer Insight separately. Neither surface exposes peer addresses or a peer identity list.
 
 The dashboard presents independent observation dimensions. One failed collection must not hide or rewrite another dimension, and one Agent's Nodes must never be merged into an Agent-level chain view.
 
@@ -739,9 +754,9 @@ The dashboard presents independent observation dimensions. One failed collection
 
 The fixed acceptance viewports are 360x800, 390x844, 768x1024, and 1280x800.
 
-- At 1280x800, Home uses four summary columns and a two-column Node grid. Node Detail centres its compact card deck within a 68rem maximum width, keeps its three resource metrics on one row, and lays the four equal metric cards in a two-by-two deck.
+- At 1280x800, Home uses four summary columns and a two-column Node grid. Node Detail uses the current Home content width, keeps its three resource metrics on one row, and lays the four equal metric cards in a two-by-two deck; acceptance checks actual readable width rather than a fixed legacy cap.
 - At 768x1024, Home uses two summary columns and a single-column Node grid when the content width requires it. Node Detail retains the two-column, equal-height compact metric deck.
-- At 360x800 and 390x844, Home keeps a compact two-column summary where it remains legible, uses a single-column Node grid, keeps `HEAD / TXS / PEERS` together, and reflows the four-column Host-resource and Consensus rows to two columns. Filter pills scroll within their own control rather than causing page overflow. Node Detail keeps the three resource metrics and three status facts in compact rows, reflows consensus into a three-column grid, stacks the four equal-height metric cards, and keeps the tabs full-width touch controls.
+- At 360x800 and 390x844, Home keeps a compact two-column summary where it remains legible, uses a single-column Node grid, keeps `Head / Transactions / Peers` together, and reflows the process-resource, Node-data, transfer-rate, and Consensus rows to two columns. Filter pills scroll within their own control rather than causing page overflow. Node Detail keeps the three resource metrics and three status facts in compact rows, reflows consensus into a three-column grid, stacks the four equal-height metric cards, and keeps the tabs full-width touch controls. At 768x1024 the page composition may be single-column, but the shared table-to-priority-card transform begins below 47.9rem; Admin tables therefore retain their table/local-wrapper behavior at the 768 fixture.
 - At every viewport, long Node names, Node IDs, Network keys, status reasons, and values wrap or truncate with an accessible full value. No critical state requires primary horizontal page scrolling.
 - Touch targets are at least 44x44 CSS pixels. Portrait, landscape, 200% zoom, and reduced-motion settings remain usable.
 
@@ -750,7 +765,7 @@ The fixed acceptance viewports are 360x800, 390x844, 768x1024, and 1280x800.
 The UI keeps collection state, freshness state, value state, and authorization state independent. It renders the fixed user-facing vocabulary from this document: Starting, Current, Stale, Error, Unknown, Disabled, Unsupported, Empty, Live updates paused, and You are offline.
 
 - Initial route loads show a meaningful Starting/loading state and do not fabricate values.
-- A successful observation may show Current or an authoritative empty value. A successful Peer Count Observation of zero is displayed as zero, not Unknown.
+- A successful observation may show Current or an authoritative empty value. A successful Peer Snapshot/aggregate of zero is displayed as zero, not Unknown; omitted/unsupported peer collection remains distinct.
 - An Error or Stale observation may retain LastGood data, but the UI must show the error/stale reason and age/freshness supplied by the Server. It must never convert Unknown, stale, never-observed, Disabled, or Unsupported into 0, false, or Healthy.
 - Node, history, metric-history, peer-history, and validator requests fail independently. A failed optional module does not erase the Node summary or unrelated successful modules.
 - A normal SSE invalidation preserves the currently displayed Node and view context while the exact Public resource is refetched. A reset, authorization transition, Node ID change, or access recheck clears affected sensitive projection state before the next render and may show a revalidation state.
@@ -803,13 +818,13 @@ desktop-1280
 | `SCN-SITE-ACCESS-PRIVATE` | from `/admin/settings`, switch to Private, close public streams, require Home login, clear old Public cache, preserve Admin Owner-only access, and record an Audit Event |
 | `SCN-SETTINGS-ROUTE` | canonical `/admin/settings` route, one h1, History Window before Site Access Mode, Settings-only navigation, removed-route fallback, and browser back/forward context |
 | `SCN-HOME-NETWORK-LIST` | network list from Public Projection, all Active Nodes visible, anonymous access follows Site Access Mode |
-| `SCN-HOME-NODE-DETAIL` | compact Komari-density Node card with no coloured edge strip, compact process CPU/process memory/Node Data progress, four equal-height compact detail cards containing two 60-second line charts and two bar charts backed by real retained samples, neutral card borders, no rendered Bounded Block History, derived consecutive-block interval, Peer Count only |
+| `SCN-HOME-NODE-DETAIL` | compact Komari-density Node card with no coloured edge strip, compact PlatON process CPU/process memory/Node Data progress, separate Node status and Validator role, four equal-height compact detail cards containing two 60-second line charts and two bar charts backed by real retained samples, neutral card borders, no rendered Bounded Block History, derived consecutive-block interval, and selected-Node aggregate Peer History in the Network tab |
 | `SCN-HOME-UNAVAILABLE-NODE` | non-leaking unavailable copy for retired/unknown; no internal detail |
 | `SCN-OVERVIEW-FRESH` | Attention precedes four linked summary cards, priority Node rows remain independently scoped, Agent cards show Host observations once, and Server Health/freshness/timestamps remain authoritative |
 | `SCN-OVERVIEW-STALE-LAST-GOOD` | last-good remains, Error/Stale reason and age visible, no zero substitution, and failed refetch does not clear valid REST content |
 | `SCN-OVERVIEW-UNKNOWN-UNSUPPORTED` | Unknown/Unsupported/Disabled/Empty remain distinct; Starting grace does not become Offline or premature attention |
 | `SCN-OVERVIEW-ATTENTION-GROUPING` | typed critical/warning items remain independent, group by Subject without loss, show issue and Subject counts, preserve safe known-route actions, expose unknown-kind fallback, and label each item's own Server observation time (`Observation time unknown` when absent) without substituting the snapshot time |
-| `SCN-OVERVIEW-PARTIAL-FAILURE` | Overview, Nodes, and Agents fail/retry independently while Attention and summary remain one atomic snapshot |
+| `SCN-OVERVIEW-PARTIAL-FAILURE` | Overview, Nodes, and Agents fail/retry independently; the Overview response keeps Attention and summary together but does not promise a cross-resource point-in-time snapshot |
 | `SCN-OVERVIEW-EMPTY-SETUP` | authoritative zero/Empty values remain visible, safe Networks/Settings guidance appears, and no remote setup or fake-data action exists |
 | `SCN-OVERVIEW-RESPONSIVE` | fixed 360/390/768/1280 layouts, summary transformation, Node cards, Agent stacking, touch/focus/Escape, 200% zoom, reduced motion, and no primary horizontal overflow |
 | `SCN-SITE-ACCESS-PUBLIC` | from `/admin/settings`, switch to Public, allow anonymous Home reads, keep Admin Owner-only, clear affected state, discard stale responses, and record an Audit Event |
@@ -840,22 +855,22 @@ A page is ready for production implementation only when:
 
 | Decision | Source |
 |---|---|
-| Compact Admin workbench first delivery: Admin-only left-aligned shell, six-column Agents summary with existing detail, precise evidence/count semantics, responsive acceptance; Settings/Audit restructuring deferred | Confirmed `grill-with-docs` Q1–Q12 and final documentation approval; §8.5. Accepted design, not an implementation/test-completion claim. |
+| Historical: Compact Admin workbench first delivery and six-column Agents summary; the later §8.6 information-architecture pass superseded the Settings/Audit deferral | Confirmed `grill-with-docs` Q1–Q12 and final documentation approval; retained as historical decision, not current route authority. |
 | Admin visual shell and responsive baseline | Issue #35, accepted prototype branch `prototype/ui-shell-variants` |
 | Home/Admin route and scope boundaries | Issue #34 |
 | Shared freshness, realtime, and authorization | Issue #36 |
-| Identity, lifecycle, access, and workflow contracts | Issue #37 — MVP subset retained (preconfigured credentials); Recovery/Rotation deferred |
-| Alert, maintenance, retention, backup/restore, Doctor | Issue #38 — superseded for MVP: deferred to later phases |
-| Representative operations-loop prototype | Issue #39, branch `prototype/phase2-operations-loop` @ `58d6f9c` — deferred |
+| Historical: Identity, lifecycle, access, and workflow contracts | Issue #37 — current Server supports Enrollment/Recovery/Rotation, while the SPA still has no management page for those operations. |
+| Historical: Alert, maintenance, retention, backup/restore, Doctor page deferral | Issue #38 — Server/API capabilities now exist; the current SPA still has no corresponding routed pages. |
+| Historical: Representative operations-loop prototype | Issue #39, branch `prototype/phase2-operations-loop` @ `58d6f9c` — prototype remains unrouted; Server Operations API is current. |
 | Implementation handoff and acceptance contract | Issue #40 |
-| MVP scope convergence: Komari-like Home/Admin separation, no Admin duplicate Node Detail, Server-only bounded Block History, no History Gap/Backfill, report-level Receipt, Peer Count only | Confirmed design review; see `docs/design/platpulse.md` |
-| Site-level access mode (Komari-like), Owner-only principals, per-Node visibility removed | Confirmed design review; see `docs/design/platpulse.md` |
+| Historical: scope convergence claimed no History Gap/Backfill, report-only Receipt, and Peer Count only | Superseded by the current AgentReport/Receipt, bounded Gap Backfill, Peer Snapshot/Presence, Geo, and Validator contracts in `docs/design/platpulse.md`. |
+| Historical: site-level access mode with Owner-only principals and removed per-Node visibility | Superseded: human roles are Owner/Viewer, anonymous Guest is mode-gated, and per-Node `visibility` remains a legacy Admin compatibility field not used by Public SQL. |
 | Accepted Home / Node Detail visual direction, responsive baseline, public-data contract, and production test seam | Issue #75 and accepted branch `prototype/home-node-detail` |
 | Unified light Admin shell and Overview shared-theme foundation | Issue #110 plus Emerald visual refit |
 | Unified Owner Settings page for History Window and Site Access Mode | Issue #111 |
 | Admin visual convergence across retained pages | Issue #112 |
 | Unified Admin experience integration contract, canonical Settings route, and fixed-viewport verification | Issue #113, parent Issue #109 |
-| Komari-inspired Admin Overview triage hierarchy, typed Attention Items, shared Server Health policy, responsive limits, and page boundaries | Confirmed `grill-with-docs` design review; see `docs/design/platpulse.md` §8.5 and this document §8.4 |
+| Historical: Komari-inspired Admin Overview triage hierarchy, typed Attention Items, shared Server Health policy, responsive limits, and page boundaries | Confirmed `grill-with-docs` design review; current code keeps typed Attention Items and responsive boundaries, but Public/Admin health precedence is route-specific rather than one shared evaluator. |
 | Admin information architecture pass: Audit event table, Settings consolidation, Agent Detail summary and categories, Overview Agent inventory summary, Network mismatch wording, shared formatting/focus | Explicit product direction after §8.5; see this document §8.6 |
 | Targeted Admin list/detail fix: Agents six-column cell alignment, Diagnostics summary plus cross-column disclosure, Audit cross-column detail row, explicit attention observation-time labels | Explicit product direction; see this document §8.6 |
 | Prototype cleanup and production-only route boundary | Issue #89 |
