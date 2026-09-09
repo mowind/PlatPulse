@@ -101,11 +101,45 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
         }),
       })
     })
+    await page.route('**/api/public/v1/nodes/0195f2a1-0060-4060-8060-000000000060', async (route) => {
+      const response = await route.fetch()
+      const payload = (await response.json()) as Record<string, unknown>
+      await route.fulfill({
+        response,
+        body: JSON.stringify({
+          ...payload,
+          displayName: longNodeName,
+          health: 'unhealthy',
+          healthReason: longHealthReason,
+        }),
+      })
+    })
     await page.goto('/networks/home-convergence')
 
     await expect(page.getByRole('heading', { level: 1, name: 'Home Convergence Network With An Extremely Long Display Name' })).toBeVisible()
     const hCard = page.getByRole('article', { name: /Node H/ })
     await expect(hCard).toBeVisible()
+    const identityGroup = hCard.getByRole('group', { name: 'Node identity and health' })
+    const summaryGroup = hCard.getByRole('group', { name: 'Node summary facts' })
+    const componentGroup = hCard.getByRole('group', { name: 'Node component status' })
+    await expect(identityGroup).toContainText(longNodeName)
+    await expect(identityGroup).toContainText('Healthy')
+    await expect(summaryGroup).toHaveText(/Head[\s\S]*Peers[\s\S]*Oldest component update/)
+    await expect(componentGroup).toHaveText(/RPC[\s\S]*Sync[\s\S]*Consensus/)
+    const [identityBox, summaryBox, componentBox, detailsBox] = await Promise.all([
+      identityGroup.boundingBox(),
+      summaryGroup.boundingBox(),
+      componentGroup.boundingBox(),
+      hCard.getByRole('link', { name: 'View details' }).boundingBox(),
+    ])
+    expect(identityBox).not.toBeNull()
+    expect(summaryBox).not.toBeNull()
+    expect(componentBox).not.toBeNull()
+    expect(detailsBox).not.toBeNull()
+    expect(summaryBox!.y).toBeGreaterThanOrEqual(identityBox!.y)
+    expect(componentBox!.y).toBeGreaterThanOrEqual(summaryBox!.y)
+    expect(detailsBox!.y).toBeGreaterThanOrEqual(componentBox!.y)
+
     const hTitleLink = hCard.getByRole('link', { name: /Node H/ })
     await expect(hTitleLink).toHaveText(longNodeName)
     await expect(hTitleLink).toHaveAttribute('href', '/nodes/0195f2a1-0060-4060-8060-000000000060')
@@ -119,6 +153,8 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expect(hCard).toContainText(/outbound/i)
     await expect(hCard).toContainText('Oldest component update')
     await expect(hCard).toContainText('Earliest Server receipt across RPC, Sync, and Consensus')
+    const timeGroup = hCard.getByText('Earliest Server receipt across RPC, Sync, and Consensus', { exact: true }).locator('..')
+    await expect(timeGroup).not.toContainText('Current')
     await expect(hCard.getByLabel('Node component status')).toContainText('RPC')
     await expect(hCard.getByLabel('Node component status')).toContainText('Sync')
     await expect(hCard.getByLabel('Node component status')).toContainText('Consensus')
@@ -188,8 +224,19 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await activate(hTitleLink)
     await expect(page).toHaveURL(/\/nodes\/0195f2a1-0060-4060-8060-000000000060$/)
     await expect(page.getByRole('heading', { level: 1, name: /Node H/ })).toHaveText(longNodeName)
-    await expect(page.locator('.node-hero-footer')).toContainText('Last report')
-    await expect(page.locator('.node-hero-footer')).toContainText('UTC')
+    const detailReason = page.getByText(longHealthReason, { exact: true })
+    await expect(detailReason).toBeVisible()
+    const detailReasonLayout = await detailReason.evaluate((element) => ({
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+    }))
+    expect(detailReasonLayout.clientWidth).toBeGreaterThan(0)
+    expect(detailReasonLayout.scrollWidth).toBeLessThanOrEqual(detailReasonLayout.clientWidth)
+    expect(detailReasonLayout.scrollHeight).toBeLessThanOrEqual(detailReasonLayout.clientHeight)
+    const lastReport = page.getByText('Last report', { exact: true }).locator('..')
+    await expect(lastReport).toContainText('UTC')
     await expectNoHorizontalOverflow(page)
 
     await page.goto('/networks/home-convergence')

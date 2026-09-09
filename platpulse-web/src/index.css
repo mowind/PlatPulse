@@ -3454,6 +3454,7 @@ button {
 .home-shell .node-metric-y-axis,
 .home-shell .node-metric-x-axis { color: var(--muted); }
 .home-shell .node-hero-badges > div { background: rgba(241, 245, 249, 0.62); border-color: rgba(148, 163, 184, 0.22); }
+.home-shell .node-hero-reason { min-width: 0; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
 .home-shell .node-hero-resources { border-top-color: rgba(100, 116, 139, 0.25); }
 .home-shell .node-hero-resource-progress { background: #e2e8f0; }
 .home-shell .node-hero-resource-progress span { background: linear-gradient(90deg, var(--brand), var(--lime)); box-shadow: none; }

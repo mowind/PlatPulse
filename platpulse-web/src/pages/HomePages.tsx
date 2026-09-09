@@ -665,19 +665,19 @@ function NodeCard({ node }: { node: PublicNode }) {
   const displayName = nodeDisplayName(node)
   const titleId = 'network-node-card-title-' + node.nodeId
   return <article className="node-card network-node-card" aria-labelledby={titleId}>
-    <header className="network-node-card-header">
+    <header className="network-node-card-header" role="group" aria-label="Node identity and health">
       <div>
         <h2 id={titleId}><Link to={'/nodes/' + node.nodeId}>{displayName}</Link></h2>
       </div>
       <StatusBadge status={health.label} tone={health.tone} />
     </header>
     {showHealthReason && <p className="health-reason">{node.healthReason || 'Server health reason unavailable.'}</p>}
-    <div className="network-node-highlights">
+    <div className="network-node-highlights" role="group" aria-label="Node summary facts">
       <div><span>Head</span><strong>{formatNumber(node.currentHead)}</strong></div>
       <div><span>Peers</span><strong>{peerCount(node.peers)}</strong><small>{peerBreakdown(node.peers)}</small></div>
       <NodeUpdateTime value={node.freshness} />
     </div>
-    <div className="network-node-statuses" aria-label="Node component status">
+    <div className="network-node-statuses" role="group" aria-label="Node component status">
       <NodeOverviewStatus label="RPC" value={node.rpcState} />
       <NodeOverviewStatus label="Sync" value={node.syncState} />
       <NodeOverviewStatus label="Consensus" value={node.consensusState} />

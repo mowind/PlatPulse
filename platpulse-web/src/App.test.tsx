@@ -6,6 +6,7 @@ import { adminQueryClient, resetAdminCache } from './api/admin'
 import { resetPublicCache } from './api/public'
 import { resetRealtimeCursors } from './api/transport'
 import { client } from './api/generated/client.gen'
+import type { PublicNode } from './api/generated/types.gen'
 
 const OWNER_SESSION = {
   session: {
@@ -643,7 +644,7 @@ describe('App shell with private Home', () => {
   })
 
   it('renders published Network and Node data on Home', async () => {
-    const nodePayload = {
+    const nodePayload: PublicNode = {
       nodeId: 'node-1',
       displayName: 'Validator A',
       networkKey: 'mainnet',
@@ -653,6 +654,7 @@ describe('App shell with private Home', () => {
       rpcState: 'ok',
       syncState: 'synced',
       consensusState: 'current',
+      consensus: { state: 'ok', freshness: 'current' },
       processState: 'running',
       resyncState: 'idle',
       currentHead: 123,
@@ -669,16 +671,7 @@ describe('App shell with private Home', () => {
       '/api/public/v1/networks': () => jsonResponse([{
         networkKey: 'mainnet',
         displayName: 'Mainnet',
-        nodes: [{
-          nodeId: 'node-1',
-          displayName: 'Validator A',
-          networkKey: 'mainnet',
-          health: 'healthy',
-          healthReason: 'rpc reachable',
-          freshness: '2026-08-12T00:00:00Z',
-          rpcState: 'ok',
-          hostCpuPercent: 42.5,
-        }],
+        nodes: [nodePayload],
       }], 200),
       '/api/public/v1/nodes/node-1': () => jsonResponse(nodePayload, 200),
       '/api/public/v1/networks/mainnet': () => jsonResponse({
@@ -717,7 +710,7 @@ describe('App shell with private Home', () => {
     const longName = 'Node with a very long name that remains readable on narrow screens'
     const longReason = 'One or more observations are unavailable while this Node is starting and waiting for a complete Server-owned snapshot.'
     const unbrokenReason = 'ServerOwnedHealthReasonThatMustWrapWithoutTruncationAtNarrowWidths0123456789'
-    const healthyNode = {
+    const healthyNode: PublicNode = {
       nodeId: 'node-healthy',
       displayName: 'Healthy Node',
       networkKey: 'mainnet',
@@ -733,12 +726,13 @@ describe('App shell with private Home', () => {
       consensusState: 'ok',
       processState: 'running',
       resyncState: 'normal',
+      networkReferenceConfidence: 'high',
       currentHead: 100,
       peers: { state: 'ok', freshness: 'current', peerCount: 30, inboundCount: 10, outboundCount: 20 },
       consensus: { state: 'ok', freshness: 'current' },
       validator: null,
     }
-    const startingNode = {
+    const startingNode: PublicNode = {
       nodeId: 'node-starting',
       displayName: longName,
       networkKey: 'mainnet',
@@ -751,6 +745,7 @@ describe('App shell with private Home', () => {
       consensusState: 'starting',
       processState: 'starting',
       resyncState: 'normal',
+      networkReferenceConfidence: 'unknown',
       currentHead: null,
       peers: { state: 'unknown', freshness: 'unknown', peerCount: null, inboundCount: null, outboundCount: null },
       consensus: { state: 'unknown', freshness: 'unknown' },
@@ -829,11 +824,11 @@ describe('App shell with private Home', () => {
     if (!healthyWithUnknownReceiptCard) throw new Error('Healthy Node with unknown receipt card is missing')
     expect(within(healthyWithUnknownReceiptCard).getByText('Healthy', { exact: true })).toBeTruthy()
     expect(within(healthyWithUnknownReceiptCard).getByText('Oldest component update', { exact: true })).toBeTruthy()
-    expect(healthyWithUnknownReceiptCard.querySelector('.network-node-time strong')?.textContent).toBe('Unknown')
+    expect(healthyWithUnknownReceiptCard.textContent).toMatch(/Oldest component update\s*Unknown/)
   })
 
   it('treats an invalid calendar timestamp as unavailable on public Node cards', async () => {
-    const node = {
+    const node: PublicNode = {
       nodeId: 'node-invalid-time',
       displayName: 'Node With Invalid Receipt Time',
       networkKey: 'mainnet',
@@ -845,10 +840,23 @@ describe('App shell with private Home', () => {
       consensusState: 'ok',
       processState: 'running',
       resyncState: 'normal',
+      networkReferenceConfidence: 'unknown',
       currentHead: 1,
       peers: { state: 'ok', freshness: 'current', peerCount: 0, inboundCount: 0, outboundCount: 0 },
       consensus: { state: 'ok', freshness: 'current' },
       validator: null,
+    }
+    const missingZoneNode = {
+      ...node,
+      nodeId: 'node-missing-zone',
+      displayName: 'Node With Missing Timezone',
+      freshness: '2026-08-20T00:05:00',
+    }
+    const incompleteNode = {
+      ...node,
+      nodeId: 'node-incomplete-time',
+      displayName: 'Node With Incomplete Receipt Time',
+      freshness: '2026-08-20T00:05',
     }
 
     mockFetch({
@@ -857,7 +865,7 @@ describe('App shell with private Home', () => {
       '/api/public/v1/networks/mainnet': () => jsonResponse({
         networkKey: 'mainnet',
         displayName: 'Mainnet',
-        nodes: [node],
+        nodes: [node, missingZoneNode, incompleteNode],
         peers: { state: 'ok', freshness: 'current', peerCount: 0 },
         geo: { state: 'disabled' },
         validators: [],
@@ -871,14 +879,21 @@ describe('App shell with private Home', () => {
       await Promise.resolve()
     })
 
-    const card = (await screen.findByRole('heading', { level: 2, name: 'Node With Invalid Receipt Time' })).closest('article')
-    if (!card) throw new Error('Invalid-time Node card is missing')
-    expect(within(card).getByText('RPC, Sync, and Consensus receipt time is unavailable.', { exact: true })).toBeTruthy()
-    expect(card.querySelectorAll('time')).toHaveLength(0)
+    const invalidDisplayNames = [
+      'Node With Invalid Receipt Time',
+      'Node With Missing Timezone',
+      'Node With Incomplete Receipt Time',
+    ]
+    for (const displayName of invalidDisplayNames) {
+      const card = (await screen.findByRole('heading', { level: 2, name: displayName })).closest('article')
+      if (!card) throw new Error(displayName + ' card is missing')
+      expect(within(card).getByText('RPC, Sync, and Consensus receipt time is unavailable.', { exact: true })).toBeTruthy()
+      expect(within(card).queryByText('Earliest Server receipt across RPC, Sync, and Consensus', { exact: true })).toBeNull()
+    }
   })
 
   it('falls back to the Node ID when a public Node display name is empty', async () => {
-    const node = {
+    const node: PublicNode = {
       nodeId: 'node-empty-name',
       displayName: '',
       networkKey: 'mainnet',
@@ -890,6 +905,7 @@ describe('App shell with private Home', () => {
       consensusState: 'ok',
       processState: 'running',
       resyncState: 'normal',
+      networkReferenceConfidence: 'unknown',
       currentHead: 1,
       peers: { state: 'ok', freshness: 'current', peerCount: 0, inboundCount: 0, outboundCount: 0 },
       consensus: { state: 'ok', freshness: 'current' },
@@ -917,7 +933,7 @@ describe('App shell with private Home', () => {
     })
 
     const heading = await screen.findByRole('heading', { level: 2, name: 'node-empty-name' })
-    expect(heading.querySelector('a')?.getAttribute('href')).toBe('/nodes/node-empty-name')
+    expect(within(heading).getByRole('link', { name: 'node-empty-name' }).getAttribute('href')).toBe('/nodes/node-empty-name')
   })
 
   it('navigates both Network Node card links to the existing public Node Detail', async () => {

@@ -1337,7 +1337,7 @@ pub struct PublicNode {
     pub validator: Option<PublicValidatorInsight>,
 }
 
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug, Default, sqlx::FromRow)]
 struct PublicNodeRow {
     node_id: String,
     display_name: Option<String>,
@@ -3684,6 +3684,21 @@ mod tests {
                 .iter()
                 .all(|component| component["name"] != "validator")
         );
+    }
+
+    #[test]
+    fn freshness_uses_oldest_complete_component_receipt_and_rejects_missing() {
+        let mut row = PublicNodeRow {
+            updated_at: Some("2026-08-20T00:05:00Z".to_owned()),
+            sync_received_at: Some("2026-08-20T00:07:00Z".to_owned()),
+            consensus_received_at: Some("2026-08-20T00:06:00Z".to_owned()),
+            ..Default::default()
+        };
+
+        assert_eq!(freshness_for(&row).as_deref(), Some("2026-08-20T00:05:00Z"));
+
+        row.consensus_received_at = None;
+        assert_eq!(freshness_for(&row), None);
     }
 
     #[test]
