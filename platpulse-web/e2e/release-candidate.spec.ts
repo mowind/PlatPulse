@@ -44,7 +44,7 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expect(page.getByText('Node D (retired)', { exact: true })).toHaveCount(0)
   })
 
-  test('Public Network header separates live transport from observation status', async ({ page }) => {
+  test('Public Network header separates live transport from observation status', async ({ page }, testInfo) => {
     await loginAs(page)
     await page.goto('/networks/home-convergence')
 
@@ -62,6 +62,21 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await adminLink.focus()
     await expect(adminLink).toBeFocused()
     await expectNoHorizontalOverflow(page)
+
+    if (page.viewportSize()?.width === 360) {
+      const keyBox = await metadata.locator('span').first().boundingBox()
+      const statusBox = await metadata.getByRole('status', { name: 'Live updates connected' }).boundingBox()
+      expect(keyBox).not.toBeNull()
+      expect(statusBox).not.toBeNull()
+      expect(statusBox!.y).toBeGreaterThan(keyBox!.y + keyBox!.height - 1)
+    }
+
+    if (testInfo.project.name.includes('touch')) {
+      await adminLink.tap()
+    } else {
+      await adminLink.press('Enter')
+    }
+    await expect(page).toHaveURL(/\/admin$/)
   })
 
   test('Public Peer insight exposes bounded summaries without peer identities', async ({ page }) => {
