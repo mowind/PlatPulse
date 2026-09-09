@@ -547,6 +547,30 @@ describe('App shell with private Home', () => {
     expect(screen.getByText('Network key')).toBeTruthy()
   })
 
+  it('keeps public transport status visible while Network REST is unavailable', async () => {
+    vi.stubGlobal('EventSource', FakeEventSource)
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/public/v1/networks': () => jsonResponse([], 200),
+      '/api/public/v1/networks/unavailable-network*': () => errorBody('network_unavailable'),
+    })
+
+    render(<App />)
+    await act(async () => {
+      window.history.pushState({}, '', '/networks/unavailable-network')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+
+    expect((await screen.findByRole('alert')).textContent).toContain('Network is Error')
+    expect(screen.getByRole('status', { name: 'Connecting to live updates' })).toBeTruthy()
+    await act(async () => {
+      FakeEventSource.latest?.onerror?.()
+      await Promise.resolve()
+    })
+    expect(screen.getByRole('status', { name: 'Live updates paused' })).toBeTruthy()
+  })
+
   it('separates connected transport from stale observations and Unknown Node Health', async () => {
     vi.stubGlobal('EventSource', FakeEventSource)
     let networkCalls = 0

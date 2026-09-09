@@ -25,10 +25,10 @@ export function NetworkPage() {
   const { generation, resetting, realtime } = useHomeRealtimeContext()
   const query = usePublicNetwork(networkKey, generation)
 
-  if (resetting) return <section className="page public-network-page"><p role="status">Revalidating Home access…</p></section>
-  if (query.isPending) return <section className="page public-network-page"><p role="status">Network is Starting; loading public data…</p></section>
-  if (query.error && !query.data) return <section className="page public-network-page"><p role="alert" className="form-error">Network is Error; {query.error instanceof Error ? query.error.message : 'public Network data is unavailable.'}</p><Link to="/">Back to Home</Link></section>
-  if (!query.data) return <section className="page public-network-page"><p role="status">Network is Unknown; public data is unavailable.</p><Link to="/">Back to Home</Link></section>
+  if (resetting) return <section className="page public-network-page"><RealtimeNotice realtime={realtime} /><p role="status">Revalidating Home access…</p></section>
+  if (query.isPending) return <section className="page public-network-page"><RealtimeNotice realtime={realtime} /><p role="status">Network is Starting; loading public data…</p></section>
+  if (query.error && !query.data) return <section className="page public-network-page"><RealtimeNotice realtime={realtime} /><p role="alert" className="form-error">Network is Error; {query.error instanceof Error ? query.error.message : 'public Network data is unavailable.'}</p><Link to="/">Back to Home</Link></section>
+  if (!query.data) return <section className="page public-network-page"><RealtimeNotice realtime={realtime} /><p role="status">Network is Unknown; public data is unavailable.</p><Link to="/">Back to Home</Link></section>
 
   const network = query.data
   return <section className="page public-network-page" aria-labelledby="network-page-title">
@@ -82,10 +82,10 @@ export function NodePage() {
   const peerHistoryQuery = usePublicNodePeerHistory(nodeId, generation)
   const [activeTab, setActiveTab] = useState<'details' | 'network'>('details')
 
-  if (resetting) return <section className="page"><p role="status">Revalidating Node access…</p></section>
-  if (nodeQuery.isPending) return <section className="page"><p role="status">Loading Node…</p></section>
-  if (nodeQuery.error && !nodeQuery.data) return <section className="page"><p role="alert" className="form-error">{nodeQuery.error instanceof Error ? nodeQuery.error.message : 'Unable to load Node'}</p><Link to="/">Back to Home</Link></section>
-  if (!nodeQuery.data) return <section className="page"><p role="status">Node unavailable.</p><Link to="/">Back to Home</Link></section>
+  if (resetting) return <section className="page"><RealtimeNotice realtime={realtime} /><p role="status">Revalidating Node access…</p></section>
+  if (nodeQuery.isPending) return <section className="page"><RealtimeNotice realtime={realtime} /><p role="status">Loading Node…</p></section>
+  if (nodeQuery.error && !nodeQuery.data) return <section className="page"><RealtimeNotice realtime={realtime} /><p role="alert" className="form-error">{nodeQuery.error instanceof Error ? nodeQuery.error.message : 'Unable to load Node'}</p><Link to="/">Back to Home</Link></section>
+  if (!nodeQuery.data) return <section className="page"><RealtimeNotice realtime={realtime} /><p role="status">Node unavailable.</p><Link to="/">Back to Home</Link></section>
 
   const node = nodeQuery.data
   const activity = nodeActivity(node)
