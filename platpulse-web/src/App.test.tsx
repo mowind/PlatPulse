@@ -727,7 +727,8 @@ describe('App shell with private Home', () => {
       freshness: '2026-08-20T00:05:00Z',
       lastReportAt: '2026-08-20T00:09:00Z',
       rpcState: 'ok',
-      syncState: 'ok',
+      // A foreign value must not be treated as a successful collection state.
+      syncState: 'synced',
       consensusState: 'ok',
       processState: 'running',
       resyncState: 'normal',
@@ -796,6 +797,7 @@ describe('App shell with private Home', () => {
     expect(within(healthyCard).getByLabelText('Node component status').textContent).toContain('Sync')
     expect(within(healthyCard).getByLabelText('Node component status').textContent).toContain('Consensus')
     expect(within(healthyCard).getByLabelText('Node component status').textContent).toContain('Current')
+    expect(within(healthyCard).getByLabelText('Node component status').textContent).toContain('Unknown')
 
     const startingCard = (await screen.findByRole('heading', { level: 2, name: longName })).closest('article')
     if (!startingCard) throw new Error('Starting Node card is missing')
@@ -805,6 +807,94 @@ describe('App shell with private Home', () => {
     expect(within(startingCard).getByText(/RPC, Sync, and Consensus receipt time is unavailable/i)).toBeTruthy()
     expect(within(startingCard).getAllByText('Starting', { exact: true }).length).toBe(3)
     expect(within(startingCard).getByLabelText('Node component status').textContent).toContain('Starting')
+  })
+
+  it('treats an invalid calendar timestamp as unavailable on public Node cards', async () => {
+    const node = {
+      nodeId: 'node-invalid-time',
+      displayName: 'Node With Invalid Receipt Time',
+      networkKey: 'mainnet',
+      health: 'healthy',
+      healthReason: 'routine',
+      freshness: '2026-02-30T00:00:00Z',
+      rpcState: 'ok',
+      syncState: 'ok',
+      consensusState: 'ok',
+      processState: 'running',
+      resyncState: 'normal',
+      currentHead: 1,
+      peers: { state: 'ok', freshness: 'current', peerCount: 0, inboundCount: 0, outboundCount: 0 },
+      consensus: { state: 'ok', freshness: 'current' },
+      validator: null,
+    }
+
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/public/v1/networks': () => jsonResponse([], 200),
+      '/api/public/v1/networks/mainnet': () => jsonResponse({
+        networkKey: 'mainnet',
+        displayName: 'Mainnet',
+        nodes: [node],
+        peers: { state: 'ok', freshness: 'current', peerCount: 0 },
+        geo: { state: 'disabled' },
+        validators: [],
+      }, 200),
+    })
+
+    render(<App />)
+    await act(async () => {
+      window.history.pushState({}, '', '/networks/mainnet')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+
+    const card = (await screen.findByRole('heading', { level: 2, name: 'Node With Invalid Receipt Time' })).closest('article')
+    if (!card) throw new Error('Invalid-time Node card is missing')
+    expect(within(card).getByText('RPC, Sync, and Consensus receipt time is unavailable.', { exact: true })).toBeTruthy()
+    expect(card.querySelectorAll('time')).toHaveLength(0)
+  })
+
+  it('falls back to the Node ID when a public Node display name is empty', async () => {
+    const node = {
+      nodeId: 'node-empty-name',
+      displayName: '',
+      networkKey: 'mainnet',
+      health: 'healthy',
+      healthReason: 'routine',
+      freshness: null,
+      rpcState: 'ok',
+      syncState: 'ok',
+      consensusState: 'ok',
+      processState: 'running',
+      resyncState: 'normal',
+      currentHead: 1,
+      peers: { state: 'ok', freshness: 'current', peerCount: 0, inboundCount: 0, outboundCount: 0 },
+      consensus: { state: 'ok', freshness: 'current' },
+      validator: null,
+    }
+
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/public/v1/networks': () => jsonResponse([], 200),
+      '/api/public/v1/networks/mainnet': () => jsonResponse({
+        networkKey: 'mainnet',
+        displayName: 'Mainnet',
+        nodes: [node],
+        peers: { state: 'ok', freshness: 'current', peerCount: 0 },
+        geo: { state: 'disabled' },
+        validators: [],
+      }, 200),
+    })
+
+    render(<App />)
+    await act(async () => {
+      window.history.pushState({}, '', '/networks/mainnet')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+
+    const heading = await screen.findByRole('heading', { level: 2, name: 'node-empty-name' })
+    expect(heading.querySelector('a')?.getAttribute('href')).toBe('/nodes/node-empty-name')
   })
 
   it('navigates both Network Node card links to the existing public Node Detail', async () => {

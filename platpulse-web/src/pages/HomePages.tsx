@@ -114,7 +114,7 @@ export function NodePage() {
     <section className="node-hero-card" aria-labelledby="node-detail-title">
       <header className="node-hero-header">
         <div>
-          <h1 id="node-detail-title">{node.displayName ?? 'Node detail'}</h1>
+          <h1 id="node-detail-title">{nodeDisplayName(node)}</h1>
           <p className="node-id-line">Node ID <code>{node.nodeId}</code></p>
         </div>
         <div className="node-hero-facts" aria-label="Node status">
@@ -527,21 +527,13 @@ function NodeOverviewStatus({ label, value }: { label: string; value: string }) 
 }
 
 function nodeComponentStateLabel(value: string | null | undefined): string {
-  switch (value?.trim().toLowerCase()) {
-    case 'ok':
-    case 'healthy':
-    case 'normal':
-    case 'current':
-    case 'synced': return 'Current'
-    case 'stale': return 'Stale'
-    case 'error':
-    case 'unhealthy':
-    case 'stopped': return 'Error'
-    case 'starting':
-    case 'resyncing': return 'Starting'
+  const state = typeof value === 'string' ? value.trim().toLowerCase() : undefined
+  switch (state) {
+    case 'ok': return 'Current'
+    case 'starting': return 'Starting'
+    case 'error': return 'Error'
     case 'disabled': return 'Disabled'
     case 'unsupported': return 'Unsupported'
-    case 'empty': return 'Empty'
     default: return 'Unknown'
   }
 }
@@ -551,20 +543,51 @@ type NodeHealthPresentation = {
   tone: 'ok' | 'warning' | 'error' | 'neutral'
 }
 
-function nodeHealthPresentation(value: string): NodeHealthPresentation {
-  switch (value.trim().toLowerCase()) {
+function nodeHealthPresentation(value: string | null | undefined): NodeHealthPresentation {
+  const health = typeof value === 'string' ? value.trim().toLowerCase() : undefined
+  switch (health) {
     case 'healthy': return { label: 'Healthy', tone: 'ok' }
     case 'unhealthy': return { label: 'Unhealthy', tone: 'error' }
     default: return { label: 'Unknown', tone: 'neutral' }
   }
 }
 
+function nodeDisplayName(node: Pick<PublicNode, 'displayName' | 'nodeId'>): string {
+  const displayName = typeof node.displayName === 'string' ? node.displayName.trim() : ''
+  return displayName || node.nodeId
+}
+
 type ComponentUpdateTime = { timestamp: string; date: Date }
+
+const COMPONENT_TIMESTAMP_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/
 
 /** PublicNode.freshness is the Server-computed earliest receipt timestamp. */
 function parseComponentUpdateTime(value: string | null | undefined): ComponentUpdateTime | null {
-  const timestamp = value?.trim()
-  if (!timestamp || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(timestamp)) return null
+  const timestamp = typeof value === 'string' ? value.trim() : undefined
+  if (!timestamp) return null
+
+  const match = COMPONENT_TIMESTAMP_PATTERN.exec(timestamp)
+  if (!match) return null
+
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const hour = Number(match[4])
+  const minute = Number(match[5])
+  const second = Number(match[6])
+  const timezone = match[7]
+  const offsetHour = timezone === 'Z' ? 0 : Number(timezone.slice(1, 3))
+  const offsetMinute = timezone === 'Z' ? 0 : Number(timezone.slice(4, 6))
+  const daysInMonth = month === 2
+    ? year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28
+    : [4, 6, 9, 11].includes(month) ? 30 : 31
+
+  if (
+    month < 1 || month > 12 || day < 1 || day > daysInMonth
+    || hour > 23 || minute > 59 || second > 59
+    || offsetHour > 23 || offsetMinute > 59
+  ) return null
+
   const date = new Date(timestamp)
   return Number.isNaN(date.getTime()) ? null : { timestamp, date }
 }
@@ -639,11 +662,12 @@ function peerBreakdown(insight: PublicNode['peers']): string {
 function NodeCard({ node }: { node: PublicNode }) {
   const health = nodeHealthPresentation(node.health)
   const showHealthReason = health.tone !== 'ok'
+  const displayName = nodeDisplayName(node)
   const titleId = 'network-node-card-title-' + node.nodeId
   return <article className="node-card network-node-card" aria-labelledby={titleId}>
     <header className="network-node-card-header">
       <div>
-        <h2 id={titleId}><Link to={'/nodes/' + node.nodeId}>{node.displayName ?? node.nodeId}</Link></h2>
+        <h2 id={titleId}><Link to={'/nodes/' + node.nodeId}>{displayName}</Link></h2>
       </div>
       <StatusBadge status={health.label} tone={health.tone} />
     </header>
