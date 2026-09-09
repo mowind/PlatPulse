@@ -538,11 +538,16 @@ with sqlite3.connect(path) as db:
             (node_id, head, head, 1 if validator else 0, qc, lock, commit, convergence_genesis, observed_at),
         )
 
-    def seed_components(node_id, received_at, value_received_at):
-        for key in ("rpc", "sync", "consensus"):
+    def seed_components(node_id, received_at, value_received_at, sync_received_at=None, consensus_received_at=None):
+        component_receipts = {
+            "rpc": received_at,
+            "sync": sync_received_at or received_at,
+            "consensus": consensus_received_at or received_at,
+        }
+        for key, component_received_at in component_receipts.items():
             db.execute(
                 "INSERT OR IGNORE INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES (?, 'node', ?, ?, ?, 'ok', ?, ?, ?, ?, 1, 1)",
-                (convergence_agent_id, node_id, node_id, key, received_at, received_at, received_at, value_received_at),
+                (convergence_agent_id, node_id, node_id, key, component_received_at, component_received_at, component_received_at, value_received_at),
             )
         db.execute(
             "INSERT OR IGNORE INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES (?, 'node', ?, ?, 'peers', 'ok', ?, ?, ?, ?, 1, 1)",
@@ -558,8 +563,11 @@ with sqlite3.connect(path) as db:
     # Node H: the fully production-like card - exact Current Head Block
     # Summary (TXS), current consensus membership, and current Provider
     # Activity through an effective Node Validator Link.
+    node_h_rpc_receipt = (datetime.now(timezone.utc) - timedelta(seconds=80)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    node_h_sync_receipt = (datetime.now(timezone.utc) - timedelta(seconds=40)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    node_h_consensus_receipt = (datetime.now(timezone.utc) - timedelta(seconds=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
     seed_chain(node_h, 12842025, True, 12842025, 12842024, 12842025, fresh)
-    seed_components(node_h, fresh, fresh)
+    seed_components(node_h, node_h_rpc_receipt, fresh, node_h_sync_receipt, node_h_consensus_receipt)
     seed_summary(node_h, 12842025, 21, convergence_genesis, fresh)
     for peer_id, direction in (("home-h-1", "inbound"), ("home-h-2", "outbound"), ("home-h-3", "outbound")):
         db.execute(
@@ -789,6 +797,7 @@ path = sys.argv[1]
 agent_id = "0195f2a1-0011-4011-8011-000000000011"
 target_agent = "0195f2a1-0021-4021-8021-000000000021"
 node_a = "0195f2a1-0014-4014-8014-000000000014"
+node_h = "0195f2a1-0060-4060-8060-000000000060"
 # Home convergence fixtures (issue #102) that must stay deterministically
 # current/fresh for the whole suite: Node H (Producing Activity), Node K
 # (current False membership), Node M (Observing), and Node N (healthy with
@@ -824,6 +833,18 @@ while True:
                 f"WHERE node_id IN ({fresh_placeholders}) AND scope = 'node'",
                 (fresh, fresh, fresh, fresh, *fresh_nodes),
             )
+            # Keep Node H's three component receipts distinct so the public
+            # freshness projection can prove it selected the earliest one.
+            node_h_receipts = {
+                "rpc": (datetime.now(timezone.utc) - timedelta(seconds=80)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "sync": (datetime.now(timezone.utc) - timedelta(seconds=40)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "consensus": (datetime.now(timezone.utc) - timedelta(seconds=5)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+            for component_key, receipt in node_h_receipts.items():
+                db.execute(
+                    "UPDATE component_status SET attempted_at = ?, observed_at = ?, received_at = ? WHERE node_id = ? AND component_key = ?",
+                    (receipt, receipt, receipt, node_h, component_key),
+                )
             # Node H's current Provider Activity stays fresh: Provider
             # failures (Node N) and authoritative empty (Node M) are
             # deliberately static.

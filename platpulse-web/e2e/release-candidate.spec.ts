@@ -109,6 +109,17 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expect(hCard.locator('time').first()).toHaveAttribute('aria-label', /UTC/)
     await expect(hCard.locator('time').nth(1)).toContainText(/\d{1,2} \w+ \d{4}.*UTC/)
 
+    // The API fixture deliberately gives RPC the oldest receipt while the
+    // Agent report is newer; the public aggregate must retain that ordering.
+    const networkResponse = await page.request.get('/api/public/v1/networks/home-convergence')
+    expect(networkResponse.ok()).toBe(true)
+    const networkPayload = (await networkResponse.json()) as {
+      nodes: Array<{ nodeId: string; freshness?: string | null; lastReportAt?: string | null }>
+    }
+    const hNode = networkPayload.nodes.find((node) => node.nodeId === '0195f2a1-0060-4060-8060-000000000060')
+    if (!hNode?.freshness || !hNode.lastReportAt) throw new Error('Node H receipt timestamps are missing')
+    expect(Date.parse(hNode.freshness)).toBeLessThan(Date.parse(hNode.lastReportAt))
+
     // The long public Node name remains visible inside its card without
     // creating page overflow at any fixed viewport.
     const hCardBox = (await hCard.boundingBox())!
