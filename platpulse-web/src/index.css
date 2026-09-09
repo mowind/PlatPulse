@@ -3651,6 +3651,13 @@ button {
   font-size: 1rem;
 }
 
+.home-shell .network-node-card {
+  align-self: start;
+  container-type: inline-size;
+  gap: 0.45rem;
+  padding: 0.75rem;
+}
+
 .home-shell .network-node-card-header {
   min-width: 0;
   align-items: flex-start;
@@ -3662,8 +3669,20 @@ button {
 }
 
 .home-shell .network-node-card-header h2 {
+  min-width: 0;
+  margin: 0;
   font-size: 1rem;
   letter-spacing: -0.025em;
+}
+
+.home-shell .network-node-card-header h2 a {
+  min-width: 0;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .home-shell .network-node-card .node-card-eyebrow,
@@ -3671,9 +3690,19 @@ button {
   text-transform: none;
 }
 
+.home-shell .network-node-card .health-reason {
+  line-height: 1.35;
+}
+
 .home-shell .network-node-highlights {
-  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 1.05fr);
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1.35fr);
   align-items: start;
+  gap: 0.45rem;
+  padding-top: 0.45rem;
+}
+
+.home-shell .network-node-highlights > div {
+  gap: 0.2rem;
 }
 
 .home-shell .network-node-highlights strong {
@@ -3687,20 +3716,93 @@ button {
 .home-shell .network-node-highlights span,
 .home-shell .network-node-highlights small {
   overflow-wrap: anywhere;
+  line-height: 1.3;
+}
+
+.home-shell .network-node-time {
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 0.4rem;
+  row-gap: 0.15rem;
+}
+
+.home-shell .network-node-time > span {
+  grid-column: 1;
+  align-self: baseline;
+  font-size: 0.68rem;
+}
+
+.home-shell .network-node-time > strong {
+  grid-column: 2;
+  align-self: baseline;
+  font-size: 0.8rem;
+}
+
+.home-shell .network-node-time > small {
+  grid-column: 1 / -1;
+  font-size: 0.66rem;
+  line-height: 1.2;
+}
+
+.home-shell .network-node-time-note {
+  color: var(--muted);
 }
 
 .home-shell .network-node-statuses {
+  display: flex;
+  flex-wrap: wrap;
   align-items: start;
+  gap: 0.3rem 0.6rem;
+  padding-top: 0.35rem;
+  border-top: 1px dotted rgba(100, 116, 139, 0.28);
 }
 
 .home-shell .network-node-statuses .node-overview-status {
-  align-content: start;
-  justify-items: start;
+  min-width: 7rem;
+  flex: 1 1 7rem;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.45rem;
 }
 
+.home-shell .network-node-statuses .node-overview-status > span:first-child {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 750;
+}
+
+.home-shell .network-node-statuses .node-overview-state {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 750;
+  overflow-wrap: anywhere;
+}
+
+.home-shell .network-node-statuses .node-overview-state-dot {
+  width: 0.38rem;
+  height: 0.38rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.home-shell .network-node-statuses .node-overview-state-current { color: var(--green); }
+.home-shell .network-node-statuses .node-overview-state-starting,
+.home-shell .network-node-statuses .node-overview-state-stale { color: var(--amber); }
+.home-shell .network-node-statuses .node-overview-state-error { color: var(--red); }
+
 .home-shell .network-node-detail-link {
+  align-self: start;
   min-height: 44px;
+  gap: 0.35rem;
   padding-top: 0.1rem;
+  font-size: 0.8rem;
+  font-weight: 650;
 }
 
 .home-shell .node-detail-topline {
@@ -3946,11 +4048,11 @@ button {
   }
 
   .home-shell .network-node-highlights > div:first-child {
-    grid-column: 1 / -1;
+    grid-column: auto;
   }
 
   .home-shell .network-node-statuses {
-    grid-template-columns: 1fr;
+    grid-template-columns: none;
   }
 
   .home-shell .node-hero-facts {
@@ -4012,6 +4114,44 @@ button {
 @media (min-width: 43rem) and (max-width: 64rem) {
   .home-shell .node-metric-card {
     min-height: 16.5rem;
+  }
+}
+
+/* A narrow card can occur inside a wide Network page when the Node grid has
+   several columns. Keep its facts scannable instead of squeezing the time
+   explanation into an unusably narrow third column. */
+@container (max-width: 34rem) {
+  .home-shell .network-node-highlights {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .home-shell .network-node-highlights > div:first-child {
+    grid-column: auto;
+  }
+
+  .home-shell .network-node-time {
+    grid-column: 1 / -1;
+  }
+
+  .home-shell .network-node-statuses {
+    gap: 0.25rem 0.4rem;
+  }
+
+  .home-shell .network-node-statuses .node-overview-status {
+    min-width: 0;
+    flex: 1 1 0;
+    display: grid;
+    align-content: start;
+    justify-items: start;
+    gap: 0.1rem;
+  }
+
+  .home-shell .network-node-statuses .node-overview-status > span:first-child {
+    font-size: 0.62rem;
+  }
+
+  .home-shell .network-node-statuses .node-overview-state {
+    font-size: 0.68rem;
   }
 }
 

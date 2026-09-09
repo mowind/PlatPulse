@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test'
 import {
   E2E_PASSWORD,
+  expectFocusedElementHasVisibleFocus,
   expectNoHorizontalOverflow,
   expectVisibleInteractiveTargets,
   loginAs,
@@ -77,6 +78,79 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
       await adminLink.press('Enter')
     }
     await expect(page).toHaveURL(/\/admin$/)
+  })
+
+  test('Public Network Node cards keep compact facts, UTC receipt time, and touch-safe links', async ({ page }, testInfo) => {
+    await loginAs(page)
+    await page.goto('/networks/home-convergence')
+
+    await expect(page.getByRole('heading', { level: 1, name: 'Home Convergence Network With An Extremely Long Display Name' })).toBeVisible()
+    const hCard = page.getByRole('article', { name: /Node H/ })
+    await expect(hCard).toBeVisible()
+    const hTitleLink = hCard.getByRole('link', { name: /Node H/ })
+    await expect(hTitleLink).toHaveAttribute('href', '/nodes/0195f2a1-0060-4060-8060-000000000060')
+    const detailsLink = hCard.getByRole('link', { name: 'View details' })
+    await expect(detailsLink).toHaveAttribute('href', '/nodes/0195f2a1-0060-4060-8060-000000000060')
+    await expect(detailsLink).toHaveText(/View details →/)
+
+    await expect(hCard).toContainText('Head')
+    await expect(hCard).toContainText('Peers')
+    await expect(hCard).toContainText(/inbound/i)
+    await expect(hCard).toContainText(/outbound/i)
+    await expect(hCard).toContainText('Oldest component update')
+    await expect(hCard).toContainText('Earliest Server receipt across RPC, Sync, and Consensus')
+    await expect(hCard.getByLabel('Node component status')).toContainText('RPC')
+    await expect(hCard.getByLabel('Node component status')).toContainText('Sync')
+    await expect(hCard.getByLabel('Node component status')).toContainText('Consensus')
+    await expect(hCard.getByText('Current observation')).toHaveCount(0)
+    await expect(hCard.getByText('Last observed')).toHaveCount(0)
+    await expect(hCard.locator('time')).toHaveCount(2)
+    await expect(hCard.locator('time').first()).toHaveAttribute('dateTime', /T\d{2}:\d{2}:\d{2}Z$/)
+    await expect(hCard.locator('time').first()).toHaveAttribute('aria-label', /UTC/)
+    await expect(hCard.locator('time').nth(1)).toContainText(/\d{1,2} \w+ \d{4}.*UTC/)
+
+    // The long public Node name remains visible inside its card without
+    // creating page overflow at any fixed viewport.
+    const hCardBox = (await hCard.boundingBox())!
+    const hTitleBox = (await hTitleLink.boundingBox())!
+    expect(hTitleBox.x).toBeGreaterThanOrEqual(hCardBox.x)
+    expect(hTitleBox.x + hTitleBox.width).toBeLessThanOrEqual(hCardBox.x + hCardBox.width)
+
+    const lCard = page.getByRole('article', { name: /Node L/ })
+    await expect(lCard).toBeVisible()
+    await expect(lCard.getByText('one or more observations are stale or unknown', { exact: true })).toBeVisible()
+    await expect(lCard.getByText('Oldest component update', { exact: true })).toBeVisible()
+    await expect(lCard.locator('time')).toHaveCount(2)
+
+    const pCard = page.getByRole('article', { name: /Node P/ })
+    await expect(pCard).toBeVisible()
+    await expect(pCard.getByText('Oldest component update', { exact: true })).toBeVisible()
+    await expect(pCard.getByText('RPC, Sync, and Consensus receipt time is unavailable.', { exact: true })).toBeVisible()
+    await expect(pCard).toContainText('Unknown')
+    await expect(pCard.locator('time')).toHaveCount(0)
+
+    await expectVisibleInteractiveTargets(page)
+    await expectNoHorizontalOverflow(page)
+
+    const activate = async (link: ReturnType<typeof hCard.getByRole>) => {
+      await link.focus()
+      await expectFocusedElementHasVisibleFocus(page)
+      if (testInfo.project.use.hasTouch) {
+        await link.tap()
+      } else {
+        await page.keyboard.press('Enter')
+      }
+    }
+
+    await activate(hTitleLink)
+    await expect(page).toHaveURL(/\/nodes\/0195f2a1-0060-4060-8060-000000000060$/)
+    await expect(page.getByRole('heading', { level: 1, name: /Node H/ })).toBeVisible()
+
+    await page.goto('/networks/home-convergence')
+    const reloadedCard = page.getByRole('article', { name: /Node H/ })
+    await expect(reloadedCard).toBeVisible()
+    await activate(reloadedCard.getByRole('link', { name: 'View details' }))
+    await expect(page).toHaveURL(/\/nodes\/0195f2a1-0060-4060-8060-000000000060$/)
   })
 
   test('Public Peer insight exposes bounded summaries without peer identities', async ({ page }) => {

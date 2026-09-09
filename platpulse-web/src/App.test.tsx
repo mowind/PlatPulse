@@ -130,6 +130,7 @@ afterEach(() => {
   resetAdminCache(0)
   resetPublicCache(0)
   resetRealtimeCursors()
+  vi.useRealTimers()
 })
 
 type PublicPeerCase = {
@@ -707,6 +708,153 @@ describe('App shell with private Home', () => {
     expect(screen.getByText('Network overview')).toBeTruthy()
     expect(screen.getByText('PlatON Nodes')).toBeTruthy()
     expect(screen.getByText('Network key')).toBeTruthy()
+  })
+
+  it('renders compact Node cards with the earliest Server component receipt time', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.setSystemTime(new Date('2026-08-20T00:10:00Z'))
+
+    const longName = 'Node with a very long name that remains readable on narrow screens'
+    const longReason = 'One or more observations are unavailable while this Node is starting and waiting for a complete Server-owned snapshot.'
+    const healthyNode = {
+      nodeId: 'node-healthy',
+      displayName: 'Healthy Node',
+      networkKey: 'mainnet',
+      health: 'healthy',
+      healthReason: 'RPC, sync, and consensus are current',
+      // This is the oldest of the three Server receipt timestamps; the card
+      // must not substitute the newer Agent report or component observation.
+      freshness: '2026-08-20T00:05:00Z',
+      lastReportAt: '2026-08-20T00:09:00Z',
+      rpcState: 'ok',
+      syncState: 'ok',
+      consensusState: 'ok',
+      processState: 'running',
+      resyncState: 'normal',
+      currentHead: 100,
+      peers: { state: 'ok', freshness: 'current', peerCount: 30, inboundCount: 10, outboundCount: 20 },
+      consensus: { state: 'ok', freshness: 'current' },
+      validator: null,
+    }
+    const startingNode = {
+      nodeId: 'node-starting',
+      displayName: longName,
+      networkKey: 'mainnet',
+      health: 'unknown',
+      healthReason: longReason,
+      // A freshness enum is not a component receipt timestamp.
+      freshness: 'current',
+      rpcState: 'Starting',
+      syncState: 'starting',
+      consensusState: 'starting',
+      processState: 'starting',
+      resyncState: 'normal',
+      currentHead: null,
+      peers: { state: 'unknown', freshness: 'unknown', peerCount: null, inboundCount: null, outboundCount: null },
+      consensus: { state: 'unknown', freshness: 'unknown' },
+      validator: null,
+    }
+
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/public/v1/networks': () => jsonResponse([], 200),
+      '/api/public/v1/networks/mainnet': () => jsonResponse({
+        networkKey: 'mainnet',
+        displayName: 'Mainnet',
+        nodes: [healthyNode, startingNode],
+        peers: { state: 'ok', freshness: 'current', peerCount: 30 },
+        geo: { state: 'disabled' },
+        validators: [],
+      }, 200),
+    })
+
+    render(<App />)
+    await act(async () => {
+      window.history.pushState({}, '', '/networks/mainnet')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+
+    const healthyCard = (await screen.findByRole('heading', { level: 2, name: 'Healthy Node' })).closest('article')
+    if (!healthyCard) throw new Error('Healthy Node card is missing')
+    expect(within(healthyCard).getByText('Healthy', { exact: true })).toBeTruthy()
+    expect(within(healthyCard).getByText('Head', { exact: true })).toBeTruthy()
+    expect(within(healthyCard).getByText('100', { exact: true })).toBeTruthy()
+    expect(within(healthyCard).getByText('30', { exact: true })).toBeTruthy()
+    expect(within(healthyCard).getByText('10 inbound · 20 outbound')).toBeTruthy()
+    expect(within(healthyCard).getByText('Oldest component update', { exact: true })).toBeTruthy()
+    expect(within(healthyCard).getByText('5 minutes ago', { exact: true })).toBeTruthy()
+    expect(within(healthyCard).getByText(/20 Aug 2026.*00:05:00 UTC/)).toBeTruthy()
+    expect(within(healthyCard).getByText(/earliest Server receipt across RPC, Sync, and Consensus/i)).toBeTruthy()
+    expect(within(healthyCard).queryByText('RPC, sync, and consensus are current')).toBeNull()
+    expect(within(healthyCard).queryByText('Current observation')).toBeNull()
+    expect(within(healthyCard).getByRole('link', { name: 'Healthy Node' }).getAttribute('href')).toBe('/nodes/node-healthy')
+    expect(within(healthyCard).getByRole('link', { name: 'View details' }).getAttribute('href')).toBe('/nodes/node-healthy')
+    expect(within(healthyCard).getByRole('link', { name: 'View details' }).getAttribute('target')).toBeNull()
+    expect(within(healthyCard).getByRole('link', { name: 'View details' }).textContent).toContain('→')
+    expect(within(healthyCard).getByLabelText('Node component status').textContent).toContain('RPC')
+    expect(within(healthyCard).getByLabelText('Node component status').textContent).toContain('Sync')
+    expect(within(healthyCard).getByLabelText('Node component status').textContent).toContain('Consensus')
+    expect(within(healthyCard).getByLabelText('Node component status').textContent).toContain('Current')
+
+    const startingCard = (await screen.findByRole('heading', { level: 2, name: longName })).closest('article')
+    if (!startingCard) throw new Error('Starting Node card is missing')
+    expect(within(startingCard).getByText(longReason, { exact: true })).toBeTruthy()
+    expect(within(startingCard).getByText('Oldest component update', { exact: true })).toBeTruthy()
+    expect(within(startingCard).getAllByText('Unknown', { exact: true }).length).toBeGreaterThan(0)
+    expect(within(startingCard).getByText(/RPC, Sync, and Consensus receipt time is unavailable/i)).toBeTruthy()
+    expect(within(startingCard).getAllByText('Starting', { exact: true }).length).toBe(3)
+    expect(within(startingCard).getByLabelText('Node component status').textContent).toContain('Starting')
+  })
+
+  it('navigates both Network Node card links to the existing public Node Detail', async () => {
+    const node = {
+      nodeId: 'node-links',
+      displayName: 'Linkable Node',
+      networkKey: 'mainnet',
+      health: 'healthy',
+      healthReason: 'routine',
+      freshness: '2026-08-20T00:05:00Z',
+      rpcState: 'ok',
+      syncState: 'ok',
+      consensusState: 'ok',
+      processState: 'running',
+      resyncState: 'normal',
+      currentHead: 1,
+      peers: { state: 'ok', freshness: 'current', peerCount: 1, inboundCount: 1, outboundCount: 0 },
+      consensus: { state: 'ok', freshness: 'current' },
+      validator: null,
+    }
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/public/v1/networks': () => jsonResponse([], 200),
+      '/api/public/v1/networks/mainnet': () => jsonResponse({ networkKey: 'mainnet', displayName: 'Mainnet', nodes: [node], peers: { state: 'ok', freshness: 'current', peerCount: 1 }, geo: { state: 'disabled' }, validators: [] }, 200),
+      '/api/public/v1/nodes/node-links': () => jsonResponse({ ...node, processStartedAt: null, lastReportAt: null }, 200),
+      '/api/public/v1/nodes/node-links/history?limit=2': () => jsonResponse([], 200),
+      '/api/public/v1/nodes/node-links/metrics': () => jsonResponse({ from: '2026-08-20T00:00:00Z', to: '2026-08-20T00:01:00Z', windowSeconds: 60, processCpuPercent: [], processMemoryPercent: [], dataDirectoryPercent: [], networkRxBytesPerSec: [], networkTxBytesPerSec: [], peerInboundCount: [], peerOutboundCount: [], blockIntervalMs: [], transactionCount: [] }, 200),
+      '/api/public/v1/nodes/node-links/peer-history': () => jsonResponse({ state: 'unknown', freshness: 'unknown', fiveMinute: [], hourly: [] }, 200),
+    })
+
+    render(<App />)
+    await act(async () => {
+      window.history.pushState({}, '', '/networks/mainnet')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+    const card = (await screen.findByRole('heading', { level: 2, name: 'Linkable Node' })).closest('article')
+    if (!card) throw new Error('Linkable Node card is missing')
+    fireEvent.click(within(card).getByRole('link', { name: 'View details' }))
+    expect(await screen.findByRole('heading', { level: 1, name: 'Linkable Node' })).toBeTruthy()
+
+    await act(async () => {
+      window.history.pushState({}, '', '/networks/mainnet')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+    const cardAgain = (await screen.findByRole('heading', { level: 2, name: 'Linkable Node' })).closest('article')
+    if (!cardAgain) throw new Error('Linkable Node card did not return')
+    fireEvent.click(within(cardAgain).getByRole('link', { name: 'Linkable Node' }))
+    expect(await screen.findByRole('heading', { level: 1, name: 'Linkable Node' })).toBeTruthy()
   })
 
   it('keeps retained zero and simultaneous collection and freshness failures visible on Node cards', async () => {

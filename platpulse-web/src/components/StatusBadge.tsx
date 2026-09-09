@@ -100,6 +100,28 @@ export function formatObservedAt(timestamp: string | null | undefined): string {
   return `${timestamp.slice(0, 19).replace('T', ' ')} UTC`
 }
 
+/** Format a display-only age without changing Server-owned freshness policy. */
+export function formatRelativeTime(value: Date, now: Date = new Date()): string {
+  const seconds = Math.round((value.getTime() - now.getTime()) / 1000)
+  const absoluteSeconds = Math.abs(seconds)
+  const formatter = new Intl.RelativeTimeFormat('en', { numeric: 'auto' })
+  if (absoluteSeconds < 60) return formatter.format(seconds, 'second')
+  if (absoluteSeconds < 3_600) return formatter.format(Math.round(seconds / 60), 'minute')
+  if (absoluteSeconds < 86_400) return formatter.format(Math.round(seconds / 3_600), 'hour')
+  return formatter.format(Math.round(seconds / 86_400), 'day')
+}
+
+/** Format a Server timestamp as a complete, locale-independent UTC value. */
+export function formatUtcDateTime(value: Date | string | null | undefined): string {
+  const date = value instanceof Date ? value : value ? new Date(value) : null
+  if (!date || Number.isNaN(date.getTime())) return 'Unknown'
+  return new Intl.DateTimeFormat('en-GB', {
+    dateStyle: 'medium',
+    timeStyle: 'long',
+    timeZone: 'UTC',
+  }).format(date)
+}
+
 export function StatusBadge({
   status,
   tone,

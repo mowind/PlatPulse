@@ -16,7 +16,7 @@ import { PeerHistoryInsight, normalizePublicPeerHistory } from '../components/Pe
 import { GeoInsight } from '../components/GeoInsight'
 import { ValidatorInsight } from '../components/ValidatorInsight'
 import { ValidatorAnalytics } from '../components/ValidatorAnalytics'
-import { formatObservedAt, StatusBadge } from '../components/StatusBadge'
+import { formatRelativeTime, formatUtcDateTime, StatusBadge } from '../components/StatusBadge'
 import { RealtimeNotice } from '../components/RealtimeNotice'
 import { formatBytes } from '../formatBytes'
 
@@ -88,6 +88,7 @@ export function NodePage() {
   if (!nodeQuery.data) return <section className="page"><RealtimeNotice realtime={realtime} /><p role="status">Node unavailable.</p><Link to="/">Back to Home</Link></section>
 
   const node = nodeQuery.data
+  const health = nodeHealthPresentation(node.health)
   const activity = nodeActivity(node)
   const blockInterval = latestBlockInterval(historyQuery.data)
   const metricHistory = metricsQuery.data
@@ -117,13 +118,13 @@ export function NodePage() {
           <p className="node-id-line">Node ID <code>{node.nodeId}</code></p>
         </div>
         <div className="node-hero-facts" aria-label="Node status">
-          <div className="node-hero-fact"><span>Health</span><StatusBadge status={nodeHealthLabel(node.health)} tone={nodeHealthTone(node.health)} /></div>
+          <div className="node-hero-fact"><span>Health</span><StatusBadge status={health.label} tone={health.tone} /></div>
           <div className="node-hero-fact"><span>Node status</span><StatusBadge status={activity.label} tone={activity.tone} /></div>
           <div className="node-hero-fact node-uptime"><span>Process uptime</span><strong>{formatDuration(node.processUptimeMs)}</strong></div>
         </div>
       </header>
 
-      {nodeHealthTone(node.health) !== 'ok' && <p className="node-hero-reason">{node.healthReason}</p>}
+      {health.tone !== 'ok' && <p className="node-hero-reason">{node.healthReason}</p>}
       <div className="node-hero-resources" aria-label="Node process and storage resources">
         <HeroResourceMetric label="CPU" value={formatPercent(node.processCpuPercent)} progress={node.processCpuPercent} />
         <HeroResourceMetric label="Memory" value={formatPercent(node.processMemoryPercent)} progress={node.processMemoryPercent} />
@@ -146,8 +147,8 @@ export function NodePage() {
         </div>
       </div>
       <footer className="node-hero-footer">
-        <div><span>Started</span><strong>{formatDateTime(node.processStartedAt)}</strong></div>
-        <div><span>Last report</span><strong>{formatDateTime(node.lastReportAt)}</strong></div>
+        <div><span>Started</span><strong>{formatUtcDateTime(node.processStartedAt)}</strong></div>
+        <div><span>Last report</span><strong>{formatUtcDateTime(node.lastReportAt)}</strong></div>
       </footer>
     </section>
 
@@ -444,13 +445,6 @@ function formatDuration(value: number | null | undefined): string {
   return `${totalSeconds}s`
 }
 
-function formatDateTime(value: string | null | undefined): string {
-  if (!value) return 'Unknown'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return 'Unknown'
-  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium' }).format(date)
-}
-
 function formatRate(value: number | null | undefined): string {
   if (value == null) return 'Unknown'
   const units = ['B/s', 'KiB/s', 'MiB/s', 'GiB/s']
@@ -520,66 +514,83 @@ function TabButton({ id, panelId, selected, onSelect, onNavigate, children }: { 
 }
 
 function NodeOverviewStatus({ label, value }: { label: string; value: string }) {
-  return <div className="node-overview-status"><span>{label}</span><StatusBadge status={value} tone={stateTone(value)} /></div>
+  const state = nodeComponentStateLabel(value)
+  return (
+    <div className="node-overview-status">
+      <span>{label}</span>
+      <span className={`node-overview-state node-overview-state-${state.toLowerCase()}`}>
+        <span className="node-overview-state-dot" aria-hidden="true" />
+        {state}
+      </span>
+    </div>
+  )
 }
 
 function nodeComponentStateLabel(value: string | null | undefined): string {
-  switch (value) {
+  switch (value?.trim().toLowerCase()) {
     case 'ok':
     case 'healthy':
     case 'normal':
-    case 'current': return 'Current'
+    case 'current':
+    case 'synced': return 'Current'
     case 'stale': return 'Stale'
     case 'error':
-    case 'unhealthy': return 'Error'
-    case 'stopped':
-      return 'Error'
-    case 'resyncing':
-      return 'Starting'
+    case 'unhealthy':
+    case 'stopped': return 'Error'
+    case 'starting':
+    case 'resyncing': return 'Starting'
     case 'disabled': return 'Disabled'
     case 'unsupported': return 'Unsupported'
     case 'empty': return 'Empty'
-    case 'Current': return 'Current'
-    case 'Error': return 'Error'
-    case 'Stale': return 'Stale'
-    case 'Unsupported': return 'Unsupported'
-    case 'Stopped': return 'Error'
-    case 'Resyncing': return 'Starting'
     default: return 'Unknown'
   }
 }
 
-function nodeHealthLabel(value: string): string {
-  if (value === 'healthy') return 'Healthy'
-  if (value === 'unhealthy') return 'Unhealthy'
-  return 'Unknown'
+type NodeHealthPresentation = {
+  label: 'Healthy' | 'Unhealthy' | 'Unknown'
+  tone: 'ok' | 'warning' | 'error' | 'neutral'
 }
 
-function nodeHealthTone(value: string): 'ok' | 'warning' | 'error' | 'neutral' {
-  if (value === 'healthy') return 'ok'
-  if (value === 'unhealthy') return 'error'
-  return 'neutral'
+function nodeHealthPresentation(value: string): NodeHealthPresentation {
+  switch (value.trim().toLowerCase()) {
+    case 'healthy': return { label: 'Healthy', tone: 'ok' }
+    case 'unhealthy': return { label: 'Unhealthy', tone: 'error' }
+    default: return { label: 'Unknown', tone: 'neutral' }
+  }
 }
 
-function stateTone(value: string | null | undefined): 'ok' | 'warning' | 'error' | 'neutral' {
-  const label = nodeComponentStateLabel(value)
-  if (label === 'Current') return 'ok'
-  if (label === 'Error') return 'error'
-  if (label === 'Stale' || label === 'Starting' || label === 'Unsupported') return 'warning'
-  return 'neutral'
+type ComponentUpdateTime = { timestamp: string; date: Date }
+
+/** PublicNode.freshness is the Server-computed earliest receipt timestamp. */
+function parseComponentUpdateTime(value: string | null | undefined): ComponentUpdateTime | null {
+  const timestamp = value?.trim()
+  if (!timestamp || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(timestamp)) return null
+  const date = new Date(timestamp)
+  return Number.isNaN(date.getTime()) ? null : { timestamp, date }
 }
 
-function freshnessLabel(value: string | null | undefined): string {
-  if (value === 'current') return 'Current'
-  if (value === 'stale') return 'Stale'
-  if (value && value !== 'unknown') return 'Current'
-  return 'Unknown'
-}
+function NodeUpdateTime({ value }: { value: PublicNode['freshness'] }) {
+  const update = parseComponentUpdateTime(value)
+  if (!update) {
+    return (
+      <div className="network-node-time">
+        <span>Oldest component update</span>
+        <strong>Unknown</strong>
+        <small>RPC, Sync, and Consensus receipt time is unavailable.</small>
+      </div>
+    )
+  }
 
-function freshnessDetail(value: string | null | undefined): string {
-  if (!value || value === 'unknown') return 'Freshness Unknown; no Server timestamp is available.'
-  if (value === 'current' || value === 'stale') return `Freshness ${freshnessLabel(value)}; Server-provided state.`
-  return `Last observed ${formatObservedAt(value)}.`
+  const relative = formatRelativeTime(update.date)
+  const absolute = formatUtcDateTime(update.date)
+  return (
+    <div className="network-node-time">
+      <span>Oldest component update</span>
+      <strong><time dateTime={update.timestamp} title={absolute} aria-label={relative + '; ' + absolute}>{relative}</time></strong>
+      <small><time dateTime={update.timestamp}>{absolute}</time></small>
+      <small className="network-node-time-note">Earliest Server receipt across RPC, Sync, and Consensus</small>
+    </div>
+  )
 }
 
 function formatNumber(value: number | null | undefined): string {
@@ -599,50 +610,54 @@ function peerBreakdown(insight: PublicNode['peers']): string {
   const freshness = peerInsightFreshnessStatus(insight)
   const value = peerInsightValueStatus(insight)
   const hasValue = value !== 'Unknown'
+  const directionSummary = formatNumber(insight.inboundCount) + ' inbound · ' + formatNumber(insight.outboundCount) + ' outbound'
   const qualifiers: string[] = []
 
   if (collection === 'Error') qualifiers.push('Collection failed')
-  else if (collection !== 'Current') qualifiers.push(`Collection ${collection.toLowerCase()}`)
+  else if (collection !== 'Current') qualifiers.push('Collection ' + collection.toLowerCase())
   if (freshness === 'Stale') qualifiers.push('Stale')
   if (freshness !== 'Current' && freshness !== 'Stale') qualifiers.push('Freshness unknown')
 
   if (!hasValue) {
     if (qualifiers.length === 0) qualifiers.push('Value unknown')
     qualifiers.push('No successful Peer snapshot is available')
+    qualifiers.push(directionSummary)
     return qualifiers.join('; ')
   }
 
   if (qualifiers.length > 0) {
     qualifiers.push('Showing last successful snapshot')
     if (value === 'Empty') qualifiers.push('authoritative zero')
+    qualifiers.push(directionSummary)
     return qualifiers.join('; ')
   }
 
-  if (value === 'Empty') return 'Empty; authoritative successful zero'
-  if (insight.inboundCount == null || insight.outboundCount == null) return 'Current observation'
-  return `${formatNumber(insight.inboundCount)} inbound · ${formatNumber(insight.outboundCount)} outbound`
+  if (value === 'Empty') return 'Empty; authoritative successful zero; ' + directionSummary
+  return directionSummary
 }
 
 function NodeCard({ node }: { node: PublicNode }) {
-  return <article className="node-card network-node-card">
+  const health = nodeHealthPresentation(node.health)
+  const showHealthReason = health.tone !== 'ok'
+  const titleId = 'network-node-card-title-' + node.nodeId
+  return <article className="node-card network-node-card" aria-labelledby={titleId}>
     <header className="network-node-card-header">
       <div>
-        <p className="node-card-eyebrow">PlatON Node</p>
-        <h2><Link to={`/nodes/${node.nodeId}`}>{node.displayName ?? node.nodeId}</Link></h2>
+        <h2 id={titleId}><Link to={'/nodes/' + node.nodeId}>{node.displayName ?? node.nodeId}</Link></h2>
       </div>
-      <StatusBadge status={nodeHealthLabel(node.health)} tone={nodeHealthTone(node.health)} />
+      <StatusBadge status={health.label} tone={health.tone} />
     </header>
-    <p className="health-reason">{node.healthReason}</p>
+    {showHealthReason && <p className="health-reason">{node.healthReason || 'Server health reason unavailable.'}</p>}
     <div className="network-node-highlights">
-      <div><span>Current Head</span><strong>{formatNumber(node.currentHead)}</strong></div>
+      <div><span>Head</span><strong>{formatNumber(node.currentHead)}</strong></div>
       <div><span>Peers</span><strong>{peerCount(node.peers)}</strong><small>{peerBreakdown(node.peers)}</small></div>
-      <div><span>Last observed</span><strong>{freshnessLabel(node.freshness)}</strong><small>{freshnessDetail(node.freshness)}</small></div>
+      <NodeUpdateTime value={node.freshness} />
     </div>
     <div className="network-node-statuses" aria-label="Node component status">
-      <NodeOverviewStatus label="RPC" value={nodeComponentStateLabel(node.rpcState)} />
-      <NodeOverviewStatus label="Sync" value={nodeComponentStateLabel(node.syncState)} />
-      <NodeOverviewStatus label="Consensus" value={nodeComponentStateLabel(node.consensusState)} />
+      <NodeOverviewStatus label="RPC" value={node.rpcState} />
+      <NodeOverviewStatus label="Sync" value={node.syncState} />
+      <NodeOverviewStatus label="Consensus" value={node.consensusState} />
     </div>
-    <Link className="network-node-detail-link" to={`/nodes/${node.nodeId}`}>View Node Details <span aria-hidden="true">↗</span></Link>
+    <Link className="network-node-detail-link" to={'/nodes/' + node.nodeId}>View details <span aria-hidden="true">→</span></Link>
   </article>
 }
