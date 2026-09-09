@@ -1,4 +1,4 @@
-import { render, screen, cleanup } from '@testing-library/react'
+import { cleanup, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { PublicPeerInsight } from '../api/generated'
 import { PeerInsight, peerInsightStatus } from './PeerInsight'
@@ -29,62 +29,29 @@ describe('PeerInsight', () => {
     expect(peerInsightStatus(undefined)).toBe('Unknown')
   })
 
-  it('renders bounded summaries with accessible status text and does not expose peer identities', () => {
+  it('puts primary counts first and reduces a healthy snapshot to one quiet summary', () => {
     render(<PeerInsight insight={current} />)
-    expect(screen.getByRole('heading', { name: 'Peer insight' })).toBeTruthy()
-    expect(screen.getAllByText('Current')).toHaveLength(3)
-    expect(screen.getByText('Inbound')).toBeTruthy()
-    expect(screen.getByText('Outbound')).toBeTruthy()
-    expect(screen.getByText('Trusted')).toBeTruthy()
-    expect(screen.getByText('Consensus')).toBeTruthy()
-    expect(screen.getByText('4')).toBeTruthy()
-    expect(screen.queryByText(/peer[- ]id/i)).toBeNull()
-    expect(screen.queryByText(/remote[- ]ip/i)).toBeNull()
+
+    const region = screen.getByRole('region', { name: 'Peer insight' })
+    const primary = within(region).getByRole('group', { name: 'Primary peer counts' })
+    const secondary = within(region).getByRole('group', { name: 'Secondary peer counts' })
+
+    expect(primary.textContent).toMatch(/Peers.*Inbound.*Outbound/)
+    expect(secondary.textContent).toMatch(/Trusted.*Static.*Consensus/)
+    expect(within(primary).getByText('4')).toBeTruthy()
+    expect(within(primary).getByText('1')).toBeTruthy()
+    expect(within(primary).getByText('3')).toBeTruthy()
+    expect(within(region).getByText('Peer data current')).toBeTruthy()
+    expect(within(region).queryByText('Collection', { exact: true })).toBeNull()
+    expect(within(region).queryByText('Freshness', { exact: true })).toBeNull()
+    expect(within(region).queryByText('Value', { exact: true })).toBeNull()
+    expect(within(region).queryByText(/peer[- ]id/i)).toBeNull()
+    expect(within(region).queryByText(/remote[- ]ip/i)).toBeNull()
   })
 
-  it('shows Unknown instead of zero when no successful snapshot exists', () => {
-    render(<PeerInsight insight={{ state: 'error', freshness: 'unknown', peerCount: null }} />)
-    expect(screen.getByText('Error')).toBeTruthy()
-    expect(screen.getAllByText('Unknown').length).toBeGreaterThanOrEqual(8)
-    expect(screen.getByText(/no successful Peer snapshot is available/i)).toBeTruthy()
-  })
-
-  it('renders a successful empty snapshot as Empty with authoritative zero counts', () => {
-    const empty = { ...current, peerCount: 0, inboundCount: 0, outboundCount: 0, trustedCount: 0, staticCount: 0, consensusCount: 0 }
-    render(<PeerInsight insight={empty} />)
-    expect(screen.getAllByText('Empty')).toHaveLength(1)
-    expect(screen.getAllByText('0')).toHaveLength(6)
-    expect(screen.getByText(/latest successful snapshot contained no Peers/i)).toBeTruthy()
-  })
-
-  it('keeps last-good non-empty values visible with Error and Unsupported context', () => {
-    const { rerender } = render(<PeerInsight insight={{ ...current, state: 'error' }} />)
-    expect(screen.getByText('Error')).toBeTruthy()
-    expect(screen.getByText('Last-good peers')).toBeTruthy()
-    expect(screen.getByText(/last-good snapshot remains visible/i)).toBeTruthy()
-    expect(screen.getByText('4')).toBeTruthy()
-
-    rerender(<PeerInsight insight={{ ...current, state: 'unsupported' }} />)
-    expect(screen.getByText('Unsupported')).toBeTruthy()
-    expect(screen.getByText(/does not expose a supported Peer snapshot/i)).toBeTruthy()
-    expect(screen.getByText('4')).toBeTruthy()
-  })
-
-  it('keeps non-empty last-good values visible while freshness is Stale', () => {
-    render(<PeerInsight insight={{ ...current, freshness: 'stale', staleSince: '2026-08-16T03:02:00Z' }} />)
-    expect(screen.getByText('Stale')).toBeTruthy()
-    expect(screen.getByText('Last-good peers')).toBeTruthy()
-    expect(screen.getByText('4')).toBeTruthy()
-    expect(screen.getByText(/last-good snapshot is shown/i)).toBeTruthy()
-  })
-
-  it('keeps an authoritative last-good zero visible while stale', () => {
+  it('shows a fresh empty snapshot as authoritative zero rather than Unknown', () => {
     render(<PeerInsight insight={{
-      state: 'ok',
-      freshness: 'stale',
-      observedAt: '2026-08-16T00:00:00Z',
-      receivedAt: '2026-08-16T00:00:00Z',
-      staleSince: '2026-08-16T00:02:00Z',
+      ...current,
       peerCount: 0,
       inboundCount: 0,
       outboundCount: 0,
@@ -92,12 +59,44 @@ describe('PeerInsight', () => {
       staticCount: 0,
       consensusCount: 0,
     }} />)
-    expect(screen.getByText('Stale')).toBeTruthy()
-    expect(screen.getAllByText('0')).toHaveLength(6)
-    expect(screen.getByText(/last-good snapshot is shown/i)).toBeTruthy()
-    expect(screen.getByText(/Stale since 2026-08-16 00:02:00 UTC/i)).toBeTruthy()
+
+    const region = screen.getByRole('region', { name: 'Peer insight' })
+    expect(within(region).getByText('Peer data current')).toBeTruthy()
+    expect(within(region).getAllByText('0')).toHaveLength(6)
+    expect(within(region).getByText(/authoritative empty snapshot/i)).toBeTruthy()
+    expect(within(region).queryByText('Unknown', { exact: true })).toBeNull()
   })
-  it('does not render retained empty values for non-current collection states', () => {
+
+  it('shows collection failure and Unknown when no successful snapshot exists', () => {
+    render(<PeerInsight insight={{ state: 'error', freshness: 'unknown', peerCount: null }} />)
+
+    const region = screen.getByRole('region', { name: 'Peer insight' })
+    expect(within(region).getByText(/Collection failed/)).toBeTruthy()
+    expect(within(region).getAllByText('Unknown', { exact: true }).length).toBeGreaterThanOrEqual(2)
+    expect(within(region).getByText(/no successful Peer snapshot is available/i)).toBeTruthy()
+    expect(within(region).queryByText('0', { exact: true })).toBeNull()
+    expect(within(region).queryByText('Peer data current')).toBeNull()
+  })
+
+  it('discloses collection failure and stale freshness while retaining the last-good values', () => {
+    render(<PeerInsight insight={{
+      ...current,
+      state: 'error',
+      freshness: 'stale',
+      staleSince: '2026-08-16T03:02:00Z',
+    }} />)
+
+    const region = screen.getByRole('region', { name: 'Peer insight' })
+    expect(within(region).getByText(/Collection failed/)).toBeTruthy()
+    expect(within(region).getByText('Stale', { exact: true })).toBeTruthy()
+    expect(within(region).getByText('Showing last successful snapshot')).toBeTruthy()
+    expect(within(region).getByText(/Freshness stale/)).toBeTruthy()
+    expect(within(region).getByText('4')).toBeTruthy()
+    expect(within(region).getByText(/Stale since 2026-08-16 03:02:00 UTC/i)).toBeTruthy()
+    expect(within(region).queryByText('Peer data current')).toBeNull()
+  })
+
+  it('retains authoritative zero values for Disabled, Unsupported, and Starting states', () => {
     const retainedEmpty: PublicPeerInsight = {
       ...current,
       peerCount: 0,
@@ -107,11 +106,35 @@ describe('PeerInsight', () => {
       staticCount: 0,
       consensusCount: 0,
     }
-    const { rerender } = render(<PeerInsight insight={{ ...retainedEmpty, state: 'starting' }} />)
+
     for (const state of ['starting', 'disabled', 'unsupported'] as const) {
-      rerender(<PeerInsight insight={{ ...retainedEmpty, state }} />)
-      expect(screen.queryByText('0')).toBeNull()
-      expect(screen.getAllByText('Unknown').length).toBeGreaterThanOrEqual(6)
+      const { unmount } = render(<PeerInsight insight={{ ...retainedEmpty, state }} />)
+      const region = screen.getByRole('region', { name: 'Peer insight' })
+      expect(within(region).getByText(state[0].toUpperCase() + state.slice(1))).toBeTruthy()
+      expect(within(region).getAllByText('0')).toHaveLength(6)
+      expect(within(region).getByText('Showing last successful snapshot')).toBeTruthy()
+      unmount()
     }
+  })
+
+  it('does not promote unknown freshness to current', () => {
+    render(<PeerInsight insight={{ ...current, freshness: 'unknown' }} />)
+
+    const region = screen.getByRole('region', { name: 'Peer insight' })
+    expect(within(region).getByText('Unknown', { exact: true })).toBeTruthy()
+    expect(within(region).getByText(/Freshness unknown/i)).toBeTruthy()
+    expect(within(region).queryByText('Peer data current')).toBeNull()
+    expect(within(region).getByText('4')).toBeTruthy()
+  })
+
+  it('distinguishes Node observation time from Server receipt time', () => {
+    const { rerender } = render(<PeerInsight insight={undefined} />)
+    let region = screen.getByRole('region', { name: 'Peer insight' })
+    expect(within(region).getByText('Observation time varies by Node.')).toBeTruthy()
+
+    rerender(<PeerInsight insight={{ ...current, observedAt: '2026-08-16T03:00:00Z', receivedAt: '2026-08-16T03:01:00Z' }} />)
+    region = screen.getByRole('region', { name: 'Peer insight' })
+    expect(within(region).getByText(/Last observed 2026-08-16 03:00:00 UTC/i)).toBeTruthy()
+    expect(within(region).getByText(/Server received 2026-08-16 03:01:00 UTC/i)).toBeTruthy()
   })
 })

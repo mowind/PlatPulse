@@ -132,6 +132,168 @@ afterEach(() => {
   resetRealtimeCursors()
 })
 
+type PublicPeerCase = {
+  name: string
+  peers: {
+    state: string
+    freshness: string
+    staleSince?: string
+    peerCount: number | null
+    inboundCount: number | null
+    outboundCount: number | null
+    trustedCount: number | null
+    staticCount: number | null
+    consensusCount: number | null
+  }
+  expectedCollection: string | RegExp | null
+  expectedFreshness: string | null
+  expectedCount: string | null
+  expectedCurrent: boolean
+  expectedNote?: RegExp
+}
+
+const PUBLIC_PEER_CASES: PublicPeerCase[] = [
+  {
+    name: 'successful non-zero data',
+    peers: { state: 'ok', freshness: 'current', peerCount: 4, inboundCount: 1, outboundCount: 3, trustedCount: 2, staticCount: 1, consensusCount: 2 },
+    expectedCollection: null,
+    expectedFreshness: null,
+    expectedCount: '4',
+    expectedCurrent: true,
+  },
+  {
+    name: 'successful fresh empty data',
+    peers: { state: 'ok', freshness: 'current', peerCount: 0, inboundCount: 0, outboundCount: 0, trustedCount: 0, staticCount: 0, consensusCount: 0 },
+    expectedCollection: null,
+    expectedFreshness: null,
+    expectedCount: '0',
+    expectedCurrent: true,
+    expectedNote: /authoritative empty snapshot/i,
+  },
+  {
+    name: 'missing successful data after collection failure',
+    peers: { state: 'error', freshness: 'unknown', peerCount: null, inboundCount: null, outboundCount: null, trustedCount: null, staticCount: null, consensusCount: null },
+    expectedCollection: /Collection failed/,
+    expectedFreshness: 'Unknown',
+    expectedCount: null,
+    expectedCurrent: false,
+    expectedNote: /no successful Peer snapshot is available/i,
+  },
+  {
+    name: 'failed collection with a fresh retained value',
+    peers: { state: 'error', freshness: 'current', peerCount: 4, inboundCount: 1, outboundCount: 3, trustedCount: 2, staticCount: 1, consensusCount: 2 },
+    expectedCollection: /Collection failed/,
+    expectedFreshness: null,
+    expectedCount: '4',
+    expectedCurrent: false,
+    expectedNote: /Showing last successful snapshot/,
+  },
+  {
+    name: 'failed collection with a stale retained value',
+    peers: { state: 'error', freshness: 'stale', staleSince: '2026-08-16T03:02:00Z', peerCount: 4, inboundCount: 1, outboundCount: 3, trustedCount: 2, staticCount: 1, consensusCount: 2 },
+    expectedCollection: /Collection failed/,
+    expectedFreshness: 'Stale',
+    expectedCount: '4',
+    expectedCurrent: false,
+    expectedNote: /Showing last successful snapshot/,
+  },
+  {
+    name: 'stale retained zero data',
+    peers: { state: 'ok', freshness: 'stale', staleSince: '2026-08-16T03:02:00Z', peerCount: 0, inboundCount: 0, outboundCount: 0, trustedCount: 0, staticCount: 0, consensusCount: 0 },
+    expectedCollection: null,
+    expectedFreshness: 'Stale',
+    expectedCount: '0',
+    expectedCurrent: false,
+    expectedNote: /Showing last successful snapshot/,
+  },
+  {
+    name: 'known values with unknown freshness',
+    peers: { state: 'ok', freshness: 'unknown', peerCount: 4, inboundCount: 1, outboundCount: 3, trustedCount: 2, staticCount: 1, consensusCount: 2 },
+    expectedCollection: null,
+    expectedFreshness: 'Unknown',
+    expectedCount: '4',
+    expectedCurrent: false,
+    expectedNote: /Freshness unknown/i,
+  },
+  {
+    name: 'disabled collection with retained values',
+    peers: { state: 'disabled', freshness: 'current', peerCount: 2, inboundCount: 1, outboundCount: 1, trustedCount: 1, staticCount: 0, consensusCount: 1 },
+    expectedCollection: 'Disabled',
+    expectedFreshness: null,
+    expectedCount: '2',
+    expectedCurrent: false,
+    expectedNote: /Collection disabled.*Showing last successful snapshot/i,
+  },
+  {
+    name: 'unsupported collection with retained values',
+    peers: { state: 'unsupported', freshness: 'stale', peerCount: 2, inboundCount: 1, outboundCount: 1, trustedCount: 1, staticCount: 0, consensusCount: 1 },
+    expectedCollection: 'Unsupported',
+    expectedFreshness: 'Stale',
+    expectedCount: '2',
+    expectedCurrent: false,
+    expectedNote: /Collection unsupported.*Showing last successful snapshot/i,
+  },
+  {
+    name: 'starting collection without a successful value',
+    peers: { state: 'starting', freshness: 'unknown', peerCount: null, inboundCount: null, outboundCount: null, trustedCount: null, staticCount: null, consensusCount: null },
+    expectedCollection: 'Starting',
+    expectedFreshness: 'Unknown',
+    expectedCount: null,
+    expectedCurrent: false,
+    expectedNote: /Collection starting.*No successful Peer snapshot is available/i,
+  },
+] as const
+
+function publicNetworkPayload(peers: (typeof PUBLIC_PEER_CASES)[number]['peers']) {
+  return {
+    networkKey: 'mainnet',
+    displayName: 'Mainnet',
+    nodes: [],
+    peers,
+    geo: { state: 'disabled' },
+    validators: [],
+  }
+}
+
+async function renderPublicNetwork(peers: (typeof PUBLIC_PEER_CASES)[number]['peers']) {
+  mockFetch({
+    '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+    '/api/public/v1/networks': () => jsonResponse([], 200),
+    '/api/public/v1/networks/mainnet': () => jsonResponse(publicNetworkPayload(peers), 200),
+  })
+  render(<App />)
+  await act(async () => {
+    window.history.pushState({}, '', '/networks/mainnet')
+    window.dispatchEvent(new PopStateEvent('popstate'))
+    await Promise.resolve()
+  })
+  return screen.findByRole('region', { name: 'Peer insight' })
+}
+
+it.each(PUBLIC_PEER_CASES)('renders $name through the public Network route', async ({ peers, expectedCollection, expectedFreshness, expectedCount, expectedCurrent, expectedNote }) => {
+  const peerRegion = await renderPublicNetwork(peers)
+
+  try {
+    if (expectedCollection) expect(within(peerRegion).getByText(expectedCollection)).toBeTruthy()
+    if (expectedFreshness) expect(within(peerRegion).getAllByText(expectedFreshness, { exact: true }).length).toBeGreaterThan(0)
+    if (expectedCount) expect(within(peerRegion).getAllByText(expectedCount, { exact: true }).length).toBeGreaterThan(0)
+    if (expectedNote) expect(within(peerRegion).getAllByText(expectedNote).length).toBeGreaterThan(0)
+    if (expectedCurrent) {
+      expect(within(peerRegion).getByText('Peer data current')).toBeTruthy()
+      expect(within(peerRegion).queryByText('Unknown', { exact: true })).toBeNull()
+    } else {
+      expect(within(peerRegion).queryByText('Peer data current')).toBeNull()
+    }
+  } finally {
+    await act(async () => {
+      window.history.pushState({}, '', '/')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+    await screen.findByRole('region', { name: 'Home' })
+  }
+})
+
 describe('App shell with private Home', () => {
   it('hands each first SSE stream the cursor captured by its REST surface', async () => {
     vi.stubGlobal('EventSource', FakeEventSource)
@@ -498,7 +660,7 @@ describe('App shell with private Home', () => {
       networkReferenceConfidence: 'high',
       hostCpuPercent: 42.5,
       resyncProgress: null,
-      peers: { state: 'current', freshness: 'current', peerCount: 3 },
+      peers: { state: 'ok', freshness: 'current', peerCount: 3 },
       validator: null,
     }
     mockFetch({
@@ -522,7 +684,7 @@ describe('App shell with private Home', () => {
         networkKey: 'mainnet',
         displayName: 'Mainnet',
         nodes: [nodePayload],
-        peers: { state: 'current', freshness: 'current', peerCount: 3 },
+        peers: { state: 'ok', freshness: 'current', peerCount: 3 },
         geo: { state: 'disabled' },
         validators: [],
       }, 200),
@@ -545,6 +707,58 @@ describe('App shell with private Home', () => {
     expect(screen.getByText('Network overview')).toBeTruthy()
     expect(screen.getByText('PlatON Nodes')).toBeTruthy()
     expect(screen.getByText('Network key')).toBeTruthy()
+  })
+
+  it('keeps retained zero and simultaneous collection and freshness failures visible on Node cards', async () => {
+    const peers = {
+      state: 'error',
+      freshness: 'stale',
+      staleSince: '2026-08-16T03:02:00Z',
+      peerCount: 0,
+      inboundCount: 0,
+      outboundCount: 0,
+      trustedCount: 0,
+      staticCount: 0,
+      consensusCount: 0,
+    }
+    const node = {
+      nodeId: 'node-1',
+      displayName: 'Validator A',
+      networkKey: 'mainnet',
+      health: 'unhealthy',
+      healthReason: 'Peer collection failed',
+      freshness: 'stale',
+      rpcState: 'ok',
+      syncState: 'ok',
+      consensusState: 'ok',
+      processState: 'ok',
+      peers,
+    }
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/public/v1/networks': () => jsonResponse([], 200),
+      '/api/public/v1/networks/mainnet': () => jsonResponse({
+        networkKey: 'mainnet',
+        displayName: 'Mainnet',
+        nodes: [node],
+        peers,
+        geo: { state: 'disabled' },
+        validators: [],
+      }, 200),
+    })
+
+    render(<App />)
+    await act(async () => {
+      window.history.pushState({}, '', '/networks/mainnet')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+
+    const nodeHeading = await screen.findByRole('heading', { level: 2, name: 'Validator A' })
+    const nodeCard = nodeHeading.closest<HTMLElement>('article')
+    if (!nodeCard) throw new Error('Node card was not rendered')
+    expect(within(nodeCard).getByText('0', { exact: true })).toBeTruthy()
+    expect(within(nodeCard).getByText(/Collection failed.*Stale.*Showing last successful snapshot/i)).toBeTruthy()
   })
 
   it('keeps public transport status visible while Network REST is unavailable', async () => {
@@ -632,6 +846,7 @@ describe('App shell with private Home', () => {
       await Promise.resolve()
     })
 
+    const networkPeer = screen.getByRole('region', { name: 'Peer insight' })
     const metadata = screen.getByLabelText('Network identity and live updates')
     expect(within(metadata).getByText('Network key')).toBeTruthy()
     expect(within(metadata).getByText('network-with-a-very-long-key')).toBeTruthy()
@@ -653,6 +868,10 @@ describe('App shell with private Home', () => {
     })
     expect(await screen.findByText('Network refresh failed; showing the last successful Network data.')).toBeTruthy()
     expect(networkCalls).toBe(2)
+    expect(within(networkPeer).getByText('4', { exact: true })).toBeTruthy()
+    expect(within(networkPeer).getByText('Collection failed', { exact: false })).toBeTruthy()
+    expect(within(networkPeer).getAllByText('Showing last successful snapshot', { exact: false }).length).toBeGreaterThan(0)
+    expect(within(networkPeer).getByText('Stale', { exact: true })).toBeTruthy()
     expect(screen.getByRole('heading', { level: 1, name: 'A Network Name That Wraps On Narrow Screens' })).toBeTruthy()
     window.dispatchEvent(new Event('offline'))
     expect(await screen.findByText('You are offline')).toBeTruthy()

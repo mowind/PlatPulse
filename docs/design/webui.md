@@ -63,13 +63,14 @@ Unknown
 Disabled
 Unsupported
 Empty
+Peer data current
 Live updates connected
 Connecting to live updates
 Live updates paused
 You are offline
 ```
 
-`Online` and `N/A` are not generic replacements. Status communication always includes text and an icon or equivalent explanation; color is supplementary.
+`Peer data current` is a scoped, low-weight healthy summary for Peer Insight; it does not replace the independent Collection, Freshness, or Value terms when those dimensions need explanation. `Online` and `N/A` are not generic replacements. Status communication always includes text and an icon or equivalent explanation; color is supplementary.
 
 ## 3. Surfaces and authorization
 
@@ -204,7 +205,8 @@ Current | LastGood | AuthoritativeEmpty | None
 ```
 
 - Error + LastGood remains visible with explicit error and age;
-- Unknown, stale, never-observed, disabled, and unsupported never render as `0`, `false`, or Healthy;
+- Missing, Unknown, never-observed, and Disabled or Unsupported data without a retained successful value never render as `0`, `false`, or Healthy;
+- a retained successful value, including an authoritative `0`, remains visible under collection Error, Starting, Disabled, Unsupported, or Stale freshness with an explicit last-successful qualifier;
 - authoritative empty is not Unknown;
 - recent Block History is bounded by the Server window and best-effort: absent blocks stay absent, never synthetic zeroes;
 - host observation is collected once per Agent and referenced by Node views.
@@ -732,10 +734,13 @@ The two routed Home surfaces are separate: the root dashboard flattens the retur
 **Network Overview `/networks/:networkKey` (`PAGE-HOME-NETWORK`):**
 
 1. Breadcrumb, Network title/key, realtime state, and refetch error/last-good state.
-2. Network-level aggregate Peer Insight and country-only Geo Insight.
-3. Validator cards with read-only Activity, history, and analytics when the Public DTO contains Validators.
-4. An Active PlatON Nodes section. Network Overview cards may contain nested Node links and an explicit `View Node Details` action; they are not the root dashboard's whole-card-only contract.
-5. The current Server returns `404 not_found` when the selected Network has no Active Node, and `/api/public/v1/networks` omits Networks with no Active Node. The component contains an empty-array state for DTO compatibility, but clients must not assume every registered Network is returned as `200 {nodes: []}`.
+2. Network-level aggregate Peer Insight leads with primary `Peers / Inbound / Outbound` counts and a secondary `Trusted / Static / Consensus` row. The counts come directly from the Public Projection; the browser does not aggregate Nodes or expose peer identities.
+3. A fresh, successful Peer Snapshot uses one quiet `Peer data current` summary. Collection, freshness, and value remain independent: Unknown freshness never becomes Current, a successful empty snapshot is an authoritative zero, and omitted values remain Unknown.
+4. Collection failure, Stale, Disabled, Unsupported, and Starting states remain visible without hiding a retained value. A retained value is annotated `Showing last successful snapshot`; when collection failure and Stale coexist, both are shown. Aggregate Peer Insight does not display a shared observation timestamp; it says `Observation time varies by Node`.
+5. Country-only Geo Insight.
+6. Validator cards with read-only Activity, history, and analytics when the Public DTO contains Validators.
+7. An Active PlatON Nodes section. Network Overview cards may contain nested Node links and an explicit `View Node Details` action; they are not the root dashboard's whole-card-only contract.
+8. The current Server returns `404 not_found` when the selected Network has no Active Node, and `/api/public/v1/networks` omits Networks with no Active Node. The component contains an empty-array state for DTO compatibility, but clients must not assume every registered Network is returned as `200 {nodes: []}`.
 
 ### Node Detail composition (PAGE-HOME-NODE)
 

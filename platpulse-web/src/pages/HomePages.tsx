@@ -11,7 +11,7 @@ import {
 } from '../api/public'
 import type { PublicMetricPoint, PublicNode, PublicValidatorInsight } from '../api/generated'
 import { useHomeRealtimeContext } from '../layouts/HomeLayout'
-import { PeerInsight } from '../components/PeerInsight'
+import { PeerInsight, peerInsightCollectionStatus, peerInsightFreshnessStatus, peerInsightValueStatus } from '../components/PeerInsight'
 import { PeerHistoryInsight, normalizePublicPeerHistory } from '../components/PeerHistoryInsight'
 import { GeoInsight } from '../components/GeoInsight'
 import { ValidatorInsight } from '../components/ValidatorInsight'
@@ -591,17 +591,36 @@ function formatPercent(value: number | null | undefined): string {
 }
 
 function peerCount(insight: PublicNode['peers']): string {
-  if (insight.peerCount == null) return 'Unknown'
-  if (insight.peerCount === 0 && ['starting', 'disabled', 'unsupported'].includes(insight.state)) return 'Unknown'
-  return insight.peerCount.toLocaleString()
+  return formatNumber(insight.peerCount)
 }
 
 function peerBreakdown(insight: PublicNode['peers']): string {
-  if (insight.state === 'error') return insight.peerCount == null ? 'Peer observation unavailable' : 'Error; showing last-good value'
-  if (insight.freshness === 'stale') return 'Stale; showing last-good value'
-  if (insight.peerCount === 0) return 'Empty; authoritative successful zero'
+  const collection = peerInsightCollectionStatus(insight)
+  const freshness = peerInsightFreshnessStatus(insight)
+  const value = peerInsightValueStatus(insight)
+  const hasValue = value !== 'Unknown'
+  const qualifiers: string[] = []
+
+  if (collection === 'Error') qualifiers.push('Collection failed')
+  else if (collection !== 'Current') qualifiers.push(`Collection ${collection.toLowerCase()}`)
+  if (freshness === 'Stale') qualifiers.push('Stale')
+  if (freshness !== 'Current' && freshness !== 'Stale') qualifiers.push('Freshness unknown')
+
+  if (!hasValue) {
+    if (qualifiers.length === 0) qualifiers.push('Value unknown')
+    qualifiers.push('No successful Peer snapshot is available')
+    return qualifiers.join('; ')
+  }
+
+  if (qualifiers.length > 0) {
+    qualifiers.push('Showing last successful snapshot')
+    if (value === 'Empty') qualifiers.push('authoritative zero')
+    return qualifiers.join('; ')
+  }
+
+  if (value === 'Empty') return 'Empty; authoritative successful zero'
   if (insight.inboundCount == null || insight.outboundCount == null) return 'Current observation'
-  return `${insight.inboundCount} inbound · ${insight.outboundCount} outbound`
+  return `${formatNumber(insight.inboundCount)} inbound · ${formatNumber(insight.outboundCount)} outbound`
 }
 
 function NodeCard({ node }: { node: PublicNode }) {

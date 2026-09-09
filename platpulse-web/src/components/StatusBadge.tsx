@@ -16,6 +16,7 @@ const STATUS_ICONS: Record<string, string> = {
   'Live updates connected': '✓',
   'Connecting to live updates': '…',
   'Live updates paused': '⏸',
+  'Peer data current': '✓',
   'You are offline': '✕',
   // Server-owned words are presented as the Server sends them (webui.md
   // §5.4): the positive realtime state, the Node Health Summary severity,

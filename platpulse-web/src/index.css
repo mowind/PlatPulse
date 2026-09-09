@@ -676,9 +676,9 @@ button {
 
 .peer-insight-heading {
   display: flex;
+  min-width: 0;
   flex-wrap: wrap;
   align-items: flex-start;
-  justify-content: space-between;
   gap: 0.75rem;
 }
 
@@ -687,37 +687,27 @@ button {
   margin: 0;
 }
 
-.peer-dimensions {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.5rem;
-  min-width: min(100%, 20rem);
-}
-
-.peer-dimensions > div {
+.peer-metric-groups {
   display: grid;
   min-width: 0;
-  gap: 0.25rem;
+  gap: 0.9rem;
+  margin-top: 1rem;
 }
 
-.peer-dimension-label {
-  color: var(--muted);
-  font-size: 0.68rem;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.peer-dimensions .status-badge {
+.peer-metric-group {
   min-width: 0;
-  justify-content: center;
+}
+
+.peer-metric-group-secondary {
+  padding-top: 0.75rem;
+  border-top: 1px dotted rgba(100, 116, 139, 0.28);
 }
 
 .peer-summary-list {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.75rem;
-  margin: 1rem 0 0;
+  gap: 0.7rem;
+  margin: 0;
 }
 
 .peer-summary-list div {
@@ -729,47 +719,112 @@ button {
   font-size: 0.72rem;
   font-weight: 800;
   letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.peer-summary-list dd {
-  margin: 0.2rem 0 0;
-  font-size: 1.05rem;
-  font-weight: 800;
   overflow-wrap: anywhere;
 }
 
+.peer-summary-list dd {
+  display: grid;
+  min-width: 0;
+  gap: 0.2rem;
+  margin: 0.2rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.peer-summary-list strong {
+  min-width: 0;
+  color: var(--ink);
+  font-size: clamp(1.25rem, 3.4vw, 1.75rem);
+  font-weight: 850;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.05;
+  overflow-wrap: anywhere;
+}
+
+.peer-summary-secondary strong {
+  font-size: clamp(1rem, 2.6vw, 1.25rem);
+  font-weight: 750;
+}
+
+.peer-value-qualification {
+  max-width: 12rem;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 650;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.peer-insight-status {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  margin-top: 0.9rem;
+}
+
+.peer-insight-status > .status-badge {
+  max-width: 100%;
+  font-size: 0.75rem;
+}
+
+.peer-status-dimensions {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.peer-status-dimension {
+  min-width: 0;
+}
+
+.peer-status-dimension .status-badge {
+  max-width: 100%;
+}
+
 .peer-insight-note {
-  margin: 0.9rem 0 0;
+  margin: 0.75rem 0 0;
   color: var(--muted);
   font-size: 0.82rem;
+  overflow-wrap: anywhere;
 }
 
 .peer-observation-time {
   margin: 0.3rem 0 0;
   color: var(--muted);
   font-size: 0.76rem;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 30rem) {
   .peer-insight,
-  .peer-insight-heading {
+  .peer-insight-heading,
+  .peer-metric-groups {
     min-width: 0;
-  }
-
-  .peer-insight-heading {
-    flex-direction: column;
-  }
-
-  .peer-dimensions {
-    width: 100%;
-    max-width: 100%;
-    min-width: 0;
-    grid-template-columns: 1fr;
   }
 
   .peer-summary-list {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
+  }
+
+  .peer-summary-list dt {
+    font-size: 0.66rem;
+  }
+
+  .peer-summary-list strong {
+    font-size: 1.2rem;
+  }
+
+  .peer-summary-secondary strong {
+    font-size: 1rem;
+  }
+
+  .peer-value-qualification {
+    font-size: 0.62rem;
+  }
+
+  .peer-status-dimensions {
+    align-items: flex-start;
   }
 }
 
@@ -3558,17 +3613,17 @@ button {
   margin-top: 0;
 }
 
-.home-shell .public-network-page .peer-dimensions {
+.home-shell .public-network-page .peer-status-dimensions {
   min-width: 0;
   align-items: start;
 }
 
-.home-shell .public-network-page .peer-dimensions > div {
+.home-shell .public-network-page .peer-status-dimension {
   align-content: start;
   justify-items: start;
 }
 
-.home-shell .public-network-page .peer-dimensions .status-badge,
+.home-shell .public-network-page .peer-status-dimensions .status-badge,
 .home-shell .public-network-page .geo-insight .status-badge,
 .home-shell .public-network-page .network-node-statuses .status-badge {
   width: max-content;

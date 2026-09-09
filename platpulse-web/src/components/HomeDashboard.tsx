@@ -2,6 +2,7 @@ import { useMemo, useState, type CSSProperties } from 'react'
 import { Link } from 'react-router'
 import type { PublicConsensusInsight, PublicNetwork, PublicNode } from '../api/generated'
 import { realtimeStreamLabel } from './RealtimeNotice'
+import { peerInsightCollectionStatus, peerInsightFreshnessStatus, peerInsightValueStatus } from './PeerInsight'
 import { StatusBadge } from './StatusBadge'
 import { formatBytes } from '../formatBytes'
 
@@ -268,23 +269,36 @@ function exceptionalDiagnostic(node: PublicNode): string | null {
 }
 
 function formatPeerCount(node: PublicNode) {
-  const peer = node.peers
-  if (peer?.peerCount == null) return 'Unknown'
-  // Starting/Disabled/Unsupported do not provide a usable value; only a
-  // successful observation may show an authoritative zero (webui.md §5.3).
-  if (peer.peerCount === 0 && ['starting', 'disabled', 'unsupported'].includes(peer.state)) return 'Unknown'
-  return peer.peerCount.toLocaleString()
+  return formatNumber(node.peers?.peerCount)
 }
-function formatPeerObservation(node: PublicNode) {
+function formatPeerObservation(node: PublicNode): string | undefined {
   const peer = node.peers
   if (!peer) return 'Unknown observation'
-  if (peer.state === 'error') return peer.peerCount == null ? 'Error; no last-good value' : 'Error; showing last-good value'
-  if (peer.state === 'starting') return 'Starting; no usable snapshot yet'
-  if (peer.state === 'disabled') return 'Disabled; Peer observation is not configured'
-  if (peer.state === 'unsupported') return 'Unsupported; no supported Peer snapshot'
-  if (peer.peerCount == null || peer.state === 'unknown') return 'Unknown observation'
-  if (peer.freshness === 'stale') return 'Stale; showing last-good value'
-  if (peer.peerCount === 0) return 'Empty; authoritative zero'
+
+  const collection = peerInsightCollectionStatus(peer)
+  const freshness = peerInsightFreshnessStatus(peer)
+  const value = peerInsightValueStatus(peer)
+  const hasValue = value !== 'Unknown'
+  const qualifiers: string[] = []
+
+  if (collection === 'Error') qualifiers.push('Collection failed')
+  else if (collection !== 'Current') qualifiers.push('Collection ' + collection.toLowerCase())
+  if (freshness === 'Stale') qualifiers.push('Stale')
+  else if (freshness !== 'Current') qualifiers.push('Freshness unknown')
+
+  if (!hasValue) {
+    if (qualifiers.length === 0) qualifiers.push('Value unknown')
+    qualifiers.push('No successful Peer snapshot is available')
+    return qualifiers.join('; ')
+  }
+
+  if (qualifiers.length > 0) {
+    qualifiers.push('Showing last successful snapshot')
+    if (value === 'Empty') qualifiers.push('authoritative zero')
+    return qualifiers.join('; ')
+  }
+
+  if (value === 'Empty') return 'Empty; authoritative zero'
   // A fresh peer count is self-explanatory; exceptional observation details
   // remain visible below the value.
   return undefined

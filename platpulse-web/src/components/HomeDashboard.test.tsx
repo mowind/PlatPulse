@@ -17,7 +17,7 @@ const network = {
       currentHead: 120, latestBlockTransactionCount: 12345, historicalHighWatermark: 120, networkReferenceHead: 120,
       networkReferenceConfidence: 'high', freshness: 'current', resyncProgress: null,
       hostCpuPercent: 91.5, hostMemoryPercent: 82.25, processCpuPercent: 12.5, processMemoryPercent: 45.25, hostStoragePercent: 80, nodeDataDirectorySizeBytes: 12_884_901_888, nodeDataDirectoryCapacityBytes: 51_539_607_552, hostNetworkRxBytesPerSec: 1024, hostNetworkTxBytesPerSec: 2048,
-      peers: { state: 'current', freshness: 'current', peerCount: 0 },
+      peers: { state: 'ok', freshness: 'current', peerCount: 0 },
       consensus: {
         state: 'ok', freshness: 'current', observedAt: '2026-08-25T00:00:00Z', receivedAt: '2026-08-25T00:00:00Z',
         epoch: 1, viewNumber: 2, validator: true, highestQcBlock: 100, highestLockBlock: 99, highestCommitBlock: 98,
@@ -54,6 +54,34 @@ describe('Public Home dashboard', () => {
     expect(within(alphaCard).getByText('Peers').nextElementSibling?.textContent).toBe('0')
     // A successful zero snapshot stays an authoritative zero, not Unknown.
     expect(within(alphaCard).getByText('Empty; authoritative zero')).toBeTruthy()
+  })
+
+  it('keeps retained zero peer values and simultaneous failure and staleness visible', () => {
+    const retainedNode = (state: 'starting' | 'disabled' | 'unsupported' | 'error') => ({
+      ...network.nodes[0],
+      nodeId: `node-${state}`,
+      displayName: `Retained ${state}`,
+      peers: {
+        state,
+        freshness: state === 'error' ? 'stale' : 'current',
+        peerCount: 0,
+      },
+    })
+    const nodes = [
+      retainedNode('starting'),
+      retainedNode('disabled'),
+      retainedNode('unsupported'),
+      retainedNode('error'),
+    ]
+    render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+
+    for (const state of ['starting', 'disabled', 'unsupported', 'error']) {
+      const card = cardOf(nodeCardLink(`Retained ${state}`))
+      expect(within(card).getByText('0')).toBeTruthy()
+      expect(within(card).getByText(/Showing last successful snapshot/)).toBeTruthy()
+    }
+    const failedCard = cardOf(nodeCardLink('Retained error'))
+    expect(within(failedCard).getByText(/Collection failed.*Stale.*Showing last successful snapshot/)).toBeTruthy()
   })
 
   it('shows the first compact metric row as Head, Transactions, and Peers with Unknown on absence', () => {
@@ -335,7 +363,7 @@ describe('Public Home dashboard', () => {
     const resyncingNode = {
       ...network.nodes[0],
       nodeId: 'node-c', displayName: 'Gamma', health: 'healthy', resyncState: 'resyncing',
-      resyncProgress: 'Backfilling 10,000 blocks', peers: { state: 'current', freshness: 'current', peerCount: 3 },
+      resyncProgress: 'Backfilling 10,000 blocks', peers: { state: 'ok', freshness: 'current', peerCount: 3 },
     }
     render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes: [network.nodes[1], resyncingNode] }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
@@ -343,8 +371,8 @@ describe('Public Home dashboard', () => {
     const betaCard = cardOf(nodeCardLink('Beta'))
     expect(within(betaCard).getByText('Never observed')).toBeTruthy()
     expect(betaCard.querySelectorAll('.dashboard-node-diagnostic')).toHaveLength(1)
-    // The unknown peer observation is never presented as Current (webui.md §5.3).
-    expect(within(betaCard).getByText('Unknown observation')).toBeTruthy()
+    // The unknown peer observation is explicit and never presented as Current.
+    expect(within(betaCard).getByText(/No successful Peer snapshot is available/)).toBeTruthy()
     expect(within(betaCard).queryByText('Current observation')).toBeNull()
 
     // Healthy Node with an active resync: progress is the single line.
