@@ -63,6 +63,8 @@ Unknown
 Disabled
 Unsupported
 Empty
+Live updates connected
+Connecting to live updates
 Live updates paused
 You are offline
 ```
@@ -264,7 +266,7 @@ SSE contains invalidation/resource identity or collection reset, not authoritati
 
 The Public/Admin event endpoints accept cursor recovery through the `after` query parameter or the `Last-Event-ID` header (the reconnect header takes precedence when both are supplied). Responses are `text/event-stream`; each emitted event uses the `invalidation` event name, a numeric event id/cursor, and JSON `data` with `version`, `eventId`, `resource`, optional `resourceId`, `revision`, and optional `reset`. A first connection without a cursor starts after the current buffered sequence because REST has already supplied the snapshot; the browser should send the last received cursor when reconnecting and discard/reconcile events older than its current authorization generation.
 
-SSE connection status is visible but does not cover valid content. Disconnect shows `Live updates paused`; browser/network loss additionally uses `You are offline` when the browser signal is authoritative. The current generated OpenAPI records the stream operation but does not fully describe every cursor/header/event field; runtime `realtime` behavior is the authority for replay.
+SSE connection status is visible but does not cover valid content. Public Home/Network/Node surfaces show `Connecting to live updates` while connecting, `Live updates connected` for an open stream, and `Live updates paused` after disconnect; browser/network loss additionally uses `You are offline` when the browser signal is authoritative. The compact Admin header retains its existing `Starting`/`Current` transport labels so this public wording change does not increase Admin information density. These transport labels never certify REST refresh success, observation freshness, Agent liveness, or Node Health. The current generated OpenAPI records the stream operation but does not fully describe every cursor/header/event field; runtime `realtime` behavior is the authority for replay.
 
 SSE updates must preserve filters, sorting, scroll, expansion, and ordinary drafts. They do not reorder a list merely because a timestamp changed.
 
@@ -719,7 +721,7 @@ The two routed Home surfaces are separate: the root dashboard flattens the retur
 
 **Root `/` (`PAGE-HOME-NETWORKS`):**
 
-1. A compact header with the PlatPulse brand link at left and one circular Admin icon link at right. The brand returns to Home; the Admin icon enters the Owner-only Admin route and does not expose Admin data inside Home.
+1. A compact header with the PlatPulse brand link at left and one Owner-only Admin link at right that pairs a gear icon with visible `Admin` text. The brand returns to Home; the Admin link enters the Admin Overview route and does not expose Admin data inside Home.
 2. A page heading, Public Projection copy, and a Server-authoritative live/realtime indicator.
 3. Four summary cards for Active Node count, Server-owned healthy Node count, Nodes needing attention, and returned Network count. These are projections of already-loaded Public data, not new health policy or visibility filtering.
 4. Network filter pills and a labelled sort control (`Health`, `Name`, or `Current Head`).
@@ -762,7 +764,7 @@ The fixed acceptance viewports are 360x800, 390x844, 768x1024, and 1280x800.
 
 ### State and realtime acceptance
 
-The UI keeps collection state, freshness state, value state, and authorization state independent. It renders the fixed user-facing vocabulary from this document: Starting, Current, Stale, Error, Unknown, Disabled, Unsupported, Empty, Live updates paused, and You are offline.
+The UI keeps collection state, freshness state, value state, and authorization state independent. It renders the fixed user-facing vocabulary from this document: Starting, Current, Stale, Error, Unknown, Disabled, Unsupported, Empty, Live updates connected, Connecting to live updates, Live updates paused, and You are offline.
 
 - Initial route loads show a meaningful Starting/loading state and do not fabricate values.
 - A successful observation may show Current or an authoritative empty value. A successful Peer Snapshot/aggregate of zero is displayed as zero, not Unknown; omitted/unsupported peer collection remains distinct.
@@ -775,7 +777,7 @@ The UI keeps collection state, freshness state, value state, and authorization s
 ### Navigation and accessibility acceptance
 
 - The PlatPulse brand is a keyboard-focusable link to `/`. Its accessible name identifies PlatPulse and its destination is stable from Home and Node Detail.
-- The circular Admin icon is a keyboard-focusable link to /admin with an explicit accessible name such as Open Admin login. Home does not show text navigation or a Home logout action in this header.
+- The Admin link is a keyboard-focusable link to /admin with a gear icon, visible `Admin` text, and an explicit accessible name. Home does not show other text navigation or a Home logout action in this header.
 - Whole-card Node links, Node Detail Network links, the Network back link, and Details/Network tabs are reachable by keyboard in a predictable order. Browser back/forward preserves route context.
 - Tabs use tab/list semantics with a single selected tab, a labelled panel, visible focus, and keyboard activation. Switching tabs preserves Node identity and summary state.
 - Pages expose one logical h1, ordered headings, semantic lists/tables where appropriate, meaningful empty/error regions, and polite live regions only for meaningful transitions.

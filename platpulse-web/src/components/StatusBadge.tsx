@@ -13,6 +13,8 @@ const STATUS_ICONS: Record<string, string> = {
   Unsupported: '⚠',
   Empty: '∅',
   'Evaluation unavailable': '?',
+  'Live updates connected': '✓',
+  'Connecting to live updates': '…',
   'Live updates paused': '⏸',
   'You are offline': '✕',
   // Server-owned words are presented as the Server sends them (webui.md

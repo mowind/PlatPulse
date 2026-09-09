@@ -44,6 +44,26 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expect(page.getByText('Node D (retired)', { exact: true })).toHaveCount(0)
   })
 
+  test('Public Network header separates live transport from observation status', async ({ page }) => {
+    await loginAs(page)
+    await page.goto('/networks/home-convergence')
+
+    await expect(page.getByRole('heading', { level: 1, name: 'Home Convergence Network With An Extremely Long Display Name' })).toBeVisible()
+    const metadata = page.getByLabel('Network identity and live updates')
+    await expect(metadata).toContainText('Network key')
+    await expect(metadata).toContainText('home-convergence')
+    await expect(metadata.getByRole('status', { name: 'Live updates connected' })).toBeVisible()
+
+    const adminLink = page.getByRole('link', { name: 'Admin', exact: true })
+    await expect(adminLink).toContainText('Admin', { useInnerText: true })
+    const adminBox = await adminLink.boundingBox()
+    expect(adminBox?.width).toBeGreaterThanOrEqual(44)
+    expect(adminBox?.height).toBeGreaterThanOrEqual(44)
+    await adminLink.focus()
+    await expect(adminLink).toBeFocused()
+    await expectNoHorizontalOverflow(page)
+  })
+
   test('Public Peer insight exposes bounded summaries without peer identities', async ({ page }) => {
     await loginAs(page)
     // Home's Network display name is plain text (issue #97), so reach the

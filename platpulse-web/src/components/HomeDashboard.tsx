@@ -55,7 +55,7 @@ export default function HomeDashboard({
     <section className="page home-dashboard" aria-label="Home">
       {error && <p className="dashboard-error" role="alert">{error}</p>}
       {loading && <p role="status">Starting Home…</p>}
-      {realtimeStatus !== 'connected' && <p className={`dashboard-live dashboard-live-${toneFor(realtimeStreamLabel(realtimeStatus))}`} role="status" aria-live="polite"><span aria-hidden="true" /> {realtimeStreamLabel(realtimeStatus)}</p>}
+      <p className={`dashboard-live dashboard-live-${realtimeTone(realtimeStatus)}`} role="status" aria-live="polite"><span aria-hidden="true" /> {realtimeStreamLabel(realtimeStatus)}</p>
       {!online && <p className="dashboard-live dashboard-live-warning" role="status" aria-live="polite"><span aria-hidden="true" /> You are offline</p>}
 
       <div className="dashboard-summary-grid" aria-label="Home summary">
@@ -314,6 +314,10 @@ function healthLabel(value: string): string {
   if (value === 'healthy') return 'Healthy'
   if (value === 'unhealthy') return 'Unhealthy'
   return 'Unknown'
+}
+
+function realtimeTone(status: HomeDashboardProps['realtimeStatus']): 'good' | 'warn' {
+  return status === 'disconnected' ? 'warn' : 'good'
 }
 
 function nodeLabel(node: PublicNode) { return node.displayName ?? node.nodeId }

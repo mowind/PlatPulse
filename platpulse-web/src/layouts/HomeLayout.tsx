@@ -91,7 +91,7 @@ function HomeLayoutContent() {
       <header className="app-header">
         <div className="home-shell-container app-header-inner">
           <Link to="/" className="app-brand" aria-label="PlatPulse"><img className="app-brand-logo" src={platpulseMark} alt="" /><span>PlatPulse</span></Link>
-          {isOwner && <Link to="/admin" className="admin-icon-link" aria-label="Admin" title="Open Admin dashboard"><span aria-hidden="true">⚙</span></Link>}
+          {isOwner && <Link to="/admin" className="admin-icon-link" aria-label="Admin" title="Open Admin dashboard"><span aria-hidden="true">⚙</span><span>Admin</span></Link>}
         </div>
       </header>
       <main className="app-main">

@@ -547,6 +547,94 @@ describe('App shell with private Home', () => {
     expect(screen.getByText('Network key')).toBeTruthy()
   })
 
+  it('separates connected transport from stale observations and Unknown Node Health', async () => {
+    vi.stubGlobal('EventSource', FakeEventSource)
+    let networkCalls = 0
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/public/v1/networks': () => jsonResponse([], 200),
+      '/api/public/v1/networks/network-with-a-very-long-key*': () => {
+        networkCalls += 1
+        return networkCalls === 1 ? jsonResponse({
+        networkKey: 'network-with-a-very-long-key',
+        displayName: 'A Network Name That Wraps On Narrow Screens',
+        peers: {
+          state: 'error',
+          freshness: 'stale',
+          peerCount: 4,
+          inboundCount: 1,
+          outboundCount: 3,
+          trustedCount: 2,
+          staticCount: 1,
+          consensusCount: 2,
+          receivedAt: '2026-08-20T00:00:00Z',
+          staleSince: '2026-08-20T00:05:00Z',
+        },
+        geo: { state: 'disabled' },
+        validators: [],
+        nodes: [{
+          nodeId: 'node-unknown-health',
+          displayName: 'Node With Unknown Health',
+          networkKey: 'network-with-a-very-long-key',
+          health: 'unknown',
+          healthReason: 'Health summary unavailable',
+          freshness: '2026-08-20T00:00:00Z',
+          rpcState: 'ok',
+          syncState: 'ok',
+          consensusState: 'ok',
+          currentHead: 42,
+          peers: {
+            state: 'error',
+            freshness: 'stale',
+            peerCount: 4,
+            inboundCount: 1,
+            outboundCount: 3,
+          },
+        }],
+        }, 200) : errorBody('network_unavailable')
+      }
+    })
+
+    render(<App />)
+    await act(async () => {
+      window.history.pushState({}, '', '/networks/network-with-a-very-long-key')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+    expect(await screen.findByRole('heading', { level: 1, name: 'A Network Name That Wraps On Narrow Screens' })).toBeTruthy()
+    expect(screen.getByRole('status', { name: 'Connecting to live updates' })).toBeTruthy()
+    await act(async () => {
+      FakeEventSource.latest?.onopen?.()
+      await Promise.resolve()
+    })
+
+    const metadata = screen.getByLabelText('Network identity and live updates')
+    expect(within(metadata).getByText('Network key')).toBeTruthy()
+    expect(within(metadata).getByText('network-with-a-very-long-key')).toBeTruthy()
+    expect(within(metadata).getByRole('status', { name: 'Live updates connected' })).toBeTruthy()
+    expect(screen.getByText('Stale', { exact: true })).toBeTruthy()
+    const nodeCard = screen.getByText('Node With Unknown Health').closest('article')
+    if (!nodeCard) throw new Error('Unknown-health Node card is missing')
+    expect(within(nodeCard).getByText('Unknown', { exact: true })).toBeTruthy()
+    expect(screen.queryByRole('status', { name: 'Current' })).toBeNull()
+    expect(networkCalls).toBe(1)
+
+    await act(async () => {
+      FakeEventSource.latest?.emit('invalidation', JSON.stringify({
+        eventId: 2,
+        resource: 'network',
+        resourceId: 'network-with-a-very-long-key',
+      }))
+      await Promise.resolve()
+    })
+    expect(await screen.findByText('Network refresh failed; showing the last successful Network data.')).toBeTruthy()
+    expect(networkCalls).toBe(2)
+    expect(screen.getByRole('heading', { level: 1, name: 'A Network Name That Wraps On Narrow Screens' })).toBeTruthy()
+    window.dispatchEvent(new Event('offline'))
+    expect(await screen.findByText('You are offline')).toBeTruthy()
+    expect(within(metadata).getByRole('status', { name: 'Live updates connected' })).toBeTruthy()
+  })
+
   it('keeps the Public Node route and last-good detail during a failed live refresh', async () => {
     let nodeCalls = 0
     mockFetch({

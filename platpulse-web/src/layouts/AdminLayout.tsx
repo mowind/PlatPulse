@@ -130,7 +130,7 @@ export default function AdminLayout() {
         <div className="admin-header-controls">
           <div className="admin-header-context" role="group" aria-label="Admin connection status">
             <span className="admin-header-context-label">Realtime</span>
-            {!resetting && <RealtimeNotice realtime={realtime} />}
+            {!resetting && <RealtimeNotice realtime={realtime} surface="admin" />}
             {resetting && <span className="admin-header-context-state">Checking access…</span>}
             <ServerStatusNotice />
           </div>

@@ -5,22 +5,35 @@ type RealtimeState = {
   online: boolean
 }
 
-export function realtimeStreamLabel(status: RealtimeState['status']): 'Current' | 'Starting' | 'Live updates paused' {
+export type RealtimeStreamLabel =
+  | 'Live updates connected'
+  | 'Connecting to live updates'
+  | 'Live updates paused'
+
+type AdminRealtimeStreamLabel = 'Current' | 'Starting' | 'Live updates paused'
+
+export function realtimeStreamLabel(status: RealtimeState['status']): RealtimeStreamLabel {
   return status === 'connected'
-    ? 'Current'
+    ? 'Live updates connected'
     : status === 'connecting'
-      ? 'Starting'
+      ? 'Connecting to live updates'
       : 'Live updates paused'
 }
 
+function adminRealtimeStreamLabel(status: RealtimeState['status']): AdminRealtimeStreamLabel {
+  return status === 'connected' ? 'Current' : status === 'connecting' ? 'Starting' : 'Live updates paused'
+}
+
 /** Shows SSE state and browser connectivity as independent dimensions. */
-export function RealtimeNotice({ realtime }: { realtime: RealtimeState }) {
-  const streamLabel = realtimeStreamLabel(realtime.status)
-  const streamTone = realtime.status === 'connected'
-    ? 'ok'
-    : realtime.status === 'disconnected'
-      ? 'warning'
-      : 'neutral'
+export function RealtimeNotice({ realtime, surface = 'public' }: { realtime: RealtimeState; surface?: 'public' | 'admin' }) {
+  const streamLabel = surface === 'admin'
+    ? adminRealtimeStreamLabel(realtime.status)
+    : realtimeStreamLabel(realtime.status)
+  // Public transport connectivity is deliberately quiet: it does not certify
+  // observation freshness, Node Health, or REST success.
+  const streamTone = surface === 'admin'
+    ? realtime.status === 'connected' ? 'ok' : realtime.status === 'disconnected' ? 'warning' : 'neutral'
+    : realtime.status === 'disconnected' ? 'warning' : 'neutral'
 
   return (
     <div className="realtime-notices" aria-live="polite">

@@ -2967,14 +2967,18 @@ button {
 }
 
 .admin-icon-link {
-  display: grid;
-  width: 44px;
-  height: 44px;
-  place-items: center;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0 0.8rem;
   color: var(--muted);
   background: rgba(255, 255, 255, 0.68);
   border: 1px solid rgba(148, 163, 184, 0.28);
-  border-radius: 50%;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 800;
   text-decoration: none;
   transition: background 160ms ease, border-color 160ms ease, transform 160ms ease, color 160ms ease;
 }
@@ -3020,8 +3024,9 @@ button {
   background: #94a3b8;
 }
 
-.dashboard-live-good { color: var(--brand-strong); border-color: rgba(5, 150, 105, 0.25); }
-.dashboard-live-good > span { background: var(--brand); }
+/* Transport connectivity is deliberately quieter than Node Health. */
+.dashboard-live-good { color: var(--muted); border-color: rgba(148, 163, 184, 0.25); }
+.dashboard-live-good > span { background: #94a3b8; }
 .dashboard-live-warn,
 .dashboard-live-warning { color: var(--amber); border-color: rgba(146, 64, 14, 0.22); }
 .dashboard-live-warn > span,
@@ -3474,22 +3479,14 @@ button {
 
 .home-shell .public-page-heading {
   display: block;
-  margin: 0 0 1rem;
+  margin: 0 0 0.9rem;
 }
 
 .home-shell .public-page-title {
   min-width: 0;
 }
 
-.home-shell .public-page-title-row {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem 1rem;
-}
-
-.home-shell .public-page-title-row h1 {
+.home-shell .public-page-title > h1 {
   min-width: 0;
   margin: 0;
   color: var(--ink);
@@ -3498,16 +3495,32 @@ button {
   overflow-wrap: anywhere;
 }
 
-.home-shell .public-page-title-row .realtime-notices {
+.home-shell .public-page-meta {
   display: flex;
-  flex: 0 0 auto;
+  min-width: 0;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: flex-end;
+  gap: 0.35rem 0.8rem;
+  margin-top: 0.35rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.home-shell .public-page-meta .public-page-key {
+  min-width: 0;
+  margin: 0;
+}
+
+.home-shell .public-page-meta .realtime-notices {
+  display: flex;
+  min-width: 0;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 0.4rem;
 }
 
-.home-shell .public-page-title-row .realtime-notice {
+.home-shell .public-page-meta .realtime-notice {
   margin: 0;
 }
 
@@ -3854,11 +3867,11 @@ button {
 }
 
 @media (max-width: 48rem) {
-  .home-shell .public-page-title-row {
+  .home-shell .public-page-meta {
     align-items: flex-start;
   }
 
-  .home-shell .public-page-title-row h1 {
+  .home-shell .public-page-title > h1 {
     font-size: 1.5rem;
   }
 
@@ -3869,11 +3882,7 @@ button {
 }
 
 @media (max-width: 42rem) {
-  .home-shell .public-page-title-row {
-    flex-wrap: wrap;
-  }
-
-  .home-shell .public-page-title-row .realtime-notices {
+  .home-shell .public-page-meta .realtime-notices {
     justify-content: flex-start;
   }
 

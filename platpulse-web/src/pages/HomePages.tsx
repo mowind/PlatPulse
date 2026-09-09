@@ -39,12 +39,12 @@ export function NetworkPage() {
     </nav>
     <header className="public-page-heading">
       <div className="public-page-title">
-        <div className="public-page-title-row">
-          <h1 id="network-page-title">{network.displayName}</h1>
+        <h1 id="network-page-title">{network.displayName}</h1>
+        <p className="public-page-subtitle">Active PlatON Nodes and network-level public observations.</p>
+        <div className="public-page-meta" aria-label="Network identity and live updates">
+          <span className="public-page-key">Network key <code>{network.networkKey}</code></span>
           <RealtimeNotice realtime={realtime} />
         </div>
-        <p className="public-page-subtitle">Active PlatON Nodes and network-level public observations.</p>
-        <p className="public-page-key">Network key <code>{network.networkKey}</code></p>
       </div>
     </header>
     {query.isRefetchError && <p role="status" className="form-error">Network refresh failed; showing the last successful Network data.</p>}
