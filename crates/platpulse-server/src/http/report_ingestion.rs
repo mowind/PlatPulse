@@ -155,6 +155,18 @@ fn status_name(status: ComponentStatus) -> &'static str {
     }
 }
 
+/// Return the persisted component key used by the Server projections.
+///
+/// Most legacy keys predate the wire enum's snake_case names. Network identity
+/// is read by the Admin projection under its stable network_identity key, so
+/// ingestion must use that same key rather than the Rust debug spelling.
+fn component_storage_key(key: ComponentKey) -> String {
+    match key {
+        ComponentKey::NetworkIdentity => "network_identity".to_owned(),
+        key => format!("{key:?}").to_lowercase(),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn save_component<T: serde::Serialize>(
     tx: &mut Transaction<'_, Sqlite>,
@@ -175,7 +187,7 @@ async fn save_component<T: serde::Serialize>(
     let value_received_at = (component.status == ComponentStatus::Ok && component.latest.is_some())
         .then_some(received_at);
     sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision, error_code, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_id, scope, scope_key, component_key) DO UPDATE SET state=excluded.state, attempted_at=excluded.attempted_at, observed_at=COALESCE(excluded.observed_at, component_status.observed_at), received_at=excluded.received_at, value_received_at=COALESCE(excluded.value_received_at, component_status.value_received_at), state_revision=excluded.state_revision, value_revision=CASE WHEN excluded.value_revision > 0 THEN excluded.value_revision ELSE component_status.value_revision END, error_code=excluded.error_code, error_message=excluded.error_message")
-        .bind(agent_id).bind(scope).bind(scope_key).bind(node_id).bind(format!("{key:?}").to_lowercase())
+        .bind(agent_id).bind(scope).bind(scope_key).bind(node_id).bind(component_storage_key(key))
         .bind(status_name(component.status)).bind(component.attempted_at.map(|v| v.to_string()))
         .bind(component.latest_observed_at.map(|v| v.to_string())).bind(received_at)
         .bind(value_received_at)
@@ -3832,6 +3844,17 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(node_rpc_count, 2);
+        let node_identity_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM component_status WHERE agent_id = ? AND scope = 'node' AND component_key = 'network_identity'",
+        )
+        .bind(&agent_id)
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            node_identity_count, 2,
+            "accepted Network Identity observations use the stable snake_case component key"
+        );
         let clients: Vec<String> = sqlx::query_scalar(
             "SELECT rpc_client_version FROM current_node_chain_observations ORDER BY node_id",
         )
