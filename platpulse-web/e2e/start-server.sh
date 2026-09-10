@@ -31,6 +31,12 @@ listen = "127.0.0.1:$PORT"
 public_base_url = "http://127.0.0.1:$PORT"
 development = true
 
+# The operator-provided GeoLite2 Country database drives the real Local MMDB
+# provider (issue #132). The fixture is the same licensed test database the
+# Server unit tests use; the harness never downloads a database.
+[geo]
+mmdb_path = "$STATE_DIR/GeoIP2-Country-Test.mmdb"
+
 # Notification delivery fixture (issue #49): Telegram is configured with a
 # fake token file and an aggressive bounded-retry policy so the Playwright
 # suite can exercise retry/dead-letter deterministically without touching a
@@ -46,6 +52,12 @@ retry_base_seconds = 1
 EOF
 
 printf '%s\n' 'fake-e2e-telegram-token' > "$STATE_DIR/telegram-token"
+
+# The Geo database is an operator-provided private file (design §19): copy the
+# licensed test fixture with 0600 permissions so the Server's startup
+# validation accepts it.
+cp "$ROOT/crates/platpulse-server/test-data/GeoIP2-Country-Test.mmdb" "$STATE_DIR/GeoIP2-Country-Test.mmdb"
+chmod 600 "$STATE_DIR/GeoIP2-Country-Test.mmdb"
 
 cd "$ROOT"
 cargo run -q -p platpulse-server -- init --config "$CONFIG" >/dev/null
@@ -98,6 +110,17 @@ node_g = "0195f2a1-0020-4020-8020-000000000020"
 target_agent = "0195f2a1-0021-4021-8021-000000000021"
 
 with sqlite3.connect(path) as db:
+    # Geo starts Disabled even though an MMDB is configured, so the disabled
+    # surface stays covered and the Settings e2e is the only thing that turns
+    # Local MMDB on (and turns it back off).
+    db.execute(
+        "INSERT OR REPLACE INTO server_settings (setting_key, setting_value, updated_at) VALUES ('geo_provider', 'disabled', ?)",
+        (now,),
+    )
+    db.execute(
+        "INSERT OR REPLACE INTO server_settings (setting_key, setting_value, updated_at) VALUES ('geo_provider_generation', '0', ?)",
+        (now,),
+    )
     db.execute(
         "INSERT OR IGNORE INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES (?, 1, ?, ?)",
         (agent_id, now, now),
@@ -198,14 +221,19 @@ with sqlite3.connect(path) as db:
         "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES (?, 'node', ?, ?, 'peers', 'ok', ?, ?, ?, ?, 1, 1)",
         (agent_id, node_a, node_a, fresh, fresh, fresh, fresh),
     )
-    for peer_id, direction, trusted, static_peer, consensus_peer in (
-        ("peer-a-inbound", "inbound", 1, 1, 0),
-        ("peer-a-outbound", "outbound", 0, 0, 1),
-        ("peer-a-consensus", "outbound", 1, 0, 1),
+    # One Peer record carries a globally routable address the bundled MMDB
+    # resolves to SE; the other two have no usable public remote IP, which is
+    # exactly what the Server's trust boundary stores for an ineligible
+    # address. That gives the Geo e2e a deterministic Known/Unknown split
+    # without inventing a second Node.
+    for peer_id, remote_ip, direction, trusted, static_peer, consensus_peer in (
+        ("peer-a-inbound", None, "inbound", 1, 1, 0),
+        ("peer-a-outbound", None, "outbound", 0, 0, 1),
+        ("peer-a-consensus", "89.160.20.112", "outbound", 1, 0, 1),
     ):
         db.execute(
-            "INSERT INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, client_name, updated_at) VALUES (?, ?, '203.0.113.9', ?, ?, ?, ?, 'platond', ?)",
-            (node_a, peer_id, direction, trusted, static_peer, consensus_peer, fresh),
+            "INSERT INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, client_name, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'platond', ?)",
+            (node_a, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, fresh),
         )
 
     # Node Detail metric charts use real persisted samples at both ends of

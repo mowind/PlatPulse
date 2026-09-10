@@ -3,8 +3,10 @@ import { Link } from 'react-router'
 import {
   AdminApiError,
   updateAccessSettings,
+  updateGeoProviderEntry,
   updateHistoryWindowEntry,
   useAdminAccess,
+  useAdminGeo,
   useAdminHistoryWindow,
   useHistoryWindowImpact,
 } from '../api/admin'
@@ -23,6 +25,7 @@ export default function AdminSettings() {
       <div className="settings-sections settings-surface">
         <HistoryWindowSettings generation={generation} csrfToken={csrfToken} />
         <SiteAccessSettings generation={generation} csrfToken={csrfToken} />
+        <GeoProviderSettings generation={generation} csrfToken={csrfToken} />
       </div>
     </section>
   )
@@ -292,6 +295,163 @@ function SiteAccessSettings({ generation, csrfToken }: SettingsSectionProps) {
       )}
     </article>
   )
+}
+
+/** PAGE-ADMIN-SETTINGS Geo provider selection. Only providers this Server
+ * actually implements are offered (issue #132): Disabled and Local MMDB. */
+function GeoProviderSettings({ generation, csrfToken }: SettingsSectionProps) {
+  const query = useAdminGeo(generation)
+  const [selection, setSelection] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (query.data) setSelection((current) => current ?? query.data.provider)
+  }, [query.data])
+
+  const current = query.data
+  const option = current?.providers.find((candidate) => candidate.provider === selection)
+  const canSave = Boolean(
+    current &&
+    selection &&
+    selection !== current.provider &&
+    option?.available &&
+    !saving,
+  )
+
+  async function save(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!current || !selection || !canSave) return
+    setSaving(true)
+    setNotice(null)
+    setError(null)
+    try {
+      const result = await updateGeoProviderEntry(selection, csrfToken)
+      setNotice(
+        'Geo provider is now ' + result.geo.provider_label +
+          ' (Audit #' + result.audit_event_id + ').',
+      )
+    } catch (caught) {
+      setError(
+        caught instanceof AdminApiError
+          ? caught.message
+          : 'Unable to change the Geo provider.',
+      )
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <article className="settings-block" aria-labelledby="geo-provider-heading">
+      <div className="settings-block-heading">
+        <div>
+          <h2 id="geo-provider-heading">Geo provider</h2>
+          <p className="muted">
+            Country resolution for the Peer addresses the Server already observes.
+          </p>
+        </div>
+        {current && (
+          <StatusBadge
+            status={geoStateLabel(current.state)}
+            tone={current.state === 'error' ? 'error' : current.state === 'disabled' ? 'neutral' : 'ok'}
+          />
+        )}
+      </div>
+
+      {!current && query.isPending && <p role="status">Loading Geo provider…</p>}
+      {!current && query.isError && (
+        <p className="form-error" role="alert">Unable to load Geo provider status.</p>
+      )}
+
+      {current && (
+        <form className="settings-form" onSubmit={save} noValidate>
+          {query.isError && (
+            <p className="form-error" role="alert">
+              Unable to refresh the Geo provider. Showing the last successful value.
+            </p>
+          )}
+
+          <p className="settings-consequence">
+            Local MMDB resolves countries from the operator-provided GeoLite2 Country database on
+            this Server. Peer addresses never leave the Server. Disabled schedules no lookups at all.
+          </p>
+
+          <fieldset className="field">
+            <legend>Provider</legend>
+            {current.providers.map((candidate) => (
+              <div key={candidate.provider}>
+                <label htmlFor={'geo-provider-' + candidate.provider}>
+                  <input
+                    id={'geo-provider-' + candidate.provider}
+                    type="radio"
+                    name="geo-provider"
+                    value={candidate.provider}
+                    checked={selection === candidate.provider}
+                    disabled={!candidate.available}
+                    onChange={() => {
+                      setSelection(candidate.provider)
+                      setNotice(null)
+                      setError(null)
+                    }}
+                  />
+                  {' '}{candidate.label}
+                </label>
+                {candidate.unavailable_reason && (
+                  <small className="muted"> {candidate.unavailable_reason}</small>
+                )}
+              </div>
+            ))}
+          </fieldset>
+
+          <dl className="detail-list settings-detail-list">
+            <div><dt>Current</dt><dd>{current.provider_label}</dd></div>
+            <div><dt>Status</dt><dd>{geoStateLabel(current.state)}</dd></div>
+            <div>
+              <dt>Local database</dt>
+              <dd>{current.configured ? 'Configured' : 'Not configured'}</dd>
+            </div>
+            <div>
+              <dt>Cached countries</dt>
+              <dd>{current.cache_country_count}</dd>
+            </div>
+            <div>
+              <dt>Lookups pending</dt>
+              <dd>
+                {current.pending_lookup_count === null || current.pending_lookup_count === undefined
+                  ? 'Not scheduled'
+                  : current.pending_lookup_count}
+              </dd>
+            </div>
+            <div>
+              <dt>Last success</dt>
+              <dd>{current.last_success_at ?? 'None yet'}</dd>
+            </div>
+          </dl>
+
+          {current.last_error && (
+            <p className="form-error" role="alert">Database error: {current.last_error}</p>
+          )}
+
+          {notice && <p className="form-success" role="status">{notice}</p>}
+          {error && <p className="form-error" role="alert">{error}</p>}
+          <button className="primary-action" type="submit" disabled={!canSave}>
+            {saving ? 'Saving…' : 'Save Geo provider'}
+          </button>
+        </form>
+      )}
+    </article>
+  )
+}
+
+function geoStateLabel(state: string): string {
+  switch (state) {
+    case 'current': return 'Current'
+    case 'stale': return 'Stale'
+    case 'error': return 'Error'
+    default: return 'Disabled'
+  }
 }
 
 type SettingsSectionProps = {

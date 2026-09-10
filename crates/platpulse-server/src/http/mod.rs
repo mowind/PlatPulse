@@ -392,6 +392,8 @@ pub struct AppState {
     validator_provider: crate::validator::SharedValidatorProvider,
     backup_dir: Option<PathBuf>,
     geo: Arc<crate::geo::GeoLoader>,
+    geo_config: Arc<std::sync::RwLock<crate::geo::GeoConfig>>,
+    geo_wake: Arc<Notify>,
     pub(crate) public_realtime: RealtimeHub,
     pub(crate) admin_realtime: RealtimeHub,
     metrics: crate::metrics::MetricsRegistry,
@@ -424,9 +426,26 @@ impl AppState {
         self
     }
 
-    /// Configure the optional server-side GeoLite Country loader.
+    /// Configure the optional server-side GeoLite Country loader. The
+    /// loader's path is deployment configuration: it is recorded in the Geo
+    /// configuration so the Admin surface can report whether Local MMDB is
+    /// selectable, but it is never writable through the Admin API.
     pub fn with_geo_loader(mut self, geo: Arc<crate::geo::GeoLoader>) -> Self {
+        let mut config = self
+            .geo_config
+            .write()
+            .expect("Geo configuration lock poisoned");
+        config.mmdb_path = geo.path().map(PathBuf::from);
+        drop(config);
         self.geo = geo;
+        self
+    }
+
+    /// Apply a provider selection with its configuration generation. Startup
+    /// passes the persisted selection; tests use it to select a provider
+    /// explicitly.
+    pub fn with_geo_provider(self, provider: crate::geo::GeoProvider, generation: u64) -> Self {
+        self.apply_geo_provider(provider, generation);
         self
     }
 
@@ -497,6 +516,8 @@ impl AppState {
             validator_provider: Arc::new(crate::validator::DisabledValidatorProvider),
             backup_dir: None,
             geo: Arc::new(crate::geo::GeoLoader::disabled()),
+            geo_config: Arc::new(std::sync::RwLock::new(crate::geo::GeoConfig::disabled())),
+            geo_wake: Arc::new(Notify::new()),
             public_realtime: RealtimeHub::default(),
             admin_realtime: RealtimeHub::default(),
             metrics: crate::metrics::MetricsRegistry::new(),
@@ -563,6 +584,56 @@ impl AppState {
 
     pub(crate) fn backup_dir(&self) -> Option<&PathBuf> {
         self.backup_dir.as_ref()
+    }
+
+    /// The process-local Geo provider selection and generation.
+    pub(crate) fn geo_config(&self) -> crate::geo::GeoConfig {
+        self.geo_config
+            .read()
+            .expect("Geo configuration lock poisoned")
+            .clone()
+    }
+
+    /// Update the process-local selection after the durable selection has
+    /// been committed, and wake the background path so a newly enabled
+    /// provider starts working immediately.
+    pub(crate) fn apply_geo_provider(&self, provider: crate::geo::GeoProvider, generation: u64) {
+        {
+            let mut config = self
+                .geo_config
+                .write()
+                .expect("Geo configuration lock poisoned");
+            config.provider = provider;
+            config.generation = generation;
+        }
+        self.geo_wake.notify_one();
+    }
+
+    pub(crate) fn geo_backfill_wake(&self) -> Arc<Notify> {
+        Arc::clone(&self.geo_wake)
+    }
+
+    /// Wake the background resolution path after a Peer reference changed.
+    pub(crate) fn notify_geo_backfill(&self) {
+        self.geo_wake.notify_one();
+    }
+
+    /// The effective Geo status every projection reads. A Disabled provider
+    /// is the only configuration that short-circuits country projection, and
+    /// it reports no database metadata or error of its own.
+    pub(crate) fn geo_status(&self) -> crate::geo::GeoStatus {
+        let config = self.geo_config();
+        if config.provider.needs_local_database() {
+            return self.geo.status();
+        }
+        crate::geo::GeoStatus {
+            state: "disabled".to_owned(),
+            configured: config.mmdb_path.is_some(),
+            build_epoch: None,
+            digest: None,
+            loaded_at: None,
+            last_error: None,
+        }
     }
 
     pub(crate) fn geo(&self) -> &Arc<crate::geo::GeoLoader> {

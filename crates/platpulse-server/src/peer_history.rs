@@ -271,17 +271,22 @@ async fn country_for_peer(
     tx: &mut Transaction<'_, Sqlite>,
     remote_ip: Option<&str>,
     received_at: &str,
+    provider: crate::geo::GeoProvider,
 ) -> Result<Option<String>, sqlx::Error> {
     let Some(canonical_ip) = remote_ip.and_then(crate::geo::GeoLoader::canonical_public_ip) else {
         return Ok(None);
     };
-    sqlx::query_scalar(
-        "SELECT country_code FROM geo_location_cache WHERE canonical_ip=? AND created_at > ?",
+    // Only the selected provider's retained results are usable; a result left
+    // over from another provider never resolves a country.
+    sqlx::query_scalar::<_, Option<String>>(
+        "SELECT country_code FROM geo_location_cache WHERE provider = ? AND canonical_ip = ? AND created_at IS NOT NULL AND created_at > ?",
     )
+    .bind(provider.as_str())
     .bind(canonical_ip)
     .bind(crate::geo::cache_rebuild_cutoff(received_at))
     .fetch_optional(&mut **tx)
     .await
+    .map(Option::flatten)
 }
 
 async fn aggregate_values(
@@ -290,6 +295,7 @@ async fn aggregate_values(
     received_at: &str,
     local_head: Option<u64>,
     delta: PeerPresenceDelta,
+    provider: crate::geo::GeoProvider,
 ) -> Result<AggregateValues, sqlx::Error> {
     let mut countries = BTreeMap::new();
     let mut inbound_count = 0_i64;
@@ -312,7 +318,7 @@ async fn aggregate_values(
         consensus_count += i64::from(peer.consensus_peer);
 
         if let Some(country_code) =
-            country_for_peer(tx, peer.remote_ip.as_deref(), received_at).await?
+            country_for_peer(tx, peer.remote_ip.as_deref(), received_at, provider).await?
         {
             *countries.entry(country_code).or_insert(0) += 1;
         }
@@ -444,8 +450,9 @@ pub(crate) async fn record_successful_snapshot(
     received_at: &str,
     local_head: Option<u64>,
     delta: PeerPresenceDelta,
+    provider: crate::geo::GeoProvider,
 ) -> Result<(), sqlx::Error> {
-    let values = aggregate_values(tx, snapshot, received_at, local_head, delta).await?;
+    let values = aggregate_values(tx, snapshot, received_at, local_head, delta, provider).await?;
     for family in [AggregateFamily::FiveMinute, AggregateFamily::Hourly] {
         let bucket = bucket_start(received_at, family.seconds())?;
         upsert_family(tx, family, node_id, &bucket, &values).await?;
@@ -613,7 +620,7 @@ mod tests {
     #[tokio::test]
     async fn retained_last_good_countries_resolve_beyond_the_ttl_but_within_retention() {
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
-        sqlx::query("CREATE TABLE geo_location_cache (canonical_ip TEXT PRIMARY KEY, country_code TEXT NOT NULL, created_at TEXT NOT NULL, last_lookup_at TEXT NOT NULL, last_referenced_at TEXT NOT NULL, expires_at TEXT NOT NULL)")
+        sqlx::query("CREATE TABLE geo_location_cache (provider TEXT NOT NULL, canonical_ip TEXT NOT NULL, country_code TEXT CHECK(country_code IS NULL OR country_code GLOB '[A-Z][A-Z]'), state TEXT NOT NULL CHECK(state IN ('current', 'no_country', 'failed')), created_at TEXT, last_attempt_at TEXT NOT NULL, last_success_at TEXT, last_referenced_at TEXT NOT NULL, expires_at TEXT, PRIMARY KEY (provider, canonical_ip))")
             .execute(&pool)
             .await
             .unwrap();
@@ -623,8 +630,9 @@ mod tests {
             let expires_at = expires_at.to_owned();
             let pool = pool.clone();
             async move {
-                sqlx::query("INSERT INTO geo_location_cache (canonical_ip, country_code, created_at, last_lookup_at, last_referenced_at, expires_at) VALUES (?, 'US', ?, ?, ?, ?)")
+                sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('local_mmdb', ?, 'US', 'current', ?, ?, ?, ?, ?)")
                     .bind(ip)
+                    .bind(&created_at)
                     .bind(&created_at)
                     .bind(&created_at)
                     .bind(&created_at)
@@ -641,24 +649,51 @@ mod tests {
 
         let mut tx = pool.begin().await.unwrap();
         assert_eq!(
-            country_for_peer(&mut tx, Some("8.8.4.4"), "2026-01-05T00:00:00Z")
-                .await
-                .unwrap()
-                .as_deref(),
+            country_for_peer(
+                &mut tx,
+                Some("8.8.4.4"),
+                "2026-01-05T00:00:00Z",
+                crate::geo::GeoProvider::LocalMmdb
+            )
+            .await
+            .unwrap()
+            .as_deref(),
             Some("US")
         );
         assert_eq!(
-            country_for_peer(&mut tx, Some("8.8.8.8"), "2026-01-05T00:00:00Z")
-                .await
-                .unwrap(),
+            country_for_peer(
+                &mut tx,
+                Some("8.8.8.8"),
+                "2026-01-05T00:00:00Z",
+                crate::geo::GeoProvider::LocalMmdb
+            )
+            .await
+            .unwrap(),
             None
         );
         assert_eq!(
-            country_for_peer(&mut tx, Some("10.0.0.1"), "2026-01-05T00:00:00Z")
-                .await
-                .unwrap(),
+            country_for_peer(
+                &mut tx,
+                Some("10.0.0.1"),
+                "2026-01-05T00:00:00Z",
+                crate::geo::GeoProvider::LocalMmdb
+            )
+            .await
+            .unwrap(),
             None,
             "a non-public address never resolves a country"
+        );
+        assert_eq!(
+            country_for_peer(
+                &mut tx,
+                Some("8.8.4.4"),
+                "2026-01-05T00:00:00Z",
+                crate::geo::GeoProvider::Disabled
+            )
+            .await
+            .unwrap(),
+            None,
+            "another provider's retained result never resolves a country"
         );
         tx.commit().await.unwrap();
     }

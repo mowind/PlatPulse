@@ -10,7 +10,7 @@
 - `docs/design/platpulse.md` for Server, Agent, API, security, and deployment boundaries;
 - generated OpenAPI artifacts for DTOs, operations, error envelopes, and client behavior.
 
-This document is the WebUI UX and interaction authority for the current routed surface. It does not replace OpenAPI and does not define Server policy. The current Home consumes country-only Geo Insight, aggregate Peer Insight/selected-Node Peer History, and read-only Validator Activity/history/analytics. Server-side Alert, Notification, Retention, Backup/Restore, Doctor, Node Transfer, People, Validator management, and Agent Enrollment/Recovery/Rotation operations exist, but their management pages are not registered in the current SPA; older page drafts are historical and must not be linked as live routes.
+This document is the WebUI UX and interaction authority for the current routed surface. It does not replace OpenAPI and does not define Server policy. The current Home consumes country-only Geo Insight, aggregate Peer Insight/selected-Node Peer History, and read-only Validator Activity/history/analytics; the Owner selects the Geo provider (Disabled or Local MMDB) on Settings. Server-side Alert, Notification, Retention, Backup/Restore, Doctor, Node Transfer, People, Validator management, and Agent Enrollment/Recovery/Rotation operations exist, but their management pages are not registered in the current SPA; older page drafts are historical and must not be linked as live routes.
 
 ## 1. Purpose and non-goals
 
@@ -33,13 +33,13 @@ PlatPulse WebUI presents operational truth from the Server and gives the Owner s
 - a duplicated full Node Detail inside Admin;
 - RPC Endpoint editing, RPC Endpoint failover, remote commands, restart, upgrade, Docker control, or terminal access;
 - TUI, arbitrary scripts, SQL/DSL alert rules, or remote-control UI;
-- Validator/Geo/Alert/Notification/Retention/Backup/Restore/Doctor/Node Transfer/People/Enrollment/Recovery/Rotation management pages (their Server/API operations exist but are not currently routed);
+- Validator/Alert/Notification/Retention/Backup/Restore/Doctor/Node Transfer/People/Enrollment/Recovery/Rotation management pages (their Server/API operations exist but are not currently routed); Geo provider selection is routed on Settings, and external Geo providers plus a global refresh remain unimplemented;
 - raw Peer identity/addresses, complete Peer Snapshot browsing, multi-tenant, HA, PostgreSQL, SSO/OIDC/TOTP/WebAuthn;
 - runtime theme/script injection or a second frontend framework.
 
 ## 2. Authorities and vocabulary
 
-Use the exact domain terms in `CONTEXT.md`. Current terms include: Host, Agent, PlatON Node, Node ID, RPC Endpoint, Network, Network Identity, Network Registry, Node Inventory, Active Node, Retired Node, Component Observation, Agent Report, Report Receipt, Current Projection, Block Summary, Peer Snapshot, Peer Insight, Peer History, Host Observation, Node Process Observation, Node Chain Observation, Node Observation, Node Health Summary, Validator, Validator Activity, Geo Insight, Attention Item, Public Projection, Site Access Mode, Invalidation Event, Home Dashboard, Admin Dashboard, Audit Event, Owner, Viewer, and Guest.
+Use the exact domain terms in `CONTEXT.md`. Current terms include: Host, Agent, PlatON Node, Node ID, RPC Endpoint, Network, Network Identity, Network Registry, Node Inventory, Active Node, Retired Node, Component Observation, Agent Report, Report Receipt, Current Projection, Block Summary, Peer Snapshot, Peer Insight, Peer History, Host Observation, Node Process Observation, Node Chain Observation, Node Observation, Node Health Summary, Validator, Validator Activity, Geo Provider, Geo Database, Geo Location Cache, Geo Insight, Attention Item, Public Projection, Site Access Mode, Invalidation Event, Home Dashboard, Admin Dashboard, Audit Event, Owner, Viewer, and Guest.
 
 The WebUI must not invent synonyms that blur boundaries. In particular:
 
@@ -170,7 +170,7 @@ Each page has a stable ID. IDs are semantic and do not prescribe React filenames
 | `PAGE-ADMIN-NETWORK-DETAIL` | `/admin/networks/:networkKey` | Expected identity, metadata, mismatch diagnostics | Owner |
 | `PAGE-ADMIN-SETTINGS` | `/admin/settings` | Global Block History window and Site Access Mode configuration | Owner |
 
-The table above is the complete set of concrete SPA page routes; unknown paths under `/admin` use the registered Admin wildcard fallback rather than a legacy page. The Server/Admin APIs additionally expose People, Geo, Validator management/links/analytics, Alerts, Notifications, Operations, Retention, Backups/Restore, Doctor, Node Transfer, and Agent enrollment/recovery/credential operations; these are available DTO/operation surfaces, not current SPA pages.
+The table above is the complete set of concrete SPA page routes; unknown paths under `/admin` use the registered Admin wildcard fallback rather than a legacy page. The Server/Admin APIs additionally expose People, Validator management/links/analytics, Alerts, Notifications, Operations, Retention, Backups/Restore, Doctor, Node Transfer, and Agent enrollment/recovery/credential operations; these are available DTO/operation surfaces, not current SPA pages. Geo provider status and selection are consumed by the Settings page.
 
 The current SPA has no generic `returnTo`/`return_to` mutation contract. When a protected Home route sends a Guest to `/login`, it carries the internal router pathname as `location.state.from`; a successful login navigates back to that pathname, or `/` when absent. Admin mutations stay on their current route and invalidate/refetch authoritative data.
 
@@ -331,13 +331,15 @@ Every `PAGE-*` entry must specify the following before production coding:
 
 ### 8.3 Settings (`PAGE-ADMIN-SETTINGS`)
 
-- renders one Settings heading with an ordered History Window then Site Access Mode module inside one left-aligned constrained surface (see §8.6);
+- renders one Settings heading with an ordered History Window, Site Access Mode, then Geo provider module inside one left-aligned constrained surface (see §8.6);
 - each card loads, mutates, and reports success or errors independently;
 - History Window shows the current window, default, min/max bounds, and last update;
 - History Window requires an integer in the Server bounds, a successful Server-authoritative impact preview, and the current mutation body `{confirmed: bool}` before mutation; values are rejected rather than clamped. A typed phrase, if displayed, is client-side friction only; it is not a Server security field;
 - History Window copy states that shortening asynchronously deletes expired history and lengthening cannot recover deleted or missed history; success includes its Audit Event identifier;
 - Site Access Mode uses text plus icon/equivalent semantics for Public or Private: Public permits anonymous Home reads, while Private requires authenticated Owner or Viewer; its current mutation body likewise uses `{confirmed: bool}`;
 - switching Site Access Mode requires confirmation, records Audit, and performs the Public access-generation transition by closing affected streams, aborting old requests, clearing sensitive caches, discarding older responses, and reloading authoritative state;
+- Geo provider offers only the providers this Server actually implements: Disabled and Local MMDB. Disabled schedules no lookups at all; Local MMDB resolves countries from the operator-provided GeoLite2 Country database on the Server and never sends a Peer address anywhere. IPinfo, GeoJS, and a global refresh action are not rendered while they are unimplemented;
+- Geo provider states the outbound consequence in plain text and shows the effective database state (Disabled/Current/Stale/Error), whether a local database is configured, the cached country count, the pending lookup count (not scheduled while Disabled), and the last success time; an option the Server reports unavailable is rendered disabled with the Server-provided reason and cannot be submitted; success reports the Audit Event identifier;
 - the Settings cards stack on narrow viewports, preserve 44×44 CSS pixel targets, and never cause primary horizontal page overflow.
 
 The retired `/admin/history-window` and `/admin/site-access` routes are not redirected; they resolve through the Admin Section not found fallback. This is a page-level SPA outcome and does not guarantee an HTTP 404 response from the Server.
@@ -348,7 +350,9 @@ The Settings route is the single canonical configuration surface. The accepted s
 
 | Scenario | Route and outcome |
 |---|---|
-| `SCN-SETTINGS-ROUTE` | `/admin/settings` renders one logical `Settings` h1, ordered `History Window` then `Site Access Mode` sections, and no obsolete navigation entries; the retired URLs remain on the Admin Section not found fallback without redirecting. |
+| `SCN-SETTINGS-ROUTE` | `/admin/settings` renders one logical `Settings` h1, ordered `History Window`, `Site Access Mode`, then `Geo provider` sections, and no obsolete navigation entries; the retired URLs remain on the Admin Section not found fallback without redirecting. |
+| `SCN-SETTINGS-GEO-PROVIDER` | Through the Geo provider card, select an available provider, submit, and read the audited result plus the refreshed Server status; an unavailable option stays disabled with its reason and is never submitted, and no unimplemented provider or refresh action appears. |
+| `SCN-GEO-BACKGROUND-RESOLUTION` | With Local MMDB selected, the already-open Public Network view updates its Server-computed Known/Unknown country buckets through the existing realtime invalidation once the background resolution completes, without a reload and without exposing a Peer address or database path. |
 | `SCN-HISTORY-WINDOW-SHORTEN` | Through the History Window card, show Server bounds and impact, require explicit confirmation (the current Server body is `{confirmed: bool}`), report the returned Audit Event, and retain asynchronous deletion consequences. |
 | `SCN-HISTORY-WINDOW-BOUNDS` | Through the History Window card, reject blank, non-integer, and out-of-bounds values with field-level errors; never clamp or submit an invalid value. |
 | `SCN-SITE-ACCESS-PUBLIC` | Through the Site Access Mode card, confirm and apply Public, clear affected Public state, reload the new authorization generation, and permit anonymous Home reads while Admin remains Owner-only. |

@@ -1724,11 +1724,92 @@
         "operationId": "admin_geo_status",
         "responses": {
           "200": {
-            "description": "Owner-only safe Geo database status",
+            "description": "Owner-only safe Geo provider status",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/GeoStatusDiagnostic"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/geo/provider": {
+      "put": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Select the Geo provider. The change is Owner-only, Origin/JSON/CSRF\nguarded, audited, durably persisted with a new configuration generation,\nand applied to the running process in the same breath, so scheduled work\nfrom the previous selection can never be written as the current one.",
+        "operationId": "update_geo_provider",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GeoProviderUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Owner-only Geo provider change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeoProviderMutationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
                 }
               }
             }
@@ -8691,12 +8772,70 @@
           }
         }
       },
+      "GeoProviderMutationResponse": {
+        "type": "object",
+        "required": [
+          "geo",
+          "audit_event_id"
+        ],
+        "properties": {
+          "audit_event_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "geo": {
+            "$ref": "#/components/schemas/GeoStatusDiagnostic"
+          }
+        }
+      },
+      "GeoProviderOption": {
+        "type": "object",
+        "required": [
+          "provider",
+          "label",
+          "available"
+        ],
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "label": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "unavailable_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Safe explanation when the option cannot be selected. It never contains\na filesystem path, raw address, or provider internals."
+          }
+        }
+      },
+      "GeoProviderUpdateRequest": {
+        "type": "object",
+        "required": [
+          "provider"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string"
+          }
+        }
+      },
       "GeoStatusDiagnostic": {
         "type": "object",
         "required": [
+          "provider",
+          "provider_label",
+          "provider_generation",
+          "providers",
           "state",
           "configured",
-          "cache_country_count"
+          "cache_country_count",
+          "cache_entry_count"
         ],
         "properties": {
           "build_epoch": {
@@ -8709,10 +8848,17 @@
           },
           "cache_country_count": {
             "type": "integer",
-            "format": "int64"
+            "format": "int64",
+            "description": "Distinct countries with a currently valid retained result."
+          },
+          "cache_entry_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Retained cache rows for the selected provider."
           },
           "configured": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Whether this deployment configured a local GeoLite2 Country database."
           },
           "digest": {
             "type": [
@@ -8726,14 +8872,48 @@
               "null"
             ]
           },
+          "last_success_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "loaded_at": {
             "type": [
               "string",
               "null"
             ]
           },
-          "state": {
+          "pending_lookup_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Current Peer addresses still waiting for a fresh country result. It is\nnull while Geo is disabled, because nothing is scheduled then."
+          },
+          "provider": {
+            "type": "string",
+            "description": "The selected provider. Only implemented providers are ever reported."
+          },
+          "provider_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Monotonic configuration generation. Every background result carries\nthe generation that scheduled it and is discarded if it no longer\nmatches the selection.",
+            "minimum": 0
+          },
+          "provider_label": {
             "type": "string"
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GeoProviderOption"
+            }
+          },
+          "state": {
+            "type": "string",
+            "description": "Effective database/result state: disabled, current, stale, or error.\nIt is independent of Peer collection freshness and Node health."
           }
         }
       },

@@ -55,6 +55,8 @@ def put(db, table, values):
 
 def seed(db, version):
     put(db, "server_settings", {"setting_key":"fixture", "setting_value":"recovery", "updated_at":NOW})
+    put(db, "server_settings", {"setting_key":"geo_provider", "setting_value":"local_mmdb", "updated_at":NOW})
+    put(db, "server_settings", {"setting_key":"geo_provider_generation", "setting_value":"1", "updated_at":NOW})
     put(db, "users", {"user_id":"user-owner", "username":"fixture-owner", "role":"owner", "password_hash":"fixture-hash", "created_at":NOW, "updated_at":NOW})
     put(db, "users", {"user_id":"user-viewer", "username":"fixture-viewer", "role":"viewer", "password_hash":"fixture-hash", "created_at":NOW, "updated_at":NOW})
     put(db, "sessions", {"session_id":"session-owner", "user_id":"user-owner", "token_digest":b"owner", "csrf_token_digest":b"csrf", "created_at":NOW, "last_seen_at":NOW, "expires_at":"2100-01-01T00:00:00Z"})
@@ -87,7 +89,9 @@ def seed(db, version):
     if version >= 29:
         put(db, "current_node_peers", {"node_id":NODE_A, "peer_id":"peer-fixture", "remote_ip":"1.1.1.1", "direction":"outbound", "trusted":1, "static_peer":0, "consensus_peer":1, "client_name":"fixture", "updated_at":NOW})
         put(db, "peer_presence_intervals", {"node_id":NODE_A, "peer_id":"peer-fixture", "direction":"outbound", "trusted":1, "static_peer":0, "consensus_peer":1, "client_name":"fixture", "opened_at":NOW})
-        put(db, "geo_location_cache", {"canonical_ip":"1.1.1.1", "country_code":"ZZ", "created_at":NOW, "last_lookup_at":NOW, "last_referenced_at":NOW, "expires_at":"2100-01-01T00:00:00Z"})
+        # The same superset seeds both the pre-42 single-provider cache and the
+        # provider-keyed cache; put() keeps only the columns the version has.
+        put(db, "geo_location_cache", {"provider":"local_mmdb", "canonical_ip":"1.1.1.1", "country_code":"ZZ", "state":"current", "created_at":NOW, "last_lookup_at":NOW, "last_attempt_at":NOW, "last_success_at":NOW, "last_referenced_at":NOW, "expires_at":"2100-01-01T00:00:00Z"})
     if version >= 30:
         put(db, "validators", {"validator_id":"validator-fixture", "network_key":NETWORK, "validator_node_id":"validator-node-fixture", "display_name":"Fixture Validator", "created_at":NOW, "updated_at":NOW})
         put(db, "node_validator_links", {"link_id":"link-fixture", "node_id":NODE_A, "validator_id":"validator-fixture", "role":"primary", "valid_from":NOW, "created_at":NOW, "updated_at":NOW})
@@ -205,6 +209,14 @@ def check_fixture(path, checkpoint):
             raise RehearsalError("Site Access Mode was not preserved")
         if value(path, "SELECT setting_value FROM server_settings WHERE setting_key='authorization_generation'") != "0":
             raise RehearsalError("authorization generation was not preserved")
+    if checkpoint >= 42:
+        # The provider-keyed Geo cache survives as the selected provider's
+        # retained result, and a portable backup carries no raw Peer address
+        # or country cache at all (issue #132).
+        if value(path, "SELECT provider FROM geo_location_cache WHERE canonical_ip='1.1.1.1'") != "local_mmdb":
+            raise RehearsalError("Geo provider selection was not preserved")
+        if value(path, "SELECT country_code FROM geo_location_cache WHERE canonical_ip='1.1.1.1'") != "ZZ":
+            raise RehearsalError("Geo country result was not preserved")
 
 def self_test():
     with tempfile.TemporaryDirectory(prefix="platpulse-recovery-") as root:

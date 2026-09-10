@@ -25,6 +25,8 @@ import {
   adminAgentAudit,
   adminAgentDetail,
   adminEnrollmentToken,
+  adminGeoStatus,
+  updateGeoProvider as updateGeoProviderApi,
   adminNetworkDetail,
   adminNetworks,
   adminNodeDetail,
@@ -83,6 +85,8 @@ import {
   updateHistoryWindow,
   updateValidatorLink,
   type AccessSettingsResponse,
+  type GeoProviderMutationResponse,
+  type GeoStatusDiagnostic,
   type HistoryWindowResponse,
   type AdminNetwork,
   type AlertRuleDetail,
@@ -219,6 +223,7 @@ const adminKeys = {
   sessions: ['admin', 'sessions'] as const,
   audit: (filters: AuditFilters) => ['admin', 'audit', filters] as const,
   access: ['admin', 'access'] as const,
+  geo: ['admin', 'geo'] as const,
   historyWindow: ['admin', 'history-window'] as const,
   historyWindowImpact: (days: number) => ['admin', 'history-window', 'impact', days] as const,
   alertRules: ['admin', 'alerts', 'rules'] as const,
@@ -1192,6 +1197,47 @@ export async function updateAccessSettings(
   return settings
 }
 
+/** Owner-only Geo provider selection and retained-result status. */
+export async function fetchAdminGeo(signal?: AbortSignal): Promise<GeoStatusDiagnostic> {
+  return requestAdmin(() => adminGeoStatus({ signal }), 'Unable to load Geo provider status')
+}
+
+export function useAdminGeo(generation: number) {
+  return useQuery({
+    queryKey: [...adminKeys.geo, generation],
+    queryFn: ({ signal }) => fetchAdminGeo(signal),
+  })
+}
+
+/** Select the Geo provider. The Server audits the change, persists it with a
+ * new configuration generation, and invalidates the affected country
+ * projections; the response carries the diagnostic for the new selection. */
+export async function updateGeoProviderEntry(
+  provider: string,
+  csrfToken: string,
+): Promise<GeoProviderMutationResponse> {
+  const isGeoQuery = (queryKey: readonly unknown[]) => samePrefix(queryKey, adminKeys.geo)
+  try {
+    const response = await requestAdmin(
+      () =>
+        updateGeoProviderApi({
+          body: { provider },
+          headers: { 'X-CSRF-Token': csrfToken },
+        }),
+      'Unable to change the Geo provider',
+    )
+    adminQueryClient.setQueriesData<GeoStatusDiagnostic>(
+      { predicate: (query) => isGeoQuery(query.queryKey) },
+      response.geo,
+    )
+    await adminQueryClient.invalidateQueries({ predicate: (query) => isGeoQuery(query.queryKey) })
+    return response
+  } catch (error) {
+    await adminQueryClient.invalidateQueries({ predicate: (query) => isGeoQuery(query.queryKey) })
+    throw error
+  }
+}
+
 export type RealtimeStatus = 'connecting' | 'connected' | 'disconnected'
 export type RealtimeState = { status: RealtimeStatus; online: boolean }
 
@@ -1218,11 +1264,10 @@ function invalidateAdminResource(resource: string, resourceId: string | undefine
         // Server emits a Node invalidation too.
         return [adminKeys.overview, adminKeys.diagnostics, ...(resourceId ? [adminKeys.agentDetail(resourceId), adminKeys.agentAudit(resourceId)] : [])]
       case 'geo':
-        // The Geo database surface is deferred beyond the MVP WebUI
-        // (issue #93), but the Server still publishes geo invalidations
-        // on report ingestion; keep refreshing the retained Node/Network
-        // panels instead of falling back to the whole Admin namespace.
-        return [adminKeys.nodes, adminKeys.networks]
+        // Geo invalidations come from report ingestion, the background
+        // resolution path, and the provider selection itself; the Settings
+        // card and the retained Node/Network panels all refetch.
+        return [adminKeys.geo, adminKeys.nodes, adminKeys.networks]
       case 'network':
         return [adminKeys.overview, adminKeys.networks, adminKeys.validators, adminKeys.validatorLinks, adminKeys.nodes]
       case 'validator':

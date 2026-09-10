@@ -20,7 +20,7 @@ use thiserror::Error;
 pub static SERVER_MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 /// The latest migration version compiled into the Server binary.
-pub const SERVER_SCHEMA_VERSION: i64 = 41;
+pub const SERVER_SCHEMA_VERSION: i64 = 42;
 
 /// The Server currently serializes all SQLite operations through one pool
 /// connection. Read scaling can be added with a concrete query need; it is
@@ -586,6 +586,98 @@ mod tests {
             database.schema_version().await.unwrap(),
             SERVER_SCHEMA_VERSION
         );
+    }
+
+    /// Issue #132: an existing installation keeps its retained local MMDB
+    /// results, their birth/expiry times, and its enabled Geo behaviour across
+    /// the provider-keyed cache migration. Nothing is deleted, and the
+    /// compatibility default follows the deployment's MMDB configuration.
+    #[tokio::test]
+    async fn geo_cache_migration_preserves_existing_local_results() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("server.db");
+        let pool = SqlitePoolOptions::new()
+            .max_connections(SERVER_WRITE_CONNECTIONS)
+            .connect_with(sqlite_options(&config(&path), true))
+            .await
+            .unwrap();
+        migrations_through(SERVER_SCHEMA_VERSION - 1)
+            .run(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO geo_location_cache (canonical_ip, country_code, created_at, last_lookup_at, last_referenced_at, expires_at) VALUES ('8.8.4.4', 'US', '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', '2026-01-03T00:00:00Z', '2026-01-02T00:00:00Z')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        let database = ServerDatabase::open(config(&path)).await.unwrap();
+        assert_eq!(
+            database.schema_version().await.unwrap(),
+            SERVER_SCHEMA_VERSION
+        );
+        let row = sqlx::query_as::<_, (String, String, String, String, String, String)>(
+            "SELECT provider, country_code, state, created_at, last_attempt_at, last_referenced_at FROM geo_location_cache WHERE canonical_ip = '8.8.4.4'",
+        )
+        .fetch_one(database.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            row,
+            (
+                "local_mmdb".to_owned(),
+                "US".to_owned(),
+                "current".to_owned(),
+                "2026-01-01T00:00:00Z".to_owned(),
+                "2026-01-02T00:00:00Z".to_owned(),
+                "2026-01-03T00:00:00Z".to_owned(),
+            )
+        );
+        let retained: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT last_success_at, expires_at FROM geo_location_cache WHERE canonical_ip = '8.8.4.4'",
+        )
+        .fetch_one(database.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            retained,
+            (
+                Some("2026-01-02T00:00:00Z".to_owned()),
+                Some("2026-01-02T00:00:00Z".to_owned())
+            )
+        );
+        // The durable selection is resolved from the deployment's MMDB
+        // configuration: an installation that had one keeps resolving
+        // locally, and the decision is durable.
+        let enabled = crate::geo::ensure_provider_selection(database.pool(), true)
+            .await
+            .unwrap();
+        assert_eq!(enabled.provider, crate::geo::GeoProvider::LocalMmdb);
+        assert_eq!(enabled.generation, 1);
+        assert_eq!(
+            crate::geo::ensure_provider_selection(database.pool(), false)
+                .await
+                .unwrap(),
+            enabled
+        );
+        database.close().await;
+
+        // An installation without a local database stays Disabled and is
+        // never silently switched to an outbound provider.
+        let other = tempdir().unwrap();
+        let other_database = ServerDatabase::open(config(&other.path().join("server.db")))
+            .await
+            .unwrap();
+        let disabled = crate::geo::ensure_provider_selection(other_database.pool(), false)
+            .await
+            .unwrap();
+        assert_eq!(disabled.provider, crate::geo::GeoProvider::Disabled);
+        assert_eq!(disabled.generation, 1);
     }
 
     #[tokio::test]

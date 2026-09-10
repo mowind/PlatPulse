@@ -328,6 +328,13 @@ function invalidatePublicExact(queryKey: readonly unknown[], generation: number)
 export function invalidatePublicResource(resource: string, resourceId?: string, eventId?: number): void {
   if (!acceptEvent(resource, resourceId, eventId)) return
   const generation = activePublicGeneration()
+  if (resource === 'geo') {
+    // A completed background resolution or a provider change updates the
+    // country counts inside the Network list and every Network projection.
+    invalidatePublicNamespace(publicKeys.networks, generation)
+    invalidatePublicNamespace(['public', 'network'], generation)
+    return
+  }
   const keys: Array<readonly unknown[]> = (() => {
     switch (resource) {
       case 'node':

@@ -1711,7 +1711,7 @@ impl GeoDistribution {
 
 /// Project one Network's country distribution. `geo_status` is read once per
 /// response so every Network in a list shares one database-status reading.
-async fn public_country_distribution(
+pub(crate) async fn public_country_distribution(
     state: &AppState,
     network_key: &str,
     geo_status: &crate::geo::GeoStatus,
@@ -1791,9 +1791,12 @@ async fn load_geo_distribution(
     now: &str,
 ) -> Option<GeoDistribution> {
     let rebuild_before = crate::geo::cache_rebuild_cutoff(now);
+    // Only the selected provider's retained rows are usable: a result left
+    // over from another provider is not a country for the current projection.
     let rows = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>, Option<String>)>(
-        "SELECT p.remote_ip, g.country_code, g.created_at, g.expires_at FROM current_node_peers p JOIN nodes n ON n.node_id = p.node_id LEFT JOIN geo_location_cache g ON g.canonical_ip = p.remote_ip WHERE n.network_key = ? AND n.lifecycle = 'active'",
+        "SELECT p.remote_ip, g.country_code, g.created_at, g.expires_at FROM current_node_peers p JOIN nodes n ON n.node_id = p.node_id LEFT JOIN geo_location_cache g ON g.provider = ? AND g.canonical_ip = p.remote_ip WHERE n.network_key = ? AND n.lifecycle = 'active'",
     )
+    .bind(state.geo_config().provider.as_str())
     .bind(network_key)
     .fetch_all(state.db().pool())
     .await
@@ -2362,7 +2365,7 @@ pub(crate) async fn public_networks(State(state): State<AppState>) -> Response {
     let mut networks: Vec<PublicNetwork> = Vec::new();
     // One database-status reading per response keeps every Network's Geo
     // projection mutually consistent.
-    let geo_status = state.geo().status();
+    let geo_status = state.geo_status();
     for row in rows {
         let network_key = row.network_key.clone();
         let (network_display_name, node) = public_node(row);
@@ -2459,7 +2462,7 @@ pub(crate) async fn public_network(
         .map(|row| public_node(row).1)
         .collect::<Vec<_>>();
     let peers = aggregate_peer_insight(&nodes);
-    let geo = public_country_distribution(&state, &network_key, &state.geo().status()).await;
+    let geo = public_country_distribution(&state, &network_key, &state.geo_status()).await;
     let validators = match public_validator_insights(&state, &network_key).await {
         Ok(validators) => validators,
         Err(_) => {
@@ -2725,8 +2728,10 @@ mod tests {
         let loader = std::sync::Arc::new(crate::geo::GeoLoader::new(Some(
             dir.path().join("missing-geolite.mmdb"),
         )));
-        let state = state.with_geo_loader(loader);
-        let insight = public_country_distribution(&state, "mainnet", &state.geo().status()).await;
+        let state = state
+            .with_geo_loader(loader)
+            .with_geo_provider(crate::geo::GeoProvider::LocalMmdb, 1);
+        let insight = public_country_distribution(&state, "mainnet", &state.geo_status()).await;
         assert_eq!(insight.state, "error");
         assert_eq!(insight.error_reason.as_deref(), Some(PUBLIC_GEO_ERROR));
         assert!(
@@ -2738,13 +2743,15 @@ mod tests {
         );
     }
 
-    /// A loader with no database that reports Geo as Enabled/Current.
+    /// A selected Local MMDB provider whose loader reports Current.
     /// Projection tests seed `geo_location_cache` directly, which is exactly
     /// the retained state a real provider produces.
     fn geo_enabled(state: AppState) -> AppState {
-        state.with_geo_loader(std::sync::Arc::new(
-            crate::geo::GeoLoader::enabled_for_tests(),
-        ))
+        state
+            .with_geo_loader(std::sync::Arc::new(
+                crate::geo::GeoLoader::enabled_for_tests(),
+            ))
+            .with_geo_provider(crate::geo::GeoProvider::LocalMmdb, 1)
     }
 
     fn seconds_ago(seconds: i64) -> String {
@@ -2825,10 +2832,11 @@ mod tests {
         expires_in_seconds: i64,
     ) {
         let now = crate::auth::now_utc();
-        sqlx::query("INSERT INTO geo_location_cache (canonical_ip, country_code, created_at, last_lookup_at, last_referenced_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('local_mmdb', ?, ?, 'current', ?, ?, ?, ?, ?)")
             .bind(ip)
             .bind(country)
             .bind(format_rfc3339(now - time::Duration::seconds(created_seconds_ago)))
+            .bind(format_rfc3339(now))
             .bind(format_rfc3339(now))
             .bind(format_rfc3339(now))
             .bind(format_rfc3339(now + time::Duration::seconds(expires_in_seconds)))
@@ -2838,7 +2846,7 @@ mod tests {
     }
 
     async fn geo_insight_for(state: &AppState, network_key: &str) -> PublicGeoInsight {
-        public_country_distribution(state, network_key, &state.geo().status()).await
+        public_country_distribution(state, network_key, &state.geo_status()).await
     }
 
     #[tokio::test]

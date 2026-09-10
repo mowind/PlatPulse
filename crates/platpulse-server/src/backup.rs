@@ -700,6 +700,61 @@ pub async fn latest_artifact(
 mod tests {
     use super::*;
 
+    /// A portable backup must not carry a raw Peer address or any retained
+    /// country result, whatever provider produced it (issue #132).
+    #[tokio::test]
+    async fn sanitized_snapshot_drops_provider_keyed_geo_cache_and_peer_addresses() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('local_mmdb', '8.8.4.4', 'US', 'current', ?, ?, ?, ?, ?)")
+            .bind(&now)
+            .bind(&now)
+            .bind(&now)
+            .bind(&now)
+            .bind(crate::geo::cache_expiry(&now))
+            .execute(database.pool())
+            .await
+            .unwrap();
+
+        let snapshot = dir.path().join("portable.db");
+        sqlx::query(&format!("VACUUM INTO '{}'", snapshot.to_str().unwrap()))
+            .execute(database.pool())
+            .await
+            .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&snapshot, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        crate::backup::sanitize_snapshot(&snapshot).await.unwrap();
+        crate::backup::validate_snapshot_privacy(&snapshot)
+            .await
+            .unwrap();
+
+        let options = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&snapshot)
+            .read_only(true);
+        let pool = sqlx::SqlitePool::connect_with(options).await.unwrap();
+        let geo_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM geo_location_cache")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(geo_rows, 0);
+        let leaked_ips: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM current_node_peers WHERE remote_ip IS NOT NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(leaked_ips, 0);
+        pool.close().await;
+    }
+
     #[tokio::test]
     async fn prepare_backup_dir_creates_restrictive_and_rejects_loose_permissions() {
         let dir = tempfile::TempDir::new().unwrap();

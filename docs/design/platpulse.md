@@ -10,7 +10,7 @@
   - 不允许：违反即破坏边界或领域不变量；
   - 可以：允许实现，但不是当前核心链路的必需能力；
   - 明确未实现：当前代码和运行时边界均未提供，不应在页面、API 或数据模型中暗示已存在。
-- 本文件区分三种状态：已实现的 Server/Agent/API 能力、当前 `platpulse-web` 实际注册的路由，以及明确未实现的产品边界。Validator、Geo、Peer、Alert、Notification、Backup/Restore、Retention、Operation、Node Transfer、Recovery/Rotation 等不再统一视为“未来功能”：其中 Server/API 和后台工作器已有实现，但很多扩展没有当前 SPA 页面；详见 §3、§8、§9 和 `docs/design/webui.md`。
+- 本文件区分三种状态：已实现的 Server/Agent/API 能力、当前 `platpulse-web` 实际注册的路由，以及明确未实现的产品边界。Validator、Geo、Peer、Alert、Notification、Backup/Restore、Retention、Operation、Node Transfer、Recovery/Rotation 等不再统一视为“未来功能”：其中 Server/API 和后台工作器已有实现，部分扩展已注册 SPA 页面（例如 Settings 中的 Geo provider），其余仍只有 API；详见 §3、§8、§9 和 `docs/design/webui.md`。
 
 ---
 
@@ -19,7 +19,7 @@
 产品分离参照 Komari（<https://github.com/komari-monitor/komari>），但监控对象是 PlatON Node 而不是服务器：
 
 - Home：只读、以 Node 为中心的监控面。根路由 `/` 展示 Active Node 卡片，Network → Node → Node Detail 展开公共投影；Network Overview 还展示聚合 Peer Insight、country-only Geo Insight、Validator cards/history/analytics。Node Detail 由最近两个连续 Block Summary 推导出块间隔，但不展示 Bounded Block History 列表。Site Access Mode 为 Public 时匿名 Guest 可读选定 Public GET/SSE 路径；为 Private 时 Owner 或 Viewer 登录后可读。
-- Admin：认证后的 Owner-only 系统概览与配置面。当前 SPA 路由覆盖 Overview、Agents、Nodes、Networks、Settings、Sessions 与 Audit；Server/Admin API 另外提供 Geo、Validator、Alert、Notification、Operation、Retention、Backup/Restore、Doctor、Transfer、People、Enrollment/Recovery/Rotation 等能力，但尚未全部注册为页面。
+- Admin：认证后的 Owner-only 系统概览与配置面。当前 SPA 路由覆盖 Overview、Agents、Nodes、Networks、Settings、Sessions 与 Audit；Settings 现在包含 Geo provider 选择（Disabled / Local MMDB）。Server/Admin API 另外提供 Validator、Alert、Notification、Operation、Retention、Backup/Restore、Doctor、Transfer、People、Enrollment/Recovery/Rotation 等能力，但尚未全部注册为页面。
 - 同一个 WebUI 承载 `/` 与 `/admin` 两组路由，使用不同的 DTO、查询缓存、权限和导航。
 - 站点级 Site Access Mode（Public/Private）由 Owner 配置，变更记 Audit；当前默认 Private。Node DTO 和 Admin 页面仍保留 `visibility` 字段与 Owner mutation 作为兼容/诊断字段，但 Public 查询实际按 `lifecycle = active` 过滤，不按该字段隐藏 Home；站点模式才是有效的匿名访问开关。
 
@@ -77,7 +77,7 @@
 
 ### 3.2 已实现的 Server/Agent 扩展
 
-当前代码和迁移已经提供：Agent Enrollment、Recovery、Credential Rotation/Revocation、Boot/Shutdown 生命周期；Peer Snapshot、Peer Presence 与聚合历史；GeoLite2 country cache；Server-side Validator Registry/Links/PlatScan Provider、历史与日/月 analytics；Typed Alert/Incident/Silence/Maintenance；at-least-once Notification Delivery；Node Transfer；Retention、Operation、Backup/Restore、Doctor；独立 Prometheus metrics listener。它们由 Server/Admin API、CLI 或后台工作器提供，是否有当前 SPA 页面由 `docs/design/webui.md` 的路由矩阵单独决定。
+当前代码和迁移已经提供：Agent Enrollment、Recovery、Credential Rotation/Revocation、Boot/Shutdown 生命周期；Peer Snapshot、Peer Presence 与聚合历史；provider-keyed GeoLite2 country cache 与后台国家解析（Settings 可选择 Disabled / Local MMDB）；Server-side Validator Registry/Links/PlatScan Provider、历史与日/月 analytics；Typed Alert/Incident/Silence/Maintenance；at-least-once Notification Delivery；Node Transfer；Retention、Operation、Backup/Restore、Doctor；独立 Prometheus metrics listener。它们由 Server/Admin API、CLI 或后台工作器提供，是否有当前 SPA 页面由 `docs/design/webui.md` 的路由矩阵单独决定。
 
 ### 3.3 明确未实现或明确排除
 
@@ -203,6 +203,16 @@ Consensus 表示 Node 当前的协议状态，不等于 Validator 管理。当�
 - 尚在有限保留边界内的 last-good 国家结果保留国家归属并标为 Stale（不计入未知）；超出保留边界则转为未知。已知国家缺少底图代表点不是未知国家。
 - 成功空 Peer Snapshot 是权威零；never-observed 或没有可靠分母时保持 unavailable/unknown 且不输出计数。Geo database/国家结果状态与 Peer 采集状态、新鲜度互相独立：Geo Current 不代表 Peer 在线或刚刚采集，采集失败保留的 Peer Snapshot 仍按自身状态展示。
 - 每个 Network 的 Public Geo Insight 是独立投影；本契约不提供跨 Network 的全局去重 Peer 总数，也不把缺失 Network 当零或制造完整性百分比。部分覆盖时投影如实标注 scope，Public 只含国家代码与计数，不含原始 IP、RPC Endpoint、精确位置或敏感错误。
+
+### 5.9 Geo 服务商、后台解析与缓存（issue #132）
+
+- Geo 的服务商由 Owner 在 Settings 选择，当前只实现 `Disabled` 与 `Local MMDB`；一次只用一个，不自动回退，也没有外部服务商。未实现的 IPinfo/GeoJS 不出现在管理界面、OpenAPI 或可持久化的 provider 值中。
+- 选择持久化在 `server_settings`（`geo_provider` + `geo_provider_generation`），每次变更推进 generation。升级时若该键不存在，由部署是否配置本地 MMDB 决定：已配置本地数据库的安装继续用 `Local MMDB`，没有配置的保持 `Disabled`，两条路径都不新增外部请求。MMDB 路径只来自 Server 配置（`[geo] mmdb_path` 或 CLI），不是 Admin 可写字段。
+- 国家解析只在后台执行：Report Ingestion 事务只记录当前 Peer 引用（并更新最后引用时间），不读 MMDB、不做外部 HTTP；`geo_backfill` 负责调度、按规范化公网 IP 去重、有限并发（`MAX_BACKFILL_CONCURRENCY`）、有界批量（`MAX_BACKFILL_BATCH`）、无国家结果的小时级重试间隔，以及每轮结束后的 realtime 失效。慢查询或数据库损坏不会占用 Receipt 事务，也不影响报告接收与就绪状态。
+- 结果按 provider 与规范化 IP 隔离存放在 `geo_location_cache`：国家代码、状态（`current` / `no_country` / `failed`）、最近尝试时间、最近成功时间、出生时间、有效期与最后引用时间。投影与 5m/1h country 聚合只读当前 provider 的行；切换 provider 后旧 provider 的行立即删除，未被任何当前 Peer 引用的行在维护周期内清理，超出 24h TTL 但仍在 30 天硬边界内的结果继续作为 last-good Stale，失败只记录尝试、绝不把 last-good 刷成 Current，超出边界则回到未知。
+- 每次后台写入在事务内重新校验持久化 selection 与进程内 generation：配置变更后迟到的任务不能回写成新配置的结果。
+- 管理接口：`PUT /api/admin/v1/geo/provider`（Owner-only、Origin/JSON/CSRF、审计 `geo_provider_changed`）返回新的诊断；`GET /api/admin/v1/geo` 提供 provider、generation、可选列表、数据库状态、缓存国家数、待解析数量与最近成功时间，均不含路径或原始 IP。Public 仍然只见国家代码与计数。
+- 本票不含外部服务商、全局强制刷新与第三方 MMDB 自动下载；后续加入时复用同一条后台执行路径与 provider 隔离。
 
 ---
 
@@ -338,7 +348,7 @@ Server 不连接 Node RPC、不远程控制、不根据 Agent 输入自动创建
 
 ### 8.2 最小数据模型
 
-Server schema 当前为 41（Agent schema 独立为 13）。物理 SQLite schema 是规范化表族，而不是一个 `node_current_state` 或单一 `block_history` 表；逻辑上至少包括：
+Server schema 当前为 42（Agent schema 独立为 13）。物理 SQLite schema 是规范化表族，而不是一个 `node_current_state` 或单一 `block_history` 表；逻辑上至少包括：
 
 ~~~text
 身份与访问       users / sessions / enrollment_tokens / recovery_tokens / audit_events
@@ -347,7 +357,7 @@ Agent 生命周期   agents / agent_credentials / boot + shutdown + spool diagno
 当前 Component   component_status + host/node process/data/chain/rpc/peer tables
 区块与缺口       block_summaries / history state + coverage + gaps / sequence gaps
 Peer              current peers / peer capabilities / presence intervals / 5m + 1h aggregates
-Geo               geo location cache
+Geo               provider-keyed country cache (geo_location_cache) + server_settings selection
 Validator         validators / links / current insight / ranking-counter history / daily-monthly analytics
 运营扩展         alert rules/incidents/silences/maintenance; notifications; operations; retention; backups/restore
 设置与审计       server_settings / audit events
@@ -366,7 +376,7 @@ Validator         validators / links / current insight / ranking-counter history
 7. 追加合法的 Block History，记录 coverage/divergence/gap 状态（受全局窗口约束）；
 8. 计算 Inventory、per-Node 和 per-sample dispositions，写入完整 Report Receipt；
 9. 在同一事务中评估 Alert/Notification side effects；
-10. 提交事务；
+10. 提交事务（Geo 国家解析不在事务内，提交后只唤醒后台解析路径）；
 11. 事务提交后才发布受影响资源的 Admin/Public SSE invalidation。
 
 `partially_accepted` 表示同一个事务中部分 Node/sample 被接受、其余被拒绝，不表示半提交。任一步骤失败都回滚投影、历史、Receipt 和告警副作用；回滚不会发布 invalidation。Post-commit invalidation 是通知层行为，客户端必须用 REST 重新读取权威 DTO。

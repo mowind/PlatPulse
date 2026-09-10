@@ -692,13 +692,65 @@ export type EventRow = {
     summary: string;
 };
 
+export type GeoProviderMutationResponse = {
+    audit_event_id: number;
+    geo: GeoStatusDiagnostic;
+};
+
+export type GeoProviderOption = {
+    available: boolean;
+    label: string;
+    provider: string;
+    /**
+     * Safe explanation when the option cannot be selected. It never contains
+     * a filesystem path, raw address, or provider internals.
+     */
+    unavailable_reason?: string | null;
+};
+
+export type GeoProviderUpdateRequest = {
+    provider: string;
+};
+
 export type GeoStatusDiagnostic = {
     build_epoch?: number | null;
+    /**
+     * Distinct countries with a currently valid retained result.
+     */
     cache_country_count: number;
+    /**
+     * Retained cache rows for the selected provider.
+     */
+    cache_entry_count: number;
+    /**
+     * Whether this deployment configured a local GeoLite2 Country database.
+     */
     configured: boolean;
     digest?: string | null;
     last_error?: string | null;
+    last_success_at?: string | null;
     loaded_at?: string | null;
+    /**
+     * Current Peer addresses still waiting for a fresh country result. It is
+     * null while Geo is disabled, because nothing is scheduled then.
+     */
+    pending_lookup_count?: number | null;
+    /**
+     * The selected provider. Only implemented providers are ever reported.
+     */
+    provider: string;
+    /**
+     * Monotonic configuration generation. Every background result carries
+     * the generation that scheduled it and is discarded if it no longer
+     * matches the selection.
+     */
+    provider_generation: number;
+    provider_label: string;
+    providers: Array<GeoProviderOption>;
+    /**
+     * Effective database/result state: disabled, current, stale, or error.
+     * It is independent of Peer collection freshness and Node health.
+     */
     state: string;
 };
 
@@ -2857,14 +2909,45 @@ export type AdminGeoStatusData = {
     url: '/api/admin/v1/geo';
 };
 
+export type AdminGeoStatusErrors = {
+    403: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type AdminGeoStatusError = AdminGeoStatusErrors[keyof AdminGeoStatusErrors];
+
 export type AdminGeoStatusResponses = {
     /**
-     * Owner-only safe Geo database status
+     * Owner-only safe Geo provider status
      */
     200: GeoStatusDiagnostic;
 };
 
 export type AdminGeoStatusResponse = AdminGeoStatusResponses[keyof AdminGeoStatusResponses];
+
+export type UpdateGeoProviderData = {
+    body: GeoProviderUpdateRequest;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/geo/provider';
+};
+
+export type UpdateGeoProviderErrors = {
+    400: ApiErrorBody;
+    403: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type UpdateGeoProviderError = UpdateGeoProviderErrors[keyof UpdateGeoProviderErrors];
+
+export type UpdateGeoProviderResponses = {
+    /**
+     * Owner-only Geo provider change
+     */
+    200: GeoProviderMutationResponse;
+};
+
+export type UpdateGeoProviderResponse = UpdateGeoProviderResponses[keyof UpdateGeoProviderResponses];
 
 export type HistoryWindowData = {
     body?: never;

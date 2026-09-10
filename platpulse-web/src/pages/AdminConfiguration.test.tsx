@@ -26,6 +26,31 @@ const HISTORY_WINDOW = {
   updatedBy: 'owner-1',
 }
 
+const GEO_STATUS = {
+  provider: 'disabled',
+  provider_label: 'Disabled',
+  provider_generation: 1,
+  providers: [
+    { provider: 'disabled', label: 'Disabled', available: true, unavailable_reason: null },
+    {
+      provider: 'local_mmdb',
+      label: 'Local MMDB',
+      available: true,
+      unavailable_reason: null,
+    },
+  ],
+  state: 'disabled',
+  configured: true,
+  build_epoch: 1700000000,
+  digest: 'digest',
+  loaded_at: '2026-08-20T00:00:00Z',
+  last_error: null,
+  cache_country_count: 0,
+  cache_entry_count: 0,
+  pending_lookup_count: null,
+  last_success_at: null,
+}
+
 const TEST_ORIGIN = 'http://platpulse.test'
 
 type RouteHandler = (request: Request) => Response | Promise<Response>
@@ -67,6 +92,7 @@ function successfulRoutes(overrides: Record<string, RouteHandler> = {}) {
       })
     },
     '/api/admin/v1/access-mode': () => response({ mode: 'private', authorizationGeneration: 0 }),
+    '/api/admin/v1/geo': () => response(GEO_STATUS),
     ...overrides,
   }
 }
@@ -101,9 +127,10 @@ describe('Admin Settings workflows', () => {
 
     expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1)
     const cards = screen.getAllByRole('article')
-    expect(cards).toHaveLength(2)
+    expect(cards).toHaveLength(3)
     expect(within(cards[0]).getByRole('heading', { level: 2, name: 'History Window' })).toBeTruthy()
     expect(within(cards[1]).getByRole('heading', { level: 2, name: 'Site Access Mode' })).toBeTruthy()
+    expect(within(cards[2]).getByRole('heading', { level: 2, name: 'Geo provider' })).toBeTruthy()
 
     const historyCard = within(cards[0])
     expect(historyCard.getByText('7 days')).toBeTruthy()
@@ -118,6 +145,102 @@ describe('Admin Settings workflows', () => {
     expect(accessCard.getByText('Private')).toBeTruthy()
     expect(accessCard.getByText(/Public permits anonymous Home reads/)).toBeTruthy()
     expect(accessCard.getByText(/Private requires Owner login/)).toBeTruthy()
+
+    // Only implemented providers are offered, and the privacy consequence is
+    // explicit (issue #132).
+    const geoCard = within(cards[2])
+    expect(geoCard.getByLabelText(/Disabled/)).toBeTruthy()
+    expect(geoCard.getByLabelText(/Local MMDB/)).toBeTruthy()
+    expect(geoCard.queryByLabelText(/IPinfo/)).toBeNull()
+    expect(geoCard.queryByLabelText(/GeoJS/)).toBeNull()
+    expect(geoCard.queryByRole('button', { name: /Refresh/i })).toBeNull()
+    expect(geoCard.getByText(/Peer addresses never leave the Server/)).toBeTruthy()
+    expect(geoCard.getByText('Not scheduled')).toBeTruthy()
+  })
+
+  it('changes the Geo provider through the audited Admin API', async () => {
+    let putBody: unknown = null
+    let provider = 'disabled'
+    const enabledStatus = {
+      ...GEO_STATUS,
+      provider: 'local_mmdb',
+      provider_label: 'Local MMDB',
+      provider_generation: 2,
+      state: 'current',
+      pending_lookup_count: 3,
+      cache_country_count: 2,
+      last_success_at: '2026-08-20T01:00:00Z',
+    }
+    mockFetch(successfulRoutes({
+      '/api/admin/v1/geo': () => response(provider === 'disabled' ? GEO_STATUS : enabledStatus),
+      '/api/admin/v1/geo/provider': async (request) => {
+        putBody = await request.json()
+        provider = 'local_mmdb'
+        return response({ geo: enabledStatus, audit_event_id: 77 })
+      },
+    }))
+
+    await renderSettings()
+    const geoCard = within(screen.getAllByRole('article')[2])
+    const save = geoCard.getByRole('button', { name: 'Save Geo provider' })
+    expect((save as HTMLButtonElement).disabled).toBe(true)
+
+    fireEvent.click(geoCard.getByLabelText(/Local MMDB/))
+    await waitFor(() => expect((save as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(save)
+
+    await waitFor(() => expect(putBody).toEqual({ provider: 'local_mmdb' }))
+    expect(
+      await geoCard.findByText(/Geo provider is now Local MMDB \(Audit #77\)/),
+    ).toBeTruthy()
+    // The Server-side switch is reflected by the refreshed status badge and
+    // detail values, not only by the optimistic notice.
+    await waitFor(() => {
+      expect(geoCard.getAllByText('Current').length).toBeGreaterThanOrEqual(2)
+      expect(geoCard.getByText('3')).toBeTruthy()
+      expect(geoCard.getByText('2')).toBeTruthy()
+    })
+  }, 20_000)
+
+  it('keeps Local MMDB unavailable when the Server has no local database', async () => {
+    mockFetch(successfulRoutes({
+      '/api/admin/v1/geo': () => response({
+        ...GEO_STATUS,
+        configured: false,
+        providers: [
+          { provider: 'disabled', label: 'Disabled', available: true, unavailable_reason: null },
+          {
+            provider: 'local_mmdb',
+            label: 'Local MMDB',
+            available: false,
+            unavailable_reason: 'No local GeoLite2 Country database is configured on this Server',
+          },
+        ],
+      }),
+    }))
+
+    await renderSettings()
+    const local = screen.getByLabelText(/Local MMDB/) as HTMLInputElement
+    expect(local.disabled).toBe(true)
+    expect(screen.getByText(/No local GeoLite2 Country database/)).toBeTruthy()
+    expect((screen.getByRole('button', { name: 'Save Geo provider' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('reports a rejected Geo provider change without hiding the other cards', async () => {
+    mockFetch(successfulRoutes({
+      '/api/admin/v1/geo/provider': () =>
+        apiError('this Server has no configured local GeoLite2 Country database', ['provider']),
+    }))
+
+    await renderSettings()
+    fireEvent.click(screen.getByLabelText(/Local MMDB/))
+    const save = screen.getByRole('button', { name: 'Save Geo provider' })
+    await waitFor(() => expect((save as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(save)
+
+    expect(await screen.findByText(/no configured local GeoLite2 Country database/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Make Home Public' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Save History Window' })).toBeTruthy()
   })
 
 
@@ -130,6 +253,11 @@ describe('Admin Settings workflows', () => {
     {
       failedPath: '/api/admin/v1/access-mode',
       errorText: 'Unable to load Site Access Mode.',
+      otherControl: 'Save History Window',
+    },
+    {
+      failedPath: '/api/admin/v1/geo',
+      errorText: 'Unable to load Geo provider status.',
       otherControl: 'Save History Window',
     },
   ])('keeps the other Settings card usable when $failedPath fails', async ({ failedPath, errorText, otherControl }) => {

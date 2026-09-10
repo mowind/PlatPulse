@@ -502,6 +502,30 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
     )
     .with_backup_dir(config.backup_dir.clone())
     .with_geo_loader(geo_loader);
+    // The durable Geo provider selection is resolved once per installation
+    // (issue #132). Before the key exists, the deployment's MMDB
+    // configuration decides, so an upgrade keeps resolving with the same
+    // local database and an installation without one stays Disabled. Neither
+    // branch adds outbound traffic.
+    let geo_selection = match crate::geo::ensure_provider_selection(
+        state.db().pool(),
+        config.geo.is_some(),
+    )
+    .await
+    {
+        Ok(selection) => selection,
+        Err(error) => {
+            eprintln!(
+                "Geo provider selection deferred: {}",
+                crate::redaction::redact_sensitive(&error.to_string())
+            );
+            crate::geo::GeoSelection {
+                provider: crate::geo::GeoProvider::Disabled,
+                generation: 0,
+            }
+        }
+    };
+    state = state.with_geo_provider(geo_selection.provider, geo_selection.generation);
     if let Some(provider_config) = config.validator_provider.clone() {
         match crate::validator::PlatScanValidatorProvider::new(
             &provider_config.base_url,
@@ -557,7 +581,8 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
 
     // Geo database reload and raw-IP cache cleanup are deliberately
     // best-effort. A malformed replacement keeps the last-good reader and
-    // never interrupts report ingestion or readiness.
+    // never interrupts report ingestion or readiness. A provider that does
+    // not read a local database is never reloaded.
     {
         let geo_state = state.clone();
         worker_handles.push(tokio::spawn(async move {
@@ -573,16 +598,25 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                 if geo_state.is_shutting_down() {
                     break;
                 }
-                let before_geo = geo_state.geo().status();
-                let geo_loader = std::sync::Arc::clone(geo_state.geo());
-                let reload_changed =
+                let before_geo = geo_state.geo_status();
+                let reload_changed = if geo_state.geo_config().provider.needs_local_database() {
+                    let geo_loader = std::sync::Arc::clone(geo_state.geo());
                     tokio::task::spawn_blocking(move || geo_loader.reload_if_changed())
                         .await
-                        .unwrap_or(false);
-                let after_geo = geo_state.geo().status();
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
+                let after_geo = geo_state.geo_status();
                 let cleanup_changed = {
                     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
-                    match crate::geo::cleanup_cache(geo_state.db().pool(), &now).await {
+                    match crate::geo::cleanup_cache(
+                        geo_state.db().pool(),
+                        &now,
+                        geo_state.geo_config().provider,
+                    )
+                    .await
+                    {
                         Ok(removed) => removed > 0,
                         Err(error) => {
                             eprintln!(
@@ -601,6 +635,15 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                 }
             }
         }));
+    }
+
+    // Background Geo resolution (issue #132): report ingestion only records
+    // Peer references; this worker owns country lookups and cache writes, so
+    // a slow or replaced database never occupies the receipt transaction and
+    // a provider change never leaves work running under the old selection.
+    {
+        let geo_state = state.clone();
+        worker_handles.push(tokio::spawn(crate::geo_backfill::run_worker(geo_state)));
     }
 
     // Operations left `running` by a crash are honestly failed (issue #50,

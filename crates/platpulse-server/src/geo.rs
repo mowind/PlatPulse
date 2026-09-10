@@ -1,9 +1,20 @@
-//! Optional Server-side GeoLite2 Country resolution.
+//! Server-side Peer country resolution and its retained cache.
 //!
 //! The loader owns only an operator-provided MMDB reader. It never downloads
 //! data or exposes a database path or raw IP through an HTTP DTO. A failed
 //! reload updates the diagnostic state but deliberately keeps the previous
 //! reader available for last-good lookups.
+//!
+//! Which provider is active is a persisted Owner decision (`server_settings`),
+//! resolved once per process and never silently changed by an upgrade. Only
+//! the local MMDB provider is implemented; the module already models providers
+//! as a real axis because retained results are keyed by provider and every
+//! background write is checked against the configuration generation that
+//! scheduled it.
+//!
+//! Lookups never run inside the report receipt transaction: the background
+//! path in `crate::geo_backfill` owns scheduling, bounded concurrency, and
+//! cache writes.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
@@ -14,11 +25,114 @@ use maxminddb::Reader;
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 
+/// Identifiers of the Geo providers this Server can select. `ipinfo` and
+/// `geojs` are deliberately absent: those providers need an external HTTP
+/// boundary that this phase does not ship, and an unselectable identifier
+/// must never appear in the Admin surface.
+pub const PROVIDER_DISABLED: &str = "disabled";
+pub const PROVIDER_LOCAL_MMDB: &str = "local_mmdb";
+
+/// `server_settings` keys holding the durable provider selection.
+pub const SETTING_GEO_PROVIDER: &str = "geo_provider";
+pub const SETTING_GEO_PROVIDER_GENERATION: &str = "geo_provider_generation";
+
 pub const CACHE_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 pub const CACHE_REBUILD_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 pub const DATABASE_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 pub const MAX_PEER_IP_CACHE_ROWS: i64 = 1024;
+/// How long a Peer IP whose lookup produced no country result is left alone
+/// before the background path retries it.
+pub const ATTEMPT_RETRY_AGE: Duration = Duration::from_secs(60 * 60);
+/// Upper bound on the work one background pass may schedule.
+pub const MAX_BACKFILL_BATCH: usize = 128;
+/// Upper bound on concurrent lookups inside one background pass.
+pub const MAX_BACKFILL_CONCURRENCY: usize = 4;
+/// Cadence of the background resolution loop. Report ingestion also wakes it
+/// directly when a peer snapshot arrives, so this is an upper bound.
+pub const BACKFILL_INTERVAL: Duration = Duration::from_secs(15);
 pub const MAXMIND_ATTRIBUTION: &str = "This product includes GeoLite Data created by MaxMind, available from https://www.maxmind.com.";
+
+/// A country lookup outcome that keeps "no country in the database" apart
+/// from "no usable database", so a failure never erases a retained country.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GeoLookup {
+    /// The database returned a usable two-letter ISO country code.
+    Country(String),
+    /// The database was read successfully and has no country for this address.
+    /// Ineligible addresses (private, special-purpose, documentation ranges)
+    /// are refused by the trust boundary and have no country result either.
+    NoCountry,
+    /// No usable database is loaded, so no result can be produced at all.
+    Unavailable,
+}
+
+/// The Geo provider selected by the Owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GeoProvider {
+    Disabled,
+    LocalMmdb,
+}
+
+impl GeoProvider {
+    pub const ALL: [GeoProvider; 2] = [GeoProvider::Disabled, GeoProvider::LocalMmdb];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GeoProvider::Disabled => PROVIDER_DISABLED,
+            GeoProvider::LocalMmdb => PROVIDER_LOCAL_MMDB,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            GeoProvider::Disabled => "Disabled",
+            GeoProvider::LocalMmdb => "Local MMDB",
+        }
+    }
+
+    /// Unknown persisted values fail safe to Disabled: an unrecognized
+    /// provider string must never start resolution work.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            PROVIDER_DISABLED => Some(GeoProvider::Disabled),
+            PROVIDER_LOCAL_MMDB => Some(GeoProvider::LocalMmdb),
+            _ => None,
+        }
+    }
+
+    /// Whether this provider resolves from an operator-provided local
+    /// database. A provider that needs one cannot be selected without it.
+    pub fn needs_local_database(self) -> bool {
+        matches!(self, GeoProvider::LocalMmdb)
+    }
+}
+
+/// The process-local view of the persisted provider selection. The MMDB path
+/// stays deployment configuration: it is read from the Server config at
+/// startup and is never writable through the Admin API.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeoConfig {
+    pub provider: GeoProvider,
+    pub generation: u64,
+    pub mmdb_path: Option<PathBuf>,
+}
+
+impl GeoConfig {
+    pub fn disabled() -> Self {
+        Self {
+            provider: GeoProvider::Disabled,
+            generation: 0,
+            mmdb_path: None,
+        }
+    }
+}
+
+/// The durable provider selection read from `server_settings`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GeoSelection {
+    pub provider: GeoProvider,
+    pub generation: u64,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GeoStatus {
@@ -179,11 +293,13 @@ impl GeoLoader {
         changed && self.reload()
     }
 
-    /// Resolve only an eligible public literal. The returned value contains
-    /// only the two-letter country code extracted from the Country database.
-    pub fn lookup_country(&self, ip: &IpAddr) -> Option<String> {
+    /// Resolve one eligible public literal into a country outcome. The
+    /// returned code is the two-letter ISO code from the Country database;
+    /// a database that is not loaded reports `Unavailable` instead of an
+    /// empty country so callers never overwrite retained evidence.
+    pub fn resolve(&self, ip: &IpAddr) -> GeoLookup {
         if !eligible_public_ip(ip) {
-            return None;
+            return GeoLookup::NoCountry;
         }
         let lookup_ip = match ip {
             IpAddr::V6(ipv6) => ipv6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(*ip),
@@ -193,14 +309,31 @@ impl GeoLoader {
             .database
             .read()
             .expect("GeoLoader database lock poisoned");
-        let database = guard.as_ref()?;
-        let result = database.reader.lookup(lookup_ip).ok()?;
-        result
+        let Some(database) = guard.as_ref() else {
+            return GeoLookup::Unavailable;
+        };
+        let Ok(result) = database.reader.lookup(lookup_ip) else {
+            return GeoLookup::Unavailable;
+        };
+        match result
             .decode_path::<String>(&maxminddb::path!["country", "iso_code"])
             .ok()
             .flatten()
             .map(|code| code.to_ascii_uppercase())
             .filter(|code| code.len() == 2 && code.bytes().all(|byte| byte.is_ascii_uppercase()))
+        {
+            Some(code) => GeoLookup::Country(code),
+            None => GeoLookup::NoCountry,
+        }
+    }
+
+    /// Resolve only an eligible public literal. The returned value contains
+    /// only the two-letter country code extracted from the Country database.
+    pub fn lookup_country(&self, ip: &IpAddr) -> Option<String> {
+        match self.resolve(ip) {
+            GeoLookup::Country(code) => Some(code),
+            GeoLookup::NoCountry | GeoLookup::Unavailable => None,
+        }
     }
 
     pub fn canonical_public_ip(value: &str) -> Option<String> {
@@ -326,22 +459,40 @@ pub fn country_centroid(country_code: &str) -> (Option<f64>, Option<f64>) {
     (Some(centroid.0), Some(centroid.1))
 }
 
-/// Remove expired raw-IP rows and enforce the bounded country cache. Current-peer
-/// references are intentionally not enough to extend the 24-hour cache lifetime.
-pub async fn cleanup_cache(pool: &SqlitePool, now: &str) -> Result<u64, sqlx::Error> {
+/// Remove rows that are no longer usable and enforce the bounded country
+/// cache. Results retained for a provider that is not selected anymore are
+/// deleted outright: they can never be read again, and a raw Peer IP must not
+/// outlive the selection that produced it. Current-peer references are
+/// intentionally not enough to extend the 24-hour cache lifetime.
+pub async fn cleanup_cache(
+    pool: &SqlitePool,
+    now: &str,
+    active_provider: GeoProvider,
+) -> Result<u64, sqlx::Error> {
+    let retired = sqlx::query("DELETE FROM geo_location_cache WHERE provider <> ?")
+        .bind(active_provider.as_str())
+        .execute(pool)
+        .await?
+        .rows_affected();
     let rebuild_before = cache_rebuild_cutoff(now);
-    let rebuilt = sqlx::query("DELETE FROM geo_location_cache WHERE canonical_ip IN (SELECT canonical_ip FROM geo_location_cache WHERE created_at <= ? ORDER BY created_at ASC, canonical_ip ASC LIMIT 1024)")
+    let rebuilt = sqlx::query("DELETE FROM geo_location_cache WHERE rowid IN (SELECT rowid FROM geo_location_cache WHERE created_at IS NOT NULL AND created_at <= ? ORDER BY created_at ASC, provider ASC, canonical_ip ASC LIMIT 1024)")
         .bind(&rebuild_before)
         .execute(pool)
         .await?
         .rows_affected();
-    let expired = sqlx::query("DELETE FROM geo_location_cache WHERE canonical_ip IN (SELECT canonical_ip FROM geo_location_cache WHERE expires_at <= ? ORDER BY expires_at ASC, canonical_ip ASC LIMIT 1024)")
+    let expired = sqlx::query("DELETE FROM geo_location_cache WHERE rowid IN (SELECT rowid FROM geo_location_cache WHERE expires_at IS NOT NULL AND expires_at <= ? ORDER BY expires_at ASC, provider ASC, canonical_ip ASC LIMIT 1024)")
         .bind(now)
         .execute(pool)
         .await?
         .rows_affected();
+    // A raw Peer address may not outlive the current Peer reference that
+    // justified retaining it.
+    let unreferenced = sqlx::query("DELETE FROM geo_location_cache WHERE NOT EXISTS (SELECT 1 FROM current_node_peers current WHERE current.remote_ip = geo_location_cache.canonical_ip)")
+        .execute(pool)
+        .await?
+        .rows_affected();
     let trimmed = trim_cache(pool).await?;
-    Ok(rebuilt + expired + trimmed)
+    Ok(retired + rebuilt + expired + unreferenced + trimmed)
 }
 
 /// Keep unreferenced raw-IP cache rows bounded even when many Nodes report
@@ -352,12 +503,101 @@ where
     E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
 {
     Ok(sqlx::query(
-        "DELETE FROM geo_location_cache WHERE canonical_ip IN (SELECT cache.canonical_ip FROM geo_location_cache cache WHERE NOT EXISTS (SELECT 1 FROM current_node_peers current WHERE current.remote_ip = cache.canonical_ip) ORDER BY cache.last_referenced_at ASC, cache.last_lookup_at ASC, cache.canonical_ip ASC LIMIT MAX(0, (SELECT COUNT(*) FROM geo_location_cache) - ?))",
+        "DELETE FROM geo_location_cache WHERE rowid IN (SELECT cache.rowid FROM geo_location_cache cache WHERE NOT EXISTS (SELECT 1 FROM current_node_peers current WHERE current.remote_ip = cache.canonical_ip) ORDER BY cache.last_referenced_at ASC, cache.last_attempt_at ASC, cache.provider ASC, cache.canonical_ip ASC LIMIT MAX(0, (SELECT COUNT(*) FROM geo_location_cache) - ?))",
     )
     .bind(MAX_PEER_IP_CACHE_ROWS)
     .execute(executor)
     .await?
     .rows_affected())
+}
+
+/// The retry boundary for an address whose last attempt produced no country
+/// result. Recent attempts are left alone so a large Peer set cannot turn
+/// into unbounded work, and a database failure is not retried on every pass.
+pub fn cache_attempt_cutoff(now: &str) -> String {
+    let parsed = crate::auth::parse_rfc3339(now).unwrap_or_else(crate::auth::now_utc);
+    crate::auth::format_rfc3339(
+        parsed - time::Duration::seconds(ATTEMPT_RETRY_AGE.as_secs() as i64),
+    )
+}
+
+/// Read the durable provider selection. Both keys are written together by
+/// `write_provider_selection`; a missing or unrecognized provider value
+/// fails safe to Disabled so an unknown string never starts resolution work.
+pub async fn read_provider_selection<'e, E>(
+    executor: E,
+) -> Result<Option<GeoSelection>, sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    let rows = sqlx::query_as::<_, (String, String)>(
+        "SELECT setting_key, setting_value FROM server_settings WHERE setting_key IN (?, ?)",
+    )
+    .bind(SETTING_GEO_PROVIDER)
+    .bind(SETTING_GEO_PROVIDER_GENERATION)
+    .fetch_all(executor)
+    .await?;
+    let mut provider = None;
+    let mut generation = None;
+    for (key, value) in rows {
+        match key.as_str() {
+            SETTING_GEO_PROVIDER => provider = Some(value),
+            SETTING_GEO_PROVIDER_GENERATION => generation = value.parse::<u64>().ok(),
+            _ => {}
+        }
+    }
+    Ok(provider.map(|value| GeoSelection {
+        provider: GeoProvider::parse(&value).unwrap_or(GeoProvider::Disabled),
+        generation: generation.unwrap_or(0),
+    }))
+}
+
+/// Persist a provider selection and its generation atomically.
+pub async fn write_provider_selection<'e, E>(
+    executor: E,
+    selection: GeoSelection,
+    now: &str,
+) -> Result<(), sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO server_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?), (?, ?, ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value, updated_at=excluded.updated_at",
+    )
+    .bind(SETTING_GEO_PROVIDER)
+    .bind(selection.provider.as_str())
+    .bind(now)
+    .bind(SETTING_GEO_PROVIDER_GENERATION)
+    .bind(selection.generation.to_string())
+    .bind(now)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// Resolve the durable provider selection once per installation. Before the
+/// key exists, the deployment's MMDB configuration decides: an installation
+/// that already resolved with a local database keeps doing so, and an
+/// installation without one stays Disabled. Neither branch adds outbound
+/// traffic, so an upgrade never changes the privacy boundary by itself.
+pub async fn ensure_provider_selection(
+    pool: &SqlitePool,
+    mmdb_configured: bool,
+) -> Result<GeoSelection, sqlx::Error> {
+    if let Some(selection) = read_provider_selection(pool).await? {
+        return Ok(selection);
+    }
+    let selection = GeoSelection {
+        provider: if mmdb_configured {
+            GeoProvider::LocalMmdb
+        } else {
+            GeoProvider::Disabled
+        },
+        generation: 1,
+    };
+    let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+    write_provider_selection(pool, selection, &now).await?;
+    Ok(selection)
 }
 
 pub fn cache_rebuild_cutoff(now: &str) -> String {
@@ -442,7 +682,7 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(
-            "CREATE TABLE geo_location_cache (canonical_ip TEXT PRIMARY KEY, country_code TEXT NOT NULL, created_at TEXT NOT NULL, last_lookup_at TEXT NOT NULL, last_referenced_at TEXT NOT NULL, expires_at TEXT NOT NULL)",
+            "CREATE TABLE geo_location_cache (provider TEXT NOT NULL, canonical_ip TEXT NOT NULL, country_code TEXT CHECK(country_code IS NULL OR country_code GLOB '[A-Z][A-Z]'), state TEXT NOT NULL CHECK(state IN ('current', 'no_country', 'failed')), created_at TEXT, last_attempt_at TEXT NOT NULL, last_success_at TEXT, last_referenced_at TEXT NOT NULL, expires_at TEXT, PRIMARY KEY (provider, canonical_ip))",
         )
         .execute(&pool)
         .await
@@ -450,8 +690,9 @@ mod tests {
         for index in 0..=MAX_PEER_IP_CACHE_ROWS {
             let ip = format!("198.18.{}.{}", index / 256, index % 256);
             let timestamp = format!("2026-01-01T00:00:{index:04}Z");
-            sqlx::query("INSERT INTO geo_location_cache (canonical_ip, country_code, created_at, last_lookup_at, last_referenced_at, expires_at) VALUES (?, 'US', ?, ?, ?, ?)")
+            sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('local_mmdb', ?, 'US', 'current', ?, ?, ?, ?, ?)")
                 .bind(ip)
+                .bind(&timestamp)
                 .bind(&timestamp)
                 .bind(&timestamp)
                 .bind(&timestamp)

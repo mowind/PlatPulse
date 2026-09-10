@@ -19,6 +19,7 @@ pub mod doctor;
 pub mod enrollment;
 pub mod file_security;
 pub mod geo;
+pub mod geo_backfill;
 pub mod http;
 pub mod init;
 pub mod metrics;

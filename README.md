@@ -81,7 +81,7 @@ Each phase is independently deployable; no empty abstractions or schemas are add
 - [ ] **Phase 0 — Workspace & protocol foundation:** workspace, AgentReport v1, Observation Envelope, wire fixtures, migrations, OpenAPI/Web skeleton, CI
 - [ ] **Phase 1 — First vertical slice:** one Agent monitoring multiple Nodes, Enrollment, per-Node Head Subscription + Block Resolution, AgentStore/spool, Report Ingestion/Receipt, minimal Network Registry, SQLite projections, Owner/Viewer login, private-by-default Home, Admin diagnostics, responsive WebUI
 - [ ] **Phase 2 — Operations loop:** Recovery/rotation, Node lifecycle/Transfer, multi-user sessions, Audit, Alerts + Telegram outbox, Silence/Maintenance, retention aggregates, backup/restore/doctor
-- [ ] **Phase 3 — Peer & Geo:** typed Peer Snapshots, presence intervals, operator-provided GeoLite2 country lookups, raw-IP privacy controls
+- [ ] **Phase 3 — Peer & Geo:** typed Peer Snapshots, presence intervals, Owner-selected Geo provider (`Disabled` / `Local MMDB`), bounded background country resolution with a provider-keyed last-good cache, raw-IP privacy controls
 - [ ] **Phase 4 — Validator analytics:** Validator Provider seam, Explorer adapter, Node Validator Links, ranking/reward metrics and aggregates
 - [ ] **Phase 5 — Hardening:** native TLS, internal metrics, packaging, load/fault/soak testing, security review
 

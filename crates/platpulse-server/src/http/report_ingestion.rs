@@ -289,7 +289,6 @@ async fn save_current_peers(
     node_id: &str,
     component: &ComponentObservation<PeerSnapshot>,
     received_at: &str,
-    geo: &crate::geo::GeoLoader,
 ) -> Result<(), sqlx::Error> {
     if component.status != ComponentStatus::Ok {
         return Ok(());
@@ -339,40 +338,16 @@ async fn save_current_peers(
             .execute(&mut **tx)
             .await?;
         if let Some(ip) = canonical_ip {
-            let existing_created_at: Option<String> = sqlx::query_scalar(
-                "SELECT created_at FROM geo_location_cache WHERE canonical_ip=?",
-            )
-            .bind(&ip)
-            .fetch_optional(&mut **tx)
-            .await?;
-            if let Ok(parsed) = ip.parse() {
-                if let Some(country_code) = geo.lookup_country(&parsed) {
-                    let (created_at, expires_at) = crate::geo::cache_refresh_window(
-                        existing_created_at.as_deref(),
-                        received_at,
-                    );
-                    sqlx::query("INSERT INTO geo_location_cache (canonical_ip, country_code, created_at, last_lookup_at, last_referenced_at, expires_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(canonical_ip) DO UPDATE SET country_code=excluded.country_code, created_at=excluded.created_at, last_lookup_at=excluded.last_lookup_at, last_referenced_at=excluded.last_referenced_at, expires_at=excluded.expires_at")
-                        .bind(&ip)
-                        .bind(country_code)
-                        .bind(created_at)
-                        .bind(received_at)
-                        .bind(received_at)
-                        .bind(expires_at)
-                        .execute(&mut **tx)
-                        .await?;
-                } else {
-                    // A transient lookup failure must not erase a last-good
-                    // country. It is still a current reference, but its
-                    // existing expiry is intentionally not extended.
-                    sqlx::query(
-                        "UPDATE geo_location_cache SET last_referenced_at=? WHERE canonical_ip=?",
-                    )
-                    .bind(received_at)
-                    .bind(&ip)
-                    .execute(&mut **tx)
-                    .await?;
-                }
-            }
+            // Recording a reference never performs a country lookup: the
+            // background Geo path (crate::geo_backfill) owns resolution
+            // outside this receipt transaction. A reference only keeps the
+            // retained rows honest about being referenced right now, and a
+            // failure of that path can never erase a last-good country.
+            sqlx::query("UPDATE geo_location_cache SET last_referenced_at=? WHERE canonical_ip=?")
+                .bind(received_at)
+                .bind(&ip)
+                .execute(&mut **tx)
+                .await?;
         }
         for capability in &peer.caps {
             let safe_capability = crate::redaction::redact_sensitive(capability);
@@ -686,7 +661,7 @@ async fn save_current(
     tx: &mut Transaction<'_, Sqlite>,
     report: &AgentReport,
     received_at: &str,
-    geo: &crate::geo::GeoLoader,
+    geo_provider: crate::geo::GeoProvider,
 ) -> Result<(), sqlx::Error> {
     let agent_id = report.agent_id.to_string();
     let host = &report.host;
@@ -1001,7 +976,7 @@ async fn save_current(
             } else {
                 PeerPresenceDelta::default()
             };
-            save_current_peers(tx, &node_id, peers, received_at, geo).await?;
+            save_current_peers(tx, &node_id, peers, received_at).await?;
             if peers.status == ComponentStatus::Ok {
                 if let Some(snapshot) = peers.latest.as_ref() {
                     let local_head = node.chain.sync.latest.map(|sync| sync.current_block);
@@ -1012,6 +987,7 @@ async fn save_current(
                         received_at,
                         local_head,
                         presence_delta,
+                        geo_provider,
                     )
                     .await?;
                 }
@@ -2085,7 +2061,9 @@ async fn handler(
     projection_report
         .block_summaries
         .retain(|sample| !ownership_mismatches.contains(&sample.node_id));
-    if let Err(save_error) = save_current(&mut tx, &projection_report, &now_text, state.geo()).await
+    let geo_provider = state.geo_config().provider;
+    if let Err(save_error) =
+        save_current(&mut tx, &projection_report, &now_text, geo_provider).await
     {
         eprintln!(
             "save_current error: {}",
@@ -2590,6 +2568,9 @@ async fn handler(
         );
     }
     if peer_component_present {
+        // A new Peer reference is a reason to resolve its country now; the
+        // background path is woken instead of resolving inside this receipt.
+        state.notify_geo_backfill();
         state
             .admin_realtime()
             .publish("peer", None::<String>, parsed.report_sequence);
@@ -4791,6 +4772,9 @@ mod tests {
     #[tokio::test]
     async fn successful_peer_snapshots_update_both_aggregate_families_once() {
         let (_dir, state, agent_id) = state_with_agent().await;
+        // Country aggregation reads the retained results of the selected
+        // provider only, exactly like the Public projection does.
+        let state = state.with_geo_provider(crate::geo::GeoProvider::LocalMmdb, 1);
         let node_id = "0195f2a1-0014-4014-8014-000000000014";
         let mut value: serde_json::Value = serde_json::from_slice(include_bytes!(
             "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
@@ -4837,7 +4821,8 @@ mod tests {
         // A cache row as the Server itself writes it: created now with its
         // absolute expiry capped by the hard retention boundary.
         let cache_now = crate::auth::format_rfc3339(crate::auth::now_utc());
-        sqlx::query("INSERT INTO geo_location_cache (canonical_ip, country_code, created_at, last_lookup_at, last_referenced_at, expires_at) VALUES ('8.8.8.8', 'US', ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('local_mmdb', '8.8.8.8', 'US', 'current', ?, ?, ?, ?, ?)")
+            .bind(&cache_now)
             .bind(&cache_now)
             .bind(&cache_now)
             .bind(&cache_now)

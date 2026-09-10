@@ -197,16 +197,20 @@ A derived connected interval opened or closed only by differences between consec
 _Avoid_: Snapshot history, Disconnect on missing report
 
 **Geo Location Cache**:
-The Server's country-only lookup cache keyed by canonical Peer IP. Raw addresses remain sensitive current data, are never part of Public Projection, and are not copied into long-term aggregates.
-_Avoid_: Peer history, Browser geolocation
+The Server's country-only lookup cache keyed by Geo Provider and canonical Peer IP. It retains the country, the attempt and success times, and the retention window, and results of a provider that is not selected are never read. Raw addresses remain sensitive current data, are never part of Public Projection, and are not copied into long-term aggregates.
+_Avoid_: Peer history, Browser geolocation, Results shared across providers
+
+**Geo Provider**:
+The single country-resolution source the Owner selects for the Server; the implemented options are Disabled and Local MMDB, with no automatic fallback between them. The selection is durable, audited, and carries a configuration generation so a result produced for an older selection is never written as current.
+_Avoid_: Provider failover, Per-Node Geo setting, Silent external query
 
 **Geo Database**:
-The country-only data source the Server is configured to resolve Peer public IPs with; this phase is an operator-provided local GeoLite2 Country MMDB. PlatPulse does not bundle the database, download it, or hold MaxMind credentials; enabling it also requires MaxMind attribution.
+The country-only data source the Server is configured to resolve Peer public IPs with; this phase is an operator-provided local GeoLite2 Country MMDB used by the Local MMDB Geo Provider. PlatPulse does not bundle the database, download it, or hold MaxMind credentials; enabling it also requires MaxMind attribution.
 _Avoid_: Embedded asset, PlatPulse-managed download
 
 **Geo Insight**:
-The Server-owned country projection over the current Peer records of a Network's Active Nodes. Its country and Unknown buckets count Peer records per Node (never IP-deduplicated Peers), and its Known/Unknown total, scope completeness, and database status are separate dimensions from Peer collection freshness.
-_Avoid_: Node deployment map, unique Peer count, Browser geolocation
+The Server-owned country projection over the current Peer records of a Network's Active Nodes. Its country and Unknown buckets count Peer records per Node (never IP-deduplicated Peers), and its Known/Unknown total, scope completeness, and Geo Provider/database status are separate dimensions from Peer collection freshness. Country resolution runs in a bounded background path, never inside the report receipt transaction.
+_Avoid_: Node deployment map, unique Peer count, Browser geolocation, Lookup inside report ingestion
 
 **Block Production Attribution**:
 The evidence describing how an observed block relates to a monitored Node. It keeps Coinbase, Seal Signer Match, and Protocol Proposer distinct rather than collapsing them into one inferred producer flag.

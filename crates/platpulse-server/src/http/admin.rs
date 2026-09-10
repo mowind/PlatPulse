@@ -4862,39 +4862,209 @@ pub(crate) async fn cancel_node_transfer(
 
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
+pub struct GeoProviderOption {
+    pub provider: String,
+    pub label: String,
+    pub available: bool,
+    /// Safe explanation when the option cannot be selected. It never contains
+    /// a filesystem path, raw address, or provider internals.
+    pub unavailable_reason: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
 pub struct GeoStatusDiagnostic {
+    /// The selected provider. Only implemented providers are ever reported.
+    pub provider: String,
+    pub provider_label: String,
+    /// Monotonic configuration generation. Every background result carries
+    /// the generation that scheduled it and is discarded if it no longer
+    /// matches the selection.
+    pub provider_generation: u64,
+    pub providers: Vec<GeoProviderOption>,
+    /// Effective database/result state: disabled, current, stale, or error.
+    /// It is independent of Peer collection freshness and Node health.
     pub state: String,
+    /// Whether this deployment configured a local GeoLite2 Country database.
     pub configured: bool,
     pub build_epoch: Option<u64>,
     pub digest: Option<String>,
     pub loaded_at: Option<String>,
     pub last_error: Option<String>,
+    /// Distinct countries with a currently valid retained result.
     pub cache_country_count: i64,
+    /// Retained cache rows for the selected provider.
+    pub cache_entry_count: i64,
+    /// Current Peer addresses still waiting for a fresh country result. It is
+    /// null while Geo is disabled, because nothing is scheduled then.
+    pub pending_lookup_count: Option<i64>,
+    pub last_success_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct GeoProviderUpdateRequest {
+    pub provider: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct GeoProviderMutationResponse {
+    pub geo: GeoStatusDiagnostic,
+    pub audit_event_id: i64,
+}
+
+/// Build the Owner-only Geo diagnostic. Every value is computed from the
+/// selected provider only; a path or raw address never enters the DTO.
+async fn geo_diagnostic(state: &AppState) -> Option<GeoStatusDiagnostic> {
+    let config = state.geo_config();
+    let status = state.geo_status();
+    let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+    let rebuild_before = crate::geo::cache_rebuild_cutoff(&now);
+    let provider = config.provider.as_str();
+    let cache_country_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(DISTINCT country_code) FROM geo_location_cache WHERE provider = ? AND country_code IS NOT NULL AND expires_at > ? AND created_at > ?",
+    )
+    .bind(provider)
+    .bind(&now)
+    .bind(&rebuild_before)
+    .fetch_one(state.db().pool())
+    .await
+    .ok()?;
+    let cache_entry_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM geo_location_cache WHERE provider = ?")
+            .bind(provider)
+            .fetch_one(state.db().pool())
+            .await
+            .ok()?;
+    let last_success_at = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT MAX(last_success_at) FROM geo_location_cache WHERE provider = ?",
+    )
+    .bind(provider)
+    .fetch_one(state.db().pool())
+    .await
+    .ok()
+    .flatten();
+    let pending_lookup_count = if config.provider.needs_local_database() {
+        Some(
+            crate::geo_backfill::pending_addresses(state.db().pool(), config.provider, &now)
+                .await
+                .ok()?
+                .len() as i64,
+        )
+    } else {
+        None
+    };
+    let providers = crate::geo::GeoProvider::ALL
+        .iter()
+        .map(|candidate| {
+            let needs_database = candidate.needs_local_database();
+            let available = !needs_database || config.mmdb_path.is_some();
+            GeoProviderOption {
+                provider: candidate.as_str().to_owned(),
+                label: candidate.label().to_owned(),
+                available,
+                unavailable_reason: (!available).then(|| {
+                    "No local GeoLite2 Country database is configured on this Server".to_owned()
+                }),
+            }
+        })
+        .collect();
+    Some(GeoStatusDiagnostic {
+        provider: config.provider.as_str().to_owned(),
+        provider_label: config.provider.label().to_owned(),
+        provider_generation: config.generation,
+        providers,
+        state: status.state,
+        configured: status.configured,
+        build_epoch: status.build_epoch,
+        digest: status.digest,
+        loaded_at: status.loaded_at,
+        last_error: status.last_error,
+        cache_country_count,
+        cache_entry_count,
+        pending_lookup_count,
+        last_success_at,
+    })
 }
 
 #[utoipa::path(
     get,
     path = "/api/admin/v1/geo",
     tag = "admin",
-    responses((status = 200, description = "Owner-only safe Geo database status", body = GeoStatusDiagnostic))
+    responses((status = 200, description = "Owner-only safe Geo provider status", body = GeoStatusDiagnostic), (status = 403, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
 )]
 pub(crate) async fn admin_geo_status(
     State(state): State<AppState>,
     Extension(_session): Extension<super::AuthenticatedSession>,
     Extension(request_id): Extension<super::RequestId>,
 ) -> Response {
-    let status = state.geo().status();
+    match geo_diagnostic(&state).await {
+        Some(diagnostic) => Json(diagnostic).into_response(),
+        None => mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        ),
+    }
+}
+
+/// Select the Geo provider. The change is Owner-only, Origin/JSON/CSRF
+/// guarded, audited, durably persisted with a new configuration generation,
+/// and applied to the running process in the same breath, so scheduled work
+/// from the previous selection can never be written as the current one.
+#[utoipa::path(
+    put,
+    path = "/api/admin/v1/geo/provider",
+    tag = "admin",
+    request_body = GeoProviderUpdateRequest,
+    responses((status = 200, description = "Owner-only Geo provider change", body = GeoProviderMutationResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
+)]
+pub(crate) async fn update_geo_provider(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Extension(principal): Extension<super::AuthenticatedSession>,
+    Extension(request_id): Extension<super::RequestId>,
+    Json(request): Json<GeoProviderUpdateRequest>,
+) -> Response {
+    if let Some(response) = mutation_guard(&headers, &principal, state.auth(), &request_id, true) {
+        return response;
+    }
+    let Some(provider) = crate::geo::GeoProvider::parse(&request.provider) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(crate::http::ApiErrorBody::with_fields(
+                "unknown_geo_provider",
+                "unknown Geo provider",
+                &request_id.0,
+                vec!["provider".to_owned()],
+            )),
+        )
+            .into_response();
+    };
+    let config = state.geo_config();
+    if provider.needs_local_database() && config.mmdb_path.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(crate::http::ApiErrorBody::with_fields(
+                "geo_provider_unavailable",
+                "this Server has no configured local GeoLite2 Country database",
+                &request_id.0,
+                vec!["provider".to_owned()],
+            )),
+        )
+            .into_response();
+    }
+
+    let generation = config.generation.saturating_add(1);
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
-    let rebuild_before = crate::geo::cache_rebuild_cutoff(&now);
-    let cache_country_count = match sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(DISTINCT country_code) FROM geo_location_cache WHERE expires_at > ? AND created_at > ?",
-    )
-    .bind(now)
-    .bind(rebuild_before)
-    .fetch_one(state.db().pool())
-    .await
-    {
-        Ok(count) => count,
+    let selection = crate::geo::GeoSelection {
+        provider,
+        generation,
+    };
+    let mut tx = match state.db().pool().begin().await {
+        Ok(tx) => tx,
         Err(_) => {
             return mutation_error(
                 &request_id.0,
@@ -4904,16 +5074,85 @@ pub(crate) async fn admin_geo_status(
             );
         }
     };
-    Json(GeoStatusDiagnostic {
-        state: status.state,
-        configured: status.configured,
-        build_epoch: status.build_epoch,
-        digest: status.digest,
-        loaded_at: status.loaded_at,
-        last_error: status.last_error,
-        cache_country_count,
-    })
-    .into_response()
+    if crate::geo::write_provider_selection(&mut *tx, selection, &now)
+        .await
+        .is_err()
+    {
+        let _ = tx.rollback().await;
+        return mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        );
+    }
+    if crate::auth::insert_audit_change(
+        &mut *tx,
+        Some(&principal.0.user_id),
+        "geo_provider_changed",
+        "geo",
+        "global",
+        Some(&serde_json::json!({ "provider": config.provider.as_str() })),
+        Some(&serde_json::json!({ "provider": provider.as_str() })),
+    )
+    .await
+    .is_err()
+    {
+        let _ = tx.rollback().await;
+        return mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        );
+    }
+    let audit_event_id = match sqlx::query_scalar::<_, i64>("SELECT last_insert_rowid()")
+        .fetch_one(&mut *tx)
+        .await
+    {
+        Ok(value) => value,
+        Err(_) => {
+            let _ = tx.rollback().await;
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    };
+    if tx.commit().await.is_err() {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        );
+    }
+    state.apply_geo_provider(provider, generation);
+    // A provider that is not selected anymore keeps no raw-IP results: drop
+    // them now instead of waiting for the maintenance tick.
+    let _ = crate::geo::cleanup_cache(state.db().pool(), &now, provider).await;
+    state
+        .admin_realtime()
+        .publish("geo", None::<String>, generation);
+    state
+        .public_realtime()
+        .publish("geo", None::<String>, generation);
+
+    match geo_diagnostic(&state).await {
+        Some(diagnostic) => Json(GeoProviderMutationResponse {
+            geo: diagnostic,
+            audit_event_id,
+        })
+        .into_response(),
+        None => mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        ),
+    }
 }
 
 pub fn router() -> Router<AppState> {
@@ -4921,6 +5160,7 @@ pub fn router() -> Router<AppState> {
         .route("/events", get(admin_events))
         .route("/overview", get(overview))
         .route("/geo", get(admin_geo_status))
+        .route("/geo/provider", put(update_geo_provider))
         .route("/nodes", get(admin_nodes))
         .route("/nodes/{node_id}", get(admin_node_detail))
         .route("/nodes/{node_id}/metadata", put(set_node_metadata))
@@ -4997,7 +5237,8 @@ mod tests {
         let state = AppState::new(database, None, auth);
         let now = crate::auth::format_rfc3339(crate::auth::now_utc());
         let expires_at = crate::geo::cache_expiry(&now);
-        sqlx::query("INSERT INTO geo_location_cache (canonical_ip, country_code, created_at, last_lookup_at, last_referenced_at, expires_at) VALUES ('8.8.8.8', 'US', ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('disabled', '8.8.8.8', 'US', 'current', ?, ?, ?, ?, ?)")
+            .bind(&now)
             .bind(&now)
             .bind(&now)
             .bind(&now)
@@ -5030,6 +5271,297 @@ mod tests {
         assert_eq!(value["cache_country_count"], 1);
         assert!(!text.contains("8.8.8.8"));
         assert!(!text.contains("server.db"));
+    }
+
+    /// Build a Geo-capable Admin state. `with_database` copies the real
+    /// GeoIP2 Country test fixture into the state directory with private
+    /// permissions and loads it, so the mutation path is exercised against a
+    /// real MMDB rather than a stub.
+    async fn geo_admin_state(dir: &tempfile::TempDir, with_database: bool) -> AppState {
+        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let pepper_path = dir.path().join("pepper");
+        crate::secrets::create_pepper_file(&pepper_path).unwrap();
+        let auth = crate::auth::AuthConfig::development(
+            crate::secrets::load_pepper_file(&pepper_path).unwrap(),
+            "http://127.0.0.1:8080".to_owned(),
+        );
+        if !with_database {
+            return AppState::new(database, None, auth);
+        }
+        let path = dir.path().join("GeoIP2-Country-Test.mmdb");
+        std::fs::write(
+            &path,
+            include_bytes!("../../test-data/GeoIP2-Country-Test.mmdb"),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let loader = std::sync::Arc::new(crate::geo::GeoLoader::new(Some(path)));
+        assert!(loader.reload());
+        let state = AppState::new(database, None, auth).with_geo_loader(loader);
+        sqlx::query("INSERT INTO users (user_id, username, role, password_hash, created_at, updated_at) VALUES ('owner', 'owner', 'owner', 'hash', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        state
+    }
+
+    fn geo_owner_session() -> AuthenticatedSession {
+        AuthenticatedSession(crate::auth::SessionInfo {
+            session_id: "session".to_owned(),
+            user_id: "owner".to_owned(),
+            username: "owner".to_owned(),
+            role: "owner".to_owned(),
+            created_at: OffsetDateTime::now_utc(),
+            last_seen_at: OffsetDateTime::now_utc(),
+            expires_at: OffsetDateTime::now_utc(),
+            csrf_token: "csrf".to_owned(),
+        })
+    }
+
+    fn geo_mutation_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONTENT_TYPE,
+            "application/json; charset=utf-8".parse().unwrap(),
+        );
+        headers.insert(header::ORIGIN, "http://127.0.0.1:8080".parse().unwrap());
+        headers.insert("x-csrf-token", "csrf".parse().unwrap());
+        headers
+    }
+
+    fn geo_request_id() -> crate::http::RequestId {
+        crate::http::RequestId(std::sync::Arc::from("req-geo-1"))
+    }
+
+    async fn geo_body(response: Response) -> Value {
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn geo_provider_selection_is_guarded_persisted_and_audited() {
+        let dir = tempdir().unwrap();
+        let state = geo_admin_state(&dir, true).await;
+        let session = geo_owner_session();
+
+        let response = admin_geo_status(
+            State(state.clone()),
+            Extension(session.clone()),
+            Extension(geo_request_id()),
+        )
+        .await;
+        let body = geo_body(response).await;
+        assert_eq!(body["provider"], "disabled");
+        assert_eq!(body["provider_label"], "Disabled");
+        assert_eq!(body["provider_generation"], 0);
+        assert_eq!(body["providers"][0]["provider"], "disabled");
+        assert_eq!(body["providers"][0]["available"], true);
+        assert_eq!(body["providers"][1]["provider"], "local_mmdb");
+        assert_eq!(body["providers"][1]["available"], true);
+        assert!(body["pending_lookup_count"].is_null());
+        // No unimplemented provider is ever offered.
+        let text = body.to_string();
+        for absent in ["ipinfo", "geojs", "GeoJS", "IPinfo"] {
+            assert!(!text.contains(absent), "{absent} must not be selectable");
+        }
+
+        // CSRF/Origin/JSON guard.
+        let response = update_geo_provider(
+            State(state.clone()),
+            HeaderMap::new(),
+            Extension(session.clone()),
+            Extension(geo_request_id()),
+            Json(GeoProviderUpdateRequest {
+                provider: "local_mmdb".to_owned(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        // Unknown providers are rejected instead of silently ignored.
+        let response = update_geo_provider(
+            State(state.clone()),
+            geo_mutation_headers(),
+            Extension(session.clone()),
+            Extension(geo_request_id()),
+            Json(GeoProviderUpdateRequest {
+                provider: "ipinfo".to_owned(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            geo_body(response).await["error"]["code"],
+            "unknown_geo_provider"
+        );
+
+        // A retained result of another provider is not current data and is
+        // dropped when the selection changes, even while the Peer reference
+        // that justified retaining it still exists.
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, last_received_at, created_at, updated_at) VALUES ('agent-geo-admin', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('geo-net', 'Geo Network', '0xgenesis', 1, 1, 'lat', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ('geo-admin-node', 'agent-geo-admin', 'geo-net', 'Geo Node', 'ws://127.0.0.1:1', 'active', 'public', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, updated_at) VALUES ('geo-admin-node', 'peer-1', '8.8.8.8', 'inbound', 0, 0, 0, '2026-01-01T00:00:00Z')")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        for provider in ["disabled", "local_mmdb"] {
+            sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES (?, '8.8.8.8', 'US', 'current', ?, ?, ?, ?, ?)")
+                .bind(provider)
+                .bind(&now)
+                .bind(&now)
+                .bind(&now)
+                .bind(&now)
+                .bind(crate::geo::cache_expiry(&now))
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+        }
+
+        let response = update_geo_provider(
+            State(state.clone()),
+            geo_mutation_headers(),
+            Extension(session.clone()),
+            Extension(geo_request_id()),
+            Json(GeoProviderUpdateRequest {
+                provider: "local_mmdb".to_owned(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = geo_body(response).await;
+        assert_eq!(body["geo"]["provider"], "local_mmdb");
+        assert_eq!(body["geo"]["provider_generation"], 1);
+        assert!(body["audit_event_id"].as_i64().unwrap() > 0);
+        assert_eq!(
+            state.geo_config().provider,
+            crate::geo::GeoProvider::LocalMmdb
+        );
+        assert_eq!(state.geo_config().generation, 1);
+        let stored: String = sqlx::query_scalar(
+            "SELECT setting_value FROM server_settings WHERE setting_key = 'geo_provider'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(stored, "local_mmdb");
+        let stored_generation: String = sqlx::query_scalar(
+            "SELECT setting_value FROM server_settings WHERE setting_key = 'geo_provider_generation'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(stored_generation, "1");
+        let audit_kind: String = sqlx::query_scalar(
+            "SELECT event_kind FROM audit_events WHERE event_kind = 'geo_provider_changed'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(audit_kind, "geo_provider_changed");
+        let providers_left: Vec<String> =
+            sqlx::query_scalar("SELECT provider FROM geo_location_cache ORDER BY provider")
+                .fetch_all(state.db().pool())
+                .await
+                .unwrap();
+        assert_eq!(providers_left, vec!["local_mmdb".to_owned()]);
+
+        // Repeating the same selection still advances the generation, so work
+        // scheduled before the change can never be written as current.
+        let response = update_geo_provider(
+            State(state.clone()),
+            geo_mutation_headers(),
+            Extension(session.clone()),
+            Extension(geo_request_id()),
+            Json(GeoProviderUpdateRequest {
+                provider: "local_mmdb".to_owned(),
+            }),
+        )
+        .await;
+        assert_eq!(geo_body(response).await["geo"]["provider_generation"], 2);
+
+        let response = update_geo_provider(
+            State(state.clone()),
+            geo_mutation_headers(),
+            Extension(session.clone()),
+            Extension(geo_request_id()),
+            Json(GeoProviderUpdateRequest {
+                provider: "disabled".to_owned(),
+            }),
+        )
+        .await;
+        let body = geo_body(response).await;
+        assert_eq!(body["geo"]["provider"], "disabled");
+        assert_eq!(body["geo"]["provider_generation"], 3);
+        assert_eq!(body["geo"]["state"], "disabled");
+        assert!(body["geo"]["pending_lookup_count"].is_null());
+        assert_eq!(
+            state.geo_config().provider,
+            crate::geo::GeoProvider::Disabled
+        );
+    }
+
+    #[tokio::test]
+    async fn local_mmdb_requires_a_configured_database() {
+        let dir = tempdir().unwrap();
+        let state = geo_admin_state(&dir, false).await;
+        let session = geo_owner_session();
+
+        let response = admin_geo_status(
+            State(state.clone()),
+            Extension(session.clone()),
+            Extension(geo_request_id()),
+        )
+        .await;
+        let body = geo_body(response).await;
+        assert_eq!(body["providers"][1]["provider"], "local_mmdb");
+        assert_eq!(body["providers"][1]["available"], false);
+        assert!(body["providers"][1]["unavailable_reason"].is_string());
+
+        let response = update_geo_provider(
+            State(state.clone()),
+            geo_mutation_headers(),
+            Extension(session),
+            Extension(geo_request_id()),
+            Json(GeoProviderUpdateRequest {
+                provider: "local_mmdb".to_owned(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = geo_body(response).await;
+        assert_eq!(body["error"]["code"], "geo_provider_unavailable");
+        assert_eq!(body["error"]["fields"][0], "provider");
+        assert_eq!(
+            state.geo_config().provider,
+            crate::geo::GeoProvider::Disabled,
+            "a rejected selection never changes the running configuration"
+        );
+        let stored: Option<String> = sqlx::query_scalar(
+            "SELECT setting_value FROM server_settings WHERE setting_key = 'geo_provider'",
+        )
+        .fetch_optional(state.db().pool())
+        .await
+        .unwrap();
+        assert!(stored.is_none());
     }
     #[tokio::test]
     async fn visibility_mutation_accepts_json_parameters_and_updates_node() {
