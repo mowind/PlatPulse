@@ -480,6 +480,8 @@ Public 与 Admin Projection 都由 Server 计算 Health，浏览器不得自行�
 - Network 概览（Active Node 列表/卡片）；
 - Node Detail：一个 Komari 风格的紧凑主卡片展示 Node 名称、Node Health Summary、Node status、独立 Validator role、进程运行时间、PlatON 进程 CPU、进程内存占比、Node Data 大小/容量、`HEAD / QC / LOCKED / COMMITTED / VALIDATOR`、进程启动时间和 Agent 最后上报时间；主卡片使用中性细边框，不显示彩色顶部/边缘色条。CPU、Memory 与 Node Data 在主卡片内沿用 Home Node 卡片的紧凑当前值和进度条层级。Details 仅展示四张等高、缩小内边距与图表高度的一分钟图表卡片：Host 网络上下行、Peer 连接数、最近连续区块间隔与最新 Block Summary 交易数；Network 与 Connections 使用折线图，Block time 与 Transactions 使用柱状图；不伪造中间点，不以 0 替代未知值。进程内存占比使用该进程 RSS 除以所属 Host 总内存；不展示 Bounded Block History 列表或历史导出。
 
+Home 顶部为紧凑概览：左侧 2×2 全局统计（Active Nodes / Healthy Nodes、Attention / Networks，始终为全局口径），右侧透明 Peer 国家地图；统计与地图共用浅绿渐变与淡网格，筛选与排序仅改变下方 Node 列表和地图范围。地图只使用 Server 提供的国家计数与国家代表点：国家按 Peer 记录逐 Node 计数（不按 IP 去重），未知国家不绘制，无法绘制或缺少代表点的国家保留可访问文字统计，不使用 `[0, 0]` 或随机点回退，也不表示受监控 Node 的部署位置。底图为固定版本、本地托管的世界国家几何（Natural Earth 1:110m Admin 0 Countries，公有领域），由 `platpulse-web/scripts/build-world-geometry.mjs` 离线生成并随 WebUI 静态资源同源托管；运行时不访问地图 CDN 或在线瓦片。Geo 停用、底图加载失败或地图渲染失败只在概览局部降级，不影响统计、筛选、排序与 Node 卡片。
+
 Home 不展示：凭证、RPC Endpoint 原文、内部错误堆栈、Agent/Host 拓扑、任何操作入口。已退休/已删除/未知 Node 使用不泄漏信息的 unavailable 文案。Site Access Mode 为 Private 时 Home 路由要求已认证 Owner 或 Viewer；为 Public 时允许匿名 Guest 读取允许的 Public projection 路径。
 
 ### 9.2 Admin
@@ -609,6 +611,7 @@ Server 仍不会用零值填充缺失区间；Retention 按 data family 分别�
 ### 13.4 WebUI
 
 - Home 从 Network 列表进入 Node Detail；站点 Private 时 Home 要求 Owner/Viewer 登录，Public 时允许匿名 Guest 读取；
+- Home 概览为 2×2 全局统计 + 透明 Peer 国家地图；地图跟随 Network 筛选，四项统计不随筛选变化，窄屏统计与地图上下排布且地图默认紧凑、可展开；
 - Node Detail 使用无彩色边缘条的 Komari 风格紧凑首卡片，显示当前 Health、Node status、独立 Validator role、进程运行时间、PlatON 进程 CPU/Memory、Node Data、Head/QC/Locked/Committed/Validator；Details 展示四张等高紧凑卡片，其中 Network 与 Connections 使用折线图，Block time 与 Transactions 使用柱状图；Network tab 还展示选定 Node 的聚合 Peer History；Bounded Block History 不在页面展示，最近两个连续 Block Summary 仅用于计算区块间隔；
 - Admin 的 Node 页面不复制 Home 的完整 Node Detail；
 - SSE 断开显示 `Live updates paused`；invalidation 后通过 REST 重取；

@@ -4,6 +4,8 @@ import type { PublicConsensusInsight, PublicNetwork, PublicNode } from '../api/g
 import { realtimeStreamLabel } from './RealtimeNotice'
 import { peerInsightCollectionStatus, peerInsightFreshnessStatus, peerInsightValueStatus } from './PeerInsight'
 import { StatusBadge } from './StatusBadge'
+import GeoMapBoundary from './GeoMapBoundary'
+import GeoWorldMap from './GeoWorldMap'
 import { formatBytes } from '../formatBytes'
 
 type HomeDashboardProps = {
@@ -59,11 +61,17 @@ export default function HomeDashboard({
       <p className={`dashboard-live dashboard-live-${realtimeTone(realtimeStatus)}`} role="status" aria-live="polite"><span aria-hidden="true" /> {realtimeStreamLabel(realtimeStatus)}</p>
       {!online && <p className="dashboard-live dashboard-live-warning" role="status" aria-live="polite"><span aria-hidden="true" /> You are offline</p>}
 
-      <div className="dashboard-summary-grid" aria-label="Home summary">
-        <SummaryCard label="Active Nodes" value={hasProjection ? records.length : null} tone="indigo" />
-        <SummaryCard label="Healthy Nodes" value={healthyCount} tone="green" />
-        <SummaryCard label="Attention" value={healthyCount === null ? null : records.length - healthyCount} tone={healthyCount !== null && records.length === healthyCount ? 'green' : 'red'} />
-        <SummaryCard label="Networks" value={hasProjection ? networks.length : null} tone="violet" />
+      <div className="home-overview">
+        <div className="home-overview-stats dashboard-summary-grid" aria-label="Home summary">
+          <SummaryCard label="Active Nodes" value={hasProjection ? records.length : null} tone="indigo" />
+          <SummaryCard label="Healthy Nodes" value={healthyCount} tone="green" />
+          <SummaryCard label="Attention" value={healthyCount === null ? null : records.length - healthyCount} tone={healthyCount !== null && records.length === healthyCount ? 'green' : 'red'} />
+          <SummaryCard label="Networks" value={hasProjection ? networks.length : null} tone="violet" />
+          <p className="home-overview-scope">All Networks · the four counts stay global; the Network filter below changes the Node list and the map scope, and sorting changes only the list.</p>
+        </div>
+        <GeoMapBoundary>
+          <GeoWorldMap networks={networks} networkFilter={networkFilter} loading={loading} hasProjection={hasProjection} />
+        </GeoMapBoundary>
       </div>
 
       <div className="dashboard-toolbar" aria-label="Node filters and sorting">

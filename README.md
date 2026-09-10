@@ -120,6 +120,7 @@ npm run test:e2e  # fixed Playwright projects against a fresh temporary SQLite S
 - `npm run build`
 - `CI=1 npm run test:e2e` — boots a fresh temporary SQLite Server, provisions an Owner and Viewer through the password-from-stdin CLI, seeds two independent Nodes with one private projection, and runs the fixed Playwright projects (`phone-360-touch`, `phone-390-touch`, `tablet-768-touch`, `desktop-1280`).
 - `cargo run -p platpulse-server --quiet -- --print-openapi` and `npm run generate:api` — regenerate the committed OpenAPI and browser client artifacts and verify no diff.
+- `node scripts/build-world-geometry.mjs` — regenerate the committed world country geometry used by the Home Peer country map from the pinned Natural Earth 1:110m Admin 0 Countries release (public domain). It runs offline, needs network access only for that pinned download, and there is no runtime map CDN or tile service; the generated asset is served same-origin from `public/assets/geo/`.
 
 The release-candidate browser run validates the public/private projection boundary, Owner diagnostics, form stability across SSE-triggered refetches, keyboard login, reduced motion, and no horizontal overflow at 360×800, 390×844, 768×1024 touch, and 1280×800 desktop. Its state directory is temporary and its seed data is only for the local test process; it is not a production bootstrap path.
 ```

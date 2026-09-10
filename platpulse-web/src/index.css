@@ -3147,7 +3147,6 @@ button {
 
 .dashboard-summary-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.75rem;
 }
 
@@ -3205,6 +3204,239 @@ button {
 .dashboard-summary-dot-violet { background: #94a3b8; }
 .dashboard-summary-dot-green { background: var(--brand-strong); }
 .dashboard-summary-dot-red { background: #dc2626; }
+
+/* ---------------------------------------------------------------------------
+ * Home overview: 2x2 global statistics beside the transparent Peer country
+ * map (issue #133). The overview shares the top wash, fades into the toolbar
+ * and Node list, and never becomes a page-wide map background.
+ * ------------------------------------------------------------------------- */
+
+.home-overview {
+  display: grid;
+  gap: 0.7rem 1rem;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.home-overview-stats {
+  display: grid;
+  align-content: start;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: minmax(0, auto);
+  gap: 0.6rem;
+}
+
+/* The four statistics stay global: the filter and sort below never change
+   them, so the scope is labelled instead of implied. */
+.home-overview-scope {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+
+
+.home-geo {
+  display: flex;
+  flex-direction: column;
+  gap: 0.22rem;
+  min-width: 0;
+  padding-top: 0.15rem;
+}
+
+.home-geo-disabled { justify-content: center; min-height: 4.5rem; }
+
+.home-geo-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.5rem;
+}
+
+.home-geo-heading h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.84rem;
+  font-weight: 760;
+  letter-spacing: -0.02em;
+}
+
+/* The map's state badge is a secondary cue in a dense overview, so it stays
+   smaller than a panel badge while keeping its text. */
+.home-geo-heading .status-badge { min-height: 20px; padding: 0.1rem 0.4rem; font-size: 0.62rem; }
+.home-geo-heading .status-badge-icon { width: 0.85rem; height: 0.85rem; font-size: 0.55rem; }
+
+.home-geo-meta,
+.home-geo-note,
+.home-geo-detail,
+.home-geo-counts,
+.home-geo-unknown-detail,
+.home-geo-canvas-state {
+  margin: 0;
+  font-size: 0.68rem;
+  line-height: 1.45;
+}
+
+.home-geo-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.1rem 0.55rem;
+  color: var(--muted);
+  font-weight: 620;
+}
+
+.home-geo-meta > span + span::before {
+  margin-right: 0.55rem;
+  color: rgba(100, 116, 139, 0.5);
+  content: '·';
+}
+
+.home-geo-note,
+.home-geo-detail,
+.home-geo-unknown-detail { color: var(--muted); }
+
+.home-geo-counts { color: var(--ink); font-weight: 700; font-variant-numeric: tabular-nums; }
+
+.home-geo-canvas {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 10rem; /* compact canvas starts at 160px on phones */
+  margin-top: 0.1rem;
+  overflow: hidden;
+}
+
+.home-geo-canvas[data-expanded='true'] { height: 16.5rem; } /* expanded starts at 264px */
+
+.home-geo-canvas-state {
+  display: grid;
+  justify-items: center;
+  gap: 0.5rem;
+  padding: 0 0.5rem;
+  color: var(--muted);
+  text-align: center;
+}
+
+.home-geo-svg { display: block; width: 100%; height: 100%; }
+
+/* Basemap: quiet outlines only. Observed countries take the restrained
+   Emerald fill; markers are Server representative points, never Peer or Node
+   locations. */
+.home-geo-land path {
+  fill: rgba(148, 163, 184, 0.16);
+  stroke: rgba(100, 116, 139, 0.34);
+  stroke-width: 0.75;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.home-geo-observed path {
+  fill: rgba(16, 185, 129, 0.3);
+  stroke: rgba(5, 150, 105, 0.6);
+}
+
+.home-geo-marker-dot {
+  fill: rgba(255, 255, 255, 0.94);
+  stroke: var(--brand-strong);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.home-geo-marker-label {
+  fill: var(--brand-strong);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  text-anchor: middle;
+  dominant-baseline: central;
+}
+
+.home-geo-credit {
+  margin: 0;
+  color: rgba(100, 116, 139, 0.92);
+  font-size: 0.62rem;
+  line-height: 1.4;
+}
+
+.home-geo-footer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.45rem;
+  margin-top: 0.1rem;
+}
+
+.home-geo-toggle {
+  min-height: 44px;
+  padding: 0 0.85rem;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid rgba(148, 163, 184, 0.26);
+  border-radius: 0.5rem;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.home-geo-toggle:hover { color: var(--brand-strong); background: #ffffff; border-color: rgba(5, 150, 105, 0.26); }
+
+.home-geo-countries {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.28rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.home-geo-countries li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+  padding: 0.2rem 0.45rem;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.home-geo-countries .home-geo-country-code { color: var(--ink); font-weight: 760; letter-spacing: 0.02em; }
+.home-geo-countries strong { color: var(--brand-strong); font-weight: 760; font-variant-numeric: tabular-nums; }
+.home-geo-countries small { color: var(--muted); font-size: 0.62rem; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .home-geo-canvas { transition: height 180ms ease; }
+}
+
+@media (min-width: 64rem) {
+  .home-overview {
+    grid-template-columns: minmax(0, 42fr) minmax(0, 58fr);
+    grid-auto-rows: minmax(15.5rem, auto); /* 248px initial overview height */
+  }
+
+  /* A definite canvas height keeps the overview starting inside the
+     accepted 240-280px band; the SVG letterboxes the whole world inside it.
+     Long state copy still grows the row naturally. */
+  .home-geo-canvas { height: 8.5rem; }
+  .home-geo-canvas[data-expanded='true'] { height: 16.5rem; }
+}
+
+@media (max-width: 30rem) {
+  /* The compact phone canvas is much smaller than the desktop one, so the
+     marker geometry scales up to stay legible. */
+  .home-geo-marker-dot { r: 26px; }
+  .home-geo-marker-label { font-size: 34px; }
+  .home-overview { gap: 0.6rem; }
+  .home-overview-stats { gap: 0.55rem; }
+  .home-geo-countries li { white-space: normal; }
+}
 
 .dashboard-toolbar {
   display: flex;
@@ -3373,10 +3605,6 @@ button {
     box-shadow: 0 8px 20px rgba(5, 150, 105, 0.1);
     transform: translateY(-2px);
   }
-}
-
-@media (max-width: 64rem) {
-  .dashboard-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 48rem) {
