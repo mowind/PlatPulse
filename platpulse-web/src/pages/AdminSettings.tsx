@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router'
 import {
   AdminApiError,
+  triggerGeoRefreshEntry,
   updateAccessSettings,
   updateGeoProviderEntry,
   updateHistoryWindowEntry,
@@ -10,6 +11,7 @@ import {
   useAdminHistoryWindow,
   useHistoryWindowImpact,
 } from '../api/admin'
+import type { GeoRefreshStatus, GeoStatusDiagnostic } from '../api/generated'
 import { useAuth } from '../auth/AuthContext'
 import { StatusBadge } from '../components/StatusBadge'
 
@@ -488,8 +490,150 @@ function GeoProviderSettings({ generation, csrfToken }: SettingsSectionProps) {
           </button>
         </form>
       )}
+
+      {current && <GeoRefreshControl geo={current} csrfToken={csrfToken} />}
     </article>
   )
+}
+
+/**
+ * PAGE-ADMIN-SETTINGS Geo refresh (issue #136). The Owner-only action really
+ * re-resolves every public Peer address the current Networks reference
+ * through the selected provider, deliberately bypassing a retained country
+ * that is still valid, and the Server reports real per-address progress. The
+ * counts are IP lookups; the Peer records those addresses serve are stated
+ * beside them, because the Public country map counts Peer records per Node.
+ * Geo that cannot resolve anything is refused by the Server with a stable
+ * reason, so a refresh is never rendered as a success that did not happen.
+ */
+function GeoRefreshControl({
+  geo,
+  csrfToken,
+}: {
+  geo: GeoStatusDiagnostic
+  csrfToken: string
+}) {
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const refresh = geo.refresh
+  const running = refresh?.state === 'running'
+  const unavailable = geo.refresh_unavailable_reason ?? null
+  const disabled = submitting || running || unavailable !== null
+
+  async function start() {
+    if (disabled) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      await triggerGeoRefreshEntry(csrfToken)
+    } catch (caught) {
+      setError(
+        caught instanceof AdminApiError
+          ? caught.message
+          : 'Unable to refresh Peer geolocation.',
+      )
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <section className="geo-refresh" aria-labelledby="geo-refresh-heading">
+      <h3 id="geo-refresh-heading">Refresh Peer geolocation</h3>
+      <p className="muted">
+        Re-resolves every public Peer IP any Network currently references, even when a cached
+        country result is still valid. One lookup per distinct IP address; the Peer country map
+        counts Peer records per Node.
+      </p>
+      <button
+        className="primary-action"
+        type="button"
+        onClick={() => void start()}
+        disabled={disabled}
+        aria-busy={running || submitting}
+      >
+        {running ? 'Refreshing…' : 'Refresh Peer geolocation'}
+      </button>
+      {unavailable && <p className="muted" role="note">{unavailable}</p>}
+      {error && <p className="form-error" role="alert">{error}</p>}
+      {refresh && <GeoRefreshRunStatus refresh={refresh} currentProviderLabel={geo.provider_label} />}
+    </section>
+  )
+}
+
+function GeoRefreshRunStatus({
+  refresh,
+  currentProviderLabel,
+}: {
+  refresh: GeoRefreshStatus
+  currentProviderLabel: string
+}) {
+  return (
+    <div className="geo-refresh-status" role="status">
+      <p>
+        {refresh.state === 'running' && (
+          <>
+            Refreshing: {refresh.completed_lookups} of {refresh.total_lookups} IP lookups done
+            ({refresh.resolved_lookups} resolved, {refresh.no_country_lookups} without a country,{' '}
+            {refresh.failed_lookups} failed).
+          </>
+        )}
+        {refresh.state === 'completed' && (
+          <>
+            Refresh complete: {refresh.resolved_lookups} resolved, {refresh.no_country_lookups}{' '}
+            without a country, {refresh.failed_lookups} failed.
+          </>
+        )}
+        {refresh.state === 'aborted' && (
+          <>
+            {refresh.abort_reason ?? 'The refresh stopped early.'} It completed{' '}
+            {refresh.completed_lookups} of {refresh.total_lookups} IP lookups
+            ({refresh.resolved_lookups} resolved, {refresh.no_country_lookups} without a country,{' '}
+            {refresh.failed_lookups} failed).
+          </>
+        )}
+      </p>
+      {refresh.total_lookups === 0 && (
+        <p className="muted">
+          No eligible public Peer address is currently referenced by any Network, so there was
+          nothing to re-resolve.
+        </p>
+      )}
+      <dl className="detail-list settings-detail-list">
+        <div><dt>Status</dt><dd>{refreshStateLabel(refresh.state)}</dd></div>
+        <div><dt>Provider for this run</dt><dd>{refresh.provider_label}</dd></div>
+        <div>
+          <dt>IP lookups</dt>
+          <dd>{refresh.completed_lookups} of {refresh.total_lookups} complete</dd>
+        </div>
+        <div><dt>Resolved</dt><dd>{refresh.resolved_lookups}</dd></div>
+        <div><dt>Without a country</dt><dd>{refresh.no_country_lookups}</dd></div>
+        <div><dt>Failed</dt><dd>{refresh.failed_lookups}</dd></div>
+        {refresh.rate_limited_lookups > 0 && (
+          <div><dt>Rate limited</dt><dd>{refresh.rate_limited_lookups}</dd></div>
+        )}
+        <div>
+          <dt>Peer records referencing them</dt>
+          <dd>{refresh.peer_records_in_scope}</dd>
+        </div>
+        <div><dt>Started</dt><dd>{refresh.started_at}</dd></div>
+        {refresh.finished_at && <div><dt>Finished</dt><dd>{refresh.finished_at}</dd></div>}
+      </dl>
+      {refresh.provider_label !== currentProviderLabel && (
+        <p className="muted" role="note">
+          This run used {refresh.provider_label}; the current provider is {currentProviderLabel}.
+        </p>
+      )}
+    </div>
+  )
+}
+
+function refreshStateLabel(state: string): string {
+  switch (state) {
+    case 'running': return 'Running'
+    case 'completed': return 'Completed'
+    default: return 'Stopped early'
+  }
 }
 
 function geoStateLabel(state: string): string {

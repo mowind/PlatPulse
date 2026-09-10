@@ -77,6 +77,8 @@ const GEO_STATUS = {
   pending_lookup_count: null,
   last_success_at: null,
   rate_limited_until: null,
+  refresh: null,
+  refresh_unavailable_reason: 'Geo is Disabled, so no Peer address is resolved',
 }
 
 const TEST_ORIGIN = 'http://platpulse.test'
@@ -188,13 +190,98 @@ describe('Admin Settings workflows', () => {
     // (issue #135), and it states its own fixed destination before selection.
     expect(geoCard.getByLabelText(/GeoJS/)).toBeTruthy()
     expect(geoCard.getByText(/get\.geojs\.io\/v1\/ip\/geo\/\{ip\}\.json/)).toBeTruthy()
-    // Only the four implemented options exist, and a global refresh — which
-    // no slice has delivered yet — is still absent.
+    // Only the four implemented options exist, and the global refresh
+    // (issue #136) is present but explicitly unavailable while Geo is
+    // Disabled: the Server's reason is rendered instead of a fake success.
     expect(geoCard.getAllByRole('radio')).toHaveLength(4)
-    expect(geoCard.queryByRole('button', { name: /Refresh/i })).toBeNull()
+    const refreshButton = geoCard.getByRole('button', { name: 'Refresh Peer geolocation' })
+    expect((refreshButton as HTMLButtonElement).disabled).toBe(true)
+    expect(geoCard.getByText(/Geo is Disabled, so no Peer address is resolved/)).toBeTruthy()
+    expect(geoCard.getByText(/One lookup per distinct IP address/)).toBeTruthy()
     expect(geoCard.getByText(/Peer addresses never leave the Server/)).toBeTruthy()
     expect(geoCard.getByText('Not scheduled')).toBeTruthy()
   })
+
+  it('forces a real Geo refresh and reports per-address progress with terminal counts', async () => {
+    let postCount = 0
+    const enabled = {
+      ...GEO_STATUS,
+      provider: 'local_mmdb',
+      provider_label: 'Local MMDB',
+      provider_generation: 2,
+      state: 'current',
+      pending_lookup_count: 0,
+      refresh_unavailable_reason: null,
+    }
+    let statusBody: Record<string, unknown> = enabled
+    const run = {
+      run_id: 'run-1',
+      provider: 'local_mmdb',
+      provider_label: 'Local MMDB',
+      provider_generation: 2,
+      state: 'running',
+      abort_code: null,
+      abort_reason: null,
+      total_lookups: 4,
+      peer_records_in_scope: 6,
+      completed_lookups: 1,
+      resolved_lookups: 1,
+      no_country_lookups: 0,
+      failed_lookups: 0,
+      rate_limited_lookups: 0,
+      started_at: '2026-08-20T02:00:00Z',
+      finished_at: null,
+    }
+    const running = { ...enabled, refresh: run }
+    const completed = {
+      ...enabled,
+      refresh: {
+        ...run,
+        state: 'completed',
+        completed_lookups: 4,
+        resolved_lookups: 2,
+        no_country_lookups: 1,
+        failed_lookups: 1,
+        finished_at: '2026-08-20T02:00:05Z',
+      },
+    }
+    mockFetch(successfulRoutes({
+      '/api/admin/v1/geo': () => response(statusBody),
+      '/api/admin/v1/geo/refresh': () => {
+        postCount += 1
+        statusBody = running
+        return response({ refresh: run, started: true, audit_event_id: 91 })
+      },
+    }))
+
+    await renderSettings()
+    const geoCard = within(screen.getAllByRole('article')[2])
+    expect(geoCard.queryByText(/Refresh complete/)).toBeNull()
+
+    fireEvent.click(geoCard.getByRole('button', { name: 'Refresh Peer geolocation' }))
+
+    await waitFor(() => expect(postCount).toBe(1))
+    // Progress comes from the Server diagnostic rather than from the POST
+    // having been accepted, and the counts are clearly IP lookups.
+    expect(await geoCard.findByText(/Refreshing: 1 of 4 IP lookups done/)).toBeTruthy()
+    expect(geoCard.getByText(/1 resolved, 0 without a country, 0 failed/)).toBeTruthy()
+    expect((geoCard.getByRole('button', { name: /Refreshing/ }) as HTMLButtonElement).disabled).toBe(true)
+    // One address can serve several Peer records, so the two denominators are
+    // stated separately: 4 IP lookups, 6 Peer records.
+    expect(
+      geoCard.getByText('Peer records referencing them').closest('div')?.textContent,
+    ).toContain('6')
+
+    statusBody = completed
+    await waitFor(
+      () => expect(geoCard.getByText(/Refresh complete: 2 resolved/)).toBeTruthy(),
+      { timeout: 4_000 },
+    )
+    expect(geoCard.getByText(/1 without a country, 1 failed/)).toBeTruthy()
+    expect(geoCard.getByText('4 of 4 complete')).toBeTruthy()
+    expect(geoCard.getByRole('button', { name: 'Refresh Peer geolocation' })).toBeTruthy()
+  }, 20_000)
+
 
   it('changes the Geo provider through the audited Admin API', async () => {
     let putBody: unknown = null

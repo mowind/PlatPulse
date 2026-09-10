@@ -113,14 +113,85 @@ pub async fn pending_addresses(
 
 /// Run one bounded background pass for the selected provider. Disabled
 /// schedules no work at all.
+///
+/// A running Owner-triggered refresh owns exactly the addresses in its frozen
+/// scope, so this pass excludes them: one address is never resolved by two
+/// paths at the same time. Everything else keeps its normal cadence, which is
+/// what lets a Peer reference that appeared mid-run be resolved by the next
+/// pass instead of waiting for the run to finish. A pass that arrives after
+/// the refresh finished finds every refreshed address valid and schedules
+/// nothing, which is the same rule seen from the other side; an address the
+/// refresh could not resolve stays pending and is retried here on the normal
+/// bounded backoff.
 pub async fn run_pass(state: &AppState, now: &str) -> Result<BackfillSummary, sqlx::Error> {
     let config = state.geo_config();
-    match config.provider {
-        GeoProvider::Disabled => Ok(BackfillSummary::default()),
-        GeoProvider::LocalMmdb => run_local_pass(state, &config, now).await,
-        // Both external providers reuse one execution path: the provider only
-        // changes which fixed profile the shared outbound client carries.
-        GeoProvider::Ipinfo | GeoProvider::GeoJs => run_external_pass(state, &config, now).await,
+    if config.provider == GeoProvider::Disabled {
+        return Ok(BackfillSummary::default());
+    }
+    // A recently rate-limited provider is left alone until its bounded window
+    // passes instead of being asked again on every tick.
+    if let Some(client) = state.external_geo(config.provider) {
+        if client.throttled_until(now).is_some() {
+            return Ok(BackfillSummary::default());
+        }
+    }
+    let owned = state
+        .geo_refresh()
+        .owned_by(config.provider, config.generation);
+    let mut addresses = scheduled_addresses(state, &config, now).await?;
+    if !owned.is_empty() {
+        addresses.retain(|ip| !owned.contains(ip));
+    }
+    run_bounded_pass(
+        state,
+        &config,
+        now,
+        provider_concurrency(state, &config),
+        addresses,
+    )
+    .await
+}
+
+/// The concurrency bound of the selected provider's own resolution path. Local
+/// MMDB reads on blocking threads and every External Geo Provider carries its
+/// own outbound bound; Disabled resolves nothing.
+pub(crate) fn provider_concurrency(state: &AppState, config: &GeoConfig) -> usize {
+    if config.provider.needs_local_database() {
+        return geo::MAX_BACKFILL_CONCURRENCY;
+    }
+    state
+        .external_geo(config.provider)
+        .map(|client| client.max_concurrency())
+        .unwrap_or(1)
+}
+
+/// Resolve one address through the selected provider's own path. It is the one
+/// per-address resolver the background pass and an Owner-triggered refresh
+/// share, so a forced re-query can never take a different route from an
+/// automatic one.
+pub(crate) async fn resolve_address(
+    state: &AppState,
+    config: &GeoConfig,
+    ip: IpAddr,
+    now: &str,
+) -> GeoLookup {
+    if config.provider.needs_local_database() {
+        // The MMDB read is synchronous and must not occupy the async runtime:
+        // a slow or replaced database cannot delay report ingestion, which
+        // writes on other connections.
+        let loader = Arc::clone(state.geo());
+        return tokio::task::spawn_blocking(move || loader.resolve(&ip))
+            .await
+            .unwrap_or(GeoLookup::Unavailable);
+    }
+    match state.external_geo(config.provider) {
+        // The selected provider's own client is used, so its destination, its
+        // country field, its bounded backoff, and its latest-outcome flag are
+        // the only ones observed. A provider that is not selected performs no
+        // work at all, which is also what makes Disabled safe: nothing falls
+        // back to the other external provider.
+        Some(client) => client.resolve(ip, now).await,
+        None => GeoLookup::Unavailable,
     }
 }
 
@@ -170,35 +241,33 @@ async fn scheduled_addresses(
 }
 
 /// Drive one bounded, IP-deduplicated lookup set. Scheduling, concurrency,
-/// accounting, generation checks, and cache writes are identical for both
-/// providers; only the per-address resolver and its concurrency bound differ.
-async fn run_bounded_pass<F, Fut>(
+/// accounting, generation checks, and cache writes are identical for every
+/// provider; only the per-address resolver and its concurrency bound differ.
+async fn run_bounded_pass(
     state: &AppState,
     config: &GeoConfig,
     now: &str,
     concurrency: usize,
     addresses: Vec<IpAddr>,
-    lookup: F,
-) -> Result<BackfillSummary, sqlx::Error>
-where
-    F: Fn(IpAddr) -> Fut + Clone + Send + 'static,
-    Fut: std::future::Future<Output = GeoLookup> + Send,
-{
+) -> Result<BackfillSummary, sqlx::Error> {
     let mut summary = BackfillSummary::default();
     if addresses.is_empty() {
         return Ok(summary);
     }
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency.max(1)));
     let mut lookups = tokio::task::JoinSet::new();
+    let clock: Arc<str> = Arc::from(now);
     for ip in addresses {
-        let lookup = lookup.clone();
         let permit = Arc::clone(&semaphore);
+        let state = state.clone();
+        let config = config.clone();
+        let clock = Arc::clone(&clock);
         lookups.spawn(async move {
             let _permit = permit
                 .acquire_owned()
                 .await
                 .expect("Geo backfill semaphore is never closed");
-            (ip, lookup(ip).await)
+            (ip, resolve_address(&state, &config, ip, &clock).await)
         });
     }
     while let Some(joined) = lookups.join_next().await {
@@ -208,74 +277,6 @@ where
         record_outcome(state, config, &mut summary, ip, outcome, now).await?;
     }
     Ok(summary)
-}
-
-/// The local-database pass: a synchronous MMDB read per address, bounded by
-/// the local concurrency limit.
-async fn run_local_pass(
-    state: &AppState,
-    config: &GeoConfig,
-    now: &str,
-) -> Result<BackfillSummary, sqlx::Error> {
-    let addresses = scheduled_addresses(state, config, now).await?;
-    let loader = Arc::clone(state.geo());
-    run_bounded_pass(
-        state,
-        config,
-        now,
-        geo::MAX_BACKFILL_CONCURRENCY,
-        addresses,
-        move |ip| {
-            let loader = Arc::clone(&loader);
-            async move {
-                // The MMDB read is synchronous and must not occupy the async
-                // runtime: a slow or replaced database cannot delay report
-                // ingestion, which writes on other connections.
-                tokio::task::spawn_blocking(move || loader.resolve(&ip))
-                    .await
-                    .unwrap_or(GeoLookup::Unavailable)
-            }
-        },
-    )
-    .await
-}
-
-/// The external pass, shared by every External Geo Provider. It adds exactly
-/// two things to the shared scheduling: a bounded provider-wide rate-limit
-/// backoff, and the outbound concurrency bound. Neither can delay report
-/// ingestion, because both live entirely inside this background task.
-///
-/// The selected provider's own client is used, so its destination, its
-/// country field, its bounded backoff, and its latest-outcome flag are the
-/// only ones observed. A provider that is not selected performs no work at
-/// all, which is also what makes Disabled safe: nothing falls back to the
-/// other external provider.
-async fn run_external_pass(
-    state: &AppState,
-    config: &GeoConfig,
-    now: &str,
-) -> Result<BackfillSummary, sqlx::Error> {
-    let Some(client) = state.external_geo(config.provider) else {
-        // Unreachable by construction: only external providers are routed
-        // here. Refusing to send is the safe direction if that ever changes.
-        return Ok(BackfillSummary::default());
-    };
-    let client = Arc::clone(client);
-    // A recently rate-limited provider is left alone until its bounded window
-    // passes instead of being asked again on every tick.
-    if client.throttled_until(now).is_some() {
-        return Ok(BackfillSummary::default());
-    }
-    let addresses = scheduled_addresses(state, config, now).await?;
-    let concurrency = client.max_concurrency();
-    let clock: Arc<str> = Arc::from(now);
-    let lookup_clock = Arc::clone(&clock);
-    run_bounded_pass(state, config, &clock, concurrency, addresses, move |ip| {
-        let client = Arc::clone(&client);
-        let clock = Arc::clone(&lookup_clock);
-        async move { client.resolve(ip, &clock).await }
-    })
-    .await
 }
 
 /// Write one lookup result for the selection that scheduled it. The durable

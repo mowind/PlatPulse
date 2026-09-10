@@ -728,6 +728,70 @@ export type GeoProviderUpdateRequest = {
     provider: string;
 };
 
+export type GeoRefreshMutationResponse = {
+    audit_event_id: number;
+    refresh: GeoRefreshStatus;
+    /**
+     * False when this request joined the identical run that was already in
+     * progress instead of scheduling a second batch.
+     */
+    started: boolean;
+};
+
+/**
+ * One Owner-triggered global refresh run (issue #136). Every count is a
+ * count of address lookups. `peer_records_in_scope` keeps the Public
+ * projection's per-Node Peer-record denominator beside them, so the two
+ * units are never conflated.
+ */
+export type GeoRefreshStatus = {
+    /**
+     * A stable machine-readable reason when the run stopped early, or null.
+     */
+    abort_code?: string | null;
+    /**
+     * The matching non-sensitive sentence, or null when the run is running
+     * or completed.
+     */
+    abort_reason?: string | null;
+    /**
+     * Lookups that reached an authoritative outcome. It stays below
+     * `total_lookups` while the run is running or after it was aborted.
+     */
+    completed_lookups: number;
+    failed_lookups: number;
+    finished_at?: string | null;
+    no_country_lookups: number;
+    /**
+     * Current Peer records that reference those addresses. One address may
+     * serve several records, so this is never derived from the lookup count.
+     */
+    peer_records_in_scope: number;
+    provider: string;
+    provider_generation: number;
+    provider_label: string;
+    /**
+     * Requests the provider refused while rate limiting this Server. A
+     * rate-limited request is not a result and never counts as completed.
+     */
+    rate_limited_lookups: number;
+    resolved_lookups: number;
+    /**
+     * An opaque run identifier. It carries no address.
+     */
+    run_id: string;
+    started_at: string;
+    /**
+     * running, completed, or aborted.
+     */
+    state: string;
+    /**
+     * Distinct public Peer addresses the run resolves. One lookup per
+     * address; this is not a count of Peer records.
+     */
+    total_lookups: number;
+};
+
 export type GeoStatusDiagnostic = {
     build_epoch?: number | null;
     /**
@@ -765,6 +829,13 @@ export type GeoStatusDiagnostic = {
      * instant: no address, endpoint, or provider error crosses this DTO.
      */
     rate_limited_until?: string | null;
+    refresh?: null | GeoRefreshStatus;
+    /**
+     * Why the global refresh cannot start in this configuration, or null
+     * when it can. It is a stable, path-free sentence, so a Disabled
+     * provider is explained before the Owner clicks anything.
+     */
+    refresh_unavailable_reason?: string | null;
     /**
      * Effective database/result state: disabled, current, stale, or error.
      * It is independent of Peer collection freshness and Node health.
@@ -2966,6 +3037,30 @@ export type UpdateGeoProviderResponses = {
 };
 
 export type UpdateGeoProviderResponse = UpdateGeoProviderResponses[keyof UpdateGeoProviderResponses];
+
+export type TriggerGeoRefreshData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/geo/refresh';
+};
+
+export type TriggerGeoRefreshErrors = {
+    400: ApiErrorBody;
+    403: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type TriggerGeoRefreshError = TriggerGeoRefreshErrors[keyof TriggerGeoRefreshErrors];
+
+export type TriggerGeoRefreshResponses = {
+    /**
+     * Owner-only Geo refresh run
+     */
+    200: GeoRefreshMutationResponse;
+};
+
+export type TriggerGeoRefreshResponse = TriggerGeoRefreshResponses[keyof TriggerGeoRefreshResponses];
 
 export type HistoryWindowData = {
     body?: never;

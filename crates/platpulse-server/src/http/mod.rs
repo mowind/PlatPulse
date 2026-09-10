@@ -395,6 +395,7 @@ pub struct AppState {
     geo_config: Arc<std::sync::RwLock<crate::geo::GeoConfig>>,
     geo_wake: Arc<Notify>,
     external_geo: crate::geo_external::ExternalGeoPaths,
+    geo_refresh: crate::geo_refresh::GeoRefreshRegistry,
     pub(crate) public_realtime: RealtimeHub,
     pub(crate) admin_realtime: RealtimeHub,
     metrics: crate::metrics::MetricsRegistry,
@@ -531,6 +532,7 @@ impl AppState {
             geo_config: Arc::new(std::sync::RwLock::new(crate::geo::GeoConfig::disabled())),
             geo_wake: Arc::new(Notify::new()),
             external_geo: crate::geo_external::ExternalGeoPaths::production(),
+            geo_refresh: crate::geo_refresh::GeoRefreshRegistry::default(),
             public_realtime: RealtimeHub::default(),
             admin_realtime: RealtimeHub::default(),
             metrics: crate::metrics::MetricsRegistry::new(),
@@ -619,6 +621,13 @@ impl AppState {
             config.provider = selection.provider;
             config.generation = selection.generation;
         }
+        // A refresh that was running under the previous selection can no
+        // longer produce results for the current one, so its terminal state
+        // becomes truthful immediately instead of waiting for its worker to
+        // observe the change.
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        self.geo_refresh
+            .abort_active(crate::geo_refresh::RefreshAbort::ProviderChanged, &now);
         self.geo_wake.notify_one();
     }
 
@@ -683,6 +692,11 @@ impl AppState {
 
     pub(crate) fn geo(&self) -> &Arc<crate::geo::GeoLoader> {
         &self.geo
+    }
+
+    /// The process-local Owner-triggered refresh registry (issue #136).
+    pub(crate) fn geo_refresh(&self) -> &crate::geo_refresh::GeoRefreshRegistry {
+        &self.geo_refresh
     }
 
     /// The outbound path of one External Geo Provider, or `None` when the
@@ -2595,6 +2609,7 @@ mod tests {
             "/api/admin/v1/missing",
             "/api/admin/v1/session",
             "/api/admin/v1/sessions",
+            "/api/admin/v1/geo/refresh",
             "/api/admin/v1/agents/enroll-token",
             "/api/admin/v1/agents/any/recover",
             "/api/admin/v1/agents/any/credentials/rotate",

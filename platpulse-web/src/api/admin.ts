@@ -81,11 +81,13 @@ import {
   setPersonRole,
   setPersonStatus,
   setVisibility,
+  triggerGeoRefresh as triggerGeoRefreshApi,
   updateNetwork,
   updateHistoryWindow,
   updateValidatorLink,
   type AccessSettingsResponse,
   type GeoProviderMutationResponse,
+  type GeoRefreshMutationResponse,
   type GeoStatusDiagnostic,
   type HistoryWindowResponse,
   type AdminNetwork,
@@ -1206,6 +1208,12 @@ export function useAdminGeo(generation: number) {
   return useQuery({
     queryKey: [...adminKeys.geo, generation],
     queryFn: ({ signal }) => fetchAdminGeo(signal),
+    // A refresh run reports real per-address progress. Polling while one is
+    // running keeps the Settings card truthful even when the SSE stream is
+    // reconnecting or disabled, and it stops on the first terminal state
+    // instead of holding a stale "running" forever.
+    refetchInterval: (query) =>
+      query.state.data?.refresh?.state === 'running' ? 1000 : false,
   })
 }
 
@@ -1231,6 +1239,30 @@ export async function updateGeoProviderEntry(
     adminQueryClient.setQueriesData<GeoStatusDiagnostic>(
       { predicate: (query) => isGeoQuery(query.queryKey) },
       response.geo,
+    )
+    return response
+  } finally {
+    await adminQueryClient.invalidateQueries({ predicate: (query) => isGeoQuery(query.queryKey) })
+  }
+}
+
+/** Owner-only global Geo refresh (issue #136). The Server re-resolves every
+ * public Peer address the current Networks reference through the selected
+ * provider, bypassing the valid cache, and returns the run itself; the
+ * Settings card follows its real progress from the diagnostic query, so a
+ * batch that was only accepted is never rendered as success. */
+export async function triggerGeoRefreshEntry(
+  csrfToken: string,
+): Promise<GeoRefreshMutationResponse> {
+  const isGeoQuery = (queryKey: readonly unknown[]) => samePrefix(queryKey, adminKeys.geo)
+  try {
+    const response = await requestAdmin(
+      () => triggerGeoRefreshApi({ headers: { 'X-CSRF-Token': csrfToken } }),
+      'Unable to refresh Peer geolocation',
+    )
+    adminQueryClient.setQueriesData<GeoStatusDiagnostic>(
+      { predicate: (query) => isGeoQuery(query.queryKey) },
+      (current) => (current ? { ...current, refresh: response.refresh } : current),
     )
     return response
   } finally {

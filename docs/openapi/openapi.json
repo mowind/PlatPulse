@@ -1817,6 +1817,58 @@
         }
       }
     },
+    "/api/admin/v1/geo/refresh": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Owner-only global Peer geolocation refresh (issue #136).",
+        "description": "It re-resolves every eligible public Peer address the Server currently\nreferences, bypassing the 24-hour validity of the retained cache, through\nthe same provider path the automatic background pass uses. The response is\nthe run itself: the Settings surface reads real per-address progress from\n`GET /api/admin/v1/geo` and follows it through the existing Geo\ninvalidation. A repeated request joins the identical running run instead\nof scheduling a second batch, and Geo that cannot resolve anything is\nrefused with a stable public error instead of a fake success.\n\nThe request carries no body, so - like every other bodyless Admin mutation -\nthe guard enforces the session, the Owner role, the Origin, and the CSRF\ntoken without requiring a JSON content type; there is no request document\na form-encoded cross-site post could smuggle in.",
+        "operationId": "trigger_geo_refresh",
+        "responses": {
+          "200": {
+            "description": "Owner-only Geo refresh run",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeoRefreshMutationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/v1/history-window": {
       "get": {
         "tags": [
@@ -8837,6 +8889,129 @@
           }
         }
       },
+      "GeoRefreshMutationResponse": {
+        "type": "object",
+        "required": [
+          "refresh",
+          "started",
+          "audit_event_id"
+        ],
+        "properties": {
+          "audit_event_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "refresh": {
+            "$ref": "#/components/schemas/GeoRefreshStatus"
+          },
+          "started": {
+            "type": "boolean",
+            "description": "False when this request joined the identical run that was already in\nprogress instead of scheduling a second batch."
+          }
+        }
+      },
+      "GeoRefreshStatus": {
+        "type": "object",
+        "description": "One Owner-triggered global refresh run (issue #136). Every count is a\ncount of address lookups. `peer_records_in_scope` keeps the Public\nprojection's per-Node Peer-record denominator beside them, so the two\nunits are never conflated.",
+        "required": [
+          "run_id",
+          "provider",
+          "provider_label",
+          "provider_generation",
+          "state",
+          "total_lookups",
+          "peer_records_in_scope",
+          "completed_lookups",
+          "resolved_lookups",
+          "no_country_lookups",
+          "failed_lookups",
+          "rate_limited_lookups",
+          "started_at"
+        ],
+        "properties": {
+          "abort_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A stable machine-readable reason when the run stopped early, or null."
+          },
+          "abort_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The matching non-sensitive sentence, or null when the run is running\nor completed."
+          },
+          "completed_lookups": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Lookups that reached an authoritative outcome. It stays below\n`total_lookups` while the run is running or after it was aborted.",
+            "minimum": 0
+          },
+          "failed_lookups": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "no_country_lookups": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "peer_records_in_scope": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Current Peer records that reference those addresses. One address may\nserve several records, so this is never derived from the lookup count.",
+            "minimum": 0
+          },
+          "provider": {
+            "type": "string"
+          },
+          "provider_generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "provider_label": {
+            "type": "string"
+          },
+          "rate_limited_lookups": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Requests the provider refused while rate limiting this Server. A\nrate-limited request is not a result and never counts as completed.",
+            "minimum": 0
+          },
+          "resolved_lookups": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "run_id": {
+            "type": "string",
+            "description": "An opaque run identifier. It carries no address."
+          },
+          "started_at": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "description": "running, completed, or aborted."
+          },
+          "total_lookups": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Distinct public Peer addresses the run resolves. One lookup per\naddress; this is not a count of Peer records.",
+            "minimum": 0
+          }
+        }
+      },
       "GeoStatusDiagnostic": {
         "type": "object",
         "required": [
@@ -8923,6 +9098,24 @@
               "null"
             ],
             "description": "The bounded backoff window an external provider currently imposes, or\nnull when the provider may be asked again now. It is a Server-owned\ninstant: no address, endpoint, or provider error crosses this DTO."
+          },
+          "refresh": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GeoRefreshStatus",
+                "description": "The global refresh run the Settings surface reports: running, or the\nterminal result of the newest run, or null when no refresh has been\nrequested since this Server process started."
+              }
+            ]
+          },
+          "refresh_unavailable_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the global refresh cannot start in this configuration, or null\nwhen it can. It is a stable, path-free sentence, so a Disabled\nprovider is explained before the Owner clicks anything."
           },
           "state": {
             "type": "string",

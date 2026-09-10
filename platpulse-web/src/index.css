@@ -4634,6 +4634,11 @@ button {
 .admin-shell .settings-detail-list dd { overflow-wrap: anywhere; }
 .admin-shell .settings-consequence, .admin-shell .impact-preview { padding: 0.8rem 1rem; border: 1px solid var(--line); border-radius: 0.6rem; background: rgba(241, 245, 249, 0.76); }
 .admin-shell .settings-block-heading h2, .admin-shell .impact-preview h3 { color: var(--ink); }
+.admin-shell .geo-refresh { display: grid; gap: 0.75rem; margin-top: 1.25rem; padding-top: 1.25rem; border-top: 1px solid var(--line); }
+.admin-shell .geo-refresh h3 { margin: 0; color: var(--ink); }
+.admin-shell .geo-refresh .primary-action { justify-self: start; min-height: 44px; }
+.admin-shell .geo-refresh-status { display: grid; gap: 0.75rem; }
+.admin-shell .geo-refresh-status .settings-detail-list { margin: 0; }
 .admin-shell .summary-strip { color: var(--ink); background: rgba(255, 255, 255, 0.68); border-color: rgba(148, 163, 184, 0.22); box-shadow: none; }
 .admin-shell .audit-list a { display: inline-flex; min-width: 44px; min-height: 44px; align-items: center; }
 .admin-shell .summary-strip dt { color: var(--muted); }
@@ -4675,6 +4680,7 @@ button {
   .admin-shell .settings-detail-list { grid-template-columns: 1fr; }
   .admin-shell .settings-block-heading { flex-direction: column; }
   .admin-shell .settings-form input, .admin-shell .settings-form button { width: 100%; min-height: 44px; }
+  .admin-shell .geo-refresh .primary-action { justify-self: stretch; width: 100%; }
   .admin-shell .admin-header-context {
     order: 3;
     flex: 1 0 100%;

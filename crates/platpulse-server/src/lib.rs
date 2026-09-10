@@ -23,6 +23,7 @@ pub mod geo_backfill;
 pub mod geo_external;
 pub mod geo_geojs;
 pub mod geo_ipinfo;
+pub mod geo_refresh;
 pub mod http;
 pub mod init;
 pub mod metrics;
