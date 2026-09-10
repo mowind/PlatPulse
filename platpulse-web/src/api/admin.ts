@@ -1226,15 +1226,15 @@ export async function updateGeoProviderEntry(
         }),
       'Unable to change the Geo provider',
     )
+    // REST stays authoritative: seed the diagnostic the Server just returned,
+    // then refetch so a concurrent background resolution is not masked.
     adminQueryClient.setQueriesData<GeoStatusDiagnostic>(
       { predicate: (query) => isGeoQuery(query.queryKey) },
       response.geo,
     )
-    await adminQueryClient.invalidateQueries({ predicate: (query) => isGeoQuery(query.queryKey) })
     return response
-  } catch (error) {
+  } finally {
     await adminQueryClient.invalidateQueries({ predicate: (query) => isGeoQuery(query.queryKey) })
-    throw error
   }
 }
 

@@ -204,15 +204,15 @@ Consensus 表示 Node 当前的协议状态，不等于 Validator 管理。当�
 - 成功空 Peer Snapshot 是权威零；never-observed 或没有可靠分母时保持 unavailable/unknown 且不输出计数。Geo database/国家结果状态与 Peer 采集状态、新鲜度互相独立：Geo Current 不代表 Peer 在线或刚刚采集，采集失败保留的 Peer Snapshot 仍按自身状态展示。
 - 每个 Network 的 Public Geo Insight 是独立投影；本契约不提供跨 Network 的全局去重 Peer 总数，也不把缺失 Network 当零或制造完整性百分比。部分覆盖时投影如实标注 scope，Public 只含国家代码与计数，不含原始 IP、RPC Endpoint、精确位置或敏感错误。
 
-### 5.9 Geo 服务商、后台解析与缓存（issue #132）
+### 5.9 Geo Provider、后台解析与缓存（issue #132）
 
-- Geo 的服务商由 Owner 在 Settings 选择，当前只实现 `Disabled` 与 `Local MMDB`；一次只用一个，不自动回退，也没有外部服务商。未实现的 IPinfo/GeoJS 不出现在管理界面、OpenAPI 或可持久化的 provider 值中。
+- Geo Provider 由 Owner 在 Settings 选择，当前只实现 `Disabled` 与 `Local MMDB`；一次只用一个，不自动回退，也没有外部 Provider。未实现的 IPinfo/GeoJS 不出现在管理界面、OpenAPI 或可持久化的 `provider` 值中。
 - 选择持久化在 `server_settings`（`geo_provider` + `geo_provider_generation`），每次变更推进 generation。升级时若该键不存在，由部署是否配置本地 MMDB 决定：已配置本地数据库的安装继续用 `Local MMDB`，没有配置的保持 `Disabled`，两条路径都不新增外部请求。MMDB 路径只来自 Server 配置（`[geo] mmdb_path` 或 CLI），不是 Admin 可写字段。
 - 国家解析只在后台执行：Report Ingestion 事务只记录当前 Peer 引用（并更新最后引用时间），不读 MMDB、不做外部 HTTP；`geo_backfill` 负责调度、按规范化公网 IP 去重、有限并发（`MAX_BACKFILL_CONCURRENCY`）、有界批量（`MAX_BACKFILL_BATCH`）、无国家结果的小时级重试间隔，以及每轮结束后的 realtime 失效。慢查询或数据库损坏不会占用 Receipt 事务，也不影响报告接收与就绪状态。
-- 结果按 provider 与规范化 IP 隔离存放在 `geo_location_cache`：国家代码、状态（`current` / `no_country` / `failed`）、最近尝试时间、最近成功时间、出生时间、有效期与最后引用时间。投影与 5m/1h country 聚合只读当前 provider 的行；切换 provider 后旧 provider 的行立即删除，未被任何当前 Peer 引用的行在维护周期内清理，超出 24h TTL 但仍在 30 天硬边界内的结果继续作为 last-good Stale，失败只记录尝试、绝不把 last-good 刷成 Current，超出边界则回到未知。
-- 每次后台写入在事务内重新校验持久化 selection 与进程内 generation：配置变更后迟到的任务不能回写成新配置的结果。
-- 管理接口：`PUT /api/admin/v1/geo/provider`（Owner-only、Origin/JSON/CSRF、审计 `geo_provider_changed`）返回新的诊断；`GET /api/admin/v1/geo` 提供 provider、generation、可选列表、数据库状态、缓存国家数、待解析数量与最近成功时间，均不含路径或原始 IP。Public 仍然只见国家代码与计数。
-- 本票不含外部服务商、全局强制刷新与第三方 MMDB 自动下载；后续加入时复用同一条后台执行路径与 provider 隔离。
+- 结果按 Geo Provider 与规范化 IP 隔离存放在 `geo_location_cache`：国家代码、状态（`current` / `no_country` / `failed`）、最近尝试时间、最近成功时间、出生时间、有效期与最后引用时间。投影与 5m/1h country 聚合只读当前 provider 的行；切换 provider 后旧 provider 的行立即删除，未被任何当前 Peer 引用的行在维护周期内清理，超出 24h TTL 但仍在 30 天硬边界内的结果继续作为 last-good Stale，失败只记录尝试、绝不把 last-good 刷成 Current，超出边界则回到未知。
+- 每次后台写入在事务内重新校验持久化 selection 与进程内 generation：配置变更后迟到的任务不能回写成新配置的结果。cleanup 只应用硬保留边界、当前引用规则与容量上界：24h 过期只把结果标为 Stale last-good，绝不删除仍在硬边界内的国家结果。
+- 管理接口：`PUT /api/admin/v1/geo/provider`（Owner-only、Origin/JSON/CSRF、审计 `geo_provider_changed`）在事务内推进 generation 并返回新的诊断；`GET /api/admin/v1/geo` 提供 provider、generation、可选列表、数据库状态、缓存国家数、完整待解析队列长度与最近成功时间，均不含路径或原始 IP。Provider 为 Disabled 但本地数据库已配置且不可用时，诊断仍显示该数据库的错误说明，Owner 在选择前即可看到。Public 仍然只见国家代码与计数。
+- 本票不含外部 Provider、全局强制刷新与第三方 MMDB 自动下载；后续加入时复用同一条后台执行路径与 provider 隔离。
 
 ---
 

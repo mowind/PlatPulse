@@ -719,10 +719,6 @@ export type GeoStatusDiagnostic = {
      */
     cache_country_count: number;
     /**
-     * Retained cache rows for the selected provider.
-     */
-    cache_entry_count: number;
-    /**
      * Whether this deployment configured a local GeoLite2 Country database.
      */
     configured: boolean;

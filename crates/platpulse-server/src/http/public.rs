@@ -2730,7 +2730,10 @@ mod tests {
         )));
         let state = state
             .with_geo_loader(loader)
-            .with_geo_provider(crate::geo::GeoProvider::LocalMmdb, 1);
+            .with_geo_provider(crate::geo::GeoSelection {
+                provider: crate::geo::GeoProvider::LocalMmdb,
+                generation: 1,
+            });
         let insight = public_country_distribution(&state, "mainnet", &state.geo_status()).await;
         assert_eq!(insight.state, "error");
         assert_eq!(insight.error_reason.as_deref(), Some(PUBLIC_GEO_ERROR));
@@ -2751,7 +2754,10 @@ mod tests {
             .with_geo_loader(std::sync::Arc::new(
                 crate::geo::GeoLoader::enabled_for_tests(),
             ))
-            .with_geo_provider(crate::geo::GeoProvider::LocalMmdb, 1)
+            .with_geo_provider(crate::geo::GeoSelection {
+                provider: crate::geo::GeoProvider::LocalMmdb,
+                generation: 1,
+            })
     }
 
     fn seconds_ago(seconds: i64) -> String {

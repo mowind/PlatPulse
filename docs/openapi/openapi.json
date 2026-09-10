@@ -8834,8 +8834,7 @@
           "providers",
           "state",
           "configured",
-          "cache_country_count",
-          "cache_entry_count"
+          "cache_country_count"
         ],
         "properties": {
           "build_epoch": {
@@ -8850,11 +8849,6 @@
             "type": "integer",
             "format": "int64",
             "description": "Distinct countries with a currently valid retained result."
-          },
-          "cache_entry_count": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Retained cache rows for the selected provider."
           },
           "configured": {
             "type": "boolean",

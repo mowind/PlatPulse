@@ -52,6 +52,7 @@ pub async fn pending_addresses(
     pool: &SqlitePool,
     provider: GeoProvider,
     now: &str,
+    limit: Option<usize>,
 ) -> Result<Vec<IpAddr>, sqlx::Error> {
     let rows = sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>)>(
         "SELECT DISTINCT peers.remote_ip, cache.country_code, cache.expires_at, cache.last_attempt_at FROM current_node_peers peers LEFT JOIN geo_location_cache cache ON cache.provider = ? AND cache.canonical_ip = peers.remote_ip WHERE peers.remote_ip IS NOT NULL ORDER BY peers.remote_ip ASC",
@@ -60,11 +61,12 @@ pub async fn pending_addresses(
     .fetch_all(pool)
     .await?;
     let retry_before = geo::cache_attempt_cutoff(now);
+    let bound = limit.unwrap_or(usize::MAX);
     let mut pending = BTreeSet::new();
     // Rows arrive ordered by address, so the bound is reached after the
     // lowest addresses and a later pass continues from there.
     for (remote_ip, country_code, expires_at, last_attempt_at) in rows {
-        if pending.len() >= geo::MAX_BACKFILL_BATCH {
+        if pending.len() >= bound {
             break;
         }
         let Some(canonical) = geo::GeoLoader::canonical_public_ip(&remote_ip) else {
@@ -97,7 +99,13 @@ pub async fn run_pass(state: &AppState, now: &str) -> Result<BackfillSummary, sq
     if !config.provider.needs_local_database() {
         return Ok(BackfillSummary::default());
     }
-    let addresses = pending_addresses(state.db().pool(), config.provider, now).await?;
+    let addresses = pending_addresses(
+        state.db().pool(),
+        config.provider,
+        now,
+        Some(geo::MAX_BACKFILL_BATCH),
+    )
+    .await?;
     let mut summary = BackfillSummary::default();
     if addresses.is_empty() {
         return Ok(summary);
@@ -261,16 +269,7 @@ mod tests {
     const RESOLVABLE: &str = "89.160.20.112";
 
     fn write_mmdb(path: &std::path::Path) {
-        std::fs::write(
-            path,
-            include_bytes!("../test-data/GeoIP2-Country-Test.mmdb"),
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        }
+        crate::geo::write_test_database(path);
     }
 
     /// A real Server database with a real GeoIP2 Country fixture, the given
@@ -302,7 +301,10 @@ mod tests {
         }
         let state = AppState::new(database, None, auth)
             .with_geo_loader(loader)
-            .with_geo_provider(provider, 1);
+            .with_geo_provider(GeoSelection {
+                provider,
+                generation: 1,
+            });
         crate::geo::write_provider_selection(
             state.db().pool(),
             GeoSelection {
@@ -419,7 +421,7 @@ mod tests {
             run_pass(&state, NOW).await.unwrap(),
             BackfillSummary::default()
         );
-        let pending = pending_addresses(state.db().pool(), GeoProvider::LocalMmdb, NOW)
+        let pending = pending_addresses(state.db().pool(), GeoProvider::LocalMmdb, NOW, None)
             .await
             .unwrap();
         assert!(pending.is_empty());
@@ -541,7 +543,10 @@ mod tests {
 
         // Selecting Local MMDB is what starts work; the generation advances
         // with the durable selection.
-        state.apply_geo_provider(GeoProvider::LocalMmdb, 2);
+        state.apply_geo_provider(GeoSelection {
+            provider: GeoProvider::LocalMmdb,
+            generation: 2,
+        });
         crate::geo::write_provider_selection(
             state.db().pool(),
             GeoSelection {
@@ -595,7 +600,10 @@ mod tests {
             generation: 2,
             mmdb_path: state.geo_config().mmdb_path,
         };
-        state.apply_geo_provider(GeoProvider::Disabled, 3);
+        state.apply_geo_provider(GeoSelection {
+            provider: GeoProvider::Disabled,
+            generation: 3,
+        });
         assert!(
             !record_lookup(
                 &state,
@@ -610,7 +618,10 @@ mod tests {
         assert_eq!(cache_count(&state).await, 0);
 
         // The current selection writes normally.
-        state.apply_geo_provider(GeoProvider::LocalMmdb, 4);
+        state.apply_geo_provider(GeoSelection {
+            provider: GeoProvider::LocalMmdb,
+            generation: 4,
+        });
         crate::geo::write_provider_selection(
             state.db().pool(),
             GeoSelection {
@@ -684,6 +695,142 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(cache_count(&state).await, 0);
+    }
+
+    /// Regression (issue #132 review): cleanup must never delete a retained
+    /// country result that is still last-good. Expiry marks Stale; only the
+    /// hard retention boundary, the current-reference rule, and the size
+    /// bound remove anything. Before this rule, the 60-second maintenance
+    /// tick deleted the very row the backfill had just recorded as failed.
+    #[tokio::test]
+    async fn cleanup_never_deletes_a_retained_last_good_country() {
+        let dir = tempdir().unwrap();
+        let state = backfill_state(&dir, true, GeoProvider::LocalMmdb).await;
+        seed_node(&state, "geo-node-a").await;
+        insert_peer(&state, "geo-node-a", "p1", RESOLVABLE).await;
+
+        // A country result whose 24-hour TTL is long past but whose birth
+        // time is still inside the 30-day hard boundary: exactly the
+        // retained last-good state the projections serve as Stale.
+        sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('local_mmdb', ?, 'SE', 'failed', '2026-08-01T09:00:00Z', '2026-08-12T09:00:00Z', '2026-08-01T09:00:00Z', '2026-08-12T09:00:00Z', '2026-08-02T09:00:00Z')")
+            .bind(RESOLVABLE)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            crate::geo::cleanup_cache(state.db().pool(), NOW, GeoProvider::LocalMmdb)
+                .await
+                .unwrap(),
+            0
+        );
+        let row = cache_row(&state, RESOLVABLE).await.unwrap();
+        assert_eq!(row.0.as_deref(), Some("SE"));
+        assert_eq!(row.1, "failed");
+
+        // Past the hard boundary the row is genuinely unretainable.
+        sqlx::query("UPDATE geo_location_cache SET created_at = '2026-06-01T09:00:00Z' WHERE canonical_ip = ?")
+            .bind(RESOLVABLE)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            crate::geo::cleanup_cache(state.db().pool(), NOW, GeoProvider::LocalMmdb)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(cache_count(&state).await, 0);
+    }
+
+    /// Regression (issue #132 review): the reported backlog is the whole
+    /// queue, not the bounded batch one pass may schedule.
+    #[tokio::test]
+    async fn the_reported_backlog_is_not_capped_by_the_batch_bound() {
+        let dir = tempdir().unwrap();
+        let state = backfill_state(&dir, true, GeoProvider::LocalMmdb).await;
+        seed_node(&state, "geo-node-a").await;
+        for index in 0..(geo::MAX_BACKFILL_BATCH + 7) {
+            let ip = format!("8.8.{}.{}", index / 256 + 1, index % 256);
+            insert_peer(&state, "geo-node-a", &format!("p{index}"), &ip).await;
+        }
+
+        let full = pending_addresses(state.db().pool(), GeoProvider::LocalMmdb, NOW, None)
+            .await
+            .unwrap();
+        assert_eq!(full.len(), geo::MAX_BACKFILL_BATCH + 7);
+        let bounded = pending_addresses(
+            state.db().pool(),
+            GeoProvider::LocalMmdb,
+            NOW,
+            Some(geo::MAX_BACKFILL_BATCH),
+        )
+        .await
+        .unwrap();
+        assert_eq!(bounded.len(), geo::MAX_BACKFILL_BATCH);
+        // One pass stays bounded and the next one continues the queue.
+        assert_eq!(
+            run_pass(&state, NOW).await.unwrap().attempted as usize,
+            geo::MAX_BACKFILL_BATCH
+        );
+        let remaining = pending_addresses(state.db().pool(), GeoProvider::LocalMmdb, NOW, None)
+            .await
+            .unwrap();
+        assert_eq!(remaining.len(), 7);
+    }
+
+    /// A restart reuses both the durable provider selection and the retained
+    /// country result: the new process resolves from the existing cache and
+    /// schedules no new lookup for a result that is still valid.
+    #[tokio::test]
+    async fn the_selection_and_retained_results_survive_a_server_restart() {
+        let dir = tempdir().unwrap();
+        // The pass time comes from the real clock so the retained 24-hour
+        // result is still valid after the restart below.
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        {
+            let state = backfill_state(&dir, true, GeoProvider::LocalMmdb).await;
+            seed_node(&state, "geo-node-a").await;
+            insert_peer(&state, "geo-node-a", "p1", RESOLVABLE).await;
+            assert_eq!(run_pass(&state, &now).await.unwrap().resolved, 1);
+            state.db().close().await;
+        }
+
+        // A new Server process over the same state directory.
+        let database = crate::database::ServerDatabase::open_existing(
+            crate::database::ServerDatabaseConfig::new(dir.path().join("server.db")),
+        )
+        .await
+        .unwrap();
+        let pepper_path = dir.path().join("pepper");
+        let auth = crate::auth::AuthConfig::development(
+            crate::secrets::load_pepper_file(&pepper_path).unwrap(),
+            "http://127.0.0.1:8080".to_owned(),
+        );
+        let loader = Arc::new(crate::geo::GeoLoader::new(Some(
+            dir.path().join("GeoIP2-Country-Test.mmdb"),
+        )));
+        assert!(loader.reload());
+        // Startup resolves the durable selection again instead of guessing.
+        let selection = crate::geo::ensure_provider_selection(database.pool(), true)
+            .await
+            .unwrap();
+        assert_eq!(selection.provider, GeoProvider::LocalMmdb);
+        assert_eq!(selection.generation, 1);
+        let state = AppState::new(database, None, auth)
+            .with_geo_loader(loader)
+            .with_geo_provider(selection);
+        // The MMDB was reloaded while the retained row stayed usable.
+        assert!(
+            pending_addresses(state.db().pool(), GeoProvider::LocalMmdb, &now, None)
+                .await
+                .unwrap()
+                .is_empty(),
+            "a retained result inside its lifetime is not looked up again"
+        );
+        let row = cache_row(&state, RESOLVABLE).await.unwrap();
+        assert_eq!(row.0.as_deref(), Some("SE"));
+        assert_eq!(row.1, "current");
+        state.db().close().await;
     }
 
     /// The background path and the Public projection agree end to end: before

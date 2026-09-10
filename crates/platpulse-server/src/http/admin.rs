@@ -4893,8 +4893,6 @@ pub struct GeoStatusDiagnostic {
     pub last_error: Option<String>,
     /// Distinct countries with a currently valid retained result.
     pub cache_country_count: i64,
-    /// Retained cache rows for the selected provider.
-    pub cache_entry_count: i64,
     /// Current Peer addresses still waiting for a fresh country result. It is
     /// null while Geo is disabled, because nothing is scheduled then.
     pub pending_lookup_count: Option<i64>,
@@ -4931,12 +4929,6 @@ async fn geo_diagnostic(state: &AppState) -> Option<GeoStatusDiagnostic> {
     .fetch_one(state.db().pool())
     .await
     .ok()?;
-    let cache_entry_count =
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM geo_location_cache WHERE provider = ?")
-            .bind(provider)
-            .fetch_one(state.db().pool())
-            .await
-            .ok()?;
     let last_success_at = sqlx::query_scalar::<_, Option<String>>(
         "SELECT MAX(last_success_at) FROM geo_location_cache WHERE provider = ?",
     )
@@ -4945,9 +4937,11 @@ async fn geo_diagnostic(state: &AppState) -> Option<GeoStatusDiagnostic> {
     .await
     .ok()
     .flatten();
+    // The reported backlog is the whole queue, not the bounded batch one pass
+    // is allowed to schedule.
     let pending_lookup_count = if config.provider.needs_local_database() {
         Some(
-            crate::geo_backfill::pending_addresses(state.db().pool(), config.provider, &now)
+            crate::geo_backfill::pending_addresses(state.db().pool(), config.provider, &now, None)
                 .await
                 .ok()?
                 .len() as i64,
@@ -4958,8 +4952,7 @@ async fn geo_diagnostic(state: &AppState) -> Option<GeoStatusDiagnostic> {
     let providers = crate::geo::GeoProvider::ALL
         .iter()
         .map(|candidate| {
-            let needs_database = candidate.needs_local_database();
-            let available = !needs_database || config.mmdb_path.is_some();
+            let available = config.can_run(*candidate);
             GeoProviderOption {
                 provider: candidate.as_str().to_owned(),
                 label: candidate.label().to_owned(),
@@ -4982,7 +4975,6 @@ async fn geo_diagnostic(state: &AppState) -> Option<GeoStatusDiagnostic> {
         loaded_at: status.loaded_at,
         last_error: status.last_error,
         cache_country_count,
-        cache_entry_count,
         pending_lookup_count,
         last_success_at,
     })
@@ -5044,7 +5036,7 @@ pub(crate) async fn update_geo_provider(
             .into_response();
     };
     let config = state.geo_config();
-    if provider.needs_local_database() && config.mmdb_path.is_none() {
+    if !config.can_run(provider) {
         return (
             StatusCode::BAD_REQUEST,
             Json(crate::http::ApiErrorBody::with_fields(
@@ -5057,12 +5049,7 @@ pub(crate) async fn update_geo_provider(
             .into_response();
     }
 
-    let generation = config.generation.saturating_add(1);
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
-    let selection = crate::geo::GeoSelection {
-        provider,
-        generation,
-    };
     let mut tx = match state.db().pool().begin().await {
         Ok(tx) => tx,
         Err(_) => {
@@ -5073,6 +5060,25 @@ pub(crate) async fn update_geo_provider(
                 "server database is unavailable",
             );
         }
+    };
+    // The generation is advanced inside this transaction and read back from
+    // the same statement, so two concurrent Owner changes can never persist
+    // the same generation.
+    let generation = match crate::geo::bump_provider_generation(&mut *tx, &now).await {
+        Ok(generation) => generation,
+        Err(_) => {
+            let _ = tx.rollback().await;
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    };
+    let selection = crate::geo::GeoSelection {
+        provider,
+        generation,
     };
     if crate::geo::write_provider_selection(&mut *tx, selection, &now)
         .await
@@ -5129,7 +5135,10 @@ pub(crate) async fn update_geo_provider(
             "server database is unavailable",
         );
     }
-    state.apply_geo_provider(provider, generation);
+    state.apply_geo_provider(crate::geo::GeoSelection {
+        provider,
+        generation,
+    });
     // A provider that is not selected anymore keeps no raw-IP results: drop
     // them now instead of waiting for the maintenance tick.
     let _ = crate::geo::cleanup_cache(state.db().pool(), &now, provider).await;
@@ -5293,16 +5302,7 @@ mod tests {
             return AppState::new(database, None, auth);
         }
         let path = dir.path().join("GeoIP2-Country-Test.mmdb");
-        std::fs::write(
-            &path,
-            include_bytes!("../../test-data/GeoIP2-Country-Test.mmdb"),
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        }
+        crate::geo::write_test_database(&path);
         let loader = std::sync::Arc::new(crate::geo::GeoLoader::new(Some(path)));
         assert!(loader.reload());
         let state = AppState::new(database, None, auth).with_geo_loader(loader);
@@ -5517,6 +5517,52 @@ mod tests {
             state.geo_config().provider,
             crate::geo::GeoProvider::Disabled
         );
+    }
+
+    #[tokio::test]
+    async fn a_configured_but_unusable_database_is_visible_before_it_is_selected() {
+        let dir = tempdir().unwrap();
+        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let pepper_path = dir.path().join("pepper");
+        crate::secrets::create_pepper_file(&pepper_path).unwrap();
+        let auth = crate::auth::AuthConfig::development(
+            crate::secrets::load_pepper_file(&pepper_path).unwrap(),
+            "http://127.0.0.1:8080".to_owned(),
+        );
+        // A configured file that cannot be parsed as an MMDB.
+        let path = dir.path().join("broken.mmdb");
+        std::fs::write(&path, b"not an MMDB").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let loader = std::sync::Arc::new(crate::geo::GeoLoader::new(Some(path)));
+        assert!(!loader.reload());
+        let state = AppState::new(database, None, auth).with_geo_loader(loader);
+
+        let response = admin_geo_status(
+            State(state.clone()),
+            Extension(geo_owner_session()),
+            Extension(geo_request_id()),
+        )
+        .await;
+        let body = geo_body(response).await;
+        // Disabled is still the selected provider, but the Owner can see that
+        // the database Local MMDB would use is unusable before choosing it.
+        assert_eq!(body["provider"], "disabled");
+        assert_eq!(body["state"], "disabled");
+        assert_eq!(body["configured"], true);
+        assert_eq!(body["providers"][1]["available"], true);
+        let error = body["last_error"].as_str().unwrap();
+        assert!(!error.is_empty());
+        let text = body.to_string();
+        assert!(!text.contains("broken.mmdb"), "no filesystem path leaks");
+        assert!(!text.contains('/'));
     }
 
     #[tokio::test]

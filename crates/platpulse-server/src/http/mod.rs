@@ -441,11 +441,10 @@ impl AppState {
         self
     }
 
-    /// Apply a provider selection with its configuration generation. Startup
-    /// passes the persisted selection; tests use it to select a provider
-    /// explicitly.
-    pub fn with_geo_provider(self, provider: crate::geo::GeoProvider, generation: u64) -> Self {
-        self.apply_geo_provider(provider, generation);
+    /// Apply a provider selection. Startup passes the persisted selection;
+    /// tests use it to select a provider explicitly.
+    pub fn with_geo_provider(self, selection: crate::geo::GeoSelection) -> Self {
+        self.apply_geo_provider(selection);
         self
     }
 
@@ -597,14 +596,14 @@ impl AppState {
     /// Update the process-local selection after the durable selection has
     /// been committed, and wake the background path so a newly enabled
     /// provider starts working immediately.
-    pub(crate) fn apply_geo_provider(&self, provider: crate::geo::GeoProvider, generation: u64) {
+    pub(crate) fn apply_geo_provider(&self, selection: crate::geo::GeoSelection) {
         {
             let mut config = self
                 .geo_config
                 .write()
                 .expect("Geo configuration lock poisoned");
-            config.provider = provider;
-            config.generation = generation;
+            config.provider = selection.provider;
+            config.generation = selection.generation;
         }
         self.geo_wake.notify_one();
     }
@@ -619,21 +618,20 @@ impl AppState {
     }
 
     /// The effective Geo status every projection reads. A Disabled provider
-    /// is the only configuration that short-circuits country projection, and
-    /// it reports no database metadata or error of its own.
+    /// is the only configuration that short-circuits country projection.
+    ///
+    /// A configured local database still reports its own load metadata and
+    /// failure while Disabled: the Owner must be able to see that the
+    /// database Local MMDB would use is unusable *before* selecting it, and
+    /// the reported error is already path-free.
     pub(crate) fn geo_status(&self) -> crate::geo::GeoStatus {
         let config = self.geo_config();
         if config.provider.needs_local_database() {
             return self.geo.status();
         }
-        crate::geo::GeoStatus {
-            state: "disabled".to_owned(),
-            configured: config.mmdb_path.is_some(),
-            build_epoch: None,
-            digest: None,
-            loaded_at: None,
-            last_error: None,
-        }
+        let mut status = self.geo.status();
+        status.state = "disabled".to_owned();
+        status
     }
 
     pub(crate) fn geo(&self) -> &Arc<crate::geo::GeoLoader> {

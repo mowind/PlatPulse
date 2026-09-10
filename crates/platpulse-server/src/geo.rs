@@ -125,6 +125,13 @@ impl GeoConfig {
             mmdb_path: None,
         }
     }
+
+    /// Whether this deployment can actually run the given provider. The one
+    /// predicate the Admin surface reads for both the option list and the
+    /// mutation guard, so the two can never disagree.
+    pub fn can_run(&self, provider: GeoProvider) -> bool {
+        !provider.needs_local_database() || self.mmdb_path.is_some()
+    }
 }
 
 /// The durable provider selection read from `server_settings`.
@@ -327,15 +334,6 @@ impl GeoLoader {
         }
     }
 
-    /// Resolve only an eligible public literal. The returned value contains
-    /// only the two-letter country code extracted from the Country database.
-    pub fn lookup_country(&self, ip: &IpAddr) -> Option<String> {
-        match self.resolve(ip) {
-            GeoLookup::Country(code) => Some(code),
-            GeoLookup::NoCountry | GeoLookup::Unavailable => None,
-        }
-    }
-
     pub fn canonical_public_ip(value: &str) -> Option<String> {
         let ip = value.parse::<IpAddr>().ok()?;
         let canonical = match ip {
@@ -459,11 +457,38 @@ pub fn country_centroid(country_code: &str) -> (Option<f64>, Option<f64>) {
     (Some(centroid.0), Some(centroid.1))
 }
 
+/// Write the licensed GeoIP2 Country test database as a private file, the
+/// way an operator provides one. Shared by the Geo test fixtures so they all
+/// exercise the Server's real file validation.
+#[cfg(test)]
+pub(crate) fn write_test_database(path: &Path) {
+    std::fs::write(
+        path,
+        include_bytes!("../test-data/GeoIP2-Country-Test.mmdb"),
+    )
+    .expect("the bundled GeoIP2 Country test fixture is readable");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .expect("the Geo test database permission can be set");
+    }
+}
+
+/// The canonical shape of the provider-keyed country cache, shared by the
+/// migration and the test fixtures so the two can never drift apart.
+#[cfg(test)]
+pub(crate) const CACHE_TABLE_DDL: &str = "CREATE TABLE geo_location_cache (provider TEXT NOT NULL, canonical_ip TEXT NOT NULL, country_code TEXT CHECK(country_code IS NULL OR country_code GLOB '[A-Z][A-Z]'), state TEXT NOT NULL CHECK(state IN ('current', 'no_country', 'failed')), created_at TEXT, last_attempt_at TEXT NOT NULL, last_success_at TEXT, last_referenced_at TEXT NOT NULL, expires_at TEXT, PRIMARY KEY (provider, canonical_ip))";
+
 /// Remove rows that are no longer usable and enforce the bounded country
 /// cache. Results retained for a provider that is not selected anymore are
 /// deleted outright: they can never be read again, and a raw Peer IP must not
-/// outlive the selection that produced it. Current-peer references are
-/// intentionally not enough to extend the 24-hour cache lifetime.
+/// outlive the selection that produced it.
+///
+/// Expiry never deletes a row: an expired country result inside the hard
+/// retention boundary is exactly the last-good Stale data the projections
+/// serve, so cleanup only applies the hard boundary, the current-reference
+/// rule, and the size bound.
 pub async fn cleanup_cache(
     pool: &SqlitePool,
     now: &str,
@@ -480,11 +505,6 @@ pub async fn cleanup_cache(
         .execute(pool)
         .await?
         .rows_affected();
-    let expired = sqlx::query("DELETE FROM geo_location_cache WHERE rowid IN (SELECT rowid FROM geo_location_cache WHERE expires_at IS NOT NULL AND expires_at <= ? ORDER BY expires_at ASC, provider ASC, canonical_ip ASC LIMIT 1024)")
-        .bind(now)
-        .execute(pool)
-        .await?
-        .rows_affected();
     // A raw Peer address may not outlive the current Peer reference that
     // justified retaining it.
     let unreferenced = sqlx::query("DELETE FROM geo_location_cache WHERE NOT EXISTS (SELECT 1 FROM current_node_peers current WHERE current.remote_ip = geo_location_cache.canonical_ip)")
@@ -492,7 +512,7 @@ pub async fn cleanup_cache(
         .await?
         .rows_affected();
     let trimmed = trim_cache(pool).await?;
-    Ok(retired + rebuilt + expired + unreferenced + trimmed)
+    Ok(retired + rebuilt + unreferenced + trimmed)
 }
 
 /// Keep unreferenced raw-IP cache rows bounded even when many Nodes report
@@ -552,7 +572,26 @@ where
     }))
 }
 
-/// Persist a provider selection and its generation atomically.
+/// Advance and return the configuration generation. The increment and the
+/// read are one SQL statement inside the caller's write transaction, so two
+/// concurrent Owner changes can never persist the same generation.
+pub async fn bump_provider_generation<'e, E>(executor: E, now: &str) -> Result<u64, sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    let value: i64 = sqlx::query_scalar(
+        "INSERT INTO server_settings (setting_key, setting_value, updated_at) VALUES (?, '1', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = CAST(CAST(setting_value AS INTEGER) + 1 AS TEXT), updated_at = excluded.updated_at RETURNING CAST(setting_value AS INTEGER)",
+    )
+    .bind(SETTING_GEO_PROVIDER_GENERATION)
+    .bind(now)
+    .fetch_one(executor)
+    .await?;
+    Ok(value.max(0) as u64)
+}
+
+/// Persist a full provider selection. Startup seeding and tests use this;
+/// the Admin mutation advances the generation with
+/// [`bump_provider_generation`] inside its own transaction instead.
 pub async fn write_provider_selection<'e, E>(
     executor: E,
     selection: GeoSelection,
@@ -681,12 +720,7 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        sqlx::query(
-            "CREATE TABLE geo_location_cache (provider TEXT NOT NULL, canonical_ip TEXT NOT NULL, country_code TEXT CHECK(country_code IS NULL OR country_code GLOB '[A-Z][A-Z]'), state TEXT NOT NULL CHECK(state IN ('current', 'no_country', 'failed')), created_at TEXT, last_attempt_at TEXT NOT NULL, last_success_at TEXT, last_referenced_at TEXT NOT NULL, expires_at TEXT, PRIMARY KEY (provider, canonical_ip))",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        sqlx::query(CACHE_TABLE_DDL).execute(&pool).await.unwrap();
         for index in 0..=MAX_PEER_IP_CACHE_ROWS {
             let ip = format!("198.18.{}.{}", index / 256, index % 256);
             let timestamp = format!("2026-01-01T00:00:{index:04}Z");
@@ -731,16 +765,7 @@ mod tests {
     fn loads_country_deterministically_and_reports_metadata() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("GeoIP2-Country-Test.mmdb");
-        std::fs::write(
-            &path,
-            include_bytes!("../test-data/GeoIP2-Country-Test.mmdb"),
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        }
+        write_test_database(&path);
         let loader = GeoLoader::new(Some(path));
         assert!(loader.reload());
         let status = loader.status();
@@ -748,38 +773,34 @@ mod tests {
         assert!(status.build_epoch.is_some());
         assert!(status.digest.is_some());
         assert_eq!(
-            loader.lookup_country(&"89.160.20.112".parse().unwrap()),
-            Some("SE".to_owned())
+            loader.resolve(&"89.160.20.112".parse().unwrap()),
+            GeoLookup::Country("SE".to_owned())
         );
-        assert_eq!(loader.lookup_country(&"10.0.0.1".parse().unwrap()), None);
+        // A private address is refused by the trust boundary rather than
+        // reported as a database failure.
+        assert_eq!(
+            loader.resolve(&"10.0.0.1".parse().unwrap()),
+            GeoLookup::NoCountry
+        );
     }
 
     #[test]
     fn failed_reload_keeps_the_last_good_reader() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("GeoIP2-Country-Test.mmdb");
-        std::fs::write(
-            &path,
-            include_bytes!("../test-data/GeoIP2-Country-Test.mmdb"),
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        }
+        write_test_database(&path);
         let loader = GeoLoader::new(Some(path.clone()));
         assert!(loader.reload());
         assert_eq!(
-            loader.lookup_country(&"89.160.20.112".parse().unwrap()),
-            Some("SE".to_owned())
+            loader.resolve(&"89.160.20.112".parse().unwrap()),
+            GeoLookup::Country("SE".to_owned())
         );
         std::fs::write(&path, b"not an MMDB").unwrap();
         assert!(!loader.reload());
         assert_eq!(loader.status().state, "error");
         assert_eq!(
-            loader.lookup_country(&"89.160.20.112".parse().unwrap()),
-            Some("SE".to_owned())
+            loader.resolve(&"89.160.20.112".parse().unwrap()),
+            GeoLookup::Country("SE".to_owned())
         );
         std::fs::write(
             &path,

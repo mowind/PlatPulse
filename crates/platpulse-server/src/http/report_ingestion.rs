@@ -4774,7 +4774,10 @@ mod tests {
         let (_dir, state, agent_id) = state_with_agent().await;
         // Country aggregation reads the retained results of the selected
         // provider only, exactly like the Public projection does.
-        let state = state.with_geo_provider(crate::geo::GeoProvider::LocalMmdb, 1);
+        let state = state.with_geo_provider(crate::geo::GeoSelection {
+            provider: crate::geo::GeoProvider::LocalMmdb,
+            generation: 1,
+        });
         let node_id = "0195f2a1-0014-4014-8014-000000000014";
         let mut value: serde_json::Value = serde_json::from_slice(include_bytes!(
             "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"

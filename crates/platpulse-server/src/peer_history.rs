@@ -620,7 +620,7 @@ mod tests {
     #[tokio::test]
     async fn retained_last_good_countries_resolve_beyond_the_ttl_but_within_retention() {
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
-        sqlx::query("CREATE TABLE geo_location_cache (provider TEXT NOT NULL, canonical_ip TEXT NOT NULL, country_code TEXT CHECK(country_code IS NULL OR country_code GLOB '[A-Z][A-Z]'), state TEXT NOT NULL CHECK(state IN ('current', 'no_country', 'failed')), created_at TEXT, last_attempt_at TEXT NOT NULL, last_success_at TEXT, last_referenced_at TEXT NOT NULL, expires_at TEXT, PRIMARY KEY (provider, canonical_ip))")
+        sqlx::query(crate::geo::CACHE_TABLE_DDL)
             .execute(&pool)
             .await
             .unwrap();

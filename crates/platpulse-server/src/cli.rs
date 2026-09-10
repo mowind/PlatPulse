@@ -525,7 +525,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
             }
         }
     };
-    state = state.with_geo_provider(geo_selection.provider, geo_selection.generation);
+    state = state.with_geo_provider(geo_selection);
     if let Some(provider_config) = config.validator_provider.clone() {
         match crate::validator::PlatScanValidatorProvider::new(
             &provider_config.base_url,
