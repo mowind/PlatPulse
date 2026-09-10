@@ -201,8 +201,12 @@ The Server's country-only lookup cache keyed by canonical Peer IP. Raw addresses
 _Avoid_: Peer history, Browser geolocation
 
 **Geo Database**:
-An operator-provided local GeoLite2 Country MMDB read by the Server. PlatPulse does not bundle the database, download it, or hold MaxMind credentials; enabling it also requires MaxMind attribution.
+The country-only data source the Server is configured to resolve Peer public IPs with; this phase is an operator-provided local GeoLite2 Country MMDB. PlatPulse does not bundle the database, download it, or hold MaxMind credentials; enabling it also requires MaxMind attribution.
 _Avoid_: Embedded asset, PlatPulse-managed download
+
+**Geo Insight**:
+The Server-owned country projection over the current Peer records of a Network's Active Nodes. Its country and Unknown buckets count Peer records per Node (never IP-deduplicated Peers), and its Known/Unknown total, scope completeness, and database status are separate dimensions from Peer collection freshness.
+_Avoid_: Node deployment map, unique Peer count, Browser geolocation
 
 **Block Production Attribution**:
 The evidence describing how an observed block relates to a monitored Node. It keeps Coinbase, Seal Signer Match, and Protocol Proposer distinct rather than collapsing them into one inferred producer flag.

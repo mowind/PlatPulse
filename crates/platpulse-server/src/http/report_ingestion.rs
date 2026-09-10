@@ -4834,7 +4834,14 @@ mod tests {
         value["report_id"] = serde_json::json!("0195f2a1-0200-4200-8200-000000000200");
         value["report_sequence"] = serde_json::json!(1);
         let body = serde_json::to_vec(&value).unwrap();
-        sqlx::query("INSERT INTO geo_location_cache (canonical_ip, country_code, created_at, last_lookup_at, last_referenced_at, expires_at) VALUES ('8.8.8.8', 'US', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2099-01-01T00:00:00Z')")
+        // A cache row as the Server itself writes it: created now with its
+        // absolute expiry capped by the hard retention boundary.
+        let cache_now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        sqlx::query("INSERT INTO geo_location_cache (canonical_ip, country_code, created_at, last_lookup_at, last_referenced_at, expires_at) VALUES ('8.8.8.8', 'US', ?, ?, ?, ?)")
+            .bind(&cache_now)
+            .bind(&cache_now)
+            .bind(&cache_now)
+            .bind(crate::geo::cache_expiry(&cache_now))
             .execute(state.db().pool())
             .await
             .unwrap();

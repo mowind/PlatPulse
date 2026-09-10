@@ -408,7 +408,13 @@ pub(crate) async fn session_handler(
 #[serde(rename_all = "camelCase")]
 pub struct PublicCountryCount {
     pub country_code: String,
+    /// Peer records in scope attributed to this country. Records are counted
+    /// per Node and are never deduplicated by IP or Peer identity.
     pub count: i64,
+    /// Of `count`, the records whose country result is retained last-good
+    /// data past its cache lifetime. They keep their country and are never
+    /// re-counted as Unknown.
+    pub stale_count: i64,
     pub centroid_lat: Option<f64>,
     pub centroid_lon: Option<f64>,
 }
@@ -481,6 +487,9 @@ fn public_peer_aggregate(row: crate::peer_history::PeerAggregateRow) -> PublicPe
                 PublicCountryCount {
                     country_code: country.country_code,
                     count: country.count,
+                    // Aggregate buckets record which countries were
+                    // resolvable at sample time; they do not track staleness.
+                    stale_count: 0,
                     centroid_lat,
                     centroid_lon,
                 }
@@ -518,12 +527,42 @@ fn public_peer_history(history: crate::peer_history::PeerHistory) -> PublicPeerH
 #[serde(rename_all = "camelCase")]
 pub struct PublicGeoInsight {
     /// Server-owned Geo database state. Raw IPs and MMDB paths never cross
-    /// the Public projection boundary.
+    /// the Public projection boundary. This is the database dimension only:
+    /// it never claims that Peers are currently online or freshly observed.
     pub state: String,
     pub last_good_at: Option<String>,
     pub database_age_seconds: Option<u64>,
     pub stale_since: Option<String>,
     pub error_reason: Option<String>,
+    /// How complete the Peer-record basis of this projection is: `complete`
+    /// (every Active Node in this Network reported a successful Peer
+    /// Snapshot), `partial` (some did), `unobserved` (none did), or
+    /// `unavailable`
+    /// (no country projection exists because Geo is Disabled or its read
+    /// failed; `state` keeps those two apart).
+    pub scope: String,
+    /// Peer records in scope with a retained country attribution, including
+    /// retained last-good rows reported as `staleCount` per country. Peer
+    /// records are counted per Node and are never deduplicated by IP.
+    /// `None` when there is no reliable denominator (`unobserved` or
+    /// `unavailable` scope), so Unknown is never read as zero.
+    pub known_country_count: Option<i64>,
+    /// Peer records in the same scope with no retained country attribution.
+    /// `None` under the same conditions as `known_country_count`.
+    pub unknown_country_count: Option<i64>,
+    /// The `known_country_count` + `unknown_country_count` denominator the
+    /// Server actually observed: the same per-Node Peer-record total the
+    /// aggregate Peer Insight reports whenever that total is available. The
+    /// browser never subtracts an independent Peer total to derive Unknown.
+    pub available_peer_count: Option<i64>,
+    /// Of `unknown_country_count`, the records without a usable public
+    /// remote IP.
+    pub unknown_without_remote_ip_count: Option<i64>,
+    /// Of `unknown_country_count`, the records that do have a usable public
+    /// remote IP but no retained country result. Both reasons are computed
+    /// here so the browser never derives one by subtraction; they are never
+    /// split further than the Server can substantiate.
+    pub unknown_with_public_ip_count: Option<i64>,
     pub countries: Option<Vec<PublicCountryCount>>,
     pub attribution: Option<String>,
 }
@@ -537,6 +576,12 @@ fn unknown_public_geo_insight() -> PublicGeoInsight {
         database_age_seconds: None,
         stale_since: None,
         error_reason: None,
+        scope: "unavailable".to_owned(),
+        known_country_count: None,
+        unknown_country_count: None,
+        available_peer_count: None,
+        unknown_without_remote_ip_count: None,
+        unknown_with_public_ip_count: None,
         countries: None,
         attribution: None,
     }
@@ -1629,24 +1674,55 @@ fn geo_timing(
     (Some(age_seconds), stale_since)
 }
 
-async fn public_country_distribution(state: &AppState, network_key: &str) -> PublicGeoInsight {
-    let geo_status = state.geo().status();
+/// One Network's country projection over the current Peer records of its
+/// Active Nodes. Every bucket is derived from the same record set, so
+/// Known + Unknown always equals `available_peer_count`.
+#[derive(Debug, Default, Clone, Copy)]
+struct CountryBucket {
+    count: i64,
+    stale_count: i64,
+}
+
+#[derive(Debug, Default)]
+struct GeoDistribution {
+    countries: std::collections::BTreeMap<String, CountryBucket>,
+    known_country_count: i64,
+    unknown_country_count: i64,
+    unknown_without_remote_ip_count: i64,
+    active_node_count: i64,
+    observed_node_count: i64,
+}
+
+impl GeoDistribution {
+    fn available_peer_count(&self) -> i64 {
+        self.known_country_count + self.unknown_country_count
+    }
+
+    fn scope(&self) -> &'static str {
+        if self.observed_node_count == 0 {
+            "unobserved"
+        } else if self.observed_node_count < self.active_node_count {
+            "partial"
+        } else {
+            "complete"
+        }
+    }
+}
+
+/// Project one Network's country distribution. `geo_status` is read once per
+/// response so every Network in a list shares one database-status reading.
+async fn public_country_distribution(
+    state: &AppState,
+    network_key: &str,
+    geo_status: &crate::geo::GeoStatus,
+) -> PublicGeoInsight {
     if geo_status.state == "disabled" {
         return unknown_public_geo_insight();
     }
     let now_utc = crate::auth::now_utc();
-    let (database_age_seconds, stale_since) = geo_timing(&geo_status, now_utc);
+    let (database_age_seconds, stale_since) = geo_timing(geo_status, now_utc);
     let now = crate::auth::format_rfc3339(now_utc);
-    let rebuild_before = crate::geo::cache_rebuild_cutoff(&now);
-    let rows = sqlx::query_as::<_, (String, i64)>(
-        "SELECT g.country_code, COUNT(*) FROM current_node_peers p JOIN geo_location_cache g ON g.canonical_ip = p.remote_ip JOIN nodes n ON n.node_id = p.node_id WHERE n.network_key=? AND n.lifecycle='active' AND g.expires_at > ? AND g.created_at > ? GROUP BY g.country_code ORDER BY g.country_code",
-    )
-    .bind(network_key)
-    .bind(now)
-    .bind(rebuild_before)
-    .fetch_all(state.db().pool())
-    .await;
-    let Ok(rows) = rows else {
+    let Some(distribution) = load_geo_distribution(state, network_key, &now).await else {
         return PublicGeoInsight {
             state: "error".to_owned(),
             last_good_at: geo_status.loaded_at.clone(),
@@ -1655,17 +1731,29 @@ async fn public_country_distribution(state: &AppState, network_key: &str) -> Pub
             // Loader errors can contain filesystem/parser details. Public
             // responses expose only a stable, non-sensitive explanation.
             error_reason: Some(PUBLIC_GEO_ERROR.to_owned()),
+            scope: "unavailable".to_owned(),
+            known_country_count: None,
+            unknown_country_count: None,
+            available_peer_count: None,
+            unknown_without_remote_ip_count: None,
+            unknown_with_public_ip_count: None,
             countries: None,
             attribution: None,
         };
     };
-    let countries = rows
-        .into_iter()
-        .map(|(country_code, count)| {
-            let (centroid_lat, centroid_lon) = crate::geo::country_centroid(&country_code);
+    let scope = distribution.scope();
+    // Without a single successful Peer Snapshot there is no reliable
+    // denominator: never-observed is not a country count of zero.
+    let has_basis = scope != "unobserved";
+    let countries = distribution
+        .countries
+        .iter()
+        .map(|(country_code, bucket)| {
+            let (centroid_lat, centroid_lon) = crate::geo::country_centroid(country_code);
             PublicCountryCount {
-                country_code,
-                count,
+                country_code: country_code.clone(),
+                count: bucket.count,
+                stale_count: bucket.stale_count,
                 centroid_lat,
                 centroid_lon,
             }
@@ -1673,14 +1761,82 @@ async fn public_country_distribution(state: &AppState, network_key: &str) -> Pub
         .collect::<Vec<_>>();
     let geo_error = geo_status.state == "error";
     PublicGeoInsight {
-        state: geo_status.state,
-        last_good_at: geo_status.loaded_at,
+        state: geo_status.state.clone(),
+        last_good_at: geo_status.loaded_at.clone(),
         database_age_seconds,
         stale_since,
         error_reason: geo_error.then(|| PUBLIC_GEO_ERROR.to_owned()),
-        countries: Some(countries),
+        scope: scope.to_owned(),
+        known_country_count: has_basis.then_some(distribution.known_country_count),
+        unknown_country_count: has_basis.then_some(distribution.unknown_country_count),
+        available_peer_count: has_basis.then(|| distribution.available_peer_count()),
+        unknown_without_remote_ip_count: has_basis
+            .then_some(distribution.unknown_without_remote_ip_count),
+        unknown_with_public_ip_count: has_basis.then(|| {
+            distribution.unknown_country_count - distribution.unknown_without_remote_ip_count
+        }),
+        countries: has_basis.then_some(countries),
         attribution: Some(crate::geo::MAXMIND_ATTRIBUTION.to_owned()),
     }
+}
+
+/// Project one Network's current Peer records onto the retained country
+/// cache. A Peer record is one row of `current_node_peers`: the same IP seen
+/// on two Peers or two Nodes is two records. A row is only retainable inside
+/// the hard cache-retention boundary; inside that boundary an expired country
+/// stays as explicit last-good Stale data instead of becoming Unknown.
+async fn load_geo_distribution(
+    state: &AppState,
+    network_key: &str,
+    now: &str,
+) -> Option<GeoDistribution> {
+    let rebuild_before = crate::geo::cache_rebuild_cutoff(now);
+    let rows = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>, Option<String>)>(
+        "SELECT p.remote_ip, g.country_code, g.created_at, g.expires_at FROM current_node_peers p JOIN nodes n ON n.node_id = p.node_id LEFT JOIN geo_location_cache g ON g.canonical_ip = p.remote_ip WHERE n.network_key = ? AND n.lifecycle = 'active'",
+    )
+    .bind(network_key)
+    .fetch_all(state.db().pool())
+    .await
+    .ok()?;
+    let node_counts = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT COUNT(*), COALESCE(SUM(CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN 1 ELSE 0 END), 0) FROM nodes n LEFT JOIN component_status ps ON ps.node_id = n.node_id AND ps.component_key = 'peers' WHERE n.network_key = ? AND n.lifecycle = 'active'",
+    )
+    .bind(network_key)
+    .fetch_one(state.db().pool())
+    .await
+    .ok()?;
+
+    let mut distribution = GeoDistribution {
+        active_node_count: node_counts.0,
+        observed_node_count: node_counts.1,
+        ..GeoDistribution::default()
+    };
+    for (remote_ip, country_code, created_at, expires_at) in rows {
+        // Timestamps are canonical RFC 3339 UTC, so the ordering comparisons
+        // the cache itself relies on are valid here too. A row outside the
+        // hard retention boundary is no longer retainable at all.
+        let retainable = created_at
+            .as_deref()
+            .is_some_and(|created| created > rebuild_before.as_str());
+        match (country_code, retainable) {
+            (Some(country_code), true) => {
+                let stale = !expires_at.as_deref().is_some_and(|expires| expires > now);
+                distribution.known_country_count += 1;
+                let bucket = distribution.countries.entry(country_code).or_default();
+                bucket.count += 1;
+                if stale {
+                    bucket.stale_count += 1;
+                }
+            }
+            _ => {
+                distribution.unknown_country_count += 1;
+                if remote_ip.is_none() {
+                    distribution.unknown_without_remote_ip_count += 1;
+                }
+            }
+        }
+    }
+    Some(distribution)
 }
 
 fn public_node(row: PublicNodeRow) -> (String, PublicNode) {
@@ -2204,6 +2360,9 @@ pub(crate) async fn public_networks(State(state): State<AppState>) -> Response {
         }
     };
     let mut networks: Vec<PublicNetwork> = Vec::new();
+    // One database-status reading per response keeps every Network's Geo
+    // projection mutually consistent.
+    let geo_status = state.geo().status();
     for row in rows {
         let network_key = row.network_key.clone();
         let (network_display_name, node) = public_node(row);
@@ -2225,7 +2384,7 @@ pub(crate) async fn public_networks(State(state): State<AppState>) -> Response {
     }
     for network in &mut networks {
         network.peers = aggregate_peer_insight(&network.nodes);
-        network.geo = public_country_distribution(&state, &network.network_key).await;
+        network.geo = public_country_distribution(&state, &network.network_key, &geo_status).await;
         match public_validator_insights(&state, &network.network_key).await {
             Ok(validators) => {
                 match effective_public_links(&state, None, Some(&network.network_key)).await {
@@ -2300,7 +2459,7 @@ pub(crate) async fn public_network(
         .map(|row| public_node(row).1)
         .collect::<Vec<_>>();
     let peers = aggregate_peer_insight(&nodes);
-    let geo = public_country_distribution(&state, &network_key).await;
+    let geo = public_country_distribution(&state, &network_key, &state.geo().status()).await;
     let validators = match public_validator_insights(&state, &network_key).await {
         Ok(validators) => validators,
         Err(_) => {
@@ -2567,7 +2726,7 @@ mod tests {
             dir.path().join("missing-geolite.mmdb"),
         )));
         let state = state.with_geo_loader(loader);
-        let insight = public_country_distribution(&state, "mainnet").await;
+        let insight = public_country_distribution(&state, "mainnet", &state.geo().status()).await;
         assert_eq!(insight.state, "error");
         assert_eq!(insight.error_reason.as_deref(), Some(PUBLIC_GEO_ERROR));
         assert!(
@@ -2577,6 +2736,359 @@ mod tests {
                 .unwrap()
                 .contains("missing-geolite")
         );
+    }
+
+    /// A loader with no database that reports Geo as Enabled/Current.
+    /// Projection tests seed `geo_location_cache` directly, which is exactly
+    /// the retained state a real provider produces.
+    fn geo_enabled(state: AppState) -> AppState {
+        state.with_geo_loader(std::sync::Arc::new(
+            crate::geo::GeoLoader::enabled_for_tests(),
+        ))
+    }
+
+    fn seconds_ago(seconds: i64) -> String {
+        format_rfc3339(crate::auth::now_utc() - time::Duration::seconds(seconds))
+    }
+
+    async fn seed_geo_network(state: &AppState, network_key: &str, node_ids: &[&str]) {
+        let now = seconds_ago(0);
+        sqlx::query("INSERT OR IGNORE INTO agents (agent_id, agent_epoch, last_received_at, created_at, updated_at) VALUES ('agent-public-test', 1, ?, ?, ?)")
+            .bind(&now)
+            .bind(&now)
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT OR IGNORE INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES (?, ?, '0xgenesis', 1, 1, 'lat', ?, ?)")
+            .bind(network_key)
+            .bind(format!("{network_key} display"))
+            .bind(&now)
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        for node_id in node_ids {
+            sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES (?, 'agent-public-test', ?, ?, 'ws://127.0.0.1:1', 'active', 'public', 1, ?, ?)")
+                .bind(node_id)
+                .bind(network_key)
+                .bind(format!("{node_id} display"))
+                .bind(&now)
+                .bind(&now)
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+        }
+    }
+
+    /// A successful Peer Snapshot basis. `value_revision = 0` models a Node
+    /// that has never produced one.
+    async fn mark_peer_snapshot(state: &AppState, node_id: &str, value_revision: i64) {
+        let now = seconds_ago(0);
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES ('agent-public-test', 'node', ?, ?, 'peers', 'ok', ?, ?, ?, ?, 1, ?) ON CONFLICT(agent_id, scope, scope_key, component_key) DO UPDATE SET state = 'ok', value_revision = excluded.value_revision, received_at = excluded.received_at, observed_at = excluded.observed_at, value_received_at = excluded.value_received_at")
+            .bind(node_id)
+            .bind(node_id)
+            .bind(&now)
+            .bind(&now)
+            .bind(&now)
+            .bind(&now)
+            .bind(value_revision)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+    }
+
+    async fn insert_geo_peer(
+        state: &AppState,
+        node_id: &str,
+        peer_id: &str,
+        remote_ip: Option<&str>,
+    ) {
+        sqlx::query("INSERT INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, updated_at) VALUES (?, ?, ?, 'inbound', 0, 0, 0, ?)")
+            .bind(node_id)
+            .bind(peer_id)
+            .bind(remote_ip)
+            .bind(seconds_ago(0))
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+    }
+
+    /// Retain one country result. `created_seconds_ago` beyond the 30-day
+    /// boundary is unretainable; a negative `expires_in_seconds` is expired
+    /// last-good data that is still inside that boundary.
+    async fn insert_geo_cache(
+        state: &AppState,
+        ip: &str,
+        country: &str,
+        created_seconds_ago: i64,
+        expires_in_seconds: i64,
+    ) {
+        let now = crate::auth::now_utc();
+        sqlx::query("INSERT INTO geo_location_cache (canonical_ip, country_code, created_at, last_lookup_at, last_referenced_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)")
+            .bind(ip)
+            .bind(country)
+            .bind(format_rfc3339(now - time::Duration::seconds(created_seconds_ago)))
+            .bind(format_rfc3339(now))
+            .bind(format_rfc3339(now))
+            .bind(format_rfc3339(now + time::Duration::seconds(expires_in_seconds)))
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+    }
+
+    async fn geo_insight_for(state: &AppState, network_key: &str) -> PublicGeoInsight {
+        public_country_distribution(state, network_key, &state.geo().status()).await
+    }
+
+    #[tokio::test]
+    async fn public_country_distribution_counts_peer_records_without_ip_deduplication() {
+        let (_dir, state) = test_state().await;
+        let state = geo_enabled(state);
+        seed_geo_network(&state, "mainnet", &["geo-a", "geo-b"]).await;
+        seed_geo_network(&state, "testnet", &["geo-c"]).await;
+        for node_id in ["geo-a", "geo-b", "geo-c"] {
+            mark_peer_snapshot(&state, node_id, 1).await;
+        }
+
+        // Two Peer records on one Node share a public IP; a third Peer record
+        // on another Node observes the same IP again. Every record counts.
+        insert_geo_peer(&state, "geo-a", "geo-a-1", Some("8.8.8.8")).await;
+        insert_geo_peer(&state, "geo-a", "geo-a-2", Some("8.8.8.8")).await;
+        insert_geo_peer(&state, "geo-b", "geo-b-1", Some("8.8.8.8")).await;
+        insert_geo_peer(&state, "geo-b", "geo-b-2", Some("9.9.9.9")).await;
+        // No usable public IP: Unknown, never zero and never a country.
+        insert_geo_peer(&state, "geo-b", "geo-b-3", None).await;
+        // Another Network's Peer records never leak into this projection.
+        insert_geo_peer(&state, "geo-c", "geo-c-1", Some("8.8.8.8")).await;
+        // A Retired Node is filtered out of every bucket as well.
+        sqlx::query("UPDATE nodes SET lifecycle = 'retired' WHERE node_id = 'geo-c'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        insert_geo_cache(&state, "8.8.8.8", "US", 60, 3600).await;
+        insert_geo_cache(&state, "9.9.9.9", "DE", 60, 3600).await;
+
+        let response = public_network(
+            State(state.clone()),
+            Path("mainnet".to_owned()),
+            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
+        )
+        .await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        let countries = value["geo"]["countries"].as_array().unwrap();
+        assert_eq!(countries.len(), 2);
+        let us = countries
+            .iter()
+            .find(|country| country["countryCode"] == "US")
+            .unwrap();
+        assert_eq!(us["count"], 3, "three Peer records, not two distinct IPs");
+        assert_eq!(us["staleCount"], 0);
+        let de = countries
+            .iter()
+            .find(|country| country["countryCode"] == "DE")
+            .unwrap();
+        assert_eq!(de["count"], 1);
+
+        assert_eq!(value["geo"]["state"], "current");
+        assert_eq!(value["geo"]["scope"], "complete");
+        assert_eq!(value["geo"]["knownCountryCount"], 4);
+        assert_eq!(value["geo"]["unknownCountryCount"], 1);
+        assert_eq!(value["geo"]["availablePeerCount"], 5);
+        assert_eq!(value["geo"]["unknownWithoutRemoteIpCount"], 1);
+        assert_eq!(value["geo"]["unknownWithPublicIpCount"], 0);
+        // The country buckets and the aggregate Peer Insight are computed
+        // from the same Peer-record basis on the same projection, so the
+        // Server's denominator always equals the total it reports there.
+        assert_eq!(value["peers"]["peerCount"], 5);
+        assert_eq!(
+            value["geo"]["knownCountryCount"].as_i64().unwrap()
+                + value["geo"]["unknownCountryCount"].as_i64().unwrap(),
+            value["geo"]["availablePeerCount"].as_i64().unwrap()
+        );
+
+        let text = String::from_utf8_lossy(&body);
+        for raw in ["8.8.8.8", "9.9.9.9", "geo-a-1"] {
+            assert!(!text.contains(raw), "Public projection leaked {raw}");
+        }
+    }
+
+    #[tokio::test]
+    async fn public_country_distribution_keeps_retained_last_good_countries_as_stale() {
+        let (_dir, state) = test_state().await;
+        let state = geo_enabled(state);
+        seed_geo_network(&state, "mainnet", &["geo-stale"]).await;
+        mark_peer_snapshot(&state, "geo-stale", 1).await;
+
+        // Expired but inside the hard retention boundary: retained last-good.
+        insert_geo_peer(&state, "geo-stale", "stale-1", Some("8.8.4.4")).await;
+        insert_geo_peer(&state, "geo-stale", "stale-2", Some("1.1.1.1")).await;
+        // Expired and outside the boundary: no longer retainable.
+        insert_geo_peer(&state, "geo-stale", "stale-3", Some("9.9.9.9")).await;
+        insert_geo_cache(&state, "8.8.4.4", "US", 3600, -60).await;
+        insert_geo_cache(&state, "1.1.1.1", "AU", 60, 3600).await;
+        insert_geo_cache(&state, "9.9.9.9", "DE", 31 * 24 * 3600 + 60, 3600).await;
+
+        let insight = geo_insight_for(&state, "mainnet").await;
+        assert_eq!(insight.scope, "complete");
+        let countries = insight.countries.as_ref().unwrap();
+        assert_eq!(countries.len(), 2, "the unretainable country is not shown");
+        let us = countries
+            .iter()
+            .find(|country| country.country_code == "US")
+            .unwrap();
+        assert_eq!(us.count, 1);
+        assert_eq!(us.stale_count, 1, "retained last-good stays Stale");
+        let au = countries
+            .iter()
+            .find(|country| country.country_code == "AU")
+            .unwrap();
+        assert_eq!(au.count, 1);
+        assert_eq!(au.stale_count, 0);
+        // Stale countries are not re-counted as Unknown, and the one
+        // unretainable record is.
+        assert_eq!(insight.known_country_count, Some(2));
+        assert_eq!(insight.unknown_country_count, Some(1));
+        assert_eq!(insight.available_peer_count, Some(3));
+        assert_eq!(insight.unknown_without_remote_ip_count, Some(0));
+        assert_eq!(insight.unknown_with_public_ip_count, Some(1));
+    }
+
+    #[tokio::test]
+    async fn public_country_distribution_distinguishes_unobserved_from_an_empty_snapshot() {
+        let (_dir, state) = test_state().await;
+        let state = geo_enabled(state);
+        seed_geo_network(&state, "mainnet", &["geo-never", "geo-empty"]).await;
+        mark_peer_snapshot(&state, "geo-empty", 1).await;
+        mark_peer_snapshot(&state, "geo-never", 0).await;
+
+        // One Active Node has never produced a Peer Snapshot: partial scope
+        // with a real denominator, never a fabricated complete zero.
+        let insight = geo_insight_for(&state, "mainnet").await;
+        assert_eq!(insight.scope, "partial");
+        assert_eq!(insight.known_country_count, Some(0));
+        assert_eq!(insight.unknown_country_count, Some(0));
+        assert_eq!(insight.available_peer_count, Some(0));
+
+        // No Active Node has a successful snapshot: no reliable denominator,
+        // so Unknown and Known stay absent instead of becoming zero.
+        sqlx::query("UPDATE component_status SET value_revision = 0 WHERE node_id = 'geo-empty' AND component_key = 'peers'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let insight = geo_insight_for(&state, "mainnet").await;
+        assert_eq!(insight.scope, "unobserved");
+        assert!(insight.known_country_count.is_none());
+        assert!(insight.unknown_country_count.is_none());
+        assert!(insight.available_peer_count.is_none());
+        assert!(insight.unknown_with_public_ip_count.is_none());
+        assert!(insight.countries.is_none());
+
+        // Successful empty Peer Snapshots are an authoritative zero.
+        mark_peer_snapshot(&state, "geo-empty", 1).await;
+        mark_peer_snapshot(&state, "geo-never", 1).await;
+        let insight = geo_insight_for(&state, "mainnet").await;
+        assert_eq!(insight.scope, "complete");
+        assert_eq!(insight.known_country_count, Some(0));
+        assert_eq!(insight.unknown_country_count, Some(0));
+        assert_eq!(insight.available_peer_count, Some(0));
+        assert_eq!(insight.countries.as_ref().map(Vec::len), Some(0));
+    }
+
+    #[tokio::test]
+    async fn public_geo_state_is_independent_from_failed_peer_collection() {
+        let (_dir, state) = test_state().await;
+        let state = geo_enabled(state);
+        seed_geo_network(&state, "mainnet", &["geo-failed"]).await;
+        mark_peer_snapshot(&state, "geo-failed", 1).await;
+        insert_geo_peer(&state, "geo-failed", "failed-1", Some("8.8.8.8")).await;
+        insert_geo_cache(&state, "8.8.8.8", "US", 60, 3600).await;
+
+        // A failed collection keeps the retained Peer Snapshot and its own
+        // stale state; Geo being Current never claims the Peers are fresh.
+        let stale_received = seconds_ago(600);
+        sqlx::query("UPDATE component_status SET state = 'error', state_revision = 2, received_at = ?, observed_at = ?, value_received_at = ? WHERE node_id = 'geo-failed' AND component_key = 'peers'")
+            .bind(&stale_received)
+            .bind(&stale_received)
+            .bind(&stale_received)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let response = public_network(
+            State(state.clone()),
+            Path("mainnet".to_owned()),
+            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
+        )
+        .await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["peers"]["state"], "error");
+        assert_eq!(value["peers"]["freshness"], "stale");
+        assert_eq!(value["peers"]["peerCount"], 1);
+        assert_eq!(value["geo"]["state"], "current");
+        assert_eq!(value["geo"]["knownCountryCount"], 1);
+    }
+
+    #[tokio::test]
+    async fn disabled_geo_projects_no_counts_at_all() {
+        let (_dir, state) = test_state().await;
+        seed_geo_network(&state, "mainnet", &["geo-disabled"]).await;
+        mark_peer_snapshot(&state, "geo-disabled", 1).await;
+        insert_geo_peer(&state, "geo-disabled", "disabled-1", Some("8.8.8.8")).await;
+        insert_geo_cache(&state, "8.8.8.8", "US", 60, 3600).await;
+
+        let insight = geo_insight_for(&state, "mainnet").await;
+        assert_eq!(insight.state, "disabled");
+        assert_eq!(insight.scope, "unavailable");
+        assert!(insight.countries.is_none());
+        assert!(insight.known_country_count.is_none());
+        assert!(insight.unknown_country_count.is_none());
+        assert!(insight.available_peer_count.is_none());
+        assert!(insight.unknown_with_public_ip_count.is_none());
+        assert!(insight.attribution.is_none());
+    }
+
+    #[tokio::test]
+    async fn public_network_list_reuses_one_consistent_geo_projection() {
+        let (_dir, state) = test_state().await;
+        let state = geo_enabled(state);
+        seed_geo_network(&state, "mainnet", &["geo-list-a"]).await;
+        seed_geo_network(&state, "testnet", &["geo-list-b"]).await;
+        mark_peer_snapshot(&state, "geo-list-a", 1).await;
+        mark_peer_snapshot(&state, "geo-list-b", 1).await;
+        insert_geo_peer(&state, "geo-list-a", "list-a-1", Some("8.8.8.8")).await;
+        insert_geo_peer(&state, "geo-list-b", "list-b-1", Some("8.8.8.8")).await;
+        insert_geo_peer(&state, "geo-list-b", "list-b-2", None).await;
+        insert_geo_cache(&state, "8.8.8.8", "US", 60, 3600).await;
+
+        let response = public_networks(State(state.clone())).await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let by_key = |key: &str| {
+            value
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|network| network["networkKey"] == key)
+                .unwrap()
+                .clone()
+        };
+        let mainnet = by_key("mainnet");
+        assert_eq!(mainnet["geo"]["knownCountryCount"], 1);
+        assert_eq!(mainnet["geo"]["unknownCountryCount"], 0);
+        assert_eq!(mainnet["geo"]["availablePeerCount"], 1);
+        assert_eq!(mainnet["peers"]["peerCount"], 1);
+        let testnet = by_key("testnet");
+        assert_eq!(testnet["geo"]["knownCountryCount"], 1);
+        assert_eq!(testnet["geo"]["unknownCountryCount"], 1);
+        assert_eq!(testnet["geo"]["unknownWithoutRemoteIpCount"], 1);
+        assert_eq!(testnet["geo"]["unknownWithPublicIpCount"], 0);
+        assert_eq!(testnet["geo"]["availablePeerCount"], 2);
+        assert_eq!(testnet["peers"]["peerCount"], 2);
     }
 
     async fn seed_public_data(state: &AppState) {

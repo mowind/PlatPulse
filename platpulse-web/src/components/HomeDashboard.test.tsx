@@ -7,7 +7,7 @@ import HomeDashboard from './HomeDashboard'
 const network = {
   networkKey: 'mainnet',
   displayName: 'Mainnet',
-  geo: { state: 'disabled' },
+  geo: { state: 'disabled', scope: 'unavailable' },
   peers: { state: 'unsupported', freshness: 'unknown' },
   validators: [],
   nodes: [

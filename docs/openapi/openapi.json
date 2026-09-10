@@ -10878,7 +10878,8 @@
         "type": "object",
         "required": [
           "countryCode",
-          "count"
+          "count",
+          "staleCount"
         ],
         "properties": {
           "centroidLat": {
@@ -10897,17 +10898,24 @@
           },
           "count": {
             "type": "integer",
-            "format": "int64"
+            "format": "int64",
+            "description": "Peer records in scope attributed to this country. Records are counted\nper Node and are never deduplicated by IP or Peer identity."
           },
           "countryCode": {
             "type": "string"
+          },
+          "staleCount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Of `count`, the records whose country result is retained last-good\ndata past its cache lifetime. They keep their country and are never\nre-counted as Unknown."
           }
         }
       },
       "PublicGeoInsight": {
         "type": "object",
         "required": [
-          "state"
+          "state",
+          "scope"
         ],
         "properties": {
           "attribution": {
@@ -10915,6 +10923,14 @@
               "string",
               "null"
             ]
+          },
+          "availablePeerCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The `known_country_count` + `unknown_country_count` denominator the\nServer actually observed: the same per-Node Peer-record total the\naggregate Peer Insight reports whenever that total is available. The\nbrowser never subtracts an independent Peer total to derive Unknown."
           },
           "countries": {
             "type": [
@@ -10939,11 +10955,23 @@
               "null"
             ]
           },
+          "knownCountryCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Peer records in scope with a retained country attribution, including\nretained last-good rows reported as `staleCount` per country. Peer\nrecords are counted per Node and are never deduplicated by IP.\n`None` when there is no reliable denominator (`unobserved` or\n`unavailable` scope), so Unknown is never read as zero."
+          },
           "lastGoodAt": {
             "type": [
               "string",
               "null"
             ]
+          },
+          "scope": {
+            "type": "string",
+            "description": "How complete the Peer-record basis of this projection is: `complete`\n(every Active Node in this Network reported a successful Peer\nSnapshot), `partial` (some did), `unobserved` (none did), or\n`unavailable`\n(no country projection exists because Geo is Disabled or its read\nfailed; `state` keeps those two apart)."
           },
           "staleSince": {
             "type": [
@@ -10953,7 +10981,31 @@
           },
           "state": {
             "type": "string",
-            "description": "Server-owned Geo database state. Raw IPs and MMDB paths never cross\nthe Public projection boundary."
+            "description": "Server-owned Geo database state. Raw IPs and MMDB paths never cross\nthe Public projection boundary. This is the database dimension only:\nit never claims that Peers are currently online or freshly observed."
+          },
+          "unknownCountryCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Peer records in the same scope with no retained country attribution.\n`None` under the same conditions as `known_country_count`."
+          },
+          "unknownWithPublicIpCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Of `unknown_country_count`, the records that do have a usable public\nremote IP but no retained country result. Both reasons are computed\nhere so the browser never derives one by subtraction; they are never\nsplit further than the Server can substantiate."
+          },
+          "unknownWithoutRemoteIpCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Of `unknown_country_count`, the records without a usable public\nremote IP."
           }
         }
       },

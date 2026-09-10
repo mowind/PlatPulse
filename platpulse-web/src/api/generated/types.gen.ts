@@ -1327,22 +1327,74 @@ export type PublicConsensusInsight = {
 export type PublicCountryCount = {
     centroidLat?: number | null;
     centroidLon?: number | null;
+    /**
+     * Peer records in scope attributed to this country. Records are counted
+     * per Node and are never deduplicated by IP or Peer identity.
+     */
     count: number;
     countryCode: string;
+    /**
+     * Of `count`, the records whose country result is retained last-good
+     * data past its cache lifetime. They keep their country and are never
+     * re-counted as Unknown.
+     */
+    staleCount: number;
 };
 
 export type PublicGeoInsight = {
     attribution?: string | null;
+    /**
+     * The `known_country_count` + `unknown_country_count` denominator the
+     * Server actually observed: the same per-Node Peer-record total the
+     * aggregate Peer Insight reports whenever that total is available. The
+     * browser never subtracts an independent Peer total to derive Unknown.
+     */
+    availablePeerCount?: number | null;
     countries?: Array<PublicCountryCount> | null;
     databaseAgeSeconds?: number | null;
     errorReason?: string | null;
+    /**
+     * Peer records in scope with a retained country attribution, including
+     * retained last-good rows reported as `staleCount` per country. Peer
+     * records are counted per Node and are never deduplicated by IP.
+     * `None` when there is no reliable denominator (`unobserved` or
+     * `unavailable` scope), so Unknown is never read as zero.
+     */
+    knownCountryCount?: number | null;
     lastGoodAt?: string | null;
+    /**
+     * How complete the Peer-record basis of this projection is: `complete`
+     * (every Active Node in this Network reported a successful Peer
+     * Snapshot), `partial` (some did), `unobserved` (none did), or
+     * `unavailable`
+     * (no country projection exists because Geo is Disabled or its read
+     * failed; `state` keeps those two apart).
+     */
+    scope: string;
     staleSince?: string | null;
     /**
      * Server-owned Geo database state. Raw IPs and MMDB paths never cross
-     * the Public projection boundary.
+     * the Public projection boundary. This is the database dimension only:
+     * it never claims that Peers are currently online or freshly observed.
      */
     state: string;
+    /**
+     * Peer records in the same scope with no retained country attribution.
+     * `None` under the same conditions as `known_country_count`.
+     */
+    unknownCountryCount?: number | null;
+    /**
+     * Of `unknown_country_count`, the records that do have a usable public
+     * remote IP but no retained country result. Both reasons are computed
+     * here so the browser never derives one by subtraction; they are never
+     * split further than the Server can substantiate.
+     */
+    unknownWithPublicIpCount?: number | null;
+    /**
+     * Of `unknown_country_count`, the records without a usable public
+     * remote IP.
+     */
+    unknownWithoutRemoteIpCount?: number | null;
 };
 
 export type PublicMetricPoint = {

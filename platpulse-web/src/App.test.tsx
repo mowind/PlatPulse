@@ -263,18 +263,31 @@ const PUBLIC_GEO_CASES: PublicGeoCase[] = [
     name: 'enabled country data',
     geo: {
       state: 'current',
-      countries: [{ countryCode: 'US', count: 3, centroidLat: 37, centroidLon: -95 }],
+      scope: 'complete',
+      knownCountryCount: 3,
+      unknownCountryCount: 1,
+      availablePeerCount: 4,
+      unknownWithoutRemoteIpCount: 0,
+      unknownWithPublicIpCount: 1,
+      countries: [{ countryCode: 'US', count: 3, staleCount: 0, centroidLat: 37, centroidLon: -95 }],
       attribution: GEO_ATTRIBUTION,
     },
     expectedStatus: 'Current',
     expectedAttribution: /GeoLite Data created by MaxMind/i,
     expectedCountry: 'US',
     expectedCount: '3',
+    expectedDetails: [/Known 3 · Unknown 1/i],
   },
   {
     name: 'enabled empty country data',
     geo: {
       state: 'current',
+      scope: 'complete',
+      knownCountryCount: 0,
+      unknownCountryCount: 0,
+      availablePeerCount: 0,
+      unknownWithoutRemoteIpCount: 0,
+      unknownWithPublicIpCount: 0,
       countries: [],
       attribution: GEO_ATTRIBUTION,
     },
@@ -286,6 +299,7 @@ const PUBLIC_GEO_CASES: PublicGeoCase[] = [
     name: 'without a country observation',
     geo: {
       state: 'unknown',
+      scope: 'unavailable',
       countries: null,
       attribution: null,
     },
@@ -296,7 +310,13 @@ const PUBLIC_GEO_CASES: PublicGeoCase[] = [
     name: 'error with retained country data',
     geo: {
       state: 'error',
-      countries: [{ countryCode: 'US', count: 3 }],
+      scope: 'complete',
+      knownCountryCount: 3,
+      unknownCountryCount: 0,
+      availablePeerCount: 3,
+      unknownWithoutRemoteIpCount: 0,
+      unknownWithPublicIpCount: 0,
+      countries: [{ countryCode: 'US', count: 3, staleCount: 1 }],
       attribution: GEO_ATTRIBUTION,
       errorReason: 'Geo database is invalid',
       lastGoodAt: '2026-08-16T03:00:00Z',
@@ -317,7 +337,13 @@ const PUBLIC_GEO_CASES: PublicGeoCase[] = [
     name: 'stale with retained country data',
     geo: {
       state: 'stale',
-      countries: [{ countryCode: 'DE', count: 2 }],
+      scope: 'complete',
+      knownCountryCount: 2,
+      unknownCountryCount: 0,
+      availablePeerCount: 2,
+      unknownWithoutRemoteIpCount: 0,
+      unknownWithPublicIpCount: 0,
+      countries: [{ countryCode: 'DE', count: 2, staleCount: 0 }],
       attribution: GEO_ATTRIBUTION,
       lastGoodAt: '2026-08-16T03:00:00Z',
       databaseAgeSeconds: 2678400,
@@ -336,7 +362,7 @@ const PUBLIC_GEO_CASES: PublicGeoCase[] = [
   },
 ]
 
-function publicNetworkPayload(peers: (typeof PUBLIC_PEER_CASES)[number]['peers'], geo: PublicGeoInsight = { state: 'disabled' }) {
+function publicNetworkPayload(peers: (typeof PUBLIC_PEER_CASES)[number]['peers'], geo: PublicGeoInsight = { state: 'disabled', scope: 'unavailable' }) {
   return {
     networkKey: 'mainnet',
     displayName: 'Mainnet',
@@ -347,7 +373,7 @@ function publicNetworkPayload(peers: (typeof PUBLIC_PEER_CASES)[number]['peers']
   }
 }
 
-async function renderPublicNetwork(peers: (typeof PUBLIC_PEER_CASES)[number]['peers'], geo: PublicGeoInsight = { state: 'disabled' }) {
+async function renderPublicNetwork(peers: (typeof PUBLIC_PEER_CASES)[number]['peers'], geo: PublicGeoInsight = { state: 'disabled', scope: 'unavailable' }) {
   mockFetch({
     '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
     '/api/public/v1/networks': () => jsonResponse([], 200),
@@ -431,7 +457,7 @@ it.each(PUBLIC_GEO_CASES)('renders $name through the public Network route', asyn
 
 it('reveals enabled country content after a public Network invalidation', async () => {
   vi.stubGlobal('EventSource', FakeEventSource)
-  let geo: PublicGeoInsight = { state: 'disabled' }
+  let geo: PublicGeoInsight = { state: 'disabled', scope: 'unavailable' }
   mockFetch({
     '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
     '/api/public/v1/networks': () => jsonResponse([], 200),
@@ -452,7 +478,13 @@ it('reveals enabled country content after a public Network invalidation', async 
 
     geo = {
       state: 'current',
-      countries: [{ countryCode: 'JP', count: 4 }],
+      scope: 'complete',
+      knownCountryCount: 4,
+      unknownCountryCount: 0,
+      availablePeerCount: 4,
+      unknownWithoutRemoteIpCount: 0,
+      unknownWithPublicIpCount: 0,
+      countries: [{ countryCode: 'JP', count: 4, staleCount: 0 }],
       attribution: GEO_ATTRIBUTION,
     }
     await act(async () => {
@@ -863,7 +895,7 @@ describe('App shell with private Home', () => {
         displayName: 'Mainnet',
         nodes: [nodePayload],
         peers: { state: 'ok', freshness: 'current', peerCount: 3 },
-        geo: { state: 'disabled' },
+        geo: { state: 'disabled', scope: 'unavailable' },
         validators: [],
       }, 200),
     })
@@ -956,7 +988,7 @@ describe('App shell with private Home', () => {
         displayName: 'Mainnet',
         nodes: [healthyNode, startingNode, unbrokenReasonNode, healthyWithUnknownReceiptNode],
         peers: { state: 'ok', freshness: 'current', peerCount: 30 },
-        geo: { state: 'disabled' },
+        geo: { state: 'disabled', scope: 'unavailable' },
         validators: [],
       }, 200),
     })
@@ -1051,7 +1083,7 @@ describe('App shell with private Home', () => {
         displayName: 'Mainnet',
         nodes: [node, missingZoneNode, incompleteNode],
         peers: { state: 'ok', freshness: 'current', peerCount: 0 },
-        geo: { state: 'disabled' },
+        geo: { state: 'disabled', scope: 'unavailable' },
         validators: [],
       }, 200),
     })
@@ -1104,7 +1136,7 @@ describe('App shell with private Home', () => {
         displayName: 'Mainnet',
         nodes: [node],
         peers: { state: 'ok', freshness: 'current', peerCount: 0 },
-        geo: { state: 'disabled' },
+        geo: { state: 'disabled', scope: 'unavailable' },
         validators: [],
       }, 200),
     })
@@ -1141,7 +1173,7 @@ describe('App shell with private Home', () => {
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       '/api/public/v1/networks': () => jsonResponse([], 200),
-      '/api/public/v1/networks/mainnet': () => jsonResponse({ networkKey: 'mainnet', displayName: 'Mainnet', nodes: [node], peers: { state: 'ok', freshness: 'current', peerCount: 1 }, geo: { state: 'disabled' }, validators: [] }, 200),
+      '/api/public/v1/networks/mainnet': () => jsonResponse({ networkKey: 'mainnet', displayName: 'Mainnet', nodes: [node], peers: { state: 'ok', freshness: 'current', peerCount: 1 }, geo: { state: 'disabled', scope: 'unavailable' }, validators: [] }, 200),
       '/api/public/v1/nodes/node-links': () => jsonResponse({ ...node, processStartedAt: null, lastReportAt: null }, 200),
       '/api/public/v1/nodes/node-links/history?limit=2': () => jsonResponse([], 200),
       '/api/public/v1/nodes/node-links/metrics': () => jsonResponse({ from: '2026-08-20T00:00:00Z', to: '2026-08-20T00:01:00Z', windowSeconds: 60, processCpuPercent: [], processMemoryPercent: [], dataDirectoryPercent: [], networkRxBytesPerSec: [], networkTxBytesPerSec: [], peerInboundCount: [], peerOutboundCount: [], blockIntervalMs: [], transactionCount: [] }, 200),
@@ -1203,7 +1235,7 @@ describe('App shell with private Home', () => {
         displayName: 'Mainnet',
         nodes: [node],
         peers,
-        geo: { state: 'disabled' },
+        geo: { state: 'disabled', scope: 'unavailable' },
         validators: [],
       }, 200),
     })
@@ -1269,7 +1301,7 @@ describe('App shell with private Home', () => {
           receivedAt: '2026-08-20T00:00:00Z',
           staleSince: '2026-08-20T00:05:00Z',
         },
-        geo: { state: 'disabled' },
+        geo: { state: 'disabled', scope: 'unavailable' },
         validators: [],
         nodes: [{
           nodeId: 'node-unknown-health',

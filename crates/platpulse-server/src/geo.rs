@@ -59,22 +59,48 @@ impl GeoLoader {
     /// from a blocking context to perform the initial load.
     pub fn new(path: Option<PathBuf>) -> Self {
         let configured = path.is_some();
-        Self {
+        Self::with_status(
             path,
-            database: RwLock::new(None),
-            status: RwLock::new(GeoStatus {
+            GeoStatus {
                 state: if configured { "error" } else { "disabled" }.to_owned(),
                 configured,
                 build_epoch: None,
                 digest: None,
                 loaded_at: None,
                 last_error: configured.then(|| "Geo database has not loaded".to_owned()),
-            }),
+            },
+        )
+    }
+
+    fn with_status(path: Option<PathBuf>, status: GeoStatus) -> Self {
+        Self {
+            path,
+            database: RwLock::new(None),
+            status: RwLock::new(status),
         }
     }
 
     pub fn disabled() -> Self {
         Self::new(None)
+    }
+
+    /// A test double for an Enabled, Current provider. Projection tests seed
+    /// `geo_location_cache` directly, which is exactly the retained state a
+    /// real provider produces; `disabled` is the only state the Public
+    /// projection short-circuits on.
+    #[cfg(test)]
+    pub(crate) fn enabled_for_tests() -> Self {
+        Self::with_status(
+            None,
+            GeoStatus {
+                state: "current".to_owned(),
+                configured: true,
+                build_epoch: None,
+                digest: None,
+                loaded_at: Some("2026-01-01T00:00:00Z".to_owned()),
+                last_error: None,
+            },
+        )
     }
 
     pub fn path(&self) -> Option<&Path> {

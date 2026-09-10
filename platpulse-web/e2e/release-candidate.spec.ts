@@ -345,7 +345,7 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expectNoHorizontalOverflow(page)
   })
 
-  test('Public Geo enabled state preserves retained countries, attribution, and responsive composition', async ({ page }) => {
+  test('Public Geo enabled state reports real Known/Unknown counts, retained Stale countries, attribution, and responsive composition', async ({ page }) => {
     await loginAs(page)
     await page.route('**/api/public/v1/networks/platon-e2e', async (route) => {
       const response = await route.fetch()
@@ -356,7 +356,16 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
           ...payload,
           geo: {
             state: 'stale',
-            countries: [{ countryCode: 'US', count: 3, centroidLat: 37, centroidLon: -95 }],
+            scope: 'partial',
+            knownCountryCount: 4,
+            unknownCountryCount: 2,
+            availablePeerCount: 6,
+            unknownWithoutRemoteIpCount: 1,
+            unknownWithPublicIpCount: 1,
+            countries: [
+              { countryCode: 'US', count: 3, staleCount: 1, centroidLat: 37, centroidLon: -95 },
+              { countryCode: 'XK', count: 1, staleCount: 0, centroidLat: null, centroidLon: null },
+            ],
             attribution: 'This product includes GeoLite Data created by MaxMind, available from https://www.maxmind.com.',
             errorReason: 'GeoDatabaseReasonThatMustWrapWithoutExposingPeerAddressOrPreciseLocation0123456789abcdefghijklmnopqrstuvwxyz',
             lastGoodAt: '2026-08-16T03:00:00Z',
@@ -376,6 +385,20 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expect(publicGeo).toContainText('Stale')
     await expect(publicGeo).toContainText('US')
     await expect(publicGeo).toContainText('3')
+    // Known and Unknown are Server-computed buckets on the same Peer-record
+    // basis; the browser never subtracts an independent Peer total.
+    await expect(publicGeo).toContainText('Known 4 · Unknown 2')
+    await expect(publicGeo).toContainText('6 Peer records in scope; counted per Node, not deduplicated by IP.')
+    await expect(publicGeo).toContainText('1 without a usable public remote IP')
+    await expect(publicGeo).toContainText('1 without a retained country result')
+    // A retained last-good country stays in its country bucket as Stale and
+    // is never re-counted as Unknown.
+    await expect(publicGeo).toContainText('1 retained as last-good Stale')
+    // A country without a representative point keeps its accessible count.
+    await expect(publicGeo).toContainText('XK')
+    await expect(publicGeo).toContainText('No representative point; count remains available.')
+    // Scope is explicit rather than presented as a complete distribution.
+    await expect(publicGeo).toContainText('Partial scope: Active Nodes without a successful Peer Snapshot are not included in these counts.')
     await expect(publicGeo).toContainText('Showing the last-good country projection')
     await expect(publicGeo).toContainText('Database age: 31 days')
     await expect(publicGeo).toContainText('Stale since: 2026-08-17T03:00:00Z')

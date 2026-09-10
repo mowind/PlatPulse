@@ -261,6 +261,12 @@ fn merge_rows(existing: &DbAggregateRow, incoming: &AggregateValues) -> Aggregat
     }
 }
 
+/// Resolve one Peer record's country for a sample taken at `received_at`.
+///
+/// A country result stays usable for the whole hard cache-retention boundary,
+/// not only for its 24-hour TTL: that is the same retained last-good rule the
+/// Public Geo Insight applies, so both Public projections of one cache agree.
+/// Beyond the boundary the result is no longer retained and counts as unknown.
 async fn country_for_peer(
     tx: &mut Transaction<'_, Sqlite>,
     remote_ip: Option<&str>,
@@ -270,10 +276,10 @@ async fn country_for_peer(
         return Ok(None);
     };
     sqlx::query_scalar(
-        "SELECT country_code FROM geo_location_cache WHERE canonical_ip=? AND expires_at > ?",
+        "SELECT country_code FROM geo_location_cache WHERE canonical_ip=? AND created_at > ?",
     )
     .bind(canonical_ip)
-    .bind(received_at)
+    .bind(crate::geo::cache_rebuild_cutoff(received_at))
     .fetch_optional(&mut **tx)
     .await
 }
@@ -602,6 +608,59 @@ mod tests {
             bucket_start("2026-08-12T10:07:31Z", ONE_HOUR).unwrap(),
             "2026-08-12T10:00:00Z"
         );
+    }
+
+    #[tokio::test]
+    async fn retained_last_good_countries_resolve_beyond_the_ttl_but_within_retention() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query("CREATE TABLE geo_location_cache (canonical_ip TEXT PRIMARY KEY, country_code TEXT NOT NULL, created_at TEXT NOT NULL, last_lookup_at TEXT NOT NULL, last_referenced_at TEXT NOT NULL, expires_at TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let insert = |ip: &str, created_at: &str, expires_at: &str| {
+            let ip = ip.to_owned();
+            let created_at = created_at.to_owned();
+            let expires_at = expires_at.to_owned();
+            let pool = pool.clone();
+            async move {
+                sqlx::query("INSERT INTO geo_location_cache (canonical_ip, country_code, created_at, last_lookup_at, last_referenced_at, expires_at) VALUES (?, 'US', ?, ?, ?, ?)")
+                    .bind(ip)
+                    .bind(&created_at)
+                    .bind(&created_at)
+                    .bind(&created_at)
+                    .bind(expires_at)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+        };
+        // Expired last-good inside the 30-day retention boundary.
+        insert("8.8.4.4", "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z").await;
+        // Past the hard retention boundary: no longer retainable.
+        insert("8.8.8.8", "2025-11-01T00:00:00Z", "2025-11-02T00:00:00Z").await;
+
+        let mut tx = pool.begin().await.unwrap();
+        assert_eq!(
+            country_for_peer(&mut tx, Some("8.8.4.4"), "2026-01-05T00:00:00Z")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("US")
+        );
+        assert_eq!(
+            country_for_peer(&mut tx, Some("8.8.8.8"), "2026-01-05T00:00:00Z")
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            country_for_peer(&mut tx, Some("10.0.0.1"), "2026-01-05T00:00:00Z")
+                .await
+                .unwrap(),
+            None,
+            "a non-public address never resolves a country"
+        );
+        tx.commit().await.unwrap();
     }
 
     #[test]

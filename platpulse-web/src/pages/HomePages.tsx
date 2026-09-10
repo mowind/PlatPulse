@@ -50,7 +50,7 @@ export function NetworkPage() {
     {query.isRefetchError && <p role="status" className="form-error">Network refresh failed; showing the last successful Network data.</p>}
     <div className={"public-network-insights" + (network.geo.state === 'disabled' ? " public-network-insights-geo-disabled" : "")}>
       <PeerInsight insight={network.peers} />
-      <GeoInsight insight={network.geo} />
+      <GeoInsight insight={network.geo} peerState={network.peers.state} />
     </div>
     {network.validators.length > 0 && <>
       <h2 className="public-section-heading">Validators</h2>
