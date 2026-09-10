@@ -394,7 +394,7 @@ pub struct AppState {
     geo: Arc<crate::geo::GeoLoader>,
     geo_config: Arc<std::sync::RwLock<crate::geo::GeoConfig>>,
     geo_wake: Arc<Notify>,
-    ipinfo: Arc<crate::geo_ipinfo::IpinfoClient>,
+    external_geo: crate::geo_external::ExternalGeoPaths,
     pub(crate) public_realtime: RealtimeHub,
     pub(crate) admin_realtime: RealtimeHub,
     metrics: crate::metrics::MetricsRegistry,
@@ -449,11 +449,15 @@ impl AppState {
         self
     }
 
-    /// Override the external Geo provider's outbound boundary. Deterministic
+    /// Override one External Geo Provider's outbound boundary. Deterministic
     /// tests point it at a loopback stub; the production default is the fixed
     /// endpoint and is never reachable from configuration or an API.
-    pub fn with_ipinfo_client(mut self, client: Arc<crate::geo_ipinfo::IpinfoClient>) -> Self {
-        self.ipinfo = client;
+    pub fn with_external_geo_client(
+        mut self,
+        provider: crate::geo::GeoProvider,
+        client: Arc<crate::geo_external::ExternalGeoClient>,
+    ) -> Self {
+        self.external_geo.set(provider, client);
         self
     }
 
@@ -526,7 +530,7 @@ impl AppState {
             geo: Arc::new(crate::geo::GeoLoader::disabled()),
             geo_config: Arc::new(std::sync::RwLock::new(crate::geo::GeoConfig::disabled())),
             geo_wake: Arc::new(Notify::new()),
-            ipinfo: Arc::new(crate::geo_ipinfo::IpinfoClient::production()),
+            external_geo: crate::geo_external::ExternalGeoPaths::production(),
             public_realtime: RealtimeHub::default(),
             admin_realtime: RealtimeHub::default(),
             metrics: crate::metrics::MetricsRegistry::new(),
@@ -635,43 +639,45 @@ impl AppState {
     /// database Local MMDB would use is unusable *before* selecting it, and
     /// the reported error is already path-free.
     ///
-    /// The external provider reads no database, so its state describes the
+    /// An External Geo Provider reads no database, so its state describes the
     /// outbound path instead. A bounded rate-limit backoff is the one
     /// condition this process can state without reading the retained cache,
     /// and it is reported with the same path-free vocabulary the rest of the
-    /// diagnostic uses.
+    /// diagnostic uses; the reason string comes from the selected provider's
+    /// own profile, so one provider's failure never names another's endpoint.
     pub(crate) fn geo_status(&self) -> crate::geo::GeoStatus {
         let config = self.geo_config();
         if config.provider.needs_local_database() {
             return self.geo.status();
         }
         let mut status = self.geo.status();
-        match config.provider {
-            crate::geo::GeoProvider::Ipinfo => {
-                let now = crate::auth::format_rfc3339(crate::auth::now_utc());
-                let throttled = self.ipinfo.throttled_until(&now).is_some();
-                let failing = self.ipinfo.last_failure();
-                // The external path has no database to load, so its state is
-                // the outbound path's own: Error while the endpoint is rate
-                // limiting this Server or while the most recent attempt
-                // produced no usable result, Current otherwise.
-                status.state = if throttled || failing {
-                    "error"
-                } else {
-                    "current"
-                }
-                .to_owned();
-                status.build_epoch = None;
-                status.digest = None;
-                status.loaded_at = None;
-                status.last_error = match (throttled, failing) {
-                    (true, _) => Some(crate::geo_ipinfo::IPINFO_THROTTLE_REASON.to_owned()),
-                    (false, true) => Some(crate::geo_ipinfo::IPINFO_FAILURE_REASON.to_owned()),
-                    (false, false) => None,
-                };
+        if let Some(client) = self.external_geo.get(config.provider) {
+            let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+            let throttled = client.throttled_until(&now).is_some();
+            let failing = client.last_failure();
+            // An external path has no database to load, so its state is the
+            // outbound path's own: Error while the endpoint is rate limiting
+            // this Server or while the most recent attempt produced no usable
+            // result, Current otherwise. The reason comes from the provider's
+            // own profile, so it never names another provider's endpoint.
+            let profile = client.profile();
+            status.state = if throttled || failing {
+                "error"
+            } else {
+                "current"
             }
-            _ => status.state = "disabled".to_owned(),
+            .to_owned();
+            status.build_epoch = None;
+            status.digest = None;
+            status.loaded_at = None;
+            status.last_error = match (throttled, failing) {
+                (true, _) => Some(profile.throttle_reason.to_owned()),
+                (false, true) => Some(profile.failure_reason.to_owned()),
+                (false, false) => None,
+            };
+            return status;
         }
+        status.state = "disabled".to_owned();
         status
     }
 
@@ -679,8 +685,15 @@ impl AppState {
         &self.geo
     }
 
-    pub(crate) fn ipinfo(&self) -> &Arc<crate::geo_ipinfo::IpinfoClient> {
-        &self.ipinfo
+    /// The outbound path of one External Geo Provider, or `None` when the
+    /// provider does not resolve outside this Server. Every caller that needs
+    /// a provider's outbound state goes through this one lookup, so a new
+    /// external provider cannot be half-wired.
+    pub(crate) fn external_geo(
+        &self,
+        provider: crate::geo::GeoProvider,
+    ) -> Option<&Arc<crate::geo_external::ExternalGeoClient>> {
+        self.external_geo.get(provider)
     }
 
     pub(crate) fn delivery_provider(&self) -> Arc<dyn crate::notifications::DeliveryProvider> {

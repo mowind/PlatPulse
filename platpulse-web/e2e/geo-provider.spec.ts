@@ -31,16 +31,28 @@ test.describe('Geo provider selection and background country resolution', () => 
       await save.click()
       await expect(geoCard.getByText(/Geo provider is now Disabled/)).toBeVisible()
     }
-    // No provider this Server does not implement is offered, and the privacy
-    // consequence is explicit (issues #132 and #134). IPinfo is implemented,
-    // so it is offered with its third-party consequence; this spec never
-    // selects it, so no Peer address ever leaves the test Server.
-    await expect(geoCard.getByRole('radio', { name: /GeoJS/ })).toHaveCount(0)
+    // Exactly the four implemented providers are offered, and the privacy
+    // consequence is explicit (issues #132, #134, and #135). Both external
+    // providers are offered with their own fixed destination stated; this
+    // spec never selects either of them, so no Peer address ever leaves the
+    // test Server.
+    await expect(geoCard.getByRole('radio')).toHaveCount(4)
     const ipinfo = geoCard.getByRole('radio', { name: 'IPinfo' })
     await expect(ipinfo).toBeVisible()
     await expect(ipinfo).not.toBeChecked()
-    await expect(geoCard.getByText(/Sends observed Peer public IPs to a third party/)).toBeVisible()
-    await expect(geoCard.getByText(/ipinfo\.io\/\{ip\}\/json/)).toBeVisible()
+    const geojs = geoCard.getByRole('radio', { name: 'GeoJS' })
+    await expect(geojs).toBeVisible()
+    await expect(geojs).not.toBeChecked()
+    await expect(geoCard.getByText(/Sends observed Peer public IPs to a third party/)).toHaveCount(2)
+    // The Server owns the disclosure text, including the fixed destination,
+    // so the browser renders what the Server returned instead of composing a
+    // credit of its own.
+    const geojsNotice = await page.request.get('/api/admin/v1/geo')
+    const disclosure = (await geojsNotice.json()).providers.find(
+      (candidate: { provider: string }) => candidate.provider === 'geojs',
+    ).disclosure as string
+    expect(disclosure).toContain('https://get.geojs.io/v1/ip/geo/{ip}.json')
+    await expect(geoCard.getByText(disclosure, { exact: false })).toBeVisible()
     await expect(geoCard.getByText(/Peer addresses never leave the Server/)).toBeVisible()
     await expect(geoCard.getByText('Not scheduled')).toBeVisible()
     await expect(geoCard.getByText('Configured')).toBeVisible()

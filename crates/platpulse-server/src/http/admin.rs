@@ -4870,10 +4870,17 @@ pub struct GeoProviderOption {
     /// a filesystem path, raw address, or provider internals.
     pub unavailable_reason: Option<String>,
     /// Whether selecting this provider sends observed Peer public addresses
-    /// to a third-party service. The Settings surface states the consequence
-    /// from this Server-owned flag instead of hardcoding which providers do
-    /// it, so an Owner always knows the privacy boundary before selecting.
+    /// to a third-party service. The Settings surface reads this Server-owned
+    /// flag instead of hardcoding which providers do it, so an Owner always
+    /// knows the privacy boundary before selecting.
     pub sends_peer_addresses: bool,
+    /// The exact consequence of selecting this provider, including its fixed
+    /// destination, or null for a provider that keeps addresses on this
+    /// Server. The Server owns the sentence because it owns the destination:
+    /// the browser renders this string and never composes one, so the
+    /// disclosure and the endpoint a request is really sent to cannot drift
+    /// apart.
+    pub disclosure: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -4958,9 +4965,13 @@ async fn geo_diagnostic(state: &AppState) -> Option<GeoStatusDiagnostic> {
                 .len() as i64,
         )
     };
-    let rate_limited_until = (config.provider == crate::geo::GeoProvider::Ipinfo)
-        .then(|| state.ipinfo().throttled_until(&now))
-        .flatten();
+    // The bounded rate-limit window belongs to the selected provider's own
+    // outbound path, so a backoff armed by one external provider is never
+    // reported for another. Providers that resolve on this Server have no
+    // outbound path and therefore no window.
+    let rate_limited_until = state
+        .external_geo(config.provider)
+        .and_then(|client| client.throttled_until(&now));
     let providers = crate::geo::GeoProvider::ALL
         .iter()
         .map(|candidate| GeoProviderOption {
@@ -4969,6 +4980,9 @@ async fn geo_diagnostic(state: &AppState) -> Option<GeoStatusDiagnostic> {
             available: config.can_run(*candidate),
             unavailable_reason: config.unavailable_reason(*candidate).map(str::to_owned),
             sends_peer_addresses: candidate.sends_peer_addresses(),
+            disclosure: candidate
+                .external_profile()
+                .map(|profile| profile.disclosure.to_owned()),
         })
         .collect();
     Some(GeoStatusDiagnostic {
@@ -5383,11 +5397,21 @@ mod tests {
         assert_eq!(body["providers"][2]["label"], "IPinfo");
         assert_eq!(body["providers"][2]["available"], true);
         assert_eq!(body["providers"][2]["sends_peer_addresses"], true);
+        // GeoJS is offered on exactly the same terms: it is implemented, it
+        // needs no local database, and the Server states the outbound
+        // consequence before the Owner selects it (issue #135).
+        assert_eq!(body["providers"][3]["provider"], "geojs");
+        assert_eq!(body["providers"][3]["label"], "GeoJS");
+        assert_eq!(body["providers"][3]["available"], true);
+        assert_eq!(body["providers"][3]["sends_peer_addresses"], true);
+        // Exactly the four implemented options are offered, in one stable
+        // order; nothing else became selectable.
+        assert_eq!(body["providers"].as_array().unwrap().len(), 4);
         assert!(body["rate_limited_until"].is_null());
         assert!(body["pending_lookup_count"].is_null());
-        // No unimplemented provider is ever offered.
+        // No unimplemented provider or arbitrary endpoint is ever offered.
         let text = body.to_string();
-        for absent in ["geojs", "GeoJS"] {
+        for absent in ["ip-api", "ipapi", "maxmind.com/download", "http://"] {
             assert!(!text.contains(absent), "{absent} must not be selectable");
         }
 
@@ -5411,7 +5435,7 @@ mod tests {
             Extension(session.clone()),
             Extension(geo_request_id()),
             Json(GeoProviderUpdateRequest {
-                provider: "geojs".to_owned(),
+                provider: "ip-api".to_owned(),
             }),
         )
         .await;
@@ -5577,6 +5601,82 @@ mod tests {
                 .await
                 .unwrap();
         assert!(providers_left.is_empty());
+
+        // Switching between the two External Geo Providers keeps the same
+        // contract: the new provider persists and audits, its diagnostic
+        // carries no database metadata, and no row retained for the provider
+        // that was just retired can be read as the new one's result (#135).
+        sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('ipinfo', '8.8.8.8', 'US', 'current', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z')")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let response = update_geo_provider(
+            State(state.clone()),
+            geo_mutation_headers(),
+            Extension(session.clone()),
+            Extension(geo_request_id()),
+            Json(GeoProviderUpdateRequest {
+                provider: "geojs".to_owned(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = geo_body(response).await;
+        assert_eq!(body["geo"]["provider"], "geojs");
+        assert_eq!(body["geo"]["provider_label"], "GeoJS");
+        assert_eq!(body["geo"]["provider_generation"], 5);
+        assert_eq!(body["geo"]["state"], "current");
+        assert!(body["geo"]["build_epoch"].is_null());
+        assert!(body["geo"]["digest"].is_null());
+        assert!(body["geo"]["loaded_at"].is_null());
+        assert!(body["geo"]["last_error"].is_null());
+        assert!(body["geo"]["rate_limited_until"].is_null());
+        // The backlog is counted against the newly selected provider only.
+        assert_eq!(body["geo"]["pending_lookup_count"], 1);
+        assert_eq!(state.geo_config().provider, crate::geo::GeoProvider::GeoJs);
+        let stored: String = sqlx::query_scalar(
+            "SELECT setting_value FROM server_settings WHERE setting_key = 'geo_provider'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(stored, "geojs");
+        let providers_left: Vec<String> =
+            sqlx::query_scalar("SELECT provider FROM geo_location_cache ORDER BY provider")
+                .fetch_all(state.db().pool())
+                .await
+                .unwrap();
+        assert!(
+            providers_left.is_empty(),
+            "the retired provider's raw-IP rows are dropped immediately"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM audit_events WHERE event_kind = 'geo_provider_changed'",
+            )
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            5,
+            "every provider change including the GeoJS one is audited"
+        );
+
+        // Disabling an external provider stops scheduling entirely; it never
+        // falls back to the other external provider.
+        let response = update_geo_provider(
+            State(state.clone()),
+            geo_mutation_headers(),
+            Extension(session),
+            Extension(geo_request_id()),
+            Json(GeoProviderUpdateRequest {
+                provider: "disabled".to_owned(),
+            }),
+        )
+        .await;
+        let body = geo_body(response).await;
+        assert_eq!(body["geo"]["provider_generation"], 6);
+        assert_eq!(body["geo"]["state"], "disabled");
+        assert!(body["geo"]["pending_lookup_count"].is_null());
     }
 
     #[tokio::test]
@@ -5622,7 +5722,21 @@ mod tests {
         assert!(!error.is_empty());
         let text = body.to_string();
         assert!(!text.contains("broken.mmdb"), "no filesystem path leaks");
-        assert!(!text.contains('/'));
+        assert!(
+            !text.contains(dir.path().to_str().unwrap()),
+            "no state directory leaks"
+        );
+        // The only URLs this diagnostic may carry are the fixed destinations
+        // the Server-owned disclosures name for the providers it implements.
+        // Everything else (a database path, a request URL, provider error
+        // text) must stay out.
+        for after_scheme in text.split("https://").skip(1) {
+            let host = after_scheme.split(['/', '"']).next().unwrap_or_default();
+            assert!(
+                matches!(host, "ipinfo.io" | "get.geojs.io"),
+                "unexpected URL in the Geo diagnostic: {host}"
+            );
+        }
     }
 
     #[tokio::test]

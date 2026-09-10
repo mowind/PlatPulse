@@ -6,12 +6,15 @@
 //! reader available for last-good lookups.
 //!
 //! Which provider is active is a persisted Owner decision (`server_settings`),
-//! resolved once per process and never silently changed by an upgrade. Two
-//! providers are implemented: the local MMDB reader owned by this module and
-//! the external IPinfo lookup owned by `crate::geo_ipinfo`. Retained results
-//! are keyed by provider and every background write is checked against the
-//! configuration generation that scheduled it, so a result produced for one
-//! provider can never be read or written as another provider's result.
+//! resolved once per process and never silently changed by an upgrade. Three
+//! resolving providers are implemented - the local MMDB reader owned by this
+//! module, plus the IPinfo and GeoJS External Geo Providers whose fixed
+//! outbound boundaries are owned by `crate::geo_ipinfo` and
+//! `crate::geo_geojs` on the shared mechanism in `crate::geo_external` -
+//! alongside `Disabled`. Retained results are keyed by provider and every
+//! background write is checked against the configuration generation that
+//! scheduled it, so a result produced for one provider can never be read or
+//! written as another provider's result.
 //!
 //! Lookups never run inside the report receipt transaction: the background
 //! path in `crate::geo_backfill` owns scheduling, bounded concurrency, and
@@ -26,13 +29,15 @@ use maxminddb::Reader;
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 
-/// Identifiers of the Geo providers this Server can select. `ipinfo` is the
-/// external provider implemented by `crate::geo_ipinfo`; `geojs` is still
-/// deliberately absent, because an unselectable identifier must never appear
-/// in the Admin surface.
+/// Identifiers of the Geo providers this Server can select. `ipinfo` and
+/// `geojs` are the External Geo Providers implemented by
+/// `crate::geo_ipinfo` and `crate::geo_geojs`. Only identifiers this Server
+/// really implements appear here: an unselectable identifier must never
+/// appear in the Admin surface.
 pub const PROVIDER_DISABLED: &str = "disabled";
 pub const PROVIDER_LOCAL_MMDB: &str = "local_mmdb";
 pub const PROVIDER_IPINFO: &str = "ipinfo";
+pub const PROVIDER_GEOJS: &str = "geojs";
 
 /// `server_settings` keys holding the durable provider selection.
 pub const SETTING_GEO_PROVIDER: &str = "geo_provider";
@@ -88,13 +93,20 @@ pub enum GeoProvider {
     /// countries by sending a canonical public Peer address to a fixed
     /// third-party HTTPS endpoint (`crate::geo_ipinfo`).
     Ipinfo,
+    /// The external GeoJS provider. It reads no local database and resolves
+    /// countries by sending a canonical public Peer address to a fixed
+    /// third-party HTTPS endpoint (`crate::geo_geojs`). Every option stays
+    /// explicitly selected: there is no fallback between the two external
+    /// providers or from one to the other.
+    GeoJs,
 }
 
 impl GeoProvider {
-    pub const ALL: [GeoProvider; 3] = [
+    pub const ALL: [GeoProvider; 4] = [
         GeoProvider::Disabled,
         GeoProvider::LocalMmdb,
         GeoProvider::Ipinfo,
+        GeoProvider::GeoJs,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -102,6 +114,7 @@ impl GeoProvider {
             GeoProvider::Disabled => PROVIDER_DISABLED,
             GeoProvider::LocalMmdb => PROVIDER_LOCAL_MMDB,
             GeoProvider::Ipinfo => PROVIDER_IPINFO,
+            GeoProvider::GeoJs => PROVIDER_GEOJS,
         }
     }
 
@@ -110,6 +123,7 @@ impl GeoProvider {
             GeoProvider::Disabled => "Disabled",
             GeoProvider::LocalMmdb => "Local MMDB",
             GeoProvider::Ipinfo => "IPinfo",
+            GeoProvider::GeoJs => "GeoJS",
         }
     }
 
@@ -120,6 +134,7 @@ impl GeoProvider {
             PROVIDER_DISABLED => Some(GeoProvider::Disabled),
             PROVIDER_LOCAL_MMDB => Some(GeoProvider::LocalMmdb),
             PROVIDER_IPINFO => Some(GeoProvider::Ipinfo),
+            PROVIDER_GEOJS => Some(GeoProvider::GeoJs),
             _ => None,
         }
     }
@@ -130,12 +145,23 @@ impl GeoProvider {
         matches!(self, GeoProvider::LocalMmdb)
     }
 
+    /// The compile-time outbound profile of an External Geo Provider, or
+    /// `None` for a provider that resolves countries on this Server.
+    ///
+    /// This is the single lookup that decides whether a provider is external.
+    /// The privacy flag, the credit string, and the background pass all read
+    /// it, so a provider can never be reported as sending addresses without a
+    /// destination profile (or the other way round).
+    pub fn external_profile(self) -> Option<&'static crate::geo_external::ExternalProfile> {
+        crate::geo_external::profile_of(self)
+    }
+
     /// Whether selecting this provider sends observed Peer public addresses
     /// outside this Server. The Owner-only Admin surface states this before a
     /// selection is made, and the WebUI never has to hardcode which providers
     /// do it.
     pub fn sends_peer_addresses(self) -> bool {
-        matches!(self, GeoProvider::Ipinfo)
+        self.external_profile().is_some()
     }
 
     /// The attribution the provider's terms require wherever its country
@@ -145,7 +171,9 @@ impl GeoProvider {
         match self {
             GeoProvider::Disabled => None,
             GeoProvider::LocalMmdb => Some(MAXMIND_ATTRIBUTION),
-            GeoProvider::Ipinfo => Some(crate::geo_ipinfo::IPINFO_ATTRIBUTION),
+            // An external provider's credit belongs to its own module, beside
+            // the destination it describes.
+            _ => self.external_profile().map(|profile| profile.attribution),
         }
     }
 }

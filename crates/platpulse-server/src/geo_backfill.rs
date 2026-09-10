@@ -13,9 +13,12 @@
 //! records the attempt so a last-good value is never rewritten as current.
 //!
 //! The provider decides only *how* one address is resolved: the local MMDB
-//! reader runs on a blocking thread, the external IPinfo provider runs on the
-//! bounded outbound boundary in `crate::geo_ipinfo`. Scheduling, dedup,
-//! retention, generation checks, and cache writes are shared by both.
+//! reader runs on a blocking thread, and every External Geo Provider (IPinfo
+//! and GeoJS) runs on the shared bounded outbound boundary in
+//! `crate::geo_external` through its own profile. Scheduling, dedup,
+//! retention, generation checks, and cache writes are shared by all of them,
+//! so switching providers changes the destination and the field spelling but
+//! never the statistics, the retention rules, or the Peer record counts.
 
 use std::collections::BTreeSet;
 use std::net::IpAddr;
@@ -115,7 +118,9 @@ pub async fn run_pass(state: &AppState, now: &str) -> Result<BackfillSummary, sq
     match config.provider {
         GeoProvider::Disabled => Ok(BackfillSummary::default()),
         GeoProvider::LocalMmdb => run_local_pass(state, &config, now).await,
-        GeoProvider::Ipinfo => run_ipinfo_pass(state, &config, now).await,
+        // Both external providers reuse one execution path: the provider only
+        // changes which fixed profile the shared outbound client carries.
+        GeoProvider::Ipinfo | GeoProvider::GeoJs => run_external_pass(state, &config, now).await,
     }
 }
 
@@ -235,36 +240,41 @@ async fn run_local_pass(
     .await
 }
 
-/// The external pass. It adds exactly two things to the shared scheduling: a
-/// bounded provider-wide rate-limit backoff, and the outbound concurrency
-/// bound. Neither can delay report ingestion, because both live entirely
-/// inside this background task.
-async fn run_ipinfo_pass(
+/// The external pass, shared by every External Geo Provider. It adds exactly
+/// two things to the shared scheduling: a bounded provider-wide rate-limit
+/// backoff, and the outbound concurrency bound. Neither can delay report
+/// ingestion, because both live entirely inside this background task.
+///
+/// The selected provider's own client is used, so its destination, its
+/// country field, its bounded backoff, and its latest-outcome flag are the
+/// only ones observed. A provider that is not selected performs no work at
+/// all, which is also what makes Disabled safe: nothing falls back to the
+/// other external provider.
+async fn run_external_pass(
     state: &AppState,
     config: &GeoConfig,
     now: &str,
 ) -> Result<BackfillSummary, sqlx::Error> {
-    let client = Arc::clone(state.ipinfo());
+    let Some(client) = state.external_geo(config.provider) else {
+        // Unreachable by construction: only external providers are routed
+        // here. Refusing to send is the safe direction if that ever changes.
+        return Ok(BackfillSummary::default());
+    };
+    let client = Arc::clone(client);
     // A recently rate-limited provider is left alone until its bounded window
     // passes instead of being asked again on every tick.
     if client.throttled_until(now).is_some() {
         return Ok(BackfillSummary::default());
     }
     let addresses = scheduled_addresses(state, config, now).await?;
+    let concurrency = client.max_concurrency();
     let clock: Arc<str> = Arc::from(now);
     let lookup_clock = Arc::clone(&clock);
-    run_bounded_pass(
-        state,
-        config,
-        &clock,
-        crate::geo_ipinfo::IPINFO_MAX_CONCURRENCY,
-        addresses,
-        move |ip| {
-            let client = Arc::clone(&client);
-            let clock = Arc::clone(&lookup_clock);
-            async move { client.resolve(ip, &clock).await }
-        },
-    )
+    run_bounded_pass(state, config, &clock, concurrency, addresses, move |ip| {
+        let client = Arc::clone(&client);
+        let clock = Arc::clone(&lookup_clock);
+        async move { client.resolve(ip, &clock).await }
+    })
     .await
 }
 
@@ -394,7 +404,7 @@ pub async fn run_worker(state: AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geo_ipinfo::stub::{StubReply, StubServer};
+    use crate::geo_external::stub::{StubReply, StubServer};
     use tempfile::tempdir;
 
     const NOW: &str = "2026-08-12T10:00:00Z";
@@ -1014,29 +1024,64 @@ mod tests {
         assert_eq!(countries[0].stale_count, 0);
     }
 
-    /// The external provider's retained row, read the same way the local
-    /// provider's row is read so the shared retention rules stay comparable.
-    async fn ipinfo_cache_row(state: &AppState, ip: &str) -> Option<CacheRow> {
+    /// One provider's retained row, read the same way the local provider's
+    /// row is read so the shared retention rules stay comparable.
+    async fn provider_cache_row(
+        state: &AppState,
+        provider: GeoProvider,
+        ip: &str,
+    ) -> Option<CacheRow> {
         sqlx::query_as(
-            "SELECT country_code, state, created_at, expires_at, last_success_at, last_attempt_at FROM geo_location_cache WHERE provider = 'ipinfo' AND canonical_ip = ?",
+            "SELECT country_code, state, created_at, expires_at, last_success_at, last_attempt_at FROM geo_location_cache WHERE provider = ? AND canonical_ip = ?",
         )
+        .bind(provider.as_str())
         .bind(ip)
         .fetch_optional(state.db().pool())
         .await
         .unwrap()
     }
 
-    /// A Server whose selected provider is the external path, wired to the
-    /// deterministic loopback stub instead of the fixed destination. The
-    /// provider selection is persisted exactly as the Admin mutation leaves
-    /// it, so the background pass reads a real selection.
-    async fn ipinfo_state(dir: &tempfile::TempDir, stub: &StubServer) -> AppState {
-        backfill_state(dir, false, GeoProvider::Ipinfo)
+    /// An external provider's retained row.
+    async fn ipinfo_cache_row(state: &AppState, ip: &str) -> Option<CacheRow> {
+        provider_cache_row(state, GeoProvider::Ipinfo, ip).await
+    }
+
+    /// The compile-time profile of an implemented external provider. The
+    /// tests never invent a destination: they reuse the production profile and
+    /// only redirect the client, which is unreachable from configuration.
+    fn external_profile(provider: GeoProvider) -> &'static crate::geo_external::ExternalProfile {
+        provider
+            .external_profile()
+            .expect("the provider resolves countries outside this Server")
+    }
+
+    /// A Server whose selected provider is an external path, wired to the
+    /// deterministic loopback stub instead of that provider's fixed
+    /// destination. The provider selection is persisted exactly as the Admin
+    /// mutation leaves it, so the background pass reads a real selection.
+    async fn external_state(
+        dir: &tempfile::TempDir,
+        stub: &StubServer,
+        provider: GeoProvider,
+    ) -> AppState {
+        backfill_state(dir, false, provider)
             .await
-            .with_ipinfo_client(Arc::new(crate::geo_ipinfo::IpinfoClient::for_tests(
-                stub.base_url(),
-                std::time::Duration::from_secs(2),
-            )))
+            .with_external_geo_client(
+                provider,
+                Arc::new(crate::geo_external::ExternalGeoClient::for_tests(
+                    external_profile(provider),
+                    stub.base_url(),
+                    std::time::Duration::from_secs(2),
+                )),
+            )
+    }
+
+    async fn ipinfo_state(dir: &tempfile::TempDir, stub: &StubServer) -> AppState {
+        external_state(dir, stub, GeoProvider::Ipinfo).await
+    }
+
+    async fn geojs_state(dir: &tempfile::TempDir, stub: &StubServer) -> AppState {
+        external_state(dir, stub, GeoProvider::GeoJs).await
     }
 
     /// One address shared by three Peer records across two Nodes is one
@@ -1428,10 +1473,14 @@ mod tests {
         assert_eq!(selection.provider, GeoProvider::Ipinfo);
         assert_eq!(selection.generation, 1);
         let state = AppState::new(database, None, auth)
-            .with_ipinfo_client(Arc::new(crate::geo_ipinfo::IpinfoClient::for_tests(
-                stub.base_url(),
-                std::time::Duration::from_secs(2),
-            )))
+            .with_external_geo_client(
+                GeoProvider::Ipinfo,
+                Arc::new(crate::geo_external::ExternalGeoClient::for_tests(
+                    external_profile(GeoProvider::Ipinfo),
+                    stub.base_url(),
+                    std::time::Duration::from_secs(2),
+                )),
+            )
             .with_geo_provider(selection);
         assert!(
             pending_addresses(state.db().pool(), GeoProvider::Ipinfo, &now, None)
@@ -1443,6 +1492,384 @@ mod tests {
         let row = ipinfo_cache_row(&state, RESOLVABLE).await.unwrap();
         assert_eq!(row.0.as_deref(), Some("SE"));
         assert_eq!(row.1, "current");
+        state.db().close().await;
+    }
+
+    /// A Server with both external providers wired to their own loopback
+    /// stub, so a provider switch changes which destination is really asked.
+    /// The selected provider is GeoJS and persisted as such.
+    async fn external_switch_state(
+        dir: &tempfile::TempDir,
+        geojs_stub: &StubServer,
+        ipinfo_stub: &StubServer,
+    ) -> AppState {
+        backfill_state(dir, false, GeoProvider::GeoJs)
+            .await
+            .with_external_geo_client(
+                GeoProvider::GeoJs,
+                Arc::new(crate::geo_external::ExternalGeoClient::for_tests(
+                    external_profile(GeoProvider::GeoJs),
+                    geojs_stub.base_url(),
+                    std::time::Duration::from_secs(2),
+                )),
+            )
+            .with_external_geo_client(
+                GeoProvider::Ipinfo,
+                Arc::new(crate::geo_external::ExternalGeoClient::for_tests(
+                    external_profile(GeoProvider::Ipinfo),
+                    ipinfo_stub.base_url(),
+                    std::time::Duration::from_secs(2),
+                )),
+            )
+    }
+
+    /// Select `provider` durably and in-process, the way the Owner mutation
+    /// leaves the running Server.
+    async fn select_provider(state: &AppState, provider: GeoProvider, generation: u64) {
+        let selection = GeoSelection {
+            provider,
+            generation,
+        };
+        crate::geo::write_provider_selection(state.db().pool(), selection, NOW)
+            .await
+            .unwrap();
+        state.apply_geo_provider(selection);
+        crate::geo::cleanup_cache(state.db().pool(), NOW, provider)
+            .await
+            .unwrap();
+    }
+
+    /// GeoJS runs the whole chain the IPinfo slice proved, with the GeoJS
+    /// field and path: one outbound query per canonical address, a retained
+    /// provider-keyed result, and Public counts that stay per Peer record.
+    #[tokio::test]
+    async fn geojs_queries_each_address_once_and_feeds_the_public_projection() {
+        let dir = tempdir().unwrap();
+        let stub = StubServer::start(vec![StubReply::document(
+            r#"{"ip":"89.160.20.112","country":"Sweden","country_code":"SE"}"#,
+        )])
+        .await;
+        let state = geojs_state(&dir, &stub).await;
+        seed_node(&state, "geo-node-a").await;
+        seed_node(&state, "geo-node-b").await;
+        // Two Nodes and three Peer records share one address: one query.
+        insert_peer(&state, "geo-node-a", "p1", RESOLVABLE).await;
+        insert_peer(&state, "geo-node-a", "p2", RESOLVABLE).await;
+        insert_peer(&state, "geo-node-b", "p3", RESOLVABLE).await;
+        // A documentation address is refused by the trust boundary and never
+        // reaches the third party.
+        insert_peer(&state, "geo-node-a", "p4", "203.0.113.9").await;
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES ('agent-geo-backfill', 'node', 'geo-node-a', 'geo-node-a', 'peers', 'ok', ?, ?, ?, ?, 1, 1)")
+            .bind(NOW)
+            .bind(NOW)
+            .bind(NOW)
+            .bind(NOW)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let summary = run_pass(&state, NOW).await.unwrap();
+        assert_eq!(
+            summary,
+            BackfillSummary {
+                attempted: 1,
+                resolved: 1,
+                no_country: 0,
+                failed: 0,
+                rate_limited: 0,
+                discarded: 0,
+            }
+        );
+        let requests = stub.requests();
+        assert_eq!(requests.len(), 1, "one query per canonical address");
+        assert_eq!(requests[0].path, format!("/v1/ip/geo/{RESOLVABLE}.json"));
+        assert!(requests[0].query.is_empty());
+        assert!(!requests[0].authorization);
+        let row = provider_cache_row(&state, GeoProvider::GeoJs, RESOLVABLE)
+            .await
+            .unwrap();
+        assert_eq!(row.0.as_deref(), Some("SE"));
+        assert_eq!(row.1, "current");
+        assert_eq!(row.4.as_deref(), Some(NOW));
+        // The retained row is keyed by the GeoJS provider, never shared with
+        // the other external provider.
+        assert!(ipinfo_cache_row(&state, RESOLVABLE).await.is_none());
+        assert_eq!(cache_count(&state).await, 1);
+
+        // A retained result inside its lifetime schedules nothing.
+        assert_eq!(
+            run_pass(&state, NOW).await.unwrap(),
+            BackfillSummary::default()
+        );
+        assert_eq!(stub.request_count(), 1);
+
+        // The Public projection reads the same retained result, counts Peer
+        // records rather than deduplicated addresses, and carries the GeoJS
+        // attribution the selected provider owns.
+        let insight = crate::http::public::public_country_distribution(
+            &state,
+            "geo-net",
+            &state.geo_status(),
+        )
+        .await;
+        assert_eq!(insight.state, "current");
+        assert_eq!(insight.known_country_count, Some(3));
+        assert_eq!(insight.unknown_country_count, Some(1));
+        let countries = insight.countries.unwrap();
+        assert_eq!(countries.len(), 1);
+        assert_eq!(countries[0].country_code, "SE");
+        assert_eq!(countries[0].count, 3, "Peer records, not unique addresses");
+        assert_eq!(
+            insight.attribution.as_deref(),
+            Some(crate::geo_geojs::GEOJS_ATTRIBUTION)
+        );
+    }
+
+    /// A GeoJS HTTP failure keeps last-good exactly like the other external
+    /// provider, and a later real success refreshes it.
+    #[tokio::test]
+    async fn geojs_failure_keeps_last_good_and_a_later_success_is_real() {
+        let dir = tempdir().unwrap();
+        let stub = StubServer::start(vec![
+            StubReply::Status(500),
+            StubReply::document(r#"{"country_code":"US"}"#),
+        ])
+        .await;
+        let state = geojs_state(&dir, &stub).await;
+        seed_node(&state, "geo-node-a").await;
+        insert_peer(&state, "geo-node-a", "p1", RESOLVABLE).await;
+        sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('geojs', ?, 'SE', 'current', '2026-08-11T09:00:00Z', '2026-08-11T09:00:00Z', '2026-08-11T09:00:00Z', '2026-08-11T09:00:00Z', '2026-08-12T09:00:00Z')")
+            .bind(RESOLVABLE)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        assert_eq!(run_pass(&state, NOW).await.unwrap().failed, 1);
+        let row = provider_cache_row(&state, GeoProvider::GeoJs, RESOLVABLE)
+            .await
+            .unwrap();
+        assert_eq!(row.0.as_deref(), Some("SE"), "last-good is never erased");
+        assert_eq!(row.1, "failed");
+        assert_eq!(
+            row.2.as_deref(),
+            Some("2026-08-11T09:00:00Z"),
+            "a failure never refreshes a retained result to Current"
+        );
+        assert_eq!(
+            state.geo_status().last_error.as_deref(),
+            Some(crate::geo_geojs::GEOJS_FAILURE_REASON),
+            "the reported reason belongs to the selected provider"
+        );
+
+        // The failed attempt is not retried on every pass.
+        assert_eq!(
+            run_pass(&state, "2026-08-12T10:30:00Z").await.unwrap(),
+            BackfillSummary::default()
+        );
+        assert_eq!(stub.request_count(), 1);
+
+        // Past the bounded attempt backoff the retry is a real provider call.
+        let later = "2026-08-12T11:30:00Z";
+        assert_eq!(run_pass(&state, later).await.unwrap().resolved, 1);
+        let row = provider_cache_row(&state, GeoProvider::GeoJs, RESOLVABLE)
+            .await
+            .unwrap();
+        assert_eq!(row.0.as_deref(), Some("US"));
+        assert_eq!(row.1, "current");
+        assert_eq!(row.4.as_deref(), Some(later));
+        assert_eq!(state.geo_status().state, "current");
+        assert!(state.geo_status().last_error.is_none());
+        assert_eq!(stub.request_count(), 2);
+    }
+
+    /// Switching between the two External Geo Providers, and disabling Geo,
+    /// never mixes their data and never asks the provider that is not
+    /// selected. A result produced under the previous provider is discarded
+    /// even when it arrives after the switch.
+    #[tokio::test]
+    async fn switching_external_providers_never_mixes_their_results() {
+        let dir = tempdir().unwrap();
+        let geojs_stub = StubServer::start(vec![StubReply::document(
+            r#"{"country":"Sweden","country_code":"SE"}"#,
+        )])
+        .await;
+        let ipinfo_stub = StubServer::start(vec![StubReply::country("US")]).await;
+        let state = external_switch_state(&dir, &geojs_stub, &ipinfo_stub).await;
+        seed_node(&state, "geo-node-a").await;
+        insert_peer(&state, "geo-node-a", "p1", RESOLVABLE).await;
+
+        // GeoJS is the initial selection: only the GeoJS destination is asked.
+        let geojs_config = state.geo_config();
+        assert_eq!(geojs_config.provider, GeoProvider::GeoJs);
+        assert_eq!(run_pass(&state, NOW).await.unwrap().resolved, 1);
+        assert_eq!(geojs_stub.request_count(), 1);
+        assert_eq!(ipinfo_stub.request_count(), 0);
+        assert_eq!(
+            provider_cache_row(&state, GeoProvider::GeoJs, RESOLVABLE)
+                .await
+                .unwrap()
+                .0
+                .as_deref(),
+            Some("SE")
+        );
+
+        // Owner switches to IPinfo. The retired provider's rows are dropped
+        // immediately, so GeoJS's SE can never be served as IPinfo's result,
+        // and the GeoJS destination is not asked again.
+        select_provider(&state, GeoProvider::Ipinfo, 2).await;
+        assert_eq!(cache_count(&state).await, 0);
+        assert_eq!(run_pass(&state, NOW).await.unwrap().resolved, 1);
+        assert_eq!(ipinfo_stub.request_count(), 1);
+        assert_eq!(
+            geojs_stub.request_count(),
+            1,
+            "no work for a provider that is not selected"
+        );
+        let row = ipinfo_cache_row(&state, RESOLVABLE).await.unwrap();
+        assert_eq!(row.0.as_deref(), Some("US"));
+        assert!(
+            provider_cache_row(&state, GeoProvider::GeoJs, RESOLVABLE)
+                .await
+                .is_none()
+        );
+
+        // A GeoJS lookup that was already in flight when the Owner switched
+        // arrives late: it must not become the new selection's result.
+        assert!(
+            !record_lookup(
+                &state,
+                &geojs_config,
+                RESOLVABLE.parse().unwrap(),
+                GeoLookup::Country("SE".to_owned()),
+                NOW
+            )
+            .await
+            .unwrap()
+        );
+        assert_eq!(cache_count(&state).await, 1);
+        assert_eq!(
+            ipinfo_cache_row(&state, RESOLVABLE)
+                .await
+                .unwrap()
+                .0
+                .as_deref(),
+            Some("US"),
+            "the late GeoJS result did not overwrite the IPinfo result"
+        );
+
+        // Switching back to GeoJS is a real re-selection: the IPinfo row is
+        // retired and the GeoJS destination is asked again.
+        select_provider(&state, GeoProvider::GeoJs, 3).await;
+        assert_eq!(cache_count(&state).await, 0);
+        assert_eq!(
+            run_pass(&state, "2026-08-12T10:30:00Z")
+                .await
+                .unwrap()
+                .resolved,
+            1
+        );
+        assert_eq!(geojs_stub.request_count(), 2);
+        assert_eq!(ipinfo_stub.request_count(), 1);
+        assert_eq!(
+            provider_cache_row(&state, GeoProvider::GeoJs, RESOLVABLE)
+                .await
+                .unwrap()
+                .0
+                .as_deref(),
+            Some("SE")
+        );
+
+        // Disabled schedules no outbound work at all, and a failing selected
+        // provider never triggers an implicit fallback to the other one.
+        select_provider(&state, GeoProvider::Disabled, 4).await;
+        assert_eq!(
+            run_pass(&state, NOW).await.unwrap(),
+            BackfillSummary::default()
+        );
+        assert_eq!(geojs_stub.request_count(), 2);
+        assert_eq!(ipinfo_stub.request_count(), 1);
+
+        let failing_geojs = StubServer::start(vec![StubReply::Status(500)]).await;
+        let failing_dir = tempdir().unwrap();
+        let state = external_switch_state(&failing_dir, &failing_geojs, &ipinfo_stub).await;
+        seed_node(&state, "geo-node-a").await;
+        insert_peer(&state, "geo-node-a", "p1", RESOLVABLE).await;
+        assert_eq!(state.geo_config().provider, GeoProvider::GeoJs);
+        assert_eq!(run_pass(&state, NOW).await.unwrap().failed, 1);
+        assert_eq!(failing_geojs.request_count(), 1);
+        assert_eq!(
+            ipinfo_stub.request_count(),
+            1,
+            "a failing provider is never replaced by another one"
+        );
+    }
+
+    /// A restart reuses the durable provider selection and the retained
+    /// GeoJS result, so a Server that already resolved its Peers does not ask
+    /// the GeoJS endpoint again for a valid country.
+    #[tokio::test]
+    async fn geojs_selection_and_retained_results_survive_a_server_restart() {
+        let dir = tempdir().unwrap();
+        let stub = StubServer::start(vec![StubReply::document(
+            r#"{"country":"Sweden","country_code":"SE"}"#,
+        )])
+        .await;
+        // The pass time comes from the real clock so the retained 24-hour
+        // result is still valid after the restart below.
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        {
+            let state = geojs_state(&dir, &stub).await;
+            seed_node(&state, "geo-node-a").await;
+            insert_peer(&state, "geo-node-a", "p1", RESOLVABLE).await;
+            assert_eq!(run_pass(&state, &now).await.unwrap().resolved, 1);
+            state.db().close().await;
+        }
+
+        let database = crate::database::ServerDatabase::open_existing(
+            crate::database::ServerDatabaseConfig::new(dir.path().join("server.db")),
+        )
+        .await
+        .unwrap();
+        let pepper_path = dir.path().join("pepper");
+        let auth = crate::auth::AuthConfig::development(
+            crate::secrets::load_pepper_file(&pepper_path).unwrap(),
+            "http://127.0.0.1:8080".to_owned(),
+        );
+        // Startup resolves the durable selection again instead of guessing,
+        // resetting to Disabled, or falling back to the other external
+        // provider.
+        let selection = crate::geo::ensure_provider_selection(database.pool(), true)
+            .await
+            .unwrap();
+        assert_eq!(selection.provider, GeoProvider::GeoJs);
+        assert_eq!(selection.generation, 1);
+        let state = AppState::new(database, None, auth)
+            .with_external_geo_client(
+                GeoProvider::GeoJs,
+                Arc::new(crate::geo_external::ExternalGeoClient::for_tests(
+                    external_profile(GeoProvider::GeoJs),
+                    stub.base_url(),
+                    std::time::Duration::from_secs(2),
+                )),
+            )
+            .with_geo_provider(selection);
+        assert!(
+            pending_addresses(state.db().pool(), GeoProvider::GeoJs, &now, None)
+                .await
+                .unwrap()
+                .is_empty(),
+            "a retained result inside its lifetime is not looked up again"
+        );
+        let row = provider_cache_row(&state, GeoProvider::GeoJs, RESOLVABLE)
+            .await
+            .unwrap();
+        assert_eq!(row.0.as_deref(), Some("SE"));
+        assert_eq!(row.1, "current");
+        assert_eq!(
+            stub.request_count(),
+            1,
+            "restarting does not repeat the outbound query"
+        );
         state.db().close().await;
     }
 }

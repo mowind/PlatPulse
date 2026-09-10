@@ -8800,6 +8800,13 @@
           "available": {
             "type": "boolean"
           },
+          "disclosure": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The exact consequence of selecting this provider, including its fixed\ndestination, or null for a provider that keeps addresses on this\nServer. The Server owns the sentence because it owns the destination:\nthe browser renders this string and never composes one, so the\ndisclosure and the endpoint a request is really sent to cannot drift\napart."
+          },
           "label": {
             "type": "string"
           },
@@ -8808,7 +8815,7 @@
           },
           "sends_peer_addresses": {
             "type": "boolean",
-            "description": "Whether selecting this provider sends observed Peer public addresses\nto a third-party service. The Settings surface states the consequence\nfrom this Server-owned flag instead of hardcoding which providers do\nit, so an Owner always knows the privacy boundary before selecting."
+            "description": "Whether selecting this provider sends observed Peer public addresses\nto a third-party service. The Settings surface reads this Server-owned\nflag instead of hardcoding which providers do it, so an Owner always\nknows the privacy boundary before selecting."
           },
           "unavailable_reason": {
             "type": [

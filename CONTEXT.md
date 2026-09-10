@@ -201,15 +201,15 @@ The Server's country-only lookup cache keyed by Geo Provider and canonical Peer 
 _Avoid_: Peer history, Browser geolocation, Results shared across providers
 
 **Geo Provider**:
-The single country-resolution source the Owner selects for the Server; the implemented options are Disabled, Local MMDB, and IPinfo, with no automatic fallback between them. Local MMDB resolves on this Server; IPinfo is an External Geo Provider, so only an explicit Owner selection enables it and the Admin surface states that consequence before the choice is made. The selection is durable, audited, and carries a configuration generation so a result produced for an older selection is never written as current.
+The single country-resolution source the Owner selects for the Server; the implemented options are Disabled, Local MMDB, IPinfo, and GeoJS, with no automatic fallback between them. Local MMDB resolves on this Server; IPinfo and GeoJS are External Geo Providers, so only an explicit Owner selection enables one and the Admin surface states that consequence before the choice is made. The selection is durable, audited, and carries a configuration generation, so a result produced for an older selection is never written as the current one.
 _Avoid_: Provider failover, Per-Node Geo setting, Silent external query
 
 **External Geo Provider**:
-A Geo Provider that resolves countries outside this Server by sending one observed Peer public address to a fixed third-party HTTPS endpoint; IPinfo is the only one implemented this phase. Its destination is not configurable, a redirect is never followed, it is never enabled by an upgrade or by a fallback, and its failures never erase a retained last-good country result.
+A Geo Provider that resolves countries outside this Server by sending one observed Peer public address to a fixed third-party HTTPS endpoint; IPinfo and GeoJS are implemented, and each keeps its own destination, retained rows, attribution, and outbound state. Its destination is not configurable, a redirect is never followed, it is never enabled by an upgrade or by a fallback, and its failures never erase a retained last-good country result.
 _Avoid_: Remote database, Failover target, Credentialed Geo account, Arbitrary Geo endpoint
 
 **Geo Database**:
-The country-only data source the Server is configured to resolve Peer public IPs with; this phase is an operator-provided local GeoLite2 Country MMDB used by the Local MMDB Geo Provider. PlatPulse does not bundle the database, download it, or hold MaxMind credentials; enabling it also requires MaxMind attribution. The IPinfo Geo Provider reads no Geo Database: it has no local file, no load state, and no build epoch, and it carries IPinfo's own attribution instead of MaxMind's.
+The country-only data source the Server is configured to resolve Peer public IPs with; this phase is an operator-provided local GeoLite2 Country MMDB used by the Local MMDB Geo Provider. PlatPulse does not bundle the database, download it, or hold MaxMind credentials; enabling it also requires MaxMind attribution. An External Geo Provider (IPinfo, GeoJS) reads no Geo Database: it has no local file, no load state, and no build epoch, and it carries its own stable attribution instead of the Local MMDB one.
 _Avoid_: Embedded asset, PlatPulse-managed download
 
 **Geo Insight**:

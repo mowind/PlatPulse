@@ -297,23 +297,22 @@ function SiteAccessSettings({ generation, csrfToken }: SettingsSectionProps) {
   )
 }
 
-/** The precise outbound disclosure for a provider the Server flags as
- * sending Peer addresses off this Server. The Server owns *whether* a
- * provider sends them; this map only supplies the destination wording, and a
- * flagged provider without an entry still renders the generic notice, so a
- * new external provider can never appear without a disclosure. */
-const EXTERNAL_GEO_NOTICES: Record<string, string> = {
-  ipinfo:
-    'IPinfo asks the fixed HTTPS endpoint https://ipinfo.io/{ip}/json for each observed Peer public IP and keeps only the returned two-letter country code. It carries no token and sends no other Peer data.',
-}
-
+/** The last-resort sentence for a provider the Server flagged as sending
+ * Peer addresses but for which it returned no disclosure text. The Server
+ * owns both the flag and the exact wording (including the fixed destination),
+ * because it owns the destination the request is really sent to; this string
+ * only exists so a flagged provider can never render with no consequence at
+ * all. */
 const GENERIC_EXTERNAL_GEO_NOTICE =
   'This provider sends each observed Peer public IP to a third-party service over HTTPS and keeps only the returned country code.'
 
 /**
  * PAGE-ADMIN-SETTINGS Geo provider selection. Only providers this Server
- * actually implements are offered (issues #132 and #134): Disabled, Local
- * MMDB, and the external IPinfo provider. */
+ * actually implements are offered (issues #132, #134, and #135): Disabled,
+ * Local MMDB, and the external IPinfo and GeoJS providers. The option list,
+ * the privacy consequence, and the availability reason all come from the
+ * Server, so a provider the Server cannot run is disabled with its own
+ * reason and a provider it does not implement is never rendered. */
 function GeoProviderSettings({ generation, csrfToken }: SettingsSectionProps) {
   const query = useAdminGeo(generation)
   const [selection, setSelection] = useState<string | null>(null)
@@ -404,7 +403,7 @@ function GeoProviderSettings({ generation, csrfToken }: SettingsSectionProps) {
           {externalProviders.map((candidate) => (
             <p className="settings-consequence" key={candidate.provider} role="note">
               <strong>{candidate.label}.</strong>{' '}
-              {EXTERNAL_GEO_NOTICES[candidate.provider] ?? GENERIC_EXTERNAL_GEO_NOTICE}{' '}
+              {candidate.disclosure ?? GENERIC_EXTERNAL_GEO_NOTICE}{' '}
               Only the Owner can select it, and it is never enabled by an upgrade.
             </p>
           ))}

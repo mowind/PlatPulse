@@ -699,13 +699,22 @@ export type GeoProviderMutationResponse = {
 
 export type GeoProviderOption = {
     available: boolean;
+    /**
+     * The exact consequence of selecting this provider, including its fixed
+     * destination, or null for a provider that keeps addresses on this
+     * Server. The Server owns the sentence because it owns the destination:
+     * the browser renders this string and never composes one, so the
+     * disclosure and the endpoint a request is really sent to cannot drift
+     * apart.
+     */
+    disclosure?: string | null;
     label: string;
     provider: string;
     /**
      * Whether selecting this provider sends observed Peer public addresses
-     * to a third-party service. The Settings surface states the consequence
-     * from this Server-owned flag instead of hardcoding which providers do
-     * it, so an Owner always knows the privacy boundary before selecting.
+     * to a third-party service. The Settings surface reads this Server-owned
+     * flag instead of hardcoding which providers do it, so an Owner always
+     * knows the privacy boundary before selecting.
      */
     sends_peer_addresses: boolean;
     /**

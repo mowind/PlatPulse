@@ -37,6 +37,7 @@ const GEO_STATUS = {
       available: true,
       unavailable_reason: null,
       sends_peer_addresses: false,
+      disclosure: null,
     },
     {
       provider: 'local_mmdb',
@@ -44,6 +45,7 @@ const GEO_STATUS = {
       available: true,
       unavailable_reason: null,
       sends_peer_addresses: false,
+      disclosure: null,
     },
     {
       provider: 'ipinfo',
@@ -51,6 +53,17 @@ const GEO_STATUS = {
       available: true,
       unavailable_reason: null,
       sends_peer_addresses: true,
+      disclosure:
+        'IPinfo asks the fixed HTTPS endpoint https://ipinfo.io/{ip}/json for each observed Peer public IP and keeps only the returned two-letter country code. It carries no token and sends no other Peer data.',
+    },
+    {
+      provider: 'geojs',
+      label: 'GeoJS',
+      available: true,
+      unavailable_reason: null,
+      sends_peer_addresses: true,
+      disclosure:
+        'GeoJS asks the fixed HTTPS endpoint https://get.geojs.io/v1/ip/geo/{ip}.json for each observed Peer public IP and keeps only the returned two-letter country code. It carries no token and sends no other Peer data.',
     },
   ],
   state: 'disabled',
@@ -169,11 +182,15 @@ describe('Admin Settings workflows', () => {
     // IPinfo is offered because the Server really implements it, and it
     // states the outbound consequence before any selection (issue #134).
     expect(geoCard.getByLabelText(/IPinfo/)).toBeTruthy()
-    expect(geoCard.getByText(/Sends observed Peer public IPs to a third party/)).toBeTruthy()
+    expect(geoCard.getAllByText(/Sends observed Peer public IPs to a third party/).length).toBe(2)
     expect(geoCard.getByText(/ipinfo\.io\/\{ip\}\/json/)).toBeTruthy()
-    // Providers the Server does not implement, and a global refresh, are
-    // still absent.
-    expect(geoCard.queryByLabelText(/GeoJS/)).toBeNull()
+    // GeoJS is the second external provider this Server really implements
+    // (issue #135), and it states its own fixed destination before selection.
+    expect(geoCard.getByLabelText(/GeoJS/)).toBeTruthy()
+    expect(geoCard.getByText(/get\.geojs\.io\/v1\/ip\/geo\/\{ip\}\.json/)).toBeTruthy()
+    // Only the four implemented options exist, and a global refresh — which
+    // no slice has delivered yet — is still absent.
+    expect(geoCard.getAllByRole('radio')).toHaveLength(4)
     expect(geoCard.queryByRole('button', { name: /Refresh/i })).toBeNull()
     expect(geoCard.getByText(/Peer addresses never leave the Server/)).toBeTruthy()
     expect(geoCard.getByText('Not scheduled')).toBeTruthy()
@@ -235,6 +252,7 @@ describe('Admin Settings workflows', () => {
             available: true,
             unavailable_reason: null,
             sends_peer_addresses: false,
+            disclosure: null,
           },
           {
             provider: 'local_mmdb',
@@ -242,6 +260,7 @@ describe('Admin Settings workflows', () => {
             available: false,
             unavailable_reason: 'No local GeoLite2 Country database is configured on this Server',
             sends_peer_addresses: false,
+            disclosure: null,
           },
           {
             provider: 'ipinfo',
@@ -249,6 +268,17 @@ describe('Admin Settings workflows', () => {
             available: true,
             unavailable_reason: null,
             sends_peer_addresses: true,
+            disclosure:
+              'IPinfo asks the fixed HTTPS endpoint https://ipinfo.io/{ip}/json for each observed Peer public IP and keeps only the returned two-letter country code. It carries no token and sends no other Peer data.',
+          },
+          {
+            provider: 'geojs',
+            label: 'GeoJS',
+            available: true,
+            unavailable_reason: null,
+            sends_peer_addresses: true,
+            disclosure:
+              'GeoJS asks the fixed HTTPS endpoint https://get.geojs.io/v1/ip/geo/{ip}.json for each observed Peer public IP and keeps only the returned two-letter country code. It carries no token and sends no other Peer data.',
           },
         ],
       }),
@@ -259,9 +289,10 @@ describe('Admin Settings workflows', () => {
     expect(local.disabled).toBe(true)
     expect(screen.getByText(/No local GeoLite2 Country database/)).toBeTruthy()
     expect((screen.getByRole('button', { name: 'Save Geo provider' }) as HTMLButtonElement).disabled).toBe(true)
-    // IPinfo needs no local database, so a deployment without one can still
-    // make an informed choice for or against the external provider.
+    // Neither external provider needs a local database, so a deployment
+    // without one can still make an informed choice for or against them.
     expect((screen.getByLabelText(/IPinfo/) as HTMLInputElement).disabled).toBe(false)
+    expect((screen.getByLabelText(/GeoJS/) as HTMLInputElement).disabled).toBe(false)
   })
 
   it('offers IPinfo with the third-party consequence and only enables it on request', async () => {
@@ -308,6 +339,55 @@ describe('Admin Settings workflows', () => {
     await waitFor(() => {
       expect(geoCard.getByText('Sent to IPinfo')).toBeTruthy()
       expect(geoCard.getByText('2')).toBeTruthy()
+      expect(geoCard.queryByText('Database age')).toBeNull()
+    })
+  }, 20_000)
+
+
+  it('offers GeoJS with its own fixed destination and only enables it on request', async () => {
+    let putBody: unknown = null
+    const geojsStatus = {
+      ...GEO_STATUS,
+      provider: 'geojs',
+      provider_label: 'GeoJS',
+      provider_generation: 2,
+      state: 'current',
+      build_epoch: null,
+      digest: null,
+      loaded_at: null,
+      pending_lookup_count: 4,
+      cache_country_count: 3,
+      last_success_at: '2026-08-20T02:00:00Z',
+    }
+    let provider = 'disabled'
+    mockFetch(successfulRoutes({
+      '/api/admin/v1/geo': () => response(provider === 'disabled' ? GEO_STATUS : geojsStatus),
+      '/api/admin/v1/geo/provider': async (request) => {
+        putBody = await request.json()
+        provider = 'geojs'
+        return response({ geo: geojsStatus, audit_event_id: 93 })
+      },
+    }))
+
+    await renderSettings()
+    const geoCard = within(screen.getAllByRole('article')[2])
+    const geojs = geoCard.getByLabelText(/GeoJS/) as HTMLInputElement
+    // The Server never enables an external provider by itself, and the
+    // destination is stated before any selection.
+    expect(geojs.checked).toBe(false)
+    expect(geoCard.getByText(/get\.geojs\.io\/v1\/ip\/geo\/\{ip\}\.json/)).toBeTruthy()
+
+    fireEvent.click(geojs)
+    const save = geoCard.getByRole('button', { name: 'Save Geo provider' })
+    await waitFor(() => expect((save as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(save)
+
+    await waitFor(() => expect(putBody).toEqual({ provider: 'geojs' }))
+    expect(await geoCard.findByText(/Geo provider is now GeoJS \(Audit #93\)/)).toBeTruthy()
+    await waitFor(() => {
+      expect(geoCard.getByText('Sent to GeoJS')).toBeTruthy()
+      expect(geoCard.getByText('4')).toBeTruthy()
+      expect(geoCard.getByText('3')).toBeTruthy()
       expect(geoCard.queryByText('Database age')).toBeNull()
     })
   }, 20_000)
