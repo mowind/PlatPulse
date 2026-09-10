@@ -6,7 +6,7 @@ import { adminQueryClient, resetAdminCache } from './api/admin'
 import { resetPublicCache } from './api/public'
 import { resetRealtimeCursors } from './api/transport'
 import { client } from './api/generated/client.gen'
-import type { PublicNode } from './api/generated/types.gen'
+import type { PublicGeoInsight, PublicNode } from './api/generated/types.gen'
 
 const OWNER_SESSION = {
   session: {
@@ -246,22 +246,112 @@ const PUBLIC_PEER_CASES: PublicPeerCase[] = [
   },
 ] as const
 
-function publicNetworkPayload(peers: (typeof PUBLIC_PEER_CASES)[number]['peers']) {
+type PublicGeoCase = {
+  name: string
+  geo: PublicGeoInsight
+  expectedStatus: string
+  expectedContent?: RegExp
+  expectedAttribution?: RegExp
+  expectedCountry?: string
+  expectedCount?: string
+  expectedDetails?: RegExp[]
+}
+
+const GEO_ATTRIBUTION = 'This product includes GeoLite Data created by MaxMind, available from https://www.maxmind.com.'
+const PUBLIC_GEO_CASES: PublicGeoCase[] = [
+  {
+    name: 'enabled country data',
+    geo: {
+      state: 'current',
+      countries: [{ countryCode: 'US', count: 3, centroidLat: 37, centroidLon: -95 }],
+      attribution: GEO_ATTRIBUTION,
+    },
+    expectedStatus: 'Current',
+    expectedAttribution: /GeoLite Data created by MaxMind/i,
+    expectedCountry: 'US',
+    expectedCount: '3',
+  },
+  {
+    name: 'enabled empty country data',
+    geo: {
+      state: 'current',
+      countries: [],
+      attribution: GEO_ATTRIBUTION,
+    },
+    expectedStatus: 'Current',
+    expectedAttribution: /GeoLite Data created by MaxMind/i,
+    expectedContent: /No country observations are available yet/i,
+  },
+  {
+    name: 'without a country observation',
+    geo: {
+      state: 'unknown',
+      countries: null,
+      attribution: null,
+    },
+    expectedStatus: 'Unknown',
+    expectedContent: /Country insight is Unknown; no usable Geo projection is available/i,
+  },
+  {
+    name: 'error with retained country data',
+    geo: {
+      state: 'error',
+      countries: [{ countryCode: 'US', count: 3 }],
+      attribution: GEO_ATTRIBUTION,
+      errorReason: 'Geo database is invalid',
+      lastGoodAt: '2026-08-16T03:00:00Z',
+      databaseAgeSeconds: 3600,
+    },
+    expectedStatus: 'Error',
+    expectedAttribution: /GeoLite Data created by MaxMind/i,
+    expectedCountry: 'US',
+    expectedCount: '3',
+    expectedContent: /Showing the last-good country projection/i,
+    expectedDetails: [
+      /Reason: Geo database is invalid/i,
+      /Last good database load: 2026-08-16T03:00:00Z/i,
+      /Database age: 1 hour/i,
+    ],
+  },
+  {
+    name: 'stale with retained country data',
+    geo: {
+      state: 'stale',
+      countries: [{ countryCode: 'DE', count: 2 }],
+      attribution: GEO_ATTRIBUTION,
+      lastGoodAt: '2026-08-16T03:00:00Z',
+      databaseAgeSeconds: 2678400,
+      staleSince: '2026-08-17T03:00:00Z',
+    },
+    expectedStatus: 'Stale',
+    expectedAttribution: /GeoLite Data created by MaxMind/i,
+    expectedCountry: 'DE',
+    expectedCount: '2',
+    expectedContent: /Showing the last-good country projection/i,
+    expectedDetails: [
+      /Last good database load: 2026-08-16T03:00:00Z/i,
+      /Database age: 31 days/i,
+      /Stale since: 2026-08-17T03:00:00Z/i,
+    ],
+  },
+]
+
+function publicNetworkPayload(peers: (typeof PUBLIC_PEER_CASES)[number]['peers'], geo: PublicGeoInsight = { state: 'disabled' }) {
   return {
     networkKey: 'mainnet',
     displayName: 'Mainnet',
     nodes: [],
     peers,
-    geo: { state: 'disabled' },
+    geo,
     validators: [],
   }
 }
 
-async function renderPublicNetwork(peers: (typeof PUBLIC_PEER_CASES)[number]['peers']) {
+async function renderPublicNetwork(peers: (typeof PUBLIC_PEER_CASES)[number]['peers'], geo: PublicGeoInsight = { state: 'disabled' }) {
   mockFetch({
     '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
     '/api/public/v1/networks': () => jsonResponse([], 200),
-    '/api/public/v1/networks/mainnet': () => jsonResponse(publicNetworkPayload(peers), 200),
+    '/api/public/v1/networks/mainnet': () => jsonResponse(publicNetworkPayload(peers, geo), 200),
   })
   render(<App />)
   await act(async () => {
@@ -286,6 +376,100 @@ it.each(PUBLIC_PEER_CASES)('renders $name through the public Network route', asy
     } else {
       expect(within(peerRegion).queryByText('Peer data current')).toBeNull()
     }
+  } finally {
+    await act(async () => {
+      window.history.pushState({}, '', '/')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+    await screen.findByRole('region', { name: 'Home' })
+  }
+})
+
+it('renders server-disabled Geo as a neutral notice through the public Network route', async () => {
+  const peerRegion = await renderPublicNetwork(PUBLIC_PEER_CASES[0].peers)
+
+  try {
+    expect(screen.getByText('Peer countries · Disabled by server', { exact: true })).toBeTruthy()
+    expect(screen.queryByRole('region', { name: 'Peer countries' })).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'Peer countries' })).toBeNull()
+    expect(screen.queryByText(/Country insight is Disabled/i)).toBeNull()
+    expect(peerRegion).toBeTruthy()
+  } finally {
+    await act(async () => {
+      window.history.pushState({}, '', '/')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+    await screen.findByRole('region', { name: 'Home' })
+  }
+})
+
+it.each(PUBLIC_GEO_CASES)('renders $name through the public Network route', async ({ geo, expectedStatus, expectedContent, expectedAttribution, expectedCountry, expectedCount, expectedDetails }) => {
+  const peerRegion = await renderPublicNetwork(PUBLIC_PEER_CASES[0].peers, geo)
+
+  try {
+    const geoRegion = await screen.findByRole('region', { name: 'Peer countries' })
+    expect(within(geoRegion).getByText(expectedStatus, { exact: true })).toBeTruthy()
+    if (expectedContent) expect(within(geoRegion).getByText(expectedContent)).toBeTruthy()
+    if (expectedCountry) expect(within(geoRegion).getByText(expectedCountry, { exact: true })).toBeTruthy()
+    if (expectedCount) expect(within(geoRegion).getByText(expectedCount, { exact: true })).toBeTruthy()
+    for (const detail of expectedDetails ?? []) expect(within(geoRegion).getByText(detail)).toBeTruthy()
+    if (expectedAttribution) expect(within(geoRegion).getByText(expectedAttribution)).toBeTruthy()
+    expect(screen.queryByText(/static centroid|37, -95/i)).toBeNull()
+    expect(screen.queryByText('Peer countries · Disabled by server', { exact: true })).toBeNull()
+    expect(peerRegion).toBeTruthy()
+  } finally {
+    await act(async () => {
+      window.history.pushState({}, '', '/')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+    await screen.findByRole('region', { name: 'Home' })
+  }
+})
+
+it('reveals enabled country content after a public Network invalidation', async () => {
+  vi.stubGlobal('EventSource', FakeEventSource)
+  let geo: PublicGeoInsight = { state: 'disabled' }
+  mockFetch({
+    '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+    '/api/public/v1/networks': () => jsonResponse([], 200),
+    '/api/public/v1/networks/mainnet': () => jsonResponse(publicNetworkPayload(PUBLIC_PEER_CASES[0].peers, geo), 200),
+  })
+  render(<App />)
+  await act(async () => {
+    window.history.pushState({}, '', '/networks/mainnet')
+    window.dispatchEvent(new PopStateEvent('popstate'))
+    await Promise.resolve()
+  })
+
+  try {
+    await screen.findByText('Peer countries · Disabled by server', { exact: true })
+    const peerRegion = await screen.findByRole('region', { name: 'Peer insight' })
+    const transportStatus = screen.getByRole('status', { name: /live updates/i })
+    await waitFor(() => expect(FakeEventSource.latest?.url).toBe('/api/public/v1/events?after=0'))
+
+    geo = {
+      state: 'current',
+      countries: [{ countryCode: 'JP', count: 4 }],
+      attribution: GEO_ATTRIBUTION,
+    }
+    await act(async () => {
+      FakeEventSource.latest?.emit(
+        'invalidation',
+        JSON.stringify({ version: 1, eventId: 1, resource: 'network', resourceId: 'mainnet', revision: 1 }),
+      )
+      await Promise.resolve()
+    })
+
+    const geoRegion = await screen.findByRole('region', { name: 'Peer countries' })
+    expect(within(geoRegion).getByText('Current', { exact: true })).toBeTruthy()
+    expect(within(geoRegion).getByText('JP', { exact: true })).toBeTruthy()
+    expect(within(geoRegion).getByText('4', { exact: true })).toBeTruthy()
+    expect(screen.getByRole('region', { name: 'Peer insight' })).toBe(peerRegion)
+    expect(screen.getByRole('status', { name: /live updates/i })).toBe(transportStatus)
+    expect(screen.queryByText('Peer countries · Disabled by server', { exact: true })).toBeNull()
   } finally {
     await act(async () => {
       window.history.pushState({}, '', '/')

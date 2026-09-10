@@ -10,8 +10,6 @@ function label(state: string): string {
       return 'Stale'
     case 'error':
       return 'Error'
-    case 'disabled':
-      return 'Disabled'
     default:
       return 'Unknown'
   }
@@ -46,6 +44,11 @@ export function GeoInsight({ insight }: { insight: PublicGeoInsight | undefined 
   const headingId = useId()
   const state = insight?.state ?? 'unknown'
   const countries = insight?.countries ?? null
+
+  if (state === 'disabled') {
+    return <p className="geo-disabled-note" data-state={state} role="status">Peer countries · Disabled by server</p>
+  }
+
   return (
     <section className="geo-insight" data-state={state} aria-labelledby={headingId}>
       <div className="geo-insight-heading">
@@ -67,11 +70,7 @@ export function GeoInsight({ insight }: { insight: PublicGeoInsight | undefined 
         </p>
       )}
       {countries === null && state !== 'stale' && state !== 'error' && (
-        <p className="panel-state">
-          {state === 'disabled'
-            ? 'Country insight is Disabled by the Server.'
-            : 'Country insight is Unknown; no usable Geo projection is available.'}
-        </p>
+        <p className="panel-state">Country insight is Unknown; no usable Geo projection is available.</p>
       )}
       {countries !== null && countries.length === 0 && state !== 'stale' && state !== 'error' && (
         <p className="panel-state">No country observations are available yet.</p>
@@ -80,12 +79,7 @@ export function GeoInsight({ insight }: { insight: PublicGeoInsight | undefined 
         <ul className="geo-country-list" aria-label="Peer countries by count">
           {countries.map((country) => (
             <li key={country.countryCode}>
-              <span>
-                {country.countryCode}
-                {country.centroidLat != null && country.centroidLon != null && (
-                  <small className="geo-centroid" aria-label={`static centroid ${country.centroidLat}, ${country.centroidLon}`}> (static centroid {country.centroidLat}, {country.centroidLon})</small>
-                )}
-              </span>
+              <span>{country.countryCode}</span>
               <strong>{country.count.toLocaleString()}</strong>
             </li>
           ))}

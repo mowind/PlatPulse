@@ -284,15 +284,43 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expectNoHorizontalOverflow(page)
   })
 
-  test('Public Geo surface stays explicit when the database is disabled; the Owner Overview carries no Geo panel', async ({ page }) => {
+  test('Public Geo surface compresses disabled state; the Owner Overview carries no Geo panel', async ({ page }) => {
     await loginAs(page)
     await page.goto('/networks/platon-e2e')
     await expect(page.getByRole('heading', { level: 1, name: 'PlatON E2E Network' })).toBeVisible()
-    const publicGeo = page.getByRole('region', { name: 'Peer countries' }).first()
-    await expect(publicGeo).toContainText('Peer countries')
-    await expect(publicGeo).toContainText('Disabled')
-    await expect(publicGeo).toContainText('Country insight is Disabled by the Server')
+    const networkPeer = page.getByRole('region', { name: 'Peer insight' }).first()
+    const publicGeo = page.getByText('Peer countries · Disabled by server', { exact: true })
+    await expect(publicGeo).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Peer countries' })).toHaveCount(0)
+    await expect(page.getByRole('heading', { name: 'Peer countries' })).toHaveCount(0)
+    await expect(page.getByText(/Country insight is Disabled/i)).toHaveCount(0)
+    const composition = networkPeer.locator('..')
+    const [compositionBox, peerBox, noticeBox] = await Promise.all([
+      composition.boundingBox(),
+      networkPeer.boundingBox(),
+      publicGeo.boundingBox(),
+    ])
+    expect(compositionBox).not.toBeNull()
+    expect(peerBox).not.toBeNull()
+    expect(noticeBox).not.toBeNull()
+    expect(peerBox!.width).toBeGreaterThanOrEqual(compositionBox!.width - 2)
+    const noticeLayout = await publicGeo.evaluate((element) => {
+      const range = document.createRange()
+      range.selectNodeContents(element)
+      return {
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+        clientHeight: element.clientHeight,
+        scrollHeight: element.scrollHeight,
+        lineRectCount: range.getClientRects().length,
+      }
+    })
+    expect(noticeLayout.clientWidth).toBeGreaterThan(0)
+    expect(noticeLayout.lineRectCount).toBe(1)
+    expect(noticeLayout.scrollWidth).toBeLessThanOrEqual(noticeLayout.clientWidth)
+    expect(noticeLayout.scrollHeight).toBeLessThanOrEqual(noticeLayout.clientHeight)
     await expect(page.getByText(/GeoLite|MaxMind/i)).toHaveCount(0)
+    await expectNoHorizontalOverflow(page)
 
     // Geo database status is absent from the Owner Overview (issue #93);
     // the Audit/Site Access surface remains the only Admin Geo context.
@@ -316,6 +344,81 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expectVisibleInteractiveTargets(page)
     await expectNoHorizontalOverflow(page)
   })
+
+  test('Public Geo enabled state preserves retained countries, attribution, and responsive composition', async ({ page }) => {
+    await loginAs(page)
+    await page.route('**/api/public/v1/networks/platon-e2e', async (route) => {
+      const response = await route.fetch()
+      const payload = (await response.json()) as Record<string, unknown>
+      await route.fulfill({
+        response,
+        body: JSON.stringify({
+          ...payload,
+          geo: {
+            state: 'stale',
+            countries: [{ countryCode: 'US', count: 3, centroidLat: 37, centroidLon: -95 }],
+            attribution: 'This product includes GeoLite Data created by MaxMind, available from https://www.maxmind.com.',
+            errorReason: 'GeoDatabaseReasonThatMustWrapWithoutExposingPeerAddressOrPreciseLocation0123456789abcdefghijklmnopqrstuvwxyz',
+            lastGoodAt: '2026-08-16T03:00:00Z',
+            databaseAgeSeconds: 2678400,
+            staleSince: '2026-08-17T03:00:00Z',
+          },
+        }),
+      })
+    })
+    await page.goto('/networks/platon-e2e')
+
+    await expect(page.getByRole('heading', { level: 1, name: 'PlatON E2E Network' })).toBeVisible()
+    const networkPeer = page.getByRole('region', { name: 'Peer insight' }).first()
+    const publicGeo = page.getByRole('region', { name: 'Peer countries' })
+    await expect(networkPeer).toBeVisible()
+    await expect(publicGeo).toBeVisible()
+    await expect(publicGeo).toContainText('Stale')
+    await expect(publicGeo).toContainText('US')
+    await expect(publicGeo).toContainText('3')
+    await expect(publicGeo).toContainText('Showing the last-good country projection')
+    await expect(publicGeo).toContainText('Database age: 31 days')
+    await expect(publicGeo).toContainText('Stale since: 2026-08-17T03:00:00Z')
+    await expect(publicGeo).toContainText('This product includes GeoLite Data created by MaxMind')
+    await expect(page.getByText('203.0.113.9')).toHaveCount(0)
+    await expect(page.getByText('peer-a-inbound')).toHaveCount(0)
+    await expect(page.getByText(/static centroid|37, -95/)).toHaveCount(0)
+    await expect(page.getByText(/GeoDatabaseReasonThatMustWrap/)).toBeVisible()
+
+    const composition = networkPeer.locator('..')
+    const [compositionBox, peerBox, geoBox] = await Promise.all([
+      composition.boundingBox(),
+      networkPeer.boundingBox(),
+      publicGeo.boundingBox(),
+    ])
+    expect(compositionBox).not.toBeNull()
+    expect(peerBox).not.toBeNull()
+    expect(geoBox).not.toBeNull()
+    expect(peerBox!.width).toBeGreaterThan(0)
+    expect(geoBox!.width).toBeGreaterThan(0)
+    if ((page.viewportSize()?.width ?? 0) > 768) {
+      expect(geoBox!.x).toBeGreaterThan(peerBox!.x)
+      expect(peerBox!.width).toBeGreaterThan(compositionBox!.width * 0.35)
+    } else {
+      expect(geoBox!.y).toBeGreaterThanOrEqual(peerBox!.y + peerBox!.height - 1)
+    }
+
+    const reasonLayout = await page.getByText(/GeoDatabaseReasonThatMustWrap/).evaluate((element) => ({
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+    }))
+    expect(reasonLayout.clientWidth).toBeGreaterThan(0)
+    expect(reasonLayout.scrollWidth).toBeLessThanOrEqual(reasonLayout.clientWidth)
+    expect(reasonLayout.scrollHeight).toBeLessThanOrEqual(reasonLayout.clientHeight)
+    const breadcrumb = page.getByRole('link', { name: '← All Networks' })
+    await breadcrumb.focus()
+    await expect(breadcrumb).toBeFocused()
+    await expectVisibleInteractiveTargets(page)
+    await expectNoHorizontalOverflow(page)
+  })
+
   test('Owner diagnostics and SSE reconnect do not disturb an active form field', async ({ page }) => {
     // The Overview itself carries no forms (issue #93); the active-field
     // contract is exercised on the Admin Node detail rename form, which

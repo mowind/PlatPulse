@@ -18,6 +18,7 @@ describe('GeoInsight', () => {
     expect(screen.getByText('3')).toBeTruthy()
     expect(screen.getByText(/This product includes GeoLite Data created by MaxMind/)).toBeTruthy()
     expect(screen.queryByText(/remote|address|ip/i)).toBeNull()
+    expect(screen.queryByText(/static centroid|37, -95/i)).toBeNull()
   })
 
   it('describes stale projections without collapsing them into unknown', () => {
@@ -39,9 +40,13 @@ describe('GeoInsight', () => {
     expect(screen.getByText(/Reason: Geo database is invalid/i)).toBeTruthy()
     expect(screen.getByText(/Database age: 1 hour/i)).toBeTruthy()
   })
-  it('is explicit when Geo is disabled', () => {
+  it('compresses server-disabled Geo into a neutral single-line notice', () => {
     render(<GeoInsight insight={{ state: 'disabled', lastGoodAt: null, countries: null, attribution: null }} />)
-    expect(screen.getByText('Disabled')).toBeTruthy()
-    expect(screen.getByText(/Country insight is Disabled/i)).toBeTruthy()
+    const notice = screen.getByText('Peer countries · Disabled by server', { exact: true })
+
+    expect(notice.tagName).toBe('P')
+    expect(notice.getAttribute('role')).toBe('status')
+    expect(screen.queryByRole('heading', { name: 'Peer countries' })).toBeNull()
+    expect(screen.queryByText('Disabled', { exact: true })).toBeNull()
   })
 })
