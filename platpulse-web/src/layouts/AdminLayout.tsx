@@ -21,10 +21,12 @@ import platpulseMark from '../../../assets/platpulse-mark.png'
  * in-flight Admin requests, clears the sensitive Admin cache, and opens a
  * fresh stream under the new authorization (design §3.3).
  *
- * Navigation follows design §10.1: a persistent sidebar on desktop, a
+ * Navigation follows webui.md §10.1: a persistent sidebar on desktop, a
  * collapsible drawer on tablet and mobile that moves focus inside, traps
  * Tab, closes on Escape, restores focus to the opener, and locks body
- * scroll while open.
+ * scroll while open. Each page-group link carries a leading decorative glyph
+ * that is `aria-hidden`, inherits the label color, and never carries status
+ * meaning (webui.md §10.3).
  */
 export default function AdminLayout() {
   const { generation, recheckSession } = useAuth()
@@ -157,25 +159,32 @@ export default function AdminLayout() {
         >
           <p className="admin-nav-label">Operations</p>
           <NavLink to="/admin" end onClick={closeNav}>
+            <span className="admin-nav-icon" aria-hidden="true">▦</span>
             Overview
           </NavLink>
           <NavLink to="/admin/agents" onClick={closeNav}>
+            <span className="admin-nav-icon" aria-hidden="true">◈</span>
             Agents
           </NavLink>
           <NavLink to="/admin/nodes" onClick={closeNav}>
+            <span className="admin-nav-icon" aria-hidden="true">◉</span>
             Nodes
           </NavLink>
           <NavLink to="/admin/networks" onClick={closeNav}>
+            <span className="admin-nav-icon" aria-hidden="true">⬡</span>
             Networks
           </NavLink>
           <NavLink to="/admin/settings" end onClick={closeNav}>
+            <span className="admin-nav-icon" aria-hidden="true">⚙</span>
             Settings
           </NavLink>
           <p className="admin-nav-label">Access</p>
           <NavLink to="/admin/access/sessions" end onClick={closeNav}>
+            <span className="admin-nav-icon" aria-hidden="true">◫</span>
             Sessions
           </NavLink>
           <NavLink to="/admin/access/audit" end onClick={closeNav}>
+            <span className="admin-nav-icon" aria-hidden="true">☷</span>
             Audit
           </NavLink>
           {/* MVP Admin surface (issue #92): deferred groups (alerts,

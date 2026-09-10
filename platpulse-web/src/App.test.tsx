@@ -1907,20 +1907,27 @@ describe('Admin MVP route inventory (issue #92)', () => {
     await screen.findByRole('heading', { level: 1, name: 'Overview' })
 
     const adminNav = screen.getByRole('navigation', { name: 'Admin' })
-    const menu = adminNav.querySelectorAll('a')
-    const links = Array.from(menu).map((element) => ({
-      name: element.textContent?.trim() ?? '',
-      href: element.getAttribute('href'),
-    }))
-    expect(links).toEqual([
-      { name: 'Overview', href: '/admin' },
-      { name: 'Agents', href: '/admin/agents' },
-      { name: 'Nodes', href: '/admin/nodes' },
-      { name: 'Networks', href: '/admin/networks' },
-      { name: 'Settings', href: '/admin/settings' },
-      { name: 'Sessions', href: '/admin/access/sessions' },
-      { name: 'Audit', href: '/admin/access/audit' },
-    ])
+    // Each retained page group carries one decorative leading glyph. The glyph
+    // is aria-hidden, so the accessible name stays the page-group label while
+    // the visible text leads with the glyph (webui.md §10.1).
+    const expectedLinks = [
+      { name: 'Overview', href: '/admin', glyph: '▦' },
+      { name: 'Agents', href: '/admin/agents', glyph: '◈' },
+      { name: 'Nodes', href: '/admin/nodes', glyph: '◉' },
+      { name: 'Networks', href: '/admin/networks', glyph: '⬡' },
+      { name: 'Settings', href: '/admin/settings', glyph: '⚙' },
+      { name: 'Sessions', href: '/admin/access/sessions', glyph: '◫' },
+      { name: 'Audit', href: '/admin/access/audit', glyph: '☷' },
+    ]
+    expect(within(adminNav).getAllByRole('link')).toHaveLength(expectedLinks.length)
+    for (const { name, href, glyph } of expectedLinks) {
+      const link = within(adminNav).getByRole('link', { name })
+      expect(link.getAttribute('href')).toBe(href)
+      expect(link.textContent?.trim()).toBe(glyph + name)
+      const icon = link.querySelector('.admin-nav-icon')
+      expect(icon?.getAttribute('aria-hidden')).toBe('true')
+      expect(icon?.textContent).toBe(glyph)
+    }
     for (const removed of ['History Window', 'Site Access', 'Validators', 'People', 'Alert Rules', 'Incidents', 'Silences', 'Maintenance', 'Deliveries', 'Channels', 'Operations', 'Data', 'Retention', 'Backups', 'Restore', 'Doctor', 'Enroll', 'Recover', 'Rotate']) {
       expect(
         Array.from(adminNav.querySelectorAll('a')).some((element) =>

@@ -638,7 +638,18 @@ Relative times can expand to absolute UTC or selected timezone. Server timestamp
 - mobile: accessible drawer or equivalent navigation;
 - drawer opening moves focus inside, traps Tab focus, closes on Escape, restores focus to opener, and locks body scroll;
 - no critical action depends on hover;
-- browser back/forward preserves URL filters and detail context.
+- browser back/forward preserves URL filters and detail context;
+- Admin page-group links carry one leading decorative glyph that inherits the label colour. The glyph is `aria-hidden`, so the link's accessible name remains the visible page-group label; it never carries status meaning (§10.3) and never replaces the label. The retained MVP mapping is:
+
+| Page group | Glyph | Code point |
+|---|---|---|
+| Overview | ▦ | U+25A6 |
+| Agents | ◈ | U+25C8 |
+| Nodes | ◉ | U+25C9 |
+| Networks | ⬡ | U+2B21 |
+| Settings | ⚙ | U+2699 |
+| Sessions | ◫ | U+25EB |
+| Audit | ☷ | U+2637 |
 
 ### 10.2 Layout
 
@@ -883,5 +894,6 @@ A page is ready for production implementation only when:
 | Admin information architecture pass: Audit event table, Settings consolidation, Agent Detail summary and categories, Overview Agent inventory summary, Network mismatch wording, shared formatting/focus | Explicit product direction after §8.5; see this document §8.6 |
 | Targeted Admin list/detail fix: Agents six-column cell alignment, Diagnostics summary plus cross-column disclosure, Audit cross-column detail row, explicit attention observation-time labels | Explicit product direction; see this document §8.6 |
 | Prototype cleanup and production-only route boundary | Issue #89 |
+| Admin navigation leading decorative glyphs (▦ ◈ ◉ ⬡ ⚙ ◫ ☷), `aria-hidden`, no route, authorization, page-title, or DTO change | Confirmed `grill-with-docs` decision; UI-only |
 
 Changes to a settled contract require a new decision record and must update the affected `PAGE-*`, `PATTERN-*`, and `SCN-*` references together. OpenAPI or Server policy changes do not silently change WebUI semantics; they require an explicit design review when the user-visible contract changes.

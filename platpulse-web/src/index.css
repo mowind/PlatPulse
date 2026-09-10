@@ -2336,6 +2336,14 @@ button {
   font-weight: 800;
 }
 
+/* Leading decorative glyph (webui.md §10.1): fixed column so the labels align,
+ * color inherited from the link's active/inactive state. */
+.admin-nav-icon {
+  flex: 0 0 auto;
+  width: 1.5em;
+  text-align: center;
+}
+
 .admin-nav-label {
   margin: 0.5rem 0.65rem 0.25rem;
   color: #aeb9df;
