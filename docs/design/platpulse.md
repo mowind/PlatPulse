@@ -19,7 +19,7 @@
 产品分离参照 Komari（<https://github.com/komari-monitor/komari>），但监控对象是 PlatON Node 而不是服务器：
 
 - Home：只读、以 Node 为中心的监控面。根路由 `/` 展示 Active Node 卡片，Network → Node → Node Detail 展开公共投影；Network Overview 还展示聚合 Peer Insight、country-only Geo Insight、Validator cards/history/analytics。Node Detail 由最近两个连续 Block Summary 推导出块间隔，但不展示 Bounded Block History 列表。Site Access Mode 为 Public 时匿名 Guest 可读选定 Public GET/SSE 路径；为 Private 时 Owner 或 Viewer 登录后可读。
-- Admin：认证后的 Owner-only 系统概览与配置面。当前 SPA 路由覆盖 Overview、Agents、Nodes、Networks、Settings、Sessions 与 Audit；Settings 现在包含 Geo provider 选择（Disabled / Local MMDB）。Server/Admin API 另外提供 Validator、Alert、Notification、Operation、Retention、Backup/Restore、Doctor、Transfer、People、Enrollment/Recovery/Rotation 等能力，但尚未全部注册为页面。
+- Admin：认证后的 Owner-only 系统概览与配置面。当前 SPA 路由覆盖 Overview、Agents、Nodes、Networks、Settings、Sessions 与 Audit；Settings 现在包含 Geo provider 选择（Disabled / Local MMDB / IPinfo）。Server/Admin API 另外提供 Validator、Alert、Notification、Operation、Retention、Backup/Restore、Doctor、Transfer、People、Enrollment/Recovery/Rotation 等能力，但尚未全部注册为页面。
 - 同一个 WebUI 承载 `/` 与 `/admin` 两组路由，使用不同的 DTO、查询缓存、权限和导航。
 - 站点级 Site Access Mode（Public/Private）由 Owner 配置，变更记 Audit；当前默认 Private。Node DTO 和 Admin 页面仍保留 `visibility` 字段与 Owner mutation 作为兼容/诊断字段，但 Public 查询实际按 `lifecycle = active` 过滤，不按该字段隐藏 Home；站点模式才是有效的匿名访问开关。
 
@@ -77,7 +77,7 @@
 
 ### 3.2 已实现的 Server/Agent 扩展
 
-当前代码和迁移已经提供：Agent Enrollment、Recovery、Credential Rotation/Revocation、Boot/Shutdown 生命周期；Peer Snapshot、Peer Presence 与聚合历史；provider-keyed GeoLite2 country cache 与后台国家解析（Settings 可选择 Disabled / Local MMDB）；Server-side Validator Registry/Links/PlatScan Provider、历史与日/月 analytics；Typed Alert/Incident/Silence/Maintenance；at-least-once Notification Delivery；Node Transfer；Retention、Operation、Backup/Restore、Doctor；独立 Prometheus metrics listener。它们由 Server/Admin API、CLI 或后台工作器提供，是否有当前 SPA 页面由 `docs/design/webui.md` 的路由矩阵单独决定。
+当前代码和迁移已经提供：Agent Enrollment、Recovery、Credential Rotation/Revocation、Boot/Shutdown 生命周期；Peer Snapshot、Peer Presence 与聚合历史；provider-keyed country cache 与后台国家解析（Settings 可选择 Disabled / Local MMDB / IPinfo）；Server-side Validator Registry/Links/PlatScan Provider、历史与日/月 analytics；Typed Alert/Incident/Silence/Maintenance；at-least-once Notification Delivery；Node Transfer；Retention、Operation、Backup/Restore、Doctor；独立 Prometheus metrics listener。它们由 Server/Admin API、CLI 或后台工作器提供，是否有当前 SPA 页面由 `docs/design/webui.md` 的路由矩阵单独决定。
 
 ### 3.3 明确未实现或明确排除
 
@@ -204,15 +204,21 @@ Consensus 表示 Node 当前的协议状态，不等于 Validator 管理。当�
 - 成功空 Peer Snapshot 是权威零；never-observed 或没有可靠分母时保持 unavailable/unknown 且不输出计数。Geo database/国家结果状态与 Peer 采集状态、新鲜度互相独立：Geo Current 不代表 Peer 在线或刚刚采集，采集失败保留的 Peer Snapshot 仍按自身状态展示。
 - 每个 Network 的 Public Geo Insight 是独立投影；本契约不提供跨 Network 的全局去重 Peer 总数，也不把缺失 Network 当零或制造完整性百分比。部分覆盖时投影如实标注 scope，Public 只含国家代码与计数，不含原始 IP、RPC Endpoint、精确位置或敏感错误。
 
-### 5.9 Geo Provider、后台解析与缓存（issue #132）
+### 5.9 Geo Provider、后台解析与缓存（issue #132、#134）
 
-- Geo Provider 由 Owner 在 Settings 选择，当前只实现 `Disabled` 与 `Local MMDB`；一次只用一个，不自动回退，也没有外部 Provider。未实现的 IPinfo/GeoJS 不出现在管理界面、OpenAPI 或可持久化的 `provider` 值中。
+- Geo Provider 由 Owner 在 Settings 选择，当前实现 `Disabled`、`Local MMDB` 与 `IPinfo`；一次只用一个，不自动回退。未实现的 GeoJS 不出现在管理界面、OpenAPI 或可持久化的 `provider` 值中。Admin 诊断逐项给出 `sends_peer_addresses`，Settings 据此在 Owner 选择前说明该 Provider 会把当前 Peer 公网 IP 发往第三方；只有 Owner 显式选择才启用，升级不会打开外部查询。
 - 选择持久化在 `server_settings`（`geo_provider` + `geo_provider_generation`），每次变更推进 generation。升级时若该键不存在，由部署是否配置本地 MMDB 决定：已配置本地数据库的安装继续用 `Local MMDB`，没有配置的保持 `Disabled`，两条路径都不新增外部请求。MMDB 路径只来自 Server 配置（`[geo] mmdb_path` 或 CLI），不是 Admin 可写字段。
-- 国家解析只在后台执行：Report Ingestion 事务只记录当前 Peer 引用（并更新最后引用时间），不读 MMDB、不做外部 HTTP；`geo_backfill` 负责调度、按规范化公网 IP 去重、有限并发（`MAX_BACKFILL_CONCURRENCY`）、有界批量（`MAX_BACKFILL_BATCH`）、无国家结果的小时级重试间隔，以及每轮结束后的 realtime 失效。慢查询或数据库损坏不会占用 Receipt 事务，也不影响报告接收与就绪状态。
+- 国家解析只在后台执行：Report Ingestion 事务只记录当前 Peer 引用（并更新最后引用时间），不读 MMDB、不做外部 HTTP；`geo_backfill` 负责调度、按规范化公网 IP 去重、有限并发、有界批量（`MAX_BACKFILL_BATCH`）、无国家结果的小时级重试间隔，以及每轮结束后的 realtime 失效。慢查询、外部服务慢或被限流都不会占用 Receipt 事务，也不影响报告接收与就绪状态。Provider 只决定"单个地址如何解析"：Local MMDB 在阻塞线程读文件（`MAX_BACKFILL_CONCURRENCY`），IPinfo 在有界外发边界发 HTTP（`IPINFO_MAX_CONCURRENCY`，低于本地并发）；调度、去重、保留、generation 校验与缓存写入完全共用。
 - 结果按 Geo Provider 与规范化 IP 隔离存放在 `geo_location_cache`：国家代码、状态（`current` / `no_country` / `failed`）、最近尝试时间、最近成功时间、出生时间、有效期与最后引用时间。投影与 5m/1h country 聚合只读当前 provider 的行；切换 provider 后旧 provider 的行立即删除，未被任何当前 Peer 引用的行在维护周期内清理，超出 24h TTL 但仍在 30 天硬边界内的结果继续作为 last-good Stale，失败只记录尝试、绝不把 last-good 刷成 Current，超出边界则回到未知。
+- IPinfo 走固定 HTTPS 旧式接口 `https://ipinfo.io/{ip}/json`，读取 `country` 两字母代码，不携带 token，不替换为 Lite API，不提供凭据 UI，也不把源码或定价页的免费额度当作供应商承诺。只发送经 Server 校验的规范化公网字面 IP：私网／loopback／link-local／保留地址在外发边界再次拒绝，主机名从不解析 DNS，请求目的地不可配置，重定向一概不跟随（`redirect::Policy::none()`）。边界包含有界超时、有界响应体、有限并发与有界重试/排队。
+- IPinfo 的结果解释区分四类：有 `country` 是 `Country`，`country` 缺失或为空是权威 `NoCountry`，出现但不是两字母 ASCII 国家码是畸形结果（按失败处理），429 是 `RateLimited`。国家码只做形状校验（两个大写 ASCII 字母），与 Local MMDB 路径共用同一个过滤器：字段按 ISO 3166-1 alpha-2 定义，本 Server 不固化一份会过期的国家清单，畸形值在两条路径上都成不了国家。
+- 429 不写入任何按地址的尝试记录：地址保持 pending，改由有界的进程内 Provider 级退避（60s 起、翻倍、上限 15 分钟，任何正常响应即清零）决定重试窗口；写入路径本身也拒绝 `RateLimited`，即使将来有调用方绕过调度也不会留下"失败尝试"。非成功 HTTP、传输失败、超时、超长响应体与畸形 JSON 都按失败记录，只记尝试、绝不擦除 last-good。
+- 外部 Provider 的状态是外发路径的真实状态：进程记录最近一次外发是否产生了可用结果与限流窗口，被限流或最近一次尝试无可用结果时 Admin 与 Public 都报 `error`（Public 只给固定非敏感理由），下一次正常响应即回到 `current`。因为 IPinfo 不读数据库，它的诊断不含 build epoch、digest 或"数据库加载时间"，`last_success_at` 来自按 Provider 隔离的缓存行。
 - 每次后台写入在事务内重新校验持久化 selection 与进程内 generation：配置变更后迟到的任务不能回写成新配置的结果。cleanup 只应用硬保留边界、当前引用规则与容量上界：24h 过期只把结果标为 Stale last-good，绝不删除仍在硬边界内的国家结果。
-- 管理接口：`PUT /api/admin/v1/geo/provider`（Owner-only、Origin/JSON/CSRF、审计 `geo_provider_changed`）在事务内推进 generation 并返回新的诊断；`GET /api/admin/v1/geo` 提供 provider、generation、可选列表、数据库状态、缓存国家数、完整待解析队列长度与最近成功时间，均不含路径或原始 IP。Provider 为 Disabled 但本地数据库已配置且不可用时，诊断仍显示该数据库的错误说明，Owner 在选择前即可看到。Public 仍然只见国家代码与计数。
-- 本票不含外部 Provider、全局强制刷新与第三方 MMDB 自动下载；后续加入时复用同一条后台执行路径与 provider 隔离。
+- 管理接口：`PUT /api/admin/v1/geo/provider`（Owner-only、Origin/JSON/CSRF、审计 `geo_provider_changed`）在事务内推进 generation 并返回新的诊断；`GET /api/admin/v1/geo` 提供 provider、generation、可选列表（含 `sends_peer_addresses`）、数据库状态、缓存国家数、完整待解析队列长度、最近成功时间与外部 Provider 的 `rate_limited_until`，均不含路径、原始 IP、请求 URL 或供应商错误原文。Provider 为 Disabled 但本地数据库已配置且不可用时，诊断仍显示该数据库的错误说明，Owner 在选择前即可看到。
+- Public 仍然只见国家代码、计数、Provider 自有的稳定状态与署名：署名随所选 Provider 变化（Local MMDB 为 MaxMind 署名，IPinfo 为 IPinfo 署名，Disabled 无署名），浏览器不自行拼接；外部 Provider 的失败理由对 Public 只呈现固定非敏感文案。
+- 本票不含 GeoJS、全局强制刷新与第三方 MMDB 自动下载；后续加入时复用同一条后台执行路径与 provider 隔离。浏览器 E2E 只验证 IPinfo 选项与知情说明存在且默认未选，绝不在真实浏览器会话里选中它：E2E 用的 Server 没有（也不允许有）可配置目的地，选中即意味着把 Peer 地址发给真实第三方，违反"CI 不向供应商发送真实 Peer IP"。外发行为由进程内的确定性替身覆盖。
+- IPinfo 旧式接口的核查结论（2026-08，issue #134）：该无 token 路径在官方文档中与 Lite API 并列存在，官方支持文档称无账号公共 API 为每源 IP 每天 1,000 次、旧式 Free API 为每月 50,000 次，两者口径不一致，因此本实现只把它当作有界、可失败的外部依赖，不承诺额度、不规避限流。官方条款允许为内部业务目的使用查询内容，禁止转售或再分发，付费档位标注 `Attribution required`，故 Public 在 IPinfo 下展示 IPinfo 署名。未实测项：未对真实服务发起联调（需另行授权），因此响应字段、限流响应头与真实限额均未验证；实现只依赖已确认的 `country` 字段与 429 状态码。
 
 ---
 

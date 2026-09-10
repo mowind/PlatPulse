@@ -8793,7 +8793,8 @@
         "required": [
           "provider",
           "label",
-          "available"
+          "available",
+          "sends_peer_addresses"
         ],
         "properties": {
           "available": {
@@ -8804,6 +8805,10 @@
           },
           "provider": {
             "type": "string"
+          },
+          "sends_peer_addresses": {
+            "type": "boolean",
+            "description": "Whether selecting this provider sends observed Peer public addresses\nto a third-party service. The Settings surface states the consequence\nfrom this Server-owned flag instead of hardcoding which providers do\nit, so an Owner always knows the privacy boundary before selecting."
           },
           "unavailable_reason": {
             "type": [
@@ -8904,6 +8909,13 @@
             "items": {
               "$ref": "#/components/schemas/GeoProviderOption"
             }
+          },
+          "rate_limited_until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The bounded backoff window an external provider currently imposes, or\nnull when the provider may be asked again now. It is a Server-owned\ninstant: no address, endpoint, or provider error crosses this DTO."
           },
           "state": {
             "type": "string",

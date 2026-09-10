@@ -11,6 +11,11 @@
 //! retained country result stays usable until its hard cache boundary, a
 //! successful lookup may refresh it within that boundary, and a failure only
 //! records the attempt so a last-good value is never rewritten as current.
+//!
+//! The provider decides only *how* one address is resolved: the local MMDB
+//! reader runs on a blocking thread, the external IPinfo provider runs on the
+//! bounded outbound boundary in `crate::geo_ipinfo`. Scheduling, dedup,
+//! retention, generation checks, and cache writes are shared by both.
 
 use std::collections::BTreeSet;
 use std::net::IpAddr;
@@ -26,19 +31,29 @@ use crate::http::AppState;
 /// record counts a reader sees are never derived from these numbers.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BackfillSummary {
+    /// Lookups this pass processed, whatever their outcome. It is the sum of
+    /// `resolved`, `no_country`, `failed`, and `rate_limited`.
     pub attempted: u64,
     pub resolved: u64,
     pub no_country: u64,
+    /// Lookups that produced no usable result at all: an unloaded or
+    /// unreadable database, a transport failure, a bounded timeout, a
+    /// non-success status, or a malformed document.
     pub failed: u64,
+    /// Lookups the external provider refused because this Server is being
+    /// rate limited. They are counted as attempted but never recorded against
+    /// the address: no authoritative result exists, the bounded provider-wide
+    /// backoff governs the retry, and the address stays pending.
+    pub rate_limited: u64,
     /// Results discarded because the selection changed while they were in
     /// flight. They must never be written as the current configuration's data.
     pub discarded: u64,
 }
 
 impl BackfillSummary {
-    /// Whether the pass touched the retained cache at all.
+    /// Whether the pass wrote anything to the retained cache.
     pub fn changed(self) -> bool {
-        self.attempted > 0
+        self.resolved + self.no_country + self.failed > 0
     }
 }
 
@@ -93,58 +108,164 @@ pub async fn pending_addresses(
     Ok(pending.into_iter().collect())
 }
 
-/// Run one bounded background pass. Disabled schedules no work at all.
+/// Run one bounded background pass for the selected provider. Disabled
+/// schedules no work at all.
 pub async fn run_pass(state: &AppState, now: &str) -> Result<BackfillSummary, sqlx::Error> {
     let config = state.geo_config();
-    if !config.provider.needs_local_database() {
-        return Ok(BackfillSummary::default());
+    match config.provider {
+        GeoProvider::Disabled => Ok(BackfillSummary::default()),
+        GeoProvider::LocalMmdb => run_local_pass(state, &config, now).await,
+        GeoProvider::Ipinfo => run_ipinfo_pass(state, &config, now).await,
     }
-    let addresses = pending_addresses(
+}
+
+/// Apply one lookup outcome to the pass accounting and, unless the provider
+/// refused the request, to the retained cache.
+async fn record_outcome(
+    state: &AppState,
+    config: &GeoConfig,
+    summary: &mut BackfillSummary,
+    ip: IpAddr,
+    outcome: GeoLookup,
+    now: &str,
+) -> Result<(), sqlx::Error> {
+    summary.attempted += 1;
+    match outcome {
+        GeoLookup::Country(_) => summary.resolved += 1,
+        GeoLookup::NoCountry => summary.no_country += 1,
+        GeoLookup::Unavailable => summary.failed += 1,
+        GeoLookup::RateLimited => {
+            summary.rate_limited += 1;
+            // Deliberately not recorded: the provider produced no result, so
+            // the address is still pending and the bounded provider-wide
+            // backoff, not a per-address attempt, decides when it is retried.
+            return Ok(());
+        }
+    }
+    if !record_lookup(state, config, ip, outcome, now).await? {
+        summary.discarded += 1;
+    }
+    Ok(())
+}
+
+/// The addresses one pass may schedule: the whole queue is bounded by the
+/// batch limit, and every provider reads the same IP-deduplicated queue.
+async fn scheduled_addresses(
+    state: &AppState,
+    config: &GeoConfig,
+    now: &str,
+) -> Result<Vec<IpAddr>, sqlx::Error> {
+    pending_addresses(
         state.db().pool(),
         config.provider,
         now,
         Some(geo::MAX_BACKFILL_BATCH),
     )
-    .await?;
+    .await
+}
+
+/// Drive one bounded, IP-deduplicated lookup set. Scheduling, concurrency,
+/// accounting, generation checks, and cache writes are identical for both
+/// providers; only the per-address resolver and its concurrency bound differ.
+async fn run_bounded_pass<F, Fut>(
+    state: &AppState,
+    config: &GeoConfig,
+    now: &str,
+    concurrency: usize,
+    addresses: Vec<IpAddr>,
+    lookup: F,
+) -> Result<BackfillSummary, sqlx::Error>
+where
+    F: Fn(IpAddr) -> Fut + Clone + Send + 'static,
+    Fut: std::future::Future<Output = GeoLookup> + Send,
+{
     let mut summary = BackfillSummary::default();
     if addresses.is_empty() {
         return Ok(summary);
     }
-
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(geo::MAX_BACKFILL_CONCURRENCY));
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
     let mut lookups = tokio::task::JoinSet::new();
     for ip in addresses {
-        let loader = Arc::clone(state.geo());
+        let lookup = lookup.clone();
         let permit = Arc::clone(&semaphore);
         lookups.spawn(async move {
             let _permit = permit
                 .acquire_owned()
                 .await
                 .expect("Geo backfill semaphore is never closed");
-            // The MMDB read is synchronous and must not occupy the async
-            // runtime: a slow or replaced database cannot delay report
-            // ingestion, which writes on other connections.
-            let outcome = tokio::task::spawn_blocking(move || loader.resolve(&ip))
-                .await
-                .unwrap_or(GeoLookup::Unavailable);
-            (ip, outcome)
+            (ip, lookup(ip).await)
         });
     }
     while let Some(joined) = lookups.join_next().await {
         let Ok((ip, outcome)) = joined else {
             continue;
         };
-        summary.attempted += 1;
-        match outcome {
-            GeoLookup::Country(_) => summary.resolved += 1,
-            GeoLookup::NoCountry => summary.no_country += 1,
-            GeoLookup::Unavailable => summary.failed += 1,
-        }
-        if !record_lookup(state, &config, ip, outcome, now).await? {
-            summary.discarded += 1;
-        }
+        record_outcome(state, config, &mut summary, ip, outcome, now).await?;
     }
     Ok(summary)
+}
+
+/// The local-database pass: a synchronous MMDB read per address, bounded by
+/// the local concurrency limit.
+async fn run_local_pass(
+    state: &AppState,
+    config: &GeoConfig,
+    now: &str,
+) -> Result<BackfillSummary, sqlx::Error> {
+    let addresses = scheduled_addresses(state, config, now).await?;
+    let loader = Arc::clone(state.geo());
+    run_bounded_pass(
+        state,
+        config,
+        now,
+        geo::MAX_BACKFILL_CONCURRENCY,
+        addresses,
+        move |ip| {
+            let loader = Arc::clone(&loader);
+            async move {
+                // The MMDB read is synchronous and must not occupy the async
+                // runtime: a slow or replaced database cannot delay report
+                // ingestion, which writes on other connections.
+                tokio::task::spawn_blocking(move || loader.resolve(&ip))
+                    .await
+                    .unwrap_or(GeoLookup::Unavailable)
+            }
+        },
+    )
+    .await
+}
+
+/// The external pass. It adds exactly two things to the shared scheduling: a
+/// bounded provider-wide rate-limit backoff, and the outbound concurrency
+/// bound. Neither can delay report ingestion, because both live entirely
+/// inside this background task.
+async fn run_ipinfo_pass(
+    state: &AppState,
+    config: &GeoConfig,
+    now: &str,
+) -> Result<BackfillSummary, sqlx::Error> {
+    let client = Arc::clone(state.ipinfo());
+    // A recently rate-limited provider is left alone until its bounded window
+    // passes instead of being asked again on every tick.
+    if client.throttled_until(now).is_some() {
+        return Ok(BackfillSummary::default());
+    }
+    let addresses = scheduled_addresses(state, config, now).await?;
+    let clock: Arc<str> = Arc::from(now);
+    let lookup_clock = Arc::clone(&clock);
+    run_bounded_pass(
+        state,
+        config,
+        &clock,
+        crate::geo_ipinfo::IPINFO_MAX_CONCURRENCY,
+        addresses,
+        move |ip| {
+            let client = Arc::clone(&client);
+            let clock = Arc::clone(&lookup_clock);
+            async move { client.resolve(ip, &clock).await }
+        },
+    )
+    .await
 }
 
 /// Write one lookup result for the selection that scheduled it. The durable
@@ -158,6 +279,13 @@ pub(crate) async fn record_lookup(
     outcome: GeoLookup,
     now: &str,
 ) -> Result<bool, sqlx::Error> {
+    // A rate-limited lookup is not a result: no authoritative answer exists,
+    // so nothing may be recorded against the address. The caller leaves it
+    // pending and the bounded provider-wide backoff owns the retry. Guarding
+    // here keeps that rule true even if a future caller routes it in.
+    if outcome == GeoLookup::RateLimited {
+        return Ok(false);
+    }
     let current = state.geo_config();
     if current.provider != config.provider || current.generation != config.generation {
         return Ok(false);
@@ -213,6 +341,10 @@ pub(crate) async fn record_lookup(
                 .execute(&mut *tx)
                 .await?;
         }
+        // Already refused above, before this transaction was opened. The arm
+        // is explicit so a rate-limited result can never fall into a write,
+        // and so a new outcome variant cannot silently become one.
+        GeoLookup::RateLimited => return Ok(false),
     }
     tx.commit().await?;
     Ok(true)
@@ -262,6 +394,7 @@ pub async fn run_worker(state: AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geo_ipinfo::stub::{StubReply, StubServer};
     use tempfile::tempdir;
 
     const NOW: &str = "2026-08-12T10:00:00Z";
@@ -402,6 +535,7 @@ mod tests {
                 resolved: 1,
                 no_country: 0,
                 failed: 0,
+                rate_limited: 0,
                 discarded: 0,
             }
         );
@@ -878,5 +1012,437 @@ mod tests {
         assert_eq!(countries[0].country_code, "SE");
         assert_eq!(countries[0].count, 1);
         assert_eq!(countries[0].stale_count, 0);
+    }
+
+    /// The external provider's retained row, read the same way the local
+    /// provider's row is read so the shared retention rules stay comparable.
+    async fn ipinfo_cache_row(state: &AppState, ip: &str) -> Option<CacheRow> {
+        sqlx::query_as(
+            "SELECT country_code, state, created_at, expires_at, last_success_at, last_attempt_at FROM geo_location_cache WHERE provider = 'ipinfo' AND canonical_ip = ?",
+        )
+        .bind(ip)
+        .fetch_optional(state.db().pool())
+        .await
+        .unwrap()
+    }
+
+    /// A Server whose selected provider is the external path, wired to the
+    /// deterministic loopback stub instead of the fixed destination. The
+    /// provider selection is persisted exactly as the Admin mutation leaves
+    /// it, so the background pass reads a real selection.
+    async fn ipinfo_state(dir: &tempfile::TempDir, stub: &StubServer) -> AppState {
+        backfill_state(dir, false, GeoProvider::Ipinfo)
+            .await
+            .with_ipinfo_client(Arc::new(crate::geo_ipinfo::IpinfoClient::for_tests(
+                stub.base_url(),
+                std::time::Duration::from_secs(2),
+            )))
+    }
+
+    /// One address shared by three Peer records across two Nodes is one
+    /// outbound query, and a refused address is never sent at all.
+    #[tokio::test]
+    async fn ipinfo_queries_each_address_once_and_never_sends_ineligible_input() {
+        let dir = tempdir().unwrap();
+        let stub = StubServer::start(vec![StubReply::country("SE")]).await;
+        let state = ipinfo_state(&dir, &stub).await;
+        seed_node(&state, "geo-node-a").await;
+        seed_node(&state, "geo-node-b").await;
+        insert_peer(&state, "geo-node-a", "p1", RESOLVABLE).await;
+        insert_peer(&state, "geo-node-a", "p2", RESOLVABLE).await;
+        insert_peer(&state, "geo-node-b", "p3", RESOLVABLE).await;
+        // A documentation address the trust boundary refuses.
+        insert_peer(&state, "geo-node-a", "p4", "203.0.113.9").await;
+
+        let summary = run_pass(&state, NOW).await.unwrap();
+        assert_eq!(
+            summary,
+            BackfillSummary {
+                attempted: 1,
+                resolved: 1,
+                no_country: 0,
+                failed: 0,
+                rate_limited: 0,
+                discarded: 0,
+            }
+        );
+        let requests = stub.requests();
+        assert_eq!(requests.len(), 1, "one query per canonical address");
+        assert_eq!(requests[0].path, format!("/{RESOLVABLE}/json"));
+        assert!(requests[0].query.is_empty());
+        assert!(!requests[0].authorization);
+        let row = ipinfo_cache_row(&state, RESOLVABLE).await.unwrap();
+        assert_eq!(row.0.as_deref(), Some("SE"));
+        assert_eq!(row.1, "current");
+        assert_eq!(row.4.as_deref(), Some(NOW));
+        assert_eq!(cache_count(&state).await, 1);
+
+        // A retained result inside its lifetime schedules nothing, so a
+        // repeated Peer snapshot does not repeat the request.
+        assert_eq!(
+            run_pass(&state, NOW).await.unwrap(),
+            BackfillSummary::default()
+        );
+        assert_eq!(stub.request_count(), 1);
+    }
+
+    /// The external path feeds the same Public projection as the local one,
+    /// and the projection counts Peer records rather than deduplicated
+    /// addresses.
+    #[tokio::test]
+    async fn ipinfo_completion_updates_the_public_projection_per_peer_record() {
+        let dir = tempdir().unwrap();
+        let stub = StubServer::start(vec![StubReply::country("SE")]).await;
+        let state = ipinfo_state(&dir, &stub).await;
+        seed_node(&state, "geo-node-a").await;
+        insert_peer(&state, "geo-node-a", "p1", RESOLVABLE).await;
+        insert_peer(&state, "geo-node-a", "p2", RESOLVABLE).await;
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES ('agent-geo-backfill', 'node', 'geo-node-a', 'geo-node-a', 'peers', 'ok', ?, ?, ?, ?, 1, 1)")
+            .bind(NOW)
+            .bind(NOW)
+            .bind(NOW)
+            .bind(NOW)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        // The projection compares retained expiries against the real clock.
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        let before = crate::http::public::public_country_distribution(
+            &state,
+            "geo-net",
+            &state.geo_status(),
+        )
+        .await;
+        assert_eq!(before.known_country_count, Some(0));
+        assert_eq!(before.unknown_country_count, Some(2));
+        assert_eq!(
+            before.attribution.as_deref(),
+            Some(crate::geo_ipinfo::IPINFO_ATTRIBUTION),
+            "the external provider owns the Public attribution"
+        );
+
+        assert_eq!(run_pass(&state, &now).await.unwrap().resolved, 1);
+        let insight = crate::http::public::public_country_distribution(
+            &state,
+            "geo-net",
+            &state.geo_status(),
+        )
+        .await;
+        assert_eq!(insight.state, "current");
+        assert_eq!(insight.known_country_count, Some(2));
+        assert_eq!(insight.unknown_country_count, Some(0));
+        assert_eq!(insight.last_good_at, None, "no database was loaded");
+        assert_eq!(insight.database_age_seconds, None);
+        let countries = insight.countries.unwrap();
+        assert_eq!(countries.len(), 1);
+        assert_eq!(countries[0].country_code, "SE");
+        assert_eq!(
+            countries[0].count, 2,
+            "two records sharing one address are two Peer records"
+        );
+    }
+
+    /// A failed external lookup records only the attempt: the retained
+    /// country stays last-good, and a later success is a real refresh.
+    #[tokio::test]
+    async fn ipinfo_failure_keeps_last_good_and_a_later_success_is_real() {
+        let dir = tempdir().unwrap();
+        let stub = StubServer::start(vec![StubReply::Status(500), StubReply::country("US")]).await;
+        let state = ipinfo_state(&dir, &stub).await;
+        seed_node(&state, "geo-node-a").await;
+        insert_peer(&state, "geo-node-a", "p1", RESOLVABLE).await;
+        // A retained country result that expired one hour before the pass.
+        sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('ipinfo', ?, 'SE', 'current', '2026-08-11T09:00:00Z', '2026-08-11T09:00:00Z', '2026-08-11T09:00:00Z', '2026-08-11T09:00:00Z', '2026-08-12T09:00:00Z')")
+            .bind(RESOLVABLE)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let summary = run_pass(&state, NOW).await.unwrap();
+        assert_eq!(summary.failed, 1);
+        assert_eq!(summary.resolved, 0);
+        assert_eq!(summary.rate_limited, 0);
+        let row = ipinfo_cache_row(&state, RESOLVABLE).await.unwrap();
+        assert_eq!(row.0.as_deref(), Some("SE"), "last-good is never erased");
+        assert_eq!(row.1, "failed");
+        assert_eq!(
+            row.2.as_deref(),
+            Some("2026-08-11T09:00:00Z"),
+            "a failure never refreshes a retained result to Current"
+        );
+        assert_eq!(row.3.as_deref(), Some("2026-08-12T09:00:00Z"));
+        assert_eq!(row.5, NOW);
+
+        // The Public and Admin surfaces report the provider's real failure
+        // state instead of claiming Current over a failing path, and the
+        // retained country stays visible as last-good.
+        assert_eq!(state.geo_status().state, "error");
+        assert!(state.geo_status().last_error.is_some());
+        let insight = crate::http::public::public_country_distribution(
+            &state,
+            "geo-net",
+            &state.geo_status(),
+        )
+        .await;
+        assert_eq!(insight.state, "error");
+        assert!(
+            insight.error_reason.is_some(),
+            "the Public reason stays stable and non-sensitive"
+        );
+
+        // The failed attempt is not retried on every pass.
+        assert_eq!(
+            run_pass(&state, "2026-08-12T10:30:00Z").await.unwrap(),
+            BackfillSummary::default()
+        );
+        assert_eq!(stub.request_count(), 1);
+
+        // Past the bounded attempt backoff the retry is a real provider call.
+        assert_eq!(
+            run_pass(&state, "2026-08-12T11:30:00Z")
+                .await
+                .unwrap()
+                .resolved,
+            1
+        );
+        let row = ipinfo_cache_row(&state, RESOLVABLE).await.unwrap();
+        assert_eq!(row.0.as_deref(), Some("US"));
+        assert_eq!(row.1, "current");
+        assert_eq!(row.4.as_deref(), Some("2026-08-12T11:30:00Z"));
+        assert_eq!(stub.request_count(), 2);
+        // The provider answered again, so the failure state clears.
+        assert_eq!(state.geo_status().state, "current");
+        assert!(state.geo_status().last_error.is_none());
+    }
+
+    /// A rate-limited lookup is never written as an address attempt, even if
+    /// a caller hands it to the write seam directly: the address must stay
+    /// pending under the bounded provider-wide backoff.
+    #[tokio::test]
+    async fn ipinfo_rate_limited_is_never_recorded_even_by_a_direct_write() {
+        let dir = tempdir().unwrap();
+        let stub = StubServer::start(vec![StubReply::Status(429)]).await;
+        let state = ipinfo_state(&dir, &stub).await;
+        seed_node(&state, "geo-node-a").await;
+        insert_peer(&state, "geo-node-a", "p1", RESOLVABLE).await;
+        // The pass observes the real 429 and arms the bounded backoff.
+        assert_eq!(run_pass(&state, NOW).await.unwrap().rate_limited, 1);
+        // Handing the same outcome to the write seam directly must still not
+        // record an attempt against the address.
+        assert!(
+            !record_lookup(
+                &state,
+                &state.geo_config(),
+                RESOLVABLE.parse().unwrap(),
+                GeoLookup::RateLimited,
+                NOW
+            )
+            .await
+            .unwrap()
+        );
+        assert_eq!(cache_count(&state).await, 0);
+        assert_eq!(
+            pending_addresses(state.db().pool(), GeoProvider::Ipinfo, NOW, None)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        // The reported state describes the outbound path (its clock is the
+        // real one, not this test's injected pass time), and the reason is
+        // always one of the two stable, non-sensitive strings.
+        assert_eq!(state.geo_status().state, "error");
+        let reason = state.geo_status().last_error.unwrap();
+        assert!(
+            reason == crate::geo_ipinfo::IPINFO_THROTTLE_REASON
+                || reason == crate::geo_ipinfo::IPINFO_FAILURE_REASON,
+            "unexpected reason: {reason}"
+        );
+    }
+
+    /// A rate limit is not a result: nothing is recorded against the address,
+    /// the address stays pending, and one bounded provider-wide window keeps
+    /// every later address from being asked.
+    #[tokio::test]
+    async fn ipinfo_rate_limit_backs_off_without_recording_an_attempt() {
+        let dir = tempdir().unwrap();
+        let stub = StubServer::start(vec![StubReply::Status(429)]).await;
+        let state = ipinfo_state(&dir, &stub).await;
+        seed_node(&state, "geo-node-a").await;
+        insert_peer(&state, "geo-node-a", "p1", RESOLVABLE).await;
+
+        let summary = run_pass(&state, NOW).await.unwrap();
+        assert_eq!(
+            summary,
+            BackfillSummary {
+                attempted: 1,
+                resolved: 0,
+                no_country: 0,
+                failed: 0,
+                rate_limited: 1,
+                discarded: 0,
+            }
+        );
+        assert_eq!(cache_count(&state).await, 0);
+        assert_eq!(stub.request_count(), 1);
+        assert_eq!(
+            state.geo_status().state,
+            "error",
+            "a rate-limited provider is not reported as Current"
+        );
+
+        // Inside the bounded window no outbound work is scheduled at all.
+        assert_eq!(
+            run_pass(&state, "2026-08-12T10:00:30Z").await.unwrap(),
+            BackfillSummary::default()
+        );
+        assert_eq!(stub.request_count(), 1);
+
+        // Past the window the address is asked again, and it is still a
+        // pending address rather than a failed one.
+        assert_eq!(
+            run_pass(&state, "2026-08-12T10:01:01Z")
+                .await
+                .unwrap()
+                .rate_limited,
+            1
+        );
+        assert_eq!(stub.request_count(), 2);
+        let pending = pending_addresses(
+            state.db().pool(),
+            GeoProvider::Ipinfo,
+            "2026-08-12T10:01:01Z",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(pending.len(), 1);
+    }
+
+    /// Disabling Geo, or switching provider, takes effect on the outbound
+    /// path immediately: no request is sent for a selection that is gone, and
+    /// a late result can never be written as the new selection's data.
+    #[tokio::test]
+    async fn ipinfo_stops_sending_the_moment_the_selection_changes() {
+        let dir = tempdir().unwrap();
+        let stub = StubServer::start(vec![StubReply::country("SE")]).await;
+        let state = ipinfo_state(&dir, &stub).await;
+        seed_node(&state, "geo-node-a").await;
+        insert_peer(&state, "geo-node-a", "p1", RESOLVABLE).await;
+        let scheduled = state.geo_config();
+
+        state.apply_geo_provider(GeoSelection {
+            provider: GeoProvider::Disabled,
+            generation: 2,
+        });
+        crate::geo::write_provider_selection(
+            state.db().pool(),
+            GeoSelection {
+                provider: GeoProvider::Disabled,
+                generation: 2,
+            },
+            NOW,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            run_pass(&state, NOW).await.unwrap(),
+            BackfillSummary::default()
+        );
+        assert_eq!(stub.request_count(), 0, "no outbound work while disabled");
+        assert!(
+            !record_lookup(
+                &state,
+                &scheduled,
+                RESOLVABLE.parse().unwrap(),
+                GeoLookup::Country("SE".to_owned()),
+                NOW
+            )
+            .await
+            .unwrap()
+        );
+        assert_eq!(cache_count(&state).await, 0);
+
+        // Selecting the external provider again starts real work, with the
+        // new generation owning the result.
+        state.apply_geo_provider(GeoSelection {
+            provider: GeoProvider::Ipinfo,
+            generation: 3,
+        });
+        crate::geo::write_provider_selection(
+            state.db().pool(),
+            GeoSelection {
+                provider: GeoProvider::Ipinfo,
+                generation: 3,
+            },
+            NOW,
+        )
+        .await
+        .unwrap();
+        assert_eq!(run_pass(&state, NOW).await.unwrap().resolved, 1);
+        assert_eq!(stub.request_count(), 1);
+        assert_eq!(
+            ipinfo_cache_row(&state, RESOLVABLE)
+                .await
+                .unwrap()
+                .0
+                .as_deref(),
+            Some("SE")
+        );
+    }
+
+    /// A restart reuses the durable provider selection and the retained
+    /// external result, so a Server that already resolved its Peers does not
+    /// ask the provider again for a valid country.
+    #[tokio::test]
+    async fn ipinfo_selection_and_retained_results_survive_a_server_restart() {
+        let dir = tempdir().unwrap();
+        let stub = StubServer::start(vec![StubReply::country("SE")]).await;
+        // The pass time comes from the real clock so the retained 24-hour
+        // result is still valid after the restart below.
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        {
+            let state = ipinfo_state(&dir, &stub).await;
+            seed_node(&state, "geo-node-a").await;
+            insert_peer(&state, "geo-node-a", "p1", RESOLVABLE).await;
+            assert_eq!(run_pass(&state, &now).await.unwrap().resolved, 1);
+            state.db().close().await;
+        }
+
+        let database = crate::database::ServerDatabase::open_existing(
+            crate::database::ServerDatabaseConfig::new(dir.path().join("server.db")),
+        )
+        .await
+        .unwrap();
+        let pepper_path = dir.path().join("pepper");
+        let auth = crate::auth::AuthConfig::development(
+            crate::secrets::load_pepper_file(&pepper_path).unwrap(),
+            "http://127.0.0.1:8080".to_owned(),
+        );
+        // Startup resolves the durable selection again instead of guessing or
+        // resetting to Disabled.
+        let selection = crate::geo::ensure_provider_selection(database.pool(), false)
+            .await
+            .unwrap();
+        assert_eq!(selection.provider, GeoProvider::Ipinfo);
+        assert_eq!(selection.generation, 1);
+        let state = AppState::new(database, None, auth)
+            .with_ipinfo_client(Arc::new(crate::geo_ipinfo::IpinfoClient::for_tests(
+                stub.base_url(),
+                std::time::Duration::from_secs(2),
+            )))
+            .with_geo_provider(selection);
+        assert!(
+            pending_addresses(state.db().pool(), GeoProvider::Ipinfo, &now, None)
+                .await
+                .unwrap()
+                .is_empty(),
+            "a retained result inside its lifetime is not looked up again"
+        );
+        let row = ipinfo_cache_row(&state, RESOLVABLE).await.unwrap();
+        assert_eq!(row.0.as_deref(), Some("SE"));
+        assert_eq!(row.1, "current");
+        state.db().close().await;
     }
 }

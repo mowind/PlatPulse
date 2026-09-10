@@ -1776,7 +1776,10 @@ pub(crate) async fn public_country_distribution(
             distribution.unknown_country_count - distribution.unknown_without_remote_ip_count
         }),
         countries: has_basis.then_some(countries),
-        attribution: Some(crate::geo::MAXMIND_ATTRIBUTION.to_owned()),
+        // The selected provider owns the attribution its terms require; a
+        // provider that resolves locally must never be credited to an
+        // external service and vice versa.
+        attribution: state.geo_config().provider.attribution().map(str::to_owned),
     }
 }
 
@@ -3103,6 +3106,127 @@ mod tests {
         assert_eq!(testnet["geo"]["unknownWithPublicIpCount"], 0);
         assert_eq!(testnet["geo"]["availablePeerCount"], 2);
         assert_eq!(testnet["peers"]["peerCount"], 2);
+    }
+
+    /// The Owner-facing path end to end against the real Server: the Admin
+    /// API selects IPinfo, the background pass resolves through a
+    /// deterministic loopback stand-in, and the real Public Network list
+    /// serves the resulting counts with the provider's own attribution. No
+    /// Peer address leaves the machine.
+    #[tokio::test]
+    async fn selecting_ipinfo_resolves_in_the_background_and_reaches_the_public_list() {
+        let (_dir, state) = test_state().await;
+        let stub = crate::geo_ipinfo::stub::StubServer::start(vec![
+            crate::geo_ipinfo::stub::StubReply::country("SE"),
+        ])
+        .await;
+        let state = state.with_ipinfo_client(std::sync::Arc::new(
+            crate::geo_ipinfo::IpinfoClient::for_tests(
+                stub.base_url(),
+                std::time::Duration::from_secs(2),
+            ),
+        ));
+        seed_geo_network(&state, "mainnet", &["geo-ipinfo-a", "geo-ipinfo-b"]).await;
+        mark_peer_snapshot(&state, "geo-ipinfo-a", 1).await;
+        // One address shared by three Peer records across two Nodes, plus a
+        // documentation address the trust boundary refuses.
+        for (node_id, peer_id, remote_ip) in [
+            ("geo-ipinfo-a", "ip-1", "89.160.20.112"),
+            ("geo-ipinfo-a", "ip-2", "89.160.20.112"),
+            ("geo-ipinfo-b", "ip-3", "89.160.20.112"),
+            ("geo-ipinfo-b", "ip-4", "203.0.113.9"),
+        ] {
+            insert_geo_peer(&state, node_id, peer_id, Some(remote_ip)).await;
+        }
+
+        // Nothing is scheduled while Disabled: the Public state is the
+        // neutral Disabled notice, never a country count of zero.
+        let before = public_network_list(&state).await;
+        assert_eq!(before["geo"]["state"], "disabled");
+        assert!(before["geo"]["knownCountryCount"].is_null());
+        assert_eq!(stub.request_count(), 0);
+
+        // The Owner selects IPinfo through the real Admin API.
+        sqlx::query("INSERT INTO users (user_id, username, role, password_hash, created_at, updated_at) VALUES ('owner', 'owner', 'owner', 'hash', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let session = crate::http::AuthenticatedSession(crate::auth::SessionInfo {
+            session_id: "session".to_owned(),
+            user_id: "owner".to_owned(),
+            username: "owner".to_owned(),
+            role: "owner".to_owned(),
+            created_at: time::OffsetDateTime::now_utc(),
+            last_seen_at: time::OffsetDateTime::now_utc(),
+            expires_at: time::OffsetDateTime::now_utc(),
+            csrf_token: "csrf".to_owned(),
+        });
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            "application/json; charset=utf-8".parse().unwrap(),
+        );
+        headers.insert(
+            axum::http::header::ORIGIN,
+            "http://127.0.0.1:8080".parse().unwrap(),
+        );
+        headers.insert("x-csrf-token", "csrf".parse().unwrap());
+        let response = crate::http::admin::update_geo_provider(
+            State(state.clone()),
+            headers,
+            axum::Extension(session),
+            axum::Extension(crate::http::RequestId(std::sync::Arc::from("req-ipinfo"))),
+            Json(crate::http::admin::GeoProviderUpdateRequest {
+                provider: "ipinfo".to_owned(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // The background pass resolves the shared address once.
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        assert_eq!(
+            crate::geo_backfill::run_pass(&state, &now)
+                .await
+                .unwrap()
+                .resolved,
+            1
+        );
+        assert_eq!(stub.request_count(), 1, "one query per canonical address");
+
+        let after = public_network_list(&state).await;
+        assert_eq!(after["geo"]["state"], "current");
+        assert_eq!(after["geo"]["knownCountryCount"], 3);
+        assert_eq!(after["geo"]["unknownCountryCount"], 1);
+        assert_eq!(after["geo"]["countries"][0]["countryCode"], "SE");
+        assert_eq!(
+            after["geo"]["countries"][0]["count"], 3,
+            "counts stay per Peer record, not per deduplicated address"
+        );
+        assert!(
+            after["geo"]["attribution"]
+                .as_str()
+                .unwrap()
+                .contains("IPinfo"),
+            "the external provider owns the Public attribution"
+        );
+        let text = after.to_string();
+        assert!(!text.contains("89.160.20.112"), "no raw Peer address");
+        assert!(!text.contains("/json"), "no external request detail");
+    }
+
+    /// One Network's Public Geo Insight from the real Public list route.
+    async fn public_network_list(state: &AppState) -> serde_json::Value {
+        let response = public_networks(State(state.clone())).await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        value
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|network| network["networkKey"] == "mainnet")
+            .cloned()
+            .expect("the seeded Network is in the Public list")
     }
 
     async fn seed_public_data(state: &AppState) {

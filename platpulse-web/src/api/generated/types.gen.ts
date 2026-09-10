@@ -702,6 +702,13 @@ export type GeoProviderOption = {
     label: string;
     provider: string;
     /**
+     * Whether selecting this provider sends observed Peer public addresses
+     * to a third-party service. The Settings surface states the consequence
+     * from this Server-owned flag instead of hardcoding which providers do
+     * it, so an Owner always knows the privacy boundary before selecting.
+     */
+    sends_peer_addresses: boolean;
+    /**
      * Safe explanation when the option cannot be selected. It never contains
      * a filesystem path, raw address, or provider internals.
      */
@@ -743,6 +750,12 @@ export type GeoStatusDiagnostic = {
     provider_generation: number;
     provider_label: string;
     providers: Array<GeoProviderOption>;
+    /**
+     * The bounded backoff window an external provider currently imposes, or
+     * null when the provider may be asked again now. It is a Server-owned
+     * instant: no address, endpoint, or provider error crosses this DTO.
+     */
+    rate_limited_until?: string | null;
     /**
      * Effective database/result state: disabled, current, stale, or error.
      * It is independent of Peer collection freshness and Node health.

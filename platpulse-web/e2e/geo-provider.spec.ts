@@ -32,8 +32,15 @@ test.describe('Geo provider selection and background country resolution', () => 
       await expect(geoCard.getByText(/Geo provider is now Disabled/)).toBeVisible()
     }
     // No provider this Server does not implement is offered, and the privacy
-    // consequence is explicit (issue #132).
-    await expect(geoCard.getByRole('radio', { name: /IPinfo|GeoJS/ })).toHaveCount(0)
+    // consequence is explicit (issues #132 and #134). IPinfo is implemented,
+    // so it is offered with its third-party consequence; this spec never
+    // selects it, so no Peer address ever leaves the test Server.
+    await expect(geoCard.getByRole('radio', { name: /GeoJS/ })).toHaveCount(0)
+    const ipinfo = geoCard.getByRole('radio', { name: 'IPinfo' })
+    await expect(ipinfo).toBeVisible()
+    await expect(ipinfo).not.toBeChecked()
+    await expect(geoCard.getByText(/Sends observed Peer public IPs to a third party/)).toBeVisible()
+    await expect(geoCard.getByText(/ipinfo\.io\/\{ip\}\/json/)).toBeVisible()
     await expect(geoCard.getByText(/Peer addresses never leave the Server/)).toBeVisible()
     await expect(geoCard.getByText('Not scheduled')).toBeVisible()
     await expect(geoCard.getByText('Configured')).toBeVisible()

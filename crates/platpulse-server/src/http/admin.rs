@@ -4869,6 +4869,11 @@ pub struct GeoProviderOption {
     /// Safe explanation when the option cannot be selected. It never contains
     /// a filesystem path, raw address, or provider internals.
     pub unavailable_reason: Option<String>,
+    /// Whether selecting this provider sends observed Peer public addresses
+    /// to a third-party service. The Settings surface states the consequence
+    /// from this Server-owned flag instead of hardcoding which providers do
+    /// it, so an Owner always knows the privacy boundary before selecting.
+    pub sends_peer_addresses: bool,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -4897,6 +4902,10 @@ pub struct GeoStatusDiagnostic {
     /// null while Geo is disabled, because nothing is scheduled then.
     pub pending_lookup_count: Option<i64>,
     pub last_success_at: Option<String>,
+    /// The bounded backoff window an external provider currently imposes, or
+    /// null when the provider may be asked again now. It is a Server-owned
+    /// instant: no address, endpoint, or provider error crosses this DTO.
+    pub rate_limited_until: Option<String>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -4939,28 +4948,27 @@ async fn geo_diagnostic(state: &AppState) -> Option<GeoStatusDiagnostic> {
     .flatten();
     // The reported backlog is the whole queue, not the bounded batch one pass
     // is allowed to schedule.
-    let pending_lookup_count = if config.provider.needs_local_database() {
+    let pending_lookup_count = if config.provider == crate::geo::GeoProvider::Disabled {
+        None
+    } else {
         Some(
             crate::geo_backfill::pending_addresses(state.db().pool(), config.provider, &now, None)
                 .await
                 .ok()?
                 .len() as i64,
         )
-    } else {
-        None
     };
+    let rate_limited_until = (config.provider == crate::geo::GeoProvider::Ipinfo)
+        .then(|| state.ipinfo().throttled_until(&now))
+        .flatten();
     let providers = crate::geo::GeoProvider::ALL
         .iter()
-        .map(|candidate| {
-            let available = config.can_run(*candidate);
-            GeoProviderOption {
-                provider: candidate.as_str().to_owned(),
-                label: candidate.label().to_owned(),
-                available,
-                unavailable_reason: (!available).then(|| {
-                    "No local GeoLite2 Country database is configured on this Server".to_owned()
-                }),
-            }
+        .map(|candidate| GeoProviderOption {
+            provider: candidate.as_str().to_owned(),
+            label: candidate.label().to_owned(),
+            available: config.can_run(*candidate),
+            unavailable_reason: config.unavailable_reason(*candidate).map(str::to_owned),
+            sends_peer_addresses: candidate.sends_peer_addresses(),
         })
         .collect();
     Some(GeoStatusDiagnostic {
@@ -4977,6 +4985,7 @@ async fn geo_diagnostic(state: &AppState) -> Option<GeoStatusDiagnostic> {
         cache_country_count,
         pending_lookup_count,
         last_success_at,
+        rate_limited_until,
     })
 }
 
@@ -5036,12 +5045,12 @@ pub(crate) async fn update_geo_provider(
             .into_response();
     };
     let config = state.geo_config();
-    if !config.can_run(provider) {
+    if let Some(reason) = config.unavailable_reason(provider) {
         return (
             StatusCode::BAD_REQUEST,
             Json(crate::http::ApiErrorBody::with_fields(
                 "geo_provider_unavailable",
-                "this Server has no configured local GeoLite2 Country database",
+                reason,
                 &request_id.0,
                 vec!["provider".to_owned()],
             )),
@@ -5364,12 +5373,21 @@ mod tests {
         assert_eq!(body["provider_generation"], 0);
         assert_eq!(body["providers"][0]["provider"], "disabled");
         assert_eq!(body["providers"][0]["available"], true);
+        assert_eq!(body["providers"][0]["sends_peer_addresses"], false);
         assert_eq!(body["providers"][1]["provider"], "local_mmdb");
         assert_eq!(body["providers"][1]["available"], true);
+        assert_eq!(body["providers"][1]["sends_peer_addresses"], false);
+        // IPinfo is offered because it is really implemented, and the
+        // Server states the outbound consequence before the Owner selects it.
+        assert_eq!(body["providers"][2]["provider"], "ipinfo");
+        assert_eq!(body["providers"][2]["label"], "IPinfo");
+        assert_eq!(body["providers"][2]["available"], true);
+        assert_eq!(body["providers"][2]["sends_peer_addresses"], true);
+        assert!(body["rate_limited_until"].is_null());
         assert!(body["pending_lookup_count"].is_null());
         // No unimplemented provider is ever offered.
         let text = body.to_string();
-        for absent in ["ipinfo", "geojs", "GeoJS", "IPinfo"] {
+        for absent in ["geojs", "GeoJS"] {
             assert!(!text.contains(absent), "{absent} must not be selectable");
         }
 
@@ -5393,7 +5411,7 @@ mod tests {
             Extension(session.clone()),
             Extension(geo_request_id()),
             Json(GeoProviderUpdateRequest {
-                provider: "ipinfo".to_owned(),
+                provider: "geojs".to_owned(),
             }),
         )
         .await;
@@ -5517,6 +5535,48 @@ mod tests {
             state.geo_config().provider,
             crate::geo::GeoProvider::Disabled
         );
+
+        // Selecting the external provider persists, audits, and reports a
+        // provider state that carries no database metadata at all. The
+        // backlog is real because the peer reference is still current.
+        let response = update_geo_provider(
+            State(state.clone()),
+            geo_mutation_headers(),
+            Extension(session.clone()),
+            Extension(geo_request_id()),
+            Json(GeoProviderUpdateRequest {
+                provider: "ipinfo".to_owned(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = geo_body(response).await;
+        assert_eq!(body["geo"]["provider"], "ipinfo");
+        assert_eq!(body["geo"]["provider_label"], "IPinfo");
+        assert_eq!(body["geo"]["provider_generation"], 4);
+        assert_eq!(body["geo"]["state"], "current");
+        assert!(body["geo"]["build_epoch"].is_null());
+        assert!(body["geo"]["digest"].is_null());
+        assert!(body["geo"]["loaded_at"].is_null());
+        assert!(body["geo"]["last_error"].is_null());
+        assert!(body["geo"]["rate_limited_until"].is_null());
+        assert_eq!(body["geo"]["pending_lookup_count"], 1);
+        assert_eq!(state.geo_config().provider, crate::geo::GeoProvider::Ipinfo);
+        let stored: String = sqlx::query_scalar(
+            "SELECT setting_value FROM server_settings WHERE setting_key = 'geo_provider'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(stored, "ipinfo");
+        // The local results of the previous selection can never be read as
+        // the external provider's data, so they are already gone.
+        let providers_left: Vec<String> =
+            sqlx::query_scalar("SELECT provider FROM geo_location_cache ORDER BY provider")
+                .fetch_all(state.db().pool())
+                .await
+                .unwrap();
+        assert!(providers_left.is_empty());
     }
 
     #[tokio::test]

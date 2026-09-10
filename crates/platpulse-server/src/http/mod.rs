@@ -394,6 +394,7 @@ pub struct AppState {
     geo: Arc<crate::geo::GeoLoader>,
     geo_config: Arc<std::sync::RwLock<crate::geo::GeoConfig>>,
     geo_wake: Arc<Notify>,
+    ipinfo: Arc<crate::geo_ipinfo::IpinfoClient>,
     pub(crate) public_realtime: RealtimeHub,
     pub(crate) admin_realtime: RealtimeHub,
     metrics: crate::metrics::MetricsRegistry,
@@ -445,6 +446,14 @@ impl AppState {
     /// tests use it to select a provider explicitly.
     pub fn with_geo_provider(self, selection: crate::geo::GeoSelection) -> Self {
         self.apply_geo_provider(selection);
+        self
+    }
+
+    /// Override the external Geo provider's outbound boundary. Deterministic
+    /// tests point it at a loopback stub; the production default is the fixed
+    /// endpoint and is never reachable from configuration or an API.
+    pub fn with_ipinfo_client(mut self, client: Arc<crate::geo_ipinfo::IpinfoClient>) -> Self {
+        self.ipinfo = client;
         self
     }
 
@@ -517,6 +526,7 @@ impl AppState {
             geo: Arc::new(crate::geo::GeoLoader::disabled()),
             geo_config: Arc::new(std::sync::RwLock::new(crate::geo::GeoConfig::disabled())),
             geo_wake: Arc::new(Notify::new()),
+            ipinfo: Arc::new(crate::geo_ipinfo::IpinfoClient::production()),
             public_realtime: RealtimeHub::default(),
             admin_realtime: RealtimeHub::default(),
             metrics: crate::metrics::MetricsRegistry::new(),
@@ -624,18 +634,53 @@ impl AppState {
     /// failure while Disabled: the Owner must be able to see that the
     /// database Local MMDB would use is unusable *before* selecting it, and
     /// the reported error is already path-free.
+    ///
+    /// The external provider reads no database, so its state describes the
+    /// outbound path instead. A bounded rate-limit backoff is the one
+    /// condition this process can state without reading the retained cache,
+    /// and it is reported with the same path-free vocabulary the rest of the
+    /// diagnostic uses.
     pub(crate) fn geo_status(&self) -> crate::geo::GeoStatus {
         let config = self.geo_config();
         if config.provider.needs_local_database() {
             return self.geo.status();
         }
         let mut status = self.geo.status();
-        status.state = "disabled".to_owned();
+        match config.provider {
+            crate::geo::GeoProvider::Ipinfo => {
+                let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+                let throttled = self.ipinfo.throttled_until(&now).is_some();
+                let failing = self.ipinfo.last_failure();
+                // The external path has no database to load, so its state is
+                // the outbound path's own: Error while the endpoint is rate
+                // limiting this Server or while the most recent attempt
+                // produced no usable result, Current otherwise.
+                status.state = if throttled || failing {
+                    "error"
+                } else {
+                    "current"
+                }
+                .to_owned();
+                status.build_epoch = None;
+                status.digest = None;
+                status.loaded_at = None;
+                status.last_error = match (throttled, failing) {
+                    (true, _) => Some(crate::geo_ipinfo::IPINFO_THROTTLE_REASON.to_owned()),
+                    (false, true) => Some(crate::geo_ipinfo::IPINFO_FAILURE_REASON.to_owned()),
+                    (false, false) => None,
+                };
+            }
+            _ => status.state = "disabled".to_owned(),
+        }
         status
     }
 
     pub(crate) fn geo(&self) -> &Arc<crate::geo::GeoLoader> {
         &self.geo
+    }
+
+    pub(crate) fn ipinfo(&self) -> &Arc<crate::geo_ipinfo::IpinfoClient> {
+        &self.ipinfo
     }
 
     pub(crate) fn delivery_provider(&self) -> Arc<dyn crate::notifications::DeliveryProvider> {

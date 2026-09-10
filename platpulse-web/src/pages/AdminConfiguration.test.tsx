@@ -31,12 +31,26 @@ const GEO_STATUS = {
   provider_label: 'Disabled',
   provider_generation: 1,
   providers: [
-    { provider: 'disabled', label: 'Disabled', available: true, unavailable_reason: null },
+    {
+      provider: 'disabled',
+      label: 'Disabled',
+      available: true,
+      unavailable_reason: null,
+      sends_peer_addresses: false,
+    },
     {
       provider: 'local_mmdb',
       label: 'Local MMDB',
       available: true,
       unavailable_reason: null,
+      sends_peer_addresses: false,
+    },
+    {
+      provider: 'ipinfo',
+      label: 'IPinfo',
+      available: true,
+      unavailable_reason: null,
+      sends_peer_addresses: true,
     },
   ],
   state: 'disabled',
@@ -49,6 +63,7 @@ const GEO_STATUS = {
   cache_entry_count: 0,
   pending_lookup_count: null,
   last_success_at: null,
+  rate_limited_until: null,
 }
 
 const TEST_ORIGIN = 'http://platpulse.test'
@@ -151,7 +166,13 @@ describe('Admin Settings workflows', () => {
     const geoCard = within(cards[2])
     expect(geoCard.getByLabelText(/Disabled/)).toBeTruthy()
     expect(geoCard.getByLabelText(/Local MMDB/)).toBeTruthy()
-    expect(geoCard.queryByLabelText(/IPinfo/)).toBeNull()
+    // IPinfo is offered because the Server really implements it, and it
+    // states the outbound consequence before any selection (issue #134).
+    expect(geoCard.getByLabelText(/IPinfo/)).toBeTruthy()
+    expect(geoCard.getByText(/Sends observed Peer public IPs to a third party/)).toBeTruthy()
+    expect(geoCard.getByText(/ipinfo\.io\/\{ip\}\/json/)).toBeTruthy()
+    // Providers the Server does not implement, and a global refresh, are
+    // still absent.
     expect(geoCard.queryByLabelText(/GeoJS/)).toBeNull()
     expect(geoCard.queryByRole('button', { name: /Refresh/i })).toBeNull()
     expect(geoCard.getByText(/Peer addresses never leave the Server/)).toBeTruthy()
@@ -208,12 +229,26 @@ describe('Admin Settings workflows', () => {
         ...GEO_STATUS,
         configured: false,
         providers: [
-          { provider: 'disabled', label: 'Disabled', available: true, unavailable_reason: null },
+          {
+            provider: 'disabled',
+            label: 'Disabled',
+            available: true,
+            unavailable_reason: null,
+            sends_peer_addresses: false,
+          },
           {
             provider: 'local_mmdb',
             label: 'Local MMDB',
             available: false,
             unavailable_reason: 'No local GeoLite2 Country database is configured on this Server',
+            sends_peer_addresses: false,
+          },
+          {
+            provider: 'ipinfo',
+            label: 'IPinfo',
+            available: true,
+            unavailable_reason: null,
+            sends_peer_addresses: true,
           },
         ],
       }),
@@ -224,7 +259,58 @@ describe('Admin Settings workflows', () => {
     expect(local.disabled).toBe(true)
     expect(screen.getByText(/No local GeoLite2 Country database/)).toBeTruthy()
     expect((screen.getByRole('button', { name: 'Save Geo provider' }) as HTMLButtonElement).disabled).toBe(true)
+    // IPinfo needs no local database, so a deployment without one can still
+    // make an informed choice for or against the external provider.
+    expect((screen.getByLabelText(/IPinfo/) as HTMLInputElement).disabled).toBe(false)
   })
+
+  it('offers IPinfo with the third-party consequence and only enables it on request', async () => {
+    let putBody: unknown = null
+    const ipinfoStatus = {
+      ...GEO_STATUS,
+      provider: 'ipinfo',
+      provider_label: 'IPinfo',
+      provider_generation: 2,
+      state: 'current',
+      build_epoch: null,
+      digest: null,
+      loaded_at: null,
+      pending_lookup_count: 2,
+      last_success_at: '2026-08-20T01:00:00Z',
+    }
+    let provider = 'disabled'
+    mockFetch(successfulRoutes({
+      '/api/admin/v1/geo': () => response(provider === 'disabled' ? GEO_STATUS : ipinfoStatus),
+      '/api/admin/v1/geo/provider': async (request) => {
+        putBody = await request.json()
+        provider = 'ipinfo'
+        return response({ geo: ipinfoStatus, audit_event_id: 91 })
+      },
+    }))
+
+    await renderSettings()
+    const geoCard = within(screen.getAllByRole('article')[2])
+    const ipinfo = geoCard.getByLabelText(/IPinfo/) as HTMLInputElement
+    // The Server never enables an external provider by itself.
+    expect(ipinfo.checked).toBe(false)
+    expect(geoCard.getByText(/Peer addresses never leave the Server/)).toBeTruthy()
+
+    fireEvent.click(ipinfo)
+    const save = geoCard.getByRole('button', { name: 'Save Geo provider' })
+    await waitFor(() => expect((save as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(save)
+
+    await waitFor(() => expect(putBody).toEqual({ provider: 'ipinfo' }))
+    expect(await geoCard.findByText(/Geo provider is now IPinfo \(Audit #91\)/)).toBeTruthy()
+    // The refreshed diagnostic states where Peer addresses go and reports the
+    // real backlog; no database metadata is presented for a provider that
+    // reads no database.
+    await waitFor(() => {
+      expect(geoCard.getByText('Sent to IPinfo')).toBeTruthy()
+      expect(geoCard.getByText('2')).toBeTruthy()
+      expect(geoCard.queryByText('Database age')).toBeNull()
+    })
+  }, 20_000)
 
   it('reports a rejected Geo provider change without hiding the other cards', async () => {
     mockFetch(successfulRoutes({

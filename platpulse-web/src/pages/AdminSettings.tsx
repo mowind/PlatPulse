@@ -297,8 +297,23 @@ function SiteAccessSettings({ generation, csrfToken }: SettingsSectionProps) {
   )
 }
 
-/** PAGE-ADMIN-SETTINGS Geo provider selection. Only providers this Server
- * actually implements are offered (issue #132): Disabled and Local MMDB. */
+/** The precise outbound disclosure for a provider the Server flags as
+ * sending Peer addresses off this Server. The Server owns *whether* a
+ * provider sends them; this map only supplies the destination wording, and a
+ * flagged provider without an entry still renders the generic notice, so a
+ * new external provider can never appear without a disclosure. */
+const EXTERNAL_GEO_NOTICES: Record<string, string> = {
+  ipinfo:
+    'IPinfo asks the fixed HTTPS endpoint https://ipinfo.io/{ip}/json for each observed Peer public IP and keeps only the returned two-letter country code. It carries no token and sends no other Peer data.',
+}
+
+const GENERIC_EXTERNAL_GEO_NOTICE =
+  'This provider sends each observed Peer public IP to a third-party service over HTTPS and keeps only the returned country code.'
+
+/**
+ * PAGE-ADMIN-SETTINGS Geo provider selection. Only providers this Server
+ * actually implements are offered (issues #132 and #134): Disabled, Local
+ * MMDB, and the external IPinfo provider. */
 function GeoProviderSettings({ generation, csrfToken }: SettingsSectionProps) {
   const query = useAdminGeo(generation)
   const [selection, setSelection] = useState<string | null>(null)
@@ -318,6 +333,11 @@ function GeoProviderSettings({ generation, csrfToken }: SettingsSectionProps) {
     selection !== current.provider &&
     option?.available &&
     !saving,
+  )
+  const externalProviders = current?.providers.filter((candidate) => candidate.sends_peer_addresses) ?? []
+  const currentSendsPeerAddresses = Boolean(
+    current?.providers.find((candidate) => candidate.provider === current.provider)
+      ?.sends_peer_addresses,
   )
 
   async function save(event: React.FormEvent<HTMLFormElement>) {
@@ -374,9 +394,20 @@ function GeoProviderSettings({ generation, csrfToken }: SettingsSectionProps) {
           )}
 
           <p className="settings-consequence">
-            Local MMDB resolves countries from the operator-provided GeoLite2 Country database on
-            this Server. Peer addresses never leave the Server. Disabled schedules no lookups at all.
+            Country resolution runs in the Server's background path and never blocks report
+            ingestion. Local MMDB resolves countries from the operator-provided GeoLite2 Country
+            database on this Server. Disabled schedules no lookups at all. Peer addresses never
+            leave the Server unless an external provider is selected, and the Server never falls
+            back to another provider on its own.
           </p>
+
+          {externalProviders.map((candidate) => (
+            <p className="settings-consequence" key={candidate.provider} role="note">
+              <strong>{candidate.label}.</strong>{' '}
+              {EXTERNAL_GEO_NOTICES[candidate.provider] ?? GENERIC_EXTERNAL_GEO_NOTICE}{' '}
+              Only the Owner can select it, and it is never enabled by an upgrade.
+            </p>
+          ))}
 
           <fieldset className="field">
             <legend>Provider</legend>
@@ -398,6 +429,9 @@ function GeoProviderSettings({ generation, csrfToken }: SettingsSectionProps) {
                   />
                   {' '}{candidate.label}
                 </label>
+                {candidate.sends_peer_addresses && (
+                  <small className="muted"> Sends observed Peer public IPs to a third party.</small>
+                )}
                 {candidate.unavailable_reason && (
                   <small className="muted"> {candidate.unavailable_reason}</small>
                 )}
@@ -408,6 +442,14 @@ function GeoProviderSettings({ generation, csrfToken }: SettingsSectionProps) {
           <dl className="detail-list settings-detail-list">
             <div><dt>Current</dt><dd>{current.provider_label}</dd></div>
             <div><dt>Status</dt><dd>{geoStateLabel(current.state)}</dd></div>
+            <div>
+              <dt>Peer addresses</dt>
+              <dd>
+                {currentSendsPeerAddresses
+                  ? 'Sent to ' + current.provider_label
+                  : 'Stay on this Server'}
+              </dd>
+            </div>
             <div>
               <dt>Local database</dt>
               <dd>{current.configured ? 'Configured' : 'Not configured'}</dd>
@@ -428,10 +470,16 @@ function GeoProviderSettings({ generation, csrfToken }: SettingsSectionProps) {
               <dt>Last success</dt>
               <dd>{current.last_success_at ?? 'None yet'}</dd>
             </div>
+            {current.rate_limited_until && (
+              <div>
+                <dt>Rate limited until</dt>
+                <dd>{current.rate_limited_until}</dd>
+              </div>
+            )}
           </dl>
 
           {current.last_error && (
-            <p className="form-error" role="alert">Database error: {current.last_error}</p>
+            <p className="form-error" role="alert">Provider error: {current.last_error}</p>
           )}
 
           {notice && <p className="form-success" role="status">{notice}</p>}

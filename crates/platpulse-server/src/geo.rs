@@ -6,11 +6,12 @@
 //! reader available for last-good lookups.
 //!
 //! Which provider is active is a persisted Owner decision (`server_settings`),
-//! resolved once per process and never silently changed by an upgrade. Only
-//! the local MMDB provider is implemented; the module already models providers
-//! as a real axis because retained results are keyed by provider and every
-//! background write is checked against the configuration generation that
-//! scheduled it.
+//! resolved once per process and never silently changed by an upgrade. Two
+//! providers are implemented: the local MMDB reader owned by this module and
+//! the external IPinfo lookup owned by `crate::geo_ipinfo`. Retained results
+//! are keyed by provider and every background write is checked against the
+//! configuration generation that scheduled it, so a result produced for one
+//! provider can never be read or written as another provider's result.
 //!
 //! Lookups never run inside the report receipt transaction: the background
 //! path in `crate::geo_backfill` owns scheduling, bounded concurrency, and
@@ -25,12 +26,13 @@ use maxminddb::Reader;
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 
-/// Identifiers of the Geo providers this Server can select. `ipinfo` and
-/// `geojs` are deliberately absent: those providers need an external HTTP
-/// boundary that this phase does not ship, and an unselectable identifier
-/// must never appear in the Admin surface.
+/// Identifiers of the Geo providers this Server can select. `ipinfo` is the
+/// external provider implemented by `crate::geo_ipinfo`; `geojs` is still
+/// deliberately absent, because an unselectable identifier must never appear
+/// in the Admin surface.
 pub const PROVIDER_DISABLED: &str = "disabled";
 pub const PROVIDER_LOCAL_MMDB: &str = "local_mmdb";
+pub const PROVIDER_IPINFO: &str = "ipinfo";
 
 /// `server_settings` keys holding the durable provider selection.
 pub const SETTING_GEO_PROVIDER: &str = "geo_provider";
@@ -62,24 +64,44 @@ pub enum GeoLookup {
     /// Ineligible addresses (private, special-purpose, documentation ranges)
     /// are refused by the trust boundary and have no country result either.
     NoCountry,
-    /// No usable database is loaded, so no result can be produced at all.
+    /// No usable database is loaded and no provider answered, so no result
+    /// can be produced at all.
     Unavailable,
+    /// The external provider refused the request because this Server is being
+    /// rate limited. It is deliberately separate from `Unavailable`: no
+    /// authoritative result was produced, so the background path counts the
+    /// address as still pending instead of recording a failed attempt.
+    RateLimited,
 }
+
+/// The reason the Admin surface reports for a provider that needs an
+/// operator-provided local database this deployment does not have.
+pub const NO_LOCAL_DATABASE_REASON: &str =
+    "No local GeoLite2 Country database is configured on this Server";
 
 /// The Geo provider selected by the Owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GeoProvider {
     Disabled,
     LocalMmdb,
+    /// The external IPinfo provider. It reads no local database and resolves
+    /// countries by sending a canonical public Peer address to a fixed
+    /// third-party HTTPS endpoint (`crate::geo_ipinfo`).
+    Ipinfo,
 }
 
 impl GeoProvider {
-    pub const ALL: [GeoProvider; 2] = [GeoProvider::Disabled, GeoProvider::LocalMmdb];
+    pub const ALL: [GeoProvider; 3] = [
+        GeoProvider::Disabled,
+        GeoProvider::LocalMmdb,
+        GeoProvider::Ipinfo,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
             GeoProvider::Disabled => PROVIDER_DISABLED,
             GeoProvider::LocalMmdb => PROVIDER_LOCAL_MMDB,
+            GeoProvider::Ipinfo => PROVIDER_IPINFO,
         }
     }
 
@@ -87,6 +109,7 @@ impl GeoProvider {
         match self {
             GeoProvider::Disabled => "Disabled",
             GeoProvider::LocalMmdb => "Local MMDB",
+            GeoProvider::Ipinfo => "IPinfo",
         }
     }
 
@@ -96,6 +119,7 @@ impl GeoProvider {
         match value {
             PROVIDER_DISABLED => Some(GeoProvider::Disabled),
             PROVIDER_LOCAL_MMDB => Some(GeoProvider::LocalMmdb),
+            PROVIDER_IPINFO => Some(GeoProvider::Ipinfo),
             _ => None,
         }
     }
@@ -104,6 +128,25 @@ impl GeoProvider {
     /// database. A provider that needs one cannot be selected without it.
     pub fn needs_local_database(self) -> bool {
         matches!(self, GeoProvider::LocalMmdb)
+    }
+
+    /// Whether selecting this provider sends observed Peer public addresses
+    /// outside this Server. The Owner-only Admin surface states this before a
+    /// selection is made, and the WebUI never has to hardcode which providers
+    /// do it.
+    pub fn sends_peer_addresses(self) -> bool {
+        matches!(self, GeoProvider::Ipinfo)
+    }
+
+    /// The attribution the provider's terms require wherever its country
+    /// results are shown. It is a stable Server-owned string: the browser
+    /// never composes one, and a Disabled provider attributes nothing.
+    pub fn attribution(self) -> Option<&'static str> {
+        match self {
+            GeoProvider::Disabled => None,
+            GeoProvider::LocalMmdb => Some(MAXMIND_ATTRIBUTION),
+            GeoProvider::Ipinfo => Some(crate::geo_ipinfo::IPINFO_ATTRIBUTION),
+        }
     }
 }
 
@@ -126,11 +169,22 @@ impl GeoConfig {
         }
     }
 
+    /// Why this deployment cannot run the given provider, or `None` when it
+    /// can. The one explanation the Admin option list and the mutation guard
+    /// both read, so an unavailable option can never disagree with the
+    /// rejection.
+    pub fn unavailable_reason(&self, provider: GeoProvider) -> Option<&'static str> {
+        match provider {
+            GeoProvider::LocalMmdb if self.mmdb_path.is_none() => Some(NO_LOCAL_DATABASE_REASON),
+            _ => None,
+        }
+    }
+
     /// Whether this deployment can actually run the given provider. The one
     /// predicate the Admin surface reads for both the option list and the
     /// mutation guard, so the two can never disagree.
     pub fn can_run(&self, provider: GeoProvider) -> bool {
-        !provider.needs_local_database() || self.mmdb_path.is_some()
+        self.unavailable_reason(provider).is_none()
     }
 }
 
@@ -327,7 +381,7 @@ impl GeoLoader {
             .ok()
             .flatten()
             .map(|code| code.to_ascii_uppercase())
-            .filter(|code| code.len() == 2 && code.bytes().all(|byte| byte.is_ascii_uppercase()))
+            .filter(|code| is_country_code(code))
         {
             Some(code) => GeoLookup::Country(code),
             None => GeoLookup::NoCountry,
@@ -382,6 +436,16 @@ fn state_for_build(build_epoch: u64) -> String {
     } else {
         "current".to_owned()
     }
+}
+
+/// The two-letter ISO 3166-1 alpha-2 shape a value must have before it may
+/// be retained as a country. Both providers apply the same filter, so a
+/// malformed value can never become a country result on either path. The
+/// shape is checked rather than a fixed ISO list because the providers
+/// document the field as that code and the set of codes is not this Server's
+/// to freeze.
+pub(crate) fn is_country_code(value: &str) -> bool {
+    value.len() == 2 && value.bytes().all(|byte| byte.is_ascii_uppercase())
 }
 
 /// Server-side trust-boundary eligibility. Documentation and carrier-grade
