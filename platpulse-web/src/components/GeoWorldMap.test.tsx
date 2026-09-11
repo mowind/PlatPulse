@@ -190,6 +190,56 @@ describe('GeoWorldMap', () => {
     expect(screen.queryByRole('tooltip')).toBeNull()
   })
 
+  it('keeps a pinned marker inside its disc when rounding promotes the label', async () => {
+    stubFetch(geometryResponse)
+    renderMap({ networks: [network({ geo: { countries: [{ ...seCountry, count: 999_500 }], knownCountryCount: 999_500, unknownCountryCount: 0, availablePeerCount: 999_500, unknownWithPublicIpCount: 0 } })] })
+    await screen.findByRole('img', { name: 'Peer countries map' })
+    const marker = screen.getByRole('button', { name: 'Sweden · 999,500 records' })
+    // Rounding may promote the numeral (999,500 -> 1000k). The disc must grow
+    // with the glyphs it actually renders, never overflow them, and stay inside
+    // the bounded 14-22px marker size.
+    const radius = Number(marker.querySelector('.home-geo-marker-dot')!.getAttribute('r'))
+    const label = marker.querySelector('.home-geo-marker-label')!.textContent!
+    expect(label, 'abbreviation never promotes past four glyphs').toBe('1M')
+    expect(label.length).toBeLessThanOrEqual(4)
+    expect(radius).toBeGreaterThanOrEqual(7)
+    expect(radius).toBeLessThanOrEqual(11)
+    // The disc must fit the glyphs it renders. The label is 7.5px, so a digit
+    // is about 4.5px wide; a 4-glyph numeral needs a 21px disc inside the 22px cap.
+    expect(radius * 2, 'disc fits its own glyphs: ' + label).toBeGreaterThanOrEqual(label.length * 4.5 + 3)
+  })
+
+  it('releases the pin when the pinned country leaves the projection', async () => {
+    stubFetch(geometryResponse)
+    const { rerender } = renderMap({ networks: [network({ geo: { countries: [seCountry], knownCountryCount: 3, unknownCountryCount: 0, availablePeerCount: 3 } })] })
+    await screen.findByRole('img', { name: 'Peer countries map' })
+    fireEvent.click(screen.getByRole('button', { name: 'Sweden · 3 records' }))
+    expect(screen.getByRole('tooltip')).toBeTruthy()
+
+    // A realtime refetch can drop the country the user pinned. The pin must not
+    // survive it, or every later hover would stay suppressed.
+    rerender(<GeoWorldMap networks={[network({ geo: { countries: [{ ...deCountry, staleCount: 0, centroidLat: 60.2, centroidLon: 18.7 }], knownCountryCount: 2, unknownCountryCount: 0, availablePeerCount: 2 } })]} networkFilter="all" loading={false} hasProjection />)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+
+    const germany = screen.getByRole('button', { name: 'Germany · 2 records' })
+    fireEvent.mouseEnter(germany)
+    expect(screen.getByRole('tooltip').textContent).toBe('Germany · 2 records')
+  })
+
+  it('lets a second tap close the marker it opened', async () => {
+    stubFetch(geometryResponse)
+    renderMap({ networks: [network({ geo: { countries: [seCountry], knownCountryCount: 3, unknownCountryCount: 0, availablePeerCount: 3 } })] })
+    await screen.findByRole('img', { name: 'Peer countries map' })
+    const marker = screen.getByRole('button', { name: 'Sweden · 3 records' })
+
+    fireEvent.click(marker)
+    expect(screen.getByRole('tooltip')).toBeTruthy()
+    fireEvent.click(marker)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    fireEvent.click(marker)
+    expect(screen.getByRole('tooltip')).toBeTruthy()
+  })
+
   it('previews a hovered marker and hides the preview when the mouse leaves', async () => {
     stubFetch(geometryResponse)
     renderMap({ networks: [network({ geo: { countries: [seCountry], knownCountryCount: 3, unknownCountryCount: 0, availablePeerCount: 3 } })] })

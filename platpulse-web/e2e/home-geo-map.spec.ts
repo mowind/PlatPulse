@@ -287,6 +287,14 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
       expect(circles[0]).toBeCloseTo(24, 0)
       expect(circles[1]).toBeGreaterThanOrEqual(6.9)
       expect(circles[1]).toBeLessThanOrEqual(22.1)
+      // A rendered numeral must fit inside its own disc. Real layout is required,
+      // so this is measured here rather than in jsdom.
+      const label = marker.locator('text')
+      if (await label.count() > 0) {
+        const textWidth = (await label.boundingBox())!.width
+        const numeral = await label.textContent()
+        expect(textWidth, 'numeral fits its disc: ' + numeral).toBeLessThanOrEqual(circles[1] - 1)
+      }
       await marker.focus()
       await marker.press('Enter')
       await expect(map.getByRole('tooltip')).toHaveText((await marker.getAttribute('aria-label'))!)

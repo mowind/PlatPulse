@@ -103,7 +103,6 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
     observer.observe(element)
     return () => observer.disconnect()
   }, [clearActive])
-  useEffect(() => { clearActive() }, [clearActive, networkFilter, loading, hasProjection])
   useEffect(() => {
     function dismiss(event: Event) {
       if (event.type === 'keydown' && (event as KeyboardEvent).key !== 'Escape') return
@@ -127,6 +126,10 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
   const [geometry, setGeometry] = useState<GeometryState>({ status: 'idle' })
 
   const overview = useMemo(() => homeGeoOverview(networks, networkFilter), [networks, networkFilter])
+  // A Network filter change, a projection change, or any refetch that changes
+  // the country list invalidates the current tooltip and releases its pin, so a
+  // pinned country can never suppress later hover previews after it is gone.
+  useEffect(() => { clearActive() }, [clearActive, networkFilter, loading, hasProjection, overview.countries])
   const status: MapStatus = loading
     ? 'starting'
     : !hasProjection
@@ -182,7 +185,7 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
   // one radius step, and long quantities are abbreviated so four glyphs is the
   // maximum. The exact count stays in the tooltip, the accessible name, and the
   // listed country statistics.
-  const markerRadius = (count: number) => count === 1 ? 3.5 : Math.min(11, 6.5 + markerText(count).length)
+  const markerRadius = (count: number) => count === 1 ? 3.5 : Math.min(11, Math.max(7, 2.5 * markerText(count).length + 2))
   const bounds = geometryReady ? plotted.reduce((box, { at }) => {
     const padding = 24 * geometry.geometry.projection.width / Math.max(240, canvasWidth - 48)
     return { left: Math.min(box.left, at.x - padding), top: Math.min(box.top, at.y - padding), right: Math.max(box.right, at.x + padding), bottom: Math.max(box.bottom, at.y + padding) }
@@ -279,7 +282,12 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
                   role="button" tabIndex={0} aria-label={countryLabel(country.code)} aria-describedby={activeCountryCode === country.code ? tooltipId : undefined}
                   onMouseEnter={(event) => { if (!pinned) showCountry(country.code, event.currentTarget, false) }}
                   onMouseLeave={() => { if (!pinned) clearActive() }}
-                  onClick={(event) => showCountry(country.code, event.currentTarget, lastPointerType.current !== 'mouse')}
+                  onClick={(event) => {
+                    // Re-activating the same marker closes it: a touch tap has no
+                    // pointer-leave, so the tap itself must be able to dismiss.
+                    if (activeCountryCode === country.code && pinned) clearActive()
+                    else showCountry(country.code, event.currentTarget, lastPointerType.current !== 'mouse')
+                  }}
                   onBlur={() => clearActive()}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' || event.key === ' ') {
@@ -408,12 +416,19 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
   )
 }
 
-/** Marker numerals stay short enough for the bounded marker size; the exact
- *  count is never lost because every surface around the marker keeps it. */
+/** Marker numerals stay at four glyphs or fewer so they always fit the bounded
+ *  marker size. Abbreviation is monotonic and never promotes past its own unit:
+ *  999,500 would round to "1000k", so it is shown as "1M" instead. The exact
+ *  count is never lost: the marker's accessible name, the tooltip, and the
+ *  country list all carry it in full. */
 function markerText(count: number): string {
   if (count < 10_000) return String(count)
-  if (count < 1_000_000) return Math.round(count / 1_000) + 'k'
-  return Math.round(count / 1_000_000) + 'M'
+  if (count < 1_000_000) {
+    const thousands = Math.round(count / 1_000)
+    return thousands < 1_000 ? thousands + 'k' : '1M'
+  }
+  const millions = Math.round(count / 1_000_000)
+  return millions < 1_000 ? millions + 'M' : '999M'
 }
 
 /** Keep the Server's complete attribution above; these are only its compact

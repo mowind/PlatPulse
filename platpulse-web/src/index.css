@@ -3255,7 +3255,7 @@ button {
 .home-geo-marker { cursor: pointer; }
 .home-geo-marker-hit { fill: transparent; }
 .home-geo-marker-dot { fill: #16a078; stroke: none; pointer-events: none; }
-.home-geo-marker-label { fill: white; font-size: 10px; font-weight: 650; font-variant-numeric: tabular-nums; text-anchor: middle; dominant-baseline: central; pointer-events: none; }
+.home-geo-marker-label { fill: white; font-size: 7.5px; font-weight: 650; font-variant-numeric: tabular-nums; text-anchor: middle; dominant-baseline: central; pointer-events: none; }
 .home-geo-marker:focus-visible { outline: none; }
 .home-geo-marker:focus-visible .home-geo-marker-hit { stroke: var(--brand-strong); stroke-width: 1.5; }
 .home-geo-tooltip { position: absolute; z-index: 4; transform: translate(-50%, -100%); width: max-content; max-width: min(180px, 95%); padding: 0.35rem 0.55rem; border: 1px solid rgba(112, 141, 124, 0.2); border-radius: 0.4rem; background: #f8fdf9; color: var(--ink); box-shadow: 0 2px 8px rgba(28, 66, 48, 0.08); font-size: 0.72rem; pointer-events: none; }
