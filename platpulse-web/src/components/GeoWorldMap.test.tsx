@@ -157,6 +157,43 @@ describe('GeoWorldMap', () => {
     expect(document.activeElement).toBe(trigger)
   })
 
+  it('never paints a clipped outline that degenerated into a flat line', async () => {
+    // Natural Earth clips Antarctica at the southern projection bound, so its
+    // ring collapses onto the bottom edge: "M1000 394L0 394...". Painting it
+    // draws a stray rule under the whole map.
+    const clipped = { code: 'AQ', path: 'M1000 394L0 394L2.6 394L7.6 394Z' }
+    stubFetch(() => ({
+      ok: true,
+      status: 200,
+      text: () => Promise.resolve(JSON.stringify({ ...geometry, countries: [geometry.countries[0], clipped] })),
+    }))
+    const { container } = renderMap()
+    await screen.findByRole('img', { name: 'Peer countries map' })
+
+    const land = mapImage(container).querySelectorAll('.home-geo-land path')
+    const painted = [...land].map((path) => path.getAttribute('d'))
+    expect(painted).toContain(geometry.countries[0].path)
+    expect(painted, 'a zero-height outline is not a country shape').not.toContain(clipped.path)
+  })
+
+  it('keeps the marker and the listed count for a country whose outline cannot be painted', async () => {
+    const outline = { code: 'AQ', path: 'M1000 394L0 394L2.6 394L7.6 394Z' }
+    const observed = { countryCode: 'AQ', count: 4, staleCount: 0, centroidLat: -60, centroidLon: 0 }
+    stubFetch(() => ({
+      ok: true,
+      status: 200,
+      text: () => Promise.resolve(JSON.stringify({ ...geometry, countries: [geometry.countries[0], outline] })),
+    }))
+    renderMap({ networks: [network({ geo: { countries: [observed], knownCountryCount: 4, unknownCountryCount: 0, availablePeerCount: 4, unknownWithPublicIpCount: 0 } })] })
+    await screen.findByRole('img', { name: 'Peer countries map' })
+
+    // Nothing is dropped: the quantity stays reachable as a marker and as text.
+    const marker = await screen.findByRole('button', { name: /^Antarctica · 4 records$/ })
+    expect(marker.textContent).toBe('4')
+    fireEvent.click(screen.getByRole('button', { name: 'Map information' }))
+    expect(screen.getByRole('list', { name: 'Peer countries by count' }).textContent).toContain('Antarctica')
+  })
+
   it('does not warn for a missing outline when its quantity has a valid marker', async () => {
     stubFetch(geometryResponse)
     const locatedKosovo = { ...xkCountry, centroidLat: 42.6, centroidLon: 20.9 }

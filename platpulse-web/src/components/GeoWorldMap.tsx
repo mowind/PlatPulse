@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { PublicNetwork } from '../api/generated'
 import { homeGeoOverview } from '../homeGeo'
-import { loadWorldGeometry, projectCountryPoint, type WorldGeometry } from '../worldGeometry'
+import { hasDrawableArea, loadWorldGeometry, projectCountryPoint, type WorldGeometry } from '../worldGeometry'
 import {
   PEER_COUNTRIES_DISABLED_NOTICE,
   PEER_COUNTRIES_HEADING,
@@ -151,7 +151,11 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
   }, [attempt, needsBasemap])
 
   const geometryReady = geometry.status === 'ready' && status !== 'disabled'
-  const outlineByCode = new Map(geometryReady ? geometry.geometry.countries.map((country) => [country.code, country.path]) : [])
+  // Only outlines that enclose area are painted; a clipped-away ring would draw
+  // a bare line across the map. Counts, markers, and the country list are
+  // unaffected, so nothing is dropped from the data.
+  const outlines = geometryReady ? geometry.geometry.countries.filter((country) => hasDrawableArea(country.path)) : []
+  const outlineByCode = new Map(outlines.map((country) => [country.code, country.path]))
   const observed = geometryReady
     ? overview.countries.flatMap((country) => {
         const path = outlineByCode.get(country.code)
@@ -263,7 +267,7 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
             <title id={svgTitleId}>{PEER_COUNTRIES_HEADING} map</title>
             <desc id={svgDescriptionId}>{mapDescription}</desc>
             <g className="home-geo-land" aria-hidden="true">
-              {geometry.geometry.countries.map((country) => <path key={country.code} d={country.path} />)}
+              {outlines.map((country) => <path key={country.code} d={country.path} />)}
             </g>
             <g className="home-geo-observed" aria-hidden="true">
               {observed.map((country) => <path key={country.code} d={country.path}

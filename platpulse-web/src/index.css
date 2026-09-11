@@ -3169,13 +3169,17 @@ button {
   gap: 0.75rem;
 }
 
+/* Emerald card surface: translucent enough to let the page wash through, and
+   opaque with a soft emerald halo once pointed at. The 1px ring is painted as a
+   shadow so the card never grows or shifts when it lights up. */
 .dashboard-summary-card,
 .dashboard-node-card,
 .dashboard-empty {
   min-width: 0;
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid rgba(148, 163, 184, 0.22);
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.035);
+  transition: background-color 200ms ease, border-color 200ms ease, box-shadow 200ms ease, transform 200ms ease;
 }
 
 .dashboard-summary-card {
@@ -3301,6 +3305,13 @@ button {
   .home-overview { grid-template-columns: minmax(0, 48fr) minmax(0, 52fr); }
   .home-overview-stats { align-content: stretch; }
   .home-geo { align-self: start; }
+  /* Expanded map: the statistics become one full-width row so nothing is left
+     orphaned beside the map, and the map keeps the whole row beneath them. */
+  .home-overview:has(.home-geo-canvas[data-expanded='true']) .home-overview-stats {
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
   .home-overview:has(.home-geo-canvas[data-expanded='true']) .home-geo { grid-column: 1 / -1; }
 
 }
@@ -3486,12 +3497,20 @@ button {
 .dashboard-empty strong { color: var(--ink); }
 
 @media (hover: hover) and (pointer: fine) {
+  .dashboard-summary-card:hover,
   .dashboard-node-card:hover {
-    background: rgba(255, 255, 255, 0.94);
-    border-color: rgba(5, 150, 105, 0.2);
-    box-shadow: 0 8px 20px rgba(5, 150, 105, 0.1);
+    background: #ffffff;
+    border-color: rgba(5, 150, 105, 0.22);
+    box-shadow: 0 0 20px rgba(5, 150, 105, 0.12), 0 0 0 1px rgba(5, 150, 105, 0.12);
     transform: translateY(-2px);
   }
+}
+
+/* Keyboard parity: a focused Node card gets the same highlight as a hovered one. */
+.dashboard-node-card:focus-within {
+  background: #ffffff;
+  border-color: rgba(5, 150, 105, 0.22);
+  box-shadow: 0 0 20px rgba(5, 150, 105, 0.12), 0 0 0 1px rgba(5, 150, 105, 0.12);
 }
 
 @media (max-width: 48rem) {

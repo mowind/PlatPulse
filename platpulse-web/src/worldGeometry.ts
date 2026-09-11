@@ -80,6 +80,31 @@ export function parseWorldGeometry(value: unknown): WorldGeometry | null {
   }
 }
 
+/**
+ * Whether a country outline encloses any area at all.
+ *
+ * Natural Earth clips Antarctica at the southern projection bound, so its ring
+ * collapses onto a single horizontal line along the bottom edge
+ * (`M1000 394L0 394…`). Painting that draws a stray rule across the whole map
+ * and reads as a border under it. The generated asset only ever uses absolute
+ * `M`/`L` pairs, so the y values are the odd-numbered coordinates.
+ *
+ * This is a painting rule, not a data rule: a country without a paintworthy
+ * outline keeps its count, its marker, and its entry in the country list.
+ */
+export function hasDrawableArea(path: string): boolean {
+  const coordinates = path.match(/-?\d+(?:\.\d+)?/g)
+  if (!coordinates || coordinates.length < 6) return false
+  let minY = Infinity
+  let maxY = -Infinity
+  for (let index = 1; index < coordinates.length; index += 2) {
+    const y = Number(coordinates[index])
+    if (y < minY) minY = y
+    if (y > maxY) maxY = y
+  }
+  return maxY - minY >= 0.5
+}
+
 export async function loadWorldGeometry(signal?: AbortSignal): Promise<WorldGeometry> {
   const response = await fetch(WORLD_GEOMETRY_PATH, { signal, cache: 'force-cache' })
   if (!response.ok) throw new Error('map geometry request failed with ' + response.status)

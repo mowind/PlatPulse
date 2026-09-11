@@ -396,6 +396,36 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     await expect(page.locator('body')).not.toContainText('89.160.20.112')
     await expect(page.locator('body')).not.toContainText('GeoIP2-Country-Test')
 
+    // No clipped outline may be painted: Natural Earth's Antarctica ring
+    // collapses onto the bottom edge, and drawing it puts a stray full-width
+    // rule under the map that reads as a border.
+    const flatOutlines = await map.getByRole('img', { name: 'Peer countries map' }).locator('path').evaluateAll(paths => paths
+      .map(path => { const box = path.getBBox(); return { height: box.height, width: box.width, bottom: box.y + box.height } })
+      .filter(box => box.height < 0.5))
+    expect(flatOutlines, 'no zero-height country outline is painted').toHaveLength(0)
+
+    // Emerald card surface: translucent at rest, opaque with an emerald halo
+    // while pointed at or focused.
+    for (const selector of ['.dashboard-summary-card', '.dashboard-node-card']) {
+      const card = page.locator(selector).first()
+      const rest = await card.evaluate(element => {
+        const style = getComputedStyle(element)
+        const alpha = style.backgroundColor.match(/rgba?\(([^)]+)\)/)
+        const parts = alpha ? alpha[1].split(',').map(part => part.trim()) : []
+        return { alpha: parts.length === 4 ? Number(parts[3]) : 1, shadow: style.boxShadow }
+      })
+      expect(rest.alpha, selector + ' is translucent at rest').toBeGreaterThan(0.3)
+      expect(rest.alpha, selector + ' is translucent at rest').toBeLessThan(1)
+      if (test.info().project.use.hasTouch) continue
+      await card.hover()
+      await expect.poll(async () => card.evaluate(element => {
+        const style = getComputedStyle(element)
+        const alpha = style.backgroundColor.match(/rgba?\(([^)]+)\)/)
+        const parts = alpha ? alpha[1].split(',').map(part => part.trim()) : []
+        return (parts.length === 4 ? Number(parts[3]) : 1) === 1 && style.boxShadow.includes('rgba(5, 150, 105')
+      }), { message: selector + ' lights up on hover' }).toBe(true)
+    }
+
     // No opaque white shell, border, shadow, or whole-container opacity fade.
     const surface = await map.evaluate((element) => {
       const style = getComputedStyle(element)
@@ -432,6 +462,35 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     await page.getByRole('button', { name: 'Show full map' }).click()
     await expect.poll(async () => (await worldBox(page)).width).toBeGreaterThan(desktopWorld.width)
     await expectNoHorizontalOverflow(page)
+
+    // Expanding must not orphan half a row: the four statistics become one
+    // full-width row, and the map takes the whole row beneath them. The pointer
+    // is parked first, because a hovered card lifts by 2px.
+    await page.mouse.move(4, 4)
+    await page.waitForTimeout(250)
+    const expandedLayout = await page.evaluate(() => {
+      const stats = document.querySelector('.home-overview-stats')!
+      const facts = [...document.querySelectorAll<HTMLElement>('.dashboard-summary-card')]
+      const map = document.querySelector('.home-geo')!
+      const boxes = facts.map(card => card.getBoundingClientRect())
+      const firstTop = boxes[0].top
+      const inFirstRow = boxes.filter(box => Math.abs(box.top - firstTop) <= 4).length
+      const columns = new Set(boxes.map(box => Math.round(box.left))).size
+      return {
+        inFirstRow,
+        columns,
+        cards: boxes.length,
+        statsSpan: Math.round(stats.getBoundingClientRect().width),
+        mapSpan: Math.round(map.getBoundingClientRect().width),
+        mapTop: Math.round(map.getBoundingClientRect().top),
+        lowestCard: Math.round(Math.max(...boxes.map(box => box.bottom))),
+      }
+    })
+    expect(expandedLayout.cards, 'all four statistics are laid out').toBe(4)
+    expect(expandedLayout.inFirstRow, 'statistics sit in one row while expanded').toBe(4)
+    expect(expandedLayout.columns, 'each statistic keeps its own column').toBe(4)
+    expect(expandedLayout.statsSpan, 'statistics fill the row').toBe(expandedLayout.mapSpan)
+    expect(expandedLayout.mapTop, 'the map follows the statistics row').toBeGreaterThanOrEqual(expandedLayout.lowestCard)
     await capture(page, testInfo, 'home-1280-expanded')
     await page.getByRole('button', { name: 'Collapse map' }).click()
 
