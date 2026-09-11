@@ -31,3 +31,8 @@ platpulse-web/dist/
 # Playwright (platpulse-web)
 platpulse-web/test-results/
 platpulse-web/playwright-report/
+
+# Local design references (not deliverables)
+/emerald.jpg
+/emerald-maps.jpg
+/platpulse-emerald.jpg
