@@ -91,7 +91,8 @@ describe('GeoWorldMap', () => {
     stubFetch(geometryResponse)
     renderMap({ networks: [network({ geo: { countries: [seCountry], knownCountryCount: 3, unknownCountryCount: 0, availablePeerCount: 3, unknownWithPublicIpCount: 0 } })] })
     await screen.findByRole('img', { name: 'Peer countries map' })
-    expect(screen.getByText('· 3 records')).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: 'Peer countries' })).toBeNull()
+    expect(screen.queryByText('· 3 records')).toBeNull()
     expect(screen.queryByText('Current')).toBeNull()
     expect(screen.queryByText('Scope: All Networks')).toBeNull()
     expect(screen.queryByRole('list', { name: 'Peer countries by count' })).toBeNull()
@@ -145,7 +146,12 @@ describe('GeoWorldMap', () => {
     expect(statuses[0].textContent).toContain('1 unknown locations')
     expect(statuses[0].textContent).not.toContain('3 unknown locations')
     expect(screen.queryByRole('dialog')).toBeNull()
-    expect(screen.getByText('· 6 records')).toBeTruthy()
+    expect(screen.queryByText('· 6 records')).toBeNull()
+    const notice = screen.getByRole('button', { name: /Map status: Some locations not shown/ })
+    fireEvent.click(notice)
+    expect(screen.getByRole('dialog', { name: 'Map information' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Close map information' }))
+    expect(document.activeElement).toBe(notice)
 
     fireEvent.click(screen.getByRole('button', { name: 'Map information' }))
     expect(screen.getByRole('list', { name: 'Peer countries by count' }).textContent).toContain('Germany')
@@ -165,11 +171,30 @@ describe('GeoWorldMap', () => {
     expect(screen.getByRole('tooltip').textContent).toBe('Sweden · 3 records')
   })
 
+  it('uses a dot for one record and keeps dense quantities available without overlapping labels', async () => {
+    stubFetch(geometryResponse)
+    renderMap({ networks: [network({ geo: { countries: [
+      { ...seCountry, count: 1 },
+      { ...deCountry, staleCount: 0, centroidLat: 60.2, centroidLon: 18.7 },
+    ] } })] })
+    await screen.findByRole('img', { name: 'Peer countries map' })
+    const single = screen.getByRole('button', { name: 'Sweden · 1 records' })
+    const dense = screen.getByRole('button', { name: 'Germany · 2 records' })
+    expect(single.textContent).toBe('')
+    expect(dense.textContent).toBe('')
+    fireEvent.keyDown(dense, { key: 'Enter' })
+    expect(screen.getByRole('tooltip').textContent).toBe('Germany · 2 records')
+    fireEvent.keyDown(dense, { key: 'Escape' })
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Map information' }))
+    expect(screen.getByRole('list', { name: 'Peer countries by count' }).textContent).toContain('Germany2')
+  })
+
   it('plots Server representative points and keeps every real count readable as text', async () => {
     stubFetch(geometryResponse)
     const { container } = renderMap()
 
-    expect(screen.getByRole('heading', { name: 'Peer countries' })).toBeTruthy()
+    expect(screen.getByRole('region', { name: 'Peer countries' })).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Map information' }))
     expect(screen.getByText('Data state: Current')).toBeTruthy()
     expect(screen.getByText('Scope: All Networks')).toBeTruthy()
@@ -181,8 +206,8 @@ describe('GeoWorldMap', () => {
 
     // Only the country with a Server representative point gets a marker:
     // one circle carrying its real count as the label.
-    await waitFor(() => expect(mapImage(container).querySelectorAll('circle')).toHaveLength(1))
-    expect(mapImage(container).querySelector('circle')?.nextElementSibling?.textContent).toBe('3')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Sweden · 3 records' }).textContent).toBe('3'))
+    expect(screen.queryByRole('button', { name: 'Germany · 2 records' })).toBeNull()
     // The basemap outlines and the observed-country fills are both drawn:
     // two basemap countries, so two outlines plus two Emerald fills.
     expect(mapImage(container).querySelectorAll('path')).toHaveLength(4)
@@ -217,8 +242,7 @@ describe('GeoWorldMap', () => {
 
     fetchMock.mockImplementation(() => Promise.resolve(geometryResponse()))
     fireEvent.click(screen.getByRole('button', { name: 'Retry map' }))
-    // Retry is outside the disclosure, so its click dismisses the panel.
-    fireEvent.click(screen.getByRole('button', { name: 'Map information' }))
+    // Retry stays inside the disclosure so its live result remains readable.
     await waitFor(() => expect(screen.getByText('Map resource: Current')).toBeTruthy())
     expect(screen.getByRole('img', { name: 'Peer countries map' })).toBeTruthy()
   })
@@ -327,7 +351,9 @@ describe('GeoWorldMap', () => {
     await screen.findByRole('img', { name: 'Peer countries map' })
     expect(screen.getAllByRole('status')).toHaveLength(1)
     expect(screen.getByRole('status').textContent).toBe(hint)
-    expect(screen.getByText('· 0 records')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Map information' }))
+    expect(screen.getByText(/0 Peer records in scope; counted per Node, not deduplicated by IP/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Close map information' }))
     expect(screen.queryByText('No data')).toBeNull()
     expect(screen.queryByText(/0 unknown locations/)).toBeNull()
   })
@@ -355,7 +381,9 @@ describe('GeoWorldMap', () => {
     await screen.findByRole('img', { name: 'Peer countries map' })
     expect(screen.getAllByRole('status')).toHaveLength(1)
     expect(screen.getByRole('status').textContent).toBe('No data')
-    expect(screen.getByText('· 0 records')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Map information' }))
+    expect(screen.getByText(/0 Peer records in scope; counted per Node, not deduplicated by IP/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Close map information' }))
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
@@ -377,7 +405,8 @@ describe('GeoWorldMap', () => {
     await screen.findByRole('img', { name: 'Peer countries map' })
     expect(screen.getAllByRole('status')).toHaveLength(1)
     expect(screen.getByRole('status').textContent).toBe('Observation status varies')
-    expect(screen.getByText('· 6 records')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Map information' }))
+    expect(screen.getByText(/6 Peer records in scope; counted per Node, not deduplicated by IP/)).toBeTruthy()
   })
 
   it('offers a labelled, expanded-state-aware map control', async () => {
@@ -416,7 +445,11 @@ describe('GeoMapBoundary', () => {
     )
 
     expect(screen.getByText('Active Nodes 12')).toBeTruthy()
+    const status = screen.getByRole('button', { name: 'Map status: Map unavailable' })
+    fireEvent.click(status)
+    expect(screen.getByRole('dialog', { name: 'Map information' })).toBeTruthy()
     expect(screen.getByText(/Peer country map is Unavailable; the Node list below is unaffected/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Retry map' })).toBeTruthy()
     consoleError.mockRestore()
   })
 })
