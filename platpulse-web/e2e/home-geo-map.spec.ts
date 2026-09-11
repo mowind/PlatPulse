@@ -543,14 +543,22 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     const mapBox = (await map.boundingBox())!
     const headerBox = (await page.locator('.app-header').boundingBox())!
 
-    // No room to overlay: the map band comes first, above the statistics and
-    // the Node cards, and still runs behind the floating logo bar.
-    expect(mapBox.y, 'the map is the first thing on the page').toBeLessThanOrEqual(1)
+    // No room to overlay: the logo bar keeps its own row and the map band comes
+    // next, above the statistics and the Node cards. It never runs behind the
+    // bar on a narrow screen (Emerald's phone layout puts the map below it).
+    expect(mapBox.y, 'the map starts below the logo bar').toBeGreaterThanOrEqual(headerBox.y + headerBox.height - 1)
     expect(mapBox.y + mapBox.height, 'the map sits above the statistics').toBeLessThanOrEqual(stats.y + 1)
     const firstCard = (await page.locator('.dashboard-node-card').first().boundingBox())!
     expect(mapBox.y, 'the map sits above the Node cards').toBeLessThan(firstCard.y)
-    expect(mapBox.y, 'the map runs behind the logo bar').toBeLessThanOrEqual(headerBox.y)
-    expect(mapBox.y + mapBox.height).toBeGreaterThan(headerBox.y + headerBox.height)
+    // The bar paints nothing, so the page wash still reads through it.
+    const header = await page.locator('.app-header').evaluate((element) => {
+      const style = getComputedStyle(element)
+      return { backgroundColor: style.backgroundColor, borderBottomColor: style.borderBottomColor, boxShadow: style.boxShadow, position: style.position }
+    })
+    expect(header.backgroundColor).toMatch(/rgba\(0, 0, 0, 0\)|transparent/)
+    expect(header.borderBottomColor).toMatch(/rgba\(0, 0, 0, 0\)|transparent/)
+    expect(header.boxShadow).toBe('none')
+    expect(header.position, 'the narrow bar stays in the flow').not.toBe('absolute')
 
     // No stretch and no letterboxing: the rendered box must match the SVG's own
     // viewBox ratio, and that viewBox must still contain the whole world

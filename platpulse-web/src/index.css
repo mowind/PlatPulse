@@ -3033,22 +3033,19 @@ button {
   /* Space the summary leaves so it clears the transparent logo bar that the
      map's top band runs behind. */
   --home-header-clearance: 5.75rem;
-  /* The floating logo bar's height. The map starts at the very top of the page,
-     so its own corner controls have to start below this or they would sit under
-     the brand and the Admin link. */
-  --home-header-height: 68px;
+  /* Height of the floating logo bar, and therefore how far the map's own corner
+     controls must drop to clear it. Zero on a narrow screen, where the logo bar
+     is a normal row above the map instead of floating over it. */
+  --home-header-height: 0px;
 }
 
-/* Emerald keeps the top bar part of the page wash: no painted surface, no
-   divider, so the gradient and grid read straight through to the logo. */
-/* The logo bar floats: it takes no space in the flow, so the map band starts at
-   the very top of the page and runs behind it, exactly like the Emerald
-   reference. It keeps a higher stacking order, so the brand and the Admin link
-   stay legible and clickable over the map. */
+/* Emerald keeps the top bar part of the page wash: no painted surface and no
+   divider, so the gradient and grid read straight through to the logo.
+   On a narrow screen the bar is a normal row and the map band starts below it,
+   matching the Emerald phone layout, where the map is a full-width grid item
+   inside the padded content rather than a layer behind the brand. */
 .home-shell .app-header {
-  position: absolute;
-  top: 0;
-  inset-inline: 0;
+  position: relative;
   z-index: 3;
   min-height: 68px;
   display: block;
@@ -3056,14 +3053,6 @@ button {
   background: transparent;
   border-bottom-color: transparent;
   box-shadow: none;
-  /* The transparent bar must not swallow pointer events over the map it floats
-     above; only its real controls opt back in. */
-  pointer-events: none;
-}
-
-.home-shell .app-header a,
-.home-shell .app-header button {
-  pointer-events: auto;
 }
 
 .home-shell .app-header-inner {
@@ -3330,6 +3319,25 @@ button {
 .home-geo-tooltip { position: absolute; z-index: 4; transform: translate(-50%, -100%); width: max-content; max-width: min(180px, 95%); padding: 0.35rem 0.55rem; border: 1px solid rgba(112, 141, 124, 0.2); border-radius: 0.4rem; background: #f8fdf9; color: var(--ink); box-shadow: 0 2px 8px rgba(28, 66, 48, 0.08); font-size: 0.72rem; pointer-events: none; }
 
 @media (min-width: 64rem) {
+  /* Wide screens float the logo bar, exactly like the Emerald desktop layout:
+     it leaves the flow, so the map band starts at the very top of the page and
+     runs behind it. The bar keeps the higher stacking order, and stays
+     pointer-inert so it cannot swallow clicks meant for the map it floats over;
+     only its own controls opt back in. */
+  .home-shell { --home-header-height: 68px; }
+
+  .home-shell .app-header {
+    position: absolute;
+    top: 0;
+    inset-inline: 0;
+    pointer-events: none;
+  }
+
+  .home-shell .app-header a,
+  .home-shell .app-header button {
+    pointer-events: auto;
+  }
+
   /* The summary sits over the map's left edge, clear of the logo bar, while the
      map keeps rising to the top of the page behind it. The map is deliberately
      wider than the space the summary leaves, so the band still reaches the
