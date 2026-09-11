@@ -263,6 +263,34 @@ loopback `listen`; do not reuse the development cookie policy in production.
 Non-loopback plaintext listeners remain refused until TLS or an explicitly
 trusted HTTPS reverse proxy is configured.
 
+## Redeploying a running source checkout
+
+A Server that runs the binaries directly out of `target/release` reads
+`dist/index.html` once at startup and then serves the hashed assets beside it
+from disk. Rebuilding the WebUI replaces those hashed files, so a Server left
+running keeps handing out an `index.html` that references assets which no
+longer exist and the browser renders a blank page. Rebuilding the WebUI without
+restarting the Server therefore breaks the WebUI even though every artifact on
+disk is correct.
+
+`scripts/deploy-local.sh` rebuilds the Agent/Server binaries and the WebUI, then
+restarts the user-level services and proves the live Server resolves every asset
+the current build references:
+
+```bash
+scripts/deploy-local.sh                 # rebuild, restart if anything changed
+scripts/deploy-local.sh --skip-tests    # skip WebUI lint/typecheck/unit tests
+scripts/deploy-local.sh --check-only    # report whether the live Server is stale
+```
+
+The restart decision is not limited to "did this run change something": the
+script also probes the running Server and restarts it when the live `index.html`
+disagrees with `dist/index.html`, or when any asset it references is missing.
+That self-heals the stale state above regardless of what rebuilt the WebUI. Run
+`--check-only` in monitoring or before a manual rebuild; it exits non-zero when
+the live Server is stale. The script never modifies SQLite state, the Owner
+account, the enrollment credential, the pepper, or the service configuration.
+
 ## Supported release set
 
 The supported release builder is:
