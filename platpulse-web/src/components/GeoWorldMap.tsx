@@ -49,6 +49,16 @@ type GeometryState =
 type MapStatus = 'starting' | 'empty' | 'unknown' | 'disabled' | 'current' | 'stale' | 'error'
 type MapResourceState = 'starting' | 'current' | 'error' | 'unknown'
 
+/** Which low-noise icon a standing warning uses. The kind is carried next to
+ *  the display text so copy edits can never change the icon. */
+type NoticeKind = 'loading' | 'empty' | 'notice'
+
+const NOTICE_ICON: Record<NoticeKind, string> = {
+  loading: 'M12 7v5l3 2',
+  empty: 'M8 12h8',
+  notice: 'M12 7v6M12 16v1',
+}
+
 const MAP_RESOURCE_LABEL: Record<MapResourceState, string> = {
   starting: 'Starting',
   current: 'Current',
@@ -59,6 +69,11 @@ const MAP_RESOURCE_LABEL: Record<MapResourceState, string> = {
 export default function GeoWorldMap({ networks, networkFilter, loading, hasProjection }: GeoWorldMapProps) {
   const tooltipId = useId()
   const [activeCountryCode, setActiveCountryCode] = useState<string | null>(null)
+  // A hover preview may vanish with the pointer, but an explicit activation
+  // (tap, click, or keyboard) is pinned: a touch tap is followed by a
+  // synthesized mouse-leave burst that must not erase what the user opened.
+  const [pinned, setPinned] = useState(false)
+  const lastPointerType = useRef<string | null>(null)
   const informationId = useId()
   const informationTrigger = useRef<HTMLButtonElement>(null)
   const statusTrigger = useRef<HTMLButtonElement>(null)
@@ -73,22 +88,27 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
   const canvas = useRef<HTMLDivElement>(null)
   const [canvasWidth, setCanvasWidth] = useState(600)
   const [tooltipAt, setTooltipAt] = useState({ x: 0, y: 0 })
+  /** Close the tooltip and drop any pin. Every dismissal path goes through it. */
+  const clearActive = useCallback(() => {
+    setActiveCountryCode(null)
+    setPinned(false)
+  }, [])
   useEffect(() => {
     const element = canvas.current
     if (!element || typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(([entry]) => {
       if (entry.contentRect.width > 0) setCanvasWidth(entry.contentRect.width)
-      setActiveCountryCode(null)
+      clearActive()
     })
     observer.observe(element)
     return () => observer.disconnect()
-  }, [])
-  useEffect(() => { setActiveCountryCode(null) }, [networkFilter, loading, hasProjection])
+  }, [clearActive])
+  useEffect(() => { clearActive() }, [clearActive, networkFilter, loading, hasProjection])
   useEffect(() => {
     function dismiss(event: Event) {
       if (event.type === 'keydown' && (event as KeyboardEvent).key !== 'Escape') return
       if (event.type === 'pointerdown' && event.target instanceof Node && canvas.current?.contains(event.target)) return
-      setActiveCountryCode(null)
+      clearActive()
     }
     document.addEventListener('pointerdown', dismiss)
     document.addEventListener('keydown', dismiss)
@@ -96,12 +116,13 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
       document.removeEventListener('pointerdown', dismiss)
       document.removeEventListener('keydown', dismiss)
     }
-  }, [])
-  function showCountry(code: string, target: Element) {
+  }, [clearActive])
+  function showCountry(code: string, target: Element, pin: boolean) {
     const box = target.getBoundingClientRect()
     const parent = canvas.current?.getBoundingClientRect()
     setTooltipAt({ x: box.x + box.width / 2 - (parent?.x ?? 0), y: box.y - (parent?.y ?? 0) - 6 })
     setActiveCountryCode(code)
+    setPinned(pin)
   }
   const [geometry, setGeometry] = useState<GeometryState>({ status: 'idle' })
 
@@ -157,13 +178,17 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
   // Marker sizes are CSS pixels, independent of the responsive SVG scale.
   // Only quantities that fit and have room get a numeral; every other marker
   // stays at its true coordinate with its full count in the tooltip/details.
-  const markerRadius = (count: number) => count === 1 ? 3.5 : Math.min(11, 7 + String(count).length)
+  // A numbered marker stays inside the bounded 14-22px range: one glyph adds
+  // one radius step, and long quantities are abbreviated so four glyphs is the
+  // maximum. The exact count stays in the tooltip, the accessible name, and the
+  // listed country statistics.
+  const markerRadius = (count: number) => count === 1 ? 3.5 : Math.min(11, 6.5 + markerText(count).length)
   const bounds = geometryReady ? plotted.reduce((box, { at }) => {
     const padding = 24 * geometry.geometry.projection.width / Math.max(240, canvasWidth - 48)
     return { left: Math.min(box.left, at.x - padding), top: Math.min(box.top, at.y - padding), right: Math.max(box.right, at.x + padding), bottom: Math.max(box.bottom, at.y + padding) }
   }, { left: -1, top: -1, right: geometry.geometry.projection.width + 1, bottom: geometry.geometry.projection.height + 1 }) : null
   const mapScale = bounds ? canvasWidth / (bounds.right - bounds.left) : 1
-  const numbered = new Set(plotted.filter(({ country, at }) => country.count > 1 && country.count < 1000 && !plotted.some((other) =>
+  const numbered = new Set(plotted.filter(({ country, at }) => country.count > 1 && !plotted.some((other) =>
     other.country.code !== country.code && Math.hypot(other.at.x - at.x, other.at.y - at.y) * mapScale < markerRadius(country.count) + markerRadius(other.country.count) + 3,
   )).map(({ country }) => country.code))
   const knownCount = overview.knownCountryCount
@@ -181,25 +206,26 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
   // A known country without a quantity marker is different from an unknown
   // location. A missing outline alone does not hide an existing marker.
   const locationsNotShown = geometryReady && overview.countries.some((country) => !country.point)
-  const primaryNotice = status === 'disabled' ? PEER_COUNTRIES_DISABLED_NOTICE
-    : status === 'starting' ? 'Loading data'
-    : !hasProjection ? 'Data unavailable'
-    : status === 'empty' ? 'No data'
-    : neverObserved ? 'No observations yet'
-    : geometry.status === 'failed' ? 'Map unavailable'
-    : !geometryReady && needsBasemap ? 'Loading map'
-    : status === 'error' ? 'Data unavailable'
-    : status === 'stale' || overview.peerObservation === 'stale' || overview.countries.some((country) => country.staleCount > 0) ? 'Data stale'
-    : overview.availablePeerCount === 0 ? 'No data'
-    : !countsAvailable ? 'Data unavailable'
-    : locationsNotShown ? 'Some locations not shown'
-    : overview.scope !== 'complete' || overview.networksWithBasis < overview.networksInScope ? 'Partial data'
-    : overview.peerObservation === 'unknown' ? 'Observation status unknown'
-    : overview.peerObservation === 'mixed' ? 'Observation status varies'
+  const primary: { kind: NoticeKind; text: string } | null = status === 'disabled' ? { kind: 'notice', text: PEER_COUNTRIES_DISABLED_NOTICE }
+    : status === 'starting' ? { kind: 'loading', text: 'Loading data' }
+    : !hasProjection ? { kind: 'notice', text: 'Data unavailable' }
+    : status === 'empty' ? { kind: 'empty', text: 'No data' }
+    : neverObserved ? { kind: 'notice', text: 'No observations yet' }
+    : geometry.status === 'failed' ? { kind: 'notice', text: 'Map unavailable' }
+    : !geometryReady && needsBasemap ? { kind: 'loading', text: 'Loading map' }
+    : status === 'error' ? { kind: 'notice', text: 'Data unavailable' }
+    : status === 'stale' || overview.peerObservation === 'stale' || overview.countries.some((country) => country.staleCount > 0) ? { kind: 'notice', text: 'Data stale' }
+    : overview.availablePeerCount === 0 ? { kind: 'empty', text: 'No data' }
+    : !countsAvailable ? { kind: 'notice', text: 'Data unavailable' }
+    : locationsNotShown ? { kind: 'notice', text: 'Some locations not shown' }
+    : overview.scope !== 'complete' || overview.networksWithBasis < overview.networksInScope ? { kind: 'notice', text: 'Partial data' }
+    : overview.peerObservation === 'unknown' ? { kind: 'notice', text: 'Observation status unknown' }
+    : overview.peerObservation === 'mixed' ? { kind: 'notice', text: 'Observation status varies' }
     : null
   const unknownNotice = hasProjection && !loading && unknownCount != null && unknownCount > 0
     ? formatGeoCount(unknownCount) + ' unknown locations' : null
-  const notice = [primaryNotice, unknownNotice].filter(Boolean).join(' · ')
+  const noticeKind = primary?.kind ?? (unknownNotice ? 'notice' : null)
+  const notice = [primary?.text, unknownNotice].filter(Boolean).join(' · ')
   const mapDescription = `${formatGeoCount(overview.countries.length)} ${overview.countries.length === 1 ? 'country has' : 'countries have'} Peer records in scope for ${overview.scopeLabel}. `
     + 'Each marker is a Server-provided country representative point, not a Peer location or a Node deployment location.'
 
@@ -207,18 +233,18 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
     <section className="home-geo" aria-label={PEER_COUNTRIES_HEADING} data-state={status} data-scope={overview.scope}>
       <header className="home-geo-heading">
         <div className="home-geo-actions">
-          <button ref={informationTrigger} type="button" className="home-geo-icon" title="Map information" aria-label="Map information" aria-haspopup="dialog" aria-expanded={informationOpen} aria-controls={informationId} onClick={() => { setInformationSource('information'); setActiveCountryCode(null); setInformationOpen((current) => !current) }}>
+          <button ref={informationTrigger} type="button" className="home-geo-icon" title="Map information" aria-label="Map information" aria-haspopup="dialog" aria-expanded={informationOpen} aria-controls={informationId} onClick={() => { setInformationSource('information'); clearActive(); setInformationOpen((current) => !current) }}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7v1" /></svg>
           </button>
-          <button type="button" className="home-geo-icon" title={expanded ? 'Collapse map' : 'Show full map'} data-tooltip={expanded ? 'Collapse map' : 'Show full map'} aria-label={expanded ? 'Collapse map' : 'Show full map'} aria-expanded={expanded} aria-controls={canvasId} disabled={!geometryReady && !expanded} onClick={() => { setActiveCountryCode(null); setExpanded((current) => !current) }}>
+          <button type="button" className="home-geo-icon" title={expanded ? 'Collapse map' : 'Show full map'} data-tooltip={expanded ? 'Collapse map' : 'Show full map'} aria-label={expanded ? 'Collapse map' : 'Show full map'} aria-expanded={expanded} aria-controls={canvasId} disabled={!geometryReady && !expanded} onClick={() => { clearActive(); setExpanded((current) => !current) }}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M4 9h5V4M20 9h-5V4M4 15h5v5M20 15h-5v5' : 'M9 4H4v5M15 4h5v5M4 15v5h5M20 15v5h-5'} /></svg>
           </button>
         </div>
       </header>
       {notice && <div className="home-geo-notice">
         <span className="sr-only" role="status">{notice}</span>
-        <button ref={statusTrigger} type="button" className="home-geo-icon" aria-label={'Map status: ' + notice} aria-haspopup="dialog" aria-expanded={informationOpen && informationSource === 'status'} aria-controls={informationId} onClick={() => { setInformationSource('status'); setActiveCountryCode(null); setInformationOpen(true) }}>
-          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d={notice.startsWith('Loading') ? 'M12 7v5l3 2' : notice === 'No data' || notice === 'No observations yet' ? 'M8 12h8' : 'M12 7v6M12 16v1'} /></svg>
+        <button ref={statusTrigger} type="button" className="home-geo-icon" aria-label={'Map status: ' + notice} aria-haspopup="dialog" aria-expanded={informationOpen && informationSource === 'status'} aria-controls={informationId} onClick={() => { setInformationSource('status'); clearActive(); setInformationOpen(true) }}>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d={noticeKind ? NOTICE_ICON[noticeKind] : NOTICE_ICON.notice} /></svg>
         </button>
       </div>}
       <div ref={canvas} className="home-geo-canvas" id={canvasId} data-expanded={expanded} style={bounds ? { aspectRatio: `${bounds.right - bounds.left} / ${bounds.bottom - bounds.top}` } : undefined}>
@@ -230,9 +256,10 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
             role="img"
             aria-labelledby={svgTitleId}
             aria-describedby={svgDescriptionId}
-            onMouseLeave={() => setActiveCountryCode(null)}
-            onKeyDown={(event) => { if (event.key === 'Escape') setActiveCountryCode(null) }}
-            onClick={(event) => { if (event.target === event.currentTarget || (event.target instanceof Element && event.target.closest('.home-geo-land'))) setActiveCountryCode(null) }}
+            onPointerDown={(event) => { lastPointerType.current = event.pointerType }}
+            onMouseLeave={() => { if (!pinned) clearActive() }}
+            onKeyDown={(event) => { if (event.key === 'Escape') clearActive() }}
+            onClick={(event) => { if (event.target === event.currentTarget || (event.target instanceof Element && event.target.closest('.home-geo-land'))) clearActive() }}
           >
             <title id={svgTitleId}>{PEER_COUNTRIES_HEADING} map</title>
             <desc id={svgDescriptionId}>{mapDescription}</desc>
@@ -241,29 +268,29 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
             </g>
             <g className="home-geo-observed" aria-hidden="true">
               {observed.map((country) => <path key={country.code} d={country.path}
-                onMouseEnter={(event) => showCountry(country.code, event.currentTarget)}
-                  onMouseLeave={() => setActiveCountryCode(null)}
-                onClick={(event) => showCountry(country.code, event.currentTarget)}
+                onMouseEnter={(event) => { if (!pinned) showCountry(country.code, event.currentTarget, false) }}
+                onMouseLeave={() => { if (!pinned) clearActive() }}
+                onClick={(event) => showCountry(country.code, event.currentTarget, lastPointerType.current !== 'mouse')}
               />)}
             </g>
             <g className="home-geo-markers">
               {plotted.map(({ country, at }) => (
                 <g key={country.code} className="home-geo-marker" transform={'translate(' + at.x + ' ' + at.y + ') scale(' + 1 / mapScale + ')'}
                   role="button" tabIndex={0} aria-label={countryLabel(country.code)} aria-describedby={activeCountryCode === country.code ? tooltipId : undefined}
-                  onMouseEnter={(event) => showCountry(country.code, event.currentTarget)}
-                  onMouseLeave={() => setActiveCountryCode(null)}
-                  onClick={(event) => showCountry(country.code, event.currentTarget)}
-                  onBlur={() => setActiveCountryCode(null)}
+                  onMouseEnter={(event) => { if (!pinned) showCountry(country.code, event.currentTarget, false) }}
+                  onMouseLeave={() => { if (!pinned) clearActive() }}
+                  onClick={(event) => showCountry(country.code, event.currentTarget, lastPointerType.current !== 'mouse')}
+                  onBlur={() => clearActive()}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' || event.key === ' ') {
                       event.preventDefault()
-                      showCountry(country.code, event.currentTarget)
+                      showCountry(country.code, event.currentTarget, true)
                     }
                   }}
                 >
                   <circle className="home-geo-marker-hit" cx="0" cy="0" r="12" />
                   <circle className="home-geo-marker-dot" cx="0" cy="0" r={numbered.has(country.code) ? markerRadius(country.count) : 3.5} />
-                  {numbered.has(country.code) && <text className="home-geo-marker-label" x="0" y="0">{formatGeoCount(country.count)}</text>}
+                  {numbered.has(country.code) && <text className="home-geo-marker-label" x="0" y="0">{markerText(country.count)}</text>}
                 </g>
               ))}
             </g>
@@ -273,7 +300,7 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
       </div>
 
       {informationOpen && (
-        <MapInformation id={informationId} trigger={informationSource === 'status' ? statusTrigger : informationTrigger} onClose={closeInformation}>
+        <MapInformation id={informationId} trigger={informationSource === 'status' ? statusTrigger : informationTrigger} fallback={informationTrigger} onClose={closeInformation}>
           {notice && <p>{notice}</p>}
           {status === 'disabled' && <p>An Owner can enable a Geo provider in Admin Settings.</p>}
           {!loading && !hasProjection && <button type="button" onClick={() => window.location.reload()}>Refresh page</button>}
@@ -314,6 +341,21 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
           {scopeNotesApply && overview.scope === 'partial' && (
             <p className="home-geo-note">Partial scope: Active Nodes without a successful Peer Snapshot are not included in these counts.</p>
           )}
+          {scopeNotesApply && (overview.scope === 'partial' || overview.networksWithBasis < overview.networksInScope) && (
+            <p className="home-geo-note">Counts grow automatically as the remaining Active Nodes report a Peer Snapshot.</p>
+          )}
+          {scopeNotesApply && locationsNotShown && (
+            <p className="home-geo-note">Countries without a representative point keep their exact count in the list above.</p>
+          )}
+          {scopeNotesApply && neverObserved && (
+            <p className="home-geo-note">Counts appear after the first successful Peer Snapshot; nothing on Home has to be reset.</p>
+          )}
+          {status === 'stale' && (
+            <p className="home-geo-note">Last-good results stay visible; the Server refreshes them automatically, and an Owner can force a re-query in Admin Settings.</p>
+          )}
+          {status === 'error' && (
+            <p className="home-geo-note">The Server keeps retrying without a new Agent report; an Owner can force a re-query in Admin Settings.</p>
+          )}
           {scopeNotesApply && overview.networksInScope > 1 && overview.networksWithBasis < overview.networksInScope && (
             <p className="home-geo-note">
               {`${formatGeoCount(overview.networksWithBasis)} of ${formatGeoCount(overview.networksInScope)} Networks in scope have a Peer country basis; the others are not included in these counts.`}
@@ -348,7 +390,7 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
           )}
 
           {geometry.status === 'failed' && <><p>Map geometry is unavailable; Server country counts are unaffected.</p><button type="button" onClick={() => setAttempt((current) => current + 1)}>Retry map</button></>}
-          <p>Dense markers and counts of 1,000 or more use small dots. Hover, tap, or focus a marker and press Enter for its exact count; all countries remain listed above.</p>
+          <p>Crowded markers and abbreviated numerals keep their exact count in the tooltip and in the country list above. Hover, tap, or focus a marker and press Enter to read it.</p>
           <p>Unknown locations have no retained country result. Known countries without a representative point cannot show a quantity marker; a missing outline does not hide a valid marker.</p>
           <h3>Map credits</h3>
           {geometryReady && <p>{geometry.geometry.attribution} <a href="https://www.naturalearthdata.com/">{geometry.geometry.sourceLabel || 'Natural Earth'}</a></p>}
@@ -364,6 +406,14 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
       )}
     </section>
   )
+}
+
+/** Marker numerals stay short enough for the bounded marker size; the exact
+ *  count is never lost because every surface around the marker keeps it. */
+function markerText(count: number): string {
+  if (count < 10_000) return String(count)
+  if (count < 1_000_000) return Math.round(count / 1_000) + 'k'
+  return Math.round(count / 1_000_000) + 'M'
 }
 
 /** Keep the Server's complete attribution above; these are only its compact

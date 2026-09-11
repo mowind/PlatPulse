@@ -171,6 +171,37 @@ describe('GeoWorldMap', () => {
     expect(screen.getByRole('tooltip').textContent).toBe('Sweden · 3 records')
   })
 
+  it('keeps a tapped tooltip open through the synthetic mouse-leave a touch tap emits', async () => {
+    stubFetch(geometryResponse)
+    const { container } = renderMap({ networks: [network({ geo: { countries: [seCountry], knownCountryCount: 3, unknownCountryCount: 0, availablePeerCount: 3 } })] })
+    await screen.findByRole('img', { name: 'Peer countries map' })
+    const marker = screen.getByRole('button', { name: 'Sweden · 3 records' })
+
+    fireEvent.click(marker)
+    expect(screen.getByRole('tooltip')).toBeTruthy()
+
+    // A tap is followed by a synthesized mouse-leave burst. The country the
+    // user just tapped must stay readable until a real dismissal.
+    fireEvent.mouseLeave(marker)
+    fireEvent.mouseLeave(container.querySelector('svg[role="img"]')!)
+    expect(screen.getByRole('tooltip')).toBeTruthy()
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it('previews a hovered marker and hides the preview when the mouse leaves', async () => {
+    stubFetch(geometryResponse)
+    renderMap({ networks: [network({ geo: { countries: [seCountry], knownCountryCount: 3, unknownCountryCount: 0, availablePeerCount: 3 } })] })
+    await screen.findByRole('img', { name: 'Peer countries map' })
+    const marker = screen.getByRole('button', { name: 'Sweden · 3 records' })
+
+    fireEvent.mouseEnter(marker)
+    expect(screen.getByRole('tooltip').textContent).toBe('Sweden · 3 records')
+    fireEvent.mouseLeave(marker)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
   it('uses a dot for one record and keeps dense quantities available without overlapping labels', async () => {
     stubFetch(geometryResponse)
     renderMap({ networks: [network({ geo: { countries: [
@@ -188,6 +219,31 @@ describe('GeoWorldMap', () => {
     expect(screen.queryByRole('tooltip')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Map information' }))
     expect(screen.getByRole('list', { name: 'Peer countries by count' }).textContent).toContain('Germany2')
+  })
+
+  it('keeps an isolated large count as a bounded numbered marker', async () => {
+    stubFetch(geometryResponse)
+    renderMap({ networks: [network({ geo: { countries: [{ ...seCountry, count: 4200 }], knownCountryCount: 4200, unknownCountryCount: 0, availablePeerCount: 4200 } })] })
+    await screen.findByRole('img', { name: 'Peer countries map' })
+    const marker = screen.getByRole('button', { name: 'Sweden · 4,200 records' })
+    const dot = marker.querySelector('.home-geo-marker-dot')!
+    const radius = Number(dot.getAttribute('r'))
+    expect(radius).toBeGreaterThan(6)
+    expect(radius).toBeLessThanOrEqual(11)
+    expect(marker.textContent).toBe('4200')
+  })
+
+  it('restores focus to the permanent information control when the status icon disappears', async () => {
+    stubFetch(geometryResponse)
+    const { rerender } = renderMap({ networks: [], loading: true, hasProjection: false })
+    fireEvent.click(screen.getByRole('button', { name: 'Map status: Loading data' }))
+    expect(screen.getByRole('dialog', { name: 'Map information' })).toBeTruthy()
+    rerender(<GeoWorldMap networks={[network({ geo: { countries: [seCountry], knownCountryCount: 3, unknownCountryCount: 0, availablePeerCount: 3, unknownWithPublicIpCount: 0 } })]} networkFilter="all" loading={false} hasProjection />)
+    await screen.findByRole('img', { name: 'Peer countries map' })
+    expect(screen.queryByRole('button', { name: /^Map status: / })).toBeNull()
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Map information' }))
   })
 
   it('plots Server representative points and keeps every real count readable as text', async () => {
@@ -298,6 +354,7 @@ describe('GeoWorldMap', () => {
     expect(screen.getByText('Peer observation: Stale')).toBeTruthy()
     await waitFor(() => expect(screen.getByText('Map resource: Error')).toBeTruthy())
     expect(screen.getByText(/Database age: 31 days/)).toBeTruthy()
+    expect(screen.getByText(/force a re-query in Admin Settings/)).toBeTruthy()
     expect(screen.getByText(/Partial scope/)).toBeTruthy()
     expect(screen.getByText(/Showing the last-good country projection/)).toBeTruthy()
   })
