@@ -4171,8 +4171,10 @@ mod tests {
         assert_eq!(cumulative, 4);
         assert_eq!(state_name, "resyncing");
         let db_path = _dir.path().join("server.db");
-        // The temporary database remains valid across a fresh connection; closing
-        // the AppState-owned pool is intentionally covered by the next process.
+        // A restart is a new process: the previous connection is gone before
+        // the next one opens. The Server holds exclusive locking, so the
+        // AppState-owned pool must be closed here to model that.
+        state.db().close().await;
         let reopened = initialize(ServerDatabaseConfig::new(db_path))
             .await
             .unwrap();

@@ -12,7 +12,8 @@ use std::{
 
 use sqlx::migrate::{MigrateError, Migrator};
 use sqlx::sqlite::{
-    SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
+    SqliteConnectOptions, SqliteJournalMode, SqliteLockingMode, SqlitePool, SqlitePoolOptions,
+    SqliteSynchronous,
 };
 use thiserror::Error;
 
@@ -20,7 +21,7 @@ use thiserror::Error;
 pub static SERVER_MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 /// The latest migration version compiled into the Server binary.
-pub const SERVER_SCHEMA_VERSION: i64 = 42;
+pub const SERVER_SCHEMA_VERSION: i64 = 43;
 
 /// The Server currently serializes all SQLite operations through one pool
 /// connection. Read scaling can be added with a concrete query need; it is
@@ -390,6 +391,16 @@ fn sqlite_options(config: &ServerDatabaseConfig, create_if_missing: bool) -> Sql
         .journal_mode(SqliteJournalMode::Wal)
         .synchronous(SqliteSynchronous::Full)
         .busy_timeout(config.busy_timeout())
+        // The Server owns its SQLite file: every read and write goes through
+        // the single serialized pool connection. Exclusive locking keeps that
+        // ownership true at the file layer, so no other process can attach to
+        // the write-ahead log shared memory. Without it a concurrent external
+        // SQLite connection (any `sqlite3` invocation, including read-only)
+        // can become the first attacher, and SQLite then truncates `-shm` to
+        // 3 bytes while this process still has it mapped, raising SIGBUS
+        // inside `walFindFrame`. Exclusive mode makes such an attempt fail
+        // with SQLITE_BUSY instead of crashing the Server (issue #137).
+        .locking_mode(SqliteLockingMode::Exclusive)
 }
 
 async fn read_pragmas(pool: &SqlitePool) -> Result<SqlitePragmas, sqlx::Error> {
@@ -601,7 +612,12 @@ mod tests {
             .connect_with(sqlite_options(&config(&path), true))
             .await
             .unwrap();
-        migrations_through(SERVER_SCHEMA_VERSION - 1)
+        // Pinned to the schema immediately before the provider-keyed cache
+        // migration (0042). Deriving this from SERVER_SCHEMA_VERSION would
+        // silently start this test one migration later on every new
+        // migration instead of exercising 0042's compatibility path.
+        const SCHEMA_BEFORE_GEO_PROVIDER_CACHE: i64 = 41;
+        migrations_through(SCHEMA_BEFORE_GEO_PROVIDER_CACHE)
             .run(&pool)
             .await
             .unwrap();
@@ -722,6 +738,24 @@ mod tests {
         let path = directory.path().join("server.db");
         let database = ServerDatabase::open(config(&path)).await.unwrap();
         assert_eq!(database.pool().size(), SERVER_WRITE_CONNECTIONS);
+    }
+
+    /// Issue #137: the Server owns its SQLite file, so the connection must
+    /// hold exclusive locking. A concurrent external SQLite connection that
+    /// becomes the first attacher truncates `-shm` to 3 bytes (see
+    /// `unixShmLock` in SQLite), and this process then takes SIGBUS inside
+    /// `walFindFrame` while the file is still mapped. Exclusive mode turns
+    /// that into SQLITE_BUSY in the other process instead of a crash here.
+    #[tokio::test]
+    async fn server_connection_holds_exclusive_locking_mode() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("server.db");
+        let database = ServerDatabase::open(config(&path)).await.unwrap();
+        let mode: String = sqlx::query_scalar("PRAGMA locking_mode")
+            .fetch_one(database.pool())
+            .await
+            .unwrap();
+        assert_eq!(mode.to_ascii_lowercase(), "exclusive");
     }
 
     #[tokio::test]

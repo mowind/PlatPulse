@@ -191,6 +191,16 @@ pub async fn raw_block_summary_retention_days(pool: &SqlitePool) -> Result<i64, 
     .unwrap_or(RAW_BLOCK_SUMMARY_RETENTION_DAYS))
 }
 
+/// The bounded expired-row delete. The 'block_summaries_accepted_at_idx'
+/// index covers '(accepted_at, node_id, block_number)', so the ordered 'LIMIT'
+/// is a range read of at most 'RAW_BLOCK_SUMMARY_CLEANUP_BATCH' index entries.
+///
+/// This statement runs after every accepted AgentReport, so it must never fall
+/// back to a full table scan: SQLite can still satisfy the delete, but the
+/// scan plus temporary B-tree made report ingestion cost ~124 ms per report on
+/// a 260 MB table even when nothing was expired (issue #137).
+pub const RAW_BLOCK_SUMMARY_CLEANUP_SQL: &str = "DELETE FROM block_summaries WHERE rowid IN (SELECT rowid FROM block_summaries WHERE accepted_at < ? ORDER BY accepted_at, node_id, block_number LIMIT ?)";
+
 /// Delete at most one bounded batch of expired raw summaries.
 ///
 /// The query is intentionally one short SQLite statement: repeated startup or
@@ -203,13 +213,11 @@ pub async fn cleanup_raw_block_summaries(
 ) -> Result<u64, sqlx::Error> {
     let retention_days = raw_block_summary_retention_days(pool).await?;
     let cutoff = crate::auth::format_rfc3339(family_cutoff(now, retention_days));
-    let result = sqlx::query(
-        "DELETE FROM block_summaries WHERE rowid IN (SELECT rowid FROM block_summaries WHERE accepted_at < ? ORDER BY accepted_at, node_id, block_number LIMIT ?)",
-    )
-    .bind(cutoff)
-    .bind(RAW_BLOCK_SUMMARY_CLEANUP_BATCH)
-    .execute(pool)
-    .await?;
+    let result = sqlx::query(RAW_BLOCK_SUMMARY_CLEANUP_SQL)
+        .bind(cutoff)
+        .bind(RAW_BLOCK_SUMMARY_CLEANUP_BATCH)
+        .execute(pool)
+        .await?;
     Ok(result.rows_affected())
 }
 
@@ -854,6 +862,46 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 1, "retention deleted preservation table {table}");
         }
+    }
+
+    /// Issue #137: the cleanup statement runs on the report ingestion path.
+    /// A full scan of `block_summaries` plus a temporary B-tree made one
+    /// bounded cleanup cost ~124 ms on a 260 MB table even when nothing was
+    /// expired, so catch-up burned a core without committing anything and
+    /// Agents exhausted their 5 s sender deadline. This asserts the
+    /// index-backed plan instead of a wall-clock budget so the guard is
+    /// deterministic on any machine.
+    #[tokio::test]
+    async fn cleanup_plan_is_index_backed_and_never_scans_the_whole_table() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let rows: Vec<(i64, i64, i64, String)> = sqlx::query_as(&format!(
+            "EXPLAIN QUERY PLAN {RAW_BLOCK_SUMMARY_CLEANUP_SQL}"
+        ))
+        .fetch_all(database.pool())
+        .await
+        .unwrap();
+        let plan = rows
+            .into_iter()
+            .map(|(_, _, _, detail)| detail)
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            !plan.contains("SCAN block_summaries"),
+            "raw Block Summary retention must not scan the table it prunes: {plan}"
+        );
+        assert!(
+            plan.contains("block_summaries_accepted_at_idx"),
+            "raw Block Summary retention must be served by the accepted_at index: {plan}"
+        );
+        assert!(
+            !plan.contains("TEMP B-TREE"),
+            "the ordered LIMIT must be satisfied by the index: {plan}"
+        );
     }
 
     #[tokio::test]

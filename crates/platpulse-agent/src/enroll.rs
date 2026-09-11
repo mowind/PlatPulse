@@ -233,7 +233,6 @@ mod tests {
     use std::net::SocketAddr;
     use std::path::Path;
 
-    use sqlx::sqlite::SqlitePoolOptions;
     use tempfile::tempdir;
 
     use crate::config::AgentConfig;
@@ -242,11 +241,12 @@ mod tests {
 
     /// A real dev-mode Server (production code, no mocks) listening on an
     /// ephemeral loopback port, with one Owner and an Enrollment Token
-    /// ready. Server-side assertions are made through a second SQLite
-    /// connection to the same database file (the Server's single writer
-    /// connection stays untouched between requests).
+    /// ready. Server-side assertions read through a clone of the Server's own
+    /// `AppState`: the Server holds exclusive locking because it owns the
+    /// database file, so a second SQLite connection would contend for
+    /// ownership instead of observing the committed result.
     struct TestServer {
-        db_path: PathBuf,
+        state: platpulse_server::http::AppState,
         addr: SocketAddr,
         token: String,
     }
@@ -283,16 +283,13 @@ mod tests {
         let state = platpulse_server::http::AppState::new(db, None, auth);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        let served = state.clone();
         tokio::spawn(async move {
-            axum::serve(listener, platpulse_server::http::build_app(state))
+            axum::serve(listener, platpulse_server::http::build_app(served))
                 .await
                 .unwrap();
         });
-        TestServer {
-            db_path,
-            addr,
-            token,
-        }
+        TestServer { state, addr, token }
     }
 
     fn agent_config(dir: &Path, server: &TestServer) -> AgentConfig {
@@ -307,16 +304,10 @@ mod tests {
     }
 
     async fn server_agent_count(server: &TestServer) -> i64 {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect(&format!("sqlite://{}", server.db_path.display()))
-            .await
-            .unwrap();
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents")
-            .fetch_one(&pool)
+            .fetch_one(server.state.db().pool())
             .await
             .unwrap();
-        pool.close().await;
         count
     }
 

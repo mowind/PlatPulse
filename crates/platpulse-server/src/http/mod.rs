@@ -589,7 +589,10 @@ impl AppState {
         self.admin_realtime.clone()
     }
 
-    pub(crate) fn db(&self) -> &ServerDatabase {
+    /// The Server database handle owned by this state. Callers observe
+    /// committed state through the same owning connection, which matters
+    /// because the Server holds exclusive SQLite locking on that file.
+    pub fn db(&self) -> &ServerDatabase {
         &self.db
     }
 

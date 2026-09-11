@@ -578,9 +578,15 @@ pub(crate) async fn persist_last_report_snapshot(
     .map(|_| ())
 }
 
-/// Deliver a bounded amount of oldest-first work. Once the durable spool
-/// reaches the preflush threshold, drain a small batch; otherwise keep the
-/// periodic worker to one report per tick so collection remains responsive.
+/// Deliver a bounded amount of oldest-first work.
+///
+/// A single queued report is the steady state: collection produced it and the
+/// next tick delivers it, so the worker stays at one report per tick and
+/// collection remains responsive. Anything beyond that is a backlog (a Server
+/// restart, a slow receipt). A backlog must drain faster than the collection
+/// cadence, otherwise delivery exactly cancels collection and the queue never
+/// empties: every later report then waits behind it and the spool drifts
+/// toward its overflow limit (issue #137).
 pub async fn deliver_periodic<T: ReportTransport>(
     store: &mut AgentStore,
     transport: &T,
@@ -608,11 +614,12 @@ async fn deliver_periodic_inner<T: ReportTransport>(
         sqlx::query_scalar("SELECT COALESCE(SUM(body_bytes), 0) FROM reports WHERE in_flight = 0")
             .fetch_one(store.connection())
             .await?;
-    let max_reports = if queued_bytes.max(0) as u64 >= policy.preflush_bytes {
-        8
-    } else {
-        1
-    };
+    let queued_reports: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM reports WHERE in_flight = 0")
+            .fetch_one(store.connection())
+            .await?;
+    let backlogged = queued_bytes.max(0) as u64 >= policy.preflush_bytes || queued_reports > 1;
+    let max_reports = if backlogged { 8 } else { 1 };
     let mut delivered = 0;
     for _ in 0..max_reports {
         let result = match send_deadline {
@@ -1215,6 +1222,62 @@ mod delivery_tests {
         store.close().await.unwrap();
     }
 
+    /// Issue #137: a backlog that sits below the preflush threshold must still
+    /// drain. Previously the worker delivered exactly one report per tick in
+    /// that state, which equals the collection cadence, so a Server restart
+    /// left the queued reports permanently in the spool and the queue grew
+    /// toward its overflow limit instead of recovering.
+    #[tokio::test]
+    async fn a_backlog_below_the_preflush_threshold_is_drained_not_stalled() {
+        let mut store = test_store().await;
+        let body = report_body(1);
+        // Five small reports stay far below the 1.5 MiB preflush threshold,
+        // so only the queued-report count can reveal the backlog.
+        let mut responses = Vec::new();
+        for sequence in 1..=5u64 {
+            let id = report_id(sequence);
+            let body = report_body(sequence);
+            persist_immutable_report(
+                &mut store,
+                &id,
+                1,
+                "0195f2a1-0012-4012-8012-000000000012",
+                sequence,
+                "2026-08-12T09:00:00Z",
+                &body,
+            )
+            .await
+            .unwrap();
+            responses.push(Ok(receipt_body(&id, &body)));
+        }
+        let policy = SpoolPolicy {
+            max_bytes: body.len() as u64 * 64,
+            max_age_seconds: 24 * 60 * 60,
+            preflush_bytes: body.len() as u64 * 64,
+        };
+        let transport = FakeTransport {
+            bodies: Arc::new(Mutex::new(Vec::new())),
+            responses: Arc::new(Mutex::new(responses)),
+        };
+
+        let delivered = deliver_periodic(&mut store, &transport, &policy)
+            .await
+            .unwrap();
+        assert_eq!(
+            delivered, 5,
+            "a below-preflush backlog must be drained in one tick, not one report"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            0,
+            "every acknowledged report must leave the spool"
+        );
+        store.close().await.unwrap();
+    }
+
     #[tokio::test]
     async fn startup_drains_expiry_batches_without_idle_delivery_history_work() {
         let mut store = test_store().await;
@@ -1786,5 +1849,231 @@ mod delivery_tests {
                 .unwrap(),
             1
         );
+    }
+}
+
+/// Issue #137 end-to-end recovery, in the same style as the Enrollment tests:
+/// a real Server (production code, no mocks) is stopped while the Agent keeps
+/// collecting, then returns on the same address and database. The backlog must
+/// drain through the real HTTP transport without losing a report.
+#[cfg(test)]
+mod backlog_recovery_tests {
+    use std::path::Path;
+
+    use platpulse_server::auth::{AuthConfig, create_owner, hash_password};
+    use platpulse_server::database::{ServerDatabaseConfig, initialize};
+    use platpulse_server::enrollment::{
+        ENROLLMENT_TOKEN_DEFAULT_LIFETIME, create_enrollment_token,
+    };
+    use platpulse_server::http::{AppState, build_app};
+    use platpulse_server::network::create_network;
+    use platpulse_server::secrets::{create_pepper_file, load_pepper_file};
+    use tempfile::TempDir;
+    use tokio::task::JoinHandle;
+    use tokio_util::sync::CancellationToken;
+
+    use super::{HttpReportTransport, deliver_periodic, persist_immutable_report};
+    use crate::collector::SpoolPolicy;
+    use crate::config::{AgentConfig, BackfillConfig};
+    use crate::database::{AgentDatabaseConfig, AgentStore};
+
+    const REPORT_COUNT: u64 = 6;
+    const BOOT_ID: &str = "0195f2a1-0012-4012-8012-000000000012";
+
+    fn report_id(sequence: u64) -> String {
+        format!("0195f2a1-0100-4000-8000-0000000000{sequence:02}")
+    }
+
+    fn report_body(sequence: u64, agent_id: &str) -> Vec<u8> {
+        let mut report: serde_json::Value = serde_json::from_str(include_str!(
+            "../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        report["agent_id"] = serde_json::Value::String(agent_id.to_owned());
+        report["report_sequence"] = serde_json::json!(sequence);
+        report["report_id"] = serde_json::Value::String(report_id(sequence));
+        report["generated_at"] = serde_json::json!("2026-08-12T09:00:00Z");
+        serde_json::to_vec(&report).unwrap()
+    }
+
+    struct RunningServer {
+        state: AppState,
+        shutdown: CancellationToken,
+        task: JoinHandle<()>,
+    }
+
+    impl RunningServer {
+        /// Stop the listener and close the owning connection, which is what a
+        /// Server restart does to the database file.
+        async fn stop(self) {
+            self.shutdown.cancel();
+            let _ = self.task.await;
+            self.state.db().close().await;
+        }
+    }
+
+    fn agent_config(dir: &Path, server_url: &str) -> AgentConfig {
+        AgentConfig {
+            config_path: dir.join("agent.toml"),
+            server_url: server_url.to_owned(),
+            credential_file: dir.join("credential"),
+            state_db: dir.join("agent.db"),
+            collection_interval_seconds: 5,
+            backfill: BackfillConfig::default(),
+        }
+    }
+
+    /// Boot a real Server on `addr` from the shared state directory.
+    async fn boot_server(addr: std::net::SocketAddr, dir: &Path) -> (RunningServer, String) {
+        let first_boot = !dir.join("server.db").exists();
+        let db = initialize(ServerDatabaseConfig::new(dir.join("server.db")))
+            .await
+            .unwrap();
+        let pepper_path = dir.join("server-pepper");
+        if first_boot {
+            create_pepper_file(&pepper_path).unwrap();
+        }
+        let pepper = load_pepper_file(&pepper_path).unwrap();
+        let auth = AuthConfig::development(pepper, format!("http://{addr}"));
+        let token = create_enrollment_token(&db, &pepper, None, ENROLLMENT_TOKEN_DEFAULT_LIFETIME)
+            .await
+            .unwrap()
+            .token;
+        if first_boot {
+            create_owner(
+                &db,
+                "admin",
+                &hash_password(b"correct horse battery").unwrap(),
+            )
+            .await
+            .unwrap();
+            create_network(
+                &db,
+                "platon-mainnet",
+                "PlatON Mainnet",
+                "0x0000000000000000000000000000000000000000000000000000000000000001",
+                210425,
+                210425,
+                "lat",
+            )
+            .await
+            .unwrap();
+        }
+        let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+        let state = AppState::new(db, None, auth);
+        let shutdown = CancellationToken::new();
+        let served = state.clone();
+        let stopping = shutdown.clone();
+        let task = tokio::spawn(async move {
+            axum::serve(listener, build_app(served))
+                .with_graceful_shutdown(async move { stopping.cancelled().await })
+                .await
+                .unwrap();
+        });
+        (
+            RunningServer {
+                state,
+                shutdown,
+                task,
+            },
+            token,
+        )
+    }
+
+    #[tokio::test]
+    async fn a_backlog_drains_after_a_server_outage_without_losing_reports() {
+        let dir = TempDir::new().unwrap();
+        // Reserve a concrete port so the stopped Server and the restarted
+        // Server share one address, exactly like a service restart.
+        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = probe.local_addr().unwrap();
+        drop(probe);
+
+        let (server, token) = boot_server(addr, dir.path()).await;
+        let config = agent_config(dir.path(), &format!("http://{addr}"));
+        let enrolled = crate::enroll::enroll_agent(&config, &token).await.unwrap();
+        let agent_id = enrolled.agent_id.to_string();
+        server.stop().await;
+
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(&config.state_db))
+            .await
+            .unwrap();
+        let transport = HttpReportTransport::from_config(&config).unwrap();
+        let policy = SpoolPolicy::default();
+        for sequence in 1..=REPORT_COUNT {
+            let body = report_body(sequence, &agent_id);
+            persist_immutable_report(
+                &mut store,
+                &report_id(sequence),
+                1,
+                BOOT_ID,
+                sequence,
+                "2026-08-12T09:00:00Z",
+                &body,
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            REPORT_COUNT as i64
+        );
+
+        // With the Server down the tick fails and every report stays queued.
+        assert!(
+            deliver_periodic(&mut store, &transport, &policy)
+                .await
+                .is_err(),
+            "delivery against a stopped Server must fail"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            REPORT_COUNT as i64,
+            "a failed delivery must keep every report"
+        );
+
+        let (restarted, _token) = boot_server(addr, dir.path()).await;
+        // One tick must clear the whole backlog: catching up has to be faster
+        // than the collection cadence, otherwise the queue never empties.
+        let delivered = deliver_periodic(&mut store, &transport, &policy)
+            .await
+            .unwrap();
+        assert_eq!(
+            delivered, REPORT_COUNT as usize,
+            "one tick must drain the backlog once the Server returns"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            0,
+            "the Durable Spool must be empty once the backlog is acknowledged"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT dropped_reports FROM spool_state WHERE singleton = 1"
+            )
+            .fetch_one(store.connection())
+            .await
+            .unwrap(),
+            0,
+            "recovery must never discard a queued report"
+        );
+        let receipts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_report_receipts")
+            .fetch_one(restarted.state.db().pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            receipts, REPORT_COUNT as i64,
+            "the Server must hold one receipt per recovered report"
+        );
+        store.close().await.unwrap();
     }
 }

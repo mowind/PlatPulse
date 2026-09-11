@@ -287,7 +287,7 @@ Server 不下发或修改 `nodes.rpc_endpoint`。
 独立发送循环 → 最老报告优先 → 校验完整 Report Receipt → 按 per-Node/per-sample 结果应用 → 事务性删除已确认报告
 ~~~
 
-`collection_interval_seconds` 可配置范围为 1–300 秒，默认 5 秒；`inventory_revision` 默认 1。`[backfill]` 默认 `max_height_span = 256`、`max_block_count = 128`、`max_time_ms = 5000`，边界分别为 1–1,000,000、1–100,000、1–60,000 ms。Durable Spool 默认容量 2 MiB、最大年龄 24 小时，并在约 1.5 MiB 时预留 flush 空间；单个 AgentReport body 的 Server 上限为 8 MiB，Agent 接近 2 MiB 或样本阈值时提前 flush。区块订阅、当前观测采集、报告组装与发送相互解耦；线上仍只使用完整、不可变的 AgentReport，不按数据类型拆分 wire protocol。
+`collection_interval_seconds` 可配置范围为 1–300 秒，默认 5 秒；`inventory_revision` 默认 1。发送循环对**单次 HTTP 发送**施加 `sender_deadline_ms`（默认 5000 ms），它约束的是 Agent 等待 Server 响应的时间，而不是 Server 处理一份 report 的成本：deadline 到期后 Agent 放弃本次响应，但 Server 侧已经开始的事务可能仍然提交，因此该 report 可能已经落地。`[backfill]` 默认 `max_height_span = 256`、`max_block_count = 128`、`max_time_ms = 5000`，边界分别为 1–1,000,000、1–100,000、1–60,000 ms。Durable Spool 默认容量 2 MiB、最大年龄 24 小时，并在约 1.5 MiB 时预留 flush 空间；单个 AgentReport body 的 Server 上限为 8 MiB，Agent 接近 2 MiB 或样本阈值时提前 flush。区块订阅、当前观测采集、报告组装与发送相互解耦；线上仍只使用完整、不可变的 AgentReport，不按数据类型拆分 wire protocol。
 
 要求：
 
@@ -296,7 +296,10 @@ Server 不下发或修改 `nodes.rpc_endpoint`。
 - Spool 有明确的大小和年龄上限；
 - 溢出时丢弃最老的未确认历史报告、记录诊断日志，并保留当前状态的采集与投递；
 - Spool 不是用户可见历史；
+- 投递余量必须真正收敛：只要队列里多于一份报告，发送循环就按批清空，使追赶吞吐高于采集速率；否则投递速率恰好抵消采集速率，重启后的积压会永久滞留在 Spool 中；
 - Agent Store 损坏时 fail-closed：停止继续伪造报告，等待人工处理。
+
+`sender_deadline_ms` 与重启恢复的关系：deadline 只覆盖**单次 HTTP 发送**，不覆盖 Server 处理一份 report 的成本，也不覆盖 Server 的重启窗口（本机 1.19 GB 数据库的实测重启窗口约 3 s，且此时 Listener 尚未就绪，Agent 的失败只是重试，报告仍留在 Spool 中）。因此 deadline 不应随恢复期长短调整：只要稳定态每报告处理时间远小于 deadline，追赶就不会因为 deadline 而反复回滚已经完成的工作。
 
 ### 7.3 AgentReport
 
