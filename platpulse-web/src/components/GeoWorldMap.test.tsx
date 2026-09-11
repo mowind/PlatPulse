@@ -52,8 +52,9 @@ function network(overrides: {
   displayName?: string
   geo?: Record<string, unknown>
   peers?: Record<string, unknown>
+  nodes?: Array<{ nodeId: string; health: string }>
 } = {}): PublicNetwork {
-  const { networkKey = 'mainnet', displayName = 'Mainnet', geo = {}, peers = {} } = overrides
+  const { networkKey = 'mainnet', displayName = 'Mainnet', geo = {}, peers = {}, nodes = [] } = overrides
   return {
     networkKey,
     displayName,
@@ -70,7 +71,7 @@ function network(overrides: {
       ...geo,
     },
     peers: { state: 'ok', freshness: 'current', ...peers },
-    nodes: [],
+    nodes,
     validators: [],
   } as unknown as PublicNetwork
 }
@@ -173,16 +174,15 @@ describe('GeoWorldMap', () => {
     renderMap({ networks: [network({ geo: { countries: [singleCountry, multipleCountry], knownCountryCount: 4, unknownCountryCount: 0, availablePeerCount: 4, unknownWithPublicIpCount: 0 } })] })
     await screen.findByRole('img', { name: 'Peer countries map' })
 
-    // One record needs no numeral; the marker stays a small dot.
+    // One record needs no numeral: the marker is Emerald's 8px dot.
     const single = screen.getByRole('button', { name: 'Sweden · 1 records' })
     expect(single.querySelector('.home-geo-marker-label')).toBeNull()
-    expect(Number(single.querySelector('.home-geo-marker-dot')?.getAttribute('r'))).toBe(3.5)
+    expect(Number(single.querySelector('.home-geo-marker-dot')?.getAttribute('r')) * 2).toBe(8)
 
-    // A larger quantity keeps a numeral, bounded to the 14-22px marker range.
+    // A larger quantity keeps a numeral in Emerald's 14px marker.
     const multiple = screen.getByRole('button', { name: 'Germany · 3 records' })
     const radius = Number(multiple.querySelector('.home-geo-marker-dot')?.getAttribute('r'))
-    expect(radius).toBeGreaterThanOrEqual(7)
-    expect(radius).toBeLessThanOrEqual(11)
+    expect(radius * 2).toBe(14)
     expect(multiple.querySelector('.home-geo-marker-label')?.textContent).toBe('3')
   })
 
@@ -199,6 +199,25 @@ describe('GeoWorldMap', () => {
     expect(radius).toBeGreaterThanOrEqual(7)
     expect(radius).toBeLessThanOrEqual(11)
     expect(radius * 2, 'disc fits its own glyphs: ' + label).toBeGreaterThanOrEqual(label.length * 4.5 + 3)
+  })
+
+  it('shrinks a long numeral instead of letting it spill outside its marker', async () => {
+    stubFetch(geometryResponse)
+    const long = { ...seCountry, count: 2002 }
+    const huge = { ...deCountry, staleCount: 0, count: 999_500, centroidLat: 40, centroidLon: 0 }
+    const wide = { ...xkCountry, count: 999, centroidLat: -20, centroidLon: 0 }
+    renderMap({ networks: [network({ geo: { countries: [long, huge, wide], knownCountryCount: 2002 + 999_500 + 999, unknownCountryCount: 0, availablePeerCount: 2002 + 999_500 + 999, unknownWithPublicIpCount: 0 } })] })
+    await screen.findByRole('img', { name: 'Peer countries map' })
+
+    const fontSizeOf = (name: string) => {
+      const label = screen.getByRole('button', { name }).querySelector('.home-geo-marker-label') as SVGTextElement
+      return { glyphs: (label.textContent ?? '').length, size: Number.parseFloat(label.style.fontSize) }
+    }
+    // Emerald's 10px label is kept for short numerals and only reduced when the
+    // abbreviation still needs more room than the bounded disc has.
+    expect(fontSizeOf('Sweden · 2,002 records'), 'a four-glyph numeral steps down').toEqual({ glyphs: 4, size: 7 })
+    expect(fontSizeOf('Germany · 999,500 records'), 'an abbreviation stays at Emerald size').toEqual({ glyphs: 2, size: 10 })
+    expect(fontSizeOf('Kosovo · 999 records')).toEqual({ glyphs: 3, size: 8 })
   })
 
   it('drops the numeral where markers crowd, and keeps every exact count on the tooltip', async () => {
@@ -340,47 +359,64 @@ describe('GeoWorldMap', () => {
     expect(screen.getByRole('status').textContent).toBe('Observation status varies')
   })
 
-  it('shows the country count as a green dot and a number in the map corner', async () => {
+  it('shows the online and not-healthy Node counts as dots in the map corner', async () => {
     stubFetch(geometryResponse)
-    // The default projection carries three countries, on seven Peer records.
-    renderMap()
+    renderMap({ networks: [network({ nodes: [
+      { nodeId: 'n1', health: 'healthy' },
+      { nodeId: 'n2', health: 'healthy' },
+      { nodeId: 'n3', health: 'unhealthy' },
+      { nodeId: 'n4', health: 'unknown' },
+    ] })] })
     await screen.findByRole('img', { name: 'Peer countries map' })
     const map = screen.getByRole('region', { name: 'Peer countries' })
-    const count = map.querySelector('.home-geo-count')
+    const counters = map.querySelector('.home-geo-counters')
 
-    expect(count, 'the corner indicator exists').toBeTruthy()
-    expect(count!.querySelector('.home-geo-count-dot'), 'it is marked by a dot').toBeTruthy()
-    expect(count!.textContent, 'it states the number of countries').toContain('3')
-    expect(count!.textContent, 'the dot and number are named for assistive technology')
-      .toContain('Countries with Peer records')
-    // Countries, never Peer records: seven records must not leak into this figure.
-    expect(count!.textContent).not.toContain('7')
+    expect(counters, 'the corner indicator exists').toBeTruthy()
+    const online = counters!.querySelector('.home-geo-counter-dot-online')!.parentElement!
+    const unhealthy = counters!.querySelector('.home-geo-counter-dot-unhealthy')!.parentElement!
+    expect(online.textContent, 'the green figure is the online Node count').toContain('Online Nodes: 2')
+    expect(unhealthy.textContent, 'the amber figure is the not-healthy Node count').toContain('Not healthy Nodes: 1')
+    // An unknown Node is neither online nor not-healthy, so it is counted in
+    // neither figure rather than being presented as offline.
+    expect(counters!.textContent).not.toContain('4')
   })
 
-  it('hides the corner count when no country has a record', async () => {
+  it('never invents a corner figure while the projection is unavailable or loading', async () => {
     stubFetch(geometryResponse)
-    const zero = { countries: [], knownCountryCount: 0, unknownCountryCount: 0, availablePeerCount: 0, unknownWithPublicIpCount: 0 }
-    renderMap({ networks: [network({ geo: zero })] })
+    const { rerender } = renderMap({ networks: [network()], loading: true, hasProjection: false })
+    expect(screen.getByRole('region', { name: 'Peer countries' }).querySelector('.home-geo-counters')).toBeNull()
+
+    rerender(<GeoWorldMap networks={[network()]} networkFilter="all" loading={false} hasProjection={false} />)
+    expect(screen.getByRole('region', { name: 'Peer countries' }).querySelector('.home-geo-counters')).toBeNull()
+  })
+
+  it('hides the corner counters when no Node is online or unhealthy', async () => {
+    stubFetch(geometryResponse)
+    renderMap({ networks: [network({ nodes: [{ nodeId: 'n1', health: 'unknown' }] })] })
     await screen.findByRole('img', { name: 'Peer countries map' })
 
-    expect(screen.getByRole('region', { name: 'Peer countries' }).querySelector('.home-geo-count')).toBeNull()
+    expect(screen.getByRole('region', { name: 'Peer countries' }).querySelector('.home-geo-counters')).toBeNull()
   })
 
-  it('counts countries scoped to the current Network filter', async () => {
+  it('counts Nodes in exactly the scope the map covers', async () => {
     stubFetch(geometryResponse)
-    const mainnet = network({ networkKey: 'mainnet' })
+    const mainnet = network({ networkKey: 'mainnet', nodes: [{ nodeId: 'a', health: 'healthy' }, { nodeId: 'b', health: 'healthy' }] })
     const testnet = network({
       networkKey: 'testnet',
       displayName: 'Testnet',
+      nodes: [{ nodeId: 'c', health: 'unhealthy' }],
       geo: { countries: [{ ...deCountry, staleCount: 0 }], knownCountryCount: 2, unknownCountryCount: 0, availablePeerCount: 2, unknownWithPublicIpCount: 0 },
     })
+    const countersOf = () => screen.getByRole('region', { name: 'Peer countries' }).querySelector('.home-geo-counters')!.textContent!
+
     const { rerender } = renderMap({ networks: [mainnet, testnet], networkFilter: 'testnet' })
     await screen.findByRole('img', { name: 'Peer countries map' })
-    // One country in the filtered scope, even though the unfiltered scope has three.
-    expect(screen.getByRole('region', { name: 'Peer countries' }).querySelector('.home-geo-count')!.textContent).toContain('1')
+    expect(countersOf(), 'the filtered scope counts only its own Nodes').toContain('Not healthy Nodes: 1')
+    expect(countersOf()).not.toContain('Online Nodes')
 
     rerender(<GeoWorldMap networks={[mainnet, testnet]} networkFilter="all" loading={false} hasProjection />)
-    expect(screen.getByRole('region', { name: 'Peer countries' }).querySelector('.home-geo-count')!.textContent).toContain('3')
+    expect(countersOf(), 'All Networks adds both scopes up').toContain('Online Nodes: 2')
+    expect(countersOf()).toContain('Not healthy Nodes: 1')
   })
 
   it('renders the map itself as the only interactive surface', async () => {

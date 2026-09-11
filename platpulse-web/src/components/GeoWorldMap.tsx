@@ -45,6 +45,17 @@ type GeometryState =
 
 type MapStatus = 'starting' | 'empty' | 'unknown' | 'disabled' | 'current' | 'stale' | 'error'
 
+/**
+ * Marker sizes are the reference theme's own scatter sizes
+ * (komari-theme-emerald, src/components/NodeEarthMaps.vue, light theme):
+ * 8px for a single record and 14px once a quantity is printed. The map's
+ * colours — the faint slate basemap, the emerald wash on countries carrying
+ * data, the 0.5px borders, the 1px white ring on the dots, Emerald's hover
+ * treatment and its tooltip box — live in index.css beside the rest of the map.
+ */
+const MAP_DOT_SINGLE = 8
+const MAP_DOT_MULTIPLE = 14
+
 export default function GeoWorldMap({ networks, networkFilter, loading, hasProjection }: GeoWorldMapProps) {
   const tooltipId = useId()
   const [activeCountryCode, setActiveCountryCode] = useState<string | null>(null)
@@ -156,7 +167,20 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
   // A numbered marker stays inside the bounded 14-22px range, and long
   // quantities are abbreviated so four glyphs is the maximum; the exact count
   // stays in the marker's accessible name and in its tooltip.
-  const markerRadius = (count: number) => count === 1 ? 3.5 : Math.min(11, Math.max(7, 2.5 * markerText(count).length + 2))
+  // Emerald sizes its scatter by diameter: 8px for a single record, 14px once a
+  // quantity is printed. A wide numeral grows the disc just enough to hold it
+  // (abbreviated to at most four glyphs, capped at 22px) so digits can never
+  // spill outside their own marker.
+  const markerRadius = (count: number) => count === 1
+    ? MAP_DOT_SINGLE / 2
+    : Math.min(11, Math.max(MAP_DOT_MULTIPLE / 2, 2.5 * markerText(count).length + 2))
+  // Emerald prints its label at 10px, which only fits one or two glyphs inside
+  // the bounded disc. A longer numeral drops to a smaller size so the exact
+  // count still fits instead of spilling outside its own marker.
+  const markerFontSize = (count: number) => {
+    const glyphs = markerText(count).length
+    return glyphs <= 2 ? 10 : glyphs === 3 ? 8 : 7
+  }
   const bounds = geometryReady ? plotted.reduce((box, { at }) => {
     const padding = 24 * geometry.geometry.projection.width / Math.max(240, canvasWidth - 48)
     return { left: Math.min(box.left, at.x - padding), top: Math.min(box.top, at.y - padding), right: Math.max(box.right, at.x + padding), bottom: Math.max(box.bottom, at.y + padding) }
@@ -165,6 +189,17 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
   const numbered = new Set(plotted.filter(({ country, at }) => country.count > 1 && !plotted.some((other) =>
     other.country.code !== country.code && Math.hypot(other.at.x - at.x, other.at.y - at.y) * mapScale < markerRadius(country.count) + markerRadius(other.country.count) + 3,
   )).map(({ country }) => country.code))
+
+  // The corner indicator counts Nodes, in exactly the scope the map covers, so
+  // it can never disagree with the Node list below. Only a healthy Node is
+  // online and only an unhealthy Node is counted as the opposite; an unknown
+  // Node is neither, so it is never folded into the offline figure.
+  const scopedNodes = networkFilter === 'all'
+    ? networks.flatMap((network) => network.nodes ?? [])
+    : (networks.find((network) => network.networkKey === networkFilter)?.nodes ?? [])
+  const healthOf = (node: { health: string }) => node.health.toLowerCase()
+  const onlineNodes = hasProjection && !loading ? scopedNodes.filter((node) => healthOf(node) === 'healthy').length : null
+  const unhealthyNodes = hasProjection && !loading ? scopedNodes.filter((node) => healthOf(node) === 'unhealthy').length : null
 
   const unknownCount = overview.unknownCountryCount
   const countsAvailable = overview.knownCountryCount != null && unknownCount != null
@@ -200,16 +235,28 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
           glyph, and no expand toggle. An abnormal state stays announced to
           assistive technology without putting a glyph or a sentence on the map. */}
       {notice && <span className="sr-only" role="status">{notice}</span>}
-      {/* The one standing figure on the map, matching the reference theme's
-          corner indicator: a green dot and how many countries have Peer records
-          in scope. It is a count of countries, never a Peer-record or unique-Peer
-          total, and it stays pointer-inert so the map underneath keeps every
-          hover and tap. */}
-      {geometryReady && overview.countries.length > 0 && (
-        <p className="home-geo-count">
-          <span className="home-geo-count-dot" aria-hidden="true" />
-          <span className="sr-only">Countries with Peer records: </span>
-          {formatGeoCount(overview.countries.length)}
+      {/* The reference theme's corner indicator, in its own two-figure form: a
+          pulsing green dot with the online Node count and a pulsing amber dot
+          with the count that is not healthy. Both cover exactly the scope the
+          map covers (the Network filter), and an unknown Node is counted in
+          neither figure rather than being presented as offline. It stays
+          pointer-inert so the map underneath keeps every hover and tap. */}
+      {geometryReady && (onlineNodes !== null || unhealthyNodes !== null) && (onlineNodes! > 0 || unhealthyNodes! > 0) && (
+        <p className="home-geo-counters">
+          {onlineNodes! > 0 && (
+            <span className="home-geo-counter">
+              <span className="home-geo-counter-dot home-geo-counter-dot-online" aria-hidden="true" />
+              <span className="sr-only">Online Nodes: </span>
+              {formatGeoCount(onlineNodes!)}
+            </span>
+          )}
+          {unhealthyNodes! > 0 && (
+            <span className="home-geo-counter">
+              <span className="home-geo-counter-dot home-geo-counter-dot-unhealthy" aria-hidden="true" />
+              <span className="sr-only">Not healthy Nodes: </span>
+              {formatGeoCount(unhealthyNodes!)}
+            </span>
+          )}
         </p>
       )}
       <div ref={canvas} className="home-geo-canvas" style={bounds ? { aspectRatio: `${bounds.right - bounds.left} / ${bounds.bottom - bounds.top}` } : undefined}>
@@ -265,8 +312,12 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
                   {/* Wrapped so the hover emphasis can scale the marker about its
                       own centre without touching the placement transform. */}
                   <g className="home-geo-marker-body">
-                    <circle className="home-geo-marker-dot" cx="0" cy="0" r={numbered.has(country.code) ? markerRadius(country.count) : 3.5} />
-                    {numbered.has(country.code) && <text className="home-geo-marker-label" x="0" y="0">{markerText(country.count)}</text>}
+                    {/* Emerald sizes the dot by the quantity: 8px for a single
+                        record, 14px once there is more than one. A numeral the
+                        crowding rule had to drop leaves the dot at its size. */}
+                    <circle className="home-geo-marker-dot" cx="0" cy="0"
+                      r={country.count === 1 ? MAP_DOT_SINGLE / 2 : numbered.has(country.code) ? markerRadius(country.count) : MAP_DOT_MULTIPLE / 2} />
+                    {numbered.has(country.code) && <text className="home-geo-marker-label" x="0" y="0" style={{ fontSize: markerFontSize(country.count) }}>{markerText(country.count)}</text>}
                   </g>
                 </g>
               ))}

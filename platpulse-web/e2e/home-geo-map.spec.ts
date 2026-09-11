@@ -157,21 +157,23 @@ async function expectQuietMap(page: Page) {
   // map itself.
   await expect(map.locator('button')).toHaveCount(0)
 
-  // The single standing figure is the corner country count. When it is present
-  // it must be a country count inside the map, and pointer-inert so it never
-  // steals a hover from the country under it.
-  const count = map.locator('.home-geo-count')
-  if (await count.count() > 0) {
-    const countBox = (await count.boundingBox())!
-    const countStyle = await count.evaluate(element => getComputedStyle(element).pointerEvents)
-    expect(countStyle, 'the country count never intercepts map pointers').toBe('none')
+  // The one standing figure is the reference theme's corner indicator: a pulsing
+  // dot per figure with the online Node count and the not-healthy Node count.
+  // It must stay pointer-inert so it never steals a hover from the map under it.
+  const counters = map.locator('.home-geo-counters')
+  if (await counters.count() > 0) {
+    const counterBox = (await counters.boundingBox())!
+    const pointerEvents = await counters.evaluate(element => getComputedStyle(element).pointerEvents)
+    expect(pointerEvents, 'the corner counters never intercept map pointers').toBe('none')
     const probe = await page.evaluate(({ x, y }) => {
       const element = document.elementFromPoint(x, y)
-      return element ? (element.closest('svg[role="img"]') ? 'map' : 'count') : 'none'
-    }, { x: Math.round(countBox.x + countBox.width / 2), y: Math.round(countBox.y + countBox.height / 2) })
-    expect(probe, 'the map underneath the count still receives pointers').toBe('map')
-    await expect(count.locator('.home-geo-count-dot')).toHaveCount(1)
-    await expect(count).toHaveText(/^Countries with Peer records: [\d,]+$/)
+      return element ? (element.closest('svg[role="img"]') ? 'map' : 'counter') : 'none'
+    }, { x: Math.round(counterBox.x + counterBox.width / 2), y: Math.round(counterBox.y + counterBox.height / 2) })
+    expect(probe, 'the map underneath the counters still receives pointers').toBe('map')
+    for (const figure of await counters.locator('.home-geo-counter').all()) {
+      await expect(figure.locator('.home-geo-counter-dot')).toHaveCount(1)
+      await expect(figure).toHaveText(/^(Online|Not healthy) Nodes: [\d,]+$/)
+    }
   }
 }
 
@@ -205,11 +207,15 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     await expect(marker.locator('text')).toHaveCount(0)
     const controls = await marker.locator('circle').evaluateAll(circles => circles.map(circle => {
       const box = circle.getBoundingClientRect()
-      return { width: box.width, height: box.height, fill: getComputedStyle(circle).fill }
+      const style = getComputedStyle(circle)
+      return { width: box.width, height: box.height, fill: style.fill, stroke: style.stroke, strokeWidth: style.strokeWidth }
     }))
     expect(controls).toHaveLength(2)
     expect(controls[0].width).toBeCloseTo(24, 0)
-    expect(controls[1].width).toBeCloseTo(7, 0)
+    // Emerald's scatter: an 8px dot for a single record, ringed in 1px white.
+    expect(controls[1].width).toBeCloseTo(8, 0)
+    expect(controls[1].stroke, 'the quantity dot keeps its white ring').toBe('rgb(255, 255, 255)')
+    expect(Number.parseFloat(controls[1].strokeWidth)).toBeCloseTo(1, 1)
     const rgb = controls[1].fill.match(/\d+/g)!.map(Number)
     expect(rgb[1], 'filled Emerald marker').toBeGreaterThan(rgb[0])
     expect(rgb[1]).toBeGreaterThan(rgb[2])
@@ -324,13 +330,13 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
       const map = page.getByRole('region', { name: 'Peer countries' })
       await expect(map.getByRole('status')).toContainText('Loading map')
       await expect(map.getByRole('img', { name: 'Peer countries map' })).toHaveCount(0)
-      await expect(map.locator('.home-geo-count')).toHaveCount(0)
+      await expect(map.locator('.home-geo-counters')).toHaveCount(0)
       await expectQuietMap(page)
       await capture(page, testInfo, 'fixture-loading-' + testInfo.project.name)
       release()
       await expect(map.getByRole('img', { name: 'Peer countries map' })).toBeVisible({ timeout: 30_000 })
-      // Once the basemap resolves, the corner country count appears with it.
-      await expect(map.locator('.home-geo-count')).toHaveText(/^Countries with Peer records: [\d,]+$/)
+      // Once the basemap resolves, the corner counters appear with it.
+      await expect(map.locator('.home-geo-counters .home-geo-counter').first()).toHaveText(/^(Online|Not healthy) Nodes: [\d,]+$/)
     } finally {
       release()
       await page.unroute('**/assets/geo/**')
@@ -371,17 +377,32 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     }, { map: mapBox, header: headerBox })
     expect(topStrip, 'the map receives pointers in the strip the header floats over').toBe('map')
 
-    // The corner country count sits clear of the brand and the Admin link, and it
-    // states the number of countries the map is actually drawing.
-    const countBox = (await map.locator('.home-geo-count').boundingBox())!
+    // The corner counters sit clear of the brand and the Admin link, and each
+    // figure states what it claims: the green one is exactly the live count of
+    // healthy Nodes in the map's own scope, the amber one the unhealthy count.
+    const counterBox = (await map.locator('.home-geo-counters').boundingBox())!
     const adminBox = (await page.locator('.admin-icon-link').boundingBox())!
-    const overlaps = countBox.x < adminBox.x + adminBox.width && countBox.x + countBox.width > adminBox.x
-      && countBox.y < adminBox.y + adminBox.height && countBox.y + countBox.height > adminBox.y
-    expect(overlaps, 'the country count never collides with the Admin link').toBe(false)
-    expect(countBox.y, 'the country count sits below the floating logo bar').toBeGreaterThanOrEqual(headerBox.height - 1)
-    const drawnCountries = await map.getByRole('img', { name: 'Peer countries map' }).locator('.home-geo-observed path').count()
-    const stated = Number((await map.locator('.home-geo-count').textContent())!.replace(/\D/g, ''))
-    expect(stated, 'the corner figure matches the countries the map fills').toBe(drawnCountries)
+    const overlaps = counterBox.x < adminBox.x + adminBox.width && counterBox.x + counterBox.width > adminBox.x
+      && counterBox.y < adminBox.y + adminBox.height && counterBox.y + counterBox.height > adminBox.y
+    expect(overlaps, 'the corner counters never collide with the Admin link').toBe(false)
+    expect(counterBox.y, 'the corner counters sit below the floating logo bar').toBeGreaterThanOrEqual(headerBox.height - 1)
+    const nodes = (await page.evaluate(async () => {
+      const response = await fetch('/api/public/v1/networks', { credentials: 'include' })
+      return response.json() as Promise<Array<{ nodes?: Array<{ health?: string }> }>>
+    })).flatMap(network => network.nodes ?? [])
+    const healthy = nodes.filter(node => (node.health ?? '').toLowerCase() === 'healthy').length
+    const unhealthy = nodes.filter(node => (node.health ?? '').toLowerCase() === 'unhealthy').length
+    const figures = await map.locator('.home-geo-counter').evaluateAll(elements => elements.map(element => ({
+      text: (element.textContent ?? '').trim(),
+      color: getComputedStyle(element).color,
+    })))
+    if (healthy > 0) {
+      expect(figures.some(figure => figure.text.includes('Online Nodes: ' + healthy)), 'the green figure is the live healthy count').toBe(true)
+    }
+    if (unhealthy > 0) {
+      expect(figures.some(figure => figure.text.includes('Not healthy Nodes: ' + unhealthy)), 'the amber figure is the live unhealthy count').toBe(true)
+    }
+    expect(figures.length, 'a figure exists for every count that is above zero').toBe((healthy > 0 ? 1 : 0) + (unhealthy > 0 ? 1 : 0))
 
     // The summary overlays the map band's left edge, clear of the logo bar, and
     // the map still runs out to the right of it.
@@ -720,8 +741,8 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
       const map = page.getByRole('region', { name: 'Peer countries' })
       await expect(map.getByRole('status')).toHaveText('Peer countries · Disabled by server')
       await expect(map.getByRole('img', { name: 'Peer countries map' })).toHaveCount(0)
-      // No basemap means no map, and the corner count goes with it.
-      await expect(map.locator('.home-geo-count')).toHaveCount(0)
+      // No basemap means no map, and the corner counters go with it.
+      await expect(map.locator('.home-geo-counters')).toHaveCount(0)
       await expectQuietMap(page)
       await capture(page, testInfo, 'fixture-disabled-' + testInfo.project.name)
 
