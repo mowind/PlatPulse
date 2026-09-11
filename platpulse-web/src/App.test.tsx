@@ -736,7 +736,12 @@ describe('App shell with private Home', () => {
     const brand = screen.getByRole('link', { name: 'PlatPulse' })
     expect(brand.querySelector('img')?.getAttribute('src')).toContain('platpulse-mark')
     expect(brand.textContent).toBe('PlatPulse')
-    expect(screen.getByRole('link', { name: 'Admin' })).toBeTruthy()
+    const adminLink = screen.getByRole('link', { name: 'Admin' })
+    // Icon-only like the Emerald reference, but still named for assistive
+    // technology and still a full-size target.
+    expect(adminLink.textContent).toBe('')
+    expect(adminLink.getAttribute('aria-label')).toBe('Admin')
+    expect(adminLink.querySelector('svg')).toBeTruthy()
   })
 
   it('renders the unified Admin brand link and retained header actions', async () => {

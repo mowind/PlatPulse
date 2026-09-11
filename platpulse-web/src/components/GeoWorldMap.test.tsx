@@ -107,6 +107,42 @@ describe('GeoWorldMap', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
+  it('keeps the map surface free of standing credit text while the disclosure keeps attribution', async () => {
+    stubFetch(geometryResponse)
+    renderMap()
+    await screen.findByRole('img', { name: 'Peer countries map' })
+    const map = screen.getByRole('region', { name: 'Peer countries' })
+
+    // Licensing attribution belongs in the on-demand disclosure, not on the
+    // map surface: the map has to blend into the page background.
+    expect(map.textContent).not.toMatch(/Natural Earth|GeoLite|MaxMind|IPinfo|GeoJS/)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Map information' }))
+    const dialog = screen.getByRole('dialog', { name: 'Map information' })
+    expect(dialog.textContent).toMatch(/Country outlines: Natural Earth/)
+    expect(dialog.textContent).toMatch(/GeoLite Data created by MaxMind/)
+  })
+
+  it('shows an unambiguous info icon and a quiet status dot instead of two warnings', async () => {
+    stubFetch(geometryResponse)
+    renderMap({
+      networks: [network({ geo: { countries: [seCountry], knownCountryCount: 3, unknownCountryCount: 2, availablePeerCount: 5 } })],
+    })
+    await screen.findByRole('img', { name: 'Peer countries map' })
+
+    // The info control keeps a dot above a stem, drawn as a real circle so it can
+    // never read as an exclamation mark at 16px.
+    const info = screen.getByRole('button', { name: 'Map information' })
+    expect(info.querySelector('circle[fill="currentColor"]')).toBeTruthy()
+
+    // An abnormal state is still announced and actionable, but as one quiet dot
+    // rather than a second warning glyph.
+    const status = screen.getByRole('button', { name: /^Map status: / })
+    const shapes = status.querySelectorAll('circle')
+    expect(shapes.length).toBeGreaterThan(0)
+    expect(status.querySelectorAll('path, line')).toHaveLength(0)
+  })
+
   it('dismisses map information with Escape and restores trigger focus', async () => {
     stubFetch(geometryResponse)
     renderMap()

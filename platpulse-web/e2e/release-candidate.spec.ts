@@ -56,7 +56,11 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expect(metadata.getByRole('status', { name: 'Live updates connected' })).toBeVisible()
 
     const adminLink = page.getByRole('link', { name: 'Admin', exact: true })
-    await expect(adminLink).toContainText('Admin', { useInnerText: true })
+    // Icon-only like the Emerald reference: no visible label, still named for
+    // assistive technology, still a full-size target.
+    await expect(adminLink).toHaveAttribute('aria-label', 'Admin')
+    expect((await adminLink.innerText()).trim(), 'Admin link is icon-only').toBe('')
+    await expect(adminLink.locator('svg')).toHaveCount(1)
     const adminBox = await adminLink.boundingBox()
     expect(adminBox?.width).toBeGreaterThanOrEqual(44)
     expect(adminBox?.height).toBeGreaterThanOrEqual(44)

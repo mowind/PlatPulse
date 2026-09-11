@@ -53,12 +53,6 @@ type MapResourceState = 'starting' | 'current' | 'error' | 'unknown'
  *  the display text so copy edits can never change the icon. */
 type NoticeKind = 'loading' | 'empty' | 'notice'
 
-const NOTICE_ICON: Record<NoticeKind, string> = {
-  loading: 'M12 7v5l3 2',
-  empty: 'M8 12h8',
-  notice: 'M12 7v6M12 16v1',
-}
-
 const MAP_RESOURCE_LABEL: Record<MapResourceState, string> = {
   starting: 'Starting',
   current: 'Current',
@@ -237,7 +231,7 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
       <header className="home-geo-heading">
         <div className="home-geo-actions">
           <button ref={informationTrigger} type="button" className="home-geo-icon" title="Map information" aria-label="Map information" aria-haspopup="dialog" aria-expanded={informationOpen} aria-controls={informationId} onClick={() => { setInformationSource('information'); clearActive(); setInformationOpen((current) => !current) }}>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7v1" /></svg>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><circle cx="12" cy="8.1" r="1.2" fill="currentColor" stroke="none" /><path d="M12 11.6v5.2" /></svg>
           </button>
           <button type="button" className="home-geo-icon" title={expanded ? 'Collapse map' : 'Show full map'} data-tooltip={expanded ? 'Collapse map' : 'Show full map'} aria-label={expanded ? 'Collapse map' : 'Show full map'} aria-expanded={expanded} aria-controls={canvasId} disabled={!geometryReady && !expanded} onClick={() => { clearActive(); setExpanded((current) => !current) }}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M4 9h5V4M20 9h-5V4M4 15h5v5M20 15h-5v5' : 'M9 4H4v5M15 4h5v5M4 15v5h5M20 15v5h-5'} /></svg>
@@ -246,8 +240,10 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
       </header>
       {notice && <div className="home-geo-notice">
         <span className="sr-only" role="status">{notice}</span>
-        <button ref={statusTrigger} type="button" className="home-geo-icon" aria-label={'Map status: ' + notice} aria-haspopup="dialog" aria-expanded={informationOpen && informationSource === 'status'} aria-controls={informationId} onClick={() => { setInformationSource('status'); clearActive(); setInformationOpen(true) }}>
-          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d={noticeKind ? NOTICE_ICON[noticeKind] : NOTICE_ICON.notice} /></svg>
+        <button ref={statusTrigger} type="button" className="home-geo-icon home-geo-status" aria-label={'Map status: ' + notice} title={notice} aria-haspopup="dialog" aria-expanded={informationOpen && informationSource === 'status'} aria-controls={informationId} onClick={() => { setInformationSource('status'); clearActive(); setInformationOpen(true) }}>
+          {/* One quiet status dot, never a second warning glyph: the reason and
+              the next step live in the disclosure this control opens. */}
+          <svg viewBox="0 0 24 24" aria-hidden="true" data-kind={noticeKind ?? 'notice'}><circle className="home-geo-status-ring" cx="12" cy="12" r="7.5" /><circle className="home-geo-status-core" cx="12" cy="12" r="3" fill="currentColor" stroke="none" /></svg>
         </button>
       </div>}
       <div ref={canvas} className="home-geo-canvas" id={canvasId} data-expanded={expanded} style={bounds ? { aspectRatio: `${bounds.right - bounds.left} / ${bounds.bottom - bounds.top}` } : undefined}>
@@ -405,13 +401,6 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
           {overview.attribution && <p>{overview.attribution} <GeoCreditLinks attribution={overview.attribution} /></p>}
         </MapInformation>
       )}
-      {(geometryReady || overview.attribution) && (
-        <p className="home-geo-credit">
-          {geometryReady && 'Natural Earth'}
-          {geometryReady && overview.attribution && ' · '}
-          {overview.attribution && <GeoCreditLinks attribution={overview.attribution} compact />}
-        </p>
-      )}
     </section>
   )
 }
@@ -431,13 +420,13 @@ function markerText(count: number): string {
   return millions < 1_000 ? millions + 'M' : '999M'
 }
 
-/** Keep the Server's complete attribution above; these are only its compact
- * linked credits, never a substitute attribution for a different Provider. */
-function GeoCreditLinks({ attribution, compact = false }: { attribution: string; compact?: boolean }) {
+/** Keep the Server's complete attribution above; these are only its linked
+ * credits, never a substitute attribution for a different Provider. */
+function GeoCreditLinks({ attribution }: { attribution: string }) {
   const sources = [
     { name: 'GeoJS', label: 'GeoJS', url: 'https://get.geojs.io' },
     { name: 'MaxMind', label: 'GeoLite by MaxMind', url: 'https://www.maxmind.com' },
     { name: 'IPinfo', label: 'Powered by IPinfo', url: 'https://ipinfo.io' },
   ].filter((source) => attribution.includes(source.name))
-  return sources.length > 0 ? sources.map((source, index) => <span key={source.name}>{index > 0 && ' · '}{compact ? source.label : <a href={source.url}>{source.label}</a>}</span>) : <span>{attribution}</span>
+  return sources.length > 0 ? sources.map((source, index) => <span key={source.name}>{index > 0 && ' · '}<a href={source.url}>{source.label}</a></span>) : <span>{attribution}</span>
 }
