@@ -58,19 +58,24 @@ export default function HomeDashboard({
     <section className="page home-dashboard" aria-label="Home">
       {error && <p className="dashboard-error" role="alert">{error}</p>}
       {loading && <p role="status">Starting Home…</p>}
-      <p className={`dashboard-live dashboard-live-${realtimeTone(realtimeStatus)}`} role="status" aria-live="polite"><span aria-hidden="true" /> {realtimeStreamLabel(realtimeStatus)}</p>
-      {!online && <p className="dashboard-live dashboard-live-warning" role="status" aria-live="polite"><span aria-hidden="true" /> You are offline</p>}
-
-      <div className="home-overview">
-        <div className="home-overview-stats dashboard-summary-grid" aria-label="Home summary">
-          <SummaryCard label="Active Nodes" value={hasProjection ? records.length : null} tone="indigo" />
-          <SummaryCard label="Healthy Nodes" value={healthyCount} tone="green" />
-          <SummaryCard label="Attention" value={healthyCount === null ? null : records.length - healthyCount} tone={healthyCount !== null && records.length === healthyCount ? 'green' : 'red'} />
-          <SummaryCard label="Networks" value={hasProjection ? networks.length : null} tone="violet" />
-        </div>
+      {/* The map is the page's own top band: it starts at the very top of the
+          content, so the transparent logo bar floats over it and it reads as
+          part of the background rather than as a card. The summary sits on top
+          of it on a wide screen and beneath it on a narrow one. */}
+      <div className="home-stage">
         <GeoMapBoundary>
           <GeoWorldMap networks={networks} networkFilter={networkFilter} loading={loading} hasProjection={hasProjection} />
         </GeoMapBoundary>
+        <div className="home-stage-content">
+          <p className={`dashboard-live dashboard-live-${realtimeTone(realtimeStatus)}`} role="status" aria-live="polite"><span aria-hidden="true" /> {realtimeStreamLabel(realtimeStatus)}</p>
+          {!online && <p className="dashboard-live dashboard-live-warning" role="status" aria-live="polite"><span aria-hidden="true" /> You are offline</p>}
+          <div className="home-overview-stats dashboard-summary-grid" aria-label="Home summary">
+            <SummaryCard label="Active Nodes" value={hasProjection ? records.length : null} tone="indigo" />
+            <SummaryCard label="Healthy Nodes" value={healthyCount} tone="green" />
+            <SummaryCard label="Attention" value={healthyCount === null ? null : records.length - healthyCount} tone={healthyCount !== null && records.length === healthyCount ? 'green' : 'red'} />
+            <SummaryCard label="Networks" value={hasProjection ? networks.length : null} tone="violet" />
+          </div>
+        </div>
       </div>
 
       <div className="dashboard-toolbar" aria-label="Node filters and sorting">

@@ -229,6 +229,9 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
             </g>
             <g className="home-geo-observed" aria-hidden="true">
               {observed.map((country) => <path key={country.code} d={country.path}
+                // The active class is shared with the marker, so pointing at or
+                // focusing a quantity also lights the country it belongs to.
+                className={activeCountryCode === country.code ? 'home-geo-country-active' : undefined}
                 onMouseEnter={(event) => { if (!pinned) showCountry(country.code, event.currentTarget, false) }}
                 onMouseLeave={() => { if (!pinned) clearActive() }}
                 onClick={(event) => showCountry(country.code, event.currentTarget, lastPointerType.current !== 'mouse')}
@@ -255,8 +258,12 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
                   }}
                 >
                   <circle className="home-geo-marker-hit" cx="0" cy="0" r="12" />
-                  <circle className="home-geo-marker-dot" cx="0" cy="0" r={numbered.has(country.code) ? markerRadius(country.count) : 3.5} />
-                  {numbered.has(country.code) && <text className="home-geo-marker-label" x="0" y="0">{markerText(country.count)}</text>}
+                  {/* Wrapped so the hover emphasis can scale the marker about its
+                      own centre without touching the placement transform. */}
+                  <g className="home-geo-marker-body">
+                    <circle className="home-geo-marker-dot" cx="0" cy="0" r={numbered.has(country.code) ? markerRadius(country.count) : 3.5} />
+                    {numbered.has(country.code) && <text className="home-geo-marker-label" x="0" y="0">{markerText(country.count)}</text>}
+                  </g>
                 </g>
               ))}
             </g>

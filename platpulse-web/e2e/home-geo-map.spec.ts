@@ -332,8 +332,8 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     }
   })
 
-  test('composes 2x2 global statistics beside a transparent country map on desktop', async ({ page }, testInfo) => {
-    test.skip(test.info().project.name !== 'desktop-1280', 'the desktop project owns the two-column overview')
+  test('composes 2x2 global statistics over a transparent map band on desktop', async ({ page }, testInfo) => {
+    test.skip(test.info().project.name !== 'desktop-1280', 'the desktop project owns the overlaid composition')
     await openHomeWithGeo(page)
 
     const map = page.getByRole('region', { name: 'Peer countries' })
@@ -342,10 +342,44 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     expect(facts).toHaveLength(4)
     const statsBox = unionBox(facts.map((fact) => fact.box))
     const mapBox = (await map.boundingBox())!
+    const headerBox = (await page.locator('.app-header').boundingBox())!
 
-    // Two columns: the statistics sit left of the map and share its top edge.
-    expect(mapBox.x).toBeGreaterThanOrEqual(statsBox.x + statsBox.width - 1)
-    expect(Math.abs(mapBox.y - statsBox.y)).toBeLessThanOrEqual(2)
+    // The map band is the page's top layer: it starts at the very top, so the
+    // transparent logo bar floats over it.
+    expect(mapBox.y, 'the map reaches the top of the page').toBeLessThanOrEqual(1)
+    expect(mapBox.y, 'the map runs behind the logo bar').toBeLessThanOrEqual(headerBox.y)
+    expect(mapBox.y + mapBox.height).toBeGreaterThan(headerBox.y + headerBox.height)
+    // The logo bar paints no surface of its own, so the map reads through it.
+    const header = await page.locator('.app-header').evaluate((element) => {
+      const style = getComputedStyle(element)
+      return { backgroundColor: style.backgroundColor, borderBottomColor: style.borderBottomColor, boxShadow: style.boxShadow }
+    })
+    expect(header.backgroundColor).toMatch(/rgba\(0, 0, 0, 0\)|transparent/)
+    expect(header.borderBottomColor).toMatch(/rgba\(0, 0, 0, 0\)|transparent/)
+    expect(header.boxShadow).toBe('none')
+    // It must not intercept the map underneath; only its own controls do.
+    expect(await page.locator('.app-header').evaluate((element) => getComputedStyle(element).pointerEvents)).toBe('none')
+    const topStrip = await page.evaluate(({ map, header }) => {
+      const x = Math.round(map.x + map.width * 0.5)
+      const probe = document.elementFromPoint(x, Math.round(header.height / 2))
+      return probe?.closest('svg[role="img"]') ? 'map' : 'other'
+    }, { map: mapBox, header: headerBox })
+    expect(topStrip, 'the map receives pointers in the strip the header floats over').toBe('map')
+
+    // The map's own control sits clear of the brand and the Admin link.
+    const expandBox = (await map.getByRole('button', { name: 'Show full map' }).boundingBox())!
+    const adminBox = (await page.locator('.admin-icon-link').boundingBox())!
+    const overlaps = expandBox.x < adminBox.x + adminBox.width && expandBox.x + expandBox.width > adminBox.x
+      && expandBox.y < adminBox.y + adminBox.height && expandBox.y + expandBox.height > adminBox.y
+    expect(overlaps, 'the expand control never collides with the Admin link').toBe(false)
+
+    // The summary overlays the map band's left edge, clear of the logo bar, and
+    // the map still runs out to the right of it.
+    const intersects = statsBox.x < mapBox.x + mapBox.width && mapBox.x < statsBox.x + statsBox.width
+      && statsBox.y < mapBox.y + mapBox.height && mapBox.y < statsBox.y + statsBox.height
+    expect(intersects, 'the summary sits over the map band').toBe(true)
+    expect(statsBox.y, 'the summary clears the floating logo bar').toBeGreaterThanOrEqual(headerBox.height - 1)
+    expect(mapBox.x + mapBox.width, 'the map reaches the summary’s right edge').toBeGreaterThan(statsBox.x + statsBox.width)
     const columns = new Set(facts.map((fact) => Math.round(fact.box.x))).size
     expect(columns, 'the four statistics form a 2x2 grid').toBe(2)
 
@@ -418,41 +452,44 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     await expect.poll(async () => (await worldBox(page)).width).toBeGreaterThan(desktopWorld.width)
     await expectNoHorizontalOverflow(page)
 
-    // Expanding must not orphan half a row: the four statistics become one
-    // full-width row, and the map takes the whole row beneath them. The pointer
-    // is parked first, because a hovered card lifts by 2px.
+    // Expanding widens the band to the whole content width; the summary keeps
+    // its 2x2 overlay over the band's left edge, so no half-row is orphaned and
+    // nothing is pushed down. The pointer is parked first, because a hovered
+    // card lifts by 2px.
     await page.mouse.move(4, 4)
     await page.waitForTimeout(250)
     const expandedLayout = await page.evaluate(() => {
-      const stats = document.querySelector('.home-overview-stats')!
-      const cards = [...document.querySelectorAll<HTMLElement>('.dashboard-summary-card')]
-      const map = document.querySelector('.home-geo')!
-      const boxes = cards.map(card => card.getBoundingClientRect())
-      const firstTop = boxes[0].top
+      const facts = [...document.querySelectorAll<HTMLElement>('.dashboard-summary-card')].map(card => card.getBoundingClientRect())
+      const map = document.querySelector('.home-geo')!.getBoundingClientRect()
+      const mapStillCoversSummary = facts.every(fact =>
+        fact.left < map.right && map.left < fact.right && fact.top < map.bottom && map.top < fact.bottom)
       return {
-        inFirstRow: boxes.filter(box => Math.abs(box.top - firstTop) <= 4).length,
-        columns: new Set(boxes.map(box => Math.round(box.left))).size,
-        cards: boxes.length,
-        statsSpan: Math.round(stats.getBoundingClientRect().width),
-        mapSpan: Math.round(map.getBoundingClientRect().width),
-        mapTop: Math.round(map.getBoundingClientRect().top),
-        lowestCard: Math.round(Math.max(...boxes.map(box => box.bottom))),
+        cards: facts.length,
+        rows: new Set(facts.map(fact => Math.round(fact.top))).size,
+        columns: new Set(facts.map(fact => Math.round(fact.left))).size,
+        mapSpan: Math.round(map.width),
+        mapStillCoversSummary,
       }
     })
     expect(expandedLayout.cards, 'all four statistics are laid out').toBe(4)
-    expect(expandedLayout.inFirstRow, 'statistics sit in one row while expanded').toBe(4)
-    expect(expandedLayout.columns, 'each statistic keeps its own column').toBe(4)
-    expect(expandedLayout.statsSpan, 'statistics fill the row').toBe(expandedLayout.mapSpan)
-    expect(expandedLayout.mapTop, 'the map follows the statistics row').toBeGreaterThanOrEqual(expandedLayout.lowestCard)
+    expect(expandedLayout.rows, 'statistics keep their 2x2 shape').toBe(2)
+    expect(expandedLayout.columns, 'statistics keep their two columns').toBe(2)
+    expect(expandedLayout.mapSpan, 'the expanded band spans the full content width').toBeGreaterThan(desktopWorld.width)
+    expect(expandedLayout.mapStillCoversSummary, 'the summary still overlays the expanded band').toBe(true)
     await capture(page, testInfo, 'home-1280-expanded')
     await page.getByRole('button', { name: 'Collapse map' }).click()
 
     await page.setViewportSize({ width: 1440, height: 900 })
     await expectNoHorizontalOverflow(page)
-    const wideOverview = await overviewBox(page)
-    const wideShare = (await summaryFacts(page)).reduce((total, fact) => total + fact.box.width, 0) / 2 / wideOverview.width
-    expect(wideShare, '1440x900 statistics share').toBeGreaterThanOrEqual(0.46)
-    expect(wideShare, '1440x900 statistics share').toBeLessThanOrEqual(0.49)
+    // The summary is a fixed-width overlay (at most 32rem), not a grid fraction:
+    // it must stay readable at the wide viewport and keep sitting over the band.
+    const wideFacts = await summaryFacts(page)
+    const wideStats = unionBox(wideFacts.map((fact) => fact.box))
+    const wideMap = (await map.boundingBox())!
+    expect(wideStats.width, 'the summary keeps its own column width').toBeLessThanOrEqual(32 * 16 + 2)
+    expect(wideStats.width, 'the summary is not squeezed').toBeGreaterThanOrEqual(20 * 16)
+    expect(wideStats.x < wideMap.x + wideMap.width && wideMap.x < wideStats.x + wideStats.width,
+      'the summary still overlays the wide band').toBe(true)
     await capture(page, testInfo, 'home-1440-compact')
     await page.setViewportSize({ width: 1280, height: 800 })
 
@@ -478,12 +515,18 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     await expect(map.getByRole('img', { name: 'Peer countries map' })).toBeVisible({ timeout: 30_000 })
     await expect(map.getByRole('status')).toHaveCount(0)
     const routineSvg = (await map.getByRole('img', { name: 'Peer countries map' }).boundingBox())!
-    expect(routineSvg.height).toBeGreaterThanOrEqual(206)
+    const routineViewBox = (await map.getByRole('img', { name: 'Peer countries map' }).getAttribute('viewBox'))!.split(/\s+/).map(Number)
+    // A routine Current projection dedicates its height to the map. The band is
+    // now the page's own top band rather than a chart box, so it is larger than
+    // the old 220-260px canvas, and its box must still match its own viewBox
+    // ratio: no stretch, no letterboxing.
+    expect(routineSvg.height, 'the band is a real top band').toBeGreaterThanOrEqual(220)
+    expect(routineSvg.height / routineSvg.width, 'no vertical stretch').toBeCloseTo(routineViewBox[3] / routineViewBox[2], 3)
     expect((await worldBox(page)).height, 'actual world grows beyond the old 136px map').toBeGreaterThan(200)
-    expect(routineSvg.height).toBeLessThanOrEqual(260)
     const compactOverview = await overviewBox(page)
-    expect(compactOverview.height, 'routine overview start').toBeGreaterThanOrEqual(240)
-    expect(compactOverview.height, 'routine overview start').toBeLessThanOrEqual(280)
+    expect(compactOverview.height, 'the band drives the overview height').toBeGreaterThanOrEqual(routineSvg.height - 1)
+    const toolbarTop = (await page.getByRole('group', { name: 'Network filter' }).boundingBox())!.y
+    expect(routineSvg.y + routineSvg.height, 'the band never covers the toolbar').toBeLessThanOrEqual(toolbarTop + 1)
   })
 
   test('stacks the statistics over a compact, expandable map on narrow screens', async ({ page }) => {
@@ -498,8 +541,16 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     const facts = await summaryFacts(page)
     const stats = unionBox(facts.map((fact) => fact.box))
     const mapBox = (await map.boundingBox())!
-    // No room for two columns: the map sits below the 2x2 statistics.
-    expect(mapBox.y).toBeGreaterThanOrEqual(stats.y + stats.height - 1)
+    const headerBox = (await page.locator('.app-header').boundingBox())!
+
+    // No room to overlay: the map band comes first, above the statistics and
+    // the Node cards, and still runs behind the floating logo bar.
+    expect(mapBox.y, 'the map is the first thing on the page').toBeLessThanOrEqual(1)
+    expect(mapBox.y + mapBox.height, 'the map sits above the statistics').toBeLessThanOrEqual(stats.y + 1)
+    const firstCard = (await page.locator('.dashboard-node-card').first().boundingBox())!
+    expect(mapBox.y, 'the map sits above the Node cards').toBeLessThan(firstCard.y)
+    expect(mapBox.y, 'the map runs behind the logo bar').toBeLessThanOrEqual(headerBox.y)
+    expect(mapBox.y + mapBox.height).toBeGreaterThan(headerBox.y + headerBox.height)
 
     // No stretch and no letterboxing: the rendered box must match the SVG's own
     // viewBox ratio, and that viewBox must still contain the whole world
@@ -528,13 +579,21 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     await expect(map.getByRole('button', { name: 'Show full map' })).toHaveAttribute('aria-expanded', 'false')
     await expect.poll(async () => Math.round((await canvas.boundingBox())!.height)).toBeLessThanOrEqual(Math.round(compact.height) + 2)
 
-    // The country's exact quantity stays reachable on the compact map.
+    // The compact map stays interactive: pointing at a quantity marker also
+    // lights the country it belongs to, and opens its exact count.
     const marker = map.locator('g[role="button"]').first()
     const label = await marker.getAttribute('aria-label')
     await marker.focus()
     await marker.press('Enter')
     await expect(map.getByRole('tooltip')).toHaveText(label!)
     await marker.press('Escape')
+    const markerBox = (await marker.boundingBox())!
+    await page.mouse.move(markerBox.x + markerBox.width / 2, markerBox.y + markerBox.height / 2)
+    await expect.poll(async () => page.locator('.home-geo-observed path.home-geo-country-active').count())
+      .toBeGreaterThan(0)
+    const markerScale = await marker.locator('.home-geo-marker-body').evaluate((element) => getComputedStyle(element).transform)
+    expect(markerScale, 'the marker answers the pointer').not.toBe('none')
+    await page.mouse.move(4, Math.round(page.viewportSize()!.height - 4))
 
     await expectVisibleInteractiveTargets(page)
     await expectQuietMap(page)
@@ -561,9 +620,9 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     const mapBox = (await map.boundingBox())!
     expect(mapBox.x).toBeGreaterThanOrEqual(0)
     expect(mapBox.x + mapBox.width).toBeLessThanOrEqual(375)
-    // The compact map never covers the statistics above it.
+    // The compact map comes first, so it never covers the statistics below it.
     const stats = unionBox((await summaryFacts(page)).map((fact) => fact.box))
-    expect(mapBox.y).toBeGreaterThanOrEqual(stats.y + stats.height - 1)
+    expect(mapBox.y + mapBox.height, 'the map sits above the statistics').toBeLessThanOrEqual(stats.y + 1)
 
     await capture(page, testInfo, 'home-375-compact')
     await map.getByRole('button', { name: 'Show full map' }).click()
