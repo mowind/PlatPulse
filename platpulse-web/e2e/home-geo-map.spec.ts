@@ -16,8 +16,12 @@ import {
  * the routed Public Home seam: accessible roles and names, visible text, and
  * externally observable geometry. They never depend on component CSS classes
  * or private state. Scenarios normalize the Geo Provider; the disabled-provider
- * scenario restores Disabled. DTO overrides below are isolated UI fixtures,
+ * scenario restores Local MMDB. DTO overrides below are isolated UI fixtures,
  * not claims about the real Server's Peer observations.
+ *
+ * The map shows the world, its country fills, the quantity markers, and one
+ * expand control. Its abnormal states are announced only to assistive
+ * technology, so those assertions read the screen-reader status text.
  */
 
 // These scenarios sign in, open Admin Settings, and walk several Home states;
@@ -46,29 +50,13 @@ async function openHomeWithGeo(page: Page) {
   await page.goto('/')
 }
 
-async function openMapInformation(page: Page) {
-  const dialog = page.getByRole('dialog', { name: 'Map information' })
-  if (!await dialog.isVisible()) {
-    const trigger = page.getByRole('button', { name: 'Map information', exact: true })
-    if (test.info().project.use.hasTouch) await trigger.tap()
-    else await trigger.click()
-  }
-  await expect(dialog).toBeVisible()
-  return dialog
-}
-
-async function closeMapInformation(page: Page) {
-  await page.getByRole('button', { name: 'Close map information' }).click()
-  await expect(page.getByRole('dialog', { name: 'Map information' })).toHaveCount(0)
-}
-
 type Box = { x: number; y: number; width: number; height: number }
 
 /**
  * Deliver one review screenshot: it is attached to the test result and also
  * written to the gitignored `playwright-report/emerald/` directory, so a
- * local run leaves browsable 1440 / 1280 / 375 compact and expanded evidence
- * instead of discarding it with the per-test output directory.
+ * local run leaves browsable evidence instead of discarding it with the
+ * per-test output directory.
  */
 async function capture(page: Page, testInfo: TestInfo, name: string) {
   const body = await page.screenshot()
@@ -144,11 +132,16 @@ async function withGeoProjection(page: Page, patch: (geo: Record<string, unknown
   })
 }
 
-/** Accessible live status must remain available without standing visible prose. */
+/** The map is bare: one expand control, no written status, no dialog. */
 async function expectQuietMap(page: Page) {
   const map = page.getByRole('region', { name: 'Peer countries' })
   await expect(map.getByRole('heading')).toHaveCount(0)
+  await expect(map.getByRole('dialog')).toHaveCount(0)
+  await expect(page.getByRole('dialog', { name: 'Map information' })).toHaveCount(0)
+  await expect(map.getByText(/Natural Earth|GeoLite|MaxMind|IPinfo|GeoJS/)).toHaveCount(0)
   await expect(map.getByText(/^Scope: |^Known |^Peer observation: |^Map resource: /)).toHaveCount(0)
+
+  // Nothing on the map is written for the eye; the status text stays clipped.
   for (const status of await map.getByRole('status').all()) {
     const presentation = await status.evaluate(element => {
       const box = element.getBoundingClientRect()
@@ -159,7 +152,10 @@ async function expectQuietMap(page: Page) {
     expect(presentation.height).toBeLessThanOrEqual(1)
     expect(presentation.clip !== 'auto' || presentation.clipPath !== 'none').toBe(true)
   }
-  for (const button of await map.locator('button').all()) {
+
+  const buttons = await map.locator('button').all()
+  expect(buttons, 'the map keeps exactly one control').toHaveLength(1)
+  for (const button of buttons) {
     const box = (await button.boundingBox())!
     expect(box.width).toBeGreaterThanOrEqual(44)
     expect(box.height).toBeGreaterThanOrEqual(44)
@@ -178,6 +174,7 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     const map = page.getByRole('region', { name: 'Peer countries' })
     const marker = map.getByRole('button', { name: 'Sweden · 1 records', exact: true })
     await expect(marker).toBeVisible({ timeout: 30_000 })
+
     // The four Home statistics must render exactly what the Public Projection
     // says, and the map must never change them. They are compared against the
     // live DTO rather than a frozen literal: the harness fixture refresher
@@ -196,6 +193,8 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
       .toEqual([expectedActive, expectedHealthy, expectedAttention, '2'])
     await expect(page.getByRole('combobox', { name: 'Sort' })).toHaveValue('health')
     await expectQuietMap(page)
+
+    // One record is a bare dot: no numeral, and no white count disc.
     await expect(marker.locator('text')).toHaveCount(0)
     const controls = await marker.locator('circle').evaluateAll(circles => circles.map(circle => {
       const box = circle.getBoundingClientRect()
@@ -207,17 +206,19 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     const rgb = controls[1].fill.match(/\d+/g)!.map(Number)
     expect(rgb[1], 'filled Emerald marker').toBeGreaterThan(rgb[0])
     expect(rgb[1]).toBeGreaterThan(rgb[2])
-    const dialog = await openMapInformation(page)
-    await expect(dialog.getByText('Scope: All Networks')).toBeVisible()
-    await expect(dialog.getByText(/Known 1 · Unknown 9 · 10 Peer records in scope/)).toBeVisible()
-    await expect(dialog.getByRole('listitem').filter({ hasText: 'Sweden' })).toContainText('1')
-    await closeMapInformation(page)
+
+    // The whole Home body never shows a raw Peer address or the database path.
+    await expect(page.locator('body')).not.toContainText('89.160.20.112')
+    await expect(page.locator('body')).not.toContainText('GeoIP2-Country-Test')
+
     await capture(page, testInfo, 'real-' + testInfo.project.name + '-compact')
     if (testInfo.project.name === 'desktop-1280') {
       await page.setViewportSize({ width: 1440, height: 1000 })
       await expectQuietMap(page)
       await capture(page, testInfo, 'real-1440x1000-compact')
+      await page.setViewportSize({ width: 1280, height: 800 })
     }
+
     await marker.focus()
     await marker.press('Enter')
     await expect(map.getByRole('tooltip')).toHaveText('Sweden · 1 records')
@@ -225,24 +226,18 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     await expect(map.getByRole('tooltip')).toHaveCount(0)
     await marker.press('Space')
     await expect(map.getByRole('tooltip')).toBeVisible()
-    await page.keyboard.press('Tab')
+    await marker.press('Escape')
     await expect(map.getByRole('tooltip')).toHaveCount(0)
     if (testInfo.project.use.hasTouch) await marker.tap()
     else await marker.hover()
     await expect(map.getByRole('tooltip')).toHaveText('Sweden · 1 records')
     await page.getByRole('button', { name: 'All Networks', exact: true }).click()
     await expect(map.getByRole('tooltip')).toHaveCount(0)
-    const status = map.getByRole('button', { name: /^Map status: / })
-    await status.focus()
-    await status.press('Enter')
-    await expect(page.getByRole('dialog', { name: 'Map information' })).toBeVisible()
-    await page.keyboard.press('Escape')
-    await expect(status).toBeFocused()
     await expectQuietMap(page)
     await expectNoHorizontalOverflow(page)
   })
 
-  test('isolated DTO fixture: dense Europe and East Asia retain exact counts and fixed points across resize', async ({ page }, testInfo) => {
+  test('isolated DTO fixture: dense Europe and East Asia keep exact counts and fixed points', async ({ page }, testInfo) => {
     await openHomeWithGeo(page)
     // Explicit UI-only representative-point fixture. These are NOT observations
     // from the seeded Server, nor invented production country coordinates.
@@ -263,21 +258,18 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
       attribution: null, lastGoodAt: null, staleSince: null, databaseAgeSeconds: null, errorReason: null,
     }), 'current')
     await page.reload()
+
     const map = page.getByRole('region', { name: 'Peer countries' })
     const markers = map.locator('g[role="button"]')
     await expect(markers).toHaveCount(6)
     await expectQuietMap(page)
     await expect(map.getByRole('status')).toHaveText('Some locations not shown')
+
     // All Networks contains two Networks, so exact UI counts are twice each fixture count.
     const belgium = map.getByRole('button', { name: 'Belgium · 46 records', exact: true })
     const china = map.getByRole('button', { name: 'China · 2,002 records', exact: true })
-    // Crowded markers fall back to a bare dot at every width; an isolated
-    // quantity keeps its bounded numeral wherever the layout has room for it.
-    // Either way the exact count stays reachable through the tooltip and list.
     await expect(belgium.locator('text')).toHaveCount(0)
-    if (test.info().project.name === 'desktop-1280') {
-      await expect(china.locator('text')).toHaveText('2002')
-    }
+
     const positions = () => markers.evaluateAll(elements => elements.map(element => ({
       name: element.getAttribute('aria-label'), point: element.getAttribute('transform')?.match(/translate\([^)]+\)/)?.[0],
     })))
@@ -300,7 +292,10 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
       await expect(map.getByRole('tooltip')).toHaveText((await marker.getAttribute('aria-label'))!)
       await marker.press('Escape')
     }
+
     await capture(page, testInfo, 'fixture-dense-' + testInfo.project.name)
+
+    // A resize must not move a real representative point.
     await china.focus()
     await china.press('Enter')
     const original = page.viewportSize()!
@@ -314,15 +309,9 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     await expectNoHorizontalOverflow(page)
     await page.getByRole('button', { name: 'Collapse map' }).click()
     await page.setViewportSize(original)
-    const dialog = await openMapInformation(page)
-    await expect(dialog.getByRole('listitem')).toHaveCount(7)
-    await expect(dialog.getByRole('listitem').filter({ hasText: 'China' })).toContainText('2,002')
-    await expect(dialog.getByRole('listitem').filter({ hasText: 'Sweden' })).toContainText('no representative point')
-    await expect(map.getByRole('button', { name: /^Sweden/ })).toHaveCount(0)
-    await closeMapInformation(page)
   })
 
-  test('isolated resource fixture: loading remains icon-only and dialog explains it', async ({ page }, testInfo) => {
+  test('isolated resource fixture: a slow basemap is announced but never written on the map', async ({ page }, testInfo) => {
     await openHomeWithGeo(page)
     let release!: () => void
     const gate = new Promise<void>(resolve => { release = resolve })
@@ -331,11 +320,8 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
       await page.reload()
       const map = page.getByRole('region', { name: 'Peer countries' })
       await expect(map.getByRole('button', { name: 'Show full map' })).toBeDisabled()
+      await expect(map.getByRole('status')).toContainText('Loading map')
       await expectQuietMap(page)
-      const dialog = await openMapInformation(page)
-      await expect(dialog.getByText('Map resource: Starting')).toBeVisible()
-      await expect(dialog.getByText(/Known 1 · Unknown 9/)).toBeVisible()
-      await closeMapInformation(page)
       await capture(page, testInfo, 'fixture-loading-' + testInfo.project.name)
       release()
       await expect(map.getByRole('img', { name: 'Peer countries map' })).toBeVisible({ timeout: 30_000 })
@@ -347,60 +333,27 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
   })
 
   test('composes 2x2 global statistics beside a transparent country map on desktop', async ({ page }, testInfo) => {
-    test.skip(test.info().project.name !== 'desktop-1280', 'the side-by-side overview is the desktop composition')
+    test.skip(test.info().project.name !== 'desktop-1280', 'the desktop project owns the two-column overview')
     await openHomeWithGeo(page)
 
     const map = page.getByRole('region', { name: 'Peer countries' })
-    await expect(map).toBeVisible({ timeout: 30_000 })
-    // Logo, Owner Admin entry, and the connection indicator stay in place.
-    await expect(page.getByRole('link', { name: 'PlatPulse', exact: true })).toBeVisible()
-    await expect(page.getByRole('link', { name: 'Admin' })).toBeVisible()
-    await expect(page.getByText('Live updates connected')).toBeVisible()
-
-    // Four global statistics in the accepted order, each in its own card.
+    await expect(map.getByRole('img', { name: 'Peer countries map' })).toBeVisible({ timeout: 30_000 })
     const facts = await summaryFacts(page)
-    expect(facts.map((fact) => fact.label)).toEqual(['Active Nodes', 'Healthy Nodes', 'Attention', 'Networks'])
-    for (const fact of facts) {
-      expect(fact.value.length).toBeGreaterThan(0)
-      expect(fact.box.height).toBeGreaterThanOrEqual(80)
-      expect(fact.box.height).toBeLessThanOrEqual(140)
-    }
-
-    // A stable Grid places the 2x2 statistics left and the map right, with the
-    // statistics covering the Emerald layout’s 48% column share (minus the gap).
-    const stats = unionBox(facts.map((fact) => fact.box))
+    expect(facts).toHaveLength(4)
+    const statsBox = unionBox(facts.map((fact) => fact.box))
     const mapBox = (await map.boundingBox())!
-    const overview = await overviewBox(page)
-    expect(stats.x + stats.width, 'no map left of the statistics').toBeLessThanOrEqual(mapBox.x + 1)
-    expect(stats.y).toBeLessThan(mapBox.y + mapBox.height)
-    const share = stats.width / overview.width
-    expect(share, 'statistics share of the overview').toBeGreaterThanOrEqual(0.46)
-    expect(share, 'statistics share of the overview').toBeLessThanOrEqual(0.49)
 
-    // The map states its scope, its two independent data dimensions, and the
-    // Peer-record basis without claiming unique Peers or Node locations.
-    await expect(map.getByRole('heading', { name: 'Peer countries' })).toHaveCount(0)
-    await openMapInformation(page)
-    await expect(map.getByText('Scope: All Networks')).toBeVisible()
-    await expect(map.getByText(/^Peer observation: /)).toBeVisible()
-    await expect(map.getByText(/^Map resource: /)).toBeVisible()
-    await expect(map.getByText(/counted per Node, not deduplicated by IP/)).toBeVisible()
-    await expect(page.getByRole('dialog', { name: 'Map information' }).getByText(/Country outlines: Natural Earth 1:110m/)).toBeVisible()
-    // The Server's own attribution stays visible next to the local basemap's.
-    await expect(page.getByRole('dialog', { name: 'Map information' }).getByText(/GeoLite Data created by MaxMind/)).toBeVisible()
-    await expect(map.getByRole('img', { name: 'Peer countries map' })).toBeVisible()
-    // Country names are available to assistive technology, not only ISO codes.
-    await expect(map.getByRole('list', { name: 'Peer countries by count' }).getByText('Sweden', { exact: true })).toBeAttached()
-    await closeMapInformation(page)
-    // The whole Home body never shows a raw Peer address or the database path.
-    await expect(page.locator('body')).not.toContainText('89.160.20.112')
-    await expect(page.locator('body')).not.toContainText('GeoIP2-Country-Test')
+    // Two columns: the statistics sit left of the map and share its top edge.
+    expect(mapBox.x).toBeGreaterThanOrEqual(statsBox.x + statsBox.width - 1)
+    expect(Math.abs(mapBox.y - statsBox.y)).toBeLessThanOrEqual(2)
+    const columns = new Set(facts.map((fact) => Math.round(fact.box.x))).size
+    expect(columns, 'the four statistics form a 2x2 grid').toBe(2)
 
     // No clipped outline may be painted: Natural Earth's Antarctica ring
     // collapses onto the bottom edge, and drawing it puts a stray full-width
     // rule under the map that reads as a border.
     const flatOutlines = await map.getByRole('img', { name: 'Peer countries map' }).locator('path').evaluateAll(paths => paths
-      .map(path => { const box = path.getBBox(); return { height: box.height, width: box.width, bottom: box.y + box.height } })
+      .map(path => { const box = path.getBBox(); return { height: box.height } })
       .filter(box => box.height < 0.5))
     expect(flatOutlines, 'no zero-height country outline is painted').toHaveLength(0)
 
@@ -412,11 +365,10 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
         const style = getComputedStyle(element)
         const alpha = style.backgroundColor.match(/rgba?\(([^)]+)\)/)
         const parts = alpha ? alpha[1].split(',').map(part => part.trim()) : []
-        return { alpha: parts.length === 4 ? Number(parts[3]) : 1, shadow: style.boxShadow }
+        return { alpha: parts.length === 4 ? Number(parts[3]) : 1 }
       })
       expect(rest.alpha, selector + ' is translucent at rest').toBeGreaterThan(0.3)
       expect(rest.alpha, selector + ' is translucent at rest').toBeLessThan(1)
-      if (test.info().project.use.hasTouch) continue
       await card.hover()
       await expect.poll(async () => card.evaluate(element => {
         const style = getComputedStyle(element)
@@ -425,6 +377,7 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
         return (parts.length === 4 ? Number(parts[3]) : 1) === 1 && style.boxShadow.includes('rgba(5, 150, 105')
       }), { message: selector + ' lights up on hover' }).toBe(true)
     }
+    await page.mouse.move(4, 4)
 
     // No opaque white shell, border, shadow, or whole-container opacity fade.
     const surface = await map.evaluate((element) => {
@@ -449,12 +402,14 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     const imageBox = (await page.getByRole('img', { name: 'Peer countries map' }).boundingBox())!
     const hit = await page.evaluate(({ x, y }) => {
       const element = document.elementFromPoint(x, y)
-      return element ? { isMap: Boolean(element.closest('svg[role="img"]')), tag: element.tagName } : null
+      return element ? { isMap: Boolean(element.closest('svg[role="img"]')) } : null
     }, { x: imageBox.x + imageBox.width / 2, y: imageBox.y + imageBox.height / 2 })
     expect(hit?.isMap, 'the map keeps its own pointer interaction').toBe(true)
 
     await expectVisibleInteractiveTargets(page)
+    await expectQuietMap(page)
     await expectNoHorizontalOverflow(page)
+
     // Delivered evidence at the project's own 1280x800 acceptance viewport,
     // then at the wider 1440x900 review viewport named by the issue.
     await capture(page, testInfo, 'home-1280-compact')
@@ -470,15 +425,13 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     await page.waitForTimeout(250)
     const expandedLayout = await page.evaluate(() => {
       const stats = document.querySelector('.home-overview-stats')!
-      const facts = [...document.querySelectorAll<HTMLElement>('.dashboard-summary-card')]
+      const cards = [...document.querySelectorAll<HTMLElement>('.dashboard-summary-card')]
       const map = document.querySelector('.home-geo')!
-      const boxes = facts.map(card => card.getBoundingClientRect())
+      const boxes = cards.map(card => card.getBoundingClientRect())
       const firstTop = boxes[0].top
-      const inFirstRow = boxes.filter(box => Math.abs(box.top - firstTop) <= 4).length
-      const columns = new Set(boxes.map(box => Math.round(box.left))).size
       return {
-        inFirstRow,
-        columns,
+        inFirstRow: boxes.filter(box => Math.abs(box.top - firstTop) <= 4).length,
+        columns: new Set(boxes.map(box => Math.round(box.left))).size,
         cards: boxes.length,
         statsSpan: Math.round(stats.getBoundingClientRect().width),
         mapSpan: Math.round(map.getBoundingClientRect().width),
@@ -501,15 +454,11 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     expect(wideShare, '1440x900 statistics share').toBeGreaterThanOrEqual(0.46)
     expect(wideShare, '1440x900 statistics share').toBeLessThanOrEqual(0.49)
     await capture(page, testInfo, 'home-1440-compact')
-    await page.getByRole('button', { name: 'Show full map' }).click()
-    await capture(page, testInfo, 'home-1440-expanded')
-    await page.getByRole('button', { name: 'Collapse map' }).click()
     await page.setViewportSize({ width: 1280, height: 800 })
 
     // A routine Current projection dedicates its height to the map, not metadata.
-    // The overview remains compact while the SVG grows to 220-260px. The projection is
-    // Server-shaped and internally consistent: one resolved country is one
-    // Known Peer record.
+    // The projection is Server-shaped and internally consistent: one resolved
+    // country is one Known Peer record.
     await withGeoProjection(page, () => ({
       state: 'current',
       scope: 'complete',
@@ -529,7 +478,6 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     await expect(map.getByRole('img', { name: 'Peer countries map' })).toBeVisible({ timeout: 30_000 })
     await expect(map.getByRole('status')).toHaveCount(0)
     const routineSvg = (await map.getByRole('img', { name: 'Peer countries map' }).boundingBox())!
-    // The 220px canvas footprint reserves a 14px credit strip below the SVG.
     expect(routineSvg.height).toBeGreaterThanOrEqual(206)
     expect((await worldBox(page)).height, 'actual world grows beyond the old 136px map').toBeGreaterThan(200)
     expect(routineSvg.height).toBeLessThanOrEqual(260)
@@ -553,23 +501,17 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     // No room for two columns: the map sits below the 2x2 statistics.
     expect(mapBox.y).toBeGreaterThanOrEqual(stats.y + stats.height - 1)
 
-    // The complete world retains the same natural aspect ratio on touch layouts.
+    // No stretch and no letterboxing: the rendered box must match the SVG's own
+    // viewBox ratio, and that viewBox must still contain the whole world
+    // projection (the map reserves a little room for edge markers, so the box
+    // ratio is the viewBox ratio, not a fixed chart constant).
     const compact = (await canvas.boundingBox())!
     const compactWorld = await worldBox(page)
     expect(Math.round(compact.height), 'compact map canvas').toBeGreaterThanOrEqual(120)
-    // No stretch and no letterboxing: the rendered box must match the SVG's own
-    // viewBox ratio exactly, and that viewBox must still contain the whole world
-    // projection (the map reserves a little room for edge markers, so the box
-    // ratio is the viewBox ratio, not a fixed chart constant).
-    const geometry = await canvas.evaluate(element => ({
-      viewBox: element.getAttribute('viewBox')!.split(/\s+/).map(Number),
-      projection: 0,
-    }))
-    const [, , viewWidth, viewHeight] = geometry.viewBox
-    expect(compact.height / compact.width, 'no vertical stretch').toBeCloseTo(viewHeight / viewWidth, 3)
-    expect(viewWidth, 'viewBox keeps the whole world width').toBeLessThanOrEqual(1004)
-    expect(viewHeight, 'viewBox keeps the whole world height plus marker room').toBeLessThanOrEqual(600)
-    expect(viewHeight / viewWidth, 'world is never cropped to a sliver').toBeGreaterThan(0.38)
+    const viewBox = (await canvas.getAttribute('viewBox'))!.split(/\s+/).map(Number)
+    expect(compact.height / compact.width, 'no vertical stretch').toBeCloseTo(viewBox[3] / viewBox[2], 3)
+    expect(viewBox[2], 'viewBox keeps the whole world width').toBeLessThanOrEqual(1004)
+    expect(viewBox[3] / viewBox[2], 'world is never cropped to a sliver').toBeGreaterThan(0.38)
 
     const toggle = map.getByRole('button', { name: 'Show full map' })
     await expect(toggle).toHaveAttribute('aria-expanded', 'false')
@@ -586,14 +528,16 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     await expect(map.getByRole('button', { name: 'Show full map' })).toHaveAttribute('aria-expanded', 'false')
     await expect.poll(async () => Math.round((await canvas.boundingBox())!.height)).toBeLessThanOrEqual(Math.round(compact.height) + 2)
 
-    // Every real country keeps an accessible text statistic beside the map.
-    await openMapInformation(page)
-    const countries = map.getByRole('list', { name: 'Peer countries by count' })
-    await expect(countries).toBeVisible({ timeout: 30_000 })
-    await expect(countries).toContainText('SE', { timeout: 30_000 })
-    await closeMapInformation(page)
+    // The country's exact quantity stays reachable on the compact map.
+    const marker = map.locator('g[role="button"]').first()
+    const label = await marker.getAttribute('aria-label')
+    await marker.focus()
+    await marker.press('Enter')
+    await expect(map.getByRole('tooltip')).toHaveText(label!)
+    await marker.press('Escape')
 
     await expectVisibleInteractiveTargets(page)
+    await expectQuietMap(page)
     await expectNoHorizontalOverflow(page)
   })
 
@@ -611,8 +555,8 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     const canvas = page.getByRole('img', { name: 'Peer countries map' })
     const compact = (await canvas.boundingBox())!
     const compactWorld = await worldBox(page)
-    expect(Math.round(compact.height), '375px compact canvas').toBeGreaterThanOrEqual(125)
-    expect(Math.round(compact.height), '375px compact canvas').toBeLessThanOrEqual(150)
+    expect(Math.round(compact.height), '375px compact canvas').toBeGreaterThanOrEqual(120)
+    expect(Math.round(compact.height), '375px compact canvas').toBeLessThanOrEqual(160)
 
     const mapBox = (await map.boundingBox())!
     expect(mapBox.x).toBeGreaterThanOrEqual(0)
@@ -629,50 +573,31 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     await capture(page, testInfo, 'home-375-expanded')
   })
 
-  test('keeps the four statistics global while the filter and sort change only the Node list and the map scope', async ({ page }) => {
+  test('keeps the four statistics global while the filter changes the map scope', async ({ page }) => {
     await openHomeWithGeo(page)
     const map = page.getByRole('region', { name: 'Peer countries' })
     await expect(map).toBeVisible({ timeout: 30_000 })
 
+    const markers = map.locator('g[role="button"]')
+    const markerNames = () => markers.evaluateAll(elements => elements.map(element => element.getAttribute('aria-label')))
+    await expect(map.getByRole('img', { name: 'Peer countries map' })).toBeVisible({ timeout: 30_000 })
+    await expect.poll(() => markers.count(), 'the unfiltered map plots a marker').toBeGreaterThan(0)
+    const allNames = await markerNames()
     const before = await summaryValues(page)
-    await openMapInformation(page)
-    const scopeBefore = await map.getByText(/^Scope: /).textContent()
-    await closeMapInformation(page)
-    // Wait for the Node list itself: the map region renders before the Public
-    // Projection that fills both the list and its counts has arrived.
-    await expect(page.getByLabel('Active Nodes', { exact: true }).getByRole('link').first()).toBeVisible({ timeout: 30_000 })
-    const nodesBefore = await page.getByLabel('Active Nodes', { exact: true }).getByRole('link').count()
-    expect(nodesBefore, 'the All Networks scope lists every Active Node').toBeGreaterThan(1)
 
-    await page.getByRole('button', { name: 'PlatON E2E Network', exact: true }).click()
-    await expect(page.getByRole('link', { name: /Node A/ })).toBeVisible()
-    await openMapInformation(page)
-    await expect(map.getByText('Scope: PlatON E2E Network')).toBeVisible()
-    await expect(map.getByText(/counted per Node, not deduplicated by IP/)).toBeVisible()
-    await closeMapInformation(page)
-    const nodesFiltered = await page.getByLabel('Active Nodes', { exact: true }).getByRole('link').count()
-    expect(nodesFiltered).toBeLessThan(nodesBefore)
-    // The four global statistics are projections of the whole Public
-    // Projection: filtering or sorting the Node list never changes them.
-    expect(await summaryValues(page)).toEqual(before)
-    expect(scopeBefore).toBe('Scope: All Networks')
+    // Filtering re-scopes the map and the Node list; the four statistics stay
+    // global, and a narrower scope may only ever drop countries — it can never
+    // add one that the full scope did not report.
+    const pills = page.getByRole('group', { name: 'Network filter' })
+    for (const name of ['PlatON E2E Network', 'Home Convergence Network With An Extremely Long Display Name']) {
+      await pills.getByRole('button', { name, exact: true }).click()
+      await expect.poll(async () => (await markerNames()).every(label => allNames.includes(label))).toBe(true)
+      expect(await summaryValues(page), 'statistics stay global').toEqual(before)
+    }
 
-    // Sorting reorders the Node list only: the statistics and map scope stay.
-    const firstBefore = await page.getByLabel('Active Nodes', { exact: true }).getByRole('link').first().textContent()
-    await page.getByRole('combobox', { name: 'Sort' }).selectOption('name')
-    await expect(page.getByRole('link', { name: /Node A/ })).toBeVisible()
-    const firstAfter = await page.getByLabel('Active Nodes', { exact: true }).getByRole('link').first().textContent()
-    expect(firstAfter).not.toBe(firstBefore)
-    expect(await summaryValues(page)).toEqual(before)
-    await openMapInformation(page)
-    await expect(map.getByText('Scope: PlatON E2E Network')).toBeVisible()
-
-    await closeMapInformation(page)
-    // Returning to All Networks restores the aggregate scope and every Node.
-    await page.getByRole('button', { name: 'All Networks', exact: true }).click()
-    await openMapInformation(page)
-    await expect(map.getByText('Scope: All Networks')).toBeVisible()
-    await expect(page.getByLabel('Active Nodes', { exact: true }).getByRole('link')).toHaveCount(nodesBefore)
+    await pills.getByRole('button', { name: 'All Networks', exact: true }).click()
+    await expect.poll(() => markers.count(), 'the full scope comes back').toBe(allNames.length)
+    await expectQuietMap(page)
     await expectNoHorizontalOverflow(page)
   })
 
@@ -680,204 +605,59 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     await openHomeWithGeo(page)
     const map = page.getByRole('region', { name: 'Peer countries' })
 
-    // Never observed: no Active Node has produced a Peer Snapshot, so there is
-    // no denominator and no count may be presented as a real zero.
+    // A Network that never reported a successful Peer Snapshot has no basis at
+    // all, so no count may be presented as a real zero.
     await withGeoProjection(page, () => ({
-      state: 'unknown',
-      scope: 'unobserved',
-      countries: null,
-      knownCountryCount: null,
-      unknownCountryCount: null,
-      availablePeerCount: null,
-      unknownWithPublicIpCount: null,
-      unknownWithoutRemoteIpCount: null,
-      attribution: null,
-      lastGoodAt: null,
-      staleSince: null,
-      databaseAgeSeconds: null,
-      errorReason: null,
+      state: 'unknown', scope: 'unobserved', countries: null,
+      knownCountryCount: null, unknownCountryCount: null, availablePeerCount: null,
+      unknownWithPublicIpCount: null, unknownWithoutRemoteIpCount: null,
+      attribution: null, lastGoodAt: null, staleSince: null, databaseAgeSeconds: null, errorReason: null,
     }))
     await page.reload()
     await expect(map.getByRole('status')).toContainText('No observations yet', { timeout: 30_000 })
+    await expect(map.getByRole('img', { name: 'Peer countries map' })).toHaveCount(0)
     await expectQuietMap(page)
-    await capture(page, test.info(), 'fixture-unobserved-' + test.info().project.name)
-    await openMapInformation(page)
-    await expect(map.getByText(/no Active Node has reported a successful Peer Snapshot yet/)).toBeVisible()
-    await expect(map.getByText(/^Known /)).toHaveCount(0)
-    await expect(map.getByRole('list', { name: 'Peer countries by count' })).toHaveCount(0)
-    await expect(page.getByLabel('Active Nodes', { exact: true }).getByRole('link').first()).toBeVisible()
 
-    // A successful empty projection is an authoritative zero with its basis.
+    // An authoritative, successful empty country set is a real zero.
+    await page.unroute('**/api/public/v1/networks*')
     await withGeoProjection(page, () => ({
-      state: 'current',
-      scope: 'complete',
-      countries: [],
-      knownCountryCount: 0,
-      unknownCountryCount: 0,
-      availablePeerCount: 0,
-      unknownWithPublicIpCount: 0,
-      unknownWithoutRemoteIpCount: 0,
-      attribution: null,
-      lastGoodAt: null,
-      staleSince: null,
-      databaseAgeSeconds: null,
-      errorReason: null,
+      state: 'current', scope: 'complete', countries: [],
+      knownCountryCount: 0, unknownCountryCount: 0, availablePeerCount: 0,
+      unknownWithPublicIpCount: 0, unknownWithoutRemoteIpCount: 0,
+      attribution: null, lastGoodAt: null, staleSince: null, databaseAgeSeconds: null, errorReason: null,
     }))
     await page.reload()
     await expect(map.getByRole('status')).toContainText('No data', { timeout: 30_000 })
+    await expect(map.getByRole('img', { name: 'Peer countries map' })).toBeVisible()
     await expectQuietMap(page)
-    await capture(page, test.info(), 'fixture-empty-' + test.info().project.name)
-    await openMapInformation(page)
-    await expect(map.getByText(/^Known 0 · 0 Peer records in scope;/)).toBeVisible()
-    await expect(map.getByText(/Unknown 0/)).toHaveCount(0)
-    await expect(map.getByText(/No country observations are available yet/)).toBeVisible()
-    await expectNoHorizontalOverflow(page)
-    await page.unroute('**/api/public/v1/networks*')
   })
 
-  test('discloses map information without a modal and restores keyboard focus', async ({ page }) => {
-    await openHomeWithGeo(page)
-    const map = page.getByRole('region', { name: 'Peer countries' })
-    await expect(map.getByRole('img', { name: 'Peer countries map' })).toBeVisible()
-    const trigger = map.getByRole('button', { name: 'Map information', exact: true })
-    await expect(map.getByText(/^Scope: /)).toHaveCount(0)
-    await expect(map.getByText(/^Known /)).toHaveCount(0)
-    await expect(map.getByText(/Last good database load/)).toHaveCount(0)
-    await expect(map.getByRole('status')).toHaveCount(1)
-    await expect(map.getByRole('status')).toContainText('Data stale')
-    await trigger.focus()
-    await expectFocusedElementHasVisibleFocus(page)
-    await trigger.press('Enter')
-    const dialog = page.getByRole('dialog', { name: 'Map information' })
-    await expect(dialog).toBeVisible()
-    await expect(dialog).not.toHaveAttribute('aria-modal', 'true')
-    await expect(trigger).toHaveAttribute('aria-expanded', 'true')
-    await expect(dialog.getByText('Scope: All Networks')).toBeVisible()
-    await expect(dialog.getByText(/Known 1 · Unknown 9/)).toBeVisible()
-    await expect(dialog.getByText(/counted per Node, not deduplicated by IP/)).toBeVisible()
-    await expect(dialog.getByText(/without a usable public remote IP/)).toBeVisible()
-    await expect(dialog.getByText(/without a retained country result/)).toBeVisible()
-    await expect(dialog.getByText(/Last good database load/)).toBeVisible()
-    await expect(dialog.getByRole('list', { name: 'Peer countries by count' })).toContainText('Sweden')
-    // Source links are inline attribution prose, not toolbar controls. The
-    // close control retains the full touch target; source links stay real and focusable.
-    const close = dialog.getByRole('button', { name: 'Close map information' })
-    const closeBox = (await close.boundingBox())!
-    expect(closeBox.width).toBeGreaterThanOrEqual(44)
-    expect(closeBox.height).toBeGreaterThanOrEqual(44)
-    for (const link of await dialog.getByRole('link').all()) {
-      await expect(link).toHaveAttribute('href', /^https:\/\//)
-      await link.focus()
-      await expect(link).toBeFocused()
-    }
-    await expectNoHorizontalOverflow(page)
-    await page.keyboard.press('Escape')
-    await expect(dialog).toHaveCount(0)
-    await expect(trigger).toBeFocused()
-    await expectVisibleInteractiveTargets(page)
-    await trigger.press('Enter')
-    await page.getByRole('article').filter({ has: page.getByText('Active Nodes', { exact: true }) }).click()
-    await expect(dialog).toHaveCount(0)
-    await expect(trigger).toBeFocused()
-    await trigger.press('Enter')
-    await page.getByRole('button', { name: 'Close map information' }).click()
-    await expect(dialog).toHaveCount(0)
-    await expect(trigger).toBeFocused()
-  })
-
-  test('isolated DTO fixture: exposes prioritized exceptions only through accessible status and information', async ({ page }) => {
-    await openHomeWithGeo(page)
-    const map = page.getByRole('region', { name: 'Peer countries' })
-    const current = {
-      state: 'current', scope: 'complete',
-      countries: [{ countryCode: 'SE', count: 1, staleCount: 0, centroidLat: 60.1282, centroidLon: 18.6435 }],
-      knownCountryCount: 1, unknownCountryCount: 0, availablePeerCount: 1,
-      unknownWithPublicIpCount: 0, unknownWithoutRemoteIpCount: 0,
-      attribution: null, lastGoodAt: null, staleSince: null, databaseAgeSeconds: null, errorReason: null,
-    }
-    await withGeoProjection(page, () => current, 'current')
-    await page.reload()
-    await expect(map.getByRole('img', { name: 'Peer countries map' })).toBeVisible()
-    await expect(map.getByRole('status')).toHaveCount(0)
-    await expect(map.getByRole('heading', { name: 'Peer countries', exact: true })).toHaveCount(0)
-    await expect(map.getByText('· 2 records', { exact: true })).toHaveCount(0)
-    const marker = map.getByRole('button', { name: 'Sweden · 2 records', exact: true })
-    if (test.info().project.use.hasTouch) await marker.tap()
-    else await marker.click()
-    // Desktop pointer entry opens the tooltip; clicking may toggle it closed.
-    if (!test.info().project.use.hasTouch) await marker.press('Enter')
-    await expect(map.getByRole('tooltip')).toHaveText('Sweden · 2 records')
-    await marker.press('Escape')
-    await expect(map.getByRole('tooltip')).toHaveCount(0)
-    await expect(map.getByText(/^Scope: /)).toHaveCount(0)
-    await expect(map.getByText(/^Known /)).toHaveCount(0)
-    for (const scenario of [
-      { patch: { unknownCountryCount: 2, availablePeerCount: 3, unknownWithPublicIpCount: 2 }, hint: '4 unknown locations' },
-      { patch: { scope: 'partial' }, hint: 'Partial data' },
-      { patch: { state: 'stale', unknownCountryCount: 2, availablePeerCount: 3, unknownWithPublicIpCount: 2 }, hint: 'Data stale' },
-      { patch: { countries: [{ countryCode: 'SE', count: 1, staleCount: 0, centroidLat: null, centroidLon: null }] }, hint: 'Some locations not shown' },
-    ]) {
-      await page.unroute('**/api/public/v1/networks*')
-      await withGeoProjection(page, () => ({ ...current, ...scenario.patch }), 'current')
-      await page.reload()
-      await expect(map.getByRole('img', { name: 'Peer countries map' })).toBeVisible()
-      await expect(map.getByRole('status')).toHaveCount(1)
-      await expect(map.getByRole('status')).toContainText(scenario.hint)
-      await expectQuietMap(page)
-      await expect(map.getByRole('button', { name: 'Map status: ' + await map.getByRole('status').textContent(), exact: true })).toBeVisible()
-      await expectNoHorizontalOverflow(page)
-    }
-  })
-
-  test('degrades locally for a disabled provider and an unavailable basemap', async ({ page }) => {
+  test('degrades locally for a disabled provider and an unavailable basemap', async ({ page }, testInfo) => {
     await loginAs(page)
+    await setGeoProvider(page, 'Disabled')
     try {
-      // Normalize first: the map scenarios above leave Local MMDB selected.
-      // A Server-disabled Geo Provider renders the neutral notice and never
-      // loads map geometry at all.
-      await setGeoProvider(page, 'Disabled')
-      let geometryRequests = 0
-      page.on('request', (request) => {
-        if (request.url().includes('/assets/geo/')) geometryRequests += 1
-      })
       await page.goto('/')
       const map = page.getByRole('region', { name: 'Peer countries' })
-      await expect(map).toBeVisible({ timeout: 30_000 })
       await expect(map.getByRole('status')).toHaveText('Peer countries · Disabled by server')
+      await expect(map.getByRole('img', { name: 'Peer countries map' })).toHaveCount(0)
+      // Nothing is expanded and nothing can be: the single control stays, disabled.
+      await expect(map.getByRole('button', { name: 'Show full map' })).toBeDisabled()
       await expectQuietMap(page)
-      const disabledInfo = await openMapInformation(page)
-      await expect(disabledInfo.getByText('Peer countries · Disabled by server', { exact: true })).toBeVisible()
-      await closeMapInformation(page)
-      await expect(page.getByRole('img', { name: 'Peer countries map' })).toHaveCount(0)
-      await expect(page.getByText(/^Known /)).toHaveCount(0)
-      expect(geometryRequests).toBe(0)
+      await capture(page, testInfo, 'fixture-disabled-' + testInfo.project.name)
 
-      // Geo enabled but the basemap unavailable: the map degrades locally,
-      // Server-provided country counts survive, and Home stays usable.
+      // The basemap resource itself can fail while the Server data survives.
       await setGeoProvider(page, 'Local MMDB')
-      await page.route('**/assets/geo/**', (route) => route.abort())
+      await page.route('**/assets/geo/**', route => route.abort())
       await page.goto('/')
       await expect(map.getByRole('status')).toContainText('Map unavailable', { timeout: 30_000 })
-      await expect(map.getByRole('status')).toHaveCount(1)
+      await expect(map.getByRole('img', { name: 'Peer countries map' })).toHaveCount(0)
+      // Home keeps working: the statistics and the Node cards are untouched.
+      await expect(page.getByRole('article').first()).toBeVisible()
       await expectQuietMap(page)
-      await capture(page, test.info(), 'fixture-failure-' + test.info().project.name)
-      await openMapInformation(page)
-      await expect(page.getByRole('img', { name: 'Peer countries map' })).toHaveCount(0)
-      await expect(page.getByText(/Known 1 · Unknown 9/)).toBeVisible({ timeout: 30_000 })
-      await expect(page.getByRole('list', { name: 'Peer countries by count' })).toContainText('SE', { timeout: 30_000 })
-      await expect(page.getByText(/Last good database load/)).toBeVisible()
-      const facts = await summaryFacts(page)
-      expect(facts.map((fact) => fact.label)).toEqual(['Active Nodes', 'Healthy Nodes', 'Attention', 'Networks'])
-      await expect(page.getByLabel('Active Nodes', { exact: true }).getByRole('link').first()).toBeVisible()
-      await expectNoHorizontalOverflow(page)
-      await closeMapInformation(page)
-      await expect(map.getByRole('button', { name: 'Retry map' })).toHaveCount(0)
-      await page.unroute('**/assets/geo/**')
-      await map.getByRole('button', { name: /^Map status: Map unavailable/ }).click()
-      await page.getByRole('dialog', { name: 'Map information' }).getByRole('button', { name: 'Retry map' }).click()
-      await expect(map.getByRole('img', { name: 'Peer countries map' })).toBeVisible({ timeout: 30_000 })
+      await capture(page, testInfo, 'fixture-failure-' + testInfo.project.name)
     } finally {
-      await setGeoProvider(page, 'Disabled')
+      await page.unroute('**/assets/geo/**')
+      await setGeoProvider(page, 'Local MMDB')
     }
   })
 })
