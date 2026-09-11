@@ -3226,217 +3226,72 @@ button {
   gap: 0.6rem;
 }
 
-/* The four statistics stay global: the filter and sort below never change
-   them, so the scope is labelled instead of implied. */
-.home-overview-scope {
-  grid-column: 1 / -1;
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.7rem;
-  font-weight: 600;
-  line-height: 1.35;
-}
-
-
-
+/* The map deliberately shares the Home wash: only the on-demand explanation
+   gets a surface. Inter and tabular counts retain the existing visual language. */
 .home-geo {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 0.22rem;
   min-width: 0;
-  padding-top: 0.15rem;
 }
 
 .home-geo-disabled { justify-content: center; min-height: 4.5rem; }
-
-.home-geo-heading {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.4rem 0.5rem;
-}
-
-.home-geo-heading h2 {
-  margin: 0;
-  color: var(--ink);
-  font-size: 0.84rem;
-  font-weight: 760;
-  letter-spacing: -0.02em;
-}
-
-/* The map's state badge is a secondary cue in a dense overview, so it stays
-   smaller than a panel badge while keeping its text. */
-.home-geo-heading .status-badge { min-height: 20px; padding: 0.1rem 0.4rem; font-size: 0.62rem; }
-.home-geo-heading .status-badge-icon { width: 0.85rem; height: 0.85rem; font-size: 0.55rem; }
-
-.home-geo-meta,
-.home-geo-note,
-.home-geo-detail,
-.home-geo-counts,
-.home-geo-unknown-detail,
-.home-geo-canvas-state {
-  margin: 0;
-  font-size: 0.68rem;
-  line-height: 1.45;
-}
-
-.home-geo-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.1rem 0.55rem;
-  color: var(--muted);
-  font-weight: 620;
-}
-
-.home-geo-meta > span + span::before {
-  margin-right: 0.55rem;
-  color: rgba(100, 116, 139, 0.5);
-  content: '·';
-}
-
-.home-geo-note,
-.home-geo-detail,
-.home-geo-unknown-detail { color: var(--muted); }
-
-.home-geo-counts { color: var(--ink); font-weight: 700; font-variant-numeric: tabular-nums; }
-
-.home-geo-canvas {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 10rem; /* compact canvas starts at 160px on phones */
-  margin-top: 0.1rem;
-  overflow: hidden;
-}
-
-.home-geo-canvas[data-expanded='true'] { height: 16.5rem; } /* expanded starts at 264px */
-
-.home-geo-canvas-state {
-  display: grid;
-  justify-items: center;
-  gap: 0.5rem;
-  padding: 0 0.5rem;
-  color: var(--muted);
-  text-align: center;
-}
-
+.home-geo-heading { display: flex; align-items: center; gap: 0.3rem; min-width: 0; }
+.home-geo-heading h2 { margin: 0; color: var(--ink); font-size: 0.84rem; font-weight: 760; letter-spacing: -0.02em; white-space: nowrap; }
+.home-geo-total { min-width: 0; color: var(--muted); font-size: 0.78rem; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.home-geo-actions { display: flex; flex: none; margin-left: auto; }
+.home-geo-icon[data-tooltip] { position: relative; }
+.home-geo-icon[data-tooltip]::after { content: attr(data-tooltip); position: absolute; z-index: 11; top: 100%; right: 0; padding: 0.35rem 0.55rem; border-radius: 0.4rem; color: white; background: var(--ink); font-size: 0.7rem; white-space: nowrap; visibility: hidden; pointer-events: none; }
+.home-geo-icon[data-tooltip]:hover::after, .home-geo-icon[data-tooltip]:focus-visible::after { visibility: visible; }
+.home-geo-icon { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 44px; height: 44px; padding: 11px; border: 0; border-radius: 0.5rem; background: transparent; color: var(--muted); cursor: pointer; }
+.home-geo-icon:hover, .home-geo-icon[aria-expanded='true'] { background: rgba(16, 185, 129, 0.08); color: var(--brand-strong); }
+.home-geo-icon svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.home-geo-notice { display: flex; align-items: center; flex-wrap: wrap; gap: 0 0.5rem; color: var(--amber); font-size: 0.72rem; line-height: 1.4; }
+.home-geo-notice button { min-height: 44px; padding: 0; border: 0; color: inherit; background: transparent; font: inherit; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.home-geo-canvas { position: relative; width: 100%; aspect-ratio: 1000 / 410; }
+.home-geo-canvas[data-expanded='true'] { width: calc(100% + 2 * var(--home-gutter, 1rem) - 1rem); margin-inline: calc(0.5rem - var(--home-gutter, 1rem)); height: auto; aspect-ratio: 1000 / 410; }
 .home-geo-svg { display: block; width: 100%; height: 100%; }
+.home-geo-land path { fill: rgba(148, 163, 184, 0.16); stroke: rgba(100, 116, 139, 0.34); stroke-width: 0.75; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.home-geo-observed path { fill: rgba(16, 185, 129, 0.3); stroke: rgba(5, 150, 105, 0.6); cursor: pointer; }
+.home-geo-marker { cursor: pointer; }
+.home-geo-marker-dot { fill: rgba(255, 255, 255, 0.94); stroke: var(--brand-strong); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.home-geo-marker-label { fill: var(--brand-strong); font-size: 26px; font-weight: 800; font-variant-numeric: tabular-nums; text-anchor: middle; dominant-baseline: central; }
+.home-geo-tooltip { position: absolute; left: 50%; bottom: 0.25rem; transform: translateX(-50%); max-width: 95%; padding: 0.35rem 0.6rem; border-radius: 0.4rem; background: var(--ink); color: white; font-size: 0.75rem; pointer-events: none; }
+.home-geo-credit { align-self: flex-end; margin: 0; color: var(--muted); font-size: 0.62rem; line-height: 1.4; }
+.home-geo-credit a { color: inherit; }
 
-/* Basemap: quiet outlines only. Observed countries take the restrained
-   Emerald fill; markers are Server representative points, never Peer or Node
-   locations. */
-.home-geo-land path {
-  fill: rgba(148, 163, 184, 0.16);
-  stroke: rgba(100, 116, 139, 0.34);
-  stroke-width: 0.75;
-  stroke-linejoin: round;
-  vector-effect: non-scaling-stroke;
-}
-
-.home-geo-observed path {
-  fill: rgba(16, 185, 129, 0.3);
-  stroke: rgba(5, 150, 105, 0.6);
-}
-
-.home-geo-marker-dot {
-  fill: rgba(255, 255, 255, 0.94);
-  stroke: var(--brand-strong);
-  stroke-width: 1.5;
-  vector-effect: non-scaling-stroke;
-}
-
-.home-geo-marker-label {
-  fill: var(--brand-strong);
-  font-weight: 800;
-  font-variant-numeric: tabular-nums;
-  text-anchor: middle;
-  dominant-baseline: central;
-}
-
-.home-geo-credit {
-  margin: 0;
-  color: rgba(100, 116, 139, 0.92);
-  font-size: 0.62rem;
-  line-height: 1.4;
-}
-
-.home-geo-footer {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.35rem 0.45rem;
-  margin-top: 0.1rem;
-}
-
-.home-geo-toggle {
-  min-height: 44px;
-  padding: 0 0.85rem;
-  color: var(--ink);
-  background: rgba(255, 255, 255, 0.88);
-  border: 1px solid rgba(148, 163, 184, 0.26);
-  border-radius: 0.5rem;
-  font: inherit;
-  font-size: 0.72rem;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.home-geo-toggle:hover { color: var(--brand-strong); background: #ffffff; border-color: rgba(5, 150, 105, 0.26); }
-
-.home-geo-countries {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.28rem;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.home-geo-countries li {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.32rem;
-  padding: 0.2rem 0.45rem;
-  color: var(--muted);
-  background: rgba(255, 255, 255, 0.72);
-  border: 1px solid rgba(148, 163, 184, 0.22);
-  border-radius: 999px;
-  font-size: 0.66rem;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.home-geo-countries .home-geo-country-code { color: var(--ink); font-weight: 760; letter-spacing: 0.02em; }
-.home-geo-countries strong { color: var(--brand-strong); font-weight: 760; font-variant-numeric: tabular-nums; }
-.home-geo-countries small { color: var(--muted); font-size: 0.62rem; }
-
-@media (prefers-reduced-motion: no-preference) {
-  .home-geo-canvas { transition: height 180ms ease; }
-}
+.home-geo-information { position: absolute; z-index: 10; top: 44px; right: 0; width: min(30rem, 100%); max-height: min(32rem, 65dvh); overflow: auto; overscroll-behavior: contain; padding: 0.75rem 1rem 1rem; border: 1px solid var(--line); border-radius: 0.75rem; background: var(--surface); box-shadow: var(--shadow-soft); font-size: 0.78rem; line-height: 1.5; overflow-wrap: anywhere; }
+.home-geo-information > header { display: flex; align-items: center; justify-content: space-between; }
+.home-geo-information h3 { margin: 0; font-size: 0.84rem; }
+.home-geo-information p { margin: 0.5rem 0; }
+.home-geo-information > h3 { margin-top: 1rem; }
+.home-geo-meta { display: grid; gap: 0.2rem; color: var(--muted); }
+.home-geo-note, .home-geo-detail, .home-geo-unknown-detail { color: var(--muted); }
+.home-geo-counts { color: var(--ink); font-weight: 700; font-variant-numeric: tabular-nums; }
+.home-geo-countries { display: grid; gap: 0.4rem; margin: 0.75rem 0; padding: 0; list-style: none; }
+.home-geo-countries li { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.3rem 0.5rem; }
+.home-geo-country-code { color: var(--muted); font-size: 0.7rem; }
+.home-geo-countries strong { color: var(--brand-strong); font-variant-numeric: tabular-nums; }
+.home-geo-countries small { color: var(--muted); }
 
 @media (min-width: 64rem) {
-  .home-overview {
-    grid-template-columns: minmax(0, 42fr) minmax(0, 58fr);
-    grid-auto-rows: minmax(15.5rem, auto); /* 248px initial overview height */
-  }
-
-  /* A definite canvas height keeps the overview starting inside the
-     accepted 240-280px band; the SVG letterboxes the whole world inside it.
-     Long state copy still grows the row naturally. */
-  .home-geo-canvas { height: 8.5rem; }
-  .home-geo-canvas[data-expanded='true'] { height: 16.5rem; }
+  .home-overview { grid-template-columns: minmax(0, 42fr) minmax(0, 58fr); }
+  .home-geo-canvas { height: 220px; aspect-ratio: auto; padding-bottom: 14px; }
+  /* Reserve a corner-credit strip so no southern marker is obscured. */
+  .home-geo-credit { position: absolute; right: 0; bottom: 0; }
+  .home-overview:has(.home-geo-canvas[data-expanded='true']) .home-geo { grid-column: 1 / -1; }
+  .home-geo-canvas[data-expanded='true'] { width: 100%; margin-inline: 0; height: auto; aspect-ratio: 1000 / 410; }
 }
 
 @media (max-width: 30rem) {
-  /* The compact phone canvas is much smaller than the desktop one, so the
-     marker geometry scales up to stay legible. */
-  .home-geo-marker-dot { r: 26px; }
-  .home-geo-marker-label { font-size: 34px; }
+  .home-geo-heading { gap: 0.2rem; }
+  .home-geo-heading h2 { font-size: 0.76rem; }
+  .home-geo-total { font-size: 0.7rem; }
   .home-overview { gap: 0.6rem; }
   .home-overview-stats { gap: 0.55rem; }
-  .home-geo-countries li { white-space: normal; }
+  .home-geo-notice button { min-height: 44px; }
 }
+
 
 .dashboard-toolbar {
   display: flex;

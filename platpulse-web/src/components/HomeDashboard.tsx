@@ -67,7 +67,6 @@ export default function HomeDashboard({
           <SummaryCard label="Healthy Nodes" value={healthyCount} tone="green" />
           <SummaryCard label="Attention" value={healthyCount === null ? null : records.length - healthyCount} tone={healthyCount !== null && records.length === healthyCount ? 'green' : 'red'} />
           <SummaryCard label="Networks" value={hasProjection ? networks.length : null} tone="violet" />
-          <p className="home-overview-scope">All Networks · the four counts stay global; the Network filter below changes the Node list and the map scope, and sorting changes only the list.</p>
         </div>
         <GeoMapBoundary>
           <GeoWorldMap networks={networks} networkFilter={networkFilter} loading={loading} hasProjection={hasProjection} />

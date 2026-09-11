@@ -87,12 +87,91 @@ function renderMap(props: Partial<Parameters<typeof GeoWorldMap>[0]> = {}) {
 }
 
 describe('GeoWorldMap', () => {
+  it('keeps a current map quiet and opens the complete explanation on demand', async () => {
+    stubFetch(geometryResponse)
+    renderMap({ networks: [network({ geo: { countries: [seCountry], knownCountryCount: 3, unknownCountryCount: 0, availablePeerCount: 3, unknownWithPublicIpCount: 0 } })] })
+    await screen.findByRole('img', { name: 'Peer countries map' })
+    expect(screen.getByText('· 3 records')).toBeTruthy()
+    expect(screen.queryByText('Current')).toBeNull()
+    expect(screen.queryByText('Scope: All Networks')).toBeNull()
+    expect(screen.queryByRole('list', { name: 'Peer countries by count' })).toBeNull()
+    expect(screen.queryByRole('status')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Map information' }))
+    expect(screen.getByRole('dialog', { name: 'Map information' })).toBeTruthy()
+    expect(screen.getByText('Scope: All Networks')).toBeTruthy()
+    expect(screen.getByText(/3 Peer records in scope; counted per Node, not deduplicated by IP/)).toBeTruthy()
+    expect(screen.getByRole('list', { name: 'Peer countries by count' }).textContent).toContain('Sweden')
+    expect(screen.getByRole('heading', { name: 'Map credits' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Close map information' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('dismisses map information with Escape and restores trigger focus', async () => {
+    stubFetch(geometryResponse)
+    renderMap()
+    await screen.findByRole('img', { name: 'Peer countries map' })
+    const trigger = screen.getByRole('button', { name: 'Map information' })
+    trigger.focus()
+    fireEvent.click(trigger)
+    const dialog = screen.getByRole('dialog', { name: 'Map information' })
+    expect(dialog.contains(document.activeElement)).toBe(true)
+    fireEvent.keyDown(document.activeElement ?? dialog, { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(document.activeElement).toBe(trigger)
+  })
+
+  it('does not warn for a missing outline when its quantity has a valid marker', async () => {
+    stubFetch(geometryResponse)
+    const locatedKosovo = { ...xkCountry, centroidLat: 42.6, centroidLon: 20.9 }
+    const { rerender } = renderMap({ networks: [network({ geo: { countries: [locatedKosovo], knownCountryCount: 1, unknownCountryCount: 0, availablePeerCount: 1, unknownWithPublicIpCount: 0 } })] })
+    await screen.findByRole('img', { name: 'Peer countries map' })
+    expect(screen.queryByRole('status')).toBeNull()
+    rerender(<GeoWorldMap networks={[network({ geo: { countries: [locatedKosovo], knownCountryCount: 1, unknownCountryCount: 2, availablePeerCount: 3, unknownWithPublicIpCount: 2 } })]} networkFilter="all" loading={false} hasProjection />)
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    expect(screen.getByRole('status').textContent).toBe('2 unknown locations')
+    expect(screen.queryByText(/Some locations not shown/)).toBeNull()
+  })
+
+  it('combines missing plotted quantities and unknown locations into one compact status', async () => {
+    stubFetch(geometryResponse)
+    renderMap({ networks: [network({ geo: { countries: [seCountry, { ...deCountry, staleCount: 0 }], knownCountryCount: 5, unknownCountryCount: 1, availablePeerCount: 6 } })] })
+    await screen.findByRole('img', { name: 'Peer countries map' })
+
+    // Germany has an outline but no representative point: its quantity is
+    // still not shown. That is separate from the one unknown-country record.
+    const statuses = screen.getAllByRole('status')
+    expect(statuses).toHaveLength(1)
+    expect(statuses[0].textContent).toContain('Some locations not shown')
+    expect(statuses[0].textContent).toContain('1 unknown locations')
+    expect(statuses[0].textContent).not.toContain('3 unknown locations')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getByText('· 6 records')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Map information' }))
+    expect(screen.getByRole('list', { name: 'Peer countries by count' }).textContent).toContain('Germany')
+    expect(screen.getByText(/Known 5 · Unknown 1/)).toBeTruthy()
+  })
+
+  it.each(['click', 'Enter', ' '] as const)('opens a named country marker tooltip using %s', async (activation) => {
+    stubFetch(geometryResponse)
+    renderMap({ networks: [network({ geo: { countries: [seCountry], knownCountryCount: 3, unknownCountryCount: 0, availablePeerCount: 3 } })] })
+    await screen.findByRole('img', { name: 'Peer countries map' })
+    const marker = screen.getByRole('button', { name: 'Sweden · 3 records' })
+    expect(marker.tagName.toLowerCase()).toBe('g')
+    expect(marker.getAttribute('tabindex')).toBe('0')
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    if (activation === 'click') fireEvent.click(marker)
+    else fireEvent.keyDown(marker, { key: activation })
+    expect(screen.getByRole('tooltip').textContent).toBe('Sweden · 3 records')
+  })
+
   it('plots Server representative points and keeps every real count readable as text', async () => {
     stubFetch(geometryResponse)
     const { container } = renderMap()
 
     expect(screen.getByRole('heading', { name: 'Peer countries' })).toBeTruthy()
-    expect(await screen.findByText('Current')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Map information' }))
+    expect(screen.getByText('Data state: Current')).toBeTruthy()
     expect(screen.getByText('Scope: All Networks')).toBeTruthy()
     expect(screen.getByText('Peer observation: Current')).toBeTruthy()
     await waitFor(() => expect(screen.getByText('Map resource: Current')).toBeTruthy())
@@ -129,7 +208,8 @@ describe('GeoWorldMap', () => {
     const fetchMock = stubFetch(() => { throw new Error('offline') })
     renderMap()
 
-    expect(await screen.findByText(/Map geometry is Unavailable/)).toBeTruthy()
+    expect(await screen.findByText(/^Map unavailable/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Map information' }))
     // Country counts are Server data and survive a basemap failure.
     expect(screen.getByText(/Known 6 · Unknown 1/)).toBeTruthy()
     expect(screen.getByRole('list', { name: 'Peer countries by count' }).textContent).toContain('SE')
@@ -137,6 +217,8 @@ describe('GeoWorldMap', () => {
 
     fetchMock.mockImplementation(() => Promise.resolve(geometryResponse()))
     fireEvent.click(screen.getByRole('button', { name: 'Retry map' }))
+    // Retry is outside the disclosure, so its click dismisses the panel.
+    fireEvent.click(screen.getByRole('button', { name: 'Map information' }))
     await waitFor(() => expect(screen.getByText('Map resource: Current')).toBeTruthy())
     expect(screen.getByRole('img', { name: 'Peer countries map' })).toBeTruthy()
   })
@@ -144,7 +226,8 @@ describe('GeoWorldMap', () => {
   it('rejects an unusable payload such as the SPA fallback document', async () => {
     stubFetch(() => ({ ok: true, status: 200, text: () => Promise.resolve('<!doctype html><title>PlatPulse</title>') }))
     renderMap()
-    expect(await screen.findByText(/Map geometry is Unavailable/)).toBeTruthy()
+    expect(await screen.findByText(/^Map unavailable/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Map information' }))
   })
 
   it('never requests a basemap while the Owner disabled Geo', async () => {
@@ -166,7 +249,8 @@ describe('GeoWorldMap', () => {
     })
     const { rerender } = renderMap({ networks: [mainnet, testnet] })
 
-    expect(await screen.findByText('Scope: All Networks')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Map information' }))
+    expect(screen.getByText('Scope: All Networks')).toBeTruthy()
     // Only the Network with a denominator contributes counts, so nothing is
     // fabricated for the Network that never observed a Peer Snapshot.
     await waitFor(() => expect(screen.getByText(/Known 6 · Unknown 1/)).toBeTruthy())
@@ -175,7 +259,7 @@ describe('GeoWorldMap', () => {
     rerender(<GeoWorldMap networks={[mainnet, testnet]} networkFilter="testnet" loading={false} hasProjection />)
     expect(screen.getByText('Scope: Testnet')).toBeTruthy()
     expect(screen.getByText(/no Active Node has reported a successful Peer Snapshot yet/)).toBeTruthy()
-    expect(screen.queryByText(/Known /)).toBeNull()
+    expect(screen.queryByText(/^Known \d/)).toBeNull()
   })
 
   it('keeps Geo state, Peer observation freshness, and basemap state separate', async () => {
@@ -184,10 +268,11 @@ describe('GeoWorldMap', () => {
       networks: [network({ geo: { state: 'stale', lastGoodAt: '2026-01-01T00:00:00Z', databaseAgeSeconds: 2678400, staleSince: '2026-01-31T00:00:00Z', scope: 'partial' }, peers: { state: 'ok', freshness: 'stale' } })],
     })
 
+    fireEvent.click(screen.getByRole('button', { name: 'Map information' }))
     expect(await screen.findByText(/Geo database is Stale/)).toBeTruthy()
-    expect(screen.getByText('Stale')).toBeTruthy()
+    expect(screen.getByText('Data state: Stale')).toBeTruthy()
     expect(screen.getByText('Peer observation: Stale')).toBeTruthy()
-    expect(screen.getByText('Map resource: Error')).toBeTruthy()
+    await waitFor(() => expect(screen.getByText('Map resource: Error')).toBeTruthy())
     expect(screen.getByText(/Database age: 31 days/)).toBeTruthy()
     expect(screen.getByText(/Partial scope/)).toBeTruthy()
     expect(screen.getByText(/Showing the last-good country projection/)).toBeTruthy()
@@ -196,7 +281,8 @@ describe('GeoWorldMap', () => {
   it('never turns an unavailable or never-observed projection into a zero count', async () => {
     stubFetch(geometryResponse)
     const { rerender } = renderMap({ networks: [], hasProjection: false })
-    expect(screen.getByText('Unknown')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Map information' }))
+    expect(screen.getByText('Data state: Unknown')).toBeTruthy()
     expect(screen.getByText(/the Public Projection is currently unavailable/)).toBeTruthy()
     expect(screen.queryByText(/Known 0/)).toBeNull()
 
@@ -211,7 +297,8 @@ describe('GeoWorldMap', () => {
   it('keeps Starting and an authoritative empty projection explicit', async () => {
     stubFetch(geometryResponse)
     const { rerender } = renderMap({ networks: [network()], loading: true })
-    expect(screen.getByText('Starting')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Map information' }))
+    expect(screen.getByText('Data state: Starting')).toBeTruthy()
     expect(screen.getByText(/Starting; the Peer country scope is still loading/)).toBeTruthy()
     expect(screen.getByText('Map resource: Unknown')).toBeTruthy()
 
@@ -221,13 +308,76 @@ describe('GeoWorldMap', () => {
       networks={[network({ geo: { countries: [], knownCountryCount: 0, unknownCountryCount: 0, availablePeerCount: 0, unknownWithPublicIpCount: 0, unknownWithoutRemoteIpCount: 0 } })]}
       networkFilter="all" loading={false} hasProjection
     />)
-    expect(screen.getByText(/Known 0 · Unknown 0/)).toBeTruthy()
+    expect(screen.getByText(/^Known 0\b/)).toBeTruthy()
+    expect(screen.queryByText(/Unknown 0/)).toBeNull()
     expect(screen.getByText(/0 Peer records in scope; counted per Node, not deduplicated by IP/)).toBeTruthy()
     expect(screen.getByText(/No country observations are available yet/)).toBeTruthy()
 
     rerender(<GeoWorldMap networks={[]} networkFilter="all" loading={false} hasProjection />)
-    expect(screen.getByText('Empty')).toBeTruthy()
+    expect(screen.getByText('Data state: Empty')).toBeTruthy()
     expect(screen.getByText(/the Public Projection has no Network to place Peer countries on/)).toBeTruthy()
+  })
+
+  it.each([
+    ['error', 'Data unavailable'],
+    ['stale', 'Data stale'],
+  ])('retains an authoritative zero without hiding %s behind No data', async (state, hint) => {
+    stubFetch(geometryResponse)
+    renderMap({ networks: [network({ geo: { state, countries: [], knownCountryCount: 0, unknownCountryCount: 0, availablePeerCount: 0, unknownWithPublicIpCount: 0, unknownWithoutRemoteIpCount: 0 } })] })
+    await screen.findByRole('img', { name: 'Peer countries map' })
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    expect(screen.getByRole('status').textContent).toBe(hint)
+    expect(screen.getByText('· 0 records')).toBeTruthy()
+    expect(screen.queryByText('No data')).toBeNull()
+    expect(screen.queryByText(/0 unknown locations/)).toBeNull()
+  })
+
+  it('keeps loading, unavailable, never-observed and authoritative zero compact and distinct', async () => {
+    stubFetch(geometryResponse)
+    const { rerender } = renderMap({ networks: [], loading: true, hasProjection: false })
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    expect(screen.getByRole('status').textContent).toBe('Loading data')
+    expect(screen.queryByText('· 0 records')).toBeNull()
+
+    rerender(<GeoWorldMap networks={[]} networkFilter="all" loading={false} hasProjection={false} />)
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    expect(screen.getByRole('status').textContent).toBe('Data unavailable')
+    expect(screen.queryByText('· 0 records')).toBeNull()
+
+    const unobserved = network({ geo: { state: 'unknown', scope: 'unobserved', countries: null, knownCountryCount: null, unknownCountryCount: null, availablePeerCount: null } })
+    rerender(<GeoWorldMap networks={[unobserved]} networkFilter="all" loading={false} hasProjection />)
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    expect(screen.getByRole('status').textContent).toBe('No observations yet')
+    expect(screen.queryByText('· 0 records')).toBeNull()
+
+    const zero = network({ geo: { countries: [], knownCountryCount: 0, unknownCountryCount: 0, availablePeerCount: 0, unknownWithPublicIpCount: 0 } })
+    rerender(<GeoWorldMap networks={[zero]} networkFilter="all" loading={false} hasProjection />)
+    await screen.findByRole('img', { name: 'Peer countries map' })
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    expect(screen.getByRole('status').textContent).toBe('No data')
+    expect(screen.getByText('· 0 records')).toBeTruthy()
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it.each([
+    { name: 'partial country basis', geo: { scope: 'partial' }, peers: {}, hint: 'Partial data' },
+    { name: 'unknown Peer observation', geo: {}, peers: { state: 'unknown', freshness: 'unknown' }, hint: 'Observation status unknown' },
+  ])('exposes one compact hint for $name', async ({ geo, peers, hint }) => {
+    stubFetch(geometryResponse)
+    renderMap({ networks: [network({ geo: { countries: [seCountry], knownCountryCount: 3, unknownCountryCount: 0, availablePeerCount: 3, ...geo }, peers })] })
+    await screen.findByRole('img', { name: 'Peer countries map' })
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    expect(screen.getByRole('status').textContent).toBe(hint)
+  })
+
+  it('does not collapse varying Peer observations across Networks into current', async () => {
+    stubFetch(geometryResponse)
+    const geo = { countries: [seCountry], knownCountryCount: 3, unknownCountryCount: 0, availablePeerCount: 3, unknownWithPublicIpCount: 0 }
+    renderMap({ networks: [network({ geo }), network({ networkKey: 'testnet', displayName: 'Testnet', geo, peers: { state: 'unknown', freshness: 'unknown' } })] })
+    await screen.findByRole('img', { name: 'Peer countries map' })
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    expect(screen.getByRole('status').textContent).toBe('Observation status varies')
+    expect(screen.getByText('· 6 records')).toBeTruthy()
   })
 
   it('offers a labelled, expanded-state-aware map control', async () => {

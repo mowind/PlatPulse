@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { PublicNetwork } from '../api/generated'
 import { homeGeoOverview } from '../homeGeo'
 import { loadWorldGeometry, projectCountryPoint, type WorldGeometry } from '../worldGeometry'
@@ -11,11 +11,10 @@ import {
   formatGeoCount,
   geoPeerRecordBasis,
   geoStateLabel,
-  geoStateTone,
   geoUnknownReasons,
   peerObservationLabel,
 } from './geoPresentation'
-import { StatusBadge } from './StatusBadge'
+import MapInformation from './MapInformation'
 
 /**
  * Compact Home Peer country map (issue #133). It renders the Server's Public
@@ -58,6 +57,12 @@ const MAP_RESOURCE_LABEL: Record<MapResourceState, string> = {
 }
 
 export default function GeoWorldMap({ networks, networkFilter, loading, hasProjection }: GeoWorldMapProps) {
+  const tooltipId = useId()
+  const [activeCountryCode, setActiveCountryCode] = useState<string | null>(null)
+  const informationId = useId()
+  const informationTrigger = useRef<HTMLButtonElement>(null)
+  const [informationOpen, setInformationOpen] = useState(false)
+  const closeInformation = useCallback(() => setInformationOpen(false), [])
   const titleId = useId()
   const canvasId = useId()
   const svgTitleId = useId()
@@ -116,6 +121,18 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
       })
     : []
 
+  const activeCountry = overview.countries.find((country) => country.code === activeCountryCode)
+  const countryLabel = (code: string) => {
+    const country = overview.countries.find((item) => item.code === code)
+    return country ? countryDisplayName(code) + ' · ' + formatGeoCount(country.count) + ' records' : countryDisplayName(code)
+  }
+  // Fit the full world and the actual marker extents, rather than reserving
+  // a wide chart margin or cropping labels near the projection boundaries.
+  const markerRadius = (count: number) => Math.max(26, formatGeoCount(count).length * 8 + 8)
+  const bounds = geometryReady ? plotted.reduce((box, { country, at }) => {
+    const padding = markerRadius(country.count) + 2
+    return { left: Math.min(box.left, at.x - padding), top: Math.min(box.top, at.y - padding), right: Math.max(box.right, at.x + padding), bottom: Math.max(box.bottom, at.y + padding) }
+  }, { left: -1, top: -1, right: geometry.geometry.projection.width + 1, bottom: geometry.geometry.projection.height + 1 }) : null
   const knownCount = overview.knownCountryCount
   const unknownCount = overview.unknownCountryCount
   const countsAvailable = knownCount != null && unknownCount != null
@@ -128,10 +145,27 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
     : geometry.status === 'failed'
       ? 'error'
       : geometry.status === 'loading' ? 'starting' : 'unknown'
-  // The badge uses the fixed status vocabulary: Starting/Empty for this
-  // surface's own loading states, otherwise the Server-owned Geo state.
-  const badgeLabel = status === 'starting' ? 'Starting' : status === 'empty' ? 'Empty' : geoStateLabel(status)
-  const badgeTone = status === 'starting' || status === 'empty' ? 'neutral' : geoStateTone(status)
+  // A known country without a quantity marker is different from an unknown
+  // location. A missing outline alone does not hide an existing marker.
+  const locationsNotShown = geometryReady && overview.countries.some((country) => !country.point)
+  const primaryNotice = status === 'starting' ? 'Loading data'
+    : !hasProjection ? 'Data unavailable'
+    : status === 'empty' ? 'No data'
+    : neverObserved ? 'No observations yet'
+    : geometry.status === 'failed' ? 'Map unavailable'
+    : status === 'error' ? 'Data unavailable'
+    : status === 'stale' || overview.peerObservation === 'stale' || overview.countries.some((country) => country.staleCount > 0) ? 'Data stale'
+    : overview.availablePeerCount === 0 ? 'No data'
+    : !countsAvailable ? 'Data unavailable'
+    : locationsNotShown ? 'Some locations not shown'
+    : overview.scope !== 'complete' || overview.networksWithBasis < overview.networksInScope ? 'Partial data'
+    : overview.peerObservation === 'unknown' ? 'Observation status unknown'
+    : overview.peerObservation === 'mixed' ? 'Observation status varies'
+    : !geometryReady && needsBasemap ? 'Loading map'
+    : null
+  const unknownNotice = hasProjection && !loading && unknownCount != null && unknownCount > 0
+    ? formatGeoCount(unknownCount) + ' unknown locations' : null
+  const notice = [primaryNotice, unknownNotice].filter(Boolean).join(' · ')
   const mapDescription = `${formatGeoCount(overview.countries.length)} ${overview.countries.length === 1 ? 'country has' : 'countries have'} Peer records in scope for ${overview.scopeLabel}. `
     + 'Each marker is a Server-provided country representative point, not a Peer location or a Node deployment location.'
 
@@ -139,70 +173,32 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
     <section className="home-geo" aria-labelledby={titleId} data-state={status} data-scope={overview.scope}>
       <header className="home-geo-heading">
         <h2 id={titleId}>{PEER_COUNTRIES_HEADING}</h2>
-        <StatusBadge status={badgeLabel} tone={badgeTone} />
+        <span className="home-geo-total">· {!hasProjection || loading || overview.availablePeerCount == null ? '—' : formatGeoCount(overview.availablePeerCount)} records</span>
+        <div className="home-geo-actions">
+          <button ref={informationTrigger} type="button" className="home-geo-icon" title="Map information" aria-label="Map information" aria-haspopup="dialog" aria-expanded={informationOpen} aria-controls={informationId} onClick={() => setInformationOpen((current) => !current)}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7v1" /></svg>
+          </button>
+          <button type="button" className="home-geo-icon" title={expanded ? 'Collapse map' : 'Show full map'} data-tooltip={expanded ? 'Collapse map' : 'Show full map'} aria-label={expanded ? 'Collapse map' : 'Show full map'} aria-expanded={expanded} aria-controls={canvasId} disabled={!geometryReady} onClick={() => setExpanded((current) => !current)}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M4 9h5V4M20 9h-5V4M4 15h5v5M20 15h-5v5' : 'M9 4H4v5M15 4h5v5M4 15v5h5M20 15v5h-5'} /></svg>
+          </button>
+        </div>
       </header>
-      <p className="home-geo-meta">
-        <span className="home-geo-scope">Scope: {overview.scopeLabel}</span>
-        <span className="home-geo-peer">Peer observation: {peerObservationLabel(overview.peerObservation)}</span>
-        <span className="home-geo-basemap">Map resource: {MAP_RESOURCE_LABEL[mapState]}</span>
-      </p>
-
-      {status === 'starting' && <p className="home-geo-note" role="status">Starting; the Peer country scope is still loading.</p>}
-      {status === 'empty' && <p className="home-geo-note" role="status">Empty: the Public Projection has no Network to place Peer countries on.</p>}
-      {!loading && !hasProjection && (
-        <p className="home-geo-note" role="status">Country insight is Unknown; the Public Projection is currently unavailable.</p>
-      )}
-      {scopeNotesApply && neverObserved && (
-        <p className="home-geo-note" role="status">Country insight is Unknown; no Active Node has reported a successful Peer Snapshot yet.</p>
-      )}
-      {scopeNotesApply && !neverObserved && !countsAvailable && status !== 'stale' && status !== 'error' && (
-        <p className="home-geo-note" role="status">Country insight is Unknown; no usable Geo projection is available.</p>
-      )}
-      {(status === 'stale' || status === 'error') && (
-        <p className="home-geo-note" role="status">
-          {status === 'stale' ? 'Geo database is Stale.' : 'Geo lookup is Error.'}{' '}
-          {overview.countries.length > 0
-            ? 'Showing the last-good country projection.'
-            : 'No usable country projection is currently available.'}
-        </p>
-      )}
-      {(status === 'stale' || status === 'error') && (overview.errorReason || overview.lastGoodAt || overview.databaseAgeSeconds != null || overview.staleSince) && (
-        <p className="home-geo-detail">
-          {overview.errorReason && <>Reason: {overview.errorReason}. </>}
-          {overview.lastGoodAt && <>Last good database load: {overview.lastGoodAt}. </>}
-          {overview.databaseAgeSeconds != null && <>Database age: {describeAge(overview.databaseAgeSeconds)}. </>}
-          {overview.staleSince && <>Stale since: {overview.staleSince}.</>}
-        </p>
-      )}
-      {scopeNotesApply && overview.scope === 'partial' && (
-        <p className="home-geo-note" role="status">Partial scope: Active Nodes without a successful Peer Snapshot are not included in these counts.</p>
-      )}
-      {scopeNotesApply && overview.networksInScope > 1 && overview.networksWithBasis < overview.networksInScope && (
-        <p className="home-geo-note" role="status">
-          {`${formatGeoCount(overview.networksWithBasis)} of ${formatGeoCount(overview.networksInScope)} Networks in scope have a Peer country basis; the others are not included in these counts.`}
-        </p>
-      )}
-
-      {countsAvailable && (
-        <p className="home-geo-counts">
-          {'Known ' + formatGeoCount(knownCount) + ' · Unknown ' + formatGeoCount(unknownCount)}
-          {basis ? ' · ' + basis : ''}
-        </p>
-      )}
-      {countsAvailable && reasons.length > 0 && <p className="home-geo-unknown-detail">{reasons.join(' · ')}</p>}
-      {scopeNotesApply && countsAvailable && overview.countries.length === 0 && (
-        <p className="home-geo-note" role="status">No country observations are available yet.</p>
-      )}
-
-      <div className="home-geo-canvas" id={canvasId} data-expanded={expanded}>
+      {notice && <div className="home-geo-notice" role="status">
+        <button type="button" onClick={() => setInformationOpen(true)} title="View map information">{notice}</button>
+        {geometry.status === 'failed' && <button type="button" onClick={() => setAttempt((current) => current + 1)}>Retry map</button>}
+      </div>}
+      <div className={geometryReady ? "home-geo-canvas" : undefined} id={canvasId} data-expanded={expanded}>
         {geometryReady ? (
           <svg
             className="home-geo-svg"
-            viewBox={'0 0 ' + geometry.geometry.projection.width + ' ' + geometry.geometry.projection.height}
+            viewBox={bounds ? [bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top].join(' ') : undefined}
             preserveAspectRatio="xMidYMid meet"
             role="img"
             aria-labelledby={svgTitleId}
             aria-describedby={svgDescriptionId}
+            onMouseLeave={() => setActiveCountryCode(null)}
+            onKeyDown={(event) => { if (event.key === 'Escape') setActiveCountryCode(null) }}
+            onClick={(event) => { if (event.target === event.currentTarget) setActiveCountryCode(null) }}
           >
             <title id={svgTitleId}>{PEER_COUNTRIES_HEADING} map</title>
             <desc id={svgDescriptionId}>{mapDescription}</desc>
@@ -210,58 +206,132 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
               {geometry.geometry.countries.map((country) => <path key={country.code} d={country.path} />)}
             </g>
             <g className="home-geo-observed" aria-hidden="true">
-              {observed.map((country) => <path key={country.code} d={country.path} />)}
+              {observed.map((country) => <path key={country.code} d={country.path}
+                onMouseEnter={() => setActiveCountryCode(country.code)}
+                onClick={() => setActiveCountryCode(country.code)}
+              ><title>{countryLabel(country.code)}</title></path>)}
             </g>
-            <g className="home-geo-markers" aria-hidden="true">
+            <g className="home-geo-markers">
               {plotted.map(({ country, at }) => (
-                <g key={country.code} className="home-geo-marker" transform={'translate(' + at.x.toFixed(1) + ' ' + at.y.toFixed(1) + ')'}>
-                  <circle className="home-geo-marker-dot" cx="0" cy="0" />
+                <g key={country.code} className="home-geo-marker" transform={'translate(' + at.x.toFixed(1) + ' ' + at.y.toFixed(1) + ')'}
+                  role="button" tabIndex={0} aria-label={countryLabel(country.code)} aria-describedby={activeCountryCode === country.code ? tooltipId : undefined}
+                  onMouseEnter={() => setActiveCountryCode(country.code)}
+                  onClick={() => setActiveCountryCode(country.code)}
+                  onBlur={() => setActiveCountryCode(null)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      setActiveCountryCode(country.code)
+                    }
+                  }}
+                >
+                  <circle className="home-geo-marker-dot" cx="0" cy="0" r={markerRadius(country.count)} />
                   <text className="home-geo-marker-label" x="0" y="0">{formatGeoCount(country.count)}</text>
                 </g>
               ))}
             </g>
           </svg>
-        ) : geometry.status === 'failed' ? (
-          <div className="home-geo-canvas-state" role="status">
-            <p>Map geometry is Unavailable; the country counts below are unaffected.</p>
-            <button type="button" className="home-geo-retry" onClick={() => setAttempt((current) => current + 1)}>Retry map</button>
-          </div>
-        ) : (
-          <p className="home-geo-canvas-state" role="status">Map geometry is Starting…</p>
-        )}
+        ) : null}
+        {geometryReady && activeCountry && <div id={tooltipId} className="home-geo-tooltip" role="tooltip">{countryLabel(activeCountry.code)}</div>}
       </div>
 
-      <div className="home-geo-footer">
-        <button
-          type="button"
-          className="home-geo-toggle"
-          aria-expanded={expanded}
-          aria-controls={canvasId}
-          onClick={() => setExpanded((current) => !current)}
-        >
-          {expanded ? 'Collapse map' : 'Show full map'}
-        </button>
-        {overview.countries.length > 0 && (
-          <ul className="home-geo-countries" aria-label={PEER_COUNTRIES_LIST_LABEL}>
-            {overview.countries.map((country) => (
-              <li key={country.code}>
-                <span className="home-geo-country-code" aria-hidden="true">{country.code}</span>
-                <span className="sr-only">{countryDisplayName(country.code)}</span>
-                <strong>{formatGeoCount(country.count)}</strong>
-                {country.staleCount > 0 && <small>{formatGeoCount(country.staleCount) + ' last-good Stale'}</small>}
-                {!country.point && <small>no representative point</small>}
-                {geometryReady && !outlineByCode.has(country.code) && <small>no map outline</small>}
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      {informationOpen && (
+        <MapInformation id={informationId} trigger={informationTrigger} onClose={closeInformation}>
+          <p>Data state: {status === 'starting' ? 'Starting' : status === 'empty' ? 'Empty' : geoStateLabel(status)}</p>
+          <p className="home-geo-meta">
+            <span className="home-geo-scope">Scope: {overview.scopeLabel}</span>
+            <span className="home-geo-peer">Peer observation: {peerObservationLabel(overview.peerObservation)}</span>
+            <span className="home-geo-basemap">Map resource: {MAP_RESOURCE_LABEL[mapState]}</span>
+          </p>
+
+          {status === 'starting' && <p className="home-geo-note">Starting; the Peer country scope is still loading.</p>}
+          {status === 'empty' && <p className="home-geo-note">Empty: the Public Projection has no Network to place Peer countries on.</p>}
+          {!loading && !hasProjection && (
+            <p className="home-geo-note">Country insight is Unknown; the Public Projection is currently unavailable.</p>
+          )}
+          {scopeNotesApply && neverObserved && (
+            <p className="home-geo-note">Country insight is Unknown; no Active Node has reported a successful Peer Snapshot yet.</p>
+          )}
+          {scopeNotesApply && !neverObserved && !countsAvailable && status !== 'stale' && status !== 'error' && (
+            <p className="home-geo-note">Country insight is Unknown; no usable Geo projection is available.</p>
+          )}
+          {(status === 'stale' || status === 'error') && (
+            <p className="home-geo-note">
+              {status === 'stale' ? 'Geo database is Stale.' : 'Geo lookup is Error.'}{' '}
+              {overview.countries.length > 0
+                ? 'Showing the last-good country projection.'
+                : 'No usable country projection is currently available.'}
+            </p>
+          )}
+          {(status === 'stale' || status === 'error') && (overview.errorReason || overview.lastGoodAt || overview.databaseAgeSeconds != null || overview.staleSince) && (
+            <p className="home-geo-detail">
+              {overview.errorReason && <>Reason: {overview.errorReason}. </>}
+              {overview.lastGoodAt && <>Last good database load: {overview.lastGoodAt}. </>}
+              {overview.databaseAgeSeconds != null && <>Database age: {describeAge(overview.databaseAgeSeconds)}. </>}
+              {overview.staleSince && <>Stale since: {overview.staleSince}.</>}
+            </p>
+          )}
+          {scopeNotesApply && overview.scope === 'partial' && (
+            <p className="home-geo-note">Partial scope: Active Nodes without a successful Peer Snapshot are not included in these counts.</p>
+          )}
+          {scopeNotesApply && overview.networksInScope > 1 && overview.networksWithBasis < overview.networksInScope && (
+            <p className="home-geo-note">
+              {`${formatGeoCount(overview.networksWithBasis)} of ${formatGeoCount(overview.networksInScope)} Networks in scope have a Peer country basis; the others are not included in these counts.`}
+            </p>
+          )}
+
+          {countsAvailable && (
+            <p className="home-geo-counts">
+              {'Known ' + formatGeoCount(knownCount) + (unknownCount > 0 ? ' · Unknown ' + formatGeoCount(unknownCount) : '')}
+              {basis ? ' · ' + basis : ''}
+            </p>
+          )}
+          {countsAvailable && reasons.length > 0 && <p className="home-geo-unknown-detail">{reasons.join(' · ')}</p>}
+          {scopeNotesApply && countsAvailable && overview.countries.length === 0 && (
+            <p className="home-geo-note">No country observations are available yet.</p>
+          )}
+
+          <p>The four Home statistics cover All Networks. The Network filter changes the Node list and map scope; sorting changes only the list.</p>
+          {overview.countries.length > 0 && (
+            <ul className="home-geo-countries" aria-label={PEER_COUNTRIES_LIST_LABEL}>
+              {overview.countries.map((country) => (
+                <li key={country.code}>
+                  <span className="home-geo-country-code" aria-hidden="true">{country.code}</span>
+                  <span>{countryDisplayName(country.code)}</span>
+                  <strong>{formatGeoCount(country.count)}</strong>
+                  {country.staleCount > 0 && <small>{formatGeoCount(country.staleCount) + ' last-good Stale'}</small>}
+                  {!country.point && <small>no representative point</small>}
+                  {geometryReady && !outlineByCode.has(country.code) && <small>no map outline</small>}
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {geometry.status === 'failed' && <p>Map geometry is unavailable; Server country counts are unaffected. Retry the map from the compact notice.</p>}
+          <p>Unknown locations have no retained country result. Known countries without a representative point cannot show a quantity marker; a missing outline does not hide a valid marker.</p>
+          <h3>Map credits</h3>
+          {geometryReady && <p>{geometry.geometry.attribution} <a href="https://www.naturalearthdata.com/">{geometry.geometry.sourceLabel || 'Natural Earth'}</a></p>}
+          {overview.attribution && <p>{overview.attribution} <GeoCreditLinks attribution={overview.attribution} /></p>}
+        </MapInformation>
+      )}
       {(geometryReady || overview.attribution) && (
         <p className="home-geo-credit">
-          {[geometryReady ? geometry.geometry.attribution : '', overview.attribution ?? ''].filter(Boolean).join(' · ')}
-          {geometryReady && geometry.geometry.sourceLabel && <span className="sr-only"> Basemap source: {geometry.geometry.sourceLabel}.</span>}
+          {geometryReady && 'Natural Earth'}
+          {geometryReady && overview.attribution && ' · '}
+          {overview.attribution && <GeoCreditLinks attribution={overview.attribution} compact />}
         </p>
       )}
     </section>
   )
+}
+
+/** Keep the Server's complete attribution above; these are only its compact
+ * linked credits, never a substitute attribution for a different Provider. */
+function GeoCreditLinks({ attribution, compact = false }: { attribution: string; compact?: boolean }) {
+  const sources = [
+    { name: 'GeoJS', label: 'GeoJS', url: 'https://get.geojs.io' },
+    { name: 'MaxMind', label: 'GeoLite by MaxMind', url: 'https://www.maxmind.com' },
+    { name: 'IPinfo', label: 'Powered by IPinfo', url: 'https://ipinfo.io' },
+  ].filter((source) => attribution.includes(source.name))
+  return sources.length > 0 ? sources.map((source, index) => <span key={source.name}>{index > 0 && ' · '}{compact ? source.label : <a href={source.url}>{source.label}</a>}</span>) : <span>{attribution}</span>
 }
