@@ -3033,10 +3033,10 @@ button {
   /* Space the summary leaves so it clears the transparent logo bar that the
      map's top band runs behind. */
   --home-header-clearance: 5.75rem;
-  /* Height of the floating logo bar, and therefore how far the map's own corner
-     controls must drop to clear it. Zero on a narrow screen, where the logo bar
-     is a normal row above the map instead of floating over it. */
-  --home-header-height: 0px;
+  /* How far the map's own top-right corner indicator drops. Zero on a narrow
+     screen, where the logo bar is a row above the map and the corner is free;
+     the wide layout lifts it under the floating bar instead. */
+  --home-map-corner-clearance: 0px;
 }
 
 /* Emerald keeps the top bar part of the page wash: no painted surface and no
@@ -3286,16 +3286,28 @@ button {
 }
 
 .home-geo-disabled { justify-content: center; min-height: 4.5rem; }
-.home-geo-heading { position: absolute; z-index: 3; top: var(--home-header-height, 0px); right: 0; }
-.home-geo-actions { display: flex; flex: none; margin-left: auto; }
-.home-geo-icon[data-tooltip] { position: relative; }
-.home-geo-icon[data-tooltip]::after { content: attr(data-tooltip); position: absolute; z-index: 11; top: 100%; right: 0; padding: 0.35rem 0.55rem; border-radius: 0.4rem; color: white; background: var(--ink); font-size: 0.7rem; white-space: nowrap; visibility: hidden; pointer-events: none; }
-.home-geo-icon[data-tooltip]:hover::after, .home-geo-icon[data-tooltip]:focus-visible::after { visibility: visible; }
-.home-geo .home-geo-icon { box-shadow: none; outline: none; min-height: 44px; }
-.home-geo .home-geo-icon:focus-visible { outline: 2px solid var(--brand-strong); outline-offset: -5px; }
-.home-geo-icon { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 44px; height: 44px; padding: 11px; border: 0; border-radius: 0.5rem; background: transparent; color: var(--muted); cursor: pointer; }
-.home-geo-icon:hover, .home-geo-icon[aria-expanded='true'] { background: rgba(16, 185, 129, 0.08); color: var(--brand-strong); }
-.home-geo-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+/* The corner country count. It carries no pointer events of its own, so the map
+   under it stays fully interactive. */
+.home-geo-count {
+  position: absolute;
+  z-index: 2;
+  top: var(--home-map-corner-clearance, 0px);
+  right: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0.12rem 0.4rem;
+  border-radius: 0.375rem;
+  color: var(--brand-strong);
+  background: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(8px);
+  font-size: 0.68rem;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.home-geo-count-dot { width: 0.375rem; height: 0.375rem; flex: none; border-radius: 50%; background: var(--brand-strong); }
 .home-geo-canvas { position: relative; width: 100%; aspect-ratio: 1000 / 394; }
 .home-geo-svg { display: block; width: 100%; height: 100%; }
 .home-geo-land path { fill: rgba(137, 160, 148, 0.12); stroke: rgba(112, 141, 124, 0.22); stroke-width: 0.5; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
@@ -3324,14 +3336,16 @@ button {
      runs behind it. The bar keeps the higher stacking order, and stays
      pointer-inert so it cannot swallow clicks meant for the map it floats over;
      only its own controls opt back in. */
-  .home-shell { --home-header-height: 68px; }
-
   .home-shell .app-header {
     position: absolute;
     top: 0;
     inset-inline: 0;
     pointer-events: none;
   }
+
+  /* The bar floats over the map, so the corner indicator starts below it rather
+     than under the brand and the Admin link. */
+  .home-shell { --home-map-corner-clearance: 4.5rem; }
 
   .home-shell .app-header a,
   .home-shell .app-header button {
@@ -3355,34 +3369,6 @@ button {
     justify-self: end;
   }
 
-  /* Expanded: the band takes the whole content width. */
-  .home-stage:has(.home-geo-canvas[data-expanded='true']) > .home-geo { width: 100%; }
-
-  .home-stage:has(.home-geo-canvas[data-expanded='true']) .home-stage-content {
-    width: min(46%, 32rem);
-  }
-}
-
-/* Expanded map on a narrow screen: the band breaks out of the page gutter and
-   runs edge to edge, while the summary, filters and Node cards keep their
-   original gutter. This is a full-width grid track, not a negative margin. */
-@media (max-width: 63.999rem) {
-  .home-shell .app-main:has(.home-geo-canvas[data-expanded='true']) { padding-inline: 0; }
-
-  .home-dashboard:has(.home-geo-canvas[data-expanded='true']) {
-    display: grid;
-    grid-template-columns: var(--home-gutter) minmax(0, 1fr) var(--home-gutter);
-  }
-
-  .home-dashboard:has(.home-geo-canvas[data-expanded='true']) > * { grid-column: 2; }
-
-  .home-dashboard:has(.home-geo-canvas[data-expanded='true']) > .home-stage {
-    grid-column: 1 / -1;
-    grid-template-columns: var(--home-gutter) minmax(0, 1fr) var(--home-gutter);
-  }
-
-  .home-stage:has(.home-geo-canvas[data-expanded='true']) > .home-geo { grid-area: 1 / 1 / 2 / -1; }
-  .home-stage:has(.home-geo-canvas[data-expanded='true']) > .home-stage-content { grid-area: 2 / 2 / 3 / 3; }
 }
 
 @media (max-width: 30rem) {

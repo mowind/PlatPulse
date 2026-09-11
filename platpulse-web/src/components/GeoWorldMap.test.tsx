@@ -93,11 +93,9 @@ describe('GeoWorldMap', () => {
     await screen.findByRole('img', { name: 'Peer countries map' })
     const map = screen.getByRole('region', { name: 'Peer countries' })
 
-    // The only control left on the map is the expand toggle: the information
-    // and status controls, and the whole disclosure they opened, were removed.
-    const buttons = map.querySelectorAll('button')
-    expect(buttons).toHaveLength(1)
-    expect(buttons[0].getAttribute('aria-label')).toBe('Show full map')
+    // The map carries no control at all: the information and status controls,
+    // the disclosure they opened, and the expand toggle were all removed.
+    expect(map.querySelectorAll('button')).toHaveLength(0)
     expect(screen.queryByRole('dialog')).toBeNull()
 
     // No heading, no sentence, and no attribution is painted onto the map.
@@ -306,7 +304,7 @@ describe('GeoWorldMap', () => {
     stubFetch(geometryResponse)
     const { rerender } = renderMap({ networks: [], loading: true, hasProjection: false })
     expect(screen.getByRole('status').textContent).toBe('Loading data')
-    expect(screen.getByRole('button', { name: 'Show full map' }).hasAttribute('disabled')).toBe(true)
+    expect(screen.queryByRole('img', { name: 'Peer countries map' })).toBeNull()
 
     rerender(<GeoWorldMap networks={[]} networkFilter="all" loading={false} hasProjection={false} />)
     expect(screen.getByRole('status').textContent).toBe('Data unavailable')
@@ -342,20 +340,62 @@ describe('GeoWorldMap', () => {
     expect(screen.getByRole('status').textContent).toBe('Observation status varies')
   })
 
-  it('offers a labelled, expanded-state-aware map control', async () => {
+  it('shows the country count as a green dot and a number in the map corner', async () => {
     stubFetch(geometryResponse)
+    // The default projection carries three countries, on seven Peer records.
     renderMap()
     await screen.findByRole('img', { name: 'Peer countries map' })
-    const toggle = screen.getByRole('button', { name: 'Show full map' })
-    expect(toggle.getAttribute('aria-expanded')).toBe('false')
-    const canvasId = toggle.getAttribute('aria-controls')
-    expect(document.getElementById(canvasId as string)).toBeTruthy()
+    const map = screen.getByRole('region', { name: 'Peer countries' })
+    const count = map.querySelector('.home-geo-count')
 
-    fireEvent.click(toggle)
-    expect(screen.getByRole('button', { name: 'Collapse map' }).getAttribute('aria-expanded')).toBe('true')
-    fireEvent.click(screen.getByRole('button', { name: 'Collapse map' }))
-    expect(screen.getByRole('button', { name: 'Show full map' }).getAttribute('aria-expanded')).toBe('false')
-    expect(screen.getByRole('img', { name: 'Peer countries map' })).toBeTruthy()
+    expect(count, 'the corner indicator exists').toBeTruthy()
+    expect(count!.querySelector('.home-geo-count-dot'), 'it is marked by a dot').toBeTruthy()
+    expect(count!.textContent, 'it states the number of countries').toContain('3')
+    expect(count!.textContent, 'the dot and number are named for assistive technology')
+      .toContain('Countries with Peer records')
+    // Countries, never Peer records: seven records must not leak into this figure.
+    expect(count!.textContent).not.toContain('7')
+  })
+
+  it('hides the corner count when no country has a record', async () => {
+    stubFetch(geometryResponse)
+    const zero = { countries: [], knownCountryCount: 0, unknownCountryCount: 0, availablePeerCount: 0, unknownWithPublicIpCount: 0 }
+    renderMap({ networks: [network({ geo: zero })] })
+    await screen.findByRole('img', { name: 'Peer countries map' })
+
+    expect(screen.getByRole('region', { name: 'Peer countries' }).querySelector('.home-geo-count')).toBeNull()
+  })
+
+  it('counts countries scoped to the current Network filter', async () => {
+    stubFetch(geometryResponse)
+    const mainnet = network({ networkKey: 'mainnet' })
+    const testnet = network({
+      networkKey: 'testnet',
+      displayName: 'Testnet',
+      geo: { countries: [{ ...deCountry, staleCount: 0 }], knownCountryCount: 2, unknownCountryCount: 0, availablePeerCount: 2, unknownWithPublicIpCount: 0 },
+    })
+    const { rerender } = renderMap({ networks: [mainnet, testnet], networkFilter: 'testnet' })
+    await screen.findByRole('img', { name: 'Peer countries map' })
+    // One country in the filtered scope, even though the unfiltered scope has three.
+    expect(screen.getByRole('region', { name: 'Peer countries' }).querySelector('.home-geo-count')!.textContent).toContain('1')
+
+    rerender(<GeoWorldMap networks={[mainnet, testnet]} networkFilter="all" loading={false} hasProjection />)
+    expect(screen.getByRole('region', { name: 'Peer countries' }).querySelector('.home-geo-count')!.textContent).toContain('3')
+  })
+
+  it('renders the map itself as the only interactive surface', async () => {
+    stubFetch(geometryResponse)
+    const { container } = renderMap()
+    await screen.findByRole('img', { name: 'Peer countries map' })
+
+    // Interaction lives on the map, not on controls beside it: the country
+    // fills and the quantity markers are the tab stops.
+    const map = screen.getByRole('region', { name: 'Peer countries' })
+    expect(map.querySelectorAll('button')).toHaveLength(0)
+    const markers = screen.getAllByRole('button', { name: /records$/ })
+    expect(markers.length).toBeGreaterThan(0)
+    for (const marker of markers) expect(marker.getAttribute('tabindex')).toBe('0')
+    expect(container.querySelectorAll('.home-geo-observed path')).toHaveLength(2)
   })
 
   it('keeps the rest of Home alive when the map cannot render', () => {

@@ -53,10 +53,8 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
   // synthesized mouse-leave burst that must not erase what the user opened.
   const [pinned, setPinned] = useState(false)
   const lastPointerType = useRef<string | null>(null)
-  const canvasId = useId()
   const svgTitleId = useId()
   const svgDescriptionId = useId()
-  const [expanded, setExpanded] = useState(false)
   const canvas = useRef<HTMLDivElement>(null)
   const [canvasWidth, setCanvasWidth] = useState(600)
   const [tooltipAt, setTooltipAt] = useState({ x: 0, y: 0 })
@@ -198,17 +196,23 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
 
   return (
     <section className="home-geo" aria-label={PEER_COUNTRIES_HEADING} data-state={status} data-scope={overview.scope}>
-      <header className="home-geo-heading">
-        <div className="home-geo-actions">
-          <button type="button" className="home-geo-icon" title={expanded ? 'Collapse map' : 'Show full map'} data-tooltip={expanded ? 'Collapse map' : 'Show full map'} aria-label={expanded ? 'Collapse map' : 'Show full map'} aria-expanded={expanded} aria-controls={canvasId} disabled={!geometryReady && !expanded} onClick={() => { clearActive(); setExpanded((current) => !current) }}>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M4 9h5V4M20 9h-5V4M4 15h5v5M20 15h-5v5' : 'M9 4H4v5M15 4h5v5M4 15v5h5M20 15v5h-5'} /></svg>
-          </button>
-        </div>
-      </header>
-      {/* The only status surface left: an abnormal state stays announced to
+      {/* The map carries no control of its own: no title, no count, no status
+          glyph, and no expand toggle. An abnormal state stays announced to
           assistive technology without putting a glyph or a sentence on the map. */}
       {notice && <span className="sr-only" role="status">{notice}</span>}
-      <div ref={canvas} className="home-geo-canvas" id={canvasId} data-expanded={expanded} style={bounds ? { aspectRatio: `${bounds.right - bounds.left} / ${bounds.bottom - bounds.top}` } : undefined}>
+      {/* The one standing figure on the map, matching the reference theme's
+          corner indicator: a green dot and how many countries have Peer records
+          in scope. It is a count of countries, never a Peer-record or unique-Peer
+          total, and it stays pointer-inert so the map underneath keeps every
+          hover and tap. */}
+      {geometryReady && overview.countries.length > 0 && (
+        <p className="home-geo-count">
+          <span className="home-geo-count-dot" aria-hidden="true" />
+          <span className="sr-only">Countries with Peer records: </span>
+          {formatGeoCount(overview.countries.length)}
+        </p>
+      )}
+      <div ref={canvas} className="home-geo-canvas" style={bounds ? { aspectRatio: `${bounds.right - bounds.left} / ${bounds.bottom - bounds.top}` } : undefined}>
         {geometryReady ? (
           <svg
             className="home-geo-svg"

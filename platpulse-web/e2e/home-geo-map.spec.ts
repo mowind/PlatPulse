@@ -2,7 +2,6 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test, type Page, type TestInfo } from '@playwright/test'
 import {
-  expectFocusedElementHasVisibleFocus,
   expectNoHorizontalOverflow,
   expectVisibleInteractiveTargets,
   loginAs,
@@ -153,18 +152,26 @@ async function expectQuietMap(page: Page) {
     expect(presentation.clip !== 'auto' || presentation.clipPath !== 'none').toBe(true)
   }
 
-  const buttons = await map.locator('button').all()
-  expect(buttons, 'the map keeps exactly one control').toHaveLength(1)
-  for (const button of buttons) {
-    const box = (await button.boundingBox())!
-    expect(box.width).toBeGreaterThanOrEqual(44)
-    expect(box.height).toBeGreaterThanOrEqual(44)
-    const icon = button.locator('svg')
-    await expect(icon).toHaveCount(1)
-    const iconBox = (await icon.boundingBox())!
-    expect(iconBox.width).toBeCloseTo(16, 0)
-    expect(iconBox.height).toBeCloseTo(16, 0)
-    expect((await button.textContent())?.trim()).toBe('')
+  // No control lives on the map at all: the expand toggle, the information and
+  // status controls, and their disclosure were all removed. Interaction is the
+  // map itself.
+  await expect(map.locator('button')).toHaveCount(0)
+
+  // The single standing figure is the corner country count. When it is present
+  // it must be a country count inside the map, and pointer-inert so it never
+  // steals a hover from the country under it.
+  const count = map.locator('.home-geo-count')
+  if (await count.count() > 0) {
+    const countBox = (await count.boundingBox())!
+    const countStyle = await count.evaluate(element => getComputedStyle(element).pointerEvents)
+    expect(countStyle, 'the country count never intercepts map pointers').toBe('none')
+    const probe = await page.evaluate(({ x, y }) => {
+      const element = document.elementFromPoint(x, y)
+      return element ? (element.closest('svg[role="img"]') ? 'map' : 'count') : 'none'
+    }, { x: Math.round(countBox.x + countBox.width / 2), y: Math.round(countBox.y + countBox.height / 2) })
+    expect(probe, 'the map underneath the count still receives pointers').toBe('map')
+    await expect(count.locator('.home-geo-count-dot')).toHaveCount(1)
+    await expect(count).toHaveText(/^Countries with Peer records: [\d,]+$/)
   }
 }
 
@@ -303,11 +310,7 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     await expect(map.getByRole('tooltip')).toHaveCount(0)
     expect(await positions()).toEqual(before)
     await china.press('Enter')
-    await page.getByRole('button', { name: 'Show full map' }).click()
-    await expect(map.getByRole('tooltip')).toHaveCount(0)
-    expect(await positions()).toEqual(before)
     await expectNoHorizontalOverflow(page)
-    await page.getByRole('button', { name: 'Collapse map' }).click()
     await page.setViewportSize(original)
   })
 
@@ -319,13 +322,15 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     try {
       await page.reload()
       const map = page.getByRole('region', { name: 'Peer countries' })
-      await expect(map.getByRole('button', { name: 'Show full map' })).toBeDisabled()
       await expect(map.getByRole('status')).toContainText('Loading map')
+      await expect(map.getByRole('img', { name: 'Peer countries map' })).toHaveCount(0)
+      await expect(map.locator('.home-geo-count')).toHaveCount(0)
       await expectQuietMap(page)
       await capture(page, testInfo, 'fixture-loading-' + testInfo.project.name)
       release()
       await expect(map.getByRole('img', { name: 'Peer countries map' })).toBeVisible({ timeout: 30_000 })
-      await expect(map.getByRole('button', { name: 'Show full map' })).toBeEnabled()
+      // Once the basemap resolves, the corner country count appears with it.
+      await expect(map.locator('.home-geo-count')).toHaveText(/^Countries with Peer records: [\d,]+$/)
     } finally {
       release()
       await page.unroute('**/assets/geo/**')
@@ -366,12 +371,17 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     }, { map: mapBox, header: headerBox })
     expect(topStrip, 'the map receives pointers in the strip the header floats over').toBe('map')
 
-    // The map's own control sits clear of the brand and the Admin link.
-    const expandBox = (await map.getByRole('button', { name: 'Show full map' }).boundingBox())!
+    // The corner country count sits clear of the brand and the Admin link, and it
+    // states the number of countries the map is actually drawing.
+    const countBox = (await map.locator('.home-geo-count').boundingBox())!
     const adminBox = (await page.locator('.admin-icon-link').boundingBox())!
-    const overlaps = expandBox.x < adminBox.x + adminBox.width && expandBox.x + expandBox.width > adminBox.x
-      && expandBox.y < adminBox.y + adminBox.height && expandBox.y + expandBox.height > adminBox.y
-    expect(overlaps, 'the expand control never collides with the Admin link').toBe(false)
+    const overlaps = countBox.x < adminBox.x + adminBox.width && countBox.x + countBox.width > adminBox.x
+      && countBox.y < adminBox.y + adminBox.height && countBox.y + countBox.height > adminBox.y
+    expect(overlaps, 'the country count never collides with the Admin link').toBe(false)
+    expect(countBox.y, 'the country count sits below the floating logo bar').toBeGreaterThanOrEqual(headerBox.height - 1)
+    const drawnCountries = await map.getByRole('img', { name: 'Peer countries map' }).locator('.home-geo-observed path').count()
+    const stated = Number((await map.locator('.home-geo-count').textContent())!.replace(/\D/g, ''))
+    expect(stated, 'the corner figure matches the countries the map fills').toBe(drawnCountries)
 
     // The summary overlays the map band's left edge, clear of the logo bar, and
     // the map still runs out to the right of it.
@@ -447,22 +457,25 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     // Delivered evidence at the project's own 1280x800 acceptance viewport,
     // then at the wider 1440x900 review viewport named by the issue.
     await capture(page, testInfo, 'home-1280-compact')
-    const desktopWorld = await worldBox(page)
-    await page.getByRole('button', { name: 'Show full map' }).click()
-    await expect.poll(async () => (await worldBox(page)).width).toBeGreaterThan(desktopWorld.width)
-    await expectNoHorizontalOverflow(page)
 
-    // Expanding widens the band to the whole content width; the summary keeps
-    // its 2x2 overlay over the band's left edge, so no half-row is orphaned and
-    // nothing is pushed down. The pointer is parked first, because a hovered
-    // card lifts by 2px.
+    // There is no expansion any more: the band keeps its size, the summary keeps
+    // its 2x2 overlay, and nothing is pushed down. The pointer is parked first,
+    // because a hovered card lifts by 2px.
     await page.mouse.move(4, 4)
     await page.waitForTimeout(250)
-    const expandedLayout = await page.evaluate(() => {
+    const settled = await page.evaluate(() => {
       const facts = [...document.querySelectorAll<HTMLElement>('.dashboard-summary-card')].map(card => card.getBoundingClientRect())
       const map = document.querySelector('.home-geo')!.getBoundingClientRect()
-      const mapStillCoversSummary = facts.every(fact =>
-        fact.left < map.right && map.left < fact.right && fact.top < map.bottom && map.top < fact.bottom)
+      // The summary is one block: its right column reaches over the band, so the
+      // block as a whole overlaps. Individual cards are not required to.
+      const summary = {
+        left: Math.min(...facts.map(fact => fact.left)),
+        right: Math.max(...facts.map(fact => fact.right)),
+        top: Math.min(...facts.map(fact => fact.top)),
+        bottom: Math.max(...facts.map(fact => fact.bottom)),
+      }
+      const mapStillCoversSummary = summary.left < map.right && map.left < summary.right
+        && summary.top < map.bottom && map.top < summary.bottom
       return {
         cards: facts.length,
         rows: new Set(facts.map(fact => Math.round(fact.top))).size,
@@ -471,13 +484,11 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
         mapStillCoversSummary,
       }
     })
-    expect(expandedLayout.cards, 'all four statistics are laid out').toBe(4)
-    expect(expandedLayout.rows, 'statistics keep their 2x2 shape').toBe(2)
-    expect(expandedLayout.columns, 'statistics keep their two columns').toBe(2)
-    expect(expandedLayout.mapSpan, 'the expanded band spans the full content width').toBeGreaterThan(desktopWorld.width)
-    expect(expandedLayout.mapStillCoversSummary, 'the summary still overlays the expanded band').toBe(true)
-    await capture(page, testInfo, 'home-1280-expanded')
-    await page.getByRole('button', { name: 'Collapse map' }).click()
+    expect(settled.cards, 'all four statistics are laid out').toBe(4)
+    expect(settled.rows, 'statistics keep their 2x2 shape').toBe(2)
+    expect(settled.columns, 'statistics keep their two columns').toBe(2)
+    expect(settled.mapSpan, 'the band keeps its width: there is no expansion').toBe(Math.round(mapBox.width))
+    expect(settled.mapStillCoversSummary, 'the summary still overlays the band').toBe(true)
 
     await page.setViewportSize({ width: 1440, height: 900 })
     await expectNoHorizontalOverflow(page)
@@ -572,20 +583,23 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     expect(viewBox[2], 'viewBox keeps the whole world width').toBeLessThanOrEqual(1004)
     expect(viewBox[3] / viewBox[2], 'world is never cropped to a sliver').toBeGreaterThan(0.38)
 
-    const toggle = map.getByRole('button', { name: 'Show full map' })
-    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
-    await toggle.focus()
-    await expectFocusedElementHasVisibleFocus(page)
-    await toggle.press('Enter')
-    await expect(map.getByRole('button', { name: 'Collapse map' })).toHaveAttribute('aria-expanded', 'true')
-    await expect.poll(async () => (await worldBox(page)).width).toBeGreaterThan(compactWorld.width)
-    expect((await worldBox(page)).height).toBeGreaterThan(compactWorld.height)
+    // There is no expand control, and the band does not change size: keyboard
+    // focus lands on the map's own data, and the geometry stays put.
+    await expect(map.locator('button')).toHaveCount(0)
+    const marker0 = map.locator('g[role="button"]').first()
+    await marker0.focus()
+    // The map's own data carries the keyboard focus ring. An SVG group has no CSS
+    // outline, so the indicator is the stroke the focused marker's hit circle
+    // takes; the shared helper only understands HTMLElement and cannot see it.
+    await expect.poll(async () => marker0.evaluate((element) =>
+      document.activeElement === element && element.matches(':focus-visible'))).toBe(true)
+    const focusRing = await marker0.evaluate((element) => {
+      const hit = element.querySelector('.home-geo-marker-hit')
+      return hit ? Number.parseFloat(getComputedStyle(hit).strokeWidth) : 0
+    })
+    expect(focusRing, 'the focused marker shows a visible ring').toBeGreaterThan(0)
+    expect((await worldBox(page)).width).toBeCloseTo(compactWorld.width, 0)
     await expectNoHorizontalOverflow(page)
-
-    // Collapsing restores the compact canvas instead of hiding the map.
-    await map.getByRole('button', { name: 'Collapse map' }).press('Enter')
-    await expect(map.getByRole('button', { name: 'Show full map' })).toHaveAttribute('aria-expanded', 'false')
-    await expect.poll(async () => Math.round((await canvas.boundingBox())!.height)).toBeLessThanOrEqual(Math.round(compact.height) + 2)
 
     // The compact map stays interactive: pointing at a quantity marker also
     // lights the country it belongs to, and opens its exact count.
@@ -633,11 +647,10 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     expect(mapBox.y + mapBox.height, 'the map sits above the statistics').toBeLessThanOrEqual(stats.y + 1)
 
     await capture(page, testInfo, 'home-375-compact')
-    await map.getByRole('button', { name: 'Show full map' }).click()
-    await expect.poll(async () => (await worldBox(page)).width).toBeGreaterThan(compactWorld.width)
-    expect((await worldBox(page)).height).toBeGreaterThan(compactWorld.height)
+    // No expand control here either: the band keeps its size at 375px.
+    await expect(map.locator('button')).toHaveCount(0)
+    expect((await worldBox(page)).width).toBeCloseTo(compactWorld.width, 0)
     await expectNoHorizontalOverflow(page)
-    await capture(page, testInfo, 'home-375-expanded')
   })
 
   test('keeps the four statistics global while the filter changes the map scope', async ({ page }) => {
@@ -707,8 +720,8 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
       const map = page.getByRole('region', { name: 'Peer countries' })
       await expect(map.getByRole('status')).toHaveText('Peer countries · Disabled by server')
       await expect(map.getByRole('img', { name: 'Peer countries map' })).toHaveCount(0)
-      // Nothing is expanded and nothing can be: the single control stays, disabled.
-      await expect(map.getByRole('button', { name: 'Show full map' })).toBeDisabled()
+      // No basemap means no map, and the corner count goes with it.
+      await expect(map.locator('.home-geo-count')).toHaveCount(0)
       await expectQuietMap(page)
       await capture(page, testInfo, 'fixture-disabled-' + testInfo.project.name)
 
