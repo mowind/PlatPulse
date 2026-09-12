@@ -64,13 +64,12 @@ Disabled
 Unsupported
 Empty
 Peer data current
-Live updates connected
 Connecting to live updates
 Live updates paused
 You are offline
 ```
 
-`Peer data current` is a scoped, low-weight healthy summary for Peer Insight; it does not replace the independent Collection, Freshness, or Value terms when those dimensions need explanation. `Online` and `N/A` are not generic replacements. Status communication always includes text and an icon or equivalent explanation; color is supplementary.
+`Peer data current` is a scoped, low-weight healthy summary for Peer Insight; it does not replace the independent Collection, Freshness, or Value terms when those dimensions need explanation. `Online` and `N/A` are not generic replacements. Status communication always includes text and an icon or equivalent explanation; color is supplementary. An open SSE stream renders no transport notice: the positive transport state is deliberately silent because it changes nothing the visitor should do or believe. `Live updates connected` is therefore not part of this vocabulary and must not be reintroduced; only `Connecting to live updates` and `Live updates paused` are rendered and announced.
 
 ## 3. Surfaces and authorization
 
@@ -268,7 +267,7 @@ SSE contains invalidation/resource identity or collection reset, not authoritati
 
 The Public/Admin event endpoints accept cursor recovery through the `after` query parameter or the `Last-Event-ID` header (the reconnect header takes precedence when both are supplied). Responses are `text/event-stream`; each emitted event uses the `invalidation` event name, a numeric event id/cursor, and JSON `data` with `version`, `eventId`, `resource`, optional `resourceId`, `revision`, and optional `reset`. A first connection without a cursor starts after the current buffered sequence because REST has already supplied the snapshot; the browser should send the last received cursor when reconnecting and discard/reconcile events older than its current authorization generation.
 
-SSE connection status is visible but does not cover valid content. Public Home/Network/Node surfaces show `Connecting to live updates` while connecting, `Live updates connected` for an open stream, and `Live updates paused` after disconnect; browser/network loss additionally uses `You are offline` when the browser signal is authoritative. The compact Admin header retains its existing `Starting`/`Current` transport labels so this public wording change does not increase Admin information density. These transport labels never certify REST refresh success, observation freshness, Agent liveness, or Node Health. The current generated OpenAPI records the stream operation but does not fully describe every cursor/header/event field; runtime `realtime` behavior is the authority for replay.
+SSE connection status is visible but does not cover valid content. Public Home/Network/Node surfaces show `Connecting to live updates` while connecting and `Live updates paused` after disconnect; an open stream renders no transport notice at all, because a connected stream changes nothing the visitor should do or believe. Browser/network loss additionally uses `You are offline` when the browser signal is authoritative. The compact Admin header retains its existing `Starting`/`Current` transport labels so public transport wording does not increase Admin information density. These transport labels never certify REST refresh success, observation freshness, Agent liveness, or Node Health. The current generated OpenAPI records the stream operation but does not fully describe every cursor/header/event field; runtime `realtime` behavior is the authority for replay.
 
 SSE updates must preserve filters, sorting, scroll, expansion, and ordinary drafts. They do not reorder a list merely because a timestamp changed.
 
@@ -802,14 +801,14 @@ The fixed acceptance viewports are 360x800, 390x844, 768x1024, and 1280x800. At 
 
 ### State and realtime acceptance
 
-The UI keeps collection state, freshness state, value state, and authorization state independent. It renders the fixed user-facing vocabulary from this document: Starting, Current, Stale, Error, Unknown, Disabled, Unsupported, Empty, Live updates connected, Connecting to live updates, Live updates paused, and You are offline.
+The UI keeps collection state, freshness state, value state, and authorization state independent. It renders the fixed user-facing vocabulary from this document: Starting, Current, Stale, Error, Unknown, Disabled, Unsupported, Empty, Connecting to live updates, Live updates paused, and You are offline.
 
 - Initial route loads show a meaningful Starting/loading state and do not fabricate values.
 - A successful observation may show Current or an authoritative empty value. A successful Peer Snapshot/aggregate of zero is displayed as zero, not Unknown; omitted/unsupported peer collection remains distinct.
 - An Error or Stale observation may retain LastGood data, but the UI must show the error/stale reason and age/freshness supplied by the Server. It must never convert Unknown, stale, never-observed, Disabled, or Unsupported into 0, false, or Healthy.
 - Node, history, metric-history, peer-history, and validator requests fail independently. A failed optional module does not erase the Node summary or unrelated successful modules.
 - A normal SSE invalidation preserves the currently displayed Node and view context while the exact Public resource is refetched. A reset, authorization transition, Node ID change, or access recheck clears affected sensitive projection state before the next render and may show a revalidation state.
-- SSE carries invalidation/reset signals only. REST remains authoritative for all displayed business values. A disconnected stream announces Live updates paused; browser-offline state may additionally announce You are offline.
+- SSE carries invalidation/reset signals only. REST remains authoritative for all displayed business values. A disconnected stream announces Live updates paused; an open stream announces nothing, because the positive transport state is silent; browser-offline state may additionally announce You are offline.
 - Retired, deleted, forbidden, or unknown public Nodes use non-leaking unavailable copy and never reveal whether a protected record exists.
 
 ### Navigation and accessibility acceptance

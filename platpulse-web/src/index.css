@@ -177,28 +177,6 @@ body {
   font-weight: 700;
 }
 
-/* Plain-text live notices (Home shell) render as a tinted pill; Admin
-   pages embed a StatusBadge and keep a quiet text line. */
-.realtime-notice:not(:has(.status-badge)) {
-  padding: 0.3rem 0.75rem;
-  border-radius: 999px;
-  background: var(--green-bg);
-  color: var(--green);
-}
-
-.realtime-notice:not(:has(.status-badge))::before {
-  content: '';
-  width: 0.5rem;
-  height: 0.5rem;
-  border-radius: 50%;
-  background: currentColor;
-}
-
-.realtime-notice[data-live='false']:not(:has(.status-badge)) {
-  background: var(--amber-bg);
-  color: var(--amber);
-}
-
 .sign-out {
   min-height: 44px;
   padding: 0.4rem 0.85rem;
@@ -3125,6 +3103,15 @@ button {
   padding-top: 0;
 }
 
+/* The transport container stays mounted so the connected state keeps a stable
+   hook (and "You are offline" can still appear alone); it mirrors
+   .home-stage-content's gap so removing a notice never changes sibling spacing. */
+.dashboard-live-notices {
+  display: grid;
+  gap: 0.7rem;
+  min-width: 0;
+}
+
 .dashboard-live {
   display: inline-flex;
   min-height: 36px;
@@ -3356,6 +3343,7 @@ button {
 
 @media (max-width: 30rem) {
   .home-stage-content { gap: 0.6rem; }
+  .dashboard-live-notices { gap: 0.6rem; }
   .home-overview-stats { gap: 0.55rem; }
 }
 
@@ -4549,8 +4537,6 @@ button {
 .admin-shell .form-success, .admin-shell .form-ok { color: var(--green); background: var(--green-bg); border-color: rgba(5, 150, 105, 0.2); }
 .admin-shell .server-status, .admin-shell .warning-copy, .admin-shell .secret-panel { color: var(--amber); background: var(--amber-bg); border-color: rgba(146, 64, 14, 0.2); }
 .admin-shell .secret-value { color: var(--ink); background: #ffffff; }
-.admin-shell .realtime-notice:not(:has(.status-badge)) { color: var(--green); background: var(--green-bg); border: 1px solid rgba(5, 150, 105, 0.2); }
-.admin-shell .realtime-notice[data-live='false']:not(:has(.status-badge)) { color: var(--amber); background: var(--amber-bg); border-color: rgba(146, 64, 14, 0.2); }
 .admin-shell .status-badge-neutral { color: #475569; background: #f1f5f9; border-color: rgba(100, 116, 139, 0.2); }
 .admin-shell .status-badge-ok { color: var(--green); background: var(--green-bg); border-color: rgba(5, 150, 105, 0.2); }
 .admin-shell .status-badge-warning { color: var(--amber); background: var(--amber-bg); border-color: rgba(146, 64, 14, 0.2); }

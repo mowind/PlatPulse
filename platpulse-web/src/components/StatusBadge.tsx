@@ -13,7 +13,6 @@ const STATUS_ICONS: Record<string, string> = {
   Unsupported: '⚠',
   Empty: '∅',
   'Evaluation unavailable': '?',
-  'Live updates connected': '✓',
   'Connecting to live updates': '…',
   'Live updates paused': '⏸',
   'Peer data current': '✓',

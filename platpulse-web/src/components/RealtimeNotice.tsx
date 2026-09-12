@@ -6,15 +6,20 @@ type RealtimeState = {
 }
 
 export type RealtimeStreamLabel =
-  | 'Live updates connected'
   | 'Connecting to live updates'
   | 'Live updates paused'
 
 type AdminRealtimeStreamLabel = 'Current' | 'Starting' | 'Live updates paused'
 
-export function realtimeStreamLabel(status: RealtimeState['status']): RealtimeStreamLabel {
+/**
+ * A public transport notice is only rendered when the transport state changes
+ * how the visitor should read the page (design §6.3): an open stream renders no
+ * notice at all, because it certifies neither observation freshness nor Node
+ * Health and needs no visitor action.
+ */
+export function realtimeStreamLabel(status: RealtimeState['status']): RealtimeStreamLabel | null {
   return status === 'connected'
-    ? 'Live updates connected'
+    ? null
     : status === 'connecting'
       ? 'Connecting to live updates'
       : 'Live updates paused'
@@ -36,15 +41,16 @@ export function RealtimeNotice({ realtime, surface = 'public' }: { realtime: Rea
     : realtime.status === 'disconnected' ? 'warning' : 'neutral'
 
   return (
-    <div className="realtime-notices" aria-live="polite">
-      <p
-        className="realtime-notice"
-        data-live={realtime.status === 'connected'}
-        role="status"
-        aria-label={streamLabel}
-      >
-        <StatusBadge status={streamLabel} tone={streamTone} />
-      </p>
+    <div className="realtime-notices" aria-live="polite" data-realtime-status={realtime.status}>
+      {streamLabel && (
+        <p
+          className="realtime-notice"
+          role="status"
+          aria-label={streamLabel}
+        >
+          <StatusBadge status={streamLabel} tone={streamTone} />
+        </p>
+      )}
       {!realtime.online && (
         <p className="realtime-notice">
           <StatusBadge status="You are offline" tone="warning" />

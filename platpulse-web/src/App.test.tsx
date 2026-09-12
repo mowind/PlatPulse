@@ -1348,7 +1348,8 @@ describe('App shell with private Home', () => {
     const metadata = screen.getByLabelText('Network identity and live updates')
     expect(within(metadata).getByText('Network key')).toBeTruthy()
     expect(within(metadata).getByText('network-with-a-very-long-key')).toBeTruthy()
-    expect(within(metadata).getByRole('status', { name: 'Live updates connected' })).toBeTruthy()
+    expect(metadata.querySelector('[data-realtime-status="connected"]')).toBeTruthy()
+    expect(within(metadata).queryByText('Live updates connected')).toBeNull()
     expect(screen.getByText('Stale', { exact: true })).toBeTruthy()
     const nodeCard = screen.getByText('Node With Unknown Health').closest('article')
     if (!nodeCard) throw new Error('Unknown-health Node card is missing')
@@ -1373,7 +1374,8 @@ describe('App shell with private Home', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'A Network Name That Wraps On Narrow Screens' })).toBeTruthy()
     window.dispatchEvent(new Event('offline'))
     expect(await screen.findByText('You are offline')).toBeTruthy()
-    expect(within(metadata).getByRole('status', { name: 'Live updates connected' })).toBeTruthy()
+    expect(metadata.querySelector('[data-realtime-status="connected"]')).toBeTruthy()
+    expect(within(metadata).queryByText('Live updates connected')).toBeNull()
   })
 
   it('keeps the Public Node route and last-good detail during a failed live refresh', async () => {

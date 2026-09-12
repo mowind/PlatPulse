@@ -53,7 +53,11 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     const metadata = page.getByLabel('Network identity and live updates')
     await expect(metadata).toContainText('Network key')
     await expect(metadata).toContainText('home-convergence')
-    await expect(metadata.getByRole('status', { name: 'Live updates connected' })).toBeVisible()
+    // An open stream is deliberately silent: the container stays mounted for the
+    // transport state, but no positive transport notice is rendered. The empty
+    // container has no box, so this is an existence check, not a visibility one.
+    await expect(metadata.locator('[data-realtime-status="connected"]')).toHaveCount(1)
+    await expect(metadata.getByText('Live updates connected')).toHaveCount(0)
 
     const adminLink = page.getByRole('link', { name: 'Admin', exact: true })
     // Icon-only like the Emerald reference: no visible label, still named for
@@ -67,14 +71,6 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await adminLink.focus()
     await expect(adminLink).toBeFocused()
     await expectNoHorizontalOverflow(page)
-
-    if (page.viewportSize()?.width === 360) {
-      const keyBox = await metadata.getByText('Network key', { exact: false }).boundingBox()
-      const statusBox = await metadata.getByRole('status', { name: 'Live updates connected' }).boundingBox()
-      expect(keyBox).not.toBeNull()
-      expect(statusBox).not.toBeNull()
-      expect(statusBox!.y).toBeGreaterThan(keyBox!.y + keyBox!.height - 1)
-    }
 
     if (testInfo.project.use.hasTouch) {
       await adminLink.tap()

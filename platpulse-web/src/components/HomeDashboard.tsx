@@ -54,6 +54,7 @@ export default function HomeDashboard({
 
   const hasProjection = !loading && (error === null || hasLastGood)
   const healthyCount = hasProjection ? records.filter(({ node }) => isHealthy(node.health)).length : null
+  const streamLabel = realtimeStreamLabel(realtimeStatus)
   return (
     <section className="page home-dashboard" aria-label="Home">
       {error && <p className="dashboard-error" role="alert">{error}</p>}
@@ -67,8 +68,10 @@ export default function HomeDashboard({
           <GeoWorldMap networks={networks} networkFilter={networkFilter} loading={loading} hasProjection={hasProjection} />
         </GeoMapBoundary>
         <div className="home-stage-content">
-          <p className={`dashboard-live dashboard-live-${realtimeTone(realtimeStatus)}`} role="status" aria-live="polite"><span aria-hidden="true" /> {realtimeStreamLabel(realtimeStatus)}</p>
-          {!online && <p className="dashboard-live dashboard-live-warning" role="status" aria-live="polite"><span aria-hidden="true" /> You are offline</p>}
+          <div className="dashboard-live-notices" data-realtime-status={realtimeStatus}>
+            {streamLabel && <p className={`dashboard-live dashboard-live-${realtimeTone(realtimeStatus)}`} role="status" aria-live="polite"><span aria-hidden="true" /> {streamLabel}</p>}
+            {!online && <p className="dashboard-live dashboard-live-warning" role="status" aria-live="polite"><span aria-hidden="true" /> You are offline</p>}
+          </div>
           <div className="home-overview-stats dashboard-summary-grid" aria-label="Home summary">
             <SummaryCard label="Active Nodes" value={hasProjection ? records.length : null} tone="indigo" />
             <SummaryCard label="Healthy Nodes" value={healthyCount} tone="green" />

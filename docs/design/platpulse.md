@@ -566,7 +566,7 @@ Admin 的 Node 页面聚焦配置与诊断（显示名、RPC Endpoint 诊断、N
 
 - 重启后从 SQLite 恢复当前投影与 Block History；
 - 重复 Report 不重复追加历史；
-- Public WebUI SSE 连接中显示 `Connecting to live updates`，连接成功显示 `Live updates connected`，断开显示 `Live updates paused`，并通过 REST 重新获取；这些传输状态不代表 Node 健康或观测新鲜度。Admin 保持紧凑的既有 `Starting`/`Current` 传输文案。
+- Public WebUI SSE 连接中显示 `Connecting to live updates`，断开显示 `Live updates paused`，并通过 REST 重新获取；连接成功的正向传输状态有意保持沉默，不渲染也不播报任何提示——它不改变访问者应当做的事或应当相信的事，只表示通道已打开，这些传输状态均不代表 Node 健康或观测新鲜度（工单 #138 取代 #126 验收标准中"连接成功显示 `Live updates connected`"一条）。Admin 保持紧凑的既有 `Starting`/`Current` 传输文案。
 
 ### 11.4 数据边界
 

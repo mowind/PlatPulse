@@ -46,7 +46,8 @@ describe('Public Home dashboard', () => {
   it('summarizes Server-owned Nodes and preserves authoritative zero peer count', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
-    expect(screen.getByText('Live updates connected')).toBeTruthy()
+    expect(screen.queryByText('Live updates connected')).toBeNull()
+    expect(document.querySelector('[data-realtime-status="connected"]')).toBeTruthy()
     expect(screen.getByText('Active Nodes').nextElementSibling?.textContent).toBe('2')
     expect(screen.getByText('Healthy Nodes').nextElementSibling?.textContent).toBe('1')
     expect(screen.getByText('Attention').nextElementSibling?.textContent).toBe('1')

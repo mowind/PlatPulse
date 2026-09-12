@@ -80,6 +80,26 @@ test.describe('SCN-HOME-RESPONSIVE-ACCESSIBILITY / live refresh transport state'
     await expectNoHorizontalOverflow(page)
   })
 
+  test('wraps the paused transport notice below the Network key at 360px', async ({ page }) => {
+    // The open stream renders no transport notice, so the wrap guarantee is
+    // asserted on the paused state, which an aborted stream reaches
+    // deterministically.
+    await page.route('**/api/public/v1/events**', (route) => route.abort())
+    await loginAs(page)
+    await page.goto('/networks/home-convergence')
+
+    const metadata = page.getByLabel('Network identity and live updates')
+    await expect(metadata.getByRole('status', { name: 'Live updates paused' })).toBeVisible()
+
+    if (page.viewportSize()?.width === 360) {
+      const keyBox = await metadata.getByText('Network key', { exact: false }).boundingBox()
+      const statusBox = await metadata.getByRole('status', { name: 'Live updates paused' }).boundingBox()
+      expect(keyBox).not.toBeNull()
+      expect(statusBox).not.toBeNull()
+      expect(statusBox!.y).toBeGreaterThan(keyBox!.y + keyBox!.height - 1)
+    }
+  })
+
   test('SCN-NODE-LAST-GOOD-REFRESH preserves the routed tab and last-good Node', async ({ page }) => {
     await installControlledRealtime(page)
     await loginAs(page)
