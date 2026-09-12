@@ -46,11 +46,19 @@ test.describe('Viewer role boundary', () => {
   test('Viewer navigation is keyboard-operable with a visible focus ring', async ({ page }) => {
     await loginAs(page, E2E_VIEWER_USERNAME, E2E_VIEWER_PASSWORD)
 
-    // Focus order for a Viewer starts with the brand and the Home scan controls.
+    // Focus order for a Viewer starts with the brand, then the Home scan
+    // controls. The Peer country map sits between them and contributes its own
+    // focusable country markers whenever the Geo provider is enabled, so walk
+    // to the filter instead of assuming a fixed second stop.
     await page.keyboard.press('Tab')
     await expect(page.getByRole('link', { name: 'PlatPulse' })).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(page.getByRole('button', { name: 'All Networks' })).toBeFocused()
+    const allNetworks = page.getByRole('button', { name: 'All Networks' })
+    let reached = false
+    for (let step = 0; step < 6 && !reached; step += 1) {
+      await page.keyboard.press('Tab')
+      reached = await allNetworks.evaluate((element) => element === document.activeElement)
+    }
+    expect(reached, 'the Home scan controls are reachable by keyboard').toBe(true)
     await expectFocusedElementHasVisibleFocus(page)
     await page.keyboard.press('Enter')
     await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()

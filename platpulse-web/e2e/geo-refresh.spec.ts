@@ -24,6 +24,10 @@ test.describe('Owner global Geo refresh', () => {
     const disabled = geoCard.getByRole('radio', { name: 'Disabled' })
     const local = geoCard.getByRole('radio', { name: 'Local MMDB' })
 
+    // Wait for the query-backed initial selection: before it lands the radios
+    // render unselected, and a redundant check of the already-selected value
+    // would leave the Save button disabled until the test times out.
+    await expect(geoCard.getByRole('radio', { checked: true })).toHaveCount(1)
     // Normalize to Disabled: the harness seeds it, but a failed earlier run
     // in the same reused Server must not change this spec's outcome.
     if (!(await disabled.isChecked())) {

@@ -53,7 +53,11 @@ pub async fn run_init(config: &ServerConfig) -> Result<InitReport, InitError> {
     // Open (creating if missing) and migrate the database; validate an
     // existing database file before SQLite touches it.
     validate_database_path(&config.db_path)?;
-    let database = initialize(ServerDatabaseConfig::new(&config.db_path)).await?;
+    let database = initialize(ServerDatabaseConfig::for_deployment(
+        &config.db_path,
+        config.development,
+    ))
+    .await?;
     database.close().await;
     secure_database_file(&config.db_path)?;
 

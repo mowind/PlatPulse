@@ -1569,7 +1569,12 @@ mod tests {
             .await
             .unwrap();
 
-        let summary = run_pass(&state, NOW).await.unwrap();
+        // The Public projection below compares retained expiries against the
+        // real clock, so this test injects the pass time from the same clock;
+        // a fixed wall-clock instant would age out of the retention boundary
+        // and turn a retained country back into Unknown.
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        let summary = run_pass(&state, &now).await.unwrap();
         assert_eq!(
             summary,
             BackfillSummary {
@@ -1591,7 +1596,7 @@ mod tests {
             .unwrap();
         assert_eq!(row.0.as_deref(), Some("SE"));
         assert_eq!(row.1, "current");
-        assert_eq!(row.4.as_deref(), Some(NOW));
+        assert_eq!(row.4.as_deref(), Some(now.as_str()));
         // The retained row is keyed by the GeoJS provider, never shared with
         // the other external provider.
         assert!(ipinfo_cache_row(&state, RESOLVABLE).await.is_none());
@@ -1599,7 +1604,7 @@ mod tests {
 
         // A retained result inside its lifetime schedules nothing.
         assert_eq!(
-            run_pass(&state, NOW).await.unwrap(),
+            run_pass(&state, &now).await.unwrap(),
             BackfillSummary::default()
         );
         assert_eq!(stub.request_count(), 1);

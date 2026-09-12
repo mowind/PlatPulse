@@ -471,9 +471,15 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     expect(surface.boxShadow).toBe('none')
     expect(Number(surface.opacity)).toBe(1)
 
-    // The map never covers the toolbar or the Node cards.
+    // The map never covers the toolbar or the Node cards. The hover checks
+    // above scrolled a Node card into view, and `mapBox` was read at the top
+    // of the page: return to the top and re-read both boxes so the comparison
+    // never mixes two scroll offsets.
+    await page.evaluate(() => window.scrollTo(0, 0))
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0)
     const toolbarBox = (await page.getByRole('group', { name: 'Network filter' }).boundingBox())!
-    expect(mapBox.y + mapBox.height).toBeLessThanOrEqual(toolbarBox.y + 1)
+    const bandBox = (await map.boundingBox())!
+    expect(bandBox.y + bandBox.height).toBeLessThanOrEqual(toolbarBox.y + 1)
     // The decorative background stays pointer-inert, so a real click inside
     // the map reaches the map image itself.
     const imageBox = (await page.getByRole('img', { name: 'Peer countries map' }).boundingBox())!
@@ -770,7 +776,10 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
       await capture(page, testInfo, 'fixture-failure-' + testInfo.project.name)
     } finally {
       await page.unroute('**/assets/geo/**')
-      await setGeoProvider(page, 'Local MMDB')
+      // The Server and its Geo provider are shared by every spec and project.
+      // The harness seeds Disabled, so restore that state instead of leaving
+      // Local MMDB behind for the specs that run later.
+      await setGeoProvider(page, 'Disabled')
     }
   })
 })

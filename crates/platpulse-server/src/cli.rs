@@ -297,7 +297,11 @@ async fn open_database_with_new_password(
     validate_password(&password).map_err(HumanCreateError::InvalidPassword)?;
 
     let password_hash = hash_password(password.as_bytes()).map_err(HumanCreateError::Hash)?;
-    let database = initialize(ServerDatabaseConfig::new(&config.db_path)).await?;
+    let database = initialize(ServerDatabaseConfig::for_deployment(
+        &config.db_path,
+        config.development,
+    ))
+    .await?;
     Ok((database, password_hash))
 }
 
@@ -310,7 +314,11 @@ pub async fn run_network_create(
     args: &NetworkCreateArgs,
 ) -> Result<(), NetworkError> {
     crate::init::restrict_umask();
-    let database = initialize(ServerDatabaseConfig::new(&config.db_path)).await?;
+    let database = initialize(ServerDatabaseConfig::for_deployment(
+        &config.db_path,
+        config.development,
+    ))
+    .await?;
     let result = create_network(
         &database,
         &args.key,
@@ -347,7 +355,11 @@ pub async fn run_create_enrollment_token(
     let lifetime = std::time::Duration::from_secs(lifetime_hours * 3600);
 
     let pepper = load_pepper_file(&config.pepper_file)?;
-    let database = initialize(ServerDatabaseConfig::new(&config.db_path)).await?;
+    let database = initialize(ServerDatabaseConfig::for_deployment(
+        &config.db_path,
+        config.development,
+    ))
+    .await?;
     let result = create_enrollment_token(&database, &pepper, None, lifetime).await;
     database.close().await;
     let record = result?;
@@ -420,8 +432,11 @@ pub async fn run_backup(config: &ServerConfig) -> Result<String, Box<dyn std::er
     } else {
         AuthConfig::production(pepper, config.public_base_url.clone())
     };
-    let database =
-        ServerDatabase::open_existing(ServerDatabaseConfig::new(&config.db_path)).await?;
+    let database = ServerDatabase::open_existing(ServerDatabaseConfig::for_deployment(
+        &config.db_path,
+        config.development,
+    ))
+    .await?;
     let state =
         crate::http::AppState::new(database, None, auth).with_backup_dir(config.backup_dir.clone());
     Ok(crate::backup::create_scheduled(&state).await?)
@@ -463,9 +478,10 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         AuthConfig::production(pepper, config.public_base_url.clone())
     };
 
-    let database =
-        crate::database::ServerDatabase::open_existing(ServerDatabaseConfig::new(&config.db_path))
-            .await?;
+    let database = crate::database::ServerDatabase::open_existing(
+        ServerDatabaseConfig::for_deployment(&config.db_path, config.development),
+    )
+    .await?;
     // Retention is a fixed, bounded startup task. Re-running after a crash is
     // safe: each invocation deletes at most one batch and never touches the
     // history state/coverage/evidence tables.

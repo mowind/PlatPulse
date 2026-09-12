@@ -249,6 +249,15 @@ printf 'Release-candidate harness: provisioning isolated identities and Network\
 "$SERVER" network create --config "$CONFIG" --key platon-mainnet --display-name 'PlatON Mainnet' --genesis-hash "0x$(printf 'a%.0s' {1..64})" --chain-id 210425 --p2p-network-id 210425 --address-hrp lat >>"$CLI_LOG" 2>&1 || fail 'Network provisioning failed; see preserved CLI log'
 "$SERVER" network create --config "$CONFIG" --key platon-testnet --display-name 'PlatON Testnet' --genesis-hash "0x$(printf 'b%.0s' {1..64})" --chain-id 2206131 --p2p-network-id 2206131 --address-hrp lat >>"$CLI_LOG" 2>&1 || fail 'Network provisioning failed; see preserved CLI log'
 
+# Mint the single-use Enrollment Token before the packaged Server starts. A
+# production Server owns its SQLite file with exclusive locking (issue #137),
+# so a CLI write made while it serves is never observed by the Server's own
+# connection; the token must already be committed when the Server opens the
+# database.
+"$SERVER" agent create-enrollment-token --config "$CONFIG" >"$RUN_ROOT/enrollment-output" 2>>"$CLI_LOG" || fail 'Enrollment token provisioning failed; see preserved CLI log'
+ENROLLMENT_TOKEN="$(tail -n 1 "$RUN_ROOT/enrollment-output")"
+[[ "$ENROLLMENT_TOKEN" == pp_enroll_* ]] || fail 'Enrollment token output was invalid'
+
 UNSAFE_METRICS_CONFIG="$RUN_ROOT/unsafe-metrics.toml"
 cat > "$UNSAFE_METRICS_CONFIG" <<EOF
 state_dir = "$STATE_DIR"
@@ -458,9 +467,6 @@ SSE_REQUEST_ID="$(request_id "$SSE_HEADERS")"
 if [[ -n "$SSE_REQUEST_ID" ]]; then LAST_REQUEST_ID="$SSE_REQUEST_ID"; fi
 
 printf 'Release-candidate harness: enrolling Agent and submitting two-Node report\n'
-"$SERVER" agent create-enrollment-token --config "$CONFIG" >"$RUN_ROOT/enrollment-output" 2>>"$CLI_LOG" || fail 'Enrollment token provisioning failed; see preserved CLI log'
-ENROLLMENT_TOKEN="$(tail -n 1 "$RUN_ROOT/enrollment-output")"
-[[ "$ENROLLMENT_TOKEN" == pp_enroll_* ]] || fail 'Enrollment token output was invalid'
 curl -sS --connect-timeout 2 --max-time 10 -D "$RUN_ROOT/enroll.headers" -o "$RUN_ROOT/enroll.body" -H "Authorization: Bearer $ENROLLMENT_TOKEN" -w '%{http_code}' -X POST "$BASE_URL/api/agent/v1/enroll" >"$RUN_ROOT/enroll.status" || fail 'Agent enrollment request failed'
 expect_security_error enrollment-token-reuse 409 enrollment_token_consumed -H "Authorization: Bearer $ENROLLMENT_TOKEN" -X POST "$BASE_URL/api/agent/v1/enroll"
 unset ENROLLMENT_TOKEN

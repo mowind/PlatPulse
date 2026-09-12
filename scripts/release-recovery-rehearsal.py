@@ -2,6 +2,7 @@
 """Black-box migration and backup/restore rehearsal for packaged Server releases."""
 from __future__ import annotations
 import argparse
+from contextlib import closing
 import datetime as dt
 import hashlib
 import json
@@ -122,7 +123,11 @@ def run(args, check=True, timeout=1200):
     return result
 
 def value(path, query, params=()):
-    with sqlite3.connect(path) as db:
+    # The Server and its CLI open the database with exclusive locking, so this
+    # helper must release the file before it returns: a connection left to the
+    # cyclic collector keeps the file attached and makes a later restore or
+    # Server start fail with SQLITE_BUSY.
+    with closing(sqlite3.connect(path)) as db:
         return db.execute(query, params).fetchone()[0]
 
 def assert_private_regular(path):
@@ -287,7 +292,7 @@ def rehearsal(server, output, skip_package):
 
     run([str(server), "backup", "--config", str(cfg)])
     good_id = value(db, "SELECT artifact_id FROM backup_artifacts WHERE verification IN ('pending', 'ok') ORDER BY rowid DESC LIMIT 1")
-    with sqlite3.connect(db) as connection:
+    with closing(sqlite3.connect(db)) as connection, connection:
         connection.execute("INSERT OR REPLACE INTO server_settings VALUES ('restore-marker', 'present', ?)", (NOW,))
     live = start(server, cfg, state / "running-restore.log")
     refused = run([str(server), "restore", "--config", str(cfg), "--artifact-id", good_id, "--yes"], check=False)
@@ -338,9 +343,14 @@ def rehearsal(server, output, skip_package):
 
     higher = output / "higher.db"
     shutil.copy2(db, higher)
-    higher_before = higher.read_bytes()
-    with sqlite3.connect(higher) as connection:
+    with closing(sqlite3.connect(higher)) as connection, connection:
         connection.execute("INSERT INTO _sqlx_migrations VALUES (999, 'future schema', CURRENT_TIMESTAMP, 1, zeroblob(48), 0)")
+    # Sample the file after that connection is closed: closing the only WAL
+    # writer checkpoints the future-schema row into the main file, so the byte
+    # comparison below observes what the Server did rather than a pending frame.
+    higher_before = higher.read_bytes()
+    # The file is released, so the Server below refuses the future schema for
+    # its own reason instead of SQLITE_BUSY.
     os.chmod(higher, 0o600)
     higher_state = output / "higher-state"
     higher_state.mkdir(mode=0o700, exist_ok=True)

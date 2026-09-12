@@ -589,7 +589,7 @@ Server 仍不会用零值填充缺失区间；Retention 按 data family 分别�
 ## 12. 部署
 
 - Agent：Linux x86_64/aarch64，建议 systemd；每 Host 一个 Agent；独立 state directory；credential 与 SQLite 严格权限；只需访问本地 RPC Endpoint 与 Server HTTPS 地址。
-- Server：单进程、单 SQLite、同源托管 WebUI；`/health/live` 只判 event loop 存活，`/health/ready` 同时检查 `sqlite`、`owner`、`web_assets`、`shutdown`、`critical_workers`、`corruption` 六个组件，并以 200/503 表达整体结果；Backup/Restore 是显式运维流程，不是启动流程。
+- Server：单进程、单 SQLite、同源托管 WebUI；`/health/live` 只判 event loop 存活，`/health/ready` 同时检查 `sqlite`、`owner`、`web_assets`、`shutdown`、`critical_workers`、`corruption` 六个组件，并以 200/503 表达整体结果；Backup/Restore 是显式运维流程，不是启动流程。非开发模式下 Server 以 SQLite `locking_mode = EXCLUSIVE` 独占数据库文件，外部 SQLite 连接（含 CLI 写入）会在 Server 运行期间被隔离，因此只能在 Server 停止时执行；开发模式保留 SQLite 常规锁，允许本地工具与 e2e fixture 直接读写运行中的数据库。
 - WebUI：React + Vite 构建为静态资源，由 Server 同源托管，生产环境不单独运行 Node.js。
 
 ---

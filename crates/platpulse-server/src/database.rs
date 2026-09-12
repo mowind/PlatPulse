@@ -83,6 +83,7 @@ const REQUIRED_TABLES: &[&str] = &[
 pub struct ServerDatabaseConfig {
     path: PathBuf,
     busy_timeout: Duration,
+    exclusive_locking: bool,
 }
 
 impl ServerDatabaseConfig {
@@ -92,12 +93,30 @@ impl ServerDatabaseConfig {
         Self {
             path: path.into(),
             busy_timeout: DEFAULT_BUSY_TIMEOUT,
+            exclusive_locking: true,
         }
+    }
+
+    /// Connection settings for a resolved deployment.
+    ///
+    /// Development mode keeps SQLite's normal locking protocol so local
+    /// tooling and the browser e2e fixture refreshers may attach to a running
+    /// Server; every other deployment pins the exclusive ownership of issue
+    /// #137, where the CLI and Backup/Restore are stopped-Server operations.
+    /// Development mode is the deliberate exception for local tooling.
+    pub fn for_deployment(path: impl Into<PathBuf>, development: bool) -> Self {
+        Self::new(path).with_exclusive_locking(!development)
     }
 
     /// Override the lock wait used by SQLite.
     pub fn with_busy_timeout(mut self, busy_timeout: Duration) -> Self {
         self.busy_timeout = busy_timeout;
+        self
+    }
+
+    /// Pin exclusive ownership of the SQLite file for every connection.
+    pub fn with_exclusive_locking(mut self, exclusive_locking: bool) -> Self {
+        self.exclusive_locking = exclusive_locking;
         self
     }
 
@@ -109,6 +128,11 @@ impl ServerDatabaseConfig {
     /// Lock wait used by this configuration.
     pub fn busy_timeout(&self) -> Duration {
         self.busy_timeout
+    }
+
+    /// Whether this configuration pins exclusive ownership of the file.
+    pub fn exclusive_locking(&self) -> bool {
+        self.exclusive_locking
     }
 }
 
@@ -201,12 +225,7 @@ impl ServerDatabase {
     ) -> Result<Self, ServerDatabaseError> {
         prepare_database_path(&config, create_if_missing)?;
         let options = sqlite_options(&config, create_if_missing);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(SERVER_WRITE_CONNECTIONS)
-            .min_connections(SERVER_WRITE_CONNECTIONS)
-            .connect_with(options)
-            .await
-            .map_err(ServerDatabaseError::Connect)?;
+        let pool = connect_serialized(&options, config.busy_timeout()).await?;
 
         // SQLite creates the main file and WAL sidecars with the process
         // umask. Secure files created by this startup path before exposing
@@ -384,23 +403,75 @@ fn secure_database_files(path: &Path, created_by_startup: bool) -> Result<(), Se
 }
 
 fn sqlite_options(config: &ServerDatabaseConfig, create_if_missing: bool) -> SqliteConnectOptions {
-    SqliteConnectOptions::new()
+    let options = SqliteConnectOptions::new()
         .filename(config.path())
         .create_if_missing(create_if_missing)
         .foreign_keys(true)
         .journal_mode(SqliteJournalMode::Wal)
         .synchronous(SqliteSynchronous::Full)
-        .busy_timeout(config.busy_timeout())
-        // The Server owns its SQLite file: every read and write goes through
-        // the single serialized pool connection. Exclusive locking keeps that
-        // ownership true at the file layer, so no other process can attach to
-        // the write-ahead log shared memory. Without it a concurrent external
-        // SQLite connection (any `sqlite3` invocation, including read-only)
-        // can become the first attacher, and SQLite then truncates `-shm` to
-        // 3 bytes while this process still has it mapped, raising SIGBUS
-        // inside `walFindFrame`. Exclusive mode makes such an attempt fail
-        // with SQLITE_BUSY instead of crashing the Server (issue #137).
-        .locking_mode(SqliteLockingMode::Exclusive)
+        .busy_timeout(config.busy_timeout());
+    if !config.exclusive_locking() {
+        // Development mode deliberately shares the file: local tooling and
+        // the browser e2e fixture refreshers write to a running dev Server.
+        return options;
+    }
+    // A production Server owns its SQLite file: every read and write goes
+    // through the single serialized pool connection. Exclusive locking keeps
+    // that ownership true at the file layer, so no other process can attach
+    // to the write-ahead log shared memory. Without it a concurrent external
+    // SQLite connection (any sqlite3 invocation, including read-only) can
+    // become the first attacher, and SQLite then truncates -shm to 3 bytes
+    // while this process still has it mapped, raising SIGBUS inside
+    // walFindFrame (issue #137) instead of failing cleanly.
+    options.locking_mode(SqliteLockingMode::Exclusive)
+}
+
+/// Delay between connection-setup retries. The total wait is bounded by the
+/// configured busy timeout, never by an unbounded loop.
+const CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+
+/// SQLite primary result code for "the database file is locked".
+const SQLITE_BUSY: i64 = 5;
+
+/// Open the single-connection write pool, absorbing a transient SQLITE_BUSY.
+///
+/// SQLite cannot invoke its busy handler for the exclusive lock that PRAGMA
+/// journal_mode/locking_mode take during connection setup, so a concurrent
+/// external SQLite connection surfaces as an immediate "database is locked"
+/// even though the configured busy timeout would have absorbed it. The retry
+/// is bounded by that same timeout and never hides another error.
+async fn connect_serialized(
+    options: &SqliteConnectOptions,
+    busy_timeout: Duration,
+) -> Result<SqlitePool, ServerDatabaseError> {
+    let deadline = tokio::time::Instant::now() + busy_timeout;
+    loop {
+        let attempt = SqlitePoolOptions::new()
+            .max_connections(SERVER_WRITE_CONNECTIONS)
+            .min_connections(SERVER_WRITE_CONNECTIONS)
+            .connect_with(options.clone())
+            .await;
+        match attempt {
+            Ok(pool) => return Ok(pool),
+            Err(error) if is_database_busy(&error) && tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(CONNECT_RETRY_INTERVAL).await;
+            }
+            Err(error) => return Err(ServerDatabaseError::Connect(error)),
+        }
+    }
+}
+
+/// Whether a SQLx error carries SQLite's SQLITE_BUSY primary result code.
+/// Extended result codes (for example SQLITE_BUSY_SNAPSHOT) share it in
+/// their low byte.
+fn is_database_busy(error: &sqlx::Error) -> bool {
+    match error {
+        sqlx::Error::Database(database) => database
+            .code()
+            .and_then(|code| code.parse::<i64>().ok())
+            .is_some_and(|code| code & 0xff == SQLITE_BUSY),
+        _ => false,
+    }
 }
 
 async fn read_pragmas(pool: &SqlitePool) -> Result<SqlitePragmas, sqlx::Error> {
@@ -740,22 +811,116 @@ mod tests {
         assert_eq!(database.pool().size(), SERVER_WRITE_CONNECTIONS);
     }
 
-    /// Issue #137: the Server owns its SQLite file, so the connection must
-    /// hold exclusive locking. A concurrent external SQLite connection that
-    /// becomes the first attacher truncates `-shm` to 3 bytes (see
-    /// `unixShmLock` in SQLite), and this process then takes SIGBUS inside
-    /// `walFindFrame` while the file is still mapped. Exclusive mode turns
-    /// that into SQLITE_BUSY in the other process instead of a crash here.
+    /// Issue #137: a production Server owns its SQLite file, so the
+    /// connection must hold exclusive locking. A concurrent external SQLite
+    /// connection that becomes the first attacher truncates `-shm` to 3
+    /// bytes (see `unixShmLock` in SQLite), and this process then takes
+    /// SIGBUS inside `walFindFrame` while the file is still mapped.
     #[tokio::test]
-    async fn server_connection_holds_exclusive_locking_mode() {
+    async fn production_configuration_holds_exclusive_locking() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("server.db");
         let database = ServerDatabase::open(config(&path)).await.unwrap();
+        assert_eq!(locking_mode(&database).await, "exclusive");
+        // A deployment without development mode resolves to the same
+        // production ownership.
+        database.close().await;
+        let production = ServerDatabase::open(ServerDatabaseConfig::for_deployment(&path, false))
+            .await
+            .unwrap();
+        assert_eq!(locking_mode(&production).await, "exclusive");
+    }
+
+    /// Development mode is the deliberate exception: the browser e2e fixture
+    /// refreshers and local tooling write to a running dev Server, and an
+    /// exclusively locked connection would never observe those commits.
+    #[tokio::test]
+    async fn development_configuration_shares_the_database_with_external_writers() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("server.db");
+        let database = ServerDatabase::open(ServerDatabaseConfig::for_deployment(&path, true))
+            .await
+            .unwrap();
+        assert_eq!(locking_mode(&database).await, "normal");
+
+        // An external connection that is not the Server writes and commits;
+        // the Server must read that committed row through its own pool.
+        let external = external_pool(&path).await;
+        sqlx::query(
+            "INSERT INTO server_settings (setting_key, setting_value, updated_at) VALUES ('external', '1', '2026-01-01T00:00:00Z')",
+        )
+        .execute(&external)
+        .await
+        .unwrap();
+        let observed: Option<String> = sqlx::query_scalar(
+            "SELECT setting_value FROM server_settings WHERE setting_key = 'external'",
+        )
+        .fetch_optional(database.pool())
+        .await
+        .unwrap();
+        assert_eq!(observed.as_deref(), Some("1"));
+        external.close().await;
+    }
+
+    /// Connection setup cannot wait on SQLite's busy handler for the
+    /// exclusive lock, so a concurrent external writer must be absorbed by a
+    /// bounded retry instead of stopping Server startup.
+    #[tokio::test]
+    async fn open_retries_while_an_external_writer_holds_the_database() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("server.db");
+        let seed = ServerDatabase::open(config(&path)).await.unwrap();
+        seed.close().await;
+
+        let external = external_pool(&path).await;
+        let mut writer = external.begin().await.unwrap();
+        sqlx::query(
+            "INSERT INTO server_settings (setting_key, setting_value, updated_at) VALUES ('writer', '1', '2026-01-01T00:00:00Z')",
+        )
+        .execute(&mut *writer)
+        .await
+        .unwrap();
+        let holder = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            writer.commit().await.unwrap();
+            external.close().await;
+        });
+
+        let database = ServerDatabase::open(
+            ServerDatabaseConfig::new(&path).with_busy_timeout(Duration::from_secs(5)),
+        )
+        .await
+        .unwrap();
+        let committed: Option<String> = sqlx::query_scalar(
+            "SELECT setting_value FROM server_settings WHERE setting_key = 'writer'",
+        )
+        .fetch_optional(database.pool())
+        .await
+        .unwrap();
+        assert_eq!(committed.as_deref(), Some("1"));
+        holder.await.unwrap();
+    }
+
+    async fn locking_mode(database: &ServerDatabase) -> String {
         let mode: String = sqlx::query_scalar("PRAGMA locking_mode")
             .fetch_one(database.pool())
             .await
             .unwrap();
-        assert_eq!(mode.to_ascii_lowercase(), "exclusive");
+        mode.to_ascii_lowercase()
+    }
+
+    /// A second process-like connection to the same file, using SQLite's
+    /// ordinary locking protocol and no Server policy.
+    async fn external_pool(path: &Path) -> SqlitePool {
+        SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(path)
+                    .busy_timeout(Duration::from_secs(5)),
+            )
+            .await
+            .unwrap()
     }
 
     #[tokio::test]

@@ -88,11 +88,18 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await loginAs(page)
     const longNodeName = 'Node H — Producing Card With A Very Long Display Name That Must Not Overflow'
     const longHealthReason = 'ServerOwnedHealthReasonThatMustWrapWithoutTruncationAtNarrowWidths0123456789abcdefghijklmnopqrstuvwxyz'
+    const hNodeId = '0195f2a1-0060-4060-8060-000000000060'
+    // The fixture refresher rewrites Node H's receipts directly in SQLite, and
+    // those writes raise no SSE invalidation. A live API read can therefore be
+    // newer than the response this page rendered, so remember what the page
+    // actually received and assert the card against that.
+    let renderedFreshness: string | null = null
     await page.route('**/api/public/v1/networks/home-convergence', async (route) => {
       const response = await route.fetch()
       const payload = (await response.json()) as {
-        nodes: Array<{ nodeId: string; healthReason?: string | null }>
+        nodes: Array<{ nodeId: string; freshness?: string | null; healthReason?: string | null }>
       }
+      renderedFreshness = payload.nodes.find((node) => node.nodeId === hNodeId)?.freshness ?? null
       await route.fulfill({
         response,
         body: JSON.stringify({
@@ -180,7 +187,8 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     if (!hNode?.freshness || !hNode.lastReportAt) throw new Error('Node H receipt timestamps are missing')
     const reportLeadMs = Date.parse(hNode.lastReportAt) - Date.parse(hNode.freshness)
     expect(reportLeadMs).toBeGreaterThan(40_000)
-    await expect(hCard.locator('time').first()).toHaveAttribute('dateTime', hNode.freshness)
+    expect(renderedFreshness, 'the page received Node H freshness').not.toBeNull()
+    await expect(hCard.locator('time').first()).toHaveAttribute('dateTime', renderedFreshness!)
 
     // The long public Node name remains visible inside its card without
     // creating page overflow at any fixed viewport.
@@ -290,6 +298,20 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
 
   test('Public Geo surface compresses disabled state; the Owner Overview carries no Geo panel', async ({ page }) => {
     await loginAs(page)
+    // The Geo provider is shared Server state and other specs enable it. The
+    // harness seeds it Disabled, so establish that precondition here instead of
+    // depending on another spec's cleanup in the reused Server.
+    await page.goto('/admin/settings')
+    const geoCard = page
+      .getByRole('article')
+      .filter({ has: page.getByRole('heading', { name: 'Geo provider' }) })
+    await expect(geoCard.getByRole('radio', { checked: true })).toHaveCount(1)
+    const disabled = geoCard.getByRole('radio', { name: 'Disabled' })
+    if (!(await disabled.isChecked())) {
+      await disabled.check()
+      await geoCard.getByRole('button', { name: 'Save Geo provider' }).click()
+      await expect(geoCard.getByText(/Geo provider is now Disabled/)).toBeVisible()
+    }
     await page.goto('/networks/platon-e2e')
     await expect(page.getByRole('heading', { level: 1, name: 'PlatON E2E Network' })).toBeVisible()
     const networkPeer = page.getByRole('region', { name: 'Peer insight' }).first()
