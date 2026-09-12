@@ -497,7 +497,22 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
       height: Math.round(card.getBoundingClientRect().height),
       children: [...card.children].map((child) => ({ className: child.className, height: Math.round(child.getBoundingClientRect().height) })),
     }))
-    expect(heroLayout.height, JSON.stringify(heroLayout)).toBeLessThanOrEqual(500)
+    // The hero card is a content-driven four-block summary, so its pixel height
+    // is not portable across font stacks: the 36-character Node ID line fits in
+    // 305.2px at 360px viewport width with the integer glyph advances CI's
+    // Ubuntu 24.04 stack produces, but needs 311.5px with the fractional
+    // advances of a FreeType 2.14 host, so it wraps to a second line there.
+    // That one 18.7px line moved the card between 485px (CI) and 504px
+    // (local), which the old 500px ceiling split in half (issue #139). Pin the
+    // compact-hero contract structurally instead, and keep the ceiling as a
+    // coarse net with headroom over the widest observed phone rendering.
+    expect(heroLayout.children.map(({ className }) => className), JSON.stringify(heroLayout)).toEqual([
+      'node-hero-header',
+      'node-hero-resources',
+      'node-consensus-summary',
+      'node-hero-footer',
+    ])
+    expect(heroLayout.height, JSON.stringify(heroLayout)).toBeLessThanOrEqual(560)
     await expect(page.getByText('Head')).toBeVisible()
     await expect(page.getByText('QC')).toBeVisible()
     await expect(page.getByText('Locked')).toBeVisible()
