@@ -16,7 +16,8 @@ import {
  * country representative points.
  *
  * The map is deliberately bare. It shows the world, the country fills, the
- * quantity markers, and one expand control; every explanatory sentence,
+ * quantity markers, and one pointer-inert corner figure holding the in-scope
+ * Peer total; every explanatory sentence,
  * attribution line, and status glyph that used to sit here was removed by
  * product decision so the map blends into the page wash. The Server-owned
  * dimension (Geo Insight state) and this basemap resource's own load state are
@@ -190,16 +191,13 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
     other.country.code !== country.code && Math.hypot(other.at.x - at.x, other.at.y - at.y) * mapScale < markerRadius(country.count) + markerRadius(other.country.count) + 3,
   )).map(({ country }) => country.code))
 
-  // The corner indicator counts Nodes, in exactly the scope the map covers, so
-  // it can never disagree with the Node list below. Only a healthy Node is
-  // online and only an unhealthy Node is counted as the opposite; an unknown
-  // Node is neither, so it is never folded into the offline figure.
-  const scopedNodes = networkFilter === 'all'
-    ? networks.flatMap((network) => network.nodes ?? [])
-    : (networks.find((network) => network.networkKey === networkFilter)?.nodes ?? [])
-  const healthOf = (node: { health: string }) => node.health.toLowerCase()
-  const onlineNodes = hasProjection && !loading ? scopedNodes.filter((node) => healthOf(node) === 'healthy').length : null
-  const unhealthyNodes = hasProjection && !loading ? scopedNodes.filter((node) => healthOf(node) === 'unhealthy').length : null
+  // The corner indicator states how many Peers the Active Nodes in scope are
+  // linked to, so it is the same Server-computed denominator the map itself
+  // draws: Known + Unknown Peer records on the Server's per-Node basis, never
+  // deduplicated by IP and never derived by the browser. A scope without a
+  // successful Peer Snapshot has no denominator at all, so it reports nothing
+  // rather than an invented zero.
+  const scopedPeerCount = hasProjection && !loading ? overview.availablePeerCount : null
 
   const unknownCount = overview.unknownCountryCount
   const countsAvailable = overview.knownCountryCount != null && unknownCount != null
@@ -235,28 +233,19 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
           glyph, and no expand toggle. An abnormal state stays announced to
           assistive technology without putting a glyph or a sentence on the map. */}
       {notice && <span className="sr-only" role="status">{notice}</span>}
-      {/* The reference theme's corner indicator, in its own two-figure form: a
-          pulsing green dot with the online Node count and a pulsing amber dot
-          with the count that is not healthy. Both cover exactly the scope the
-          map covers (the Network filter), and an unknown Node is counted in
-          neither figure rather than being presented as offline. It stays
-          pointer-inert so the map underneath keeps every hover and tap. */}
-      {geometryReady && (onlineNodes !== null || unhealthyNodes !== null) && (onlineNodes! > 0 || unhealthyNodes! > 0) && (
+      {/* The reference theme's corner indicator: one pulsing dot with the total
+          number of Peers the in-scope Active Nodes are linked to. It is the same
+          Server denominator the country fills and markers are drawn from, and an
+          authoritative zero (a successful empty Peer Snapshot) stays a real
+          zero. It stays pointer-inert so the map underneath keeps every hover
+          and tap. */}
+      {geometryReady && scopedPeerCount !== null && (
         <p className="home-geo-counters">
-          {onlineNodes! > 0 && (
-            <span className="home-geo-counter">
-              <span className="home-geo-counter-dot home-geo-counter-dot-online" aria-hidden="true" />
-              <span className="sr-only">Online Nodes: </span>
-              {formatGeoCount(onlineNodes!)}
-            </span>
-          )}
-          {unhealthyNodes! > 0 && (
-            <span className="home-geo-counter">
-              <span className="home-geo-counter-dot home-geo-counter-dot-unhealthy" aria-hidden="true" />
-              <span className="sr-only">Not healthy Nodes: </span>
-              {formatGeoCount(unhealthyNodes!)}
-            </span>
-          )}
+          <span className="home-geo-counter">
+            <span className="home-geo-counter-dot" aria-hidden="true" />
+            <span className="sr-only">Peers: </span>
+            {formatGeoCount(scopedPeerCount)}
+          </span>
         </p>
       )}
       <div ref={canvas} className="home-geo-canvas" style={bounds ? { aspectRatio: `${bounds.right - bounds.left} / ${bounds.bottom - bounds.top}` } : undefined}>

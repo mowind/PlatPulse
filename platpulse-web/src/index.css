@@ -3030,20 +3030,13 @@ button {
   background: var(--paper);
   --home-content-width: 82rem;
   --home-gutter: clamp(1rem, 3vw, 2.75rem);
-  /* Space the summary leaves so it clears the transparent logo bar that the
-     map's top band runs behind. */
-  --home-header-clearance: 5.75rem;
-  /* How far the map's own top-right corner indicator drops. Zero on a narrow
-     screen, where the logo bar is a row above the map and the corner is free;
-     the wide layout lifts it under the floating bar instead. */
-  --home-map-corner-clearance: 0px;
 }
 
 /* Emerald keeps the top bar part of the page wash: no painted surface and no
-   divider, so the gradient and grid read straight through to the logo.
-   On a narrow screen the bar is a normal row and the map band starts below it,
-   matching the Emerald phone layout, where the map is a full-width grid item
-   inside the padded content rather than a layer behind the brand. */
+   divider, so the gradient and grid read straight through to the logo. The bar
+   is a normal row at every width, matching the Emerald reference, whose map is
+   a content grid item beneath the bar rather than a layer behind the brand.
+   The map band therefore always starts below the bar (issue #133). */
 .home-shell .app-header {
   position: relative;
   z-index: 3;
@@ -3244,13 +3237,14 @@ button {
 
 /* ---------------------------------------------------------------------------
  * Home stage: the transparent Peer country map (issue #133) is the page's own
- * top band, so the logo bar and the summary both sit over it. It is a
- * background layer, not a card: no surface, no border, no shadow.
+ * top band. It is a background layer of the stage, not a card: no surface, no
+ * border, no shadow.
  *
- * The band starts at the very top of the content, which puts it behind the
- * transparent logo bar. On a narrow screen the map comes first and the summary
- * follows underneath it; on a wide screen the summary sits over the map's left
- * edge, clear of the logo bar, and the map keeps rising to the page top.
+ * The stage begins below the transparent logo bar, exactly like the Emerald
+ * reference's content grid, so neither the map nor its markers and corner
+ * indicator is ever layered behind the brand. On a narrow screen the map comes
+ * first and the summary follows underneath it; on a wide screen the summary
+ * sits over the map's left edge.
  * ------------------------------------------------------------------------- */
 
 .home-stage {
@@ -3286,15 +3280,16 @@ button {
 }
 
 .home-geo-disabled { justify-content: center; min-height: 4.5rem; }
-/* The corner country count. It carries no pointer events of its own, so the map
-   under it stays fully interactive. */
-/* Emerald's corner indicator: a blurred translucent chip holding a pulsing
-   green dot with the online count and a pulsing amber dot with the count that is
-   not healthy. Pointer-inert, so the map under it keeps every hover and tap. */
+/* Emerald's corner indicator: a blurred translucent chip holding one pulsing
+   dot with the total Peer count of the scope the map covers. Pointer-inert, so
+   the map under it keeps every hover and tap. */
 .home-geo-counters {
   position: absolute;
   z-index: 2;
-  top: var(--home-map-corner-clearance, 0px);
+  /* The corner indicator sits at the band's own top-right, exactly like the
+     reference theme's chip. The logo bar is a separate row above the band, so
+     it never has to dodge anything. */
+  top: 0;
   right: 0;
   display: flex;
   align-items: center;
@@ -3309,12 +3304,8 @@ button {
   font-variant-numeric: tabular-nums;
   pointer-events: none;
 }
-.home-geo-counter { display: inline-flex; align-items: center; gap: 0.25rem; }
-.home-geo-counter-dot { width: 0.375rem; height: 0.375rem; flex: none; border-radius: 50%; animation: home-geo-counter-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
-.home-geo-counter-dot-online { background: #16a34a; }
-.home-geo-counter:has(.home-geo-counter-dot-online) { color: #16a34a; }
-.home-geo-counter-dot-unhealthy { background: #ca8a04; }
-.home-geo-counter:has(.home-geo-counter-dot-unhealthy) { color: #ca8a04; }
+.home-geo-counter { display: inline-flex; align-items: center; gap: 0.25rem; color: #16a34a; }
+.home-geo-counter-dot { width: 0.375rem; height: 0.375rem; flex: none; border-radius: 50%; background: #16a34a; animation: home-geo-counter-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
 @keyframes home-geo-counter-pulse {
   50% { opacity: 0.5; }
 }
@@ -3344,36 +3335,16 @@ button {
 .home-geo-tooltip { position: absolute; z-index: 4; transform: translate(-50%, -100%); width: max-content; max-width: min(180px, 95%); padding: 3px 6px; border: 0; border-radius: 6px; background: rgba(255, 255, 255, 0.8); backdrop-filter: blur(5px); color: rgba(0, 0, 0, 0.85); box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.06), 0 0 16px rgba(0, 0, 0, 0.06); font-size: 12px; line-height: 20px; pointer-events: none; }
 
 @media (min-width: 64rem) {
-  /* Wide screens float the logo bar, exactly like the Emerald desktop layout:
-     it leaves the flow, so the map band starts at the very top of the page and
-     runs behind it. The bar keeps the higher stacking order, and stays
-     pointer-inert so it cannot swallow clicks meant for the map it floats over;
-     only its own controls opt back in. */
-  .home-shell .app-header {
-    position: absolute;
-    top: 0;
-    inset-inline: 0;
-    pointer-events: none;
-  }
-
-  /* The bar floats over the map, so the corner indicator starts below it rather
-     than under the brand and the Admin link. */
-  .home-shell { --home-map-corner-clearance: 4.5rem; }
-
-  .home-shell .app-header a,
-  .home-shell .app-header button {
-    pointer-events: auto;
-  }
-
-  /* The summary sits over the map's left edge, clear of the logo bar, while the
-     map keeps rising to the top of the page behind it. The map is deliberately
-     wider than the space the summary leaves, so the band still reaches the
-     bottom of the summary instead of leaving a hole beside it. */
+  /* Wide screens keep the same two-part stage as narrow ones: the summary sits
+     over the map's left edge while the map keeps the right of the stage. The
+     logo bar stays its own row in the flow above both, so no part of the map is
+     ever layered behind the brand. The map is deliberately wider than the space
+     the summary leaves, so the band still reaches the bottom of the summary
+     instead of leaving a hole beside it. */
   .home-stage-content {
     grid-area: 1 / 1;
     align-self: start;
     width: min(46%, 32rem);
-    padding-top: var(--home-header-clearance);
     z-index: 1;
   }
 
@@ -3381,7 +3352,6 @@ button {
     width: 76%;
     justify-self: end;
   }
-
 }
 
 @media (max-width: 30rem) {

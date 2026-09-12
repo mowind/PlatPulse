@@ -158,8 +158,8 @@ async function expectQuietMap(page: Page) {
   await expect(map.locator('button')).toHaveCount(0)
 
   // The one standing figure is the reference theme's corner indicator: a pulsing
-  // dot per figure with the online Node count and the not-healthy Node count.
-  // It must stay pointer-inert so it never steals a hover from the map under it.
+  // dot with the total Peer count of exactly the scope the map covers. It must
+  // stay pointer-inert so it never steals a hover from the map under it.
   const counters = map.locator('.home-geo-counters')
   if (await counters.count() > 0) {
     const counterBox = (await counters.boundingBox())!
@@ -172,7 +172,7 @@ async function expectQuietMap(page: Page) {
     expect(probe, 'the map underneath the counters still receives pointers').toBe('map')
     for (const figure of await counters.locator('.home-geo-counter').all()) {
       await expect(figure.locator('.home-geo-counter-dot')).toHaveCount(1)
-      await expect(figure).toHaveText(/^(Online|Not healthy) Nodes: [\d,]+$/)
+      await expect(figure).toHaveText(/^Peers: [\d,]+$/)
     }
   }
 }
@@ -335,8 +335,8 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
       await capture(page, testInfo, 'fixture-loading-' + testInfo.project.name)
       release()
       await expect(map.getByRole('img', { name: 'Peer countries map' })).toBeVisible({ timeout: 30_000 })
-      // Once the basemap resolves, the corner counters appear with it.
-      await expect(map.locator('.home-geo-counters .home-geo-counter').first()).toHaveText(/^(Online|Not healthy) Nodes: [\d,]+$/)
+      // Once the basemap resolves, the corner figure appears with it.
+      await expect(map.locator('.home-geo-counters .home-geo-counter').first()).toHaveText(/^Peers: [\d,]+$/)
     } finally {
       release()
       await page.unroute('**/assets/geo/**')
@@ -355,61 +355,73 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     const mapBox = (await map.boundingBox())!
     const headerBox = (await page.locator('.app-header').boundingBox())!
 
-    // The map band is the page's top layer: it starts at the very top, so the
-    // transparent logo bar floats over it.
-    expect(mapBox.y, 'the map reaches the top of the page').toBeLessThanOrEqual(1)
-    expect(mapBox.y, 'the map runs behind the logo bar').toBeLessThanOrEqual(headerBox.y)
-    expect(mapBox.y + mapBox.height).toBeGreaterThan(headerBox.y + headerBox.height)
-    // The logo bar paints no surface of its own, so the map reads through it.
+    // The logo bar is the shell's own row at every width, exactly like the
+    // Emerald reference, whose map is a content grid item beneath the bar. The
+    // band therefore starts below the bar and no part of the map — land, marker,
+    // or corner counter — is layered behind the brand.
+    expect(mapBox.y, 'the map starts below the logo bar').toBeGreaterThanOrEqual(headerBox.y + headerBox.height - 1)
+    expect(mapBox.y + mapBox.height, 'the band still spans below the logo bar').toBeGreaterThan(headerBox.y + headerBox.height)
+    const brandBox = (await page.locator('.app-brand').boundingBox())!
+    const brandOverlapsMap = brandBox.x < mapBox.x + mapBox.width && mapBox.x < brandBox.x + brandBox.width
+      && brandBox.y < mapBox.y + mapBox.height && mapBox.y < brandBox.y + brandBox.height
+    expect(brandOverlapsMap, 'no part of the map renders behind the brand').toBe(false)
+    // The logo bar paints no surface of its own, so the page wash reads through it.
     const header = await page.locator('.app-header').evaluate((element) => {
       const style = getComputedStyle(element)
-      return { backgroundColor: style.backgroundColor, borderBottomColor: style.borderBottomColor, boxShadow: style.boxShadow }
+      return {
+        backgroundColor: style.backgroundColor,
+        borderBottomColor: style.borderBottomColor,
+        boxShadow: style.boxShadow,
+        position: style.position,
+        pointerEvents: style.pointerEvents,
+      }
     })
     expect(header.backgroundColor).toMatch(/rgba\(0, 0, 0, 0\)|transparent/)
     expect(header.borderBottomColor).toMatch(/rgba\(0, 0, 0, 0\)|transparent/)
     expect(header.boxShadow).toBe('none')
-    // It must not intercept the map underneath; only its own controls do.
-    expect(await page.locator('.app-header').evaluate((element) => getComputedStyle(element).pointerEvents)).toBe('none')
+    expect(header.position, 'the wide bar keeps its own row').not.toBe('absolute')
+    expect(header.pointerEvents, 'the bar handles its own pointers').not.toBe('none')
     const topStrip = await page.evaluate(({ map, header }) => {
       const x = Math.round(map.x + map.width * 0.5)
       const probe = document.elementFromPoint(x, Math.round(header.height / 2))
       return probe?.closest('svg[role="img"]') ? 'map' : 'other'
     }, { map: mapBox, header: headerBox })
-    expect(topStrip, 'the map receives pointers in the strip the header floats over').toBe('map')
+    expect(topStrip, 'the map never reaches the strip the logo bar occupies').toBe('other')
 
-    // The corner counters sit clear of the brand and the Admin link, and each
-    // figure states what it claims: the green one is exactly the live count of
-    // healthy Nodes in the map's own scope, the amber one the unhealthy count.
+    // The corner figure sits clear of the Admin link and states exactly one
+    // thing: the total number of Peers the in-scope Active Nodes are linked to.
+    // It is the Server's own Peer-record denominator for that scope, so it can
+    // never disagree with the country fills drawn from the same records.
     const counterBox = (await map.locator('.home-geo-counters').boundingBox())!
     const adminBox = (await page.locator('.admin-icon-link').boundingBox())!
     const overlaps = counterBox.x < adminBox.x + adminBox.width && counterBox.x + counterBox.width > adminBox.x
       && counterBox.y < adminBox.y + adminBox.height && counterBox.y + counterBox.height > adminBox.y
-    expect(overlaps, 'the corner counters never collide with the Admin link').toBe(false)
-    expect(counterBox.y, 'the corner counters sit below the floating logo bar').toBeGreaterThanOrEqual(headerBox.height - 1)
-    const nodes = (await page.evaluate(async () => {
+    expect(overlaps, 'the corner figure never collides with the Admin link').toBe(false)
+    expect(counterBox.y, 'the corner figure sits below the logo bar').toBeGreaterThanOrEqual(headerBox.height - 1)
+    const projection = await page.evaluate(async () => {
       const response = await fetch('/api/public/v1/networks', { credentials: 'include' })
-      return response.json() as Promise<Array<{ nodes?: Array<{ health?: string }> }>>
-    })).flatMap(network => network.nodes ?? [])
-    const healthy = nodes.filter(node => (node.health ?? '').toLowerCase() === 'healthy').length
-    const unhealthy = nodes.filter(node => (node.health ?? '').toLowerCase() === 'unhealthy').length
+      return response.json() as Promise<Array<{ geo?: { availablePeerCount?: number | null } }>>
+    })
+    const peerRecords = projection.reduce((sum, network) => sum + (network.geo?.availablePeerCount ?? 0), 0)
+    const hasBasis = projection.some(network => typeof network.geo?.availablePeerCount === 'number')
     const figures = await map.locator('.home-geo-counter').evaluateAll(elements => elements.map(element => ({
       text: (element.textContent ?? '').trim(),
       color: getComputedStyle(element).color,
     })))
-    if (healthy > 0) {
-      expect(figures.some(figure => figure.text.includes('Online Nodes: ' + healthy)), 'the green figure is the live healthy count').toBe(true)
+    expect(figures.length, 'one figure is shown exactly while the scope published a Peer denominator').toBe(hasBasis ? 1 : 0)
+    if (hasBasis) {
+      expect(figures[0].text, 'the figure is the in-scope Peer total').toBe('Peers: ' + peerRecords.toLocaleString('en-US'))
+      const rgb = figures[0].color.match(/\d+/g)!.map(Number)
+      expect(rgb[1], 'the figure keeps the reference theme’s Emerald accent').toBeGreaterThan(rgb[0])
+      expect(rgb[1]).toBeGreaterThan(rgb[2])
     }
-    if (unhealthy > 0) {
-      expect(figures.some(figure => figure.text.includes('Not healthy Nodes: ' + unhealthy)), 'the amber figure is the live unhealthy count').toBe(true)
-    }
-    expect(figures.length, 'a figure exists for every count that is above zero').toBe((healthy > 0 ? 1 : 0) + (unhealthy > 0 ? 1 : 0))
 
-    // The summary overlays the map band's left edge, clear of the logo bar, and
+    // The summary overlays the map band's left edge, below the logo bar, and
     // the map still runs out to the right of it.
     const intersects = statsBox.x < mapBox.x + mapBox.width && mapBox.x < statsBox.x + statsBox.width
       && statsBox.y < mapBox.y + mapBox.height && mapBox.y < statsBox.y + statsBox.height
     expect(intersects, 'the summary sits over the map band').toBe(true)
-    expect(statsBox.y, 'the summary clears the floating logo bar').toBeGreaterThanOrEqual(headerBox.height - 1)
+    expect(statsBox.y, 'the summary starts below the logo bar').toBeGreaterThanOrEqual(headerBox.height - 1)
     expect(mapBox.x + mapBox.width, 'the map reaches the summary’s right edge').toBeGreaterThan(statsBox.x + statsBox.width)
     const columns = new Set(facts.map((fact) => Math.round(fact.box.x))).size
     expect(columns, 'the four statistics form a 2x2 grid').toBe(2)
@@ -575,9 +587,9 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     const mapBox = (await map.boundingBox())!
     const headerBox = (await page.locator('.app-header').boundingBox())!
 
-    // No room to overlay: the logo bar keeps its own row and the map band comes
-    // next, above the statistics and the Node cards. It never runs behind the
-    // bar on a narrow screen (Emerald's phone layout puts the map below it).
+    // The logo bar keeps its own row at every width (like the Emerald reference,
+    // whose map is a content grid item beneath its bar), so the map band comes
+    // next, above the statistics and the Node cards, and never runs behind it.
     expect(mapBox.y, 'the map starts below the logo bar').toBeGreaterThanOrEqual(headerBox.y + headerBox.height - 1)
     expect(mapBox.y + mapBox.height, 'the map sits above the statistics').toBeLessThanOrEqual(stats.y + 1)
     const firstCard = (await page.locator('.dashboard-node-card').first().boundingBox())!

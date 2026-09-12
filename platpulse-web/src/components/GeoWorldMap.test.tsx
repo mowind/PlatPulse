@@ -359,26 +359,20 @@ describe('GeoWorldMap', () => {
     expect(screen.getByRole('status').textContent).toBe('Observation status varies')
   })
 
-  it('shows the online and not-healthy Node counts as dots in the map corner', async () => {
+  it('shows the in-scope Peer total as one figure in the corner', async () => {
     stubFetch(geometryResponse)
-    renderMap({ networks: [network({ nodes: [
-      { nodeId: 'n1', health: 'healthy' },
-      { nodeId: 'n2', health: 'healthy' },
-      { nodeId: 'n3', health: 'unhealthy' },
-      { nodeId: 'n4', health: 'unknown' },
-    ] })] })
+    // The Server's Peer-record denominator is Known 6 + Unknown 1 for this
+    // scope; the figure is that Server number, not a browser-side count.
+    renderMap({ networks: [network({ nodes: [{ nodeId: 'n1', health: 'healthy' }] })] })
     await screen.findByRole('img', { name: 'Peer countries map' })
     const map = screen.getByRole('region', { name: 'Peer countries' })
     const counters = map.querySelector('.home-geo-counters')
 
     expect(counters, 'the corner indicator exists').toBeTruthy()
-    const online = counters!.querySelector('.home-geo-counter-dot-online')!.parentElement!
-    const unhealthy = counters!.querySelector('.home-geo-counter-dot-unhealthy')!.parentElement!
-    expect(online.textContent, 'the green figure is the online Node count').toContain('Online Nodes: 2')
-    expect(unhealthy.textContent, 'the amber figure is the not-healthy Node count').toContain('Not healthy Nodes: 1')
-    // An unknown Node is neither online nor not-healthy, so it is counted in
-    // neither figure rather than being presented as offline.
-    expect(counters!.textContent).not.toContain('4')
+    expect(counters!.querySelectorAll('.home-geo-counter'), 'one figure only').toHaveLength(1)
+    const figure = counters!.querySelector('.home-geo-counter')!
+    expect(figure.querySelectorAll('.home-geo-counter-dot')).toHaveLength(1)
+    expect(figure.textContent).toContain('Peers: 7')
   })
 
   it('never invents a corner figure while the projection is unavailable or loading', async () => {
@@ -390,15 +384,29 @@ describe('GeoWorldMap', () => {
     expect(screen.getByRole('region', { name: 'Peer countries' }).querySelector('.home-geo-counters')).toBeNull()
   })
 
-  it('hides the corner counters when no Node is online or unhealthy', async () => {
+  it('never invents a Peer total for a scope without a Peer Snapshot', async () => {
     stubFetch(geometryResponse)
-    renderMap({ networks: [network({ nodes: [{ nodeId: 'n1', health: 'unknown' }] })] })
+    // A Network that never reported a successful Peer Snapshot has no basis at
+    // all, so the Server omits the denominator and no total may be presented as
+    // a real zero. (How several Networks' denominators add up is owned by
+    // homeGeo.test.ts.)
+    renderMap({ networks: [network({ geo: { state: 'current', scope: 'unobserved', countries: null, knownCountryCount: null, unknownCountryCount: null, availablePeerCount: null } })] })
     await screen.findByRole('img', { name: 'Peer countries map' })
 
     expect(screen.getByRole('region', { name: 'Peer countries' }).querySelector('.home-geo-counters')).toBeNull()
+    expect(screen.getByRole('status').textContent).toBe('No observations yet')
   })
 
-  it('counts Nodes in exactly the scope the map covers', async () => {
+  it('shows an authoritative zero when every in-scope Peer Snapshot was empty', async () => {
+    stubFetch(geometryResponse)
+    renderMap({ networks: [network({ geo: { countries: [], knownCountryCount: 0, unknownCountryCount: 0, availablePeerCount: 0 } })] })
+    await screen.findByRole('img', { name: 'Peer countries map' })
+
+    const figure = screen.getByRole('region', { name: 'Peer countries' }).querySelector('.home-geo-counter')
+    expect(figure?.textContent).toContain('Peers: 0')
+  })
+
+  it('counts Peers in exactly the scope the map covers', async () => {
     stubFetch(geometryResponse)
     const mainnet = network({ networkKey: 'mainnet', nodes: [{ nodeId: 'a', health: 'healthy' }, { nodeId: 'b', health: 'healthy' }] })
     const testnet = network({
@@ -411,12 +419,10 @@ describe('GeoWorldMap', () => {
 
     const { rerender } = renderMap({ networks: [mainnet, testnet], networkFilter: 'testnet' })
     await screen.findByRole('img', { name: 'Peer countries map' })
-    expect(countersOf(), 'the filtered scope counts only its own Nodes').toContain('Not healthy Nodes: 1')
-    expect(countersOf()).not.toContain('Online Nodes')
+    expect(countersOf(), 'the filtered scope counts only its own Peers').toContain('Peers: 2')
 
     rerender(<GeoWorldMap networks={[mainnet, testnet]} networkFilter="all" loading={false} hasProjection />)
-    expect(countersOf(), 'All Networks adds both scopes up').toContain('Online Nodes: 2')
-    expect(countersOf()).toContain('Not healthy Nodes: 1')
+    expect(countersOf(), 'All Networks adds every scope it covers up').toContain('Peers: 9')
   })
 
   it('renders the map itself as the only interactive surface', async () => {
