@@ -3160,8 +3160,6 @@ button {
   height: 0.55rem;
 }
 
-.dashboard-summary-dot-indigo,
-.dashboard-summary-dot-violet { background: #94a3b8; }
 .dashboard-summary-dot-green { background: var(--brand-strong); }
 .dashboard-summary-dot-red { background: #dc2626; }
 

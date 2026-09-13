@@ -75,10 +75,10 @@ export default function HomeDashboard({
             {!online && <p className="dashboard-live dashboard-live-warning" role="status" aria-live="polite"><span aria-hidden="true" /> You are offline</p>}
           </div>
           <div className="home-overview-stats dashboard-summary-grid" aria-label="Home summary">
-            <SummaryCard label="Active Nodes" value={hasProjection ? records.length : null} tone="indigo" />
+            <SummaryCard label="Active Nodes" value={hasProjection ? records.length : null} tone="green" />
             <SummaryCard label="Healthy Nodes" value={healthyCount} tone="green" />
             <SummaryCard label="Attention" value={healthyCount === null ? null : records.length - healthyCount} tone={healthyCount !== null && records.length === healthyCount ? 'green' : 'red'} />
-            <SummaryCard label="Networks" value={hasProjection ? networks.length : null} tone="violet" />
+            <SummaryCard label="Networks" value={hasProjection ? networks.length : null} tone="green" />
           </div>
         </div>
       </div>
@@ -108,7 +108,7 @@ export default function HomeDashboard({
   )
 }
 
-function SummaryCard({ label, value, tone }: { label: string; value: number | null; tone: string }) {
+function SummaryCard({ label, value, tone }: { label: string; value: number | null; tone: 'green' | 'red' }) {
   return <article className="dashboard-summary-card"><span className={`dashboard-summary-dot dashboard-summary-dot-${tone}`} aria-hidden="true" /><p>{label}</p><strong>{value === null ? '—' : value.toLocaleString()}</strong></article>
 }
 

@@ -40,6 +40,15 @@ const network = {
 const nodeCardLink = (name: string) => screen.getByRole('link', { name: new RegExp(name) })
 const cardOf = (link: HTMLElement) => link.closest('article') as HTMLElement
 
+/** The single summary-card marker belonging to the card labelled "label" (issue #142). */
+const dotOf = (label: string) => {
+  const card = screen.getByText(label).closest('article')
+  if (!card) throw new Error(`No summary card for ${label}`)
+  const dot = card.querySelector('.dashboard-summary-dot')
+  if (!dot) throw new Error(`No summary marker for ${label}`)
+  return dot
+}
+
 afterEach(cleanup)
 
 describe('Public Home dashboard', () => {
@@ -359,6 +368,29 @@ describe('Public Home dashboard', () => {
       expect(card.querySelectorAll('strong')).toHaveLength(1)
       expect(card.querySelectorAll('small')).toHaveLength(0)
     }
+  })
+
+  it('paints Active Nodes, Healthy Nodes, and Networks with the brand-green marker', () => {
+    render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+
+    for (const label of ['Active Nodes', 'Healthy Nodes', 'Networks']) {
+      expect(dotOf(label).classList.contains('dashboard-summary-dot-green')).toBe(true)
+    }
+  })
+
+  it('reserves the red Attention marker for a non-healthy Active Node', () => {
+    render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+
+    // The fixture holds one Healthy and one Unknown Node, so Attention is non-zero.
+    expect(dotOf('Attention').classList.contains('dashboard-summary-dot-red')).toBe(true)
+    expect(dotOf('Attention').classList.contains('dashboard-summary-dot-green')).toBe(false)
+  })
+
+  it('turns the Attention marker green once every Active Node is healthy', () => {
+    render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes: [network.nodes[0]] }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+
+    expect(dotOf('Attention').classList.contains('dashboard-summary-dot-green')).toBe(true)
+    expect(dotOf('Attention').classList.contains('dashboard-summary-dot-red')).toBe(false)
   })
 
   it('renders one whole-card Node link with the Network name as plain text', () => {
