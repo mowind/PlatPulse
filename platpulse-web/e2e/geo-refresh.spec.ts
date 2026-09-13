@@ -12,7 +12,14 @@ import {
  * the Public projection are all real; only the Peer fixture is seeded. The
  * spec normalizes the provider to Disabled first so it stays independent of
  * an earlier run, and restores Disabled afterwards.
+ *
+ * The scenario drives two provider changes, forces a real Server refresh, and
+ * waits for the Public projection on a second page that streams it; the
+ * default 30s budget is too tight for the shared real Server, exactly as in
+ * home-geo-map.spec.ts.
  */
+test.describe.configure({ timeout: 120_000 })
+
 test.describe('Owner global Geo refresh', () => {
   test('forces a real re-query, reports per-address progress, and updates Public countries', async ({ page }) => {
     await loginAs(page)
