@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 import {
   expectFocusedElementHasVisibleFocus,
+  expectMetricRowsAligned,
   expectNoHorizontalOverflow,
   expectVisibleInteractiveTargets,
   loginAs,
@@ -56,10 +57,13 @@ test.describe('Converged Public Home (issue #102)', () => {
     ).toHaveCount(0)
 
     // Both compact metric rows carry exactly the required labels and values:
-    // Head / Transactions / Peers and QC / Locked / Committed / Validator.
-    for (const label of ['Head', 'Transactions', 'Peers', 'QC', 'Locked', 'Committed', 'Validator']) {
+    // Head / Txs / Peers and QC / Locked / Committed / Validator.
+    for (const label of ['Head', 'Txs', 'Peers', 'QC', 'Locked', 'Committed', 'Validator']) {
       await expect(hCard.getByText(label, { exact: true })).toBeVisible()
     }
+    // Every metric is one data-item / value line with the value flush right,
+    // at every fixed viewport.
+    await expectMetricRowsAligned(hCard)
     // Head, QC, and Committed share the height; each appears once per row.
     await expect(hCard.getByText('12,842,025', { exact: true })).toHaveCount(3)
     await expect(hCard.getByText('12,842,024', { exact: true })).toHaveCount(1)
@@ -154,7 +158,7 @@ test.describe('Converged Public Home (issue #102)', () => {
   test('production-like states stay explicit with readable text across viewports', async ({ page }) => {
     await loginAs(page)
 
-    // Node K: missing Current Head Block Summary keeps Transactions Unknown, an
+    // Node K: missing Current Head Block Summary keeps Txs Unknown, an
     // authoritative empty peer set stays 0, current non-membership stays
     // No, and a Node without an effective Link has Unknown Activity.
     const kCard = nodeCard(page, /Node K/)
@@ -197,7 +201,7 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(pCard.getByText('No', { exact: true })).toHaveCount(0)
     await expect(pCard.getByText('one or more observations are stale or unknown')).toHaveCount(1)
 
-    // Node A: the exact Current Head Block Summary proves Transactions while the
+    // Node A: the exact Current Head Block Summary proves Txs while the
     // current process, data-directory, and shared Host metrics stay explicit.
     const aCard = nodeCard(page, /Node A/)
     await expect(aCard.getByText('7', { exact: true })).toHaveCount(1)

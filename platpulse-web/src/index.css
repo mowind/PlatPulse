@@ -1130,67 +1130,11 @@ button {
 
 .node-hero-resources {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.7rem;
   margin-top: 0.8rem;
   padding-top: 0.8rem;
   border-top: 1px solid rgba(100, 116, 139, 0.22);
-}
-
-.node-hero-resource {
-  min-width: 0;
-  display: grid;
-  align-content: start;
-  gap: 0.35rem;
-}
-
-.node-hero-resource > div {
-  min-width: 0;
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.65rem;
-}
-
-.node-hero-resource span {
-  color: var(--muted);
-  font-size: 0.68rem;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-}
-
-.node-hero-resource strong {
-  min-width: 0;
-  color: var(--ink);
-  font-family: 'SFMono-Regular', 'Roboto Mono', Consolas, monospace;
-  font-size: clamp(0.85rem, 1.5vw, 1.05rem);
-  font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
-  text-align: right;
-}
-
-.node-hero-resource small {
-  color: var(--muted);
-  font-size: 0.64rem;
-  line-height: 1.35;
-  overflow-wrap: anywhere;
-}
-
-.node-hero-resource-progress {
-  display: block;
-  width: 100%;
-  height: 3px;
-  overflow: hidden;
-  background: #e2e8f0;
-  border-radius: 999px;
-}
-
-.node-hero-resource-progress span {
-  display: block;
-  height: 100%;
-  background: linear-gradient(90deg, var(--brand), var(--lime));
-  border-radius: inherit;
-  box-shadow: none;
 }
 
 .node-consensus-runway {
@@ -1634,25 +1578,6 @@ button {
     gap: 0.4rem;
     margin-top: 0.55rem;
     padding-top: 0.55rem;
-  }
-
-  .node-hero-resource {
-    gap: 0.25rem;
-  }
-
-  .node-hero-resource > div {
-    display: grid;
-    gap: 0.15rem;
-  }
-
-  .node-hero-resource strong {
-    font-size: 0.78rem;
-    text-align: left;
-  }
-
-  .node-hero-resource small {
-    font-size: 0.56rem;
-    white-space: nowrap;
   }
 
   .node-metric-card {
@@ -3474,36 +3399,39 @@ button {
 .dashboard-node-resources,
 .dashboard-node-consensus {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.58rem;
   margin-top: 0.7rem;
   padding-top: 0.65rem;
   border-top: 1px dotted rgba(100, 116, 139, 0.28);
 }
 
-.dashboard-node-resources {
-  grid-template-columns: minmax(0, 1.15fr) minmax(8rem, 0.9fr) minmax(0, 1.15fr);
-  align-items: start;
-}
-.dashboard-node-resource-group {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.55rem;
+/* Shared compact metric row (issue #140): data item left, value flush right on
+   the same line, one row per line at every breakpoint. A row with progress puts
+   a full-width bar under the value line and its explanation under the bar; a
+   row without progress puts the explanation directly under the value. */
+.metric-row {
   min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  column-gap: 0.75rem;
+  row-gap: 0.2rem;
+  font-variant-numeric: tabular-nums;
 }
-.dashboard-node-resource-data { min-width: 0; }
-.dashboard-node-resource-data strong { font-size: 0.95rem; font-weight: 650; }
-.dashboard-node-primary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.dashboard-node-consensus { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.dashboard-node-primary-metric { min-width: 0; display: grid; align-content: start; gap: 0.2rem; font-variant-numeric: tabular-nums; }
-.dashboard-node-primary-metric > span { color: var(--muted); font-size: 0.75rem; font-weight: 600; letter-spacing: 0; text-transform: none; }
-.dashboard-node-primary-metric strong { color: var(--ink); font-family: inherit; font-size: 0.875rem; font-weight: 600; letter-spacing: -0.015em; line-height: 1.35; font-variant-numeric: tabular-nums; font-feature-settings: 'tnum' 1; overflow-wrap: anywhere; }
-.dashboard-node-primary > .dashboard-node-primary-metric strong { font-size: 0.95rem; font-weight: 650; }
-.dashboard-node-primary-metric small { color: var(--muted); font-family: inherit; font-size: 0.6875rem; font-weight: 550; line-height: 1.35; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.dashboard-node-rate-metric strong { display: flex; align-items: baseline; gap: 0.3rem; }
-.dashboard-node-rate-metric .dashboard-metric-number { line-height: 1; }
-.dashboard-node-rate-metric .dashboard-metric-unit { letter-spacing: 0; }
-.dashboard-node-primary-metric-progress i { position: relative; width: 100%; height: 4px; margin-top: 0.18rem; overflow: hidden; background: #e2e8f0; border-radius: 999px; }
-.dashboard-node-primary-metric-progress i::after { display: block; width: var(--metric-progress); height: 100%; content: ''; background: linear-gradient(90deg, var(--brand), var(--lime)); border-radius: inherit; }
+.metric-row-label { min-width: 0; color: var(--muted); font-size: 0.75rem; font-weight: 600; letter-spacing: 0; text-transform: none; overflow-wrap: anywhere; }
+.metric-row-value { min-width: 0; color: var(--ink); font-family: inherit; font-size: 0.95rem; font-weight: 650; letter-spacing: -0.015em; line-height: 1.35; text-align: right; font-variant-numeric: tabular-nums; font-feature-settings: 'tnum' 1; overflow-wrap: anywhere; }
+.metric-row-progress { position: relative; grid-column: 1 / -1; width: 100%; height: 4px; overflow: hidden; background: #e2e8f0; border-radius: 999px; }
+.metric-row-progress::after { display: block; width: var(--metric-progress); height: 100%; content: ''; background: linear-gradient(90deg, var(--brand), var(--lime)); border-radius: inherit; }
+.metric-row-detail { grid-column: 1 / -1; min-width: 0; color: var(--muted); font-family: inherit; font-size: 0.6875rem; font-weight: 550; line-height: 1.35; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+/* A row without progress keeps its explanation under the right-aligned value;
+   a row with progress puts it under the full-width bar instead. */
+.metric-row:not(:has(.metric-row-progress)) .metric-row-detail { text-align: right; }
+.metric-row-value .metric-row-number { line-height: 1; }
+.metric-row-value .metric-row-unit { margin-left: 0.3rem; letter-spacing: 0; }
+/* Home keeps its quieter resource and consensus value tier. */
+.dashboard-node-resources .metric-row-value,
+.dashboard-node-consensus .metric-row-value { font-size: 0.875rem; font-weight: 600; }
 .dashboard-node-diagnostic { margin: 0.58rem 0 0; padding: 0.55rem 0 0 0.68rem; color: var(--amber); border-top: 1px dotted rgba(100, 116, 139, 0.28); border-left: 2px solid #f59e0b; font-size: 0.72rem; overflow-wrap: anywhere; }
 .dashboard-empty { display: grid; min-height: 14rem; place-content: center; gap: 0.45rem; padding: 2rem; color: var(--muted); border-radius: 0.5rem; text-align: center; }
 .dashboard-empty strong { color: var(--ink); }
@@ -3541,9 +3469,6 @@ button {
   .dashboard-filter-pills { max-width: calc(100% - 8rem); }
   .dashboard-sort { margin-left: 0; }
   .dashboard-node-title { flex: 1 1 auto; }
-  .dashboard-node-resources { grid-template-columns: 1fr; gap: 0.75rem; }
-  .dashboard-node-resource-group { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .dashboard-node-consensus { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 /* ---------------------------------------------------------------------------
@@ -3613,10 +3538,7 @@ button {
   overflow-wrap: anywhere;
   white-space: normal;
 }
-.network-node-highlights { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; padding-top: 0.9rem; border-top: 1px dotted rgba(100, 116, 139, 0.28); }
-.network-node-highlights > div { min-width: 0; display: grid; gap: 0.25rem; }
-.network-node-highlights span, .network-node-highlights small { color: var(--muted); font-size: 0.72rem; }
-.network-node-highlights strong { font-size: 1.15rem; overflow-wrap: anywhere; }
+.network-node-highlights { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.75rem; padding-top: 0.9rem; border-top: 1px dotted rgba(100, 116, 139, 0.28); }
 .network-node-statuses { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.6rem; }
 .network-node-statuses .node-overview-status { display: grid; gap: 0.45rem; }
 .network-node-detail-link { min-height: 44px; display: inline-flex; align-items: center; justify-content: flex-end; color: var(--brand-strong); font-weight: 750; text-decoration: none; }
@@ -3631,7 +3553,6 @@ button {
 }
 
 .home-shell .node-hero-header h1,
-.home-shell .node-hero-resource strong,
 .home-shell .node-metric-card-heading h3,
 .home-shell .node-metric-value,
 .home-shell .node-network-rates strong { color: var(--ink); }
@@ -3641,8 +3562,6 @@ button {
 .home-shell .node-hero-badges > div > span,
 .home-shell .node-hero-footer span,
 .home-shell .node-consensus-runway span,
-.home-shell .node-hero-resource span,
-.home-shell .node-hero-resource small,
 .home-shell .node-metric-card-heading span,
 .home-shell .node-metric-card p,
 .home-shell .node-network-rates span,
@@ -3651,8 +3570,6 @@ button {
 .home-shell .node-hero-badges > div { background: rgba(241, 245, 249, 0.62); border-color: rgba(148, 163, 184, 0.22); }
 .home-shell .node-hero-reason { min-width: 0; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
 .home-shell .node-hero-resources { border-top-color: rgba(100, 116, 139, 0.25); }
-.home-shell .node-hero-resource-progress { background: #e2e8f0; }
-.home-shell .node-hero-resource-progress span { background: linear-gradient(90deg, var(--brand), var(--lime)); box-shadow: none; }
 .home-shell .node-consensus-runway { border-block-color: rgba(100, 116, 139, 0.25); }
 .home-shell .node-consensus-runway::before { background: linear-gradient(90deg, var(--info), #8b5cf6 55%, var(--brand-strong)); opacity: 0.35; }
 .home-shell .node-consensus-runway > div::before { background: #ffffff; border-color: #8b5cf6; box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.12); }
@@ -3691,9 +3608,7 @@ button {
 }
 
 @media (max-width: 42rem) {
-  .network-node-highlights { grid-template-columns: 1fr 1fr; }
   .network-node-statuses { grid-template-columns: 1fr; }
-  .network-node-highlights > div:first-child { grid-column: 1 / -1; }
 }
 
 
@@ -3894,17 +3809,24 @@ button {
 }
 
 .home-shell .network-node-highlights {
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1.35fr);
+  grid-template-columns: minmax(0, 1fr);
   align-items: start;
-  gap: 0.45rem;
+  gap: 0.55rem;
   padding-top: 0.45rem;
 }
 
-.home-shell .network-node-highlights > div {
-  gap: 0.2rem;
+.home-shell .network-node-highlights .metric-row-label,
+.home-shell .network-node-highlights .metric-row-detail {
+  overflow-wrap: anywhere;
+  line-height: 1.3;
 }
 
-.home-shell .network-node-highlights strong {
+.home-shell .network-node-highlights .metric-row-label {
+  font-size: 0.72rem;
+  font-weight: 400;
+}
+
+.home-shell .network-node-highlights .metric-row-value {
   min-width: 0;
   font-size: 0.9rem;
   font-variant-numeric: tabular-nums;
@@ -3912,35 +3834,14 @@ button {
   white-space: normal;
 }
 
-.home-shell .network-node-highlights span,
-.home-shell .network-node-highlights small {
-  overflow-wrap: anywhere;
-  line-height: 1.3;
-}
-
-.home-shell .network-node-time {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  column-gap: 0.4rem;
-  row-gap: 0.15rem;
-}
-
-.home-shell .network-node-time > span {
-  grid-column: 1;
-  align-self: baseline;
-  font-size: 0.68rem;
-}
-
-.home-shell .network-node-time > strong {
-  grid-column: 2;
-  align-self: baseline;
-  font-size: 0.8rem;
-}
-
-.home-shell .network-node-time > small {
-  grid-column: 1 / -1;
+.home-shell .network-node-highlights .metric-row-detail {
   font-size: 0.66rem;
   line-height: 1.2;
+}
+
+.home-shell .network-node-highlights .metric-row-detail > time,
+.home-shell .network-node-time-note {
+  display: block;
 }
 
 .home-shell .network-node-time-note {
@@ -4074,40 +3975,30 @@ button {
 }
 
 .home-shell .node-hero-resources {
-  gap: 1rem;
+  gap: 0.7rem;
   margin-top: 0.75rem;
   padding-top: 0.75rem;
 }
 
-.home-shell .node-hero-resource span {
-  color: var(--muted);
+.home-shell .node-hero-resources .metric-row-label {
   font-size: 0.68rem;
   font-weight: 750;
   letter-spacing: 0.04em;
-  text-transform: none;
 }
 
-.home-shell .node-hero-resource strong {
-  min-width: 0;
-  color: var(--ink);
-  font-family: inherit;
+.home-shell .node-hero-resources .metric-row-value {
   font-size: 1rem;
   font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
 }
 
-.home-shell .node-hero-resource small {
+.home-shell .node-hero-resources .metric-row-detail {
   font-size: 0.68rem;
-  overflow-wrap: anywhere;
-  white-space: normal;
 }
 
 .home-shell .node-consensus-summary {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(7.5rem, auto);
-  gap: 1rem;
-  align-items: stretch;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.7rem;
   margin-top: 0.75rem;
   padding: 0.75rem 0;
   border-block: 1px solid rgba(100, 116, 139, 0.25);
@@ -4115,21 +4006,13 @@ button {
 
 .home-shell .node-height-metrics {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0.75rem;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.7rem;
   min-width: 0;
 }
 
-.home-shell .node-height-metrics > div,
-.home-shell .node-validator-role > div {
-  min-width: 0;
-  display: grid;
-  align-content: start;
-  gap: 0.35rem;
-}
-
-.home-shell .node-height-metrics strong,
-.home-shell .node-validator-role strong {
+.home-shell .node-height-metrics .metric-row-value,
+.home-shell .node-validator-role .metric-row-value {
   color: var(--ink);
   font-size: clamp(0.95rem, 1.5vw, 1.1rem);
   font-variant-numeric: tabular-nums;
@@ -4138,10 +4021,10 @@ button {
 
 .home-shell .node-validator-role {
   min-width: 0;
-  display: flex;
-  align-items: flex-start;
-  padding-left: 1rem;
-  border-left: 1px solid rgba(100, 116, 139, 0.2);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  padding-top: 0.7rem;
+  border-top: 1px solid rgba(100, 116, 139, 0.2);
 }
 
 .home-shell .node-hero-footer {
@@ -4244,14 +4127,6 @@ button {
     justify-content: flex-start;
   }
 
-  .home-shell .network-node-highlights {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .home-shell .network-node-highlights > div:first-child {
-    grid-column: auto;
-  }
-
   .home-shell .network-node-statuses {
     grid-template-columns: none;
   }
@@ -4270,23 +4145,6 @@ button {
 
   .home-shell .node-hero-fact:last-child {
     grid-column: 1 / -1;
-  }
-
-  .home-shell .node-consensus-summary {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 0.65rem;
-  }
-
-  .home-shell .node-height-metrics {
-    display: contents;
-  }
-
-  .home-shell .node-validator-role {
-    grid-column: 3;
-    grid-row: 1;
-    padding: 0 0 0 0.65rem;
-    border-top: 0;
-    border-left: 1px solid rgba(100, 116, 139, 0.2);
   }
 
   .home-shell .node-tabs {
@@ -4319,21 +4177,9 @@ button {
 }
 
 /* A narrow card can occur inside a wide Network page when the Node grid has
-   several columns. Keep its facts scannable instead of squeezing the time
-   explanation into an unusably narrow third column. */
+   several columns. Keep the inline RPC/Sync/Consensus status row scannable
+   instead of squeezing three labels and states into one narrow line. */
 @container (max-width: 34rem) {
-  .home-shell .network-node-highlights {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .home-shell .network-node-highlights > div:first-child {
-    grid-column: auto;
-  }
-
-  .home-shell .network-node-time {
-    grid-column: 1 / -1;
-  }
-
   .home-shell .network-node-statuses {
     gap: 0.25rem 0.4rem;
   }

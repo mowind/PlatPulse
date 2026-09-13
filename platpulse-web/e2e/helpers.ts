@@ -1,4 +1,4 @@
-import { expect, type Page } from '@playwright/test'
+import { expect, type Locator, type Page } from '@playwright/test'
 
 /** Password provisioned by e2e/start-server.sh via stdin (never argv). */
 export const E2E_PASSWORD = 'platpulse-e2e-admin-2026'
@@ -76,6 +76,32 @@ export async function expectNoHorizontalOverflow(page: Page) {
     overflow,
     `page must not overflow horizontally: ${offenders.join(' | ')}`,
   ).toBeLessThanOrEqual(0)
+}
+
+/** Every metric row inside a surface is one `data item / value` line at the
+ *  current viewport: the label and value share a line, the value's right edge
+ *  meets the row's right edge, and a progress track spans the full row
+ *  (issue #140). Returns the offending rows as the failure payload. */
+export async function expectMetricRowsAligned(scope: Locator) {
+  const offenders = await scope.locator('.metric-row').evaluateAll((rows) =>
+    rows.flatMap((row) => {
+      const label = row.querySelector('.metric-row-label')
+      const value = row.querySelector('.metric-row-value')
+      if (!label || !value) return ['a metric row is missing its label or value']
+      const labelBox = label.getBoundingClientRect()
+      const valueBox = value.getBoundingClientRect()
+      const rowBox = row.getBoundingClientRect()
+      const sameLine = Math.abs(labelBox.top - valueBox.top) <= 8
+      const valueRightAligned = Math.abs(valueBox.right - rowBox.right) <= 1.5
+      const valueRightOfLabel = valueBox.left >= labelBox.right - 1
+      const progress = row.querySelector('.metric-row-progress')
+      const progressFullWidth = progress === null || Math.abs(progress.getBoundingClientRect().width - rowBox.width) <= 1.5
+      return sameLine && valueRightAligned && valueRightOfLabel && progressFullWidth
+        ? []
+        : [`"${(row.textContent ?? '').replace(/\s+/g, ' ').trim()}" sameLine=${sameLine} rightAligned=${valueRightAligned} rightOfLabel=${valueRightOfLabel} fullTrack=${progressFullWidth}`]
+    }),
+  )
+  expect(offenders, 'every metric row is one data-item / value line with the value flush right').toEqual([])
 }
 
 /** Every visible control in a fixed-viewport scenario must remain a usable

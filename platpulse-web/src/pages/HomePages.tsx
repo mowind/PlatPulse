@@ -18,7 +18,9 @@ import { ValidatorInsight } from '../components/ValidatorInsight'
 import { ValidatorAnalytics } from '../components/ValidatorAnalytics'
 import { formatRelativeTime, formatUtcDateTime, StatusBadge } from '../components/StatusBadge'
 import { RealtimeNotice } from '../components/RealtimeNotice'
-import { formatBytes } from '../formatBytes'
+import { formatNodeDataBytes } from '../formatBytes'
+import { nodeDataProgress } from '../nodeData'
+import { MetricRow } from '../components/MetricRow'
 
 export function NetworkPage() {
   const { networkKey = '' } = useParams()
@@ -99,6 +101,7 @@ export function NodePage() {
       : metricsQuery.error
         ? 'Metric history unavailable'
         : undefined
+  const nodeDataProgressValue = nodeDataProgress(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)
 
   return <section className="page node-detail-page">
     <div className="node-detail-topline">
@@ -126,24 +129,24 @@ export function NodePage() {
 
       {health.tone !== 'ok' && <p className="node-hero-reason">{node.healthReason}</p>}
       <div className="node-hero-resources" aria-label="Node process and storage resources">
-        <HeroResourceMetric label="CPU" value={formatPercent(node.processCpuPercent)} progress={node.processCpuPercent} />
-        <HeroResourceMetric label="Memory" value={formatPercent(node.processMemoryPercent)} progress={node.processMemoryPercent} />
-        <HeroResourceMetric
+        <MetricRow label="CPU" value={formatPercent(node.processCpuPercent)} progress={node.processCpuPercent} />
+        <MetricRow label="Memory" value={formatPercent(node.processMemoryPercent)} progress={node.processMemoryPercent} />
+        <MetricRow
           label="Node data"
-          value={formatBytes(node.nodeDataDirectorySizeBytes)}
-          detail={diskDetail(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)}
-          progress={diskProgress(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)}
+          value={formatPercent(nodeDataProgressValue)}
+          detail={formatNodeDataBytes(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)}
+          progress={nodeDataProgressValue}
         />
       </div>
       <div className="node-consensus-summary" aria-label="Node chain and consensus progress">
         <div className="node-height-metrics" aria-label="Node height metrics">
-          <HeroMetric label="Head" value={formatNumber(node.currentHead)} />
-          <HeroMetric label="QC" value={formatConsensusValue(node.consensus?.highestQcBlock, node.consensus)} />
-          <HeroMetric label="Locked" value={formatConsensusValue(node.consensus?.highestLockBlock, node.consensus)} />
-          <HeroMetric label="Committed" value={formatConsensusValue(node.consensus?.highestCommitBlock, node.consensus)} />
+          <MetricRow label="Head" value={formatNumber(node.currentHead)} />
+          <MetricRow label="QC" value={formatConsensusValue(node.consensus?.highestQcBlock, node.consensus)} />
+          <MetricRow label="Locked" value={formatConsensusValue(node.consensus?.highestLockBlock, node.consensus)} />
+          <MetricRow label="Committed" value={formatConsensusValue(node.consensus?.highestCommitBlock, node.consensus)} />
         </div>
         <div className="node-validator-role" aria-label="Validator role">
-          <HeroMetric label="Validator" value={formatValidatorMembership(node)} />
+          <MetricRow label="Validator" value={formatValidatorMembership(node)} />
         </div>
       </div>
       <footer className="node-hero-footer">
@@ -231,19 +234,6 @@ export function NodePage() {
       <p className="redaction-note">Network insight is public and redacted: peer addresses and identity lists are never displayed.</p>
     </section>
   </section>
-}
-
-function HeroMetric({ label, value }: { label: string; value: string }) {
-  return <div><span>{label}</span><strong>{value}</strong></div>
-}
-
-function HeroResourceMetric({ label, value, detail, progress }: { label: string; value: string; detail?: string; progress?: number | null }) {
-  const boundedProgress = progress == null ? null : Math.max(0, Math.min(100, progress))
-  return <div className="node-hero-resource">
-    <div><span>{label}</span><strong>{value}</strong></div>
-    {boundedProgress != null && <i className="node-hero-resource-progress" aria-hidden="true"><span style={{ width: `${boundedProgress}%` }} /></i>}
-    {detail && <small>{detail}</small>}
-  </div>
 }
 
 function MetricCardHeading({ label, hint }: { label: string; hint?: string }) {
@@ -467,17 +457,6 @@ function formatMillisecondsAxis(value: number): string {
   return `${Math.round(value)}ms`
 }
 
-function diskProgress(size: number | null | undefined, capacity: number | null | undefined): number | null {
-  if (size == null || capacity == null || capacity <= 0) return null
-  return (size / capacity) * 100
-}
-
-function diskDetail(size: number | null | undefined, capacity: number | null | undefined): string {
-  const progress = diskProgress(size, capacity)
-  if (progress == null) return 'Node data directory'
-  return `${formatBytes(capacity)} total · ${formatPercent(progress)}`
-}
-
 function latestBlockInterval(history: ReturnType<typeof usePublicNodeHistory>['data']): { value: string; detail: string } {
   const blocks = history?.filter((item) => item.height != null && item.blockTimeMs != null).slice(0, 2) ?? []
   if (blocks.length < 2) return { value: 'Unknown', detail: 'Two Block Summaries are required' }
@@ -596,23 +575,22 @@ function NodeUpdateTime({ value }: { value: PublicNode['freshness'] }) {
   const update = parseComponentUpdateTime(value)
   if (!update) {
     return (
-      <div className="network-node-time">
-        <span>Oldest component update</span>
-        <strong>Unknown</strong>
-        <small>RPC, Sync, and Consensus receipt time is unavailable.</small>
-      </div>
+      <MetricRow
+        label="Oldest component update"
+        value="Unknown"
+        detail="RPC, Sync, and Consensus receipt time is unavailable."
+      />
     )
   }
 
   const relative = formatRelativeTime(update.date)
   const absolute = formatUtcDateTime(update.date)
   return (
-    <div className="network-node-time">
-      <span>Oldest component update</span>
-      <strong><time dateTime={update.timestamp} title={absolute} aria-label={relative + '; ' + absolute}>{relative}</time></strong>
-      <small><time dateTime={update.timestamp}>{absolute}</time></small>
-      <small className="network-node-time-note">Earliest Server receipt across RPC, Sync, and Consensus</small>
-    </div>
+    <MetricRow
+      label="Oldest component update"
+      value={<time dateTime={update.timestamp} title={absolute} aria-label={relative + '; ' + absolute}>{relative}</time>}
+      detail={<><time dateTime={update.timestamp}>{absolute}</time><span className="network-node-time-note">Earliest Server receipt across RPC, Sync, and Consensus</span></>}
+    />
   )
 }
 
@@ -673,8 +651,8 @@ function NodeCard({ node }: { node: PublicNode }) {
     </header>
     {showHealthReason && <p className="health-reason">{node.healthReason || 'Server health reason unavailable.'}</p>}
     <div className="network-node-highlights" role="group" aria-label="Node summary facts">
-      <div><span>Head</span><strong>{formatNumber(node.currentHead)}</strong></div>
-      <div><span>Peers</span><strong>{peerCount(node.peers)}</strong><small>{peerBreakdown(node.peers)}</small></div>
+      <MetricRow label="Head" value={formatNumber(node.currentHead)} />
+      <MetricRow label="Peers" value={peerCount(node.peers)} detail={peerBreakdown(node.peers)} />
       <NodeUpdateTime value={node.freshness} />
     </div>
     <div className="network-node-statuses" role="group" aria-label="Node component status">

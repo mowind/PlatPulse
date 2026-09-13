@@ -30,6 +30,13 @@ export function formatBytesUnknown(value: number | null | undefined): string {
   return formatBytes(value)
 }
 
+/** Node data reads as used / total bytes (issue #140). A known side is never
+ * hidden by an unknown one; a never-observed pair has no detail at all. */
+export function formatNodeDataBytes(size: number | null | undefined, capacity: number | null | undefined): string | undefined {
+  if (size == null && capacity == null) return undefined
+  return `${formatBytes(size)} / ${formatBytes(capacity)}`
+}
+
 /** Keep stable identifiers readable while preserving the complete value in
  * the DOM and in the title attribute. */
 export function formatIdentifier(value: string): string {

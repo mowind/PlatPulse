@@ -85,13 +85,13 @@ describe('Public Home dashboard', () => {
     expect(within(failedCard).getByText(/Collection failed.*Stale.*Showing last successful snapshot/)).toBeTruthy()
   })
 
-  it('shows the first compact metric row as Head, Transactions, and Peers with Unknown on absence', () => {
+  it('shows the first compact metric row as Head, Txs, and Peers with Unknown on absence', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
     const alphaCard = cardOf(nodeCardLink('Alpha'))
     expect(within(alphaCard).getByText('Head')).toBeTruthy()
     expect(within(alphaCard).getByText('120')).toBeTruthy()
-    expect(within(alphaCard).getByText('Transactions')).toBeTruthy()
+    expect(within(alphaCard).getByText('Txs')).toBeTruthy()
     // Formatted exact match is rendered with locale grouping, never as a raw number.
     expect(within(alphaCard).getByText('12,345')).toBeTruthy()
     expect(within(alphaCard).getByText('Peers')).toBeTruthy()
@@ -102,7 +102,7 @@ describe('Public Home dashboard', () => {
     // No exact Block Summary match is Unknown, not zero (issue #98).
     const betaCard = cardOf(nodeCardLink('Beta'))
     expect(within(betaCard).getByText('Head')).toBeTruthy()
-    expect(within(betaCard).getByText('Transactions')).toBeTruthy()
+    expect(within(betaCard).getByText('Txs')).toBeTruthy()
     expect(within(betaCard).getByText('Peers')).toBeTruthy()
     expect(within(betaCard).getAllByText('Unknown').length).toBeGreaterThanOrEqual(3)
   })
@@ -119,29 +119,33 @@ describe('Public Home dashboard', () => {
     expect(within(resources).getByText('45.3%')).toBeTruthy()
     const nodeDataLabel = within(resources).getByText('Node data')
     expect(nodeDataLabel).toBeTruthy()
-    expect(within(resources).getByText('12.0 GiB')).toBeTruthy()
+    expect(within(resources).getByText('12.0 GiB / 48.0 GiB')).toBeTruthy()
     const nodeDataMetric = nodeDataLabel.parentElement as HTMLElement
-    expect(nodeDataMetric.classList.contains('dashboard-node-primary-metric-progress')).toBe(true)
+    expect(nodeDataMetric.classList.contains('metric-row')).toBe(true)
+    expect(nodeDataMetric.querySelector('.metric-row-progress')).toBeTruthy()
     expect(nodeDataMetric.style.getPropertyValue('--metric-progress')).toBe('25%')
     expect(within(resources).queryByText('STORAGE')).toBeNull()
     expect(within(resources).getByText('2.00 KiB/s')).toBeTruthy()
     expect(within(resources).getByText('1.00 KiB/s')).toBeTruthy()
   })
-  it('shows Node data as a percentage of its filesystem capacity', () => {
-    const withCapacity = {
-      ...network,
-      nodes: [
-        { ...network.nodes[0], nodeDataDirectoryCapacityBytes: 51_539_607_552 },
-        network.nodes[1],
-      ],
-    } as unknown as PublicNetwork
-    render(<BrowserRouter><HomeDashboard networks={[withCapacity]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+  it('renders Node data as a percentage with the used / total byte detail under its progress bar', () => {
+    render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
     const alphaCard = cardOf(nodeCardLink('Alpha'))
     const nodeDataMetric = within(alphaCard).getByText('Node data').parentElement as HTMLElement
-    expect(nodeDataMetric.classList.contains('dashboard-node-primary-metric-progress')).toBe(true)
+    expect(within(nodeDataMetric).getByText('25.0%')).toBeTruthy()
+    expect(within(nodeDataMetric).getByText('12.0 GiB / 48.0 GiB')).toBeTruthy()
     expect(nodeDataMetric.style.getPropertyValue('--metric-progress')).toBe('25%')
-    expect(within(nodeDataMetric).getByText('48.0 GiB total · 25.0%')).toBeTruthy()
+  })
+
+  it('lays every Home metric out as one data-item / value row with its detail below', () => {
+    render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+
+    const alphaCard = cardOf(nodeCardLink('Alpha'))
+    // Resources (CPU, Memory, Node data, ↑ Up, ↓ Down), main (Head, Txs,
+    // Peers), and consensus (QC, Locked, Committed, Validator). Their shared
+    // shape is covered by MetricRow.test.tsx.
+    expect(alphaCard.querySelectorAll('.metric-row')).toHaveLength(12)
   })
 
   it('shows the second compact metric row as QC, Locked, Committed, and Validator', () => {

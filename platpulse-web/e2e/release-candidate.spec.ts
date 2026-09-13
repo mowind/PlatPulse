@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test'
 import {
   E2E_PASSWORD,
   expectFocusedElementHasVisibleFocus,
+  expectMetricRowsAligned,
   expectNoHorizontalOverflow,
   expectVisibleInteractiveTargets,
   loginAs,
@@ -125,7 +126,8 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
 
     await expect(page.getByRole('heading', { level: 1, name: 'Home Convergence Network With An Extremely Long Display Name' })).toBeVisible()
     const hCard = page.getByRole('article', { name: /Node H/ })
-    await expect(hCard).toBeVisible()
+    await expect(hCard).toBeVisible({ timeout: 15_000 })
+    await expectMetricRowsAligned(hCard)
     const identityGroup = hCard.getByRole('group', { name: 'Node identity and health' })
     const summaryGroup = hCard.getByRole('group', { name: 'Node summary facts' })
     const componentGroup = hCard.getByRole('group', { name: 'Node component status' })
@@ -497,13 +499,11 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
       height: Math.round(card.getBoundingClientRect().height),
       children: [...card.children].map((child) => ({ className: child.className, height: Math.round(child.getBoundingClientRect().height) })),
     }))
-    // The hero card is a content-driven four-block summary, so its pixel height
-    // is not portable across font stacks: the 36-character Node ID line fits in
-    // 305.2px at 360px viewport width with the integer glyph advances CI's
-    // Ubuntu 24.04 stack produces, but needs 311.5px with the fractional
-    // advances of a FreeType 2.14 host, so it wraps to a second line there.
-    // That one 18.7px line moved the card between 485px (CI) and 504px
-    // (local), which the old 500px ceiling split in half (issue #139). Pin the
+    // The hero card is a content-driven four-block summary whose height is not
+    // portable across font stacks: the ID line can wrap on one host and not
+    // another, and issue #140 made every resource and height metric a single
+    // full-width row, so the four blocks now measure 604px at 360px on this
+    // host (CI's integer glyph advances render a little shorter). Pin the
     // compact-hero contract structurally instead, and keep the ceiling as a
     // coarse net with headroom over the widest observed phone rendering.
     expect(heroLayout.children.map(({ className }) => className), JSON.stringify(heroLayout)).toEqual([
@@ -512,7 +512,7 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
       'node-consensus-summary',
       'node-hero-footer',
     ])
-    expect(heroLayout.height, JSON.stringify(heroLayout)).toBeLessThanOrEqual(560)
+    expect(heroLayout.height, JSON.stringify(heroLayout)).toBeLessThanOrEqual(680)
     await expect(page.getByText('Head')).toBeVisible()
     await expect(page.getByText('QC')).toBeVisible()
     await expect(page.getByText('Locked')).toBeVisible()
@@ -526,7 +526,9 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     for (const label of ['CPU', 'Memory', 'Node data']) {
       await expect(resources.getByText(label, { exact: true })).toBeVisible()
     }
-    await expect(resources.locator('.node-hero-resource-progress')).toHaveCount(3)
+    await expect(resources.locator('.metric-row-progress')).toHaveCount(3)
+    await expectMetricRowsAligned(resources)
+    await expectMetricRowsAligned(page.getByLabel('Node chain and consensus progress'))
     for (const heading of ['Network', 'Connections', 'Block time', 'Transactions']) {
       await expect(page.getByRole('heading', { level: 3, name: heading })).toBeVisible()
     }
