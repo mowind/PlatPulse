@@ -656,7 +656,7 @@ describe('App shell with private Home', () => {
     })
 
     expect(await screen.findByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
-    expect(screen.getByText('Health')).toBeTruthy()
+    expect(screen.getByRole('img', { name: 'Unhealthy' })).toBeTruthy()
     expect(screen.getByText('Node status')).toBeTruthy()
     expect(screen.getByText('Producing')).toBeTruthy()
     expect(screen.getByText('Process uptime')).toBeTruthy()
@@ -916,7 +916,7 @@ describe('App shell with private Home', () => {
     expect(nodeCard.getAttribute('href')).toBe('/nodes/node-1')
     expect(nodeCard.textContent).toContain('Mainnet')
     expect(screen.queryByRole('link', { name: 'Mainnet' })).toBeNull()
-    expect(screen.getByText('Healthy')).toBeTruthy()
+    expect(screen.getByRole('img', { name: 'Healthy' })).toBeTruthy()
     fireEvent.click(nodeCard)
     expect(await screen.findByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
     fireEvent.click(screen.getByRole('link', { name: /← mainnet/ }))
@@ -1009,7 +1009,7 @@ describe('App shell with private Home', () => {
 
     const healthyCard = (await screen.findByRole('heading', { level: 2, name: 'Healthy Node' })).closest('article')
     if (!healthyCard) throw new Error('Healthy Node card is missing')
-    expect(within(healthyCard).getByText('Healthy', { exact: true })).toBeTruthy()
+    expect(within(healthyCard).getByRole('img', { name: 'Healthy' })).toBeTruthy()
     expect(within(healthyCard).getByText('Head', { exact: true })).toBeTruthy()
     expect(within(healthyCard).getByText('100', { exact: true })).toBeTruthy()
     expect(within(healthyCard).getByText('30', { exact: true })).toBeTruthy()
@@ -1045,7 +1045,7 @@ describe('App shell with private Home', () => {
 
     const healthyWithUnknownReceiptCard = (await screen.findByRole('heading', { level: 2, name: 'Healthy Node With Unknown Receipt' })).closest('article')
     if (!healthyWithUnknownReceiptCard) throw new Error('Healthy Node with unknown receipt card is missing')
-    expect(within(healthyWithUnknownReceiptCard).getByText('Healthy', { exact: true })).toBeTruthy()
+    expect(within(healthyWithUnknownReceiptCard).getByRole('img', { name: 'Healthy' })).toBeTruthy()
     expect(within(healthyWithUnknownReceiptCard).getByText('Oldest component update', { exact: true })).toBeTruthy()
     expect(healthyWithUnknownReceiptCard.textContent).toMatch(/Oldest component update\s*Unknown/)
   })
@@ -1355,7 +1355,7 @@ describe('App shell with private Home', () => {
     expect(screen.getByText('Stale', { exact: true })).toBeTruthy()
     const nodeCard = screen.getByText('Node With Unknown Health').closest('article')
     if (!nodeCard) throw new Error('Unknown-health Node card is missing')
-    expect(within(nodeCard).getByText('Unknown', { exact: true })).toBeTruthy()
+    expect(within(nodeCard).getByRole('img', { name: 'Unknown' })).toBeTruthy()
     expect(screen.queryByRole('status', { name: 'Current' })).toBeNull()
     expect(networkCalls).toBe(1)
 

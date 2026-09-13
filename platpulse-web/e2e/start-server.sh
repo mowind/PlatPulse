@@ -629,7 +629,7 @@ with sqlite3.connect(path) as db:
         )
 
     # Node N: Provider error retains the last-good Activity and must never
-    # affect the independent Node Health badge.
+    # affect the independent Node Health marker.
     seed_chain(node_n, 12842021, True, 12842021, 12842020, 12842021, fresh)
     seed_components(node_n, fresh, fresh)
     db.execute(

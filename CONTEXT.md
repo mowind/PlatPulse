@@ -233,7 +233,7 @@ The combined process and chain observations belonging to one PlatON Node. Observ
 _Avoid_: Agent observation
 
 **Node Health Summary**:
-A display-oriented severity derived from independent liveness, lifecycle, process, reachability, freshness, synchronization, consensus, and Host pressure dimensions. It never replaces those dimensions, and unknown data is not healthy data.
+A display-oriented severity derived from independent liveness, lifecycle, process, reachability, freshness, synchronization, consensus, and Host pressure dimensions. It never replaces those dimensions, and unknown data is not healthy data. Where a surface marks a Node by name — the Home Dashboard cards, the Network page, and Node Detail — a two-state marker beside that name shows Healthy in green and every other state in grey; the marker renders this summary rather than replacing it, and the reason for an abnormal state stays visible as text.
 _Avoid_: Online flag, Authoritative health state
 
 **Clock Unreliable**:

@@ -16,7 +16,7 @@ import { PeerHistoryInsight, normalizePublicPeerHistory } from '../components/Pe
 import { GeoInsight } from '../components/GeoInsight'
 import { ValidatorInsight } from '../components/ValidatorInsight'
 import { ValidatorAnalytics } from '../components/ValidatorAnalytics'
-import { formatRelativeTime, formatUtcDateTime, StatusBadge } from '../components/StatusBadge'
+import { formatRelativeTime, formatUtcDateTime, NodeHealthMarker, StatusBadge } from '../components/StatusBadge'
 import { RealtimeNotice } from '../components/RealtimeNotice'
 import { formatNodeDataBytes } from '../formatBytes'
 import { nodeDataProgress } from '../nodeData'
@@ -116,12 +116,14 @@ export function NodePage() {
 
     <section className="node-hero-card" aria-labelledby="node-detail-title">
       <header className="node-hero-header">
-        <div>
-          <h1 id="node-detail-title">{nodeDisplayName(node)}</h1>
-          <p className="node-id-line">Node ID <code>{node.nodeId}</code></p>
+        <div className="node-hero-identity">
+          <NodeHealthMarker health={node.health} />
+          <div>
+            <h1 id="node-detail-title">{nodeDisplayName(node)}</h1>
+            <p className="node-id-line">Node ID <code>{node.nodeId}</code></p>
+          </div>
         </div>
         <div className="node-hero-facts" aria-label="Node status">
-          <div className="node-hero-fact"><span>Health</span><StatusBadge status={health.label} tone={health.tone} /></div>
           <div className="node-hero-fact"><span>Node status</span><StatusBadge status={activity.label} tone={activity.tone} /></div>
           <div className="node-hero-fact node-uptime"><span>Process uptime</span><strong>{formatDuration(node.processUptimeMs)}</strong></div>
         </div>
@@ -644,10 +646,10 @@ function NodeCard({ node }: { node: PublicNode }) {
   const titleId = 'network-node-card-title-' + node.nodeId
   return <article className="node-card network-node-card" aria-labelledby={titleId}>
     <header className="network-node-card-header" role="group" aria-label="Node identity and health">
-      <div>
+      <div className="network-node-card-identity">
+        <NodeHealthMarker health={node.health} />
         <h2 id={titleId}><Link to={'/nodes/' + node.nodeId}>{displayName}</Link></h2>
       </div>
-      <StatusBadge status={health.label} tone={health.tone} />
     </header>
     {showHealthReason && <p className="health-reason">{node.healthReason || 'Server health reason unavailable.'}</p>}
     <div className="network-node-highlights" role="group" aria-label="Node summary facts">

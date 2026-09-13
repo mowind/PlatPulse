@@ -3,7 +3,7 @@ import { Link } from 'react-router'
 import type { PublicConsensusInsight, PublicNetwork, PublicNode } from '../api/generated'
 import { realtimeStreamLabel } from './RealtimeNotice'
 import { peerInsightCollectionStatus, peerInsightFreshnessStatus, peerInsightValueStatus } from './PeerInsight'
-import { StatusBadge } from './StatusBadge'
+import { NodeHealthMarker, StatusBadge } from './StatusBadge'
 import GeoMapBoundary from './GeoMapBoundary'
 import GeoWorldMap from './GeoWorldMap'
 import { formatNodeDataBytes } from '../formatBytes'
@@ -127,7 +127,7 @@ function HomeNodeCard({ network, node }: NodeRecord) {
       <Link className="dashboard-node-card-link" to={`/nodes/${node.nodeId}`}>
         <header className="dashboard-node-header">
           <div className="dashboard-node-title">
-            <span className={`dashboard-node-status dashboard-node-status-${tone}`} aria-hidden="true" />
+            <NodeHealthMarker health={node.health} />
             <div>
               <h2>{nodeLabel(node)}</h2>
               <p className="dashboard-node-network">{network.displayName}</p>
@@ -135,7 +135,6 @@ function HomeNodeCard({ network, node }: NodeRecord) {
           </div>
           <div className="dashboard-node-badges">
             <StatusBadge status={activity.status} tone={activity.tone} />
-            <StatusBadge status={healthLabel(node.health)} tone={statusTone(tone)} />
           </div>
         </header>
         <ResourceRow node={node} />
@@ -293,15 +292,11 @@ function formatPeerObservation(node: PublicNode): string | undefined {
   // remain visible below the value.
   return undefined
 }
-function statusTone(tone: ReturnType<typeof toneFor>): 'ok' | 'warning' | 'error' | 'neutral' {
-  return tone === 'good' ? 'ok' : tone === 'bad' ? 'error' : tone === 'warn' ? 'warning' : 'neutral'
-}
-
 /**
  * Link-aware Validator Activity (issue #100). A Public Node exposes Activity
  * only through its effective explicit Node Validator Link. A Node without
  * an observed activity value renders Observing in the compact Home badge.
- * Provider Activity never affects the separate Node Health badge.
+ * Provider Activity never affects the separate Node Health marker.
  */
 function activityBadge(node: PublicNode): { status: string; tone: 'ok' | 'warning' | 'error' | 'neutral' } {
   const validator = node.validator

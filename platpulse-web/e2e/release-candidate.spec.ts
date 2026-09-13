@@ -132,7 +132,9 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     const summaryGroup = hCard.getByRole('group', { name: 'Node summary facts' })
     const componentGroup = hCard.getByRole('group', { name: 'Node component status' })
     await expect(identityGroup).toContainText(longNodeName)
-    await expect(identityGroup).toContainText('Healthy')
+    // The removed Node Health text badge is now a two-state marker whose
+    // accessible name carries the Server-owned health word (issue #141).
+    await expect(identityGroup.getByRole('img', { name: 'Healthy' })).toBeVisible()
     await expect(summaryGroup).toHaveText(/Head[\s\S]*Peers[\s\S]*Oldest component update/)
     await expect(componentGroup).toHaveText(/RPC[\s\S]*Sync[\s\S]*Consensus/)
     const [identityBox, summaryBox, componentBox, detailsBox] = await Promise.all([

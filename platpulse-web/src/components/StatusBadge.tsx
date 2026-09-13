@@ -138,3 +138,34 @@ export function StatusBadge({
     </span>
   )
 }
+
+/** The three Server-owned Node Health words the WebUI presents as sent. */
+export function nodeHealthLabel(value: string | null | undefined): 'Healthy' | 'Unhealthy' | 'Unknown' {
+  const health = typeof value === 'string' ? value.trim().toLowerCase() : undefined
+  switch (health) {
+    case 'healthy':
+      return 'Healthy'
+    case 'unhealthy':
+      return 'Unhealthy'
+    default:
+      return 'Unknown'
+  }
+}
+
+/**
+ * Two-state Node health marker (issue #141). The Server-owned health word is
+ * the marker's accessible name, so removing the text badge leaves Healthy,
+ * Unhealthy, and Unknown in the accessibility tree. Healthy renders green and
+ * every other state - Unhealthy, Unknown, and never-observed - renders grey;
+ * the exceptional Server reason stays visible as text on each surface.
+ */
+export function NodeHealthMarker({ health }: { health: string | null | undefined }) {
+  const label = nodeHealthLabel(health)
+  return (
+    <span
+      className={`node-health-marker ${label === 'Healthy' ? 'node-health-marker-healthy' : 'node-health-marker-other'}`}
+      role="img"
+      aria-label={label}
+    />
+  )
+}

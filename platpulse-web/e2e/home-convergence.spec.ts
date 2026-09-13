@@ -45,15 +45,16 @@ test.describe('Converged Public Home (issue #102)', () => {
     const hCard = nodeCard(page, /Node H/)
     await expect(hCard).toBeVisible({ timeout: 15_000 })
 
-    // Header: status marker + Node/Network identity, then Validator Activity
-    // and Node Health badges in that order. The whole card is one semantic
-    // link, so its accessible name carries the badge order.
+    // Header: the two-state Node Health marker precedes the Node/Network
+    // identity, and Validator Activity stays the only header text badge. The
+    // whole card is one semantic link, so its accessible name carries that
+    // order.
+    await expect(
+      page.getByRole('link', { name: /^Healthy Node H — Producing Card[\s\S]*Producing/ }),
+    ).toHaveCount(1)
+    // Health never trails the Node name and Activity again.
     await expect(
       page.getByRole('link', { name: /Node H — Producing Card[\s\S]*Producing[\s\S]*Healthy/ }),
-    ).toHaveCount(1)
-    // The reverse order (Health before Activity) never occurs.
-    await expect(
-      page.getByRole('link', { name: /Node H — Producing Card[\s\S]*Healthy[\s\S]*Producing/ }),
     ).toHaveCount(0)
 
     // Both compact metric rows carry exactly the required labels and values:
@@ -118,38 +119,33 @@ test.describe('Converged Public Home (issue #102)', () => {
     expect(box.width).toBeGreaterThanOrEqual(44)
     expect(box.height).toBeGreaterThanOrEqual(44)
 
-    // Status badges remain inside the card and never overlap. The short Node A
-    // card keeps Observing and Healthy on one row even on phones; long names may wrap.
+    // The Validator Activity badge and the Node Health marker stay inside the
+    // card and never overlap. The short Node A card keeps Observing and the
+    // marker on one row even on phones; long names may wrap.
     const badgeCard = nodeCard(page, /Node A/)
     await expect(badgeCard).toBeVisible({ timeout: 15_000 })
     const badgeCardBox = (await badgeCard.boundingBox())!
-    const badgeBoxes = await Promise.all(
-      ['Observing', 'Healthy'].map(async (label) => {
-        const badge = badgeCard.getByText(label, { exact: true })
-        await expect(badge).toBeVisible()
-        return badge.boundingBox()
-      }),
-    )
-    expect(badgeBoxes.every(Boolean)).toBe(true)
-    const [firstBadge, secondBadge] = badgeBoxes
-    if (!firstBadge || !secondBadge) throw new Error('Home card status badges have no layout box')
-    for (const badge of badgeBoxes) {
-      if (!badge) continue
-      expect(badge.x).toBeGreaterThanOrEqual(badgeCardBox.x - 1)
-      expect(badge.x + badge.width).toBeLessThanOrEqual(badgeCardBox.x + badgeCardBox.width + 1)
+    const activityBadge = badgeCard.getByText('Observing', { exact: true })
+    const healthMarker = badgeCard.getByRole('img', { name: 'Healthy' })
+    await expect(activityBadge).toBeVisible()
+    await expect(healthMarker).toBeVisible()
+    const activityBox = (await activityBadge.boundingBox())!
+    const markerBox = (await healthMarker.boundingBox())!
+    for (const box of [activityBox, markerBox]) {
+      expect(box.x).toBeGreaterThanOrEqual(badgeCardBox.x - 1)
+      expect(box.x + box.width).toBeLessThanOrEqual(badgeCardBox.x + badgeCardBox.width + 1)
     }
-    const firstBadgeRight = firstBadge.x + firstBadge.width
-    const secondBadgeRight = secondBadge.x + secondBadge.width
-    const firstBadgeBottom = firstBadge.y + firstBadge.height
-    const secondBadgeBottom = secondBadge.y + secondBadge.height
     expect(
-      firstBadgeRight <= secondBadge.x + 1 ||
-      secondBadgeRight <= firstBadge.x + 1 ||
-      firstBadgeBottom <= secondBadge.y + 1 ||
-      secondBadgeBottom <= firstBadge.y + 1,
+      activityBox.x + activityBox.width <= markerBox.x + 1 ||
+      markerBox.x + markerBox.width <= activityBox.x + 1 ||
+      activityBox.y + activityBox.height <= markerBox.y + 1 ||
+      markerBox.y + markerBox.height <= activityBox.y + 1,
     ).toBe(true)
     if (testInfo.project.name === 'desktop-1280' || testInfo.project.name === 'tablet-768-touch') {
-      expect(Math.abs(firstBadge.y - secondBadge.y)).toBeLessThanOrEqual(1)
+      // The Activity badge and the Node-name health marker share the header
+      // row: their vertical ranges overlap instead of stacking.
+      expect(activityBox.y).toBeLessThan(markerBox.y + markerBox.height)
+      expect(markerBox.y).toBeLessThan(activityBox.y + activityBox.height)
     }
     await expectVisibleInteractiveTargets(page)
     await expectNoHorizontalOverflow(page)
@@ -169,7 +165,7 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(kCard.getByText('0', { exact: true })).toHaveCount(1)
     await expect(kCard.getByText('Empty; authoritative zero')).toBeVisible()
     await expect(kCard.getByText('No', { exact: true })).toHaveCount(1)
-    await expect(kCard.getByText('Healthy', { exact: true })).toBeVisible()
+    await expect(kCard.getByRole('img', { name: 'Healthy' })).toBeVisible()
 
     // Node L: stale last-good consensus keeps the values and marks them.
     const lCard = nodeCard(page, /Node L/)
@@ -183,20 +179,22 @@ test.describe('Converged Public Home (issue #102)', () => {
     const mCard = nodeCard(page, /Node M/)
     await expect(mCard.getByText('Observing', { exact: true })).toHaveCount(1)
     await expect(
-      page.getByRole('link', { name: /Node M — Validator Observing[\s\S]*Observing[\s\S]*Healthy/ }),
+      page.getByRole('link', { name: /^Healthy Node M — Validator Observing[\s\S]*Observing/ }),
     ).toHaveCount(1)
 
     // Node N: Provider error retains the last-good Activity and marks it
-    // Stale without changing the independent Node Health badge.
+    // Stale without changing the independent Node Health marker.
     await expect(
-      page.getByRole('link', { name: /Node N — Stale Last-Good[\s\S]*Locked \(Stale\)[\s\S]*Healthy/ }),
+      page.getByRole('link', { name: /^Healthy Node N — Stale Last-Good[\s\S]*Locked \(Stale\)/ }),
     ).toHaveCount(1)
     await expect(nodeCard(page, /Node N/).getByText('Locked (Stale)', { exact: true })).toHaveCount(1)
 
     // Node P has no Node observation; only the Agent-shared Host network
     // observation is known, and missing Node values never become 0 or No.
     const pCard = nodeCard(page, /Node P/)
-    await expect(pCard.getByText('Unknown', { exact: true })).toHaveCount(8)
+    // Seven Unknown metric values; the health marker is an accessible name,
+    // not card text, so it is not counted here.
+    await expect(pCard.getByText('Unknown', { exact: true })).toHaveCount(7)
     await expect(pCard.getByText('0', { exact: true })).toHaveCount(0)
     await expect(pCard.getByText('No', { exact: true })).toHaveCount(0)
     await expect(pCard.getByText('one or more observations are stale or unknown')).toHaveCount(1)
@@ -205,7 +203,7 @@ test.describe('Converged Public Home (issue #102)', () => {
     // current process, data-directory, and shared Host metrics stay explicit.
     const aCard = nodeCard(page, /Node A/)
     await expect(aCard.getByText('7', { exact: true })).toHaveCount(1)
-    await expect(aCard.getByText('Healthy', { exact: true })).toBeVisible()
+    await expect(aCard.getByRole('img', { name: 'Healthy' })).toBeVisible()
 
     await expectNoHorizontalOverflow(page)
   })

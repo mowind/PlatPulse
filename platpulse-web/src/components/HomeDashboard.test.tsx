@@ -254,7 +254,7 @@ describe('Public Home dashboard', () => {
     expect(within(unknownFreshnessCard).queryByText('Stale')).toBeNull()
   })
 
-  it('renders link-aware Validator Activity before Node Health as separate text badges', () => {
+  it('renders link-aware Validator Activity as the only header badge with an independent health marker', () => {
     const linked = (activity: string, activityState: string) => ({
       validatorId: 'validator-a', validatorNodeId: '0xvalidator', displayName: 'Validator A',
       nodeId: 'node-a', linkRole: 'primary', state: activityState === 'stale' ? 'error' : 'fresh',
@@ -282,34 +282,61 @@ describe('Public Home dashboard', () => {
       realtimeStatus="connected" online resetting={false} error={null} loading={false}
     /></BrowserRouter>)
 
-    // Activity badge is the first header badge, Node Health the second; both
-    // are text badges, never color-only (issue #100).
+    // Validator Activity stays a text badge (issue #100); Node Health is now a
+    // two-state marker whose accessible name carries the health word (#141).
     const activeCard = cardOf(nodeCardLink('Active Node'))
     const activeBadges = activeCard.querySelectorAll('.status-badge')
-    expect(activeBadges).toHaveLength(2)
+    expect(activeBadges).toHaveLength(1)
     expect(activeBadges[0].textContent).toContain('Producing')
-    expect(activeBadges[1].textContent).toContain('Healthy')
     expect(within(activeCard).getByText('Producing')).toBeTruthy()
+    expect(within(activeCard).getByRole('img', { name: 'Healthy' })).toBeTruthy()
 
     // Authoritative empty/not-found renders Observing, not a fabricated label.
-    const observingCard = cardOf(nodeCardLink('Observing Node'))
+    const observingCard = cardOf(nodeCardLink('Observing Node Mainnet'))
     expect(within(observingCard).getByText('Observing')).toBeTruthy()
     expect(observingCard.querySelectorAll('.status-badge')[0]?.textContent).toContain('Observing')
+    expect(within(observingCard).getByRole('img', { name: 'Healthy' })).toBeTruthy()
 
-    // No effective explicit Link renders Observing Activity before Health.
+    // No effective explicit Link renders Observing Activity beside Health.
     const unknownCard = cardOf(nodeCardLink('Unknown Node'))
     const unknownBadges = unknownCard.querySelectorAll('.status-badge')
+    expect(unknownBadges).toHaveLength(1)
     expect(unknownBadges[0].textContent).toContain('Observing')
-    expect(unknownBadges[1].textContent).toContain('Healthy')
+    expect(within(unknownCard).getByRole('img', { name: 'Healthy' })).toBeTruthy()
 
     // Provider failure with a last-good Activity keeps the label and visibly
-    // marks it Stale; the independent Health badge stays Healthy.
+    // marks it Stale; the independent health marker stays Healthy.
     const staleCard = cardOf(nodeCardLink('Stale Node'))
     const staleBadges = staleCard.querySelectorAll('.status-badge')
+    expect(staleBadges).toHaveLength(1)
     expect(staleBadges[0].textContent).toContain('Locked')
     expect(staleBadges[0].textContent).toContain('Stale')
-    expect(staleBadges[1].textContent).toContain('Healthy')
+    expect(within(staleCard).getByRole('img', { name: 'Healthy' })).toBeTruthy()
     expect(within(staleCard).getByText('Locked (Stale)')).toBeTruthy()
+  })
+
+  it('marks Healthy green and every other Node grey before the name (issue #141)', () => {
+    const unhealthy = { ...network.nodes[0], nodeId: 'node-unhealthy', displayName: 'Unhealthy Node', health: 'unhealthy', healthReason: 'RPC failed' }
+    render(<BrowserRouter><HomeDashboard
+      networks={[{ ...network, nodes: [network.nodes[0], network.nodes[1], unhealthy] }]}
+      realtimeStatus="connected" online resetting={false} error={null} loading={false}
+    /></BrowserRouter>)
+
+    const alphaCard = cardOf(nodeCardLink('Alpha'))
+    const alphaMarker = within(alphaCard).getByRole('img', { name: 'Healthy' })
+    expect(alphaMarker.classList.contains('node-health-marker-healthy')).toBe(true)
+    const alphaHeading = within(alphaCard).getByRole('heading', { level: 2, name: 'Alpha' })
+    expect(alphaMarker.compareDocumentPosition(alphaHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    expect(within(cardOf(nodeCardLink('Beta'))).getByRole('img', { name: 'Unknown' }).classList.contains('node-health-marker-other')).toBe(true)
+    expect(within(cardOf(nodeCardLink('Unhealthy Node'))).getByRole('img', { name: 'Unhealthy' }).classList.contains('node-health-marker-other')).toBe(true)
+
+    // The removed text badge leaves no Node Health word as card text.
+    for (const card of [alphaCard, cardOf(nodeCardLink('Beta')), cardOf(nodeCardLink('Unhealthy Node'))]) {
+      expect(card.querySelectorAll('.status-badge')).toHaveLength(1)
+      expect(within(card).queryByText('Healthy', { exact: true })).toBeNull()
+      expect(within(card).queryByText('Unhealthy', { exact: true })).toBeNull()
+    }
   })
 
   it('keeps summary cards to marker, title, and number with a compact shell', () => {

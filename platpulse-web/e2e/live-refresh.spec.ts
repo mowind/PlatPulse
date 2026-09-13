@@ -209,7 +209,7 @@ test.describe('SCN-HOME-RESPONSIVE-ACCESSIBILITY / live refresh transport state'
     // display name still contains "Producing", so assert the badge content
     // and its header order through the card's accessible name).
     await expect(
-      page.getByRole('link', { name: /Node H — Producing Card[\s\S]*Active[\s\S]*Healthy/ }),
+      page.getByRole('link', { name: /^Healthy Node H — Producing Card[\s\S]*Active/ }),
     ).toHaveCount(1)
     await expect(page.getByText('Active', { exact: true })).toHaveCount(1)
     expect(await realtimeOpened(page)).toBe(1)

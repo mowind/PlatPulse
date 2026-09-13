@@ -1076,6 +1076,10 @@ button {
   overflow-wrap: anywhere;
 }
 
+.node-hero-identity,
+.network-node-card-identity { display: flex; flex: 1 1 auto; align-items: flex-start; gap: 0.6rem; min-width: 0; }
+.node-hero-identity .node-health-marker { margin-top: 0.55rem; }
+
 .node-id-line {
   margin: 0;
   color: var(--muted);
@@ -1664,6 +1668,21 @@ button {
   color: #626c83;
   background: #edf0f5;
 }
+
+/* Two-state Node health marker (issue #141): Healthy is green and every other
+   state - Unhealthy, Unknown, and never-observed - is grey. The marker's
+   accessible name carries the Server-owned health word, so removing the text
+   badge keeps the health state in the accessibility tree. */
+.node-health-marker {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: #94a3b8;
+}
+
+.node-health-marker-healthy { background: var(--green, #059669); }
 
 .muted {
   color: var(--muted);
@@ -3054,8 +3073,7 @@ button {
 }
 
 .dashboard-live > span,
-.dashboard-summary-dot,
-.dashboard-node-status {
+.dashboard-summary-dot {
   display: inline-block;
   border-radius: 50%;
 }
@@ -3386,11 +3404,7 @@ button {
 .dashboard-node-badges .status-badge { min-height: 23px; padding: 0.14rem 0.46rem; border: 1px solid transparent; font-size: 0.62rem; }
 .dashboard-node-badges .status-badge-icon { width: 0.9rem; height: 0.9rem; font-size: 0.58rem; }
 .dashboard-node-title { display: flex; flex: 1 1 12rem; min-width: 0; gap: 0.72rem; align-items: flex-start; }
-.dashboard-node-status { width: 0.58rem; height: 0.58rem; flex: 0 0 auto; margin-top: 0.38rem; }
-.dashboard-node-status-good { background: var(--brand-strong); }
-.dashboard-node-status-warn { background: #d97706; }
-.dashboard-node-status-bad { background: #dc2626; }
-.dashboard-node-status-neutral { background: #94a3b8; }
+.dashboard-node-title .node-health-marker { margin-top: 0.38rem; }
 .dashboard-node-title > div { min-width: 0; }
 .dashboard-node-title h2 { margin: 0; min-width: 0; color: var(--ink); font-size: 0.96rem; font-weight: 760; letter-spacing: -0.025em; overflow-wrap: anywhere; word-break: break-word; }
 .dashboard-node-title p { margin: 0.22rem 0 0; color: var(--muted); font-size: 0.68rem; font-weight: 600; overflow-wrap: anywhere; }
@@ -3530,6 +3544,7 @@ button {
 .home-shell .public-network-page .node-card h2 { margin-top: 0; overflow-wrap: anywhere; word-break: break-word; }
 .home-shell .network-node-card { display: grid; gap: 0.9rem; }
 .network-node-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.network-node-card-identity .node-health-marker { margin-top: 0.5rem; }
 .node-card-eyebrow { margin: 0 0 0.25rem; color: var(--muted); font-size: 0.68rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
 .network-node-card h2 { margin: 0; }
 .home-shell .network-node-card .health-reason {
