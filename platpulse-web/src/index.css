@@ -3251,7 +3251,11 @@ button {
 .home-geo-marker-hit { fill: transparent; }
 .home-geo-marker-dot { fill: rgba(5, 150, 105, 0.9); stroke: #ffffff; stroke-width: 1; pointer-events: none; }
 .home-geo-marker-label { fill: #ffffff; font-size: 10px; font-weight: 650; font-variant-numeric: tabular-nums; text-anchor: middle; dominant-baseline: central; pointer-events: none; }
-.home-geo-marker:focus-visible { outline: none; }
+/* Suppress the browser's own focus ring on :focus, not only :focus-visible: an
+   SVG group still takes focus from a mouse click or touch tap, and the UA ring
+   is drawn for that plain :focus. Keyboard users keep a visible indicator
+   through the :focus-visible rules below. */
+.home-geo-marker:focus { outline: none; }
 .home-geo-marker:focus-visible .home-geo-marker-hit { stroke: var(--brand-strong); stroke-width: 1.5; }
 /* The quantity marker enlarges under the pointer and under keyboard focus, so
    the hit target answers before the tooltip appears. */

@@ -165,7 +165,8 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
   // Fit the full world and the actual marker extents, rather than reserving
   // a wide chart margin or cropping labels near the projection boundaries.
   // Marker sizes are CSS pixels, independent of the responsive SVG scale.
-  // A numbered marker stays inside the bounded 14-22px range, and long
+  // Every quantity above one carries its numeral — crowding never drops it —
+  // and a numbered marker stays inside the bounded 14-22px range. Long
   // quantities are abbreviated so four glyphs is the maximum; the exact count
   // stays in the marker's accessible name and in its tooltip.
   // Emerald sizes its scatter by diameter: 8px for a single record, 14px once a
@@ -187,9 +188,6 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
     return { left: Math.min(box.left, at.x - padding), top: Math.min(box.top, at.y - padding), right: Math.max(box.right, at.x + padding), bottom: Math.max(box.bottom, at.y + padding) }
   }, { left: -1, top: -1, right: geometry.geometry.projection.width + 1, bottom: geometry.geometry.projection.height + 1 }) : null
   const mapScale = bounds ? canvasWidth / (bounds.right - bounds.left) : 1
-  const numbered = new Set(plotted.filter(({ country, at }) => country.count > 1 && !plotted.some((other) =>
-    other.country.code !== country.code && Math.hypot(other.at.x - at.x, other.at.y - at.y) * mapScale < markerRadius(country.count) + markerRadius(other.country.count) + 3,
-  )).map(({ country }) => country.code))
 
   // The corner indicator states how many Peers the Active Nodes in scope are
   // linked to, so it is the same Server-computed denominator the map itself
@@ -302,11 +300,11 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
                       own centre without touching the placement transform. */}
                   <g className="home-geo-marker-body">
                     {/* Emerald sizes the dot by the quantity: 8px for a single
-                        record, 14px once there is more than one. A numeral the
-                        crowding rule had to drop leaves the dot at its size. */}
+                        record, 14px or more once a numeral is printed. Every
+                        quantity above one keeps its numeral, crowded or not. */}
                     <circle className="home-geo-marker-dot" cx="0" cy="0"
-                      r={country.count === 1 ? MAP_DOT_SINGLE / 2 : numbered.has(country.code) ? markerRadius(country.count) : MAP_DOT_MULTIPLE / 2} />
-                    {numbered.has(country.code) && <text className="home-geo-marker-label" x="0" y="0" style={{ fontSize: markerFontSize(country.count) }}>{markerText(country.count)}</text>}
+                      r={country.count === 1 ? MAP_DOT_SINGLE / 2 : markerRadius(country.count)} />
+                    {country.count > 1 && <text className="home-geo-marker-label" x="0" y="0" style={{ fontSize: markerFontSize(country.count) }}>{markerText(country.count)}</text>}
                   </g>
                 </g>
               ))}

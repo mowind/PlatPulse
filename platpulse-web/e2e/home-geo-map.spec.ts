@@ -244,6 +244,15 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     if (testInfo.project.use.hasTouch) await marker.tap()
     else await marker.hover()
     await expect(map.getByRole('tooltip')).toHaveText('Sweden · 1 records')
+
+    // A pointer activation focuses the marker. It must not leave the browser's
+    // own black focus ring behind: the outline is suppressed on :focus, while
+    // the keyboard-only :focus-visible indicator on the hit circle stays.
+    if (testInfo.project.use.hasTouch) await marker.tap()
+    else await marker.click()
+    await expect(marker).toBeFocused()
+    expect(await marker.evaluate(element => getComputedStyle(element).outlineStyle), 'no pointer focus ring').toBe('none')
+
     await page.getByRole('button', { name: 'All Networks', exact: true }).click()
     await expect(map.getByRole('tooltip')).toHaveCount(0)
     await expectQuietMap(page)
@@ -281,7 +290,9 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     // All Networks contains two Networks, so exact UI counts are twice each fixture count.
     const belgium = map.getByRole('button', { name: 'Belgium · 46 records', exact: true })
     const china = map.getByRole('button', { name: 'China · 2,002 records', exact: true })
-    await expect(belgium.locator('text')).toHaveCount(0)
+    // Belgium sits on top of the Netherlands, and crowding no longer drops a
+    // numeral: the semantically located marker still prints its exact count.
+    await expect(belgium).toContainText('46')
 
     const positions = () => markers.evaluateAll(elements => elements.map(element => ({
       name: element.getAttribute('aria-label'), point: element.getAttribute('transform')?.match(/translate\([^)]+\)/)?.[0],
@@ -292,14 +303,16 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
       expect(circles[0]).toBeCloseTo(24, 0)
       expect(circles[1]).toBeGreaterThanOrEqual(6.9)
       expect(circles[1]).toBeLessThanOrEqual(22.1)
-      // A rendered numeral must fit inside its own disc. Real layout is required,
-      // so this is measured here rather than in jsdom.
+      // Every fixture country holds more than one record, so no marker may
+      // drop its numeral, crowded or not.
       const label = marker.locator('text')
-      if (await label.count() > 0) {
-        const textWidth = (await label.boundingBox())!.width
-        const numeral = await label.textContent()
-        expect(textWidth, 'numeral fits its disc: ' + numeral).toBeLessThanOrEqual(circles[1] - 1)
-      }
+      expect(await label.count(), 'a quantity keeps its numeral').toBe(1)
+      // Measuring the numeral against its disc needs the SVG text node's real
+      // layout box, which no semantic role exposes; this geometry check is the
+      // documented exception to the semantic-seam rule.
+      const textWidth = (await label.boundingBox())!.width
+      const numeral = await label.textContent()
+      expect(textWidth, 'numeral fits its disc: ' + numeral).toBeLessThanOrEqual(circles[1] - 1)
       await marker.focus()
       await marker.press('Enter')
       await expect(map.getByRole('tooltip')).toHaveText((await marker.getAttribute('aria-label'))!)
@@ -627,9 +640,10 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     await expect(map.locator('button')).toHaveCount(0)
     const marker0 = map.locator('g[role="button"]').first()
     await marker0.focus()
-    // The map's own data carries the keyboard focus ring. An SVG group has no CSS
-    // outline, so the indicator is the stroke the focused marker's hit circle
-    // takes; the shared helper only understands HTMLElement and cannot see it.
+    // The map's own data carries the keyboard focus ring. The SVG group's
+    // outline is suppressed so a pointer click leaves no ring, so the keyboard
+    // indicator is the stroke the focused marker's hit circle takes; the shared
+    // helper only understands HTMLElement and cannot see it.
     await expect.poll(async () => marker0.evaluate((element) =>
       document.activeElement === element && element.matches(':focus-visible'))).toBe(true)
     const focusRing = await marker0.evaluate((element) => {

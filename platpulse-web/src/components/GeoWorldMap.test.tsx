@@ -220,14 +220,16 @@ describe('GeoWorldMap', () => {
     expect(fontSizeOf('Kosovo · 999 records')).toEqual({ glyphs: 3, size: 8 })
   })
 
-  it('drops the numeral where markers crowd, and keeps every exact count on the tooltip', async () => {
+  it('keeps the numeral where markers crowd, and keeps every exact count on the tooltip', async () => {
     stubFetch(geometryResponse)
+    // Both markers sit on the same representative point: crowding must no
+    // longer drop a numeral, so each one still prints its own quantity.
     renderMap({ networks: [network({ geo: { countries: [seCountry, { ...deCountry, staleCount: 0, centroidLat: 60.2, centroidLon: 18.7 }] } })] })
     await screen.findByRole('img', { name: 'Peer countries map' })
 
     for (const [name, count] of [['Sweden', '3'], ['Germany', '2']] as const) {
       const marker = screen.getByRole('button', { name: name + ' · ' + count + ' records' })
-      expect(marker.querySelector('.home-geo-marker-label'), name + ' is crowded').toBeNull()
+      expect(marker.textContent, name + ' keeps its numeral').toBe(count)
       fireEvent.keyDown(marker, { key: 'Enter' })
       expect(screen.getByRole('tooltip').textContent).toBe(name + ' · ' + count + ' records')
       fireEvent.keyDown(document, { key: 'Escape' })
