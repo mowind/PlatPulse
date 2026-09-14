@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { ECharts } from 'echarts/core'
 import type { PublicNetwork } from '../api/generated'
 import { homeGeoOverview } from '../homeGeo'
-import { hasDrawableArea, loadWorldGeometry, projectCountryPoint, type WorldGeometry } from '../worldGeometry'
+import { WORLD_MAP_NAME, loadWorldGeoJson, regionNameByCode, type WorldGeoJson } from '../worldGeometry'
+import { mapChartOption, type MapCountry } from './mapChartOption'
+import { Empty } from './ui/empty'
 import {
   PEER_COUNTRIES_DISABLED_NOTICE,
   PEER_COUNTRIES_HEADING,
@@ -10,23 +13,48 @@ import {
 } from './geoPresentation'
 
 /**
- * Compact Home Peer country map (issue #133). It renders the Server's Public
- * Geo Insight on a transparent, locally hosted world basemap: observed
- * countries take a restrained Emerald fill, and markers are Server-provided
- * country representative points.
+ * ECharts is loaded on demand rather than imported at module scope: only Home
+ * needs the map, and the library is around 530 KiB minified. Keeping it out of
+ * the entry chunk means Login, Admin, Network and Node Detail never pay for it.
+ */
+type EChartsCore = typeof import('echarts/core')
+let echartsPromise: Promise<EChartsCore> | null = null
+function loadECharts() {
+  echartsPromise ??= Promise.all([
+    import('echarts/core'),
+    import('echarts/charts'),
+    import('echarts/components'),
+    import('echarts/renderers'),
+  ]).then(([core, charts, components, renderers]) => {
+    core.use([
+      charts.MapChart,
+      charts.ScatterChart,
+      components.GeoComponent,
+      components.TooltipComponent,
+      renderers.CanvasRenderer,
+    ])
+    return core
+  })
+  return echartsPromise
+}
+
+/**
+ * Home Peer country map (issue #133), rendered by ECharts exactly as
+ * komari-theme-emerald@c2c5e88 NodeEarthMaps.vue renders its world map: the
+ * same geometry, the same silent transparent geo coordinate system, the same
+ * scatter symbol, the same 8px/14px sizes, white 10px aggregate numerals, and
+ * the same tooltip box. The option itself lives in mapChartOption.ts so the
+ * encoding can be tested without a canvas.
  *
- * The map is deliberately bare. It shows the world, the country fills, the
- * quantity markers, and one pointer-inert corner figure holding the in-scope
- * Peer total; every explanatory sentence,
- * attribution line, and status glyph that used to sit here was removed by
- * product decision so the map blends into the page wash. The Server-owned
- * dimension (Geo Insight state) and this basemap resource's own load state are
- * still announced to assistive technology through a screen-reader-only status,
- * so an abnormal state is never silently swallowed.
+ * PlatPulse keeps its own data semantics: the map plots Peer records by
+ * country from Server-provided country representative points, never node
+ * locations and never a Peer address, and stale or unknown data stays visible
+ * as such. ECharts paints into a canvas, which carries no per-country element,
+ * so the same figures are also exposed as a screen-reader list, the container
+ * is a labelled image, and the counters stay real text.
  *
- * The map never claims a Node deployment location, a unique Peer count, or
- * live Peer presence, and it never fabricates a marker, a representative
- * point, or an unknown country.
+ * The chart instance is created once and updated with setOption, so a data or
+ * theme change never destroys and rebuilds the canvas.
  */
 
 type GeoWorldMapProps = {
@@ -38,80 +66,55 @@ type GeoWorldMapProps = {
   hasProjection: boolean
 }
 
-type GeometryState =
-  | { status: 'idle' }
-  | { status: 'loading' }
-  | { status: 'ready'; geometry: WorldGeometry }
-  | { status: 'failed' }
-
 type MapStatus = 'starting' | 'empty' | 'unknown' | 'disabled' | 'current' | 'stale' | 'error'
 
-/**
- * Marker sizes are the reference theme's own scatter sizes
- * (komari-theme-emerald, src/components/NodeEarthMaps.vue, light theme):
- * 8px for a single record and 14px once a quantity is printed. The map's
- * colours — the faint slate basemap, the emerald wash on countries carrying
- * data, the 0.5px borders, the 1px white ring on the dots, Emerald's hover
- * treatment and its tooltip box — live in index.css beside the rest of the map.
- */
-const MAP_DOT_SINGLE = 8
-const MAP_DOT_MULTIPLE = 14
+/** One registration per page load, shared by every mount of the map. */
+let worldMapPromise: Promise<{ geojson: WorldGeoJson; names: Map<string, string> }> | null = null
+function ensureWorldMap() {
+  if (!worldMapPromise) {
+    worldMapPromise = loadECharts()
+      .then(async (core) => {
+        const geojson = await loadWorldGeoJson()
+        core.registerMap(WORLD_MAP_NAME, geojson as unknown as Parameters<typeof core.registerMap>[1])
+        return { geojson, names: regionNameByCode(geojson) }
+      })
+      // A failed load must not poison the cache: the next mount retries.
+      .catch((error: unknown) => {
+        worldMapPromise = null
+        throw error
+      })
+  }
+  return worldMapPromise
+}
+
+function prefersReducedMotion() {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+}
+
+/** The theme is applied as the dark class on the root element (theme.ts). */
+function useIsDark() {
+  const [dark, setDark] = useState(
+    () => typeof document !== 'undefined' && document.documentElement.classList.contains('dark'),
+  )
+  useEffect(() => {
+    const root = document.documentElement
+    const observer = new MutationObserver(() => setDark(root.classList.contains('dark')))
+    observer.observe(root, { attributes: true, attributeFilter: ['class'] })
+    return () => observer.disconnect()
+  }, [])
+  return dark
+}
 
 export default function GeoWorldMap({ networks, networkFilter, loading, hasProjection }: GeoWorldMapProps) {
-  const tooltipId = useId()
-  const [activeCountryCode, setActiveCountryCode] = useState<string | null>(null)
-  // A hover preview may vanish with the pointer, but an explicit activation
-  // (tap, click, or keyboard) is pinned: a touch tap is followed by a
-  // synthesized mouse-leave burst that must not erase what the user opened.
-  const [pinned, setPinned] = useState(false)
-  const lastPointerType = useRef<string | null>(null)
-  const svgTitleId = useId()
-  const svgDescriptionId = useId()
-  const canvas = useRef<HTMLDivElement>(null)
-  const [canvasWidth, setCanvasWidth] = useState(600)
-  const [tooltipAt, setTooltipAt] = useState({ x: 0, y: 0 })
-  /** Close the tooltip and drop any pin. Every dismissal path goes through it. */
-  const clearActive = useCallback(() => {
-    setActiveCountryCode(null)
-    setPinned(false)
-  }, [])
-  useEffect(() => {
-    const element = canvas.current
-    if (!element || typeof ResizeObserver === 'undefined') return
-    const observer = new ResizeObserver(([entry]) => {
-      if (entry.contentRect.width > 0) setCanvasWidth(entry.contentRect.width)
-      clearActive()
-    })
-    observer.observe(element)
-    return () => observer.disconnect()
-  }, [clearActive])
-  useEffect(() => {
-    function dismiss(event: Event) {
-      if (event.type === 'keydown' && (event as KeyboardEvent).key !== 'Escape') return
-      if (event.type === 'pointerdown' && event.target instanceof Node && canvas.current?.contains(event.target)) return
-      clearActive()
-    }
-    document.addEventListener('pointerdown', dismiss)
-    document.addEventListener('keydown', dismiss)
-    return () => {
-      document.removeEventListener('pointerdown', dismiss)
-      document.removeEventListener('keydown', dismiss)
-    }
-  }, [clearActive])
-  function showCountry(code: string, target: Element, pin: boolean) {
-    const box = target.getBoundingClientRect()
-    const parent = canvas.current?.getBoundingClientRect()
-    setTooltipAt({ x: box.x + box.width / 2 - (parent?.x ?? 0), y: box.y - (parent?.y ?? 0) - 6 })
-    setActiveCountryCode(code)
-    setPinned(pin)
-  }
-  const [geometry, setGeometry] = useState<GeometryState>({ status: 'idle' })
+  const container = useRef<HTMLDivElement>(null)
+  const chart = useRef<ECharts | null>(null)
+  const optionRef = useRef<ReturnType<typeof mapChartOption> | null>(null)
+  const [world, setWorld] = useState<{ geojson: WorldGeoJson; names: Map<string, string> } | null>(null)
+  const [failed, setFailed] = useState(false)
+  const dark = useIsDark()
 
   const overview = useMemo(() => homeGeoOverview(networks, networkFilter), [networks, networkFilter])
-  // A Network filter change, a projection change, or any refetch that changes
-  // the country list invalidates the current tooltip and releases its pin, so a
-  // pinned country can never suppress later hover previews after it is gone.
-  useEffect(() => { clearActive() }, [clearActive, networkFilter, loading, hasProjection, overview.countries])
   const status: MapStatus = loading
     ? 'starting'
     : !hasProjection
@@ -123,98 +126,79 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
   // The basemap is only fetched when a map can actually be drawn: a Disabled
   // Geo Provider, a Starting projection, and a scope without a country basis
   // never trigger the request, and enabling Geo later loads the map without a
-  // reload. The request is aborted on unmount so no state is written after
-  // the section is gone.
+  // reload.
   const needsBasemap = status !== 'disabled' && status !== 'empty' && status !== 'starting' && status !== 'unknown'
   useEffect(() => {
     if (!needsBasemap) return
-    const controller = new AbortController()
-    setGeometry({ status: 'loading' })
-    loadWorldGeometry(controller.signal)
-      .then((loaded) => { if (!controller.signal.aborted) setGeometry({ status: 'ready', geometry: loaded }) })
-      .catch(() => {
-        if (!controller.signal.aborted) setGeometry({ status: 'failed' })
-      })
-    return () => controller.abort()
+    let live = true
+    ensureWorldMap()
+      .then((loaded) => { if (live) setWorld(loaded) })
+      .catch(() => { if (live) setFailed(true) })
+    return () => { live = false }
   }, [needsBasemap])
 
-  const geometryReady = geometry.status === 'ready' && status !== 'disabled'
-  // Only outlines that enclose area are painted; a clipped-away ring would draw
-  // a bare line across the map. Counts and markers are unaffected, so nothing
-  // is dropped from the data.
-  const outlines = geometryReady ? geometry.geometry.countries.filter((country) => hasDrawableArea(country.path)) : []
-  const outlineByCode = new Map(outlines.map((country) => [country.code, country.path]))
-  const observed = geometryReady
-    ? overview.countries.flatMap((country) => {
-        const path = outlineByCode.get(country.code)
-        return path ? [{ code: country.code, path }] : []
+  // The instance is created once per mounted basemap and only ever updated
+  // afterwards, so a data or theme change never rebuilds the canvas.
+  useEffect(() => {
+    const element = container.current
+    if (!element || !world) return
+    let disposed = false
+    let instance: ECharts | null = null
+    let observer: ResizeObserver | null = null
+    loadECharts()
+      .then((core) => {
+        if (disposed || !container.current) return
+        instance = core.init(container.current)
+        chart.current = instance
+        if (optionRef.current) instance.setOption(optionRef.current)
+        observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => instance?.resize())
+        observer?.observe(container.current)
+        if (!observer) instance.resize()
       })
-    : []
-  const plotted = geometryReady
-    ? overview.countries.flatMap((country) => {
-        if (!country.point) return []
-        return [{ country, at: projectCountryPoint(geometry.geometry.projection, country.point) }]
-      })
-    : []
+      .catch(() => { if (!disposed) setFailed(true) })
+    return () => {
+      disposed = true
+      observer?.disconnect()
+      instance?.dispose()
+      chart.current = null
+    }
+  }, [world])
 
-  const activeCountry = overview.countries.find((country) => country.code === activeCountryCode)
-  const countryLabel = (code: string) => {
-    const country = overview.countries.find((item) => item.code === code)
-    return country ? countryDisplayName(code) + ' · ' + formatGeoCount(country.count) + ' records' : countryDisplayName(code)
-  }
-  // Fit the full world and the actual marker extents, rather than reserving
-  // a wide chart margin or cropping labels near the projection boundaries.
-  // Marker sizes are CSS pixels, independent of the responsive SVG scale.
-  // Every quantity above one carries its numeral — crowding never drops it —
-  // and a numbered marker stays inside the bounded 14-22px range. Long
-  // quantities are abbreviated so four glyphs is the maximum; the exact count
-  // stays in the marker's accessible name and in its tooltip.
-  // Emerald sizes its scatter by diameter: 8px for a single record, 14px once a
-  // quantity is printed. A wide numeral grows the disc just enough to hold it
-  // (abbreviated to at most four glyphs, capped at 22px) so digits can never
-  // spill outside their own marker.
-  const markerRadius = (count: number) => count === 1
-    ? MAP_DOT_SINGLE / 2
-    : Math.min(11, Math.max(MAP_DOT_MULTIPLE / 2, 2.5 * markerText(count).length + 2))
-  // Emerald prints its label at 10px, which only fits one or two glyphs inside
-  // the bounded disc. A longer numeral drops to a smaller size so the exact
-  // count still fits instead of spilling outside its own marker.
-  const markerFontSize = (count: number) => {
-    const glyphs = markerText(count).length
-    return glyphs <= 2 ? 10 : glyphs === 3 ? 8 : 7
-  }
-  const bounds = geometryReady ? plotted.reduce((box, { at }) => {
-    const padding = 24 * geometry.geometry.projection.width / Math.max(240, canvasWidth - 48)
-    return { left: Math.min(box.left, at.x - padding), top: Math.min(box.top, at.y - padding), right: Math.max(box.right, at.x + padding), bottom: Math.max(box.bottom, at.y + padding) }
-  }, { left: -1, top: -1, right: geometry.geometry.projection.width + 1, bottom: geometry.geometry.projection.height + 1 }) : null
-  const mapScale = bounds ? canvasWidth / (bounds.right - bounds.left) : 1
+  const countries = useMemo<MapCountry[]>(
+    () => overview.countries.flatMap((country) => country.point
+      ? [{ code: country.code, point: country.point, count: country.count, staleCount: country.staleCount }]
+      : []),
+    [overview.countries],
+  )
 
-  // The corner indicator states how many Peers the Active Nodes in scope are
-  // linked to, so it is the same Server-computed denominator the map itself
-  // draws: Known + Unknown Peer records on the Server's per-Node basis, never
-  // deduplicated by IP and never derived by the browser. A scope without a
-  // successful Peer Snapshot has no denominator at all, so it reports nothing
-  // rather than an invented zero.
+  useEffect(() => {
+    if (!world) return
+    const option = mapChartOption({
+      mapName: WORLD_MAP_NAME,
+      regionNameByCode: world.names,
+      countries,
+      labelFor: countryDisplayName,
+      dark,
+      reducedMotion: prefersReducedMotion(),
+    })
+    optionRef.current = option
+    chart.current?.setOption(option)
+  }, [world, countries, dark])
+
   const scopedPeerCount = hasProjection && !loading ? overview.availablePeerCount : null
-
   const unknownCount = overview.unknownCountryCount
   const countsAvailable = overview.knownCountryCount != null && unknownCount != null
   const neverObserved = overview.scope === 'unobserved'
-  // A known country without a quantity marker is different from an unknown
-  // location. A missing outline alone does not hide an existing marker.
-  const locationsNotShown = geometryReady && overview.countries.some((country) => !country.point)
   const primaryNotice = status === 'disabled' ? PEER_COUNTRIES_DISABLED_NOTICE
     : status === 'starting' ? 'Loading data'
     : !hasProjection ? 'Data unavailable'
     : status === 'empty' ? 'No data'
     : neverObserved ? 'No observations yet'
-    : geometry.status === 'failed' ? 'Map unavailable'
-    : !geometryReady && needsBasemap ? 'Loading map'
+    : failed ? 'Map unavailable'
     : status === 'error' ? 'Data unavailable'
     : status === 'stale' || overview.peerObservation === 'stale' || overview.countries.some((country) => country.staleCount > 0) ? 'Data stale'
     : overview.availablePeerCount === 0 ? 'No data'
     : !countsAvailable ? 'Data unavailable'
-    : locationsNotShown ? 'Some locations not shown'
     : overview.scope !== 'complete' || overview.networksWithBasis < overview.networksInScope ? 'Partial data'
     : overview.peerObservation === 'unknown' ? 'Observation status unknown'
     : overview.peerObservation === 'mixed' ? 'Observation status varies'
@@ -222,111 +206,52 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
   const unknownNotice = hasProjection && !loading && unknownCount != null && unknownCount > 0
     ? formatGeoCount(unknownCount) + ' unknown locations' : null
   const notice = [primaryNotice, unknownNotice].filter(Boolean).join(' · ')
-  const mapDescription = `${formatGeoCount(overview.countries.length)} ${overview.countries.length === 1 ? 'country has' : 'countries have'} Peer records in scope for ${overview.scopeLabel}. `
-    + 'Each marker is a Server-provided country representative point, not a Peer location or a Node deployment location.'
+  const mapDescription =
+    formatGeoCount(overview.countries.length) +
+    (overview.countries.length === 1 ? ' country has ' : ' countries have ') +
+    'Peer records in scope for ' + overview.scopeLabel +
+    '. Each marker is a Server-provided country representative point, not a Peer location or a Node deployment location.'
 
   return (
-    <section className="home-geo" aria-label={PEER_COUNTRIES_HEADING} data-state={status} data-scope={overview.scope}>
-      {/* The map carries no control of its own: no title, no count, no status
-          glyph, and no expand toggle. An abnormal state stays announced to
-          assistive technology without putting a glyph or a sentence on the map. */}
+    <section aria-label={PEER_COUNTRIES_HEADING} data-state={status} data-scope={overview.scope} className="relative h-full">
+      {/* An abnormal state stays announced to assistive technology without
+          putting a glyph or a sentence on the map. */}
       {notice && <span className="sr-only" role="status">{notice}</span>}
-      {/* The reference theme's corner indicator: one pulsing dot with the total
-          number of Peers the in-scope Active Nodes are linked to. It is the same
-          Server denominator the country fills and markers are drawn from, and an
-          authoritative zero (a successful empty Peer Snapshot) stays a real
-          zero. It stays pointer-inert so the map underneath keeps every hover
-          and tap. */}
-      {geometryReady && scopedPeerCount !== null && (
-        <p className="home-geo-counters">
-          <span className="home-geo-counter">
-            <span className="home-geo-counter-dot" aria-hidden="true" />
+      {scopedPeerCount !== null && (
+        <p
+          data-slot="geo-counters"
+          className="pointer-events-none absolute top-0 right-0 z-2 flex items-center gap-2 rounded bg-background/60 px-2 py-0.5 text-[10px] text-muted-foreground backdrop-blur-lg"
+        >
+          <span className="flex items-center gap-1">
+            <span className="inline-block size-1.5 animate-pulse rounded-full bg-emerald-600" aria-hidden="true" />
             <span className="sr-only">Peers: </span>
             {formatGeoCount(scopedPeerCount)}
           </span>
         </p>
       )}
-      <div ref={canvas} className="home-geo-canvas" style={bounds ? { aspectRatio: `${bounds.right - bounds.left} / ${bounds.bottom - bounds.top}` } : undefined}>
-        {geometryReady ? (
-          <svg
-            className="home-geo-svg"
-            viewBox={bounds ? [bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top].join(' ') : undefined}
-            preserveAspectRatio="xMidYMid meet"
-            role="img"
-            aria-labelledby={svgTitleId}
-            aria-describedby={svgDescriptionId}
-            onPointerDown={(event) => { lastPointerType.current = event.pointerType }}
-            onMouseLeave={() => { if (!pinned) clearActive() }}
-            onKeyDown={(event) => { if (event.key === 'Escape') clearActive() }}
-            onClick={(event) => { if (event.target === event.currentTarget || (event.target instanceof Element && event.target.closest('.home-geo-land'))) clearActive() }}
-          >
-            <title id={svgTitleId}>{PEER_COUNTRIES_HEADING} map</title>
-            <desc id={svgDescriptionId}>{mapDescription}</desc>
-            <g className="home-geo-land" aria-hidden="true">
-              {outlines.map((country) => <path key={country.code} d={country.path} />)}
-            </g>
-            <g className="home-geo-observed" aria-hidden="true">
-              {observed.map((country) => <path key={country.code} d={country.path}
-                // The active class is shared with the marker, so pointing at or
-                // focusing a quantity also lights the country it belongs to.
-                className={activeCountryCode === country.code ? 'home-geo-country-active' : undefined}
-                onMouseEnter={(event) => { if (!pinned) showCountry(country.code, event.currentTarget, false) }}
-                onMouseLeave={() => { if (!pinned) clearActive() }}
-                onClick={(event) => showCountry(country.code, event.currentTarget, lastPointerType.current !== 'mouse')}
-              />)}
-            </g>
-            <g className="home-geo-markers">
-              {plotted.map(({ country, at }) => (
-                <g key={country.code} className="home-geo-marker" transform={'translate(' + at.x + ' ' + at.y + ') scale(' + 1 / mapScale + ')'}
-                  role="button" tabIndex={0} aria-label={countryLabel(country.code)} aria-describedby={activeCountryCode === country.code ? tooltipId : undefined}
-                  onMouseEnter={(event) => { if (!pinned) showCountry(country.code, event.currentTarget, false) }}
-                  onMouseLeave={() => { if (!pinned) clearActive() }}
-                  onClick={(event) => {
-                    // Re-activating the same marker closes it: a touch tap has no
-                    // pointer-leave, so the tap itself must be able to dismiss.
-                    if (activeCountryCode === country.code && pinned) clearActive()
-                    else showCountry(country.code, event.currentTarget, lastPointerType.current !== 'mouse')
-                  }}
-                  onBlur={() => clearActive()}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault()
-                      showCountry(country.code, event.currentTarget, true)
-                    }
-                  }}
-                >
-                  <circle className="home-geo-marker-hit" cx="0" cy="0" r="12" />
-                  {/* Wrapped so the hover emphasis can scale the marker about its
-                      own centre without touching the placement transform. */}
-                  <g className="home-geo-marker-body">
-                    {/* Emerald sizes the dot by the quantity: 8px for a single
-                        record, 14px or more once a numeral is printed. Every
-                        quantity above one keeps its numeral, crowded or not. */}
-                    <circle className="home-geo-marker-dot" cx="0" cy="0"
-                      r={country.count === 1 ? MAP_DOT_SINGLE / 2 : markerRadius(country.count)} />
-                    {country.count > 1 && <text className="home-geo-marker-label" x="0" y="0" style={{ fontSize: markerFontSize(country.count) }}>{markerText(country.count)}</text>}
-                  </g>
-                </g>
-              ))}
-            </g>
-          </svg>
-        ) : null}
-        {geometryReady && activeCountry && <div id={tooltipId} className="home-geo-tooltip" role="tooltip" style={{ left: Math.max(90, Math.min(canvasWidth - 90, tooltipAt.x)), top: Math.max(36, tooltipAt.y) }}>{countryLabel(activeCountry.code)}</div>}
-      </div>
+      {failed ? (
+        <Empty description="Map unavailable" className="h-full" />
+      ) : (
+        <div
+          ref={container}
+          role="img"
+          aria-label={PEER_COUNTRIES_HEADING + ' map. ' + mapDescription}
+          data-slot="geo-chart"
+          className="h-full w-full"
+        />
+      )}
+      {/* The canvas has no per-country element, so the same figures stay
+          available as text: screen-reader users get every observed country,
+          its count, and whether some of those records are stale. */}
+      <ul className="sr-only" data-slot="geo-country-list">
+        {overview.countries.map((country) => (
+          <li key={country.code}>
+            {countryDisplayName(country.code) + ': ' + formatGeoCount(country.count) + ' records' +
+              (country.staleCount > 0 ? ', ' + formatGeoCount(country.staleCount) + ' stale' : '') +
+              (country.point ? '' : ' (no representative point, not plotted)')}
+          </li>
+        ))}
+      </ul>
     </section>
   )
-}
-
-/** Marker numerals stay at four glyphs or fewer so they always fit the bounded
- *  marker size. Abbreviation is monotonic and never promotes past its own unit:
- *  999,500 would round to "1000k", so it is shown as "1M" instead. The exact
- *  count is never lost: the marker's accessible name and its tooltip carry it. */
-function markerText(count: number): string {
-  if (count < 10_000) return String(count)
-  if (count < 1_000_000) {
-    const thousands = Math.round(count / 1_000)
-    return thousands < 1_000 ? thousands + 'k' : '1M'
-  }
-  const millions = Math.round(count / 1_000_000)
-  return millions < 1_000 ? millions + 'M' : '999M'
 }

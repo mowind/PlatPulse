@@ -81,7 +81,7 @@ call site, because PlatPulse's `countryCode` is uppercase.
 | `components/NodeGeneralCards.vue` | `components/HomeDashboard.tsx` top area | ported (12-col: stats left, map right) |
 | `components/NodeGeneralCards.vue` finance tiles | not adopted (no PlatPulse field) | deviation |
 | `components/NodeCard.vue` | `components/HomeDashboard.tsx` `HomeNodeCard` | ported |
-| `components/NodeEarthMaps.vue` + `utils/echartsWorldMap.ts` | `components/GeoWorldMap.tsx` on `echarts` | planned |
+| `components/NodeEarthMaps.vue` + `utils/echartsWorldMap.ts` | `components/GeoWorldMap.tsx` + `components/mapChartOption.ts` on `echarts` | ported (option literal; geometry pinned locally) |
 | `components/NodeEarthGlobe.vue` (`cobe`) | not adopted — `maps` mode only | deviation |
 | `views/HomeView.vue` | `components/HomeDashboard.tsx` | planned |
 | `views/InstanceDetail.vue` | `pages/HomePages.tsx` Node Page | planned |
@@ -106,6 +106,9 @@ the reason. Nothing here is a silent divergence.
 | 10 | Interactive controls keep a 44×44 minimum (`min-h-11`, `min-w-11` in the primitives) instead of Emerald's compact 24–36px scale. | PlatPulse's existing accessibility contract asserts every visible interactive control is at least 44×44 (e2e/helpers.ts `expectVisibleInteractiveTargets`), and the brief requires preserving touch operation. Colour, radius, typography, spacing and state treatment still follow upstream. |
 | 11 | The Home statistics slot holds four counters in a 2×2 grid (`col-span-6 row-span-2`) rather than Emerald's six tiles in a 3×2 grid. | Consequence of deviation 2. The slot's position, size, card shell and typography are upstream's. |
 | 12 | The Home Node card keeps the grey non-Healthy health marker (issue #141) and carries the exceptional signal on the card's red ring and diagnostic line. | The existing tested contract is that only Healthy is green and every other state is grey, so health is never colour-only; Emerald's red marker encodes online/offline, which is a different dimension from PlatPulse Node health. |
+| 13 | The map prints the exact per-country Peer count in the scatter label, as upstream does, instead of PlatPulse's previous four-glyph abbreviation. | Upstream's label formatter is the raw aggregate. Bug-for-bug fidelity was chosen over the earlier abbreviation, which is a deliberate quality change to disclose: a count of five or more digits can overrun the 14px disc. |
+| 14 | The map's per-country keyboard activation is replaced by a screen-reader country list; the chart container is a labelled `role="img"`. | ECharts paints into a canvas with no per-country element, so upstream's map has no keyboard path at all. Every observed country, its count, its stale count and whether it could be plotted remain available as text, and abnormal states stay announced. This is a different accessibility mechanism, not a claim of parity. |
+| 15 | ECharts is loaded on demand (dynamic import) rather than in the entry chunk. | The library is ~530 KiB minified; only Home needs the map. Login, Admin, Network and Node Detail keep the previous bundle size. |
 
 ## 5. Screenshot evidence
 
