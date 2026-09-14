@@ -1,8 +1,5 @@
-import { themeModeLabel, type ThemeMode } from '../theme'
 import { useTheme } from '../theme/ThemeProvider'
-
-/** Decorative glyphs; the accessible name carries the real meaning. */
-const THEME_ICONS: Record<ThemeMode, string> = { auto: '◐', light: '☀', dark: '☾' }
+import { EmeraldActionIcon } from './EmeraldActionIcon'
 
 /**
  * One control for the whole site: Auto → Light → Dark → Auto. Its accessible
@@ -21,12 +18,7 @@ export default function ThemeToggle() {
       title={toggleLabel}
       data-theme-mode={mode}
     >
-      <span className="theme-toggle-icon" aria-hidden="true">
-        {THEME_ICONS[mode]}
-      </span>
-      <span className="theme-toggle-label" aria-hidden="true">
-        {themeModeLabel(mode)}
-      </span>
+      <EmeraldActionIcon name={mode === 'auto' ? 'dark-mode' : mode === 'light' ? 'sun-one' : 'moon'} />
     </button>
   )
 }

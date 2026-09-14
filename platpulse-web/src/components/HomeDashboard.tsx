@@ -134,13 +134,11 @@ function HomeNodeCard({ network, node }: NodeRecord) {
           </div>
         </header>
         <ResourceRow node={node} />
-        <div className="dashboard-node-primary metric-group metric-group-pairs" aria-label="Node highlights">
+        <div className="dashboard-node-primary metric-group dashboard-metric-triple" aria-label="Node highlights">
           <MetricRow label="Head" value={formatNumber(node.currentHead)} />
           <MetricRow label="Txs" value={formatNumber(node.latestBlockTransactionCount)} />
-          {/* The Peer observation sentence can run long, so it keeps the group width. */}
-          <div className="metric-group-full">
-            <MetricRow label="Peers" value={formatPeerCount(node)} detail={formatPeerObservation(node)} />
-          </div>
+          <MetricRow label="Peers" value={formatPeerCount(node)} />
+          {formatPeerObservation(node) && <small className="metric-row-detail">{formatPeerObservation(node)}</small>}
         </div>
         <ConsensusRow consensus={node.consensus} />
         {diagnostic && <p className="dashboard-node-diagnostic">{diagnostic}</p>}
@@ -165,10 +163,10 @@ function ResourceRow({ node }: { node: PublicNode }) {
           progress={nodeDataProgressValue}
         />
       </div>
-      <div className="metric-group metric-group-pairs">
-        <RateMetric label="↑ Up" value={node.hostNetworkTxBytesPerSec} />
-        <RateMetric label="↓ Down" value={node.hostNetworkRxBytesPerSec} />
-      </div>
+      <MetricRow label="Speed" value={<span className="dashboard-network-speed">
+        <span aria-label={`Upload ${formatRate(node.hostNetworkTxBytesPerSec)}`}>↑{formatRate(node.hostNetworkTxBytesPerSec)}</span>
+        <span aria-label={`Download ${formatRate(node.hostNetworkRxBytesPerSec)}`}>↓{formatRate(node.hostNetworkRxBytesPerSec)}</span>
+      </span>} />
     </div>
   )
 }
@@ -177,32 +175,22 @@ function formatPercent(value: number | null | undefined) {
   return value == null ? '—' : `${value.toFixed(1)}%`
 }
 
-function formatRateParts(value: number | null | undefined) {
-  if (value == null) return { amount: '—', unit: '', label: '—' }
-  const units = ['B/s', 'KiB/s', 'MiB/s', 'GiB/s']
-  let scaled = value
+function formatRate(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value) || value < 0) return '—'
+  const units = ['bps', 'Kbps', 'Mbps', 'Gbps', 'Tbps']
+  let scaled = value * 8
   let unit = 0
-  while (scaled >= 1024 && unit < units.length - 1) {
-    scaled /= 1024
+  while (scaled >= 1000 && unit < units.length - 1) {
+    scaled /= 1000
     unit += 1
   }
-  const digits = scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2
-  const amount = scaled.toFixed(digits)
-  return { amount, unit: units[unit], label: `${amount} ${units[unit]}` }
-}
-
-function RateMetric({ label, value }: { label: string; value: number | null | undefined }) {
-  const formatted = formatRateParts(value)
-  return (
-    <MetricRow
-      label={label}
-      value={<>
-        <span aria-hidden="true" className="metric-row-number">{formatted.amount}</span>
-        {formatted.unit && <small aria-hidden="true" className="metric-row-unit">{formatted.unit}</small>}
-        <span className="sr-only">{formatted.label}</span>
-      </>}
-    />
-  )
+  let amount = Number(scaled.toPrecision(3))
+  // Rounding at a unit boundary should show 1Mbps, not 1000Kbps.
+  if (amount >= 1000 && unit < units.length - 1) {
+    amount /= 1000
+    unit += 1
+  }
+  return `${amount}${units[unit]}`
 }
 
 /**
@@ -216,15 +204,11 @@ function ConsensusRow({ consensus }: { consensus: PublicConsensusInsight | undef
   const status = consensusValueStatus(consensus)
   const detail = status === 'stale' ? 'Stale' : undefined
   return (
-    <div className="dashboard-node-consensus metric-group metric-group-pairs" role="group" aria-label="Consensus and validator values">
-      <MetricRow label="QC" value={formatConsensusBlock(consensus?.highestQcBlock, status)} detail={detail} />
-      <MetricRow label="Locked" value={formatConsensusBlock(consensus?.highestLockBlock, status)} detail={detail} />
-      {/* Measured at the 300-320px card width: "Committed" plus a grouped
-          ten-character height needs about 143px and a paired cell offers about
-          139px, so this unit keeps the whole group width instead of breaking a
-          word or a number. QC and Locked pair above it; Validator follows. */}
-      <div className="metric-group-full">
-        <MetricRow label="Committed" value={formatConsensusBlock(consensus?.highestCommitBlock, status)} detail={detail} />
+    <div className="dashboard-node-consensus metric-group" role="group" aria-label="Consensus and validator values">
+      <div className="metric-group dashboard-metric-triple dashboard-consensus-heights">
+        <MetricRow label="QC" value={formatConsensusBlock(consensus?.highestQcBlock, status)} detail={detail} />
+        <MetricRow label="Locked" shortLabel="L" value={formatConsensusBlock(consensus?.highestLockBlock, status)} detail={detail} />
+        <MetricRow label="Committed" shortLabel="C" value={formatConsensusBlock(consensus?.highestCommitBlock, status)} detail={detail} />
       </div>
       <div className="metric-group-full">
         <MetricRow label="Validator" value={formatConsensusValidator(consensus, status)} detail={detail} />
@@ -254,7 +238,7 @@ function formatConsensusBlock(value: number | null | undefined, status: 'current
 
 function formatConsensusValidator(insight: PublicConsensusInsight | undefined, status: 'current' | 'stale' | 'unknown'): string {
   if (status === 'unknown' || insight?.validator == null) return 'Unknown'
-  return insight.validator ? 'Yes' : 'No'
+  return insight.validator ? 'True' : 'False'
 }
 
 /** One sanitized diagnostic line for exceptional Nodes only (issue #97). */

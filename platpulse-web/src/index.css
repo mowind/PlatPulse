@@ -3191,42 +3191,7 @@ button {
   margin-inline: auto;
 }
 
-/* Icon-only, like the Emerald reference: a plain 44px target that only shows a
-   surface on hover or keyboard focus. The accessible name stays "Admin". */
-.admin-icon-link {
-  min-width: 44px;
-  min-height: 44px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  color: var(--muted);
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 0.5rem;
-  text-decoration: none;
-  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
-}
-
-.admin-icon-link svg {
-  width: 18px;
-  height: 18px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.5;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-/* The cog teeth read heavier than the ring so the glyph stays a gear, not a sun. */
-.admin-icon-link svg path { stroke-width: 2; }
-
-.admin-icon-link:hover,
-.admin-icon-link:focus-visible {
-  color: var(--brand-strong);
-  background: rgba(255, 255, 255, 0.72);
-  border-color: rgba(5, 150, 105, 0.22);
-}
+/* Settings and theme share the Emerald action-button styling below. */
 
 .home-dashboard {
   width: 100%;
@@ -3598,6 +3563,7 @@ button {
 }
 
 .dashboard-node-card {
+  container-type: inline-size;
   position: relative;
   padding: 0;
   overflow: hidden;
@@ -3654,6 +3620,17 @@ button {
 }
 
 .dashboard-node-consensus { margin-top: 0.7rem; }
+
+.dashboard-metric-triple { grid-template-columns: auto auto auto; column-gap: 0.65rem; justify-content: space-between; }
+.dashboard-metric-triple > .metric-row { grid-template-columns: auto auto; }
+.dashboard-metric-triple .metric-row-label,
+.dashboard-metric-triple .metric-row-value { white-space: nowrap; }
+.dashboard-network-speed { display: inline-flex; justify-content: flex-end; gap: 0.65rem; white-space: nowrap; }
+.metric-label-short { display: none; }
+@container (max-width: 28rem) {
+  .dashboard-consensus-heights .metric-label-full { display: none; }
+  .dashboard-consensus-heights .metric-label-short { display: inline; }
+}
 
 /* Shared compact metric row (issue #140): data item left, value flush right on
    the same line, one row per line at every breakpoint. A row with progress puts
@@ -5091,43 +5068,30 @@ button {
   gap: 0.5rem;
 }
 
-.theme-toggle {
+/* Emerald-style icon-only control: no resting surface or button frame. */
+.theme-toggle,
+.admin-icon-link {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 0.4rem;
-  min-width: 44px;
-  min-height: 44px;
-  padding: 0.35rem 0.65rem;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  padding: 13px;
+  text-decoration: none;
   color: var(--ink);
-  background: rgba(255, 255, 255, 0.74);
-  border: 1px solid rgba(148, 163, 184, 0.28);
-  border-radius: 0.55rem;
-  font: inherit;
-  font-size: 0.82rem;
-  font-weight: 650;
-  line-height: 1;
+  background: transparent;
+  border: 0;
+  border-radius: 0.5rem;
+  box-shadow: none;
   cursor: pointer;
-  transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+  transition: opacity 150ms ease;
 }
-
-.theme-toggle:hover {
-  color: var(--brand-strong);
-  background: #ffffff;
-  border-color: rgba(5, 150, 105, 0.28);
-}
-
-.theme-toggle-icon {
-  font-size: 1rem;
-}
-
-/* Mobile-first: the icon carries the control at narrow widths and the visible
-   label appears once there is room. The accessible name always carries the
-   current mode and the next action. */
-.theme-toggle-label {
-  display: none;
-  font-variant-numeric: tabular-nums;
-}
+.theme-toggle:hover,
+.admin-icon-link:hover { color: var(--ink); background: transparent; opacity: 0.75; }
+.theme-toggle:focus-visible,
+.admin-icon-link:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.emerald-action-icon { display: block; width: 18px; height: 18px; flex: none; }
 
 .login-theme {
   position: absolute;
@@ -5136,22 +5100,6 @@ button {
   z-index: 2;
 }
 
-@media (min-width: 26rem) {
-  .theme-toggle-label {
-    display: inline;
-  }
-}
-
-:root.dark .theme-toggle {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(255, 255, 255, 0.14);
-}
-
-:root.dark .theme-toggle:hover {
-  color: var(--brand);
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(52, 211, 153, 0.35);
-}
 
 /* Dark keeps the upstream layered masks: the vertical atmosphere fade plus
    the emerald/lime 30% wash and the white 2.5% / 5% overlay grid. */

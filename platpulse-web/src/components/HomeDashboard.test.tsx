@@ -134,8 +134,8 @@ describe('Public Home dashboard', () => {
     expect(nodeDataMetric.querySelector('.metric-row-progress')).toBeTruthy()
     expect(nodeDataMetric.style.getPropertyValue('--metric-progress')).toBe('25%')
     expect(within(resources).queryByText('STORAGE')).toBeNull()
-    expect(within(resources).getByText('2.00 KiB/s')).toBeTruthy()
-    expect(within(resources).getByText('1.00 KiB/s')).toBeTruthy()
+    expect(within(resources).getByText('↑16.4Kbps')).toBeTruthy()
+    expect(within(resources).getByText('↓8.19Kbps')).toBeTruthy()
   })
   it('renders Node data as a percentage with the used / total byte detail under its progress bar', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
@@ -151,43 +151,44 @@ describe('Public Home dashboard', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
     const alphaCard = cardOf(nodeCardLink('Alpha'))
-    // Resources (CPU, Memory, Node data, ↑ Up, ↓ Down), main (Head, Txs,
+    // Resources (CPU, Memory, Node data, Speed), main (Head, Txs,
     // Peers), and consensus (QC, Locked, Committed, Validator). Their shared
     // shape is covered by MetricRow.test.tsx.
-    expect(alphaCard.querySelectorAll('.metric-row')).toHaveLength(12)
+    expect(alphaCard.querySelectorAll('.metric-row')).toHaveLength(11)
   })
 
-  it('pairs the dense metric groups so the card reads as one monitor, not a form', () => {
+  it('groups Head/Txs/Peers and consensus heights into triple rows', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+    const card = cardOf(nodeCardLink('Alpha'))
+    const triples = card.querySelectorAll('.dashboard-metric-triple')
+    expect(triples).toHaveLength(2)
+    for (const triple of triples) expect(triple.querySelectorAll(':scope > .metric-row')).toHaveLength(3)
+    expect(triples[0].textContent).toContain('Head120Txs12,345Peers0')
+    expect(within(card).getByText('L').getAttribute('aria-label')).toBe('Locked')
+    expect(within(card).getByText('C').getAttribute('aria-label')).toBe('Committed')
+    expect(within(card).getByText('Speed').nextElementSibling?.textContent).toBe('↑16.4Kbps↓8.19Kbps')
+  })
 
-    const alphaCard = cardOf(nodeCardLink('Alpha'))
+  it.each([
+    [0, '0bps'],
+    [100, '800bps'],
+    [125, '1Kbps'],
+    [125_000, '1Mbps'],
+    [125_000_000, '1Gbps'],
+    [125_000_000_000, '1Tbps'],
+    [124_999, '1Mbps'],
+    [null, '—'],
+  ])('formats %s bytes/s using an appropriate speed unit', (rate, expected) => {
+    const nodes = [{ ...network.nodes[0], hostNetworkTxBytesPerSec: rate, hostNetworkRxBytesPerSec: 100 }]
+    render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+    expect(within(cardOf(nodeCardLink('Alpha'))).getByText('Speed').nextElementSibling?.textContent).toBe(`↑${expected}↓800bps`)
+  })
 
-    // CPU and Memory share a paired group; Node data keeps the group width so
-    // its used / capacity explanation is never squeezed into half a column.
-    const resources = within(alphaCard).getByLabelText('Node process and host network resources')
-    const pairs = resources.querySelectorAll(':scope > .metric-group-pairs')
-    expect(pairs).toHaveLength(2)
-    expect(pairs[0].querySelectorAll('.metric-row')).toHaveLength(2)
-    expect(pairs[0].textContent).toContain('CPU')
-    expect(pairs[0].textContent).toContain('Memory')
-    expect(pairs[1].textContent).toContain('↑ Up')
-    expect(pairs[1].textContent).toContain('↓ Down')
-    expect(within(resources).getByText('Node data').closest('.metric-group-full')).toBeTruthy()
-
-    // Head and Txs pair; the Peer observation sentence keeps the group width.
-    const highlights = within(alphaCard).getByLabelText('Node highlights')
-    expect(highlights.classList.contains('metric-group-pairs')).toBe(true)
-    expect(within(highlights).getByText('Peers').closest('.metric-group-full')).toBeTruthy()
-
-    // The consensus group pairs QC with Locked; "Committed" and "Validator"
-    // each keep the whole group width, because at a 300-320px card the
-    // Committed label plus a grouped ten-character height does not fit a
-    // paired cell without breaking a word.
-    const consensus = within(alphaCard).getByRole('group', { name: 'Consensus and validator values' })
-    expect(consensus.classList.contains('metric-group-pairs')).toBe(true)
-    expect(consensus.querySelectorAll(':scope > .metric-row')).toHaveLength(2)
-    expect(within(consensus).getByText('Committed').closest('.metric-group-full')).toBeTruthy()
-    expect(within(consensus).getByText('Validator').closest('.metric-group-full')).toBeTruthy()
+  it('converts bytes per second to decimal Mbps and preserves missing speeds', () => {
+    const nodes = [{ ...network.nodes[0], hostNetworkTxBytesPerSec: 1_250_000, hostNetworkRxBytesPerSec: 2_500_000 }, network.nodes[1]]
+    render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+    expect(within(cardOf(nodeCardLink('Alpha'))).getByText('Speed').nextElementSibling?.textContent).toBe('↑10Mbps↓20Mbps')
+    expect(within(cardOf(nodeCardLink('Beta'))).getByText('Speed').nextElementSibling?.textContent).toBe('↑—↓—')
   })
 
   it('shows the second compact metric row as QC, Locked, Committed, and Validator', () => {
@@ -202,7 +203,7 @@ describe('Public Home dashboard', () => {
     expect(within(alphaCard).getByText('98')).toBeTruthy()
     expect(within(alphaCard).getByText('Validator')).toBeTruthy()
     // Current successful membership renders Yes, not a badge or color.
-    expect(within(alphaCard).getByText('Yes')).toBeTruthy()
+    expect(within(alphaCard).getByText('True')).toBeTruthy()
     expect(within(alphaCard).queryByText('Stale')).toBeNull()
 
     // Never-observed consensus is Unknown for every metric, never zero/No.
@@ -211,7 +212,7 @@ describe('Public Home dashboard', () => {
       expect(within(betaCard).getByText(label)).toBeTruthy()
     }
     expect(within(betaCard).getAllByText('Unknown').length).toBeGreaterThanOrEqual(7)
-    expect(within(betaCard).queryByText('No')).toBeNull()
+    expect(within(betaCard).queryByText('False')).toBeNull()
   })
 
   it('retains last-good consensus values and visibly marks failed or stale collections', () => {
@@ -256,7 +257,7 @@ describe('Public Home dashboard', () => {
     expect(within(staleCard).getByText('141')).toBeTruthy()
     expect(within(staleCard).getByText('140')).toBeTruthy()
     expect(within(staleCard).getByText('139')).toBeTruthy()
-    expect(within(staleCard).getByText('Yes')).toBeTruthy()
+    expect(within(staleCard).getByText('True')).toBeTruthy()
     expect(within(staleCard).getAllByText('Stale')).toHaveLength(4)
 
     // A failed collection with last-good true keeps the value and is Stale.
@@ -264,13 +265,13 @@ describe('Public Home dashboard', () => {
     expect(within(failedCard).getByText('151')).toBeTruthy()
     expect(within(failedCard).getByText('150')).toBeTruthy()
     expect(within(failedCard).getByText('149')).toBeTruthy()
-    expect(within(failedCard).getByText('Yes')).toBeTruthy()
+    expect(within(failedCard).getByText('True')).toBeTruthy()
     expect(within(failedCard).getAllByText('Stale')).toHaveLength(4)
 
     // A stale successful non-membership keeps No and marks it Stale.
     const staleFalseCard = cardOf(nodeCardLink('Stale False'))
     expect(within(staleFalseCard).getByText('161')).toBeTruthy()
-    expect(within(staleFalseCard).getByText('No')).toBeTruthy()
+    expect(within(staleFalseCard).getByText('False')).toBeTruthy()
     expect(within(staleFalseCard).getAllByText('Stale')).toHaveLength(4)
 
     // A failed collection without a last-good membership is Unknown, never
@@ -278,12 +279,12 @@ describe('Public Home dashboard', () => {
     const failedNoneCard = cardOf(nodeCardLink('Failed None'))
     expect(within(failedNoneCard).getAllByText('Unknown').length).toBeGreaterThanOrEqual(4)
     expect(within(failedNoneCard).queryByText('Stale')).toBeNull()
-    expect(within(failedNoneCard).queryByText('No')).toBeNull()
+    expect(within(failedNoneCard).queryByText('False')).toBeNull()
 
     // A current successful non-membership renders No; an observed zero
     // block height is an authoritative zero, never Unknown.
     const falseCard = cardOf(nodeCardLink('Current False'))
-    expect(within(falseCard).getByText('No')).toBeTruthy()
+    expect(within(falseCard).getByText('False')).toBeTruthy()
     expect(within(falseCard).getAllByText('0').length).toBeGreaterThanOrEqual(4)
     expect(within(falseCard).queryByText('Stale')).toBeNull()
 
@@ -291,8 +292,8 @@ describe('Public Home dashboard', () => {
     // value must not be presented as current Yes/No or block heights.
     const unknownFreshnessCard = cardOf(nodeCardLink('Unknown Freshness'))
     expect(within(unknownFreshnessCard).getAllByText('Unknown').length).toBeGreaterThanOrEqual(4)
-    expect(within(unknownFreshnessCard).queryByText('Yes')).toBeNull()
-    expect(within(unknownFreshnessCard).queryByText('No')).toBeNull()
+    expect(within(unknownFreshnessCard).queryByText('True')).toBeNull()
+    expect(within(unknownFreshnessCard).queryByText('False')).toBeNull()
     expect(within(unknownFreshnessCard).queryByText('Stale')).toBeNull()
   })
 
