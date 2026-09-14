@@ -207,7 +207,7 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(nodeCard(page, /Node P/)).toBeVisible()
     await expectNoHorizontalOverflow(page)
 
-    await page.getByRole('button', { name: 'All Networks', exact: true }).click()
+    await page.getByRole('tab', { name: 'All Networks', exact: true }).click()
     await expect(nodeCard(page, /Node A/)).toBeVisible()
     // An authenticated Owner sees every Active Node on Home. The legacy
     // per-Node visibility value must not hide Node B from the site-wide Home
@@ -241,7 +241,7 @@ test.describe('Converged Public Home (issue #102)', () => {
     // tab to the whole-card Node H link and activate with Enter.
     await page.getByRole('button', { name: CONVERGENCE_NETWORK_NAME, exact: true }).click()
     await expect(nodeCard(page, /Node H/)).toBeVisible({ timeout: 15_000 })
-    await page.getByRole('button', { name: 'All Networks', exact: true }).focus()
+    await page.getByRole('tab', { name: 'All Networks', exact: true }).focus()
 
     let activeHref = ''
     for (let i = 0; i < 30; i++) {
@@ -298,7 +298,7 @@ test.describe('Converged Public Home (issue #102)', () => {
 
     // Sorting stays operable and the full list comes back.
     await page.getByRole('combobox', { name: 'Sort' }).selectOption('head')
-    await page.getByRole('button', { name: 'All Networks', exact: true }).click()
+    await page.getByRole('tab', { name: 'All Networks', exact: true }).click()
     await expectNoHorizontalOverflow(page)
   })
 })

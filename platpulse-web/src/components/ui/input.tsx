@@ -57,7 +57,7 @@ export function Checkbox({ className, ...props }: React.ComponentProps<'input'>)
       type="checkbox"
       data-slot="checkbox"
       className={cn(
-        'accent-primary size-4 shrink-0 rounded-sm border-input bg-transparent',
+        'accent-primary size-11 shrink-0 rounded-sm border-input bg-transparent',
         'focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50',
         'disabled:cursor-not-allowed disabled:opacity-50',
         className,

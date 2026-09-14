@@ -222,8 +222,10 @@ test('paints the correct theme before the application module runs on direct entr
   await page.route('**/assets/*.js', (route) => route.abort())
 
   const cases = [
-    { mode: 'light', dark: false, colorScheme: 'light', canvas: 'rgb(248, 250, 252)' },
-    { mode: 'dark', dark: true, colorScheme: 'dark', canvas: 'rgb(20, 25, 35)' },
+    // Emerald's --background is oklch(1 0 0) and oklch(0.141 0.005 285.823),
+    // which index.html paints before the application module runs.
+    { mode: 'light', dark: false, colorScheme: 'light', canvas: 'rgb(255, 255, 255)' },
+    { mode: 'dark', dark: true, colorScheme: 'dark', canvas: 'rgb(9, 9, 11)' },
   ] as const
 
   for (const testCase of cases) {
@@ -445,7 +447,7 @@ for (const theme of ['light', 'dark'] as const) {
     // Filters and sorting stay operable on both public surfaces.
     await page.getByRole('tablist', { name: 'Network filter' }).getByRole('tab').nth(1).click()
     await page.getByRole('combobox', { name: 'Sort' }).selectOption('head')
-    await page.getByRole('button', { name: 'All Networks', exact: true }).click()
+    await page.getByRole('tab', { name: 'All Networks', exact: true }).click()
     await page.emulateMedia({ reducedMotion: 'reduce' })
     await nodeCard.hover()
     await expect(nodeCard).toHaveCSS('transform', 'none')
@@ -562,13 +564,15 @@ test('keeps the retained Admin workbench readable in both themes', async ({ page
  * deviation is width, so the check widens past the upstream fixed 1300px to
  * prove the layer is full-bleed.
  */
-test('ports the shared Emerald top atmosphere full-bleed in both themes', async ({ page }) => {
+test('ports the shared Emerald top atmosphere in both themes', async ({ page }) => {
   await page.setViewportSize({ width: 1512, height: 900 })
   await page.goto('/login')
 
   const light = await readAtmosphere(page)
   expect(light.ready, 'the shared atmosphere layer renders on Login').toBe(true)
-  expect(light.width, 'the atmosphere spans the full viewport width').toBeGreaterThanOrEqual(1500)
+  // An earlier PlatPulse port stretched the wash to the viewport; that
+  // adaptation is gone, so this asserts upstream's own fixed w-325 (1300px).
+  expect(Math.round(light.width), "the atmosphere keeps upstream's fixed 1300px width").toBe(1300)
   expect(light.height).toBe(400)
   expect(light.gradientImage).toContain('linear-gradient')
   expect(light.gradientOpacity).toBe('0.4')
@@ -583,5 +587,5 @@ test('ports the shared Emerald top atmosphere full-bleed in both themes', async 
   const dark = await readAtmosphere(page)
   expect(dark.atmosphereMask, 'Dark keeps the upstream vertical atmosphere mask').toContain('linear-gradient')
   expect(dark.gradientOpacity).toBe('1')
-  expect(dark.gridFill).toMatch(/rgba\(255, 255, 255, 0\.02/)
+  expect(dark.gridFill, 'the dark grid is white at 2.5%').toMatch(/rgba\(255, 255, 255, 0\.02|oklab\([^)]*\/ 0\.025\)/)
 })

@@ -54,7 +54,7 @@ test.describe('Authenticated shell', () => {
     await expect(page.getByText('Attention', { exact: true })).toBeVisible()
     await expect(page.getByText('Networks', { exact: true })).toBeVisible()
     await expect(page.getByRole('tablist', { name: 'Network filter' })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'All Networks' })).toHaveAttribute('aria-pressed', 'true')
+    await expect(page.getByRole('tab', { name: 'All Networks' })).toHaveAttribute('aria-selected', 'true')
     await expect(page.getByRole('combobox', { name: 'Sort' })).toBeVisible()
     await expect(page.getByRole('link', { name: 'Admin', exact: true })).toHaveAttribute('href', '/admin')
     await expectNoHorizontalOverflow(page)
@@ -63,7 +63,7 @@ test.describe('Authenticated shell', () => {
   test('Home controls remain semantic and touch-sized', async ({ page }) => {
     await loginAs(page)
     const home = page.getByRole('region', { name: 'Home' })
-    await expect(home.getByRole('button', { name: 'All Networks' })).toHaveAttribute('aria-pressed', 'true')
+    await expect(home.getByRole('tab', { name: 'All Networks' })).toHaveAttribute('aria-selected', 'true')
     await home.getByRole('combobox', { name: 'Sort' }).selectOption('head')
 
     const undersized = await home.locator('button, a, select').evaluateAll((elements) => elements.flatMap((element) => {
