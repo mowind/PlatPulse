@@ -488,14 +488,20 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expect(page.getByRole('heading', { level: 1, name: 'Node A' })).toBeVisible({ timeout: 15_000 })
 
     await expect(page.getByText('Process uptime')).toBeVisible()
-    const heroCard = page.locator('.node-hero-card')
-    await expect.poll(() => heroCard.evaluate((card) => getComputedStyle(card, '::before').content)).toBe('none')
+    const observationPanel = page.locator('.node-info-group').first()
+    await expect.poll(() => observationPanel.evaluate((card) => getComputedStyle(card, '::before').content)).toBe('none')
     // Continuous reading (issue #149): every group is visible in one page and
     // no Details/Network tab survives.
     await expect(page.getByRole('tab')).toHaveCount(0)
     for (const label of ['Node key summary', 'Node chain and consensus observations', 'PlatON process resources', 'Node data directory', 'Shared Host resources']) {
       await expect(page.getByLabel(label)).toBeVisible()
     }
+    // The accepted A container (issue #151): an uncarded identity block, four
+    // summary tiles, and three parallel observation panels with the Node Data
+    // directory merged into the process panel.
+    await expect(page.locator('.node-hero-card')).toHaveCount(0)
+    await expect(page.locator('.node-info-group')).toHaveCount(3)
+    await expect(page.getByLabel('Node key summary').locator('.node-summary-tile')).toHaveCount(4)
     const chainGroup = page.getByLabel('Node chain and consensus observations')
     await expect(page.getByLabel('Node key summary').getByText('Head', { exact: true })).toBeVisible()
     await expect(chainGroup.getByText('QC', { exact: true })).toBeVisible()
@@ -509,9 +515,9 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     for (const label of ['CPU', 'Memory']) {
       await expect(resources.getByText(label, { exact: true })).toBeVisible()
     }
-    await expect(resources.locator('.metric-row-progress')).toHaveCount(2)
+    // Process CPU + process memory + the merged Node Data directory.
+    await expect(resources.locator('.metric-row-progress')).toHaveCount(3)
     await expectMetricRowsAligned(resources)
-    await expectMetricRowsAligned(page.getByLabel('Node key summary'))
     await expectMetricRowsAligned(chainGroup)
     await expect(page.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeVisible()
     // Six charts in the agreed order, from the fixed metrics response.

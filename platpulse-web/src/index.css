@@ -1101,26 +1101,18 @@ button {
   align-items: center;
 }
 
-.node-hero-card {
-  position: relative;
-  overflow: hidden;
-  padding: 1.25rem;
-  color: var(--ink);
-  background: rgba(255, 255, 255, 0.74);
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  border-radius: 1.05rem;
-  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.05);
-  backdrop-filter: none;
-}
-
-.node-hero-header {
+/* The page identity is deliberately not a card: the summary tiles and the
+   three observation panels are the page's only observation containers
+   (design §8.1 / §11.1). */
+.node-identity {
+  min-width: 0;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 1.25rem;
 }
 
-.node-hero-header h1 {
+.node-identity h1 {
   max-width: 28rem;
   margin: 0.1rem 0 0.25rem;
   font-size: clamp(1.7rem, 4vw, 2.5rem);
@@ -1128,9 +1120,9 @@ button {
   overflow-wrap: anywhere;
 }
 
-.node-hero-identity,
+.node-identity-main,
 .network-node-card-identity { display: flex; flex: 1 1 auto; align-items: flex-start; gap: 0.6rem; min-width: 0; }
-.node-hero-identity .node-health-marker { margin-top: 0.55rem; }
+.node-identity-main .node-health-marker { margin-top: 0.55rem; }
 
 .node-id-line {
   margin: 0;
@@ -1178,7 +1170,7 @@ button {
   font-variant-numeric: tabular-nums;
 }
 
-.node-hero-reason {
+.node-identity-reason {
   margin: 0.65rem 0 0;
   color: var(--muted);
   font-size: 0.8rem;
@@ -1262,20 +1254,20 @@ button {
   overflow-wrap: anywhere;
 }
 
-.node-hero-facts {
+.node-identity-facts {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem 1.25rem;
   margin: 0;
 }
 
-.node-hero-facts > div {
+.node-identity-facts > div {
   min-width: 0;
   display: grid;
   gap: 0.2rem;
 }
 
-.node-hero-facts dt {
+.node-identity-facts dt {
   color: var(--muted);
   font-size: 0.68rem;
   font-weight: 800;
@@ -1283,7 +1275,7 @@ button {
   text-transform: uppercase;
 }
 
-.node-hero-facts dd {
+.node-identity-facts dd {
   margin: 0;
   color: var(--ink);
   font-size: 0.8rem;
@@ -1291,18 +1283,62 @@ button {
   overflow-wrap: anywhere;
 }
 
+/* The accepted A container: a four-tile key summary plus three parallel
+   observation panels, each its own card (design §11.1). */
+.node-summary-tiles {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.node-summary-tile {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 0.3rem;
+  padding: 1rem 1.05rem;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.74);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 1.05rem;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.05);
+}
+
+.node-summary-tile-label { color: var(--muted); font-size: 0.75rem; font-weight: 650; }
+.node-summary-tile-value { color: var(--ink); font-size: 1.5rem; font-weight: 750; letter-spacing: -0.03em; line-height: 1.2; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.node-summary-tile-detail { color: var(--muted); font-size: 0.6875rem; font-weight: 550; line-height: 1.35; overflow-wrap: anywhere; }
+
 .node-info-groups {
   display: grid;
-  gap: 0.9rem;
-  margin-top: 0.9rem;
-  padding-top: 0.9rem;
-  border-top: 1px solid rgba(100, 116, 139, 0.22);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
 }
 
 .node-info-group {
   min-width: 0;
   display: grid;
-  gap: 0.5rem;
+  align-content: start;
+  gap: 0.55rem;
+  padding: 1.1rem 1.15rem;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.74);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 1.05rem;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.05);
+}
+
+@media (max-width: 64rem) {
+  .node-summary-tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 48rem) {
+  .node-info-groups {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .node-group-title {
@@ -1324,10 +1360,16 @@ button {
 
 .node-info-metrics {
   display: grid;
-  /* auto-fill, not auto-fit: a singleton group such as Node Data keeps one
-     left-aligned cell instead of stretching across the whole row. */
-  grid-template-columns: repeat(auto-fill, minmax(15.5rem, 1fr));
-  gap: 0.6rem 1.1rem;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.55rem;
+}
+
+.node-info-subgroup {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 0.15rem;
+  padding-top: 0.6rem;
+  border-top: 1px dotted rgba(100, 116, 139, 0.28);
 }
 
 .node-metrics-section {
@@ -1659,21 +1701,16 @@ button {
     flex-direction: column;
   }
 
-  .node-hero-card {
-    padding: 0.8rem;
-    border-radius: 0.9rem;
-  }
-
-  .node-hero-header {
+  .node-identity {
     flex-direction: column;
     gap: 0.45rem;
   }
 
-  .node-hero-header .dashboard-kicker {
+  .node-identity .dashboard-kicker {
     display: none;
   }
 
-  .node-hero-header h1 {
+  .node-identity h1 {
     font-size: 1.7rem;
   }
 
@@ -1694,7 +1731,7 @@ button {
     font-size: 0.6rem;
   }
 
-  .node-hero-reason {
+  .node-identity-reason {
     margin-top: 0.45rem;
     font-size: 0.72rem;
   }
@@ -3005,20 +3042,30 @@ button {
   user-select: none;
 }
 
-/* The wash is the only geometric surface. The texture lives inside it so the
-   same radial alpha mask fades both the color and the SVG at every edge. */
-.background-decoration-gradient {
+/* Faithful port of the upstream Emerald atmosphere (Background.vue at
+   c2c5e88). The page canvas already supplies the documented full-viewport
+   neutral base (#f8fafc in Light, near-#141923 in Dark), so this layer
+   carries only the emerald/lime wash and its inclined grid. The one
+   deliberate deviation is width: upstream fixes the atmosphere at 1300px,
+   while this port spans the full viewport so it never reads as a centred
+   partial band on a wide screen (design §11.1). */
+.background-decoration-atmosphere {
   position: absolute;
   top: 0;
-  left: 50%;
-  width: min(1300px, 100vw);
+  left: 0;
+  width: 100vw;
   height: 400px;
-  transform: translateX(-50%);
+}
+
+.background-decoration-gradient {
+  position: absolute;
+  inset: 0;
   overflow: hidden;
   isolation: isolate;
-  background: linear-gradient(105deg, rgba(16, 185, 129, 0.17), rgba(190, 242, 100, 0.13));
-  -webkit-mask-image: radial-gradient(ellipse 48% 125% at 50% 0%, #000 0%, rgba(0, 0, 0, 0.88) 38%, rgba(0, 0, 0, 0.22) 62%, transparent 86%);
-  mask-image: radial-gradient(ellipse 48% 125% at 50% 0%, #000 0%, rgba(0, 0, 0, 0.88) 38%, rgba(0, 0, 0, 0.22) 62%, transparent 86%);
+  background: linear-gradient(to right, #10b981, #bef264);
+  opacity: 0.4;
+  -webkit-mask-image: radial-gradient(farthest-side at top, #fff, transparent);
+  mask-image: radial-gradient(farthest-side at top, #fff, transparent);
 }
 
 .background-decoration-grid {
@@ -3028,17 +3075,10 @@ button {
   width: 100%;
   height: 200%;
   transform: skewY(-18deg);
-  transform-origin: center top;
-  fill: none;
-  stroke: rgba(15, 118, 110, 0.2);
+  fill: rgb(0 0 0 / 40%);
+  stroke: rgb(0 0 0 / 50%);
   stroke-width: 1;
   mix-blend-mode: overlay;
-  opacity: 0.45;
-}
-
-.background-decoration-cells {
-  fill: rgba(5, 150, 105, 0.08);
-  stroke: none;
 }
 
 .app-header {
@@ -3749,7 +3789,8 @@ button {
 .network-node-statuses .node-overview-status { display: grid; gap: 0.45rem; }
 .network-node-detail-link { min-height: 44px; display: inline-flex; align-items: center; justify-content: flex-end; color: var(--brand-strong); font-weight: 750; text-decoration: none; }
 
-.home-shell .node-hero-card {
+.home-shell .node-info-group,
+.home-shell .node-summary-tile {
   color: var(--ink);
   background: var(--public-card-surface);
   border: 1px solid var(--public-card-border);
@@ -3758,12 +3799,12 @@ button {
   backdrop-filter: none;
 }
 
-.home-shell .node-hero-header h1,
+.home-shell .node-identity h1,
 .home-shell .node-metric-card-heading h3,
 .home-shell .node-metric-value { color: var(--ink); }
 .home-shell .node-id-line,
 .home-shell .node-id-line code,
-.home-shell .node-hero-reason,
+.home-shell .node-identity-reason,
 .home-shell .node-hero-badges > div > span,
 .home-shell .node-hero-footer span,
 .home-shell .node-consensus-runway span,
@@ -3772,7 +3813,7 @@ button {
 .home-shell .node-metric-y-axis,
 .home-shell .node-metric-x-axis { color: var(--muted); }
 .home-shell .node-hero-badges > div { background: rgba(241, 245, 249, 0.62); border-color: rgba(148, 163, 184, 0.22); }
-.home-shell .node-hero-reason { min-width: 0; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
+.home-shell .node-identity-reason { min-width: 0; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
 .home-shell .node-hero-resources { border-top-color: rgba(100, 116, 139, 0.25); }
 .home-shell .node-consensus-runway { border-block-color: rgba(100, 116, 139, 0.25); }
 .home-shell .node-consensus-runway::before { background: linear-gradient(90deg, var(--info), #8b5cf6 55%, var(--brand-strong)); opacity: 0.35; }
@@ -4122,17 +4163,17 @@ button {
   white-space: normal;
 }
 
-.home-shell .node-hero-header {
+.home-shell .node-identity {
   align-items: flex-start;
 }
 
-.home-shell .node-hero-header h1 {
+.home-shell .node-identity h1 {
   max-width: 36rem;
   font-size: clamp(1.5rem, 2.8vw, 1.75rem);
   letter-spacing: -0.045em;
 }
 
-.home-shell .node-hero-facts {
+.home-shell .node-identity-facts {
   display: flex;
   flex: 0 1 auto;
   flex-wrap: wrap;
@@ -4226,35 +4267,6 @@ button {
   padding-top: 0.75rem;
 }
 
-.home-shell .node-tabs {
-  justify-content: center;
-  width: min(100%, 24rem);
-  max-width: 100%;
-  margin: 0.9rem auto 0.75rem;
-  padding: 0;
-  background: transparent;
-  border: 0;
-  border-bottom: 1px solid rgba(100, 116, 139, 0.25);
-  border-radius: 0;
-  gap: 0.25rem;
-}
-
-.home-shell .node-tab {
-  flex: 0 0 auto;
-  min-width: 7rem;
-  min-height: 44px;
-  padding: 0.55rem 0.85rem;
-  color: var(--muted);
-  border-radius: 0.45rem 0.45rem 0 0;
-  font-weight: 750;
-}
-
-.home-shell .node-tab[aria-selected='true'] {
-  color: var(--ink);
-  background: rgba(255, 255, 255, 0.72);
-  box-shadow: inset 0 -2px 0 var(--brand-strong);
-}
-
 .home-shell .node-metric-grid {
   gap: 0.75rem;
 }
@@ -4306,7 +4318,7 @@ button {
     font-size: 1.5rem;
   }
 
-  .home-shell .node-hero-facts {
+  .home-shell .node-identity-facts {
     justify-content: flex-start;
     padding-top: 0;
   }
@@ -4321,7 +4333,7 @@ button {
     grid-template-columns: none;
   }
 
-  .home-shell .node-hero-facts {
+  .home-shell .node-identity-facts {
     width: 100%;
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -5127,25 +5139,21 @@ button {
   border-color: rgba(52, 211, 153, 0.35);
 }
 
-/* The public top treatment keeps the accepted layered dark mask. */
+/* Dark keeps the upstream layered masks: the vertical atmosphere fade plus
+   the emerald/lime 30% wash and the white 2.5% / 5% overlay grid. */
+:root.dark .background-decoration-atmosphere {
+  -webkit-mask-image: linear-gradient(#fff, transparent);
+  mask-image: linear-gradient(#fff, transparent);
+}
+
 :root.dark .background-decoration-gradient {
-  background: linear-gradient(
-    to right,
-    oklch(0.696 0.17 162.48 / 30%),
-    oklch(0.897 0.196 126.665 / 30%)
-  );
+  background: linear-gradient(to right, rgb(16 185 129 / 30%), rgb(190 242 100 / 30%));
   opacity: 1;
-  -webkit-mask-image: linear-gradient(#000, transparent);
-  mask-image: linear-gradient(#000, transparent);
 }
 
 :root.dark .background-decoration-grid {
-  stroke: rgba(255, 255, 255, 0.05);
-  opacity: 1;
-}
-
-:root.dark .background-decoration-cells {
-  fill: rgba(255, 255, 255, 0.025);
+  fill: rgb(255 255 255 / 2.5%);
+  stroke: rgb(255 255 255 / 5%);
 }
 
 /* Shared shell and surface foundation in the dark theme. */
@@ -5183,8 +5191,10 @@ button {
   border-color: var(--public-card-border);
 }
 
-:root.dark .node-hero-card,
-:root.dark .home-shell .node-hero-card {
+:root.dark .node-info-group,
+:root.dark .home-shell .node-info-group,
+:root.dark .node-summary-tile,
+:root.dark .home-shell .node-summary-tile {
   background: var(--public-card-surface);
   border-color: var(--public-card-border);
 }
@@ -5290,7 +5300,8 @@ button {
   .dashboard-summary-card:hover,
   .dashboard-node-card:hover,
   .home-shell .public-network-page .node-card:hover,
-  .home-shell .node-hero-card:hover,
+  .home-shell .node-info-group:hover,
+  .home-shell .node-summary-tile:hover,
   .home-shell .peer-insight:hover,
   .home-shell .geo-insight:hover {
     background: var(--public-card-surface-hover);
@@ -5334,7 +5345,8 @@ button {
   .dashboard-summary-card,
   .dashboard-node-card,
   .home-shell .public-network-page .node-card,
-  .home-shell .node-hero-card,
+  .home-shell .node-info-group,
+  .home-shell .node-summary-tile,
   .home-shell .peer-insight,
   .home-shell .geo-insight,
   .home-shell .node-metric-card,
@@ -5352,7 +5364,8 @@ button {
   .dashboard-summary-card:hover,
   .dashboard-node-card:hover,
   .home-shell .public-network-page .node-card:hover,
-  .home-shell .node-hero-card:hover,
+  .home-shell .node-info-group:hover,
+  .home-shell .node-summary-tile:hover,
   .home-shell .peer-insight:hover,
   .home-shell .geo-insight:hover {
     transform: none;
@@ -5405,10 +5418,6 @@ button {
 :root.dark .home-shell .node-disclosure {
   background: var(--public-card-surface);
   border-color: var(--public-card-border);
-}
-
-:root.dark .home-shell .node-info-groups {
-  border-top-color: rgba(255, 255, 255, 0.12);
 }
 
 :root.dark .dashboard-node-diagnostic { border-top-color: rgba(255, 255, 255, 0.12); }

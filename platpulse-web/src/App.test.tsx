@@ -667,8 +667,8 @@ describe('App shell with private Home', () => {
 
     expect(await screen.findByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
     expect(screen.getByRole('img', { name: 'Unhealthy' })).toBeTruthy()
-    // Node Validator Activity is not rendered by the current SPA, so the hero
-    // carries no Node-status label and no activity wording.
+    // Node Validator Activity is not rendered by the current SPA, so the
+    // identity block carries no Node-status label and no activity wording.
     expect(screen.queryByText('Node status')).toBeNull()
     expect(screen.queryByText('Producing')).toBeNull()
     expect(screen.getByText('Process uptime')).toBeTruthy()
@@ -693,8 +693,12 @@ describe('App shell with private Home', () => {
     expect(processGroup.textContent).toContain('12.5%')
     expect(processGroup.textContent).toContain('Memory')
     expect(processGroup.textContent).toContain('6.3%')
-    expect(processGroup.querySelectorAll('.metric-row-progress')).toHaveLength(2)
+    // The accepted A container merges PlatON process resources and the Node
+    // Data directory into one panel, so the panel carries all three tracks
+    // while the Node Data directory keeps its own labelled region.
+    expect(processGroup.querySelectorAll('.metric-row-progress')).toHaveLength(3)
     const nodeDataGroup = screen.getByLabelText('Node data directory')
+    expect(processGroup.contains(nodeDataGroup)).toBe(true)
     expect(nodeDataGroup.textContent).toContain('Directory usage')
     expect(nodeDataGroup.textContent).toContain('25.0%')
     expect(nodeDataGroup.textContent).toContain('2.00 GiB / 8.00 GiB')
@@ -703,6 +707,16 @@ describe('App shell with private Home', () => {
     expect(hostGroup.textContent).toContain('Host CPU')
     expect(hostGroup.textContent).toContain('Host upload')
     expect(hostGroup.textContent).toContain('shared by every Node')
+
+    // The container contract is the accepted A calibration rather than the
+    // earlier single-hero-card composition: an uncarded identity block, four
+    // summary tiles, and three parallel observation panels.
+    expect(document.querySelector('.node-hero-card')).toBeNull()
+    expect(summary.querySelectorAll('.node-summary-tile')).toHaveLength(4)
+    expect(document.querySelectorAll('.node-info-group')).toHaveLength(3)
+    for (const title of ['Chain & consensus', 'PlatON process & Node Data', /^Host resources/]) {
+      expect(screen.getByRole('heading', { level: 2, name: title })).toBeTruthy()
+    }
     // The final six-chart order is process CPU %, process memory %, shared
     // Host upload/download, Peer inbound/outbound, block interval, then
     // transactions per block; the first four are lines and the last two bars.

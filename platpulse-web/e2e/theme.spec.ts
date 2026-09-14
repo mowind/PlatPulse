@@ -33,6 +33,46 @@ async function resolvedTheme(page: Page) {
   }))
 }
 
+/** Read the shared public top atmosphere (issue #151). The fields default to
+ *  empty so a missing layer fails an explicit assertion instead of throwing. */
+async function readAtmosphere(page: Page) {
+  return page.evaluate(() => {
+    const empty = {
+      ready: false,
+      width: 0,
+      height: 0,
+      gradientOpacity: '',
+      gradientImage: '',
+      gradientMask: '',
+      atmosphereMask: '',
+      gridFill: '',
+      ariaHidden: null as string | null,
+      pointerEvents: '',
+    }
+    const decoration = document.querySelector('.background-decoration')
+    const atmosphere = document.querySelector('.background-decoration-atmosphere')
+    const gradient = document.querySelector('.background-decoration-gradient')
+    const grid = document.querySelector('.background-decoration-grid')
+    if (!decoration || !atmosphere || !gradient || !grid) return empty
+    const atmosphereStyle = getComputedStyle(atmosphere)
+    const gradientStyle = getComputedStyle(gradient)
+    const gridStyle = getComputedStyle(grid)
+    const box = atmosphere.getBoundingClientRect()
+    return {
+      ready: true,
+      width: box.width,
+      height: box.height,
+      gradientOpacity: gradientStyle.opacity,
+      gradientImage: gradientStyle.backgroundImage,
+      gradientMask: gradientStyle.maskImage || gradientStyle.webkitMaskImage,
+      atmosphereMask: atmosphereStyle.maskImage || atmosphereStyle.webkitMaskImage,
+      gridFill: gridStyle.fill,
+      ariaHidden: decoration.getAttribute('aria-hidden'),
+      pointerEvents: getComputedStyle(decoration).pointerEvents,
+    }
+  })
+}
+
 /** Ordinary body text must keep at least 4.5:1 against its painted background.
  *  The target is a role/text locator where one exists, so the check does not
  *  depend on production CSS class names. */
@@ -468,4 +508,34 @@ test('keeps the retained Admin workbench readable in both themes', async ({ page
     await expect(menu).toBeFocused()
     await expect.poll(() => page.evaluate(() => document.body.style.overflow)).toBe('')
   }
+})
+
+/**
+ * Issue #151: the public top atmosphere is the faithful Emerald Background.vue
+ * port rather than the earlier hand-written approximation. The one deliberate
+ * deviation is width, so the check widens past the upstream fixed 1300px to
+ * prove the layer is full-bleed.
+ */
+test('ports the shared Emerald top atmosphere full-bleed in both themes', async ({ page }) => {
+  await page.setViewportSize({ width: 1512, height: 900 })
+  await page.goto('/login')
+
+  const light = await readAtmosphere(page)
+  expect(light.ready, 'the shared atmosphere layer renders on Login').toBe(true)
+  expect(light.width, 'the atmosphere spans the full viewport width').toBeGreaterThanOrEqual(1500)
+  expect(light.height).toBe(400)
+  expect(light.gradientImage).toContain('linear-gradient')
+  expect(light.gradientOpacity).toBe('0.4')
+  expect(light.gradientMask).toContain('radial-gradient')
+  expect(light.gridFill).toMatch(/0\.4|40%/)
+  expect(light.ariaHidden).toBe('true')
+  expect(light.pointerEvents).toBe('none')
+
+  await themeButton(page).click()
+  await themeButton(page).click()
+  await expect(themeButton(page)).toHaveAttribute('aria-label', 'Theme: Dark. Switch to Auto')
+  const dark = await readAtmosphere(page)
+  expect(dark.atmosphereMask, 'Dark keeps the upstream vertical atmosphere mask').toContain('linear-gradient')
+  expect(dark.gradientOpacity).toBe('1')
+  expect(dark.gridFill).toMatch(/rgba\(255, 255, 255, 0\.02/)
 })

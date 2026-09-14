@@ -114,67 +114,64 @@ export function NodePage() {
     </div>
     {nodeQuery.isRefetchError && <p role="status" className="form-error">Node refresh failed; showing the last successful Node data.</p>}
 
-    <section className="node-hero-card" aria-labelledby="node-detail-title">
-      <header className="node-hero-header">
-        <div className="node-hero-identity">
-          <NodeHealthMarker health={node.health} />
-          <div>
-            <h1 id="node-detail-title">{nodeDisplayName(node)}</h1>
-            <p className="node-id-line">Node ID <code>{node.nodeId}</code></p>
-          </div>
+    <header className="node-identity" aria-labelledby="node-detail-title">
+      <div className="node-identity-main">
+        <NodeHealthMarker health={node.health} />
+        <div>
+          <h1 id="node-detail-title">{nodeDisplayName(node)}</h1>
+          <p className="node-id-line">Node ID <code>{node.nodeId}</code></p>
         </div>
-        <dl className="node-hero-facts" aria-label="Node identity facts">
-          <div>
-            <dt>Last report</dt>
-            <dd>{formatUtcDateTime(node.lastReportAt)}</dd>
-          </div>
-        </dl>
-      </header>
+      </div>
+      <dl className="node-identity-facts" aria-label="Node identity facts">
+        <div>
+          <dt>Last report</dt>
+          <dd>{formatUtcDateTime(node.lastReportAt)}</dd>
+        </div>
+      </dl>
+    </header>
 
-      {health.tone !== 'ok' && <p className="node-hero-reason">{node.healthReason}</p>}
+    {health.tone !== 'ok' && <p className="node-identity-reason">{node.healthReason}</p>}
 
-      <NodeInfoGroup title="Summary" label="Node key summary">
-        <MetricRow label="Head" value={formatNumber(node.currentHead)} />
-        <MetricRow label="Sync" value={nodeComponentStateLabel(node.syncState)} detail={formatSyncDetail(node)} />
-        <MetricRow label="Peers" value={peerCount(node.peers)} detail={peerBreakdown(node.peers)} />
-        <MetricRow label="Process uptime" value={formatDuration(node.processUptimeMs)} />
+    <div className="node-summary-tiles" role="group" aria-label="Node key summary">
+      <SummaryTile label="Head" value={formatNumber(node.currentHead)} />
+      <SummaryTile label="Sync" value={nodeComponentStateLabel(node.syncState)} detail={formatSyncDetail(node)} />
+      <SummaryTile label="Peers" value={peerCount(node.peers)} detail={peerBreakdown(node.peers)} />
+      <SummaryTile label="Process uptime" value={formatDuration(node.processUptimeMs)} />
+    </div>
+
+    <div className="node-info-groups">
+      <NodeInfoGroup title="Chain & consensus" label="Node chain and consensus observations">
+        <MetricRow label="QC" value={formatConsensusValue(node.consensus?.highestQcBlock, node.consensus)} />
+        <MetricRow label="Locked" value={formatConsensusValue(node.consensus?.highestLockBlock, node.consensus)} />
+        <MetricRow label="Committed" value={formatConsensusValue(node.consensus?.highestCommitBlock, node.consensus)} />
+        <MetricRow label="Validator" value={formatValidatorMembership(node)} />
+        <MetricRow label="Resync" value={nodeComponentStateLabel(node.resyncState)} detail={formatResyncDetail(node)} />
+        <MetricRow label="Network reference" value={formatReferenceHead(node)} detail={formatReferenceDetail(node)} />
       </NodeInfoGroup>
 
-      <div className="node-info-groups">
-        <NodeInfoGroup title="Chain & consensus" label="Node chain and consensus observations">
-          <MetricRow label="QC" value={formatConsensusValue(node.consensus?.highestQcBlock, node.consensus)} />
-          <MetricRow label="Locked" value={formatConsensusValue(node.consensus?.highestLockBlock, node.consensus)} />
-          <MetricRow label="Committed" value={formatConsensusValue(node.consensus?.highestCommitBlock, node.consensus)} />
-          <MetricRow label="Validator" value={formatValidatorMembership(node)} />
-          <MetricRow label="Resync" value={nodeComponentStateLabel(node.resyncState)} detail={formatResyncDetail(node)} />
-          <MetricRow label="Network reference" value={formatReferenceHead(node)} detail={formatReferenceDetail(node)} />
-        </NodeInfoGroup>
-
-        <NodeInfoGroup title="PlatON process" label="PlatON process resources">
-          <MetricRow label="CPU" value={formatPercent(node.processCpuPercent)} progress={node.processCpuPercent} />
-          <MetricRow label="Memory" value={formatPercent(node.processMemoryPercent)} progress={node.processMemoryPercent} />
-          <MetricRow label="Started" value={formatUtcDateTime(node.processStartedAt)} />
-          <MetricRow label="Process state" value={nodeComponentStateLabel(node.processState)} />
-        </NodeInfoGroup>
-
-        <NodeInfoGroup title="Node Data" label="Node data directory">
+      <NodeInfoGroup title="PlatON process & Node Data" label="PlatON process resources">
+        <MetricRow label="CPU" value={formatPercent(node.processCpuPercent)} progress={node.processCpuPercent} />
+        <MetricRow label="Memory" value={formatPercent(node.processMemoryPercent)} progress={node.processMemoryPercent} />
+        <MetricRow label="Started" value={formatUtcDateTime(node.processStartedAt)} />
+        <MetricRow label="Process state" value={nodeComponentStateLabel(node.processState)} />
+        <div className="node-info-subgroup" role="group" aria-label="Node data directory">
           <MetricRow
             label="Directory usage"
             value={formatPercent(nodeDataProgressValue)}
             detail={formatNodeDataBytes(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes) + ' · directory size against the hosting filesystem capacity, not whole-Host disk usage'}
             progress={nodeDataProgressValue}
           />
-        </NodeInfoGroup>
+        </div>
+      </NodeInfoGroup>
 
-        <NodeInfoGroup title="Host resources" label="Shared Host resources" note="Collected once per Agent; shared by every Node it monitors">
-          <MetricRow label="Host CPU" value={formatPercent(node.hostCpuPercent)} progress={node.hostCpuPercent} />
-          <MetricRow label="Host memory" value={formatPercent(node.hostMemoryPercent)} progress={node.hostMemoryPercent} />
-          <MetricRow label="Host storage" value={formatPercent(node.hostStoragePercent)} progress={node.hostStoragePercent} />
-          <MetricRow label="Host upload" value={formatRate(node.hostNetworkTxBytesPerSec)} />
-          <MetricRow label="Host download" value={formatRate(node.hostNetworkRxBytesPerSec)} />
-        </NodeInfoGroup>
-      </div>
-    </section>
+      <NodeInfoGroup title="Host resources" label="Shared Host resources" note="Collected once per Agent; shared by every Node it monitors">
+        <MetricRow label="Host CPU" value={formatPercent(node.hostCpuPercent)} progress={node.hostCpuPercent} />
+        <MetricRow label="Host memory" value={formatPercent(node.hostMemoryPercent)} progress={node.hostMemoryPercent} />
+        <MetricRow label="Host storage" value={formatPercent(node.hostStoragePercent)} progress={node.hostStoragePercent} />
+        <MetricRow label="Host upload" value={formatRate(node.hostNetworkTxBytesPerSec)} />
+        <MetricRow label="Host download" value={formatRate(node.hostNetworkRxBytesPerSec)} />
+      </NodeInfoGroup>
+    </div>
 
     <section className="node-metrics-section" aria-labelledby="node-metrics-title">
       <header className="node-metrics-header">
@@ -299,6 +296,14 @@ export function NodePage() {
       </dl>
     </NodeDisclosure>
   </section>
+}
+
+function SummaryTile({ label, value, detail }: { label: string; value: ReactNode; detail?: ReactNode }) {
+  return <div className="node-summary-tile">
+    <span className="node-summary-tile-label">{label}</span>
+    <strong className="node-summary-tile-value">{value}</strong>
+    {detail != null && detail !== '' && <small className="node-summary-tile-detail">{detail}</small>}
+  </div>
 }
 
 function NodeInfoGroup({ title, label, note, children }: { title: string; label: string; note?: string; children: ReactNode }) {

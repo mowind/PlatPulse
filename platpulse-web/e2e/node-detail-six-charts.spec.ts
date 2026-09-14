@@ -118,7 +118,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
               return element ? element.getBoundingClientRect().top + window.scrollY : Number.NaN
             }
             return {
-              identity: top('.node-hero-identity'),
+              identity: top('.node-identity-main'),
               summary: top('[aria-label="Node key summary"]'),
               metrics: top('.node-metrics-section'),
               peer: top('details.node-disclosure'),
@@ -127,6 +127,22 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
           expect(order.identity, JSON.stringify(order)).toBeLessThan(order.summary)
           expect(order.summary, JSON.stringify(order)).toBeLessThan(order.metrics)
           expect(order.metrics, JSON.stringify(order)).toBeLessThan(order.peer)
+
+          // The accepted A container (issue #151): an uncarded identity block,
+          // four summary tiles, and three parallel observation panels that sit
+          // on one row at desktop width and stack to one column at <=48rem.
+          await expect(page.locator('.node-hero-card')).toHaveCount(0)
+          await expect(page.getByLabel('Node key summary').locator('.node-summary-tile')).toHaveCount(4)
+          await expect(page.locator('.node-info-group')).toHaveCount(3)
+          const panelBoxes = await page.locator('.node-info-group').evaluateAll((nodes) => nodes.map((node) => {
+            const box = node.getBoundingClientRect()
+            return { top: Math.round(box.top), left: Math.round(box.left) }
+          }))
+          if ((page.viewportSize()?.width ?? 0) >= 1024) {
+            expect(new Set(panelBoxes.map((box) => box.top)).size, JSON.stringify(panelBoxes)).toBe(1)
+          } else {
+            expect(new Set(panelBoxes.map((box) => box.left)).size, JSON.stringify(panelBoxes)).toBe(1)
+          }
 
           const metrics = page.locator('.node-metrics-section')
           await expect(metrics.getByRole('img', { name: /line chart over the last 60 seconds/ })).toHaveCount(4)
@@ -200,15 +216,15 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             expect(hovered.shadow, 'chart cards gain the Emerald outline/glow').not.toBe(restingShadow)
           }
 
-          // The hero card and the diagnostic disclosures are the other card
-          // classes on this page; they react in both themes too.
-          const heroCard = page.locator('.node-hero-card')
+          // The observation panels and the diagnostic disclosures are the
+          // other card classes on this page; they react in both themes too.
+          const observationPanel = page.locator('.node-info-group').first()
           await page.mouse.move(2, 2)
-          const heroResting = await heroCard.evaluate((card) => getComputedStyle(card).boxShadow)
-          await heroCard.hover()
+          const panelResting = await observationPanel.evaluate((card) => getComputedStyle(card).boxShadow)
+          await observationPanel.hover()
           await page.waitForTimeout(220)
           if (hoverCapable) {
-            expect(await heroCard.evaluate((card) => getComputedStyle(card).boxShadow), 'the hero card gains the outline/glow').not.toBe(heroResting)
+            expect(await observationPanel.evaluate((card) => getComputedStyle(card).boxShadow), 'the observation panel gains the outline/glow').not.toBe(panelResting)
           }
 
           // Low-frequency technical details open by keyboard and stay in the
