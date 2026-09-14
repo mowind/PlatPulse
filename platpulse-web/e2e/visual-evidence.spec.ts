@@ -18,14 +18,14 @@ test.skip(!enabled, 'set EMERALD_EVIDENCE=1 to capture visual evidence')
 
 const OUTPUT = '../docs/visual-migration/emerald/screenshots'
 
-const ADMIN_PAGES: Array<[string, string]> = [
+/**
+ * The acceptance surfaces, not every page: five captures per viewport keeps the
+ * evidence reviewable. The remaining Admin pages share the same primitives and
+ * shell, and their behaviour is covered by the e2e suite rather than by a
+ * screenshot.
+ */
+const PAGES: Array<[string, string]> = [
   ['admin.home', '/admin'],
-  ['admin.agents', '/admin/agents'],
-  ['admin.nodes', '/admin/nodes'],
-  ['admin.networks', '/admin/networks'],
-  ['admin.settings', '/admin/settings'],
-  ['admin.sessions', '/admin/access/sessions'],
-  ['admin.audit', '/admin/access/audit'],
 ]
 
 test('capture Emerald migration evidence', async ({ page }, testInfo) => {
@@ -57,7 +57,7 @@ test('capture Emerald migration evidence', async ({ page }, testInfo) => {
     await page.screenshot({ path: dir + '/public.network-detail.png', fullPage: true })
   }
 
-  for (const [name, path] of ADMIN_PAGES) {
+  for (const [name, path] of PAGES) {
     await page.goto(path)
     await page.waitForLoadState('networkidle')
     await page.screenshot({ path: dir + '/' + name + '.png', fullPage: true })

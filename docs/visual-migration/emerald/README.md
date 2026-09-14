@@ -120,3 +120,33 @@ the reason. Nothing here is a silent divergence.
 (360×800, 390×844, 768×1024, 1280×800, 1440×900). They are evidence only: no
 `toHaveScreenshot` baseline is recorded or re-recorded, so no regression can be
 hidden by refreshing a baseline.
+
+## 6. Verification results (actual, 2026-09-14)
+
+### Web checks — all green
+
+| Check | Result |
+|---|---|
+| `npm run lint` | pass (no output) |
+| `npm run typecheck` | pass (no output) |
+| `npm test` | **23 files, 249 tests pass** (was 22 / 260) |
+| `npm run build` | pass; CSS 70.17 kB (gzip 12.37 kB), entry JS 695.37 kB (gzip 194.01 kB) |
+| retired sheet gone | `--paper`, `--admin-panel-bg`, `--home-content-width`, `metric-row-progress`, `dashboard-node-card` all absent from the bundle |
+
+CSS fell from 170.31 kB to 70.17 kB when the legacy sheet was deleted, which is the direct evidence that the second design system is gone.
+
+### Playwright — NOT passing: 327 passed, 156 failed, 57 skipped, 30 did not run (31.1 min)
+
+Run with `npm run test:e2e` against a freshly built production bundle served by the real Server, across all five projects (360×800, 390×844, 768×1024, 1280×800, 1440×900). **This suite does not pass and is not claimed to.** The 156 failures group into four causes:
+
+1. **Assertions that encode the pre-migration visual values (~40).** `theme.spec.ts` and `home-geo-map.spec.ts` assert the old palette and geometry directly: the pre-mount canvas hex, an atmosphere that "spans the full viewport width" (upstream's wash is a fixed 1300px, so the earlier full-width adaptation is what made that pass), specific CSS colours, and "the map sits above the statistics" (Emerald puts the map in the right six columns on desktop). Fixing these means restating the expectations from Emerald's values — a deliberate acceptance change, not a regression fix.
+2. **One spec still drives a native confirm (~5).** `access.spec.ts` calls `page.on('dialog', …)` for the Site Access Mode change. The migration replaced that `window.confirm` with an in-app Radix dialog (unit tests were updated, this spec was not), so the mutation never fires. Mechanical fix.
+3. **Real regressions (16 + 8).** Sixteen failures are the platform 44×44 interactive minimum, on Admin and Node-detail controls the page migrations introduced; eight are a mobile horizontal overflow inside AdminSettings' CardX panels at 360px (the log reports a 346px child inside a 328px content column). Both are genuine defects of this migration and both need source fixes.
+4. **Timeouts and cascades (~90).** Failing clicks and visibility waits concentrated in the specs that already failed for reasons 1–3, plus 30 tests that never ran because a shared fixture aborted.
+
+The failure taxonomy above is the honest state: the migration's own web checks are green and its screenshot evidence exists, but the end-to-end suite has not been reconciled with the new design system.
+
+### Screenshot evidence
+
+`screenshots/<project>/<page>.png` — 25 captures (login, Home, Network detail, Node detail, Admin overview) across the five projects, 3.4 MB. Captured with `EMERALD_EVIDENCE=1 npx playwright test e2e/visual-evidence.spec.ts`. There is no `toHaveScreenshot` assertion anywhere in the repository, so these are evidence and never a gate. **They have not yet been reviewed against upstream's rendering**, so no fidelity claim is made.
+
