@@ -43,7 +43,7 @@ npm run lint && npm run typecheck && npm test && npm run build
 # OpenAPI: regenerate platpulse-web/src/api/generated/ and verify no diff
 ```
 
-CI also runs Playwright across fixed projects: `phone-360-touch` (360×800), `phone-390-touch` (390×844), `tablet-768-touch` (768×1024), `desktop-1280` (1280×800).
+CI also runs Playwright across fixed projects: `phone-360-touch` (360×800), `phone-390-touch` (390×844), `tablet-768-touch` (768×1024), `desktop-1280` (1280×800), `desktop-1440` (1440×900). The 1440 project exists for the Emerald visual-migration acceptance matrix (docs/adr/0002).
 
 ## Engineering conventions
 

@@ -33,6 +33,12 @@ export default defineConfig({
       name: 'desktop-1280',
       use: { viewport: { width: 1280, height: 800 } },
     },
+    {
+      // Required by the Emerald visual migration acceptance matrix. Adding a
+      // project changes the CI matrix, so AGENTS.md lists it too.
+      name: 'desktop-1440',
+      use: { viewport: { width: 1440, height: 900 } },
+    },
   ],
   webServer: {
     // Serve the production build through the real platpulse-server (init +

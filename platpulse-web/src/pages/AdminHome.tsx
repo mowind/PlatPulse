@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { Link } from 'react-router'
-import './AdminOverview.css'
 import {
   useAdminDiagnostics,
   useAdminNodes,
