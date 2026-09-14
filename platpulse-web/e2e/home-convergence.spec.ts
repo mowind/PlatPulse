@@ -50,7 +50,7 @@ test.describe('Converged Public Home (issue #102)', () => {
     // Node Validator Activity nowhere, so no Activity badge is rendered in any
     // state, and the whole card is one semantic link whose accessible name
     // carries that order.
-    await expect(hCard.locator('.status-badge')).toHaveCount(0)
+    await expect(hCard.locator('[data-slot="status-badge"]')).toHaveCount(0)
     await expect(
       page.getByRole('link', { name: /^Healthy Node H — Producing Card/ }),
     ).toHaveCount(1)
@@ -127,7 +127,7 @@ test.describe('Converged Public Home (issue #102)', () => {
     const badgeCard = nodeCard(page, /Node A/)
     await expect(badgeCard).toBeVisible({ timeout: 15_000 })
     const badgeCardBox = (await badgeCard.boundingBox())!
-    await expect(badgeCard.locator('.status-badge')).toHaveCount(0)
+    await expect(badgeCard.locator('[data-slot="status-badge"]')).toHaveCount(0)
     const healthMarker = badgeCard.getByRole('img', { name: 'Healthy' })
     await expect(healthMarker).toBeVisible()
     const markerBox = (await healthMarker.boundingBox())!
@@ -165,7 +165,7 @@ test.describe('Converged Public Home (issue #102)', () => {
     // No Activity badge exists, so only the consensus Validator membership row
     // states anything.
     const mCard = nodeCard(page, /Node M/)
-    await expect(mCard.locator('.status-badge')).toHaveCount(0)
+    await expect(mCard.locator('[data-slot="status-badge"]')).toHaveCount(0)
     await expect(
       page.getByRole('link', { name: /^Healthy Node M — Validator Observing/ }),
     ).toHaveCount(1)
@@ -175,7 +175,7 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(
       page.getByRole('link', { name: /^Healthy Node N — Stale Last-Good/ }),
     ).toHaveCount(1)
-    await expect(nodeCard(page, /Node N/).locator('.status-badge')).toHaveCount(0)
+    await expect(nodeCard(page, /Node N/).locator('[data-slot="status-badge"]')).toHaveCount(0)
 
     // Node P has no Node observation; only the Agent-shared Host network
     // observation is known, and missing Node values never become 0 or No.

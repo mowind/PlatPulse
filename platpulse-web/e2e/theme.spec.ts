@@ -49,10 +49,10 @@ async function readAtmosphere(page: Page) {
       ariaHidden: null as string | null,
       pointerEvents: '',
     }
-    const decoration = document.querySelector('.background-decoration')
-    const atmosphere = document.querySelector('.background-decoration-atmosphere')
-    const gradient = document.querySelector('.background-decoration-gradient')
-    const grid = document.querySelector('.background-decoration-grid')
+    const decoration = document.querySelector('[data-slot="background-decoration"]')
+    const atmosphere = document.querySelector('[data-slot="background-decoration-atmosphere"]')
+    const gradient = document.querySelector('[data-slot="background-decoration-gradient"]')
+    const grid = document.querySelector('[data-slot="background-decoration-grid"]')
     if (!decoration || !atmosphere || !gradient || !grid) return empty
     const atmosphereStyle = getComputedStyle(atmosphere)
     const gradientStyle = getComputedStyle(gradient)
@@ -262,13 +262,13 @@ test('keeps Login, Home, and Admin readable in both themes', async ({ page }) =>
   await page.goto('/login')
 
   await expectReadable(page, '#login-heading')
-  await expectReadable(page, '.login-hint')
+  await expectReadable(page, '[data-slot="login-hint"]')
 
   await themeButton(page).click()
   await themeButton(page).click()
   await expect(themeButton(page)).toHaveAttribute('aria-label', 'Theme: Dark. Switch to Auto')
   await expectReadable(page, '#login-heading')
-  await expectReadable(page, '.login-hint')
+  await expectReadable(page, '[data-slot="login-hint"]')
 
   // A failed dark-theme sign-in stays readable and operable before the
   // successful redirect.
@@ -276,12 +276,12 @@ test('keeps Login, Home, and Admin readable in both themes', async ({ page }) =>
   await page.getByLabel('Password').fill('not-the-password')
   await page.getByRole('button', { name: 'Sign in' }).click()
   await expect(page.getByRole('alert')).toContainText('Invalid username or password')
-  await expectReadable(page, '.form-error')
+  await expectReadable(page, '[data-slot="form-error"]')
 
   await page.getByLabel('Password').fill(E2E_PASSWORD)
   await page.getByRole('button', { name: 'Sign in' }).click()
   await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()
-  await expectReadable(page, '.app-brand')
+  await expectReadable(page, '[data-slot="app-brand"]')
 
   await page.getByRole('link', { name: 'Admin', exact: true }).click()
   await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
@@ -294,7 +294,7 @@ test('keeps Login, Home, and Admin readable in both themes', async ({ page }) =>
   await expectReadable(page, 'main h1')
   await page.getByRole('link', { name: 'PlatPulse', exact: true }).click()
   await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()
-  await expectReadable(page, '.app-brand')
+  await expectReadable(page, '[data-slot="app-brand"]')
   await expectNoHorizontalOverflow(page)
 })
 
@@ -410,14 +410,14 @@ for (const theme of ['light', 'dark'] as const) {
       }
     }
 
-    await expect(page.locator('.home-shell')).toHaveCSS('font-family', font)
+    await expect(page.locator('[data-slot="home-shell"]')).toHaveCSS('font-family', font)
     await expect(themeButton(page)).toHaveCSS('font-family', font)
     await expect(page.getByRole('combobox', { name: 'Sort' })).toHaveCSS('font-family', font)
-    await expect(page.locator('.dashboard-node-title h2').first()).toHaveCSS('font-weight', '700')
-    await expect(page.locator('.dashboard-node-title h2').first()).toHaveCSS('font-size', '16px')
+    await expect(page.locator('[data-slot="node-card"] h2').first()).toHaveCSS('font-weight', '700')
+    await expect(page.locator('[data-slot="node-card"] h2').first()).toHaveCSS('font-size', '16px')
     await checkCard(page.getByRole('article').filter({ hasText: 'Active Nodes' }).first())
     const nodeLink = page.getByRole('link', { name: /Node A/ })
-    const nodeCard = page.locator('.dashboard-node-card').filter({ has: nodeLink })
+    const nodeCard = page.locator('[data-slot="node-card"]').filter({ has: nodeLink })
     await checkCard(nodeCard, true)
 
     // A real keyboard traversal retains the whole-card link's visible focus ring.
@@ -431,11 +431,11 @@ for (const theme of ['light', 'dark'] as const) {
     await expectFocusedElementHasVisibleFocus(page)
     await nodeLink.press('Enter')
     await expect(page.getByRole('heading', { level: 1, name: /Node A/ })).toBeVisible({ timeout: 15_000 })
-    await expect(page.locator('.home-shell')).toHaveCSS('font-family', font)
+    await expect(page.locator('[data-slot="home-shell"]')).toHaveCSS('font-family', font)
     // Cover every rendered information group, summary tile, and chart card,
     // rather than letting one passing representative hide a stale override.
-    for (const selector of ['.node-info-group', '.node-summary-tile', '.node-metric-card']) {
-      const cards = page.locator('.home-shell ' + selector)
+    for (const selector of ['[data-slot="node-info-group"]', '[data-slot="node-summary-tile"]', '[data-slot="node-metric-card"]']) {
+      const cards = page.locator('[data-slot="home-shell"] ' + selector)
       expect(await cards.count(), selector + ' fixture coverage').toBeGreaterThan(0)
       for (const card of await cards.all()) await checkCard(card)
     }
@@ -443,7 +443,7 @@ for (const theme of ['light', 'dark'] as const) {
     await page.goto('/')
     await expect(nodeLink).toBeVisible({ timeout: 15_000 })
     // Filters and sorting stay operable on both public surfaces.
-    await page.getByRole('group', { name: 'Network filter' }).getByRole('button').nth(1).click()
+    await page.getByRole('tablist', { name: 'Network filter' }).getByRole('tab').nth(1).click()
     await page.getByRole('combobox', { name: 'Sort' }).selectOption('head')
     await page.getByRole('button', { name: 'All Networks', exact: true }).click()
     await page.emulateMedia({ reducedMotion: 'reduce' })
@@ -457,9 +457,9 @@ for (const theme of ['light', 'dark'] as const) {
     // SPA navigation must not leak the public font or borderless surfaces into Admin.
     await page.getByRole('link', { name: 'Admin', exact: true }).click()
     await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
-    await expect(page.locator('.admin-shell')).toHaveCSS('font-family',
+    await expect(page.locator('[data-slot="admin-shell"]')).toHaveCSS('font-family',
       await normalizedStyle(page, 'font-family', ADMIN_FONT))
-    await expect(page.locator('.admin-shell .background-decoration')).toHaveCount(0)
+    await expect(page.locator('[data-slot="admin-shell"] [data-slot="background-decoration"]')).toHaveCount(0)
     await page.goto('/admin/networks')
     await page.getByRole('button', { name: 'Register a Network' }).click()
     const adminCard = page.locator('#network-create-form')
@@ -480,7 +480,7 @@ test('keeps the retained Admin workbench readable in both themes', async ({ page
   // The public top treatment never crosses the Admin workbench.
   await page.getByRole('link', { name: 'Admin', exact: true }).click()
   await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
-  await expect(page.locator('.admin-shell .background-decoration')).toHaveCount(0)
+  await expect(page.locator('[data-slot="admin-shell"] [data-slot="background-decoration"]')).toHaveCount(0)
 
   const routes = [
     { path: '/admin', heading: 'Overview' },
@@ -537,7 +537,7 @@ test('keeps the retained Admin workbench readable in both themes', async ({ page
   await expect(page.getByRole('heading', { level: 1, name: 'Settings' })).toBeVisible({ timeout: 15_000 })
   await expectReadable(page, page.getByLabel('New window (days)'))
   await expectReadable(page, page.getByRole('link', { name: /Admin overview/ }))
-  await expectReadable(page, page.locator('.settings-surface').first())
+  await expectReadable(page, page.locator('[data-slot="settings-block"]').first())
 
   // The mobile/tablet drawer keeps focus entry, scroll lock, Escape close, and
   // focus restoration while Dark is active.

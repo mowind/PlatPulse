@@ -118,7 +118,7 @@ export function NodePage() {
   const metricWindow = describeMetricWindow(metricHistory)
 
   return <section className={PAGE}>
-    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+    <div data-slot="node-detail-breadcrumb" className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-medium text-muted-foreground">
         <Link className="inline-flex min-h-11 min-w-11 items-center hover:text-foreground" to={'/networks/' + node.networkKey}>{'← ' + node.networkKey}</Link>
         <span aria-hidden="true">/</span>
@@ -129,7 +129,7 @@ export function NodePage() {
     {nodeQuery.isRefetchError && <p role="status" className="mt-2 text-sm text-destructive">Node refresh failed; showing the last successful Node data.</p>}
 
     <header className="mt-2 flex min-w-0 flex-col gap-3 md:flex-row md:items-start md:justify-between" aria-labelledby="node-detail-title">
-      <div className="flex min-w-0 flex-1 items-start gap-2">
+      <div data-slot="node-identity-main" className="flex min-w-0 flex-1 items-start gap-2">
         <NodeHealthMarker health={node.health} />
         <div className="min-w-0">
           <h1 id="node-detail-title" className="m-0 break-words text-lg font-semibold leading-tight md:text-2xl">{nodeDisplayName(node)}</h1>
@@ -187,7 +187,7 @@ export function NodePage() {
       </NodeInfoGroup>
     </div>
 
-    <section className="mt-4" aria-labelledby="node-metrics-title">
+    <section data-slot="node-metrics-section" className="mt-4" aria-labelledby="node-metrics-title">
       <header className="mb-2 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
         <h2 id="node-metrics-title" className="m-0 text-lg font-semibold">{metricWindow.title}</h2>
         <p className="m-0 text-[11px] text-muted-foreground">{metricWindow.detail}</p>
@@ -352,9 +352,9 @@ function NodeInfoGroup({ title, label, note, children }: { title: string; label:
 
 function NodeDisclosure({ title, summaryDetail, children }: { title: string; summaryDetail?: string; children: ReactNode }) {
   return (
-    <details className={cn('group mt-4 overflow-hidden', CARD)}>
+    <details data-slot="node-disclosure" className={cn('group mt-4 overflow-hidden', CARD)}>
       <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-baseline gap-x-3 gap-y-1 px-4 py-2.5 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
-        <span aria-hidden="true" className="text-muted-foreground transition-transform group-open:rotate-90">▸</span>
+        <span data-slot="node-disclosure-marker" aria-hidden="true" className="text-muted-foreground transition-transform group-open:rotate-90">▸</span>
         <span className="font-semibold">{title}</span>
         {summaryDetail && <span className="text-[11px] text-muted-foreground">{summaryDetail}</span>}
       </summary>
@@ -421,10 +421,10 @@ function NodeMetricCard({ label, unit, value, detail, tone, series, showLegend =
     : []
   const toneClass = TONE_TEXT[tone]
   return (
-    <CardX bordered={false} data-slot="node-metric-card" className={cn('min-w-0', CARD, className)} contentClassName="flex h-full min-w-0 flex-col gap-2">
+    <CardX bordered={false} role="article" data-slot="node-metric-card" className={cn('min-w-0', CARD, className)} contentClassName="flex h-full min-w-0 flex-col gap-2">
       <div className="flex min-w-0 items-start justify-between gap-3">
         <MetricCardHeading label={label} hint={unit} />
-        <strong className="min-w-0 break-words text-right text-lg font-bold leading-none tracking-tight tabular-nums">{value}</strong>
+        <strong data-slot="node-metric-value" className="min-w-0 break-words text-right text-lg font-bold leading-none tracking-tight tabular-nums">{value}</strong>
       </div>
       {detail && <p className="m-0 min-h-4 break-words text-[11px] text-muted-foreground">{detail}</p>}
       {showLegend && <MetricSeriesLegend label={label} series={series} toneClass={toneClass} />}
@@ -492,7 +492,7 @@ function MetricChart({ label, series, from, to, fixedMax, axisFormat, message, k
         const area = plots.length === 1 ? chartAreaPath(item.coordinates) : ''
         return <g key={item.label}>
           {area && <path d={area} fill={'url(#' + gradientId + ')'} />}
-          {line && <path className={cn('[vector-effect:non-scaling-stroke]', item.secondary ? 'fill-none stroke-cyan-500' : 'fill-none stroke-current')} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" d={line} />}
+          {line && <path data-slot="node-metric-chart-line" className={cn('[vector-effect:non-scaling-stroke]', item.secondary ? 'fill-none stroke-cyan-500' : 'fill-none stroke-current')} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" d={line} />}
           {item.coordinates.length === 1 && <circle className={cn('[vector-effect:non-scaling-stroke]', item.secondary ? 'fill-cyan-500 stroke-background' : 'fill-current stroke-background')} strokeWidth={1.5} cx={item.coordinates[0].x} cy={item.coordinates[0].y} r={index === 0 ? 4 : 3.5} />}
         </g>
       })}
@@ -501,10 +501,10 @@ function MetricChart({ label, series, from, to, fixedMax, axisFormat, message, k
         return item.coordinates.map((point, index) => {
           const height = Math.max(1, 142 - point.y)
           const x = Math.max(0, Math.min(600 - width, point.x - width / 2))
-          return <rect key={item.label + '-' + index} className={cn('opacity-75', item.secondary ? 'fill-cyan-500' : 'fill-current')} x={x} y={142 - height} width={width} height={height} rx={Math.min(2.5, width / 3)} />
+          return <rect key={item.label + '-' + index} data-slot="node-metric-chart-bar" className={cn('opacity-75', item.secondary ? 'fill-cyan-500' : 'fill-current')} x={x} y={142 - height} width={width} height={height} rx={Math.min(2.5, width / 3)} />
         })
       })}
-      {chartMessage && <text className="fill-muted-foreground text-[22px]" x="300" y="78" textAnchor="middle">{chartMessage}</text>}
+      {chartMessage && <text data-slot="node-metric-chart-empty" className="fill-muted-foreground text-[22px]" x="300" y="78" textAnchor="middle">{chartMessage}</text>}
     </svg>
     <div className="col-start-2 row-start-2 flex justify-between pt-1 text-[11px] tabular-nums text-muted-foreground" aria-hidden="true"><span>{seconds}s</span><span>0s</span></div>
   </div>

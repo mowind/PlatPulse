@@ -63,7 +63,7 @@ export default function LoginPage() {
           <h1 id="login-heading" className="text-lg font-semibold">
             Sign in to PlatPulse
           </h1>
-          <p className="mt-2 text-sm text-muted-foreground">
+          <p data-slot="login-hint" className="mt-2 text-sm text-muted-foreground">
             The Home dashboard is private by default. Sign in with your Owner
             or Viewer account.
           </p>
@@ -75,7 +75,7 @@ export default function LoginPage() {
             </Alert>
           )}
           {error && (
-            <Alert variant="destructive" className="mt-4">
+            <Alert variant="destructive" data-slot="form-error" className="mt-4">
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           )}

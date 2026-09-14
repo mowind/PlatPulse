@@ -109,7 +109,7 @@ export default function HomeDashboard({
       )}
 
       <div className="grid h-auto grid-cols-12 grid-rows-1 gap-2 p-4 md:h-58">
-        <div className="col-span-12 col-start-1 h-full md:col-span-6 md:col-start-7">
+        <div className="col-span-12 col-start-1 h-88 md:col-span-6 md:col-start-7 md:h-full">
           <GeoMapBoundary>
             <GeoWorldMap networks={networks} networkFilter={networkFilter} loading={loading} hasProjection={hasProjection} />
           </GeoMapBoundary>
@@ -213,6 +213,7 @@ function SummaryCard({
     <CardX
       hoverable
       bordered={false}
+      role="article"
       size="small"
       data-slot="summary-card"
       data-tone={tone}
@@ -228,7 +229,7 @@ function SummaryCard({
           <strong
             data-slot="summary-value"
             className={cn(
-              'text-md font-bold leading-none tracking-tight md:text-2xl',
+              'text-base font-bold leading-none tracking-tight md:text-2xl',
               tone === 'red' && value !== null && value > 0 && 'text-destructive',
             )}
           >
@@ -267,7 +268,7 @@ function HomeNodeCard({ network, node }: NodeRecord) {
       >
         <header className="flex min-w-0 items-center gap-2">
           <NodeHealthMarker health={node.health} />
-          <h2 className="min-w-0 flex-1 truncate text-sm font-bold">{nodeLabel(node)}</h2>
+          <h2 className="min-w-0 flex-1 truncate text-base font-bold">{nodeLabel(node)}</h2>
         </header>
         <p className="truncate text-[11px] text-muted-foreground">{network.displayName}</p>
         {diagnostic && (

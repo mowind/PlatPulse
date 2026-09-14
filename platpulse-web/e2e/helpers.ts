@@ -36,7 +36,7 @@ export async function expectNoHorizontalOverflow(page: Page) {
     const vw = document.documentElement.clientWidth || window.innerWidth
     const offenders: string[] = []
     let overflow = Math.max(0, document.documentElement.scrollWidth - vw)
-    const navToggle = document.querySelector<HTMLElement>('.nav-toggle')
+    const navToggle = document.querySelector<HTMLElement>('[data-slot="admin-nav-toggle"]')
     const mobileAdminDrawerClosed = Boolean(
       navToggle &&
       getComputedStyle(navToggle).display !== 'none' &&
@@ -46,7 +46,7 @@ export async function expectNoHorizontalOverflow(page: Page) {
       const style = getComputedStyle(el)
       const rect = el.getBoundingClientRect()
       if (style.display === 'none' || style.visibility === 'hidden' || rect.width === 0 || rect.height === 0) continue
-      if (mobileAdminDrawerClosed && el.closest('.admin-nav')) continue
+      if (mobileAdminDrawerClosed && el.closest('[data-slot="admin-nav"]')) continue
       let clippedByAncestor = false
       for (let parent = el.parentElement; parent; parent = parent.parentElement) {
         const overflowX = getComputedStyle(parent).overflowX
@@ -83,10 +83,10 @@ export async function expectNoHorizontalOverflow(page: Page) {
  *  meets the row's right edge, and a progress track spans the full row
  *  (issue #140). Returns the offending rows as the failure payload. */
 export async function expectMetricRowsAligned(scope: Locator) {
-  const offenders = await scope.locator('.metric-row').evaluateAll((rows) =>
+  const offenders = await scope.locator('[data-slot="metric-row"]').evaluateAll((rows) =>
     rows.flatMap((row) => {
-      const label = row.querySelector('.metric-row-label')
-      const value = row.querySelector('.metric-row-value')
+      const label = row.querySelector('[data-slot="metric-row-label"]')
+      const value = row.querySelector('[data-slot="metric-row-value"]')
       if (!label || !value) return ['a metric row is missing its label or value']
       const labelBox = label.getBoundingClientRect()
       const valueBox = value.getBoundingClientRect()
@@ -94,7 +94,7 @@ export async function expectMetricRowsAligned(scope: Locator) {
       const sameLine = Math.abs(labelBox.top - valueBox.top) <= 8
       const valueRightAligned = Math.abs(valueBox.right - rowBox.right) <= 1.5
       const valueRightOfLabel = valueBox.left >= labelBox.right - 1
-      const progress = row.querySelector('.metric-row-progress')
+      const progress = row.querySelector('[data-slot="progress-thin"]')
       const progressFullWidth = progress === null || Math.abs(progress.getBoundingClientRect().width - rowBox.width) <= 1.5
       return sameLine && valueRightAligned && valueRightOfLabel && progressFullWidth
         ? []
@@ -107,7 +107,7 @@ export async function expectMetricRowsAligned(scope: Locator) {
 /** Open the Node Detail Peer diagnostics disclosure by pointer or keyboard
  *  and assert it opened. */
 export async function openPeerDisclosure(page: Page, via: 'click' | 'keyboard' = 'click') {
-  const disclosure = page.locator('details.node-disclosure', { hasText: 'Peer diagnostics' })
+  const disclosure = page.locator('details[data-slot="node-disclosure"]', { hasText: 'Peer diagnostics' })
   const summary = disclosure.locator('summary')
   if (via === 'keyboard') {
     await summary.focus()

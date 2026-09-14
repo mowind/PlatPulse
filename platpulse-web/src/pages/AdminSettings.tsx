@@ -55,12 +55,12 @@ export default function AdminSettings() {
   const csrfToken = status.state === 'authenticated' ? status.csrfToken : ''
 
   return (
-    <section className="mx-auto flex w-full min-w-0 max-w-[1280px] flex-col gap-4 pb-12">
+    <section data-slot="settings-page" className="mx-auto flex w-full min-w-0 max-w-[1280px] flex-col gap-4 pb-12">
       <p className="m-0">
         <Link className={TEXT_LINK} to="/admin">← Admin overview</Link>
       </p>
       <h1 className="text-lg font-semibold break-words">Settings</h1>
-      <div className="grid max-w-[58rem] gap-3">
+      <div data-slot="settings-sections" className="grid max-w-[58rem] gap-3">
         <HistoryWindowSettings generation={generation} csrfToken={csrfToken} />
         <SiteAccessSettings generation={generation} csrfToken={csrfToken} />
         <GeoProviderSettings generation={generation} csrfToken={csrfToken} />
@@ -135,6 +135,7 @@ function HistoryWindowSettings({ generation, csrfToken }: SettingsSectionProps) 
   return (
     <CardX
       role="article"
+      data-slot="settings-block"
       aria-labelledby="history-window-heading"
       bordered={false}
       className={CARD}
@@ -299,6 +300,7 @@ function SiteAccessSettings({ generation, csrfToken }: SettingsSectionProps) {
   return (
     <CardX
       role="article"
+      data-slot="settings-block"
       aria-labelledby="site-access-heading"
       bordered={false}
       className={CARD}
@@ -447,6 +449,7 @@ function GeoProviderSettings({ generation, csrfToken }: SettingsSectionProps) {
   return (
     <CardX
       role="article"
+      data-slot="settings-block"
       aria-labelledby="geo-provider-heading"
       bordered={false}
       className={CARD}

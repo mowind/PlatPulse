@@ -19,7 +19,7 @@ async function measureAdminWorkbench(page: Page) {
     const header = document.querySelector('header')
     const nav = document.querySelector('nav[aria-label="Admin"]')
     const main = document.querySelector('main')
-    const pageContent = main?.querySelector(':scope > .page')
+    const pageContent = main?.querySelector('[data-slot="admin-page"]')
     const heading = main?.querySelector('h1')
     if (!header || !nav || !main || !pageContent || !heading) {
       throw new Error('Admin workbench geometry surfaces are missing')
@@ -36,7 +36,7 @@ async function measureAdminWorkbench(page: Page) {
       page: box(pageContent),
       heading: box(heading),
       headingFontSize: Number.parseFloat(getComputedStyle(heading).fontSize),
-      decorationCount: document.querySelectorAll('.background-decoration').length,
+      decorationCount: document.querySelectorAll('[data-slot="background-decoration"]').length,
     }
   })
 }
@@ -53,7 +53,7 @@ test.describe('Authenticated shell', () => {
     await expect(page.getByText('Healthy Nodes', { exact: true })).toBeVisible()
     await expect(page.getByText('Attention', { exact: true })).toBeVisible()
     await expect(page.getByText('Networks', { exact: true })).toBeVisible()
-    await expect(page.getByRole('group', { name: 'Network filter' })).toBeVisible()
+    await expect(page.getByRole('tablist', { name: 'Network filter' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'All Networks' })).toHaveAttribute('aria-pressed', 'true')
     await expect(page.getByRole('combobox', { name: 'Sort' })).toBeVisible()
     await expect(page.getByRole('link', { name: 'Admin', exact: true })).toHaveAttribute('href', '/admin')
@@ -283,9 +283,9 @@ test.describe('Authenticated shell', () => {
     await expect(page.getByRole('link', { name: /Admin overview/ })).toBeVisible()
 
     const geometry = await page.evaluate(() => {
-      const heading = document.querySelector('.settings-page > h1')
-      const sections = document.querySelector('.settings-sections')
-      const breadcrumb = document.querySelector('.settings-page > p:first-child a')
+      const heading = document.querySelector('[data-slot="settings-page"] > h1')
+      const sections = document.querySelector('[data-slot="settings-sections"]')
+      const breadcrumb = document.querySelector('[data-slot="settings-page"] > p:first-child a')
       if (!heading || !sections || !breadcrumb) throw new Error('Settings geometry surfaces are missing')
       const headingBox = heading.getBoundingClientRect()
       const sectionsBox = sections.getBoundingClientRect()

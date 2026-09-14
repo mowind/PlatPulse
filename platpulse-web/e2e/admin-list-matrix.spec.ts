@@ -282,7 +282,7 @@ type RowGeometry = {
 
 async function readAgentsGeometry(page: Page): Promise<RowGeometry[]> {
   return page
-    .locator('table.agent-table tbody tr:not(.node-detail-row)')
+    .locator('table[data-slot="agent-table"] tbody tr:not([data-slot="detail-row"])')
     .evaluateAll((rows) =>
       rows.map((row) => {
         const box = (element: Element) => {
@@ -319,8 +319,8 @@ test.describe('SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix', () => {
     for (const width of [1440, 1920, 390]) {
       await page.setViewportSize({ width, height: 1000 })
       await page.goto('/admin/agents')
-      await expect(page.locator('table.agent-table thead th')).toHaveText(SIX_HEADERS)
-      await expect(page.locator('table.agent-table tbody tr:not(.node-detail-row)')).toHaveCount(12)
+      await expect(page.locator('table[data-slot="agent-table"] thead th')).toHaveText(SIX_HEADERS)
+      await expect(page.locator('table[data-slot="agent-table"] tbody tr:not([data-slot="detail-row"])')).toHaveCount(12)
 
       const rows = await readAgentsGeometry(page)
       expect(rows).toHaveLength(12)
@@ -361,14 +361,14 @@ test.describe('SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix', () => {
       }
 
       // Full Agent ID stays reachable without disturbing the six columns.
-      const firstRow = page.locator('table.agent-table tbody tr:not(.node-detail-row)').first()
+      const firstRow = page.locator('table[data-slot="agent-table"] tbody tr:not([data-slot="detail-row"])').first()
       await firstRow.getByRole('button', { name: 'Show full Agent ID' }).click()
-      await expect(firstRow.locator('code.agent-full-id')).toHaveText(rows[0].id)
+      await expect(firstRow.locator('code[data-slot="agent-full-id"]')).toHaveText(rows[0].id)
       await expect(firstRow.locator('> *')).toHaveCount(6)
 
       // Diagnostics keeps only the summary; the full findings open below.
       const riskyRow = page
-        .locator('table.agent-table tbody tr:not(.node-detail-row)')
+        .locator('table[data-slot="agent-table"] tbody tr:not([data-slot="detail-row"])')
         .filter({ hasText: 'store fatal' })
         .first()
       await expect(riskyRow).toContainText('Recorded evidence')
@@ -377,14 +377,14 @@ test.describe('SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix', () => {
       await toggle.click()
       await expect(toggle).toHaveAttribute('aria-expanded', 'true')
       const detailRow = riskyRow.locator('xpath=following-sibling::tr[1]')
-      await expect(detailRow).toHaveClass(/node-detail-row/)
+      await expect(detailRow).toHaveAttribute('data-slot', 'detail-row')
       await expect(detailRow.locator('td')).toHaveAttribute('colspan', '6')
       await expect(detailRow).toContainText('Dropped sequence range')
       await expect(detailRow).toContainText('Host snapshot')
       await expect(riskyRow.locator('> *')).toHaveCount(6)
       await page.keyboard.press('Escape')
       await expect(toggle).toHaveAttribute('aria-expanded', 'false')
-      await expect(page.locator('table.agent-table tr.node-detail-row')).toHaveCount(0)
+      await expect(page.locator('table[data-slot="agent-table"] tr[data-slot="detail-row"]')).toHaveCount(0)
 
       await expectNoHorizontalOverflow(page)
     }
@@ -397,7 +397,7 @@ test.describe('SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix', () => {
         : agent,
     )
     await page.reload()
-    await expect(page.locator('table.agent-table tbody tr:not(.node-detail-row)')).toHaveCount(12)
+    await expect(page.locator('table[data-slot="agent-table"] tbody tr:not([data-slot="detail-row"])')).toHaveCount(12)
     const refreshed = (await readAgentsGeometry(page)).find((row) => row.id.endsWith('000000000001'))
     expect(refreshed?.text).toMatch(/Recorded gap intervals\s*777/)
     expect(refreshed?.text).toContain('1 retained Node')
@@ -413,14 +413,14 @@ test.describe('SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix', () => {
     for (const width of [1440, 1920, 390]) {
       await page.setViewportSize({ width, height: 1000 })
       await page.goto('/admin/access/audit')
-      await expect(page.locator('table.audit-table thead th')).toHaveText([
+      await expect(page.locator('table[data-slot="audit-table"] thead th')).toHaveText([
         'Time',
         'Event',
         'Actor',
         'Target',
         'Details',
       ])
-      const items = page.locator('table.audit-table tbody tr:not(.node-detail-row)')
+      const items = page.locator('table[data-slot="audit-table"] tbody tr:not([data-slot="audit-detail-row"])')
       await expect(items).toHaveCount(3)
       for (let index = 0; index < 3; index += 1) {
         await expect(items.nth(index).locator('> *')).toHaveCount(5)
@@ -434,7 +434,7 @@ test.describe('SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix', () => {
       await actionCell.getByRole('button', { name: 'Show details' }).focus()
       await page.keyboard.press('Enter')
       const detailRow = firstItem.locator('xpath=following-sibling::tr[1]')
-      await expect(detailRow).toHaveClass(/node-detail-row/)
+      await expect(detailRow).toHaveAttribute('data-slot', 'audit-detail-row')
       await expect(detailRow.locator('td')).toHaveAttribute('colspan', '5')
       await expect(detailRow).toContainText('operator supplied rename reason')
       await expect(detailRow).toContainText(
@@ -449,7 +449,7 @@ test.describe('SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix', () => {
 
       await page.keyboard.press('Escape')
       await expect(firstItem.getByRole('button', { name: 'Show details' })).toBeVisible()
-      await expect(page.locator('table.audit-table tr.node-detail-row')).toHaveCount(0)
+      await expect(page.locator('table[data-slot="audit-table"] tr[data-slot="audit-detail-row"]')).toHaveCount(0)
       await expectNoHorizontalOverflow(page)
     }
   })
@@ -461,7 +461,7 @@ test.describe('SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix', () => {
     await mockAdminApi(page, () => [])
     await page.goto('/admin')
 
-    const header = page.locator('.header-status')
+    const header = page.locator('[data-slot="header-status"]')
     await expect(header).toContainText('Last good snapshot')
     await expect(header.locator('time')).toHaveAttribute('datetime', OVERVIEW.generated_at)
     const snapshotRelative = ((await header.textContent()) ?? '')
@@ -469,14 +469,14 @@ test.describe('SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix', () => {
       .replace('Refresh', '')
       .trim()
 
-    const known = page.locator('.attention-item', { hasText: 'agent_report_gap' })
+    const known = page.locator('[data-slot="attention-item"]', { hasText: 'agent_report_gap' })
     await expect(known).toContainText('Last observed')
     await expect(known.locator('time')).toHaveAttribute(
       'datetime',
       '2026-09-08T07:59:30Z',
     )
 
-    const unknown = page.locator('.attention-item', { hasText: 'agent_security_event' })
+    const unknown = page.locator('[data-slot="attention-item"]', { hasText: 'agent_security_event' })
     await expect(unknown).toContainText('Observation time unknown')
     await expect(unknown.locator('time')).toHaveCount(0)
     if (snapshotRelative.length > 0) {

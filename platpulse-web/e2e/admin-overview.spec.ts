@@ -101,7 +101,7 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
     await expect(page.getByRole('heading', { level: 2, name: 'Attention queue' })).toBeVisible()
     await expect(page.getByRole('heading', { level: 2, name: 'Node Health Summary' })).toBeVisible()
     await expect(page.getByRole('heading', { level: 2, name: 'Agent inventory' })).toBeVisible()
-    const transitions = await page.locator('.admin-overview *').evaluateAll((elements) =>
+    const transitions = await page.locator('[data-slot="admin-overview"] *').evaluateAll((elements) =>
       elements.map((element) => getComputedStyle(element).transitionDuration),
     )
     expect(transitions.every((duration) => duration === '0s')).toBe(true)
@@ -116,7 +116,7 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
 
     // Expand Node B (private)'s component details.
     await page.getByRole('button', { name: 'Node B (private)' }).click()
-    await expect(page.locator('.node-detail-row')).toBeVisible()
+    await expect(page.locator('[data-slot="detail-row"]')).toBeVisible()
     await expect(page.getByText('platon/1.5.1 · 0 namespaces')).toBeVisible()
 
     try {
@@ -130,13 +130,13 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
       ).toBeVisible()
 
       // Expansion and URL state survive the authorized refetch.
-      await expect(page.locator('.node-detail-row')).toBeVisible()
+      await expect(page.locator('[data-slot="detail-row"]')).toBeVisible()
       await expect(page).toHaveURL(/\/admin$/)
 
       // Escape collapses the detail row; focus stays on the toggle.
       await page.getByRole('button', { name: 'Node B (private)' }).focus()
       await page.keyboard.press('Escape')
-      await expect(page.locator('.node-detail-row')).toHaveCount(0)
+      await expect(page.locator('[data-slot="detail-row"]')).toHaveCount(0)
       await expect(page.getByRole('button', { name: 'Node B (private)' })).toBeFocused()
       await expectNoHorizontalOverflow(page)
     } finally {

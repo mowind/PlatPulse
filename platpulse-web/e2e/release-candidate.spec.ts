@@ -488,7 +488,7 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expect(page.getByRole('heading', { level: 1, name: 'Node A' })).toBeVisible({ timeout: 15_000 })
 
     await expect(page.getByText('Process uptime')).toBeVisible()
-    const observationPanel = page.locator('.node-info-group').first()
+    const observationPanel = page.locator('[data-slot="node-info-group"]').first()
     await expect.poll(() => observationPanel.evaluate((card) => getComputedStyle(card, '::before').content)).toBe('none')
     // Continuous reading (issue #149): every group is visible in one page and
     // no Details/Network tab survives.
@@ -499,9 +499,9 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     // The accepted A container (issue #151): an uncarded identity block, four
     // summary tiles, and three parallel observation panels with the Node Data
     // directory merged into the process panel.
-    await expect(page.locator('.node-hero-card')).toHaveCount(0)
-    await expect(page.locator('.node-info-group')).toHaveCount(3)
-    await expect(page.getByLabel('Node key summary').locator('.node-summary-tile')).toHaveCount(4)
+    await expect(page.locator('[data-slot="node-hero-card"]')).toHaveCount(0)
+    await expect(page.locator('[data-slot="node-info-group"]')).toHaveCount(3)
+    await expect(page.getByLabel('Node key summary').locator('[data-slot="node-summary-tile"]')).toHaveCount(4)
     const chainGroup = page.getByLabel('Node chain and consensus observations')
     await expect(page.getByLabel('Node key summary').getByText('Head', { exact: true })).toBeVisible()
     await expect(chainGroup.getByText('QC', { exact: true })).toBeVisible()
@@ -516,7 +516,7 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
       await expect(resources.getByText(label, { exact: true })).toBeVisible()
     }
     // Process CPU + process memory + the merged Node Data directory.
-    await expect(resources.locator('.metric-row-progress')).toHaveCount(3)
+    await expect(resources.locator('[data-slot="progress-thin"]')).toHaveCount(3)
     await expectMetricRowsAligned(resources)
     await expectMetricRowsAligned(chainGroup)
     await expect(page.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeVisible()
@@ -525,12 +525,12 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
       await expect(page.getByRole('heading', { level: 3, name: heading })).toBeVisible()
     }
     await expect(page.getByText('2.00 s')).toBeVisible()
-    const metrics = page.locator('.node-metrics-section')
+    const metrics = page.locator('[data-slot="node-metrics-section"]')
     await expect(metrics.getByRole('img', { name: /line chart over the last 60 seconds/ })).toHaveCount(4)
     await expect(metrics.getByRole('img', { name: /bar chart over the last 60 seconds/ })).toHaveCount(2)
-    await expect(metrics.locator('.node-metric-chart-bar')).not.toHaveCount(0)
+    await expect(metrics.locator('[data-slot="node-metric-chart-bar"]')).not.toHaveCount(0)
     await expect(metrics.getByText('60s', { exact: true })).toHaveCount(6)
-    const cardSizes = await metrics.locator('.node-metric-card').evaluateAll((cards) => cards.map((card) => {
+    const cardSizes = await metrics.locator('[data-slot="node-metric-card"]').evaluateAll((cards) => cards.map((card) => {
       const box = card.getBoundingClientRect()
       return { width: Math.round(box.width), height: Math.round(box.height) }
     }))
@@ -539,7 +539,7 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     expect(new Set(cardSizes.map(({ height }) => height)).size, JSON.stringify(cardSizes)).toBe(1)
     expect(Math.max(...cardSizes.map(({ height }) => height))).toBeLessThanOrEqual(270)
     await expect(metrics.getByText('No samples in the last minute', { exact: true })).toHaveCount(0)
-    await expect.poll(() => metrics.locator('.node-metric-card').first().evaluate((card) => getComputedStyle(card, '::before').content)).toBe('none')
+    await expect.poll(() => metrics.locator('[data-slot="node-metric-card"]').first().evaluate((card) => getComputedStyle(card, '::before').content)).toBe('none')
     await expect(page.getByText('Bounded Block History')).toHaveCount(0)
     await expect(page.getByRole('button', { name: 'Export public history' })).toHaveCount(0)
     await openPeerDisclosure(page)

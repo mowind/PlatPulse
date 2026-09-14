@@ -212,7 +212,7 @@ test.describe('SCN-HOME-RESPONSIVE-ACCESSIBILITY / live refresh transport state'
     await expect(
       page.getByRole('link', { name: /^Healthy Node H — Producing Card/ }).getByText('424,242', { exact: true }),
     ).toHaveCount(1)
-    await expect(page.locator('.dashboard-node-card .status-badge')).toHaveCount(0)
+    await expect(page.locator('[data-slot="node-card"] [data-slot="status-badge"]')).toHaveCount(0)
     expect(await realtimeOpened(page)).toBe(1)
     await expectNoHorizontalOverflow(page)
   })

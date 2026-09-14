@@ -149,7 +149,7 @@ function AgentIdentityAccess({ agentId }: { agentId: string }) {
       </Button>
       {revealed && (
         <div id={fullIdPanelId} className="flex min-w-0 flex-col items-start gap-2">
-          <code className="break-all text-[11px]">{agentId}</code>
+          <code data-slot="agent-full-id" className="break-all text-[11px]">{agentId}</code>
           <AgentIdCopyControl agentId={agentId} />
         </div>
       )}
@@ -949,7 +949,7 @@ function CredentialsPanel({
           {agent.credentials.map((credential) => {
             const state = credentialStatus(credential)
             return (
-              <li key={credential.credential_id} className="space-y-1 rounded-sm border border-border/60 p-2">
+              <li key={credential.credential_id} data-slot="credential-item" className="space-y-1 rounded-sm border border-border/60 p-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="break-all text-[11px]">{credential.credential_id}</span>
                   <StatusBadge status={state.label} tone={state.tone} />

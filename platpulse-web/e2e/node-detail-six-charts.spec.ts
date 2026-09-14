@@ -34,7 +34,7 @@ const metricsRoute = nodeRoute + '/metrics'
 
 /** Cycle the production theme control to the requested explicit theme. */
 async function setTheme(page: Page, theme: Theme) {
-  const button = page.locator('.theme-toggle')
+  const button = page.locator('[data-slot="theme-toggle"]')
   const target = theme === 'light' ? 'Light' : 'Dark'
   for (let step = 0; step < 4; step += 1) {
     const label = (await button.getAttribute('aria-label')) ?? ''
@@ -118,10 +118,10 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
               return element ? element.getBoundingClientRect().top + window.scrollY : Number.NaN
             }
             return {
-              identity: top('.node-identity-main'),
+              identity: top('[data-slot="node-identity-main"]'),
               summary: top('[aria-label="Node key summary"]'),
-              metrics: top('.node-metrics-section'),
-              peer: top('details.node-disclosure'),
+              metrics: top('[data-slot="node-metrics-section"]'),
+              peer: top('details[data-slot="node-disclosure"]'),
             }
           })
           expect(order.identity, JSON.stringify(order)).toBeLessThan(order.summary)
@@ -131,10 +131,10 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
           // The accepted A container (issue #151): an uncarded identity block,
           // four summary tiles, and three parallel observation panels that sit
           // on one row at desktop width and stack to one column at <=48rem.
-          await expect(page.locator('.node-hero-card')).toHaveCount(0)
-          await expect(page.getByLabel('Node key summary').locator('.node-summary-tile')).toHaveCount(4)
-          await expect(page.locator('.node-info-group')).toHaveCount(3)
-          const panelBoxes = await page.locator('.node-info-group').evaluateAll((nodes) => nodes.map((node) => {
+          await expect(page.locator('[data-slot="node-hero-card"]')).toHaveCount(0)
+          await expect(page.getByLabel('Node key summary').locator('[data-slot="node-summary-tile"]')).toHaveCount(4)
+          await expect(page.locator('[data-slot="node-info-group"]')).toHaveCount(3)
+          const panelBoxes = await page.locator('[data-slot="node-info-group"]').evaluateAll((nodes) => nodes.map((node) => {
             const box = node.getBoundingClientRect()
             return { top: Math.round(box.top), left: Math.round(box.left) }
           }))
@@ -144,38 +144,38 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             expect(new Set(panelBoxes.map((box) => box.left)).size, JSON.stringify(panelBoxes)).toBe(1)
           }
 
-          const metrics = page.locator('.node-metrics-section')
+          const metrics = page.locator('[data-slot="node-metrics-section"]')
           await expect(metrics.getByRole('img', { name: /line chart over the last 60 seconds/ })).toHaveCount(4)
           await expect(metrics.getByRole('img', { name: /bar chart over the last 60 seconds/ })).toHaveCount(2)
-          expect(await metrics.locator('.node-metric-card h3').allTextContents()).toEqual([...CHART_HEADINGS])
+          expect(await metrics.locator('[data-slot="node-metric-card"] h3').allTextContents()).toEqual([...CHART_HEADINGS])
 
           if (scenario === 'normal') {
-            await expect(metrics.locator('.node-metric-chart-empty')).toHaveCount(0)
+            await expect(metrics.locator('[data-slot="node-metric-chart-empty"]')).toHaveCount(0)
             // Process CPU + process memory + two direction pairs = six lines.
-            await expect(metrics.locator('.node-metric-chart-line')).toHaveCount(6)
+            await expect(metrics.locator('[data-slot="node-metric-chart-line"]')).toHaveCount(6)
           }
           if (scenario === 'unknown') {
             await expect(page.getByLabel('Node key summary').getByText('Unknown').first()).toBeVisible()
-            await expect(metrics.locator('.node-metric-chart-empty')).toHaveCount(6)
-            await expect(metrics.locator('.node-metric-value').first()).toHaveText('Unknown')
+            await expect(metrics.locator('[data-slot="node-metric-chart-empty"]')).toHaveCount(6)
+            await expect(metrics.locator('[data-slot="node-metric-value"]').first()).toHaveText('Unknown')
           }
           if (scenario === 'stale') {
             await expect(page.getByText('Latest observation is stale')).toBeVisible()
-            await expect(metrics.locator('.node-metric-chart-empty')).toHaveCount(6)
+            await expect(metrics.locator('[data-slot="node-metric-chart-empty"]')).toHaveCount(6)
           }
           if (scenario === 'single-cpu-failure') {
             const cpuCard = metrics.getByRole('article').filter({ has: page.getByRole('heading', { level: 3, name: 'Process CPU' }) })
-            await expect(cpuCard.locator('.node-metric-chart-empty')).toHaveCount(1)
-            await expect(cpuCard.locator('.node-metric-chart-line')).toHaveCount(0)
-            await expect(cpuCard.locator('.node-metric-value')).toHaveText(/%$/)
+            await expect(cpuCard.locator('[data-slot="node-metric-chart-empty"]')).toHaveCount(1)
+            await expect(cpuCard.locator('[data-slot="node-metric-chart-line"]')).toHaveCount(0)
+            await expect(cpuCard.locator('[data-slot="node-metric-value"]')).toHaveText(/%$/)
             await expect(cpuCard.getByText(/last-good value retained/)).toBeVisible()
             const hostCard = metrics.getByRole('article').filter({ has: page.getByRole('heading', { level: 3, name: 'Host network' }) })
-            await expect(hostCard.locator('.node-metric-chart-line')).toHaveCount(2)
-            await expect(hostCard.locator('.node-metric-chart-empty')).toHaveCount(0)
+            await expect(hostCard.locator('[data-slot="node-metric-chart-line"]')).toHaveCount(2)
+            await expect(hostCard.locator('[data-slot="node-metric-chart-empty"]')).toHaveCount(0)
           }
 
           // Disclosure is keyboard-operable in both directions.
-          const peerDisclosure = page.locator('details.node-disclosure', { hasText: 'Peer diagnostics' })
+          const peerDisclosure = page.locator('details[data-slot="node-disclosure"]', { hasText: 'Peer diagnostics' })
           const peerSummary = peerDisclosure.locator('summary')
           await peerSummary.focus()
           await page.keyboard.press('Enter')
@@ -186,7 +186,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
           // Accessibility, touch targets, and no page-level horizontal scroll.
           await expectVisibleInteractiveTargets(page)
           await expectNoHorizontalOverflow(page)
-          await expect(page.locator('.background-decoration-grid')).toHaveCount(1)
+          await expect(page.locator('[data-slot="background-decoration-grid"]')).toHaveCount(1)
 
           // The fixed-position background is only correct from the top of the
           // page, so scroll there before the full-page evidence screenshot.
@@ -199,7 +199,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
           const hoverCapable = await page.evaluate(
             () => matchMedia('(hover: hover) and (pointer: fine)').matches,
           )
-          const chartCard = metrics.locator('.node-metric-card').first()
+          const chartCard = metrics.locator('[data-slot="node-metric-card"]').first()
           await page.mouse.move(2, 2)
           const restingShadow = await chartCard.evaluate((card) => getComputedStyle(card).boxShadow)
           await chartCard.hover()
@@ -221,7 +221,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
 
           // The observation panels and the diagnostic disclosures are the
           // other card classes on this page; they react in both themes too.
-          const observationPanel = page.locator('.node-info-group').first()
+          const observationPanel = page.locator('[data-slot="node-info-group"]').first()
           await page.mouse.move(2, 2)
           const panelResting = await observationPanel.evaluate((card) => getComputedStyle(card).boxShadow)
           await observationPanel.hover()
@@ -232,7 +232,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
 
           // Low-frequency technical details open by keyboard and stay in the
           // Public Projection.
-          const technicalDisclosure = page.locator('details.node-disclosure', { hasText: 'Identifiers and technical details' })
+          const technicalDisclosure = page.locator('details[data-slot="node-disclosure"]', { hasText: 'Identifiers and technical details' })
           await technicalDisclosure.locator('summary').focus()
           await page.keyboard.press('Enter')
           await expect(technicalDisclosure).toHaveAttribute('open', '')
@@ -243,7 +243,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
           // Desktop 1280 lays the six charts out three columns by two rows.
           const viewportWidth = page.viewportSize()?.width ?? 0
           if (viewportWidth >= 1024) {
-            const rows = await metrics.locator('.node-metric-card').evaluateAll((cards) => cards.map((card) => {
+            const rows = await metrics.locator('[data-slot="node-metric-card"]').evaluateAll((cards) => cards.map((card) => {
               const box = card.getBoundingClientRect()
               return { top: Math.round(box.top), left: Math.round(box.left) }
             }))
@@ -263,9 +263,9 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
     await openNodeDetail(page)
     // Chromium reports a removed transition as a near-zero duration
     // ("1e-05s") rather than the literal "0s".
-    const transition = await page.locator('.node-disclosure-title').first().evaluate((element) => getComputedStyle(element, '::before').transitionDuration)
+    const transition = await page.locator('[data-slot="node-disclosure-marker"]').first().evaluate((element) => getComputedStyle(element).transitionDuration)
     expect(parseFloat(transition)).toBeLessThan(0.001)
-    const chartTransition = await page.locator('.node-metric-card').first().evaluate((card) => getComputedStyle(card).transitionDuration)
+    const chartTransition = await page.locator('[data-slot="node-metric-card"]').first().evaluate((card) => getComputedStyle(card).transitionDuration)
     expect(parseFloat(chartTransition)).toBeLessThan(0.001)
     await expectNoHorizontalOverflow(page)
   })
@@ -273,7 +273,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
   test('the breadcrumb keeps public Node Detail navigation intact', async ({ page }) => {
     await loginAs(page)
     await openNodeDetail(page)
-    await page.locator('.node-detail-breadcrumb a').click()
+    await page.locator('[data-slot="node-detail-breadcrumb"] a').click()
     await expect(page).toHaveURL(/\/networks\//)
     await expect(page.getByRole('heading', { level: 1 })).toBeVisible({ timeout: 15_000 })
     await page.goBack()

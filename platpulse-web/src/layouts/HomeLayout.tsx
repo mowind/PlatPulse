@@ -98,7 +98,7 @@ function HomeLayoutContent() {
 
   const realtime = usePublicRealtime(handleReset, !resetting, generation)
   return (
-    <div className="flex min-h-screen flex-col">
+    <div data-slot="home-shell" className="flex min-h-screen flex-col">
       <BackgroundDecoration />
       <header
         data-slot="app-header"

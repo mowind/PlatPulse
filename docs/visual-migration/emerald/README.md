@@ -69,11 +69,11 @@ call site, because PlatPulse's `countryCode` is uppercase.
 | `ui/progress-thin/ProgressThin.vue` | `components/ui/progress-thin.tsx` | verbatim + unknown-percentage rule |
 | `ui/spinner/Spinner.vue` | `components/ui/spinner.tsx` | verbatim |
 | `ui/empty/Empty.vue` | `components/ui/empty.tsx` | verbatim |
-| `ui/back-top/BackTop.vue` | `components/ui/back-top.tsx` | planned |
-| `ui/data-tooltip/DataTooltip.vue` | `components/ui/data-tooltip.tsx` | planned |
-| `ui/dialog/*` (reka-ui) | `components/ui/dialog.tsx` | planned |
-| `ui/tabs/*` (reka-ui) | `components/ui/tabs.tsx` | planned |
-| `ui/sonner/Sonner.vue` | `components/ui/toaster.tsx` (`sonner`) | planned |
+| `ui/data-tooltip/DataTooltip.vue` | `components/ui/data-tooltip.tsx` | ported (behaviour verbatim) |
+| `ui/dialog/*` (reka-ui) | `components/ui/dialog.tsx` (Radix) | ported |
+| `ui/tabs/*` (reka-ui) | `components/ui/tabs.tsx` (Radix) | ported |
+| `ui/back-top/BackTop.vue` | not adopted (PlatPulse has no back-to-top affordance) | deviation |
+| `ui/sonner/Sonner.vue` | not adopted (PlatPulse's notices are persistent, never transient) | deviation |
 | `ui/avatar/*` | not adopted (no PlatPulse use) | n/a |
 | `components/Background.vue` | `components/BackgroundDecoration.tsx` | ported verbatim (fixed 1300px wash) |
 | `components/Header.vue` | `layouts/HomeLayout.tsx` header | ported (h-14 sticky, blur on scroll) |
@@ -83,9 +83,9 @@ call site, because PlatPulse's `countryCode` is uppercase.
 | `components/NodeCard.vue` | `components/HomeDashboard.tsx` `HomeNodeCard` | ported |
 | `components/NodeEarthMaps.vue` + `utils/echartsWorldMap.ts` | `components/GeoWorldMap.tsx` + `components/mapChartOption.ts` on `echarts` | ported (option literal; geometry pinned locally) |
 | `components/NodeEarthGlobe.vue` (`cobe`) | not adopted — `maps` mode only | deviation |
-| `views/HomeView.vue` | `components/HomeDashboard.tsx` | planned |
-| `views/InstanceDetail.vue` | `pages/HomePages.tsx` Node Page | planned |
-| — | Admin pages (no upstream counterpart) | Emerald tokens/typography only |
+| `views/HomeView.vue` | `components/HomeDashboard.tsx` | ported |
+| `views/InstanceDetail.vue` | `pages/HomePages.tsx` Node Page | adapted (see deviation 16) |
+| `—` | Admin pages (no upstream counterpart) | Emerald tokens, primitives, spacing and table rules only |
 
 ## 4. Deviation register
 
@@ -109,6 +109,10 @@ the reason. Nothing here is a silent divergence.
 | 13 | The map prints the exact per-country Peer count in the scatter label, as upstream does, instead of PlatPulse's previous four-glyph abbreviation. | Upstream's label formatter is the raw aggregate. Bug-for-bug fidelity was chosen over the earlier abbreviation, which is a deliberate quality change to disclose: a count of five or more digits can overrun the 14px disc. |
 | 14 | The map's per-country keyboard activation is replaced by a screen-reader country list; the chart container is a labelled `role="img"`. | ECharts paints into a canvas with no per-country element, so upstream's map has no keyboard path at all. Every observed country, its count, its stale count and whether it could be plotted remain available as text, and abnormal states stay announced. This is a different accessibility mechanism, not a claim of parity. |
 | 15 | ECharts is loaded on demand (dynamic import) rather than in the entry chunk. | The library is ~530 KiB minified; only Home needs the map. Login, Admin, Network and Node Detail keep the previous bundle size. |
+
+| 16 | The Node Detail page keeps PlatPulse's accepted "A container": an uncarded identity block, four summary tiles and three parallel observation panels, rather than upstream's single-instance card stack. | Upstream's InstanceDetail is built for one Komari instance; PlatPulse's page carries six 60-second charts, per-dimension collection/freshness/value state and public/Admin key partitioning. The visual language (tokens, card shell, type scale, spacing, table and chip treatment) is upstream's; the information architecture is the one the project already accepted in ADR-free design review and asserts in tests. |
+| 17 | Every page is now on one stylesheet: `src/index.css` (5,386 lines) and `src/pages/AdminOverview.css` (291 lines) are deleted. | Built CSS fell from 170.31 kB to 70.17 kB (gzip 30.28 -> 12.37 kB) and no retired token reaches the bundle. This is the outcome the earlier entries were migrating towards; recorded here so the size change is accounted for. |
+| 18 | `ui/back-top` and `ui/sonner` are not adopted. | PlatPulse has no back-to-top affordance, and its notices are persistent status regions rather than transient toasts; adding either would be a new feature rather than a migration. |
 
 ## 5. Screenshot evidence
 

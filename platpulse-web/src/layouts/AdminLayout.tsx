@@ -299,7 +299,7 @@ export default function AdminLayout() {
         />
         <QueryClientProvider client={adminQueryClient}>
           <main data-slot="admin-main" className="min-w-0 flex-1 px-4 py-6 lg:px-6">
-            <div className="mx-auto w-full max-w-[1280px]">
+            <div data-slot="admin-page" className="mx-auto w-full max-w-[1280px]">
               {resetting ? (
                 <p role="status" className="text-sm text-muted-foreground">
                   Revalidating Admin access…

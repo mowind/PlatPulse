@@ -74,7 +74,7 @@ export default function AdminHome() {
   }
 
   return (
-    <section className="mx-auto flex w-full min-w-0 max-w-[1280px] flex-col gap-4 pb-12">
+    <section data-slot="admin-overview" className="mx-auto flex w-full min-w-0 max-w-[1280px] flex-col gap-4 pb-12">
       <OverviewHeader snapshot={snapshot} query={overview} refreshing={overview.isFetching || diagnostics.isFetching || nodes.isFetching} onRefresh={refreshAll} />
       <AttentionPanel query={overview} />
       {snapshot && <SummaryCards summary={snapshot.summary} />}
