@@ -788,6 +788,19 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
       await expect(page.getByRole('article').first()).toBeVisible()
       await expectQuietMap(page)
       await capture(page, testInfo, 'fixture-failure-' + testInfo.project.name)
+
+      // The same local degradation in Dark: the notice stays readable, the map
+      // stays absent, and the page keeps working without overflow.
+      const theme = page.getByRole('button', { name: /^Theme: / })
+      await theme.click()
+      await theme.click()
+      expect(await page.evaluate(() => document.documentElement.classList.contains('dark'))).toBe(true)
+      await expect(map.getByRole('status')).toContainText('Map unavailable')
+      await expect(map.getByRole('img', { name: 'Peer countries map' })).toHaveCount(0)
+      await expect(page.getByRole('article').first()).toBeVisible()
+      await expectQuietMap(page)
+      await expectNoHorizontalOverflow(page)
+      await capture(page, testInfo, 'fixture-failure-dark-' + testInfo.project.name)
     } finally {
       await page.unroute('**/assets/geo/**')
       // The Server and its Geo provider are shared by every spec and project.

@@ -36,6 +36,14 @@
   --navy: #ffffff;
   --focus-ring: #059669;
   --shadow-soft: 0 8px 24px rgba(15, 23, 42, 0.06);
+  /* Public card surface (webui.md §11.1): about 60% at rest, becoming opaque
+     with a faint Emerald outline/glow once pointed at on hover-capable
+     devices. Static cards never gain click behaviour or a tab stop. */
+  --public-card-surface: rgba(255, 255, 255, 0.62);
+  --public-card-surface-hover: #ffffff;
+  --public-card-border: rgba(148, 163, 184, 0.18);
+  --public-card-border-hover: rgba(5, 150, 105, 0.3);
+  --public-card-glow: 0 0 20px rgba(5, 150, 105, 0.1), 0 0 0 1px rgba(5, 150, 105, 0.1);
   /* Metric cell floor. A Home Node card is about 300-320px wide, and this is
      the narrowest cell in which the longest label ("Committed") and a grouped
      ten-character height ("12,842,022") still share one line. */
@@ -80,6 +88,13 @@
   --navy: rgb(28 32 41 / 88%);
   --focus-ring: #34d399;
   --shadow-soft: 0 8px 24px rgb(0 0 0 / 45%);
+  /* Calibrated dark public cards: quiet neutral panels over the near-#141923
+     canvas, opaque with a faint Emerald glow on hover-capable devices. */
+  --public-card-surface: rgb(31 36 45 / 62%);
+  --public-card-surface-hover: rgb(31 36 45);
+  --public-card-border: rgb(255 255 255 / 12%);
+  --public-card-border-hover: rgb(48 214 151 / 34%);
+  --public-card-glow: 0 0 20px rgb(0 203 137 / 14%), 0 0 0 1px rgb(0 203 137 / 14%);
 }
 
 * {
@@ -3149,8 +3164,8 @@ button {
 .dashboard-node-card,
 .dashboard-empty {
   min-width: 0;
-  background: rgba(255, 255, 255, 0.62);
-  border: 1px solid rgba(148, 163, 184, 0.17);
+  background: var(--public-card-surface);
+  border: 1px solid var(--public-card-border);
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03), 0 1px 3px rgba(15, 23, 42, 0.02);
   transition: background-color 200ms ease, border-color 200ms ease, box-shadow 200ms ease, transform 200ms ease;
 }
@@ -3537,22 +3552,9 @@ button {
 .dashboard-empty { display: grid; min-height: 14rem; place-content: center; gap: 0.45rem; padding: 2rem; color: var(--muted); border-radius: 0.5rem; text-align: center; }
 .dashboard-empty strong { color: var(--ink); }
 
-@media (hover: hover) and (pointer: fine) {
-  .dashboard-summary-card:hover,
-  .dashboard-node-card:hover {
-    background: #ffffff;
-    border-color: rgba(5, 150, 105, 0.22);
-    box-shadow: 0 0 20px rgba(5, 150, 105, 0.12), 0 0 0 1px rgba(5, 150, 105, 0.12);
-    transform: translateY(-2px);
-  }
-}
-
-/* Keyboard parity: a focused Node card gets the same highlight as a hovered one. */
-.dashboard-node-card:focus-within {
-  background: #ffffff;
-  border-color: rgba(5, 150, 105, 0.22);
-  box-shadow: 0 0 20px rgba(5, 150, 105, 0.12), 0 0 0 1px rgba(5, 150, 105, 0.12);
-}
+/* Home card hover, focus parity, and reduced-motion feedback now live in the
+   shared "Emerald public pages dual theme" section (issue #147) at the end of
+   this sheet, so there is one source for the calibrated surface/glow tokens. */
 
 @media (max-width: 48rem) {
   .dashboard-toolbar { gap: 0.6rem 0.75rem; }
@@ -3620,8 +3622,8 @@ button {
 .home-shell .validator-history-entry,
 .home-shell .peer-history-table-wrap {
   color: var(--ink);
-  background: rgba(255, 255, 255, 0.68);
-  border-color: rgba(148, 163, 184, 0.22);
+  background: var(--public-card-surface);
+  border-color: var(--public-card-border);
   box-shadow: 0 1px 1px rgba(15, 23, 42, 0.025);
   backdrop-filter: none;
 }
@@ -3646,8 +3648,8 @@ button {
 
 .home-shell .node-hero-card {
   color: var(--ink);
-  background: rgba(255, 255, 255, 0.74);
-  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: var(--public-card-surface);
+  border: 1px solid var(--public-card-border);
   border-radius: 0.6rem;
   box-shadow: 0 8px 22px rgba(15, 23, 42, 0.05);
   backdrop-filter: none;
@@ -3679,7 +3681,7 @@ button {
 .home-shell .node-tabs { background: rgba(226, 232, 240, 0.78); border: 1px solid rgba(148, 163, 184, 0.22); border-radius: 0.6rem; }
 .home-shell .node-tab { color: var(--muted); }
 .home-shell .node-tab[aria-selected='true'] { color: var(--ink); background: #ffffff; box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08); }
-.home-shell .node-metric-card { color: var(--ink); background: rgba(255, 255, 255, 0.68); border-color: rgba(148, 163, 184, 0.22); border-radius: 0.6rem; box-shadow: 0 1px 1px rgba(15, 23, 42, 0.025); backdrop-filter: none; }
+.home-shell .node-metric-card { color: var(--ink); background: var(--public-card-surface); border-color: var(--public-card-border); border-radius: 0.6rem; box-shadow: 0 1px 1px rgba(15, 23, 42, 0.025); backdrop-filter: none; }
 .home-shell .node-metric-grid-lines line { stroke: rgba(100, 116, 139, 0.18); }
 .home-shell .node-metric-chart-line-secondary { stroke: #8b5cf6; filter: none; }
 .home-shell .node-metric-chart-dot { stroke: #ffffff; }
@@ -3692,7 +3694,7 @@ button {
 .home-shell .node-fact,
 .home-shell .node-signal-card,
 .home-shell .node-headline-metric,
-.home-shell .node-overview-statuses { color: var(--ink); background: rgba(255, 255, 255, 0.64); border-color: rgba(148, 163, 184, 0.22); }
+.home-shell .node-overview-statuses { color: var(--ink); background: var(--public-card-surface); border-color: var(--public-card-border); }
 .home-shell .node-detail-breadcrumb { color: var(--muted); }
 .home-shell .status-badge-ok { color: var(--green); background: var(--green-bg); border-color: rgba(5, 150, 105, 0.2); }
 .home-shell .status-badge-warning { color: var(--amber); background: var(--amber-bg); border-color: rgba(146, 64, 14, 0.2); }
@@ -5026,33 +5028,25 @@ button {
 :root.dark .redaction-note,
 :root.dark .dashboard-live,
 :root.dark .dashboard-empty {
-  background: rgb(31 36 45 / 70%);
-  border-color: rgba(255, 255, 255, 0.12);
+  background: var(--public-card-surface);
+  border-color: var(--public-card-border);
 }
 
 :root.dark .node-hero-card,
 :root.dark .home-shell .node-hero-card {
-  background: rgb(31 36 45 / 72%);
-  border-color: rgba(255, 255, 255, 0.12);
+  background: var(--public-card-surface);
+  border-color: var(--public-card-border);
 }
 
 :root.dark .node-metric-card,
 :root.dark .home-shell .node-metric-card {
-  background: rgb(31 36 45 / 68%);
-  border-color: rgba(255, 255, 255, 0.12);
+  background: var(--public-card-surface);
+  border-color: var(--public-card-border);
 }
 
-:root.dark .node-tabs,
-:root.dark .home-shell .node-tabs {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(255, 255, 255, 0.12);
-}
-
-:root.dark .home-shell .node-tab[aria-selected='true'] {
-  color: var(--ink);
-  background: rgb(31 36 45 / 92%);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
-}
+/* Home Node Detail tabs are owned by the #147 section below; no generic dark
+   tab rule is kept here so the transparent strip + Emerald underline have one
+   source. */
 
 :root.dark .node-detail {
   background: rgb(255 255 255 / 5%);
@@ -5098,11 +5092,6 @@ button {
 :root.dark .dashboard-sort option {
   color: var(--ink);
   background: #1c2029;
-}
-
-:root.dark .dashboard-node-card:hover,
-:root.dark .dashboard-node-card:focus-within {
-  background: rgb(31 36 45 / 92%);
 }
 
 :root.dark .home-geo-counters {
@@ -5196,3 +5185,158 @@ button {
   border-color: rgba(255, 255, 255, 0.12);
   box-shadow: none;
 }
+
+/* ---------------------------------------------------------------------------
+ * Emerald public pages dual theme (webui.md §11.1, issue #147)
+ *
+ * Home Dashboard, Network Overview, and the current tabbed public Node Detail
+ * complete the shared theme foundation started in #146: the calibrated ~60%
+ * card surfaces, the hover/focus feedback, and the dark adaptations of the
+ * public map, separators, charts, and tabs. This slice is visual only — routes,
+ * statistics, Network filters/sorting, the Peer country map, the Server-owned
+ * Node Health Summary, and the Details/Network tabs with their four charts are
+ * unchanged. Admin keeps its quiet undecorated workbench background.
+ * ------------------------------------------------------------------------- */
+
+/* Information cards become opaque with a faint Emerald outline/glow and a
+   ~2px lift, only where hovering is a real interaction. The lift is applied to
+   the card, never to the chart plot, and no static card gains a pointer
+   cursor, click handler, or tab stop. */
+@media (hover: hover) and (pointer: fine) {
+  .dashboard-summary-card:hover,
+  .dashboard-node-card:hover,
+  .home-shell .public-network-page .node-card:hover,
+  .home-shell .node-hero-card:hover,
+  .home-shell .peer-insight:hover,
+  .home-shell .geo-insight:hover {
+    background: var(--public-card-surface-hover);
+    border-color: var(--public-card-border-hover);
+    box-shadow: var(--public-card-glow);
+    transform: translateY(-2px);
+  }
+
+  /* Chart and disclosure cards gain the outline/glow without moving the plot
+     or the reading surface. */
+  .home-shell .node-metric-card:hover,
+  .home-shell .validator-history-entry:hover,
+  .home-shell .peer-history-table-wrap:hover,
+  .home-shell .peer-history-insight:hover {
+    border-color: var(--public-card-border-hover);
+    box-shadow: var(--public-card-glow);
+  }
+}
+
+/* Keyboard parity for cards that contain an interactive element (the whole-card
+   Node links, the disclosure summary, and the Network card links): the card shows
+   the same highlight as a hovered one, while the focused element keeps its own
+   visible focus ring. Static cards have nothing to focus. */
+.dashboard-node-card:focus-within,
+.home-shell .public-network-page .node-card:focus-within {
+  background: var(--public-card-surface-hover);
+  border-color: var(--public-card-border-hover);
+  box-shadow: var(--public-card-glow);
+}
+
+.home-shell .validator-history-entry:focus-within {
+  border-color: var(--public-card-border-hover);
+  box-shadow: var(--public-card-glow);
+}
+
+/* reduced-motion removes the lift and the non-essential transition but keeps
+   the outline/glow state cue. */
+@media (prefers-reduced-motion: reduce) {
+  .dashboard-summary-card,
+  .dashboard-node-card,
+  .home-shell .public-network-page .node-card,
+  .home-shell .node-hero-card,
+  .home-shell .peer-insight,
+  .home-shell .geo-insight,
+  .home-shell .node-metric-card,
+  .home-shell .validator-history-entry,
+  .home-shell .peer-history-table-wrap,
+  .home-shell .peer-history-insight {
+    transition: none !important;
+  }
+
+  .dashboard-summary-card:hover,
+  .dashboard-node-card:hover,
+  .home-shell .public-network-page .node-card:hover,
+  .home-shell .node-hero-card:hover,
+  .home-shell .peer-insight:hover,
+  .home-shell .geo-insight:hover {
+    transform: none;
+  }
+}
+
+/* --- Dark adaptations --------------------------------------------------- */
+
+/* The transparent Peer country map keeps a quiet slate basemap instead of the
+   light Emerald land fill; observed countries and markers stay Emerald so the
+   data layer keeps reading the same. */
+:root.dark .home-geo-land path {
+  fill: rgb(255 255 255 / 6%);
+  stroke: rgb(255 255 255 / 14%);
+}
+
+:root.dark .home-geo-observed path {
+  fill: rgb(16 185 129 / 32%);
+  stroke: rgb(48 214 151 / 80%);
+}
+
+:root.dark .home-geo-observed path:hover,
+:root.dark .home-geo-observed path.home-geo-country-active {
+  fill: rgb(16 185 129 / 48%);
+  stroke: rgb(48 214 151 / 95%);
+}
+
+:root.dark .home-geo-marker-dot {
+  fill: var(--brand);
+  stroke: #141923;
+}
+
+:root.dark .home-geo-counter { color: var(--brand); }
+:root.dark .home-geo-counter-dot { background: var(--brand); }
+
+/* Group separators stay a low-contrast hairline rather than a light rule. */
+:root.dark .dashboard-node-resources,
+:root.dark .dashboard-node-primary,
+:root.dark .network-node-highlights,
+:root.dark .home-shell .network-node-statuses,
+:root.dark .home-shell .node-hero-resources {
+  border-top-color: rgba(255, 255, 255, 0.12);
+}
+
+:root.dark .home-shell .node-consensus-summary {
+  border-block-color: rgba(255, 255, 255, 0.14);
+}
+
+:root.dark .dashboard-node-diagnostic { border-top-color: rgba(255, 255, 255, 0.12); }
+
+/* Node Detail tabs: the light treatment keeps a transparent strip and marks the
+   selected tab with an Emerald underline, so the dark theme must preserve that
+   underline instead of the earlier raised chip with a generic shadow. */
+:root.dark .home-shell .node-tabs {
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+:root.dark .home-shell .node-tab { color: var(--muted); }
+
+:root.dark .home-shell .node-tab[aria-selected='true'] {
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 -2px 0 var(--brand-strong);
+}
+
+/* Chart furniture: grid lines, dots, and the secondary (violet) series keep
+   readable contrast on the dark canvas. */
+:root.dark .home-shell .node-metric-grid-lines line { stroke: rgba(255, 255, 255, 0.14); }
+:root.dark .home-shell .node-metric-chart-dot { stroke: #141923; }
+:root.dark .home-shell .node-metric-chart-line-secondary { stroke: #a78bfa; }
+:root.dark .home-shell .node-metric-chart-dot-secondary { fill: #a78bfa; stroke: #141923; }
+:root.dark .home-shell .node-chart-key-secondary { background: #a78bfa; }
+:root.dark .home-shell .node-network-rates > div:last-child strong { color: #a78bfa; }
+
+/* Emerald links keep a readable hover on the dark canvas. */
+:root.dark .home-shell .page a:hover { color: var(--brand); }

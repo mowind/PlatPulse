@@ -2127,4 +2127,133 @@ describe('Theme lifecycle (issue #146)', () => {
     expect(document.documentElement.classList.contains('dark')).toBe(true)
     expect(themeButton().getAttribute('aria-label')).toBe('Theme: Dark. Switch to Auto')
   })
+
+  describe('Public dual theme (issue #147)', () => {
+    const publicNode = {
+      nodeId: 'node-1',
+      displayName: 'Validator A',
+      networkKey: 'mainnet',
+      health: 'healthy',
+      healthReason: null,
+      freshness: '2026-08-20T00:00:05Z',
+      rpcState: 'ok',
+      syncState: 'ok',
+      consensusState: 'ok',
+      processState: 'ok',
+      resyncState: 'normal',
+      networkReferenceConfidence: 'high',
+      currentHead: 123,
+      latestBlockTransactionCount: 4,
+      historicalHighWatermark: 128,
+      networkReferenceHead: null,
+      processCpuPercent: 12.5,
+      processMemoryPercent: 6.25,
+      processStartedAt: '2026-08-19T22:58:00Z',
+      processUptimeMs: 3_720_000,
+      lastReportAt: '2026-08-20T00:00:05Z',
+      nodeDataDirectorySizeBytes: 2_147_483_648,
+      nodeDataDirectoryCapacityBytes: 8_589_934_592,
+      hostNetworkRxBytesPerSec: 4096,
+      hostNetworkTxBytesPerSec: 2048,
+      consensus: {
+        state: 'ok',
+        freshness: 'current',
+        highestQcBlock: 122,
+        highestLockBlock: 121,
+        highestCommitBlock: 120,
+        validator: true,
+      },
+      peers: {
+        state: 'ok',
+        freshness: 'current',
+        peerCount: 12,
+        inboundCount: 8,
+        outboundCount: 4,
+      },
+    }
+    const networkPayload = {
+      networkKey: 'mainnet',
+      displayName: 'Mainnet',
+      nodes: [publicNode],
+      peers: publicNode.peers,
+      geo: { state: 'disabled', scope: 'unavailable' },
+      validators: [],
+    }
+    const emptyMetrics = {
+      from: '2026-08-19T23:59:00Z',
+      to: '2026-08-20T00:00:00Z',
+      windowSeconds: 60,
+      processCpuPercent: [],
+      processMemoryPercent: [],
+      dataDirectoryPercent: [],
+      networkRxBytesPerSec: [],
+      networkTxBytesPerSec: [],
+      peerInboundCount: [],
+      peerOutboundCount: [],
+      blockIntervalMs: [],
+      transactionCount: [],
+    }
+
+    function mockPublicRoutes() {
+      mockFetch({
+        '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+        '/api/public/v1/networks': () => jsonResponse([networkPayload], 200),
+        '/api/public/v1/networks/mainnet': () => jsonResponse(networkPayload, 200),
+        '/api/public/v1/nodes/node-1': () => jsonResponse(publicNode, 200),
+        '/api/public/v1/nodes/node-1/history?limit=2': () => jsonResponse([], 200),
+        '/api/public/v1/nodes/node-1/metrics': () => jsonResponse(emptyMetrics, 200),
+        '/api/public/v1/nodes/node-1/peer-history': () =>
+          jsonResponse({ state: 'unknown', freshness: 'unknown', fiveMinute: [], hourly: [] }, 200),
+      })
+    }
+
+    async function navigateTo(path: string) {
+      await act(async () => {
+        window.history.pushState({}, '', path)
+        window.dispatchEvent(new PopStateEvent('popstate'))
+        await Promise.resolve()
+      })
+    }
+
+    it('keeps Home, Network, and Node Detail on the resolved theme without interactive static cards', async () => {
+      mockPublicRoutes()
+      render(<App />)
+      await screen.findByRole('region', { name: 'Home' })
+
+      fireEvent.click(themeButton())
+      fireEvent.click(themeButton())
+      expect(document.documentElement.classList.contains('dark')).toBe(true)
+
+      // The four statistics are static information cards: they gain visual
+      // feedback but never a click handler or a tab stop.
+      const summaryRegion = screen.getByLabelText('Home summary')
+      const summaryCards = within(summaryRegion).getAllByRole('article')
+      expect(summaryCards).toHaveLength(4)
+      // Static information cards expose no interactive descendant and no tab stop.
+      expect(within(summaryRegion).queryAllByRole('link')).toHaveLength(0)
+      expect(within(summaryRegion).queryAllByRole('button')).toHaveLength(0)
+      for (const card of summaryCards) expect(card.hasAttribute('tabindex')).toBe(false)
+
+      // Network Overview keeps its identity, Peer/Geo modules, and theme.
+      await navigateTo('/networks/mainnet')
+      expect(await screen.findByRole('heading', { level: 1, name: 'Mainnet' })).toBeTruthy()
+      expect(screen.getByRole('region', { name: 'Peer insight' })).toBeTruthy()
+      expect(document.documentElement.classList.contains('dark')).toBe(true)
+      expect(themeButton().getAttribute('aria-label')).toBe('Theme: Dark. Switch to Auto')
+
+      // The public Node Detail keeps its tabs, four charts, and theme.
+      await navigateTo('/nodes/node-1')
+      expect(await screen.findByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
+      expect(screen.getByRole('tab', { name: 'Details' })).toBeTruthy()
+      expect(screen.getByRole('tab', { name: 'Network' })).toBeTruthy()
+      expect(screen.getAllByRole('img', { name: /chart over the last minute/ })).toHaveLength(4)
+      expect(document.documentElement.classList.contains('dark')).toBe(true)
+
+      // Switching back to Light keeps the same public surfaces usable.
+      fireEvent.click(themeButton())
+      expect(themeButton().getAttribute('aria-label')).toBe('Theme: Auto. Switch to Light')
+      expect(document.documentElement.classList.contains('dark')).toBe(false)
+      expect(screen.getByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
+    })
+  })
 })

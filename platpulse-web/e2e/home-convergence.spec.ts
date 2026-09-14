@@ -262,6 +262,45 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()
     await expectNoHorizontalOverflow(page)
   })
+
+  test('keeps the converged Home intact in the dark theme (issue #147)', async ({ page }) => {
+    await loginAs(page)
+    const hCard = nodeCard(page, /Node H/)
+    await expect(hCard).toBeVisible({ timeout: 15_000 })
+
+    // Auto → Light → Dark through the shared theme control.
+    const theme = page.getByRole('button', { name: /^Theme: / })
+    await theme.click()
+    await theme.click()
+    expect(await page.evaluate(() => document.documentElement.classList.contains('dark'))).toBe(true)
+
+    // The compact card contract, long names, and explicit Unknown/Stale states
+    // are unchanged by the theme.
+    await expect(hCard).toBeVisible()
+    await expect(hCard.getByText('Head', { exact: true })).toBeVisible()
+    await expect(nodeCard(page, /Node P — Never Observed/)).toBeVisible()
+    await expect(nodeCard(page, /Node L/).getByText('Stale', { exact: true })).toHaveCount(4)
+
+    // Filtering stays operable on the dark surface and bounds the tab order.
+    await page.getByRole('button', { name: CONVERGENCE_NETWORK_NAME, exact: true }).click()
+    await expect(nodeCard(page, /Node H/)).toBeVisible()
+
+    // The whole-card link keeps an independent visible focus ring in Dark.
+    await page.getByRole('button', { name: CONVERGENCE_NETWORK_NAME, exact: true }).focus()
+    let activeHref = ''
+    for (let index = 0; index < 30; index++) {
+      await page.keyboard.press('Tab')
+      activeHref = await page.evaluate(() => document.activeElement?.getAttribute('href') ?? '')
+      if (activeHref === `/nodes/${NODE_H_ID}`) break
+    }
+    expect(activeHref).toBe(`/nodes/${NODE_H_ID}`)
+    await expectFocusedElementHasVisibleFocus(page)
+
+    // Sorting stays operable and the full list comes back.
+    await page.getByRole('combobox', { name: 'Sort' }).selectOption('head')
+    await page.getByRole('button', { name: 'All Networks', exact: true }).click()
+    await expectNoHorizontalOverflow(page)
+  })
 })
 
 /** Assert every forbidden legacy/verbose affordance is absent from Home. */

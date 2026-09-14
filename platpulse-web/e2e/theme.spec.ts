@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 import {
   E2E_PASSWORD,
   expectFocusedElementHasVisibleFocus,
@@ -9,8 +9,9 @@ import {
 /**
  * SCN-THEME-LIFECYCLE (webui.md §11.1 "Theme behavior"): the production
  * Auto → Light → Dark lifecycle, persistence, pre-mount first paint, and
- * readability of Login, Home, and Admin in both themes. The seam is the real
- * routed application served by e2e/start-server.sh.
+ * readability of Login, Home, Admin, Network Overview, and the public Node
+ * Detail in both themes, plus the public card feedback (issue #147). The seam
+ * is the real routed application served by e2e/start-server.sh.
  */
 
 const THEME_KEY = 'platpulse.themeMode'
@@ -32,10 +33,13 @@ async function resolvedTheme(page: Page) {
   }))
 }
 
-/** Ordinary body text must keep at least 4.5:1 against its painted background. */
-async function expectReadable(page: Page, selector: string) {
-  const result = await page
-    .locator(selector)
+/** Ordinary body text must keep at least 4.5:1 against its painted background.
+ *  The target is a role/text locator where one exists, so the check does not
+ *  depend on production CSS class names. */
+async function expectReadable(page: Page, target: string | Locator) {
+  const locator = typeof target === 'string' ? page.locator(target) : target
+  const label = typeof target === 'string' ? target : 'readable public text'
+  const result = await locator
     .first()
     .evaluate((element) => {
       const parse = (value: string) => (value.match(/[\d.]+/g) ?? []).map(Number)
@@ -75,7 +79,7 @@ async function expectReadable(page: Page, selector: string) {
         background,
       }
     })
-  expect(result.ratio, selector + ' contrast ' + JSON.stringify(result)).toBeGreaterThanOrEqual(4.5)
+  expect(result.ratio, label + ' contrast ' + JSON.stringify(result)).toBeGreaterThanOrEqual(4.5)
 }
 
 test('cycles the theme on Login with an accessible name and a touch-sized control', async ({ page }) => {
@@ -254,5 +258,132 @@ test('respects reduced motion while switching themes', async ({ page }) => {
   await themeButton(page).click()
   await themeButton(page).click()
   expect((await resolvedTheme(page)).dark).toBe(true)
+  await expectNoHorizontalOverflow(page)
+})
+
+/** A computed colour's alpha channel, defaulting to opaque. */
+function colorAlpha(color: string): number {
+  const parts = (color.match(/[\d.]+/g) ?? []).map(Number)
+  return parts.length === 4 ? parts[3] : 1
+}
+
+test('keeps the public Network and Node Detail readable in both themes', async ({ page }) => {
+  await loginAs(page)
+
+  // Public Node Detail in Light: the hero metrics and the four chart cards
+  // stay readable against their composed surfaces.
+  await page.getByRole('link', { name: /Node A/ }).click()
+  await expect(page.getByRole('heading', { level: 1, name: /Node A/ })).toBeVisible({ timeout: 15_000 })
+  await expectReadable(page, page.getByText('Process uptime').first())
+  await expectReadable(page, page.getByRole('heading', { level: 3, name: 'Network' }))
+  await expect(page.getByRole('tab', { name: 'Details' })).toBeVisible()
+  await expect(page.getByRole('tab', { name: 'Network' })).toBeVisible()
+  await expectNoHorizontalOverflow(page)
+
+  // The same surface in Dark.
+  await themeButton(page).click()
+  await themeButton(page).click()
+  expect((await resolvedTheme(page)).dark).toBe(true)
+  await expectReadable(page, page.getByText('Process uptime').first())
+  await expectReadable(page, page.getByRole('heading', { level: 3, name: 'Network' }))
+  await expect(page.getByRole('tab', { name: 'Details' })).toBeVisible()
+  await expectNoHorizontalOverflow(page)
+
+  // Network Overview keeps its Peer/Geo modules and readable copy in Dark.
+  await page.getByRole('link', { name: /platon-e2e/ }).click()
+  await expect(page.getByRole('heading', { level: 1 })).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByRole('region', { name: 'Peer insight' })).toBeVisible()
+  await expectReadable(page, page.getByRole('heading', { level: 1 }).first())
+  await expectNoHorizontalOverflow(page)
+})
+
+test('gives public cards calibrated hover, reduced-motion, and filter feedback', async ({ page }) => {
+  await loginAs(page)
+  await themeButton(page).click()
+  await themeButton(page).click()
+  expect((await resolvedTheme(page)).dark).toBe(true)
+
+  const hoverCapable = await page.evaluate(
+    () => matchMedia('(hover: hover) and (pointer: fine)').matches,
+  )
+  const summaryCard = page.getByRole('article').filter({ hasText: 'Active Nodes' }).first()
+  await expect(summaryCard).toBeVisible({ timeout: 15_000 })
+
+  // At rest the card is a ~60% surface; the pointer is parked first so a
+  // leftover hover from a previous action cannot be measured.
+  await page.mouse.move(2, 2)
+  const resting = await summaryCard.evaluate((card) => {
+    const style = getComputedStyle(card)
+    return { background: style.backgroundColor, transform: style.transform, shadow: style.boxShadow }
+  })
+  expect(colorAlpha(resting.background), 'summary card rests on a translucent surface').toBeLessThan(1)
+
+  await summaryCard.hover()
+  await page.waitForTimeout(320)
+  const hovered = await summaryCard.evaluate((card) => {
+    const style = getComputedStyle(card)
+    return { background: style.backgroundColor, transform: style.transform, shadow: style.boxShadow }
+  })
+  if (hoverCapable) {
+    expect(colorAlpha(hovered.background), 'hovered card becomes opaque').toBe(1)
+    expect(hovered.transform, 'hover-capable devices get the 2px lift').not.toBe('none')
+    expect(hovered.shadow, 'hover adds the Emerald glow').not.toBe(resting.shadow)
+  } else {
+    expect(hovered.transform, 'touch devices never receive the lift').toBe('none')
+  }
+
+  // Filters and sorting stay operable on the dark Home surface.
+  await page.getByRole('group', { name: 'Network filter' }).getByRole('button').nth(1).click()
+  await page.getByRole('combobox', { name: 'Sort' }).selectOption('head')
+  await expectNoHorizontalOverflow(page)
+  await page.getByRole('button', { name: 'All Networks', exact: true }).click()
+
+  // The chart plot never moves on hover, even where hover is available.
+  await page.getByRole('link', { name: /Node A/ }).click()
+  await expect(page.getByRole('heading', { level: 1, name: /Node A/ })).toBeVisible({ timeout: 15_000 })
+  const chartCard = page
+    .getByRole('article')
+    .filter({ has: page.getByRole('heading', { level: 3, name: 'Network' }) })
+  await expect(chartCard).toBeVisible()
+  await page.mouse.move(2, 2)
+  const chartResting = await chartCard.evaluate((card) => getComputedStyle(card).boxShadow)
+  await chartCard.hover()
+  await page.waitForTimeout(320)
+  const chartHovered = await chartCard.evaluate((card) => ({
+    transform: getComputedStyle(card).transform,
+    shadow: getComputedStyle(card).boxShadow,
+  }))
+  expect(
+    chartHovered.transform === 'none' || chartHovered.transform === 'matrix(1, 0, 0, 1, 0, 0)',
+    'the chart card keeps the plot in place',
+  ).toBe(true)
+  if (hoverCapable) {
+    expect(chartHovered.shadow, 'the chart card still gains the outline/glow').not.toBe(chartResting)
+  }
+
+  // reduced motion removes the summary-card lift in both themes.
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.goto('/')
+  await expect(page.getByRole('region', { name: 'Home' })).toBeVisible({ timeout: 15_000 })
+  const reducedCard = page.getByRole('article').filter({ hasText: 'Active Nodes' }).first()
+  await page.mouse.move(2, 2)
+  await reducedCard.hover()
+  await page.waitForTimeout(120)
+  expect(
+    await reducedCard.evaluate((card) => getComputedStyle(card).transform),
+    'reduced motion removes the lift in Dark',
+  ).toBe('none')
+
+  // One click from Dark reaches Auto; the Playwright default system theme is
+  // Light, so the same reduced-motion contract is verified in both themes.
+  await themeButton(page).click()
+  expect((await resolvedTheme(page)).dark).toBe(false)
+  await page.mouse.move(2, 2)
+  await reducedCard.hover()
+  await page.waitForTimeout(120)
+  expect(
+    await reducedCard.evaluate((card) => getComputedStyle(card).transform),
+    'reduced motion removes the lift in Light',
+  ).toBe('none')
   await expectNoHorizontalOverflow(page)
 })
