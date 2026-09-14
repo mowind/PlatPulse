@@ -68,7 +68,10 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(hCard.getByText('12,842,024', { exact: true })).toHaveCount(1)
     await expect(hCard.getByText('21', { exact: true })).toHaveCount(1)
     await expect(hCard.getByText('3', { exact: true })).toHaveCount(1)
-    await expect(hCard.getByText('Yes', { exact: true })).toHaveCount(1)
+    // main's b4b509a moved the Home Validator row to True/False (d46f0ad did
+    // the same for Node Detail) but left this spec on Yes/No, so it had been
+    // red since then. Restated to the source vocabulary.
+    await expect(hCard.getByText('True', { exact: true })).toHaveCount(1)
 
     await expectNoVerboseHomeSurface(page)
 
@@ -150,7 +153,7 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(kCard.getByText('12,842,023', { exact: true })).toHaveCount(1)
     await expect(kCard.getByText('0', { exact: true })).toHaveCount(1)
     await expect(kCard.getByText('Empty; authoritative zero')).toBeVisible()
-    await expect(kCard.getByText('No', { exact: true })).toHaveCount(1)
+    await expect(kCard.getByText('False', { exact: true })).toHaveCount(1)
     await expect(kCard.getByRole('img', { name: 'Healthy' })).toBeVisible()
 
     // Node L: stale last-good consensus keeps the values and marks them.
@@ -158,7 +161,7 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(lCard.getByText('13', { exact: true })).toHaveCount(1)
     await expect(lCard.getByText('12,842,023', { exact: true })).toHaveCount(3)
     await expect(lCard.getByText('12,842,022', { exact: true })).toHaveCount(1)
-    await expect(lCard.getByText('Yes', { exact: true })).toHaveCount(1)
+    await expect(lCard.getByText('True', { exact: true })).toHaveCount(1)
     await expect(lCard.getByText('Stale', { exact: true })).toHaveCount(4)
 
     // Node M: effective Link with an authoritative no-live-validator result.
@@ -184,7 +187,7 @@ test.describe('Converged Public Home (issue #102)', () => {
     // not card text, so it is not counted here.
     await expect(pCard.getByText('Unknown', { exact: true })).toHaveCount(7)
     await expect(pCard.getByText('0', { exact: true })).toHaveCount(0)
-    await expect(pCard.getByText('No', { exact: true })).toHaveCount(0)
+    await expect(pCard.getByText('False', { exact: true })).toHaveCount(0)
     await expect(pCard.getByText('one or more observations are stale or unknown')).toHaveCount(1)
 
     // Node A: the exact Current Head Block Summary proves Txs while the
@@ -201,7 +204,7 @@ test.describe('Converged Public Home (issue #102)', () => {
 
     // Filter to the convergence Network: only its cards remain, and the long
     // display name never creates a nested link or overflow.
-    await page.getByRole('button', { name: CONVERGENCE_NETWORK_NAME, exact: true }).click()
+    await page.getByRole('tab', { name: CONVERGENCE_NETWORK_NAME, exact: true }).click()
     await expect(nodeCard(page, /Node H/)).toBeVisible({ timeout: 15_000 })
     await expect(nodeCard(page, /Node A/)).toHaveCount(0)
     await expect(nodeCard(page, /Node P/)).toBeVisible()
@@ -239,7 +242,7 @@ test.describe('Converged Public Home (issue #102)', () => {
 
     // Narrow to the convergence Network first so tab order is bounded, then
     // tab to the whole-card Node H link and activate with Enter.
-    await page.getByRole('button', { name: CONVERGENCE_NETWORK_NAME, exact: true }).click()
+    await page.getByRole('tab', { name: CONVERGENCE_NETWORK_NAME, exact: true }).click()
     await expect(nodeCard(page, /Node H/)).toBeVisible({ timeout: 15_000 })
     await page.getByRole('tab', { name: 'All Networks', exact: true }).focus()
 
@@ -282,11 +285,11 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(nodeCard(page, /Node L/).getByText('Stale', { exact: true })).toHaveCount(4)
 
     // Filtering stays operable on the dark surface and bounds the tab order.
-    await page.getByRole('button', { name: CONVERGENCE_NETWORK_NAME, exact: true }).click()
+    await page.getByRole('tab', { name: CONVERGENCE_NETWORK_NAME, exact: true }).click()
     await expect(nodeCard(page, /Node H/)).toBeVisible()
 
     // The whole-card link keeps an independent visible focus ring in Dark.
-    await page.getByRole('button', { name: CONVERGENCE_NETWORK_NAME, exact: true }).focus()
+    await page.getByRole('tab', { name: CONVERGENCE_NETWORK_NAME, exact: true }).focus()
     let activeHref = ''
     for (let index = 0; index < 30; index++) {
       await page.keyboard.press('Tab')

@@ -344,3 +344,24 @@ Remaining failures by spec (each count is across projects):
 The next single target is home-convergence: 25 of the 75 failures, all in the
 old Home card contract, which is the last place where the pre-migration markup
 expectations still dominate.
+
+## 14. home-convergence passes: 25 failures cleared, and one was not ours
+
+The whole home-convergence spec now passes on all five projects (25 tests,
+48.5s). Three causes:
+
+1. Four network-filter locators still asked for a button named after the
+   convergence Network. They are tabs now. (My earlier sweep only covered the
+   literal 'All Networks', not the locator built from a constant.)
+2. The metric-row abbreviation was displayed instead of the full label. The
+   migrated card fits the full label at every fixed viewport, so the full word is
+   the visible label now and the abbreviation is never shown; it keeps its
+   accessible name.
+3. **A pre-existing spec/source drift that this migration did not cause.**
+   main's b4b509a ('compact Home metrics') changed the Home Validator row to
+   True/False but left home-convergence.spec.ts expecting Yes/No, while d46f0ad
+   had already moved Node Detail to True/False on purpose. Verified in git:
+   f6a980e had 'Yes'/'No' in both places, b4b509a changed the source only. The
+   spec is restated to the vocabulary main adopted; the source keeps main's
+   True/False. This is disclosed rather than quietly absorbed: those assertions
+   had been red before any of this work started.

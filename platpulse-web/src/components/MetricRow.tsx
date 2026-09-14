@@ -30,10 +30,8 @@ export function MetricRow({ label, shortLabel, value, detail, progress, progress
       <span data-slot="metric-row-label" className="min-w-0 truncate text-muted-foreground">
         {shortLabel ? (
           <>
-            <span className="hidden min-[900px]:inline">{label}</span>
-            <span className="min-[900px]:hidden" aria-label={label} title={label}>
-              {shortLabel}
-            </span>
+            <span>{label}</span>
+            <span className="hidden" aria-label={label} title={label}>{shortLabel}</span>
           </>
         ) : (
           label
