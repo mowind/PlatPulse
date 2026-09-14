@@ -1,4 +1,5 @@
-import { useId, useState } from 'react'
+import { useId } from 'react'
+import type { ReactNode } from 'react'
 import { Link, useParams } from 'react-router'
 import {
   usePublicNetwork,
@@ -82,7 +83,6 @@ export function NodePage() {
   const historyQuery = usePublicNodeHistory(nodeId, generation)
   const metricsQuery = usePublicNodeMetrics(nodeId, generation)
   const peerHistoryQuery = usePublicNodePeerHistory(nodeId, generation)
-  const [activeTab, setActiveTab] = useState<'details' | 'network'>('details')
 
   if (resetting) return <section className="page"><RealtimeNotice realtime={realtime} /><p role="status">Revalidating Node access…</p></section>
   if (nodeQuery.isPending) return <section className="page"><RealtimeNotice realtime={realtime} /><p role="status">Loading Node…</p></section>
@@ -105,7 +105,7 @@ export function NodePage() {
   return <section className="page node-detail-page">
     <div className="node-detail-topline">
       <div className="node-detail-breadcrumb">
-        <Link to={`/networks/${node.networkKey}`}>← {node.networkKey}</Link>
+        <Link to={'/networks/' + node.networkKey}>{'← ' + node.networkKey}</Link>
         <span aria-hidden="true">/</span>
         <span>Node detail</span>
       </div>
@@ -122,76 +122,84 @@ export function NodePage() {
             <p className="node-id-line">Node ID <code>{node.nodeId}</code></p>
           </div>
         </div>
-        {/* Node Validator Activity is not rendered by the current SPA, so the
-            hero carries no Node-status label; process uptime is the only fact. */}
-        <div className="node-hero-facts">
-          <div className="node-hero-fact node-uptime"><span>Process uptime</span><strong>{formatDuration(node.processUptimeMs)}</strong></div>
-        </div>
+        <dl className="node-hero-facts" aria-label="Node identity facts">
+          <div>
+            <dt>Last report</dt>
+            <dd>{formatUtcDateTime(node.lastReportAt)}</dd>
+          </div>
+        </dl>
       </header>
 
       {health.tone !== 'ok' && <p className="node-hero-reason">{node.healthReason}</p>}
-      {/* Node Detail reads at the same density as a Home Node card. The hero is
-          far wider than a card, so the groups take as many ~17rem metric cells
-          as the container holds — one row for the three resources and one for
-          the four heights at the Home content width — instead of stretching a
-          two-column pair across the full page and losing the label/value pairs. */}
-      <div className="node-hero-resources" aria-label="Node process and storage resources">
-        <MetricRow label="CPU" value={formatPercent(node.processCpuPercent)} progress={node.processCpuPercent} />
-        <MetricRow label="Memory" value={formatPercent(node.processMemoryPercent)} progress={node.processMemoryPercent} />
-        <MetricRow
-          label="Node data"
-          value={formatPercent(nodeDataProgressValue)}
-          detail={formatNodeDataBytes(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)}
-          progress={nodeDataProgressValue}
-        />
-      </div>
-      <div className="node-consensus-summary" aria-label="Node chain and consensus progress">
-        <div className="node-height-metrics" aria-label="Node height metrics">
-          <MetricRow label="Head" value={formatNumber(node.currentHead)} />
+
+      <NodeInfoGroup title="Summary" label="Node key summary">
+        <MetricRow label="Head" value={formatNumber(node.currentHead)} />
+        <MetricRow label="Sync" value={syncStateLabel(node.syncState)} detail={formatSyncDetail(node)} />
+        <MetricRow label="Peers" value={peerCount(node.peers)} detail={peerBreakdown(node.peers)} />
+        <MetricRow label="Process uptime" value={formatDuration(node.processUptimeMs)} />
+      </NodeInfoGroup>
+
+      <div className="node-info-groups">
+        <NodeInfoGroup title="Chain & consensus" label="Node chain and consensus observations">
           <MetricRow label="QC" value={formatConsensusValue(node.consensus?.highestQcBlock, node.consensus)} />
           <MetricRow label="Locked" value={formatConsensusValue(node.consensus?.highestLockBlock, node.consensus)} />
           <MetricRow label="Committed" value={formatConsensusValue(node.consensus?.highestCommitBlock, node.consensus)} />
-        </div>
-        <div className="node-validator-role" aria-label="Validator role">
           <MetricRow label="Validator" value={formatValidatorMembership(node)} />
-        </div>
+          <MetricRow label="Resync" value={nodeComponentStateLabel(node.resyncState)} detail={formatResyncDetail(node)} />
+          <MetricRow label="Network reference" value={formatReferenceHead(node)} detail={formatReferenceDetail(node)} />
+        </NodeInfoGroup>
+
+        <NodeInfoGroup title="PlatON process" label="PlatON process resources">
+          <MetricRow label="CPU" value={formatPercent(node.processCpuPercent)} progress={node.processCpuPercent} />
+          <MetricRow label="Memory" value={formatPercent(node.processMemoryPercent)} progress={node.processMemoryPercent} />
+          <MetricRow label="Started" value={formatUtcDateTime(node.processStartedAt)} />
+          <MetricRow label="Process state" value={nodeComponentStateLabel(node.processState)} />
+        </NodeInfoGroup>
+
+        <NodeInfoGroup title="Node Data" label="Node data directory">
+          <MetricRow
+            label="Directory usage"
+            value={formatPercent(nodeDataProgressValue)}
+            detail={formatNodeDataBytes(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes) + ' · directory size against the hosting filesystem capacity, not whole-Host disk usage'}
+            progress={nodeDataProgressValue}
+          />
+        </NodeInfoGroup>
+
+        <NodeInfoGroup title="Host resources" label="Shared Host resources" note="Collected once per Agent; shared by every Node it monitors">
+          <MetricRow label="Host CPU" value={formatPercent(node.hostCpuPercent)} progress={node.hostCpuPercent} />
+          <MetricRow label="Host memory" value={formatPercent(node.hostMemoryPercent)} progress={node.hostMemoryPercent} />
+          <MetricRow label="Host storage" value={formatPercent(node.hostStoragePercent)} progress={node.hostStoragePercent} />
+          <MetricRow label="Host upload" value={formatRate(node.hostNetworkTxBytesPerSec)} />
+          <MetricRow label="Host download" value={formatRate(node.hostNetworkRxBytesPerSec)} />
+        </NodeInfoGroup>
       </div>
-      <footer className="node-hero-footer">
-        <div><span>Started</span><strong>{formatUtcDateTime(node.processStartedAt)}</strong></div>
-        <div><span>Last report</span><strong>{formatUtcDateTime(node.lastReportAt)}</strong></div>
-      </footer>
     </section>
 
-    <div className="node-tabs" role="tablist" aria-label="Node detail views">
-      <TabButton id="node-details-tab" panelId="node-details-panel" selected={activeTab === 'details'} onSelect={() => setActiveTab('details')} onNavigate={(tab) => { setActiveTab(tab); document.getElementById(`node-${tab}-tab`)?.focus() }}>Details</TabButton>
-      <TabButton id="node-network-tab" panelId="node-network-panel" selected={activeTab === 'network'} onSelect={() => setActiveTab('network')} onNavigate={(tab) => { setActiveTab(tab); document.getElementById(`node-${tab}-tab`)?.focus() }}>Network</TabButton>
-    </div>
-
-    <section id="node-details-panel" className="node-tabpanel" role="tabpanel" aria-labelledby="node-details-tab" aria-label="Details" hidden={activeTab !== 'details'}>
-      <h2 className="sr-only">Details</h2>
+    <section className="node-metrics-section" aria-labelledby="node-metrics-title">
+      <header className="node-metrics-header">
+        <h2 id="node-metrics-title">Latest 60 seconds</h2>
+        <p>Real retained samples from the fixed public metric-history window; missing intervals stay empty.</p>
+      </header>
       <div className="node-metric-grid">
-        <article className="node-metric-card node-metric-network">
-          <MetricCardHeading label="Network" hint="Host observation · live 1m" />
-          <div className="node-network-rates">
-            <div><span><i className="node-chart-key node-chart-key-primary" />↑ Upload</span><strong>{formatRate(node.hostNetworkTxBytesPerSec)}</strong></div>
-            <div><span><i className="node-chart-key node-chart-key-secondary" />↓ Download</span><strong>{formatRate(node.hostNetworkRxBytesPerSec)}</strong></div>
-          </div>
-          <MetricChart
-            label="Network"
-            series={[
-              { label: 'Upload', points: metricHistory?.networkTxBytesPerSec ?? [] },
-              { label: 'Download', points: metricHistory?.networkRxBytesPerSec ?? [], secondary: true },
-            ]}
-            from={metricHistory?.from}
-            to={metricHistory?.to}
-            axisFormat={formatRate}
-            message={metricHistoryMessage}
-          />
-        </article>
+        <NodeMetricCard
+          label="Network"
+          value={formatRate(node.hostNetworkTxBytesPerSec)}
+          detail={'Host upload · download ' + formatRate(node.hostNetworkRxBytesPerSec)}
+          tone="blue"
+          series={[
+            { label: 'Upload', points: metricHistory?.networkTxBytesPerSec ?? [] },
+            { label: 'Download', points: metricHistory?.networkRxBytesPerSec ?? [], secondary: true },
+          ]}
+          showLegend
+          from={metricHistory?.from}
+          to={metricHistory?.to}
+          axisFormat={formatRate}
+          historyMessage={metricHistoryMessage}
+        />
         <NodeMetricCard
           label="Connections"
           value={peerCount(node.peers)}
-          detail={`${peerBreakdown(node.peers)} · live 1m`}
+          detail={peerBreakdown(node.peers)}
           tone="blue"
           series={[
             { label: 'Inbound', points: metricHistory?.peerInboundCount ?? [] },
@@ -206,7 +214,7 @@ export function NodePage() {
         <NodeMetricCard
           label="Block time"
           value={blockInterval.value}
-          detail={`${historyQuery.error ? 'History unavailable' : blockInterval.detail} · live 1m`}
+          detail={historyQuery.error ? 'History unavailable' : blockInterval.detail}
           tone="amber"
           series={[{ label: 'Block time', points: metricHistory?.blockIntervalMs ?? [] }]}
           from={metricHistory?.from}
@@ -218,7 +226,7 @@ export function NodePage() {
         <NodeMetricCard
           label="Transactions"
           value={formatNumber(node.latestBlockTransactionCount)}
-          detail="Block Summary transaction count · live 1m"
+          detail="Block Summary transaction count"
           tone="violet"
           series={[{ label: 'Transactions', points: metricHistory?.transactionCount ?? [] }]}
           from={metricHistory?.from}
@@ -230,8 +238,7 @@ export function NodePage() {
       </div>
     </section>
 
-    <section id="node-network-panel" className="node-tabpanel" role="tabpanel" aria-labelledby="node-network-tab" aria-label="Network" hidden={activeTab !== 'network'}>
-      <h2 className="sr-only">Network</h2>
+    <NodeDisclosure title="Peer diagnostics" summaryDetail="Peer insight and retained aggregate Peer history">
       <PeerInsight insight={node.peers} />
       <PeerHistoryInsight
         history={peerHistoryQuery.data ? normalizePublicPeerHistory(peerHistoryQuery.data) : undefined}
@@ -239,10 +246,40 @@ export function NodePage() {
         loading={peerHistoryQuery.isPending}
       />
       <p className="redaction-note">Network insight is public and redacted: peer addresses and identity lists are never displayed.</p>
-    </section>
+    </NodeDisclosure>
+
+    <NodeDisclosure title="Identifiers and technical details" summaryDetail="Node ID, component states, and reference context">
+      <dl className="node-technical-list">
+        <div><dt>Node ID</dt><dd><code>{node.nodeId}</code></dd></div>
+        <div><dt>Network key</dt><dd><code>{node.networkKey}</code></dd></div>
+        <div><dt>RPC state</dt><dd>{nodeComponentStateLabel(node.rpcState)}</dd></div>
+        <div><dt>Sync state</dt><dd>{nodeComponentStateLabel(node.syncState)}</dd></div>
+        <div><dt>Consensus state</dt><dd>{nodeComponentStateLabel(node.consensusState)}</dd></div>
+        <div><dt>Process state</dt><dd>{nodeComponentStateLabel(node.processState)}</dd></div>
+        <div><dt>Historical high watermark</dt><dd>{formatNumber(node.historicalHighWatermark)}</dd></div>
+        <div><dt>Observed Network Head</dt><dd>{formatNumber(node.networkReferenceHead)}</dd></div>
+        <div><dt>Reference confidence</dt><dd>{node.networkReferenceConfidence || 'Unknown'}</dd></div>
+      </dl>
+    </NodeDisclosure>
   </section>
 }
 
+function NodeInfoGroup({ title, label, note, children }: { title: string; label: string; note?: string; children: ReactNode }) {
+  return <section className="node-info-group" aria-label={label}>
+    <h2 className="node-group-title">{title}{note && <span className="node-group-note">{note}</span>}</h2>
+    <div className="node-info-metrics">{children}</div>
+  </section>
+}
+
+function NodeDisclosure({ title, summaryDetail, children }: { title: string; summaryDetail?: string; children: ReactNode }) {
+  return <details className="node-disclosure">
+    <summary className="node-disclosure-summary">
+      <span className="node-disclosure-title">{title}</span>
+      {summaryDetail && <span className="node-disclosure-detail">{summaryDetail}</span>}
+    </summary>
+    <div className="node-disclosure-body">{children}</div>
+  </details>
+}
 function MetricCardHeading({ label, hint }: { label: string; hint?: string }) {
   return <header className="node-metric-card-heading"><h3>{label}</h3>{hint && <span>{hint}</span>}</header>
 }
@@ -469,28 +506,52 @@ function latestBlockInterval(history: ReturnType<typeof usePublicNodeHistory>['d
   return { value, detail: `Block ${latest.height.toLocaleString()} − ${previous.height.toLocaleString()}` }
 }
 
-function TabButton({ id, panelId, selected, onSelect, onNavigate, children }: { id: string; panelId: string; selected: boolean; onSelect: () => void; onNavigate: (tab: 'details' | 'network') => void; children: string }) {
-  return <button
-    id={id}
-    className="node-tab"
-    type="button"
-    role="tab"
-    aria-controls={panelId}
-    aria-selected={selected}
-    tabIndex={selected ? 0 : -1}
-    onClick={onSelect}
-    onKeyDown={(event) => {
-      if (event.key === 'Enter' || event.key === ' ') {
-        event.preventDefault()
-        onSelect()
-      } else if (event.key === 'ArrowRight' || event.key === 'ArrowDown' || event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
-        event.preventDefault()
-        onNavigate(id === 'node-details-tab' ? 'network' : 'details')
-      }
-    }}
-  >{children}</button>
+function syncStateLabel(value: string | null | undefined): string {
+  switch (typeof value === 'string' ? value.trim().toLowerCase() : '') {
+    case 'ok':
+    case 'current':
+    case 'synced':
+      return 'Current'
+    case 'starting':
+    case 'syncing':
+      return 'Starting'
+    case 'error':
+      return 'Error'
+    case 'disabled':
+      return 'Disabled'
+    case 'unsupported':
+      return 'Unsupported'
+    default:
+      return 'Unknown'
+  }
 }
 
+/** Sync progress is only asserted from the Server Observed Network Head when
+ *  its confidence is high; a low-confidence reference is shown as context, not
+ *  as a progress claim. */
+function formatSyncDetail(node: PublicNode): string {
+  if (node.currentHead == null || node.networkReferenceHead == null) return 'Reference unavailable; sync progress is Unknown'
+  if (node.networkReferenceConfidence !== 'high') {
+    return 'Reference confidence ' + (node.networkReferenceConfidence || 'unknown') + '; progress is not asserted'
+  }
+  const behind = node.networkReferenceHead - node.currentHead
+  if (behind <= 0) return 'At the Server Observed Network Head'
+  return behind.toLocaleString() + ' blocks behind the Server Observed Network Head'
+}
+
+function formatResyncDetail(node: PublicNode): string {
+  if (node.resyncProgress) return node.resyncProgress
+  return node.resyncState === 'normal' ? 'No resync in progress' : 'Resync progress is Unknown'
+}
+
+function formatReferenceHead(node: PublicNode): string {
+  return node.networkReferenceHead == null ? 'Unknown' : node.networkReferenceHead.toLocaleString()
+}
+
+function formatReferenceDetail(node: PublicNode): string {
+  if (node.networkReferenceHead == null) return 'Server Observed Network Head unavailable'
+  return 'Server Observed Network Head · ' + (node.networkReferenceConfidence || 'unknown') + ' confidence'
+}
 function NodeOverviewStatus({ label, value }: { label: string; value: string }) {
   const state = nodeComponentStateLabel(value)
   return (

@@ -276,8 +276,8 @@ test('keeps the public Network and Node Detail readable in both themes', async (
   await expect(page.getByRole('heading', { level: 1, name: /Node A/ })).toBeVisible({ timeout: 15_000 })
   await expectReadable(page, page.getByText('Process uptime').first())
   await expectReadable(page, page.getByRole('heading', { level: 3, name: 'Network' }))
-  await expect(page.getByRole('tab', { name: 'Details' })).toBeVisible()
-  await expect(page.getByRole('tab', { name: 'Network' })).toBeVisible()
+  await expect(page.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeVisible()
+  await expect(page.getByText('Peer diagnostics')).toBeVisible()
   await expectNoHorizontalOverflow(page)
 
   // The same surface in Dark.
@@ -286,7 +286,7 @@ test('keeps the public Network and Node Detail readable in both themes', async (
   expect((await resolvedTheme(page)).dark).toBe(true)
   await expectReadable(page, page.getByText('Process uptime').first())
   await expectReadable(page, page.getByRole('heading', { level: 3, name: 'Network' }))
-  await expect(page.getByRole('tab', { name: 'Details' })).toBeVisible()
+  await expect(page.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeVisible()
   await expectNoHorizontalOverflow(page)
 
   // Network Overview keeps its Peer/Geo modules and readable copy in Dark.

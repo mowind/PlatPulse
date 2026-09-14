@@ -82,6 +82,16 @@ async function goToAdmin() {
   })
 }
 
+/** Open the Node Detail Peer diagnostics disclosure and return it. */
+function openPeerDisclosure(): HTMLDetailsElement {
+  const disclosure = screen.getByText('Peer diagnostics').closest('details')
+  if (!disclosure) throw new Error('Peer diagnostics disclosure is missing')
+  const summary = disclosure.querySelector('summary')
+  if (!summary) throw new Error('Peer diagnostics disclosure has no summary to activate')
+  fireEvent.click(summary)
+  return disclosure as HTMLDetailsElement
+}
+
 /** Minimal EventSource stand-in so Admin SSE behavior is testable in jsdom. */
 class FakeEventSource {
   static latest: FakeEventSource | null = null
@@ -539,7 +549,7 @@ describe('App shell with private Home', () => {
     await screen.findByRole('region', { name: 'Home' })
   })
 
-  it('renders the production public Node Detail contract and switches tabs by keyboard', async () => {
+  it('renders the production public Node Detail continuous reading contract', async () => {
     window.history.replaceState({}, '', '/')
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
@@ -673,19 +683,29 @@ describe('App shell with private Home', () => {
     expect(screen.getByText('RPC observation failed')).toBeTruthy()
     expect(screen.getByText('Started')).toBeTruthy()
     expect(screen.getByText('Last report')).toBeTruthy()
-    const resources = screen.getByLabelText('Node process and storage resources')
-    expect(resources.textContent).toContain('CPU')
-    expect(resources.textContent).toContain('12.5%')
-    expect(resources.textContent).toContain('Memory')
-    expect(resources.textContent).toContain('6.3%')
-    expect(resources.textContent).toContain('Node data')
-    expect(resources.textContent).toContain('25.0%')
-    expect(resources.textContent).toContain('2.00 GiB / 8.00 GiB')
-    expect(resources.querySelectorAll('.metric-row-progress')).toHaveLength(3)
-    expect(resources.querySelectorAll('.metric-row')).toHaveLength(3)
+    const summary = screen.getByLabelText('Node key summary')
+    expect(summary.textContent).toContain('Head')
+    expect(summary.textContent).toContain('Sync')
+    expect(summary.textContent).toContain('Peers')
+    expect(summary.textContent).toContain('Process uptime')
+    const processGroup = screen.getByLabelText('PlatON process resources')
+    expect(processGroup.textContent).toContain('CPU')
+    expect(processGroup.textContent).toContain('12.5%')
+    expect(processGroup.textContent).toContain('Memory')
+    expect(processGroup.textContent).toContain('6.3%')
+    expect(processGroup.querySelectorAll('.metric-row-progress')).toHaveLength(2)
+    const nodeDataGroup = screen.getByLabelText('Node data directory')
+    expect(nodeDataGroup.textContent).toContain('Directory usage')
+    expect(nodeDataGroup.textContent).toContain('25.0%')
+    expect(nodeDataGroup.textContent).toContain('2.00 GiB / 8.00 GiB')
+    expect(nodeDataGroup.querySelectorAll('.metric-row-progress')).toHaveLength(1)
+    const hostGroup = screen.getByLabelText('Shared Host resources')
+    expect(hostGroup.textContent).toContain('Host CPU')
+    expect(hostGroup.textContent).toContain('Host upload')
+    expect(hostGroup.textContent).toContain('shared by every Node')
     expect(screen.getByRole('heading', { level: 3, name: 'Network' })).toBeTruthy()
-    expect(screen.getByText('2.00 KiB/s')).toBeTruthy()
-    expect(screen.getByText('4.00 KiB/s')).toBeTruthy()
+    expect(screen.getAllByText('2.00 KiB/s').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('4.00 KiB/s').length).toBeGreaterThan(0)
     expect(screen.getByRole('heading', { level: 3, name: 'Connections' })).toBeTruthy()
     const connectionsLegend = screen.getByLabelText('Connections chart legend')
     expect(connectionsLegend.textContent).toContain('Inbound')
@@ -693,6 +713,7 @@ describe('App shell with private Home', () => {
     expect(screen.getByRole('heading', { level: 3, name: 'Block time' })).toBeTruthy()
     expect(screen.getByText('2.00 s')).toBeTruthy()
     expect(screen.getByRole('heading', { level: 3, name: 'Transactions' })).toBeTruthy()
+    expect(screen.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeTruthy()
     expect(screen.getAllByRole('img', { name: /line chart over the last minute/ })).toHaveLength(2)
     expect(screen.getAllByRole('img', { name: /bar chart over the last minute/ })).toHaveLength(2)
     expect(screen.getAllByText('1m')).toHaveLength(4)
@@ -711,16 +732,15 @@ describe('App shell with private Home', () => {
       expect(screen.queryByRole('navigation', { name: 'Prototype variants' })).toBeNull()
     }
 
-    const detailsTab = screen.getByRole('tab', { name: 'Details' })
-    const networkTab = screen.getByRole('tab', { name: 'Network' })
-    expect(detailsTab.getAttribute('aria-selected')).toBe('true')
-    expect(screen.getByRole('tabpanel', { name: 'Details' })).toBeTruthy()
-
-    networkTab.focus()
-    fireEvent.keyDown(networkTab, { key: 'Enter' })
-    expect(networkTab.getAttribute('aria-selected')).toBe('true')
-    expect(screen.getByRole('tabpanel', { name: 'Network' })).toBeTruthy()
+    // Continuous reading replaces the Details/Network tabs. Peer diagnostics
+    // and low-frequency technical details are keyboard-operable disclosures.
+    expect(screen.queryByRole('tab')).toBeNull()
+    const peerDisclosure = openPeerDisclosure()
     expect(screen.getByRole('heading', { name: 'Peer history' })).toBeTruthy()
+    expect(peerDisclosure.hasAttribute('open')).toBe(true)
+    const technicalDisclosure = screen.getByText('Identifiers and technical details').closest('details')
+    if (!technicalDisclosure) throw new Error('Technical details disclosure is missing')
+    expect(within(technicalDisclosure).getByText('Reference confidence')).toBeTruthy()
   })
 
   it('guides an unauthenticated visitor to the login page', async () => {
@@ -1421,8 +1441,8 @@ describe('App shell with private Home', () => {
     expect(screen.getAllByRole('img', { name: /line chart over the last minute/ })).toHaveLength(2)
     expect(screen.getAllByRole('img', { name: /bar chart over the last minute/ })).toHaveLength(2)
     expect(screen.getAllByText('No samples in the last minute')).toHaveLength(4)
-    fireEvent.click(screen.getByRole('tab', { name: 'Network' }))
-    expect(screen.getByRole('tab', { name: 'Network' }).getAttribute('aria-selected')).toBe('true')
+    openPeerDisclosure()
+    expect(screen.getByRole('heading', { name: 'Peer history' })).toBeTruthy()
 
     await act(async () => {
       expect(FakeEventSource.latest).toBeTruthy()
@@ -1437,7 +1457,7 @@ describe('App shell with private Home', () => {
     window.dispatchEvent(new Event('offline'))
     expect(await screen.findByText('You are offline')).toBeTruthy()
     expect(screen.getByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
-    expect(screen.getByRole('tab', { name: 'Network' }).getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByRole('heading', { name: 'Peer history' })).toBeTruthy()
     expect(screen.getByText(/last successful Node data/i)).toBeTruthy()
   })
 
@@ -2241,11 +2261,12 @@ describe('Theme lifecycle (issue #146)', () => {
       expect(document.documentElement.classList.contains('dark')).toBe(true)
       expect(themeButton().getAttribute('aria-label')).toBe('Theme: Dark. Switch to Auto')
 
-      // The public Node Detail keeps its tabs, four charts, and theme.
+      // The public Node Detail is one continuous reading page with four charts
+      // and keyboard disclosures instead of Details/Network tabs.
       await navigateTo('/nodes/node-1')
       expect(await screen.findByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
-      expect(screen.getByRole('tab', { name: 'Details' })).toBeTruthy()
-      expect(screen.getByRole('tab', { name: 'Network' })).toBeTruthy()
+      expect(screen.queryByRole('tab')).toBeNull()
+      expect(screen.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeTruthy()
       expect(screen.getAllByRole('img', { name: /chart over the last minute/ })).toHaveLength(4)
       expect(document.documentElement.classList.contains('dark')).toBe(true)
 

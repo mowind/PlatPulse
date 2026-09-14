@@ -1258,36 +1258,175 @@ button {
   overflow-wrap: anywhere;
 }
 
-.node-tabs {
+.node-hero-facts {
   display: flex;
-  justify-content: center;
-  gap: 0.25rem;
-  width: min(100%, 24rem);
-  margin: 0.75rem auto;
-  padding: 0.25rem;
-  background: #e8ebf5;
-  border-radius: 12px;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.25rem;
+  margin: 0;
 }
 
-.node-tab {
-  flex: 1;
-  min-height: 44px;
-  padding: 0.6rem 1rem;
+.node-hero-facts > div {
+  min-width: 0;
+  display: grid;
+  gap: 0.2rem;
+}
+
+.node-hero-facts dt {
   color: var(--muted);
-  background: transparent;
-  border: 0;
-  border-radius: 9px;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.node-hero-facts dd {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.node-info-groups {
+  display: grid;
+  gap: 0.9rem;
+  margin-top: 0.9rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid rgba(100, 116, 139, 0.22);
+}
+
+.node-info-group {
+  min-width: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.node-group-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.82rem;
+  letter-spacing: 0.02em;
+}
+
+.node-group-note {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 600;
+}
+
+.node-info-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15.5rem, 1fr));
+  gap: 0.6rem 1.1rem;
+}
+
+.node-metrics-section {
+  margin-top: 1.1rem;
+}
+
+.node-metrics-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.35rem 1rem;
+  margin-bottom: 0.6rem;
+}
+
+.node-metrics-header h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.node-metrics-header p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.node-disclosure {
+  margin-top: 1rem;
+  color: var(--ink);
+  background: var(--public-card-surface);
+  border: 1px solid var(--public-card-border);
+  border-radius: 1rem;
+}
+
+.node-disclosure-summary {
+  min-height: 44px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.75rem;
+  padding: 0.7rem 1rem;
+  border-radius: 1rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+.node-disclosure-summary::-webkit-details-marker {
+  display: none;
+}
+
+.node-disclosure-title {
+  color: var(--ink);
   font-weight: 800;
 }
 
-.node-tab[aria-selected='true'] {
-  color: var(--ink);
-  background: var(--surface);
-  box-shadow: 0 3px 10px rgba(37, 48, 82, 0.1);
+.node-disclosure-title::before {
+  content: '\25B8';
+  display: inline-block;
+  margin-right: 0.5rem;
+  color: var(--muted);
+  transition: transform 150ms ease;
 }
 
-.node-tabpanel[hidden] {
-  display: none;
+.node-disclosure[open] > .node-disclosure-summary .node-disclosure-title::before {
+  transform: rotate(90deg);
+}
+
+.node-disclosure-detail {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.node-disclosure-summary:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: -3px;
+}
+
+.node-disclosure-body {
+  display: grid;
+  gap: 0.8rem;
+  padding: 0 1rem 1rem;
+}
+
+.node-technical-list {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 0.6rem 1.1rem;
+}
+
+.node-technical-list > div {
+  min-width: 0;
+}
+
+.node-technical-list dt {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.node-technical-list dd {
+  margin: 0.2rem 0 0;
+  overflow-wrap: anywhere;
 }
 
 .node-metric-grid {
@@ -1620,10 +1759,6 @@ button {
 
   .node-network-rates strong {
     font-size: 0.9rem;
-  }
-
-  .node-tabs {
-    width: 100%;
   }
 
   .node-hero-resources {
@@ -5228,6 +5363,7 @@ button {
   /* Chart and disclosure cards gain the outline/glow without moving the plot
      or the reading surface. */
   .home-shell .node-metric-card:hover,
+  .home-shell .node-disclosure:hover,
   .home-shell .validator-history-entry:hover,
   .home-shell .peer-history-table-wrap:hover,
   .home-shell .peer-history-insight:hover {
@@ -5247,7 +5383,8 @@ button {
   box-shadow: var(--public-card-glow);
 }
 
-.home-shell .validator-history-entry:focus-within {
+.home-shell .validator-history-entry:focus-within,
+.home-shell .node-disclosure:focus-within {
   border-color: var(--public-card-border-hover);
   box-shadow: var(--public-card-glow);
 }
@@ -5262,10 +5399,15 @@ button {
   .home-shell .peer-insight,
   .home-shell .geo-insight,
   .home-shell .node-metric-card,
+  .home-shell .node-disclosure,
   .home-shell .validator-history-entry,
   .home-shell .peer-history-table-wrap,
   .home-shell .peer-history-insight {
     transition: none !important;
+  }
+
+  .home-shell .node-disclosure-title::before {
+    transition: none;
   }
 
   .dashboard-summary-card:hover,
@@ -5320,24 +5462,17 @@ button {
   border-block-color: rgba(255, 255, 255, 0.14);
 }
 
+:root.dark .node-disclosure,
+:root.dark .home-shell .node-disclosure {
+  background: var(--public-card-surface);
+  border-color: var(--public-card-border);
+}
+
+:root.dark .home-shell .node-info-groups {
+  border-top-color: rgba(255, 255, 255, 0.12);
+}
+
 :root.dark .dashboard-node-diagnostic { border-top-color: rgba(255, 255, 255, 0.12); }
-
-/* Node Detail tabs: the light treatment keeps a transparent strip and marks the
-   selected tab with an Emerald underline, so the dark theme must preserve that
-   underline instead of the earlier raised chip with a generic shadow. */
-:root.dark .home-shell .node-tabs {
-  background: transparent;
-  border: 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
-}
-
-:root.dark .home-shell .node-tab { color: var(--muted); }
-
-:root.dark .home-shell .node-tab[aria-selected='true'] {
-  color: var(--ink);
-  background: rgba(255, 255, 255, 0.08);
-  box-shadow: inset 0 -2px 0 var(--brand-strong);
-}
 
 /* Chart furniture: grid lines, dots, and the secondary (violet) series keep
    readable contrast on the dark canvas. */

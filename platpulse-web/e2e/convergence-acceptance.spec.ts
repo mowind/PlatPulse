@@ -155,11 +155,14 @@ test.describe('Converged WebUI acceptance (issue #95)', () => {
     await expect(page.getByRole('heading', { level: 1, name: PUBLIC_NODE_NAME })).toBeVisible({
       timeout: 15_000,
     })
-    await expect(page.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true')
-    await page.getByRole('tab', { name: 'Network' }).click()
-    await expect(page.getByRole('tabpanel', { name: 'Network' })).toBeVisible()
-    await page.getByRole('tab', { name: 'Details' }).click()
-    await expect(page.getByRole('tabpanel', { name: 'Details' })).toBeVisible()
+    // Continuous reading (issue #149): no Details/Network tabs, and the Peer
+    // diagnostics disclosure opens in place at every fixed viewport.
+    await expect(page.getByRole('tab')).toHaveCount(0)
+    await expect(page.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeVisible()
+    const peerDisclosure = page.locator('details.node-disclosure', { hasText: 'Peer diagnostics' })
+    await peerDisclosure.locator('summary').click()
+    await expect(peerDisclosure).toHaveAttribute('open', '')
+    await expect(page.getByRole('heading', { name: 'Peer history' })).toBeVisible()
 
     // Node Detail → Network overview via the breadcrumb (the Home card
     // Network display name is plain text, not a nested link).
