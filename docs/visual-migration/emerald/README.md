@@ -185,3 +185,33 @@ What still fails (96), and why it needs judgement rather than another sweep:
    identified from the log alone. The next step is a targeted locator dump, not
    a guess.
 4. The rest are click and visibility timeouts cascading from 1 and 2.
+
+## 8. The largest remaining class is narrower than it looks
+
+The 15 toHaveCSS failures are **not design mismatches**. The values agree; only
+the serialization does. Measured evidence from theme.spec.ts:396 on the Home
+statistics card:
+
+    Expected: "rgba(255, 255, 255, 0.6)"
+    Received: "oklab(1 0 0 / 0.6)"
+
+oklab(1 0 0 / 0.6) is white at 60% alpha - the same colour the assertion means,
+because bg-background/60 resolves through Emerald's --background (oklch(1 0 0))
+and Chrome now serialises that as oklab. The same pattern was already fixed once
+for the dark grid fill of the background atmosphere.
+
+So this class should be settled by making the comparison notation-agnostic -
+resolve both the expected and the computed value through the browser and compare
+components, or accept either spelling in the matcher - **not** by restating the
+expected colour. The assertion keeps pinning the exact colour and alpha; it stops
+depending on how a browser chooses to spell it.
+
+Two concrete items were also closed here:
+
+- The AdminSettings Geo provider radios were four 16px native
+  input[type=radio] instances rendered from one template. They are 44px now,
+  like the checkbox. A custom indicator that keeps a 16px visual dot inside a
+  44px row remains the better long-term design (deviation 10).
+- The input reported by expectVisibleInteractiveTargets was identified with a
+  temporary locator dump against a live server, not by guessing. That dump is how
+  the line above was found; nothing in the log alone named the element.

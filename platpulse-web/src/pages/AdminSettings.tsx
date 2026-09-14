@@ -512,7 +512,7 @@ function GeoProviderSettings({ generation, csrfToken }: SettingsSectionProps) {
                 <label htmlFor={'geo-provider-' + candidate.provider} className="flex min-h-11 items-center gap-2 text-sm">
                   <input
                     id={'geo-provider-' + candidate.provider}
-                    className="size-4 shrink-0 accent-primary"
+                    className="size-11 shrink-0 accent-primary"
                     type="radio"
                     name="geo-provider"
                     value={candidate.provider}
