@@ -112,10 +112,24 @@ test.describe('Authenticated shell', () => {
         throw new Error('Admin visual proof surfaces are missing')
       }
 
+      // Resolve through the browser rather than regex-parsing the string:
+      // Tailwind's oklch tokens serialise as oklab(1 0 0 / 0.6), whose digits a
+      // regex reads as near-black RGB.
       const parseColor = (value: string) => {
-        const channels = value.match(/[\d.]+/g)?.map(Number) ?? []
-        if (channels.length < 3) throw new Error(`Unsupported computed color: ${value}`)
-        return { red: channels[0], green: channels[1], blue: channels[2], alpha: channels[3] ?? 1 }
+        const canvas = document.createElement('canvas')
+        canvas.width = 1
+        canvas.height = 1
+        const context = canvas.getContext('2d')
+        if (!context) throw new Error('a 2d context is required to read a colour')
+        context.fillStyle = '#010203'
+        context.fillStyle = value
+        if (context.fillStyle === '#010203' && value.trim().toLowerCase() !== '#010203') {
+          throw new Error(`Unsupported computed color: ${value}`)
+        }
+        context.clearRect(0, 0, 1, 1)
+        context.fillRect(0, 0, 1, 1)
+        const [red, green, blue, alpha] = context.getImageData(0, 0, 1, 1).data
+        return { red, green, blue, alpha: alpha / 255 }
       }
       const luminance = ({ red, green, blue }: ReturnType<typeof parseColor>) => {
         const linear = [red, green, blue].map((channel) => {
@@ -169,10 +183,24 @@ test.describe('Authenticated shell', () => {
     const validatorAddress = page.getByPlaceholder('0x…')
     await expect(validatorAddress).toBeVisible()
     const placeholderContrast = await validatorAddress.evaluate((input) => {
+      // Resolve through the browser rather than regex-parsing the string:
+      // Tailwind's oklch tokens serialise as oklab(1 0 0 / 0.6), whose digits a
+      // regex reads as near-black RGB.
       const parseColor = (value: string) => {
-        const channels = value.match(/[\d.]+/g)?.map(Number) ?? []
-        if (channels.length < 3) throw new Error(`Unsupported computed color: ${value}`)
-        return { red: channels[0], green: channels[1], blue: channels[2], alpha: channels[3] ?? 1 }
+        const canvas = document.createElement('canvas')
+        canvas.width = 1
+        canvas.height = 1
+        const context = canvas.getContext('2d')
+        if (!context) throw new Error('a 2d context is required to read a colour')
+        context.fillStyle = '#010203'
+        context.fillStyle = value
+        if (context.fillStyle === '#010203' && value.trim().toLowerCase() !== '#010203') {
+          throw new Error(`Unsupported computed color: ${value}`)
+        }
+        context.clearRect(0, 0, 1, 1)
+        context.fillRect(0, 0, 1, 1)
+        const [red, green, blue, alpha] = context.getImageData(0, 0, 1, 1).data
+        return { red, green, blue, alpha: alpha / 255 }
       }
       const composite = (front: ReturnType<typeof parseColor>, back: ReturnType<typeof parseColor>) => ({
         red: front.red * front.alpha + back.red * (1 - front.alpha),
@@ -190,7 +218,7 @@ test.describe('Authenticated shell', () => {
         return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
       }
       const shell = document.querySelector('header')?.parentElement
-      const panel = input.closest('article')
+      const panel = input.closest('article, [role="article"]')
       if (!shell || !panel) throw new Error('Admin form visual surfaces are missing')
       const shellColor = parseColor(getComputedStyle(shell).backgroundColor)
       const panelColor = composite(parseColor(getComputedStyle(panel).backgroundColor), shellColor)
@@ -261,7 +289,7 @@ test.describe('Authenticated shell', () => {
     await expectNoHorizontalOverflow(page)
   })
 
-  test('Admin shell expands on ultrawide widths', async ({ page }) => {
+  test('Admin shell caps its content column on ultrawide widths', async ({ page }) => {
     test.skip((page.viewportSize()?.width ?? 0) < 1024, 'Ultrawide measurement belongs to the desktop project')
     await loginAs(page)
     await page.getByRole('link', { name: 'Admin', exact: true }).click()
@@ -270,8 +298,15 @@ test.describe('Authenticated shell', () => {
     const standard = await measureAdminWorkbench(page)
     await page.setViewportSize({ width: 2560, height: 800 })
     const ultrawide = await measureAdminWorkbench(page)
-    expect(ultrawide.page.width).toBeGreaterThan(standard.page.width * 1.5)
-    expect(Math.abs(ultrawide.heading.x - standard.heading.x)).toBeLessThanOrEqual(1)
+    // Emerald caps every page at a 1280px content column (deviation 7), so the
+    // Admin workbench no longer expands past it on an ultrawide display. What
+    // must hold is that the column is capped and stays centred.
+    expect(ultrawide.page.width).toBeLessThanOrEqual(1281)
+    expect(ultrawide.page.width).toBeGreaterThanOrEqual(standard.page.width - 1)
+    expect(
+      Math.abs(ultrawide.page.x + ultrawide.page.width / 2 - (ultrawide.main.x + ultrawide.main.width / 2)),
+      'the capped content column stays centred inside the Admin main area',
+    ).toBeLessThanOrEqual(1)
     await expectNoHorizontalOverflow(page)
   })
 
@@ -314,8 +349,15 @@ test.describe('Authenticated shell', () => {
     // Tab from the brand to the Admin icon and verify the focus ring is visible.
     await page.keyboard.press('Tab')
     await expect(page.getByRole('link', { name: 'PlatPulse' })).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: 'Admin', exact: true })).toBeFocused()
+    // The header also carries the theme control, so the Admin icon is not
+    // necessarily the next tab stop. Walk to it, as the public shell's spec does.
+    const adminLink = page.getByRole('link', { name: 'Admin', exact: true })
+    let adminFocused = false
+    for (let step = 0; step < 6 && !adminFocused; step += 1) {
+      await page.keyboard.press('Tab')
+      adminFocused = await adminLink.evaluate((element) => element === document.activeElement)
+    }
+    expect(adminFocused, 'the Admin icon is reachable by keyboard').toBe(true)
     await expectFocusedElementHasVisibleFocus(page)
 
     // Enter activates the focused link without a pointer.

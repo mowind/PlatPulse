@@ -114,7 +114,7 @@ function OverviewHeader({
     >
       <div className="min-w-0">
         <span className={EYEBROW}>Owner triage</span>
-        <h1 className="mt-1 text-lg font-semibold break-words">Overview</h1>
+        <h1 className="mt-1 text-2xl font-semibold break-words">Overview</h1>
         <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
           A compact read on what needs intervention across your PlatON estate.
         </p>

@@ -237,6 +237,7 @@ function NetworkCreateForm({ onRegistered }: { onRegistered: (displayName: strin
 
   return (
     <CardX
+      role="article"
       size="medium"
       className={CARD_SURFACE}
       id="network-create-form"

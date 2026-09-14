@@ -137,12 +137,12 @@ export default function AdminLayout() {
   }
 
   return (
-    <div className="flex min-h-dvh flex-col" data-slot="admin-shell">
+    <div className="flex min-h-dvh flex-col bg-background" data-slot="admin-shell">
       <header
         data-slot="admin-header"
         className={cn(
           'sticky top-0 z-20 border-b border-transparent transition-all duration-200',
-          scrolled ? 'backdrop-blur-xl' : 'bg-transparent',
+          scrolled ? 'bg-background/60 backdrop-blur-xl' : 'bg-background/60',
         )}
       >
         <div className="mx-auto flex max-w-[1280px] flex-wrap items-center gap-x-2 gap-y-1 px-4 py-2 lg:h-14 lg:flex-nowrap lg:py-0">

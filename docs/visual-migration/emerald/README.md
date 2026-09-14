@@ -365,3 +365,29 @@ The whole home-convergence spec now passes on all five projects (25 tests,
    spec is restated to the vocabulary main adopted; the source keeps main's
    True/False. This is disclosed rather than quietly absorbed: those assertions
    had been red before any of this work started.
+
+## 15. shell.spec: 15 failures down to 2
+
+The Admin shell spec went from 15 failures to 2 (50 passed, 1.3m). Causes:
+
+- The Admin shell element itself had no background (it relied on body), so the
+  spec's luminance reading of the shell was black. It now paints bg-background.
+- The Admin header carried no surface at rest; it is a light translucent surface
+  now, with Emerald's blur still arriving on scroll.
+- Admin page headings sat in the card-title tier (18px); they are 24px
+  (Emerald's text-2xl) now, which is the page-title tier the spec asserts.
+- **The spec's own colour parser assumed rgb()/rgba()** and regex-read the digits
+  of an oklab() value as near-black RGB - the same notation problem already fixed
+  on the assertion side, this time inside a measurement helper. It resolves the
+  colour through a canvas now.
+- The Admin workbench no longer expands past Emerald's 1280px content column on
+  an ultrawide display (deviation 7); the spec asserts the cap and that the
+  column stays centred inside the Admin main area instead.
+- The Admin icon is not the second tab stop (the header also carries the theme
+  control). The spec walks to it, which is the pattern the public shell's spec
+  already used.
+- The register-Network panel is an article now, as AdminHome's panels already
+  were, and the form proof accepts an article or an article role.
+
+Still failing on desktop only: theme.spec's sibling assertion inside
+shell.spec:83. That is the next item.
