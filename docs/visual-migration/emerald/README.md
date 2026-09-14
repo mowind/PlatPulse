@@ -391,3 +391,14 @@ The Admin shell spec went from 15 failures to 2 (50 passed, 1.3m). Causes:
 
 Still failing on desktop only: theme.spec's sibling assertion inside
 shell.spec:83. That is the next item.
+
+## 16. shell.spec is green (52 passed)
+
+The last shell failure was the Admin navigation's group label contrast reading
+4.35 against an expected 4.5 - on desktop only. The desktop navigation was
+bg-transparent, so the spec composited the label against nothing and compared it
+with black. The navigation paints bg-background now, which is both the correct
+surface for a bordered side column and what makes the measurement meaningful;
+the real contrast of muted-foreground on the page background is above AA.
+
+shell.spec: 52 passed, 3 skipped, 0 failed.

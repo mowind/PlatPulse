@@ -200,7 +200,7 @@ export default function AdminLayout() {
           className={cn(
             'fixed inset-y-0 left-0 z-40 flex w-[min(80vw,18rem)] flex-col gap-1 overflow-y-auto border-r border-border/60 bg-background/95 p-4 backdrop-blur-xl transition-transform duration-200 ease-out',
             navOpen ? 'visible translate-x-0' : 'invisible -translate-x-full',
-            'lg:sticky lg:top-14 lg:z-auto lg:h-[calc(100dvh-3.5rem)] lg:w-[13.5rem] lg:flex-none lg:visible lg:translate-x-0 lg:border-r lg:bg-transparent lg:backdrop-blur-none',
+            'lg:sticky lg:top-14 lg:z-auto lg:h-[calc(100dvh-3.5rem)] lg:w-[13.5rem] lg:flex-none lg:visible lg:translate-x-0 lg:border-r lg:bg-background lg:backdrop-blur-none',
           )}
           onKeyDown={onNavKeyDown}
         >
