@@ -1,10 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
-import {
-  E2E_PASSWORD,
-  expectFocusedElementHasVisibleFocus,
-  expectNoHorizontalOverflow,
-  loginAs,
-} from './helpers'
+import { E2E_PASSWORD, expectFocusedElementHasVisibleFocus, expectNoHorizontalOverflow, loginAs, expectComputedColor } from './helpers'
 
 /**
  * SCN-THEME-LIFECYCLE (webui.md §11.1 "Theme behavior"): the production
@@ -393,7 +388,7 @@ for (const theme of ['light', 'dark'] as const) {
     async function checkCard(card: Locator, lifts = false) {
       await expect(card).toBeVisible({ timeout: 15_000 })
       await page.mouse.move(2, 2)
-      await expect(card).toHaveCSS('background-color', background)
+      await expectComputedColor(card, 'background-color', background)
       await expect(card).toHaveCSS('font-family', font)
       await expectBorderless(card)
       await expect(card).toHaveCSS('backdrop-filter', 'none')
@@ -401,7 +396,7 @@ for (const theme of ['light', 'dark'] as const) {
       await expectQuietShadow(card)
       await expect(card).toHaveCSS('transform', 'none')
       await card.hover()
-      await expect(card).toHaveCSS('background-color', hoverCapable ? opaque : background)
+      await expectComputedColor(card, 'background-color', hoverCapable ? opaque : background)
       await expectBorderless(card)
       if (hoverCapable && lifts) {
         await expect(card).toHaveCSS('box-shadow', glow)
@@ -452,7 +447,7 @@ for (const theme of ['light', 'dark'] as const) {
     await nodeCard.hover()
     await expect(nodeCard).toHaveCSS('transform', 'none')
     await expect(nodeCard).toHaveCSS('transition-duration', '0s')
-    await expect(nodeCard).toHaveCSS('background-color', hoverCapable ? opaque : background)
+    await expectComputedColor(nodeCard, 'background-color', hoverCapable ? opaque : background)
     if (hoverCapable) await expect(nodeCard).toHaveCSS('box-shadow', glow)
     await expectNoHorizontalOverflow(page)
 
@@ -467,11 +462,11 @@ for (const theme of ['light', 'dark'] as const) {
     const adminCard = page.locator('#network-create-form')
     await expect(adminCard).toBeVisible({ timeout: 15_000 })
     await expect(adminCard).toHaveCSS('font-family', await normalizedStyle(page, 'font-family', ADMIN_FONT))
-    await expect(adminCard).toHaveCSS('background-color', theme === 'light'
+    await expectComputedColor(adminCard, 'background-color', theme === 'light'
       ? 'rgba(255, 255, 255, 0.68)' : 'rgba(31, 36, 45, 0.68)')
     await expect(adminCard).toHaveCSS('border-top-width', '1px')
     await expect(adminCard).toHaveCSS('border-top-style', 'solid')
-    await expect(adminCard).toHaveCSS('border-top-color', theme === 'light'
+    await expectComputedColor(adminCard, 'border-top-color', theme === 'light'
       ? 'rgba(148, 163, 184, 0.22)' : 'rgba(255, 255, 255, 0.12)')
   })
 }

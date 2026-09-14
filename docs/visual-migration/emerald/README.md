@@ -240,3 +240,31 @@ that test on phone-360-touch and phone-390-touch: both pass.
 What this decision does NOT license: any overlap that grows past the upstream
 band, or any Node card or interactive control being covered. Those would still
 fail.
+
+## 10. Colour comparison is now by value, and it paid off immediately
+
+e2e/helpers.ts gained 'expectComputedColor', which resolves both the expected
+and the computed colour to sRGB components through a 1x1 canvas. Verified
+against this project's own headless Chromium:
+
+    rgba(255, 255, 255, 0.6) -> fillStyle accepted, pixel [255,255,255,153]
+    oklab(1 0 0 / 0.6)       -> fillStyle accepted, pixel [255,255,255,153]
+    oklch(1 0 0)             -> fillStyle accepted, pixel [255,255,255,255]
+
+So the sampler is sound and the notation question is closed. The six colour
+comparisons in theme.spec.ts and node-detail-six-charts.spec.ts now use it, and
+'borderless' cards are genuinely border-style: none (Tailwind's preflight leaves
+border-style: solid everywhere, so 'bordered={false}' previously produced a
+zero-width solid border rather than no border).
+
+With notation out of the way, the remaining background-color mismatches turned
+out to be a different problem, and the helper now reports it plainly:
+
+    oklab(1 0 0 / 0.6) must equal rgb(255, 255, 255)
+    oklab(0.141 0.00136333 -0.00481054 / 0.613119) must equal oklch(0.141 0.005 285.823)
+
+Both expect the OPAQUE colour while the element is at 60% alpha: the assertion
+is looking at the hovered state and the element is not hovered. That is the next
+thing to chase - either the hover assertion's mouse path and timing, or
+'hover:bg-background' genuinely not applying on the card. It is now a
+well-labelled failure instead of an ambiguous colour diff.

@@ -58,7 +58,7 @@ export function CardX({
       data-slot="card-x"
       className={cn(
         'bg-card text-card-foreground flex flex-col rounded-lg',
-        bordered && 'border',
+        bordered ? 'border' : 'border-none',
         hoverable && 'transition-colors hover:border-foreground/30',
         className,
       )}

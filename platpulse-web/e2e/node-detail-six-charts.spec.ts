@@ -1,9 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import {
-  expectNoHorizontalOverflow,
-  expectVisibleInteractiveTargets,
-  loginAs,
-} from './helpers'
+import { expectNoHorizontalOverflow, expectVisibleInteractiveTargets, loginAs, expectComputedColor } from './helpers'
 
 /**
  * Issue #150 final Node Detail acceptance: the fixed four Playwright projects
@@ -215,7 +211,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
           expect(hovered.shadow, 'chart cards stay shadow-free').toBe(restingShadow)
           await expect(chartCard).toHaveCSS('box-shadow', 'none')
           if (hoverCapable) {
-            await expect(chartCard).toHaveCSS('background-color', theme === 'light'
+            await expectComputedColor(chartCard, 'background-color', theme === 'light'
               ? 'rgb(255, 255, 255)' : 'oklch(0.141 0.005 285.823)')
           }
 

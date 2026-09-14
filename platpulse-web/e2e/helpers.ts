@@ -170,3 +170,48 @@ export async function expectFocusedElementHasVisibleFocus(page: Page) {
   expect(focus!.focusVisible, 'focused element must match :focus-visible').toBe(true)
   expect(focus!.outlineWidth, 'focus must be visibly outlined').toBeGreaterThan(0)
 }
+
+/**
+ * Compare a computed colour by value rather than by notation.
+ *
+ * Chrome preserves the specified colour space, so an expectation written as
+ * rgba(255, 255, 255, 0.6) and a value derived from Emerald's oklch token
+ * (bg-background/60) come back as oklab(1 0 0 / 0.6): the same colour, spelled
+ * differently, which toHaveCSS reports as a mismatch. Both sides are resolved to
+ * sRGB components through a 1x1 canvas here, so the assertion still pins the
+ * exact colour and alpha. A notation the canvas rejects samples as
+ * [-1, -1, -1, -1] and fails loudly rather than passing by accident.
+ */
+export async function expectComputedColor(locator: Locator, property: string, expected: string) {
+  const actual = await locator.evaluate(
+    (element, prop) => getComputedStyle(element).getPropertyValue(prop).trim(),
+    property,
+  )
+  const equal = await locator.evaluate(
+    (_element, pair) => {
+      const sample = (input: string): number[] => {
+        const canvas = document.createElement('canvas')
+        canvas.width = 1
+        canvas.height = 1
+        const context = canvas.getContext('2d')
+        if (!context) return [-1, -1, -1, -1]
+        context.fillStyle = '#010203'
+        context.fillStyle = input
+        if (context.fillStyle === '#010203' && input.trim().toLowerCase() !== '#010203') {
+          return [-1, -1, -1, -1]
+        }
+        context.clearRect(0, 0, 1, 1)
+        context.fillRect(0, 0, 1, 1)
+        return Array.from(context.getImageData(0, 0, 1, 1).data)
+      }
+      const left = sample(pair[0])
+      const right = sample(pair[1])
+      return (
+        left.length === right.length &&
+        left.every((component, index) => Math.abs(component - right[index]) <= 1)
+      )
+    },
+    [actual, expected] as [string, string],
+  )
+  expect(equal, property + ': ' + actual + ' must equal ' + expected).toBe(true)
+}
