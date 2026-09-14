@@ -1,2 +1,26 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><meta name="robots" content="noindex"/><title>PlatPulse · Emerald 原型</title></head><body><div id="root"></div><script type="module" src="/src/pages/emerald-prototype/main.tsx"></script></body></html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="robots" content="noindex"/>
+  <title>PlatPulse · Emerald 原型</title>
+  <script>
+    // Apply the isolated prototype preference before styles and React render.
+    (() => {
+      let mode = 'auto'
+      try {
+        const stored = window.localStorage.getItem('platpulse.emerald-prototype.themeMode')
+        if (stored === 'light' || stored === 'dark' || stored === 'auto') mode = stored
+      } catch { /* Unavailable storage defaults to the system theme. */ }
+      const dark = mode === 'dark' || (mode === 'auto' && window.matchMedia?.('(prefers-color-scheme: dark)').matches)
+      const root = document.documentElement
+      root.classList.toggle('dark', Boolean(dark))
+      root.style.colorScheme = dark ? 'dark' : 'light'
+      root.dataset.themeMode = mode
+    })()
+  </script>
+  <style>:root { background: #f8fafc; } :root.dark { background: #141923; }</style>
+</head>
+<body><div id="root"></div><script type="module" src="/src/pages/emerald-prototype/main.tsx"></script></body>
+</html>

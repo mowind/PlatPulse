@@ -1,10 +1,20 @@
 // THROWAWAY: Three Node Detail layouts on /prototype/emerald/?variant=A|B|C.
-// Question: which Emerald hierarchy makes Node diagnosis easiest? No auth, API or persistence.
-import { useEffect, useState, type ReactNode } from 'react'
+// Question: which Emerald hierarchy makes Node diagnosis easiest? No auth or API; only theme preference persists.
+import { useEffect, useLayoutEffect, useState, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter, useSearchParams } from 'react-router'
 import '@fontsource-variable/inter'
 import './prototype.css'
+
+type ThemeMode = 'auto' | 'light' | 'dark'
+const themeStorageKey = 'platpulse.emerald-prototype.themeMode'
+const themeLabels: Record<ThemeMode, string> = { auto: '跟随系统', light: '浅色', dark: '深色' }
+const themeIcons: Record<ThemeMode, string> = { auto: '◐', light: '☀', dark: '☾' }
+const nextThemeModes: Record<ThemeMode, ThemeMode> = { auto: 'light', light: 'dark', dark: 'auto' }
+function initialThemeMode(): ThemeMode {
+  const mode = document.documentElement.dataset.themeMode
+  return mode === 'light' || mode === 'dark' ? mode : 'auto'
+}
 
 type Scenario = 'normal' | 'stale' | 'failure' | 'unknown'
 type Props = { scenario: Scenario }
@@ -13,6 +23,21 @@ const names = ['连续阅读', '诊断侧栏', '共识观察台']
 const scenarios: Record<Scenario, string> = { normal: '正常', stale: '报告过期', failure: 'CPU 采集失败', unknown: '从未观测' }
 const stamp = '2026-09-14 10:24:00 UTC'
 function value(s: Scenario, text: string) { return s === 'unknown' ? '—' : text }
+// Geometry and layered masks adapted from Emerald c2c5e88 Background.vue.
+function EmeraldBackground() {
+  return <div className="emerald-background" aria-hidden="true"><div className="emerald-atmosphere"><div className="emerald-gradient">
+    <svg className="emerald-grid" focusable="false">
+      <defs><pattern id="prototype-emerald-grid" width="72" height="56" patternUnits="userSpaceOnUse" x="-12" y="4"><path d="M.5 56V.5H72" fill="none" /></pattern></defs>
+      <rect width="100%" height="100%" strokeWidth="0" fill="url(#prototype-emerald-grid)" />
+      <svg x="-12" y="4" overflow="visible">
+        <rect strokeWidth="0" width="73" height="57" x="288" y="168" />
+        <rect strokeWidth="0" width="73" height="57" x="144" y="56" />
+        <rect strokeWidth="0" width="73" height="57" x="504" y="168" />
+        <rect strokeWidth="0" width="73" height="57" x="720" y="336" />
+      </svg>
+    </svg>
+  </div></div></div>
+}
 function Panel({ title, children, note }: { title: string; children: ReactNode; note?: string }) {
   return <section className="panel"><h2>{title}</h2>{note && <p className="quiet">{note}</p>}{children}</section>
 }
@@ -83,16 +108,37 @@ function PrototypeSwitcher({ variant, change }: { variant: string; change: (step
 function App() {
   const [params, setParams] = useSearchParams()
   const variant = variants.includes(params.get('variant') ?? '') ? params.get('variant')! : 'A'
-  const [theme, setTheme] = useState('light')
+  const [themeMode, setThemeMode] = useState<ThemeMode>(initialThemeMode)
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => document.documentElement.classList.contains('dark') ? 'dark' : 'light')
+  const nextThemeMode = nextThemeModes[themeMode]
+  const themeButtonLabel = '当前主题：' + themeLabels[themeMode] + '；切换至' + themeLabels[nextThemeMode]
+  useLayoutEffect(() => {
+    const media = window.matchMedia?.('(prefers-color-scheme: dark)')
+    const apply = () => {
+      const resolved = themeMode === 'dark' || (themeMode === 'auto' && media?.matches) ? 'dark' : 'light'
+      const root = document.documentElement
+      root.classList.toggle('dark', resolved === 'dark')
+      root.style.colorScheme = resolved
+      root.dataset.themeMode = themeMode
+      setTheme(resolved)
+    }
+    apply()
+    if (themeMode !== 'auto' || !media) return
+    media.addEventListener('change', apply)
+    return () => media.removeEventListener('change', apply)
+  }, [themeMode])
+  useEffect(() => {
+    try { window.localStorage.setItem(themeStorageKey, themeMode) } catch { /* Theme still works when storage is unavailable. */ }
+  }, [themeMode])
   const [scenario, setScenario] = useState<Scenario>('normal')
   const [page, setPage] = useState('node')
   function change(step: number) { const next = new URLSearchParams(params); next.set('variant', variants[(variants.indexOf(variant) + step + 3) % 3]); setParams(next, { replace: true }) }
   const Layout = variant === 'B' ? VariantB : variant === 'C' ? VariantC : VariantA
-  return <div className={'prototype ' + theme + ' variant-' + variant}><header className="topbar"><button className="brand" onClick={() => setPage('home')}><span className="brandmark">╱╲</span> PlatPulse<span className="brand-caption">NODE OBSERVATORY</span></button><div className="top-actions"><span className="demo-tag">模拟数据 · 免登录</span><button aria-label="切换明暗主题" onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? '☾ 深色' : '☀ 浅色'}</button></div></header>
+  return <div className={'prototype ' + theme + ' variant-' + variant}><EmeraldBackground /><header className="topbar"><button className="brand" onClick={() => setPage('home')}><span className="brandmark">╱╲</span> PlatPulse<span className="brand-caption">NODE OBSERVATORY</span></button><div className="top-actions"><span className="demo-tag">模拟数据 · 免登录</span><button aria-label={themeButtonLabel} title={themeButtonLabel} onClick={() => setThemeMode(nextThemeMode)}><span aria-hidden="true">{themeIcons[themeMode]}</span> {themeLabels[themeMode]} → {themeLabels[nextThemeMode]}</button></div></header>
     <main><div className="prototype-controls"><span>设计预览 / 不连接真实服务</span><label>模拟状态 <select value={scenario} onChange={e => setScenario(e.target.value as Scenario)}>{Object.entries(scenarios).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label></div>
       {page === 'home' ? <><div className="page-heading"><div><p className="eyebrow">PUBLIC PROJECTION / PREVIEW</p><h1>Node 概览</h1><p className="quiet">原型导航入口 · 选择 Node 查看设计方案</p></div></div><button className="node-link panel" onClick={() => setPage('node')}><span>PlatON Mainnet</span><h2>Atlas / Mainnet 01 →</h2><p>{scenarios[scenario]} · Head {value(scenario, '38,421,906')}</p></button></> : <><button className="back" onClick={() => setPage('home')}>← Node 概览 <span>/ PlatON Mainnet</span></button><div className="page-heading"><div><p className="eyebrow">PLATON MAINNET / NODE DETAIL</p><h1>Atlas <span>/ Mainnet 01</span></h1><p className="quiet">观测一个 Node，理解它此刻的运行状态。</p></div><div className="heading-status"><span className={'status ' + scenario}>{scenario === 'normal' ? '● Healthy' : scenario === 'unknown' ? '○ Unknown' : scenario === 'stale' ? '◷ Stale' : '！需要关注'}</span><small>最后报告</small><time>{scenario === 'unknown' ? '尚未收到报告' : scenario === 'stale' ? '2026-09-14 10:21:00 UTC' : stamp}</time></div></div>
       <div aria-live="polite">{scenario !== 'normal' && <div className={'notice ' + scenario}>{scenario === 'stale' ? '报告已过期 · 实时更新已暂停。保留 10:21:00 UTC 的成功值，不代表当前状态；最近 60 秒没有样本。' : scenario === 'failure' ? '进程 CPU 采集失败 · 保留 10:23:42 UTC 的 18.6%。其他观测仍独立可用，图表失败区间留空。' : '尚无成功观测 · 未知值显示为 —，不会视为 0 或 Healthy。'}</div>}</div><Layout scenario={scenario} /></>}
-      <footer className="state-footer">原型状态：布局 {variant}（{names[variants.indexOf(variant)]}） / {theme} / {scenarios[scenario]} / {page} / 内存模拟数据 / 无 API、无登录、无持久化</footer>
+      <footer className="state-footer">原型状态：布局 {variant}（{names[variants.indexOf(variant)]}） / 主题：{themeLabels[themeMode]}（当前显示：{themeLabels[theme]}） / {scenarios[scenario]} / {page} / 模拟数据仅在内存 / 无 API、无登录 / 仅主题偏好持久化（存储可用时）</footer>
     </main><PrototypeSwitcher variant={variant} change={change} /></div>
 }
 createRoot(document.getElementById('root')!).render(<BrowserRouter><App /></BrowserRouter>)
