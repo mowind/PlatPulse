@@ -387,3 +387,85 @@ test('gives public cards calibrated hover, reduced-motion, and filter feedback',
   ).toBe('none')
   await expectNoHorizontalOverflow(page)
 })
+
+test('keeps the retained Admin workbench readable in both themes', async ({ page }, testInfo) => {
+  await loginAs(page)
+
+  // The public top treatment never crosses the Admin workbench.
+  await page.getByRole('link', { name: 'Admin', exact: true }).click()
+  await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
+  await expect(page.locator('.admin-shell .background-decoration')).toHaveCount(0)
+
+  const routes = [
+    { path: '/admin', heading: 'Overview' },
+    { path: '/admin/agents', heading: 'Agents' },
+    { path: '/admin/nodes', heading: 'Nodes' },
+    { path: '/admin/networks', heading: 'Networks' },
+    { path: '/admin/settings', heading: 'Settings' },
+    { path: '/admin/access/sessions', heading: 'Sessions' },
+    { path: '/admin/access/audit', heading: 'Audit log' },
+  ] as const
+
+  // Direct entry on every retained route, so the pre-mount paint and the page
+  // heading, table header, and layout are checked in the requested theme.
+  async function sweep(theme: 'light' | 'dark') {
+    for (const route of routes) {
+      await page.goto(route.path)
+      const heading = page.getByRole('heading', { level: 1, name: route.heading })
+      await expect(heading).toBeVisible({ timeout: 15_000 })
+      expect(
+        (await resolvedTheme(page)).dark,
+        theme + ' ' + route.path + ' direct entry',
+      ).toBe(theme === 'dark')
+      await expectReadable(page, heading)
+      const tableHeader = page.locator('thead th').first()
+      if ((await tableHeader.count()) > 0) await expectReadable(page, tableHeader)
+      await expectNoHorizontalOverflow(page)
+    }
+  }
+
+  // Explicit Light: one click from Auto selects Light and persists it.
+  await themeButton(page).click()
+  await expect(themeButton(page)).toHaveAttribute('aria-label', 'Theme: Light. Switch to Dark')
+  expect((await resolvedTheme(page)).dark).toBe(false)
+  await sweep('light')
+
+  // Explicit Dark.
+  await themeButton(page).click()
+  await expect(themeButton(page)).toHaveAttribute('aria-label', 'Theme: Dark. Switch to Auto')
+  expect((await resolvedTheme(page)).dark).toBe(true)
+  await sweep('dark')
+
+  // A representative management form (the Network registration disclosure)
+  // stays readable on the dark workbench, including its labels and heading.
+  await page.goto('/admin/networks')
+  await expect(page.getByRole('heading', { level: 1, name: 'Networks' })).toBeVisible({ timeout: 15_000 })
+  await page.getByRole('button', { name: 'Register a Network' }).click()
+  await expectReadable(page, page.getByRole('heading', { level: 2, name: 'Register a Network' }))
+  await expectReadable(page, page.getByLabel('Network key'))
+  await expectReadable(page, page.getByLabel('Display name'))
+  await page.getByRole('button', { name: 'Close form' }).click()
+
+  // The Settings card and its secondary link stay readable in Dark.
+  await page.goto('/admin/settings')
+  await expect(page.getByRole('heading', { level: 1, name: 'Settings' })).toBeVisible({ timeout: 15_000 })
+  await expectReadable(page, page.getByLabel('New window (days)'))
+  await expectReadable(page, page.getByRole('link', { name: /Admin overview/ }))
+  await expectReadable(page, page.locator('.settings-surface').first())
+
+  // The mobile/tablet drawer keeps focus entry, scroll lock, Escape close, and
+  // focus restoration while Dark is active.
+  if (testInfo.project.name !== 'desktop-1280') {
+    const menu = page.getByRole('button', { name: 'Menu' })
+    await expect(menu).toBeVisible()
+    await menu.click()
+    const adminNav = page.getByRole('navigation', { name: 'Admin' })
+    await expect(adminNav).toBeVisible()
+    // Opening the drawer moves focus to the first retained page-group link.
+    await expect(adminNav.getByRole('link', { name: 'Overview', exact: true })).toBeFocused()
+    await expect.poll(() => page.evaluate(() => document.body.style.overflow)).toBe('hidden')
+    await page.keyboard.press('Escape')
+    await expect(menu).toBeFocused()
+    await expect.poll(() => page.evaluate(() => document.body.style.overflow)).toBe('')
+  }
+})

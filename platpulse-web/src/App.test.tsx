@@ -2256,4 +2256,102 @@ describe('Theme lifecycle (issue #146)', () => {
       expect(screen.getByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
     })
   })
+
+  describe('Admin dual theme (issue #148)', () => {
+    /** Every retained Admin route and the page heading that proves it rendered
+     *  without depending on any route-specific fixture. */
+    const ADMIN_ROUTES: Array<{ path: string; heading: string }> = [
+      { path: '/admin', heading: 'Overview' },
+      { path: '/admin/agents', heading: 'Agents' },
+      { path: '/admin/nodes', heading: 'Nodes' },
+      { path: '/admin/networks', heading: 'Networks' },
+      { path: '/admin/settings', heading: 'Settings' },
+      { path: '/admin/access/sessions', heading: 'Sessions' },
+      { path: '/admin/access/audit', heading: 'Audit log' },
+    ]
+
+    async function navigateTo(path: string) {
+      await act(async () => {
+        window.history.pushState({}, '', path)
+        window.dispatchEvent(new PopStateEvent('popstate'))
+        await Promise.resolve()
+      })
+    }
+
+    /** Sign in as Owner, resolve Dark through the production control, and
+     *  land on the Admin Overview. */
+    async function renderAdminInDark() {
+      mockFetch({
+        '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+        '/api/public/v1/networks': () => jsonResponse([], 200),
+      })
+      render(<App />)
+      await screen.findByRole('region', { name: 'Home' })
+      fireEvent.click(themeButton())
+      fireEvent.click(themeButton())
+      expect(document.documentElement.classList.contains('dark')).toBe(true)
+      await goToAdmin()
+      await screen.findByRole('heading', { level: 1, name: 'Overview' })
+    }
+
+    it('keeps every retained Admin route on the resolved theme without the public decoration', async () => {
+      await renderAdminInDark()
+
+      // The workbench is quiet and undecorated: the Admin shell owns its own
+      // navigation, and the public background grid/Home region never leak in.
+      expect(document.querySelector('.background-decoration')).toBeNull()
+      expect(screen.getByRole('navigation', { name: 'Admin' })).toBeTruthy()
+      expect(screen.queryByRole('region', { name: 'Home' })).toBeNull()
+
+      for (const route of ADMIN_ROUTES) {
+        await navigateTo(route.path)
+        expect(
+          await screen.findByRole('heading', { level: 1, name: route.heading }),
+        ).toBeTruthy()
+        expect(
+          document.documentElement.classList.contains('dark'),
+          route.path + ' stays on the resolved theme',
+        ).toBe(true)
+        expect(document.querySelector('.background-decoration'), route.path).toBeNull()
+        expect(document.querySelector('.admin-shell'), route.path).not.toBeNull()
+      }
+
+      // One click from Dark reaches Auto, which resolves Light under the test
+      // system preference; a second click selects explicit Light. The retained
+      // route stays mounted and the workbench keeps no public grid.
+      fireEvent.click(themeButton())
+      expect(themeButton().getAttribute('aria-label')).toBe('Theme: Auto. Switch to Light')
+      expect(document.documentElement.classList.contains('dark')).toBe(false)
+      fireEvent.click(themeButton())
+      expect(themeButton().getAttribute('aria-label')).toBe('Theme: Light. Switch to Dark')
+      expect(document.documentElement.classList.contains('dark')).toBe(false)
+      expect(screen.getByRole('heading', { level: 1, name: 'Audit log' })).toBeTruthy()
+    })
+
+    it('keeps the Owner-only boundary and Home isolation on the resolved theme', async () => {
+      // A Viewer resolves the same theme but never enters the Admin shell.
+      mockFetch({
+        '/api/public/v1/session': () => jsonResponse(VIEWER_SESSION, 200),
+        '/api/public/v1/networks': () => jsonResponse([], 200),
+      })
+      render(<App />)
+      await screen.findByRole('region', { name: 'Home' })
+      fireEvent.click(themeButton())
+      fireEvent.click(themeButton())
+      expect(document.documentElement.classList.contains('dark')).toBe(true)
+
+      await goToAdmin()
+      expect(
+        await screen.findByRole('heading', { level: 1, name: 'Owner access required' }),
+      ).toBeTruthy()
+      expect(document.querySelector('.admin-shell')).toBeNull()
+
+      // Home keeps its single Admin entry link and never adopts the Admin nav.
+      await navigateTo('/')
+      await screen.findByRole('region', { name: 'Home' })
+      expect(screen.queryByRole('link', { name: 'Admin' })).toBeNull()
+      expect(screen.queryByRole('navigation', { name: 'Admin' })).toBeNull()
+      expect(document.documentElement.classList.contains('dark')).toBe(true)
+    })
+  })
 })
