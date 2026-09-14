@@ -1,3 +1,5 @@
+import { Badge } from './ui/badge'
+
 // Status display with text plus icon (design §2.1, §10.3): color is
 // supplementary, never the only channel. WebUI-owned dimensions map onto the
 // fixed vocabulary; Server-owned summary words (Node Health severity,
@@ -121,6 +123,10 @@ export function formatUtcDateTime(value: Date | string | null | undefined): stri
   }).format(date)
 }
 
+/**
+ * Emerald chip: the Badge primitive with a leading status glyph. Text carries
+ * the meaning and colour only supplements it (design §2.1, §10.3).
+ */
 export function StatusBadge({
   status,
   tone,
@@ -130,12 +136,15 @@ export function StatusBadge({
 }) {
   const icon = STATUS_ICONS[status] ?? '·'
   return (
-    <span className={`status-badge status-badge-${tone ?? 'neutral'}`}>
-      <span className="status-badge-icon" aria-hidden="true">
-        {icon}
-      </span>
-      <span className="status-badge-text">{status}</span>
-    </span>
+    <Badge
+      data-slot="status-badge"
+      data-tone={tone ?? 'neutral'}
+      variant={tone === 'error' ? 'destructive' : tone === 'ok' ? 'secondary' : 'outline'}
+      className="gap-1"
+    >
+      <span aria-hidden="true">{icon}</span>
+      <span>{status}</span>
+    </Badge>
   )
 }
 
@@ -161,11 +170,18 @@ export function nodeHealthLabel(value: string | null | undefined): 'Healthy' | '
  */
 export function NodeHealthMarker({ health }: { health: string | null | undefined }) {
   const label = nodeHealthLabel(health)
+  const tone = label === 'Healthy' ? 'healthy' : label === 'Unhealthy' ? 'unhealthy' : 'unknown'
   return (
     <span
-      className={`node-health-marker ${label === 'Healthy' ? 'node-health-marker-healthy' : 'node-health-marker-other'}`}
+      data-slot="node-health-marker"
+      data-tone={tone}
+      className={`relative inline-flex size-2 shrink-0 rounded-full ${label === 'Healthy' ? 'node-health-marker-healthy bg-emerald-600' : 'node-health-marker-other bg-muted-foreground'}`}
       role="img"
       aria-label={label}
-    />
+    >
+      {label === 'Healthy' && (
+        <span className="animate-ping absolute inset-0 rounded-full bg-emerald-600 opacity-50" aria-hidden="true" />
+      )}
+    </span>
   )
 }

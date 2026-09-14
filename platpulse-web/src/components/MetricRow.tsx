@@ -1,4 +1,6 @@
-import type { CSSProperties, ReactNode } from 'react'
+import type { ReactNode } from 'react'
+
+import { ProgressThin, type ProgressStatus } from './ui/progress-thin'
 
 export type MetricRowProps = {
   label: string
@@ -6,27 +8,48 @@ export type MetricRowProps = {
   value: ReactNode
   detail?: ReactNode
   progress?: number | null
+  progressStatus?: ProgressStatus
 }
 
 /**
- * One compact metric row (issue #140): the data item sits at the left and the
- * value sits flush right on the same line, and every row is a single column at
- * every breakpoint. A row with progress puts a full-width bar under the value
- * line and its explanation under the bar; a row without progress puts the
- * explanation directly under the value.
+ * One compact metric row in Emerald's anatomy (NodeCard.vue): a text-xs line
+ * with the muted label at the left and the value flush right, an optional
+ * 4px ProgressThin bar underneath, and an 11px muted caption under the bar.
+ *
+ * The DOM keeps label and value adjacent so the value is the label's next
+ * sibling; the progress bar and caption span both grid columns. A row without
+ * a known progress value renders the track only — never a 0-width bar that
+ * would read as a real zero.
  */
-export function MetricRow({ label, shortLabel, value, detail, progress }: MetricRowProps) {
-  const boundedProgress = progress == null ? null : Math.max(0, Math.min(100, progress))
-  const style = boundedProgress == null ? undefined : ({ '--metric-progress': `${boundedProgress}%` } as CSSProperties)
+export function MetricRow({ label, shortLabel, value, detail, progress, progressStatus }: MetricRowProps) {
   return (
-    <div className="metric-row" style={style}>
-      <span className="metric-row-label">{shortLabel ? <>
-        <span className="metric-label-full">{label}</span>
-        <span className="metric-label-short" aria-label={label} title={label}>{shortLabel}</span>
-      </> : label}</span>
-      <strong className="metric-row-value">{value}</strong>
-      {boundedProgress != null && <i className="metric-row-progress" aria-hidden="true" />}
-      {detail != null && <small className="metric-row-detail">{detail}</small>}
+    <div
+      data-slot="metric-row"
+      className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-2 gap-y-1 text-xs"
+    >
+      <span data-slot="metric-row-label" className="min-w-0 truncate text-muted-foreground">
+        {shortLabel ? (
+          <>
+            <span className="hidden min-[900px]:inline">{label}</span>
+            <span className="min-[900px]:hidden" aria-label={label} title={label}>
+              {shortLabel}
+            </span>
+          </>
+        ) : (
+          label
+        )}
+      </span>
+      <strong data-slot="metric-row-value" className="font-medium tabular-nums text-foreground">
+        {value}
+      </strong>
+      {typeof progress === 'number' && (
+        <ProgressThin className="col-span-2" percentage={progress} status={progressStatus} label={label} />
+      )}
+      {detail != null && (
+        <small data-slot="metric-row-detail" className="col-span-2 truncate text-[11px] text-muted-foreground">
+          {detail}
+        </small>
+      )}
     </div>
   )
 }

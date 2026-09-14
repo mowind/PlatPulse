@@ -696,13 +696,13 @@ describe('App shell with private Home', () => {
     // The accepted A container merges PlatON process resources and the Node
     // Data directory into one panel, so the panel carries all three tracks
     // while the Node Data directory keeps its own labelled region.
-    expect(processGroup.querySelectorAll('.metric-row-progress')).toHaveLength(3)
+    expect(processGroup.querySelectorAll('[data-slot="progress-thin"]')).toHaveLength(3)
     const nodeDataGroup = screen.getByLabelText('Node data directory')
     expect(processGroup.contains(nodeDataGroup)).toBe(true)
     expect(nodeDataGroup.textContent).toContain('Directory usage')
     expect(nodeDataGroup.textContent).toContain('25.0%')
     expect(nodeDataGroup.textContent).toContain('2.00 GiB / 8.00 GiB')
-    expect(nodeDataGroup.querySelectorAll('.metric-row-progress')).toHaveLength(1)
+    expect(nodeDataGroup.querySelectorAll('[data-slot="progress-thin"]')).toHaveLength(1)
     const hostGroup = screen.getByLabelText('Shared Host resources')
     expect(hostGroup.textContent).toContain('Host CPU')
     expect(hostGroup.textContent).toContain('Host upload')
@@ -737,7 +737,12 @@ describe('App shell with private Home', () => {
     expect(screen.getAllByRole('img', { name: /line chart over the last 60 seconds/ })).toHaveLength(4)
     expect(screen.getAllByRole('img', { name: /bar chart over the last 60 seconds/ })).toHaveLength(2)
     expect(screen.getAllByText('60s')).toHaveLength(6)
-    expect(screen.queryByRole('progressbar')).toBeNull()
+    // The accepted resource panels are now the only progress bars on the page,
+    // and each one names the value it tracks. The removed bounded-history
+    // widget's bar must stay gone.
+    const tracks = screen.getAllByRole('progressbar')
+    expect(tracks.length).toBeGreaterThan(0)
+    for (const track of tracks) expect(track.getAttribute('aria-label')).toBeTruthy()
     expect(screen.queryByText('Bounded Block History')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Export public history' })).toBeNull()
     expect(screen.queryByRole('navigation', { name: 'Prototype variants' })).toBeNull()
@@ -2267,7 +2272,7 @@ describe('Theme lifecycle (issue #146)', () => {
       // The four statistics are static information cards: they gain visual
       // feedback but never a click handler or a tab stop.
       const summaryRegion = screen.getByLabelText('Home summary')
-      const summaryCards = within(summaryRegion).getAllByRole('article')
+      const summaryCards = summaryRegion.querySelectorAll('[data-slot="summary-card"]')
       expect(summaryCards).toHaveLength(4)
       // Static information cards expose no interactive descendant and no tab stop.
       expect(within(summaryRegion).queryAllByRole('link')).toHaveLength(0)

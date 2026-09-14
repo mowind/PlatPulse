@@ -13,8 +13,13 @@ import {
 } from '../api/public'
 import { ServerStatusNotice } from '../components/ServerStatusNotice'
 import BackgroundDecoration from '../components/BackgroundDecoration'
+import AppFooter from '../components/AppFooter'
 import ThemeToggle from '../components/ThemeToggle'
 import { EmeraldActionIcon } from '../components/EmeraldActionIcon'
+import { Alert, AlertDescription } from '../components/ui/alert'
+import { buttonVariants } from '../components/ui/button'
+import { useIsScrolled } from '../hooks/use-is-scrolled'
+import { cn } from '../lib/utils'
 import platpulseMark from '../../../assets/platpulse-mark.png'
 
 /**
@@ -24,6 +29,10 @@ import platpulseMark from '../../../assets/platpulse-mark.png'
  * to the login page. Authorization transitions arrive as Public `reset`
  * events: the shell re-checks the session and the Guest setting before any
  * cached projection can re-render (design §3.3, §6.3).
+ *
+ * The chrome follows Emerald's shell: a sticky h-14 header that gains
+ * backdrop-blur-xl only after the page scrolls, and a max-w-[1280px] content
+ * column shared by every page.
  */
 export type HomeRealtimeContext = {
   resetting: boolean
@@ -47,6 +56,7 @@ export default function HomeLayout() {
 function HomeLayoutContent() {
   const { status, recheckSession } = useAuth()
   const navigate = useNavigate()
+  const scrolled = useIsScrolled()
   const isOwner = status.state === 'authenticated' && status.session.role === 'owner'
   const [generation, setGeneration] = useState(getSiteAccessGeneration() ?? 0)
   const [resetting, setResetting] = useState(false)
@@ -88,26 +98,56 @@ function HomeLayoutContent() {
 
   const realtime = usePublicRealtime(handleReset, !resetting, generation)
   return (
-    <div className="app-shell home-shell">
+    <div className="flex min-h-screen flex-col">
       <BackgroundDecoration />
-      <header className="app-header">
-        <div className="home-shell-container app-header-inner">
-          <Link to="/" className="app-brand" aria-label="PlatPulse"><img className="app-brand-logo" src={platpulseMark} alt="" /><span>PlatPulse</span></Link>
-          <div className="app-header-actions">
+      <header
+        className={cn(
+          'sticky top-0 z-10 border-b border-transparent transition-all duration-200',
+          scrolled ? 'backdrop-blur-xl' : 'bg-transparent',
+        )}
+      >
+        <div className="mx-auto flex h-14 max-w-[1280px] items-center justify-between px-4">
+          <Link to="/" className="flex items-center gap-3" aria-label="PlatPulse">
+            <img className="size-8 shrink-0 rounded-full" src={platpulseMark} alt="" />
+            <h3 className="m-0 text-lg font-semibold">PlatPulse</h3>
+          </Link>
+          <div className="flex items-center gap-2">
             <ThemeToggle />
-            {isOwner && <Link to="/admin" className="admin-icon-link" aria-label="Admin" title="Open Admin dashboard">
-              <EmeraldActionIcon name="setting" />
-            </Link>}
+            {isOwner && (
+              <Link
+                to="/admin"
+                aria-label="Admin"
+                title="Open Admin dashboard"
+                className={buttonVariants({ variant: 'ghost', size: 'icon-sm' })}
+              >
+                <EmeraldActionIcon name="setting" />
+              </Link>
+            )}
           </div>
         </div>
       </header>
-      <main className="app-main">
-        <div className="home-shell-container app-main-inner">
+      <main className="flex-1">
+        <div className="mx-auto max-w-[1280px]">
           <ServerStatusNotice />
-          {networksQuery.data && networksQuery.isRefetchError && <p role="status" className="form-error">Partial: showing the last successful Home data while refresh is unavailable.</p>}
-          {resetting ? <p role="status">Revalidating Home access…</p> : <Outlet context={{ resetting, generation, networks: networksQuery, realtime }} />}
+          {networksQuery.data && networksQuery.isRefetchError && (
+            <div className="px-4">
+              <Alert>
+                <AlertDescription role="status">
+                  Partial: showing the last successful Home data while refresh is unavailable.
+                </AlertDescription>
+              </Alert>
+            </div>
+          )}
+          {resetting ? (
+            <p role="status" className="p-4 text-sm text-muted-foreground">
+              Revalidating Home access…
+            </p>
+          ) : (
+            <Outlet context={{ resetting, generation, networks: networksQuery, realtime }} />
+          )}
         </div>
       </main>
+      <AppFooter />
     </div>
   )
 }

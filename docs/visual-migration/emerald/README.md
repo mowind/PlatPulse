@@ -75,11 +75,12 @@ call site, because PlatPulse's `countryCode` is uppercase.
 | `ui/tabs/*` (reka-ui) | `components/ui/tabs.tsx` | planned |
 | `ui/sonner/Sonner.vue` | `components/ui/toaster.tsx` (`sonner`) | planned |
 | `ui/avatar/*` | not adopted (no PlatPulse use) | n/a |
-| `components/Background.vue` | `components/BackgroundDecoration.tsx` | planned |
-| `components/Header.vue` / `Footer.vue` | `layouts/HomeLayout.tsx` / `AdminLayout.tsx` | planned |
-| `components/NodeGeneralCards.vue` | `components/HomeDashboard.tsx` top area | planned |
+| `components/Background.vue` | `components/BackgroundDecoration.tsx` | ported verbatim (fixed 1300px wash) |
+| `components/Header.vue` | `layouts/HomeLayout.tsx` header | ported (h-14 sticky, blur on scroll) |
+| `components/Footer.vue` | `components/AppFooter.tsx` | metrics ported, copy replaced |
+| `components/NodeGeneralCards.vue` | `components/HomeDashboard.tsx` top area | ported (12-col: stats left, map right) |
 | `components/NodeGeneralCards.vue` finance tiles | not adopted (no PlatPulse field) | deviation |
-| `components/NodeCard.vue` / `NodeList.vue` | `components/HomeDashboard.tsx` node cards | planned |
+| `components/NodeCard.vue` | `components/HomeDashboard.tsx` `HomeNodeCard` | ported |
 | `components/NodeEarthMaps.vue` + `utils/echartsWorldMap.ts` | `components/GeoWorldMap.tsx` on `echarts` | planned |
 | `components/NodeEarthGlobe.vue` (`cobe`) | not adopted — `maps` mode only | deviation |
 | `views/HomeView.vue` | `components/HomeDashboard.tsx` | planned |
@@ -102,6 +103,9 @@ the reason. Nothing here is a silent divergence.
 | 7 | No shadcn Select/Table/Tooltip/Skeleton/Dropdown exist upstream. PlatPulse's admin surfaces get dedicated primitives built from Emerald's tokens and typography. | Upstream has no admin surface to copy; inventing none would leave admin pages on the retired sheet. |
 | 8 | Emerald's FX providers, visitor-geolocation providers, Iconify runtime API, footer links, brand and ICP reference are not adopted. | Out of PlatPulse's product scope and blocked by CSP; upstream brand must not be carried over. |
 | 9 | The Tailwind patch level differs (upstream declares `^4.1.16`, no lockfile; PlatPulse resolves 4.3.3). | Upstream publishes no lockfile, so an exact patch cannot be reproduced; the token block, `@theme inline` mapping and class strings are copied literally. |
+| 10 | Interactive controls keep a 44×44 minimum (`min-h-11`, `min-w-11` in the primitives) instead of Emerald's compact 24–36px scale. | PlatPulse's existing accessibility contract asserts every visible interactive control is at least 44×44 (e2e/helpers.ts `expectVisibleInteractiveTargets`), and the brief requires preserving touch operation. Colour, radius, typography, spacing and state treatment still follow upstream. |
+| 11 | The Home statistics slot holds four counters in a 2×2 grid (`col-span-6 row-span-2`) rather than Emerald's six tiles in a 3×2 grid. | Consequence of deviation 2. The slot's position, size, card shell and typography are upstream's. |
+| 12 | The Home Node card keeps the grey non-Healthy health marker (issue #141) and carries the exceptional signal on the card's red ring and diagnostic line. | The existing tested contract is that only Healthy is green and every other state is grey, so health is never colour-only; Emerald's red marker encodes online/offline, which is a different dimension from PlatPulse Node health. |
 
 ## 5. Screenshot evidence
 

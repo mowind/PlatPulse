@@ -34,6 +34,7 @@ export function ProgressThin({
   const clamped = known ? Math.max(0, Math.min(100, percentage)) : 0
   return (
     <div
+      data-slot="progress-thin"
       role="progressbar"
       aria-label={label}
       aria-valuemin={known ? 0 : undefined}
