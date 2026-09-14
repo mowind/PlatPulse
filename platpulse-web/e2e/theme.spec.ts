@@ -79,10 +79,23 @@ async function readAtmosphere(page: Page) {
 async function expectReadable(page: Page, target: string | Locator) {
   const locator = typeof target === 'string' ? page.locator(target) : target
   const label = typeof target === 'string' ? target : 'readable public text'
-  const result = await locator
+  await expect.poll(async () => {
+    const result = await locator
     .first()
     .evaluate((element) => {
-      const parse = (value: string) => (value.match(/[\d.]+/g) ?? []).map(Number)
+      // Canvas converts modern CSS colours (including oklch) to sRGB before
+      // contrast calculation; parsing their numeric components as RGB is wrong.
+      const canvas = document.createElement('canvas')
+      canvas.width = canvas.height = 1
+      const context = canvas.getContext('2d')
+      if (!context) throw new Error('Canvas colour conversion is unavailable')
+      const parse = (value: string) => {
+        context.clearRect(0, 0, 1, 1)
+        context.fillStyle = value
+        context.fillRect(0, 0, 1, 1)
+        const [r, g, b, alpha] = context.getImageData(0, 0, 1, 1).data
+        return [r, g, b, alpha / 255]
+      }
       const luminance = (rgb: number[]) => {
         const [r, g, b] = rgb.slice(0, 3).map((value) => {
           const channel = value / 255
@@ -119,7 +132,8 @@ async function expectReadable(page: Page, target: string | Locator) {
         background,
       }
     })
-  expect(result.ratio, label + ' contrast ' + JSON.stringify(result)).toBeGreaterThanOrEqual(4.5)
+    return result.ratio
+  }, { message: label + ' contrast after theme transition' }).toBeGreaterThanOrEqual(4.5)
 }
 
 test('cycles the theme on Login with an accessible name and a touch-sized control', async ({ page }) => {
@@ -301,12 +315,6 @@ test('respects reduced motion while switching themes', async ({ page }) => {
   await expectNoHorizontalOverflow(page)
 })
 
-/** A computed colour's alpha channel, defaulting to opaque. */
-function colorAlpha(color: string): number {
-  const parts = (color.match(/[\d.]+/g) ?? []).map(Number)
-  return parts.length === 4 ? parts[3] : 1
-}
-
 test('keeps the public Network and Node Detail readable in both themes', async ({ page }) => {
   await loginAs(page)
 
@@ -337,96 +345,134 @@ test('keeps the public Network and Node Detail readable in both themes', async (
   await expectNoHorizontalOverflow(page)
 })
 
-test('gives public cards calibrated hover, reduced-motion, and filter feedback', async ({ page }) => {
-  await loginAs(page)
-  await themeButton(page).click()
-  await themeButton(page).click()
-  expect((await resolvedTheme(page)).dark).toBe(true)
+/** Normalize literals through the browser, not production tokens: changing a token
+ * must not silently change the expectation alongside the implementation. */
+async function normalizedStyle(page: Page, property: string, value: string) {
+  return page.evaluate(({ property, value }) => {
+    const probe = document.createElement('div')
+    probe.style.setProperty(property, value)
+    document.body.append(probe)
+    const result = getComputedStyle(probe).getPropertyValue(property)
+    probe.remove()
+    return result
+  }, { property, value })
+}
 
-  const hoverCapable = await page.evaluate(
-    () => matchMedia('(hover: hover) and (pointer: fine)').matches,
-  )
-  const summaryCard = page.getByRole('article').filter({ hasText: 'Active Nodes' }).first()
-  await expect(summaryCard).toBeVisible({ timeout: 15_000 })
+const PUBLIC_FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif'
+const ADMIN_FONT = '"Inter Variable", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
 
-  // At rest the card is a ~60% surface; the pointer is parked first so a
-  // leftover hover from a previous action cannot be measured.
-  await page.mouse.move(2, 2)
-  const resting = await summaryCard.evaluate((card) => {
-    const style = getComputedStyle(card)
-    return { background: style.backgroundColor, transform: style.transform, shadow: style.boxShadow }
-  })
-  expect(colorAlpha(resting.background), 'summary card rests on a translucent surface').toBeLessThan(1)
-
-  await summaryCard.hover()
-  await page.waitForTimeout(320)
-  const hovered = await summaryCard.evaluate((card) => {
-    const style = getComputedStyle(card)
-    return { background: style.backgroundColor, transform: style.transform, shadow: style.boxShadow }
-  })
-  if (hoverCapable) {
-    expect(colorAlpha(hovered.background), 'hovered card becomes opaque').toBe(1)
-    expect(hovered.transform, 'hover-capable devices get the 2px lift').not.toBe('none')
-    expect(hovered.shadow, 'hover adds the Emerald glow').not.toBe(resting.shadow)
-  } else {
-    expect(hovered.transform, 'touch devices never receive the lift').toBe('none')
+async function expectBorderless(card: Locator) {
+  for (const side of ['top', 'right', 'bottom', 'left']) {
+    await expect(card).toHaveCSS('border-' + side + '-style', 'none')
+    await expect(card).toHaveCSS('border-' + side + '-width', '0px')
   }
+}
 
-  // Filters and sorting stay operable on the dark Home surface.
-  await page.getByRole('group', { name: 'Network filter' }).getByRole('button').nth(1).click()
-  await page.getByRole('combobox', { name: 'Sort' }).selectOption('head')
-  await expectNoHorizontalOverflow(page)
-  await page.getByRole('button', { name: 'All Networks', exact: true }).click()
+async function expectQuietShadow(card: Locator) {
+  // Emerald permits either no shadow or its transparent 1px outline at rest.
+  await expect(card).toHaveCSS('box-shadow', /^(none|rgba\(0, 0, 0, 0\) 0px 0px 0px 1px)$/)
+}
 
-  // The chart plot never moves on hover, even where hover is available.
-  await page.getByRole('link', { name: /Node A/ }).click()
-  await expect(page.getByRole('heading', { level: 1, name: /Node A/ })).toBeVisible({ timeout: 15_000 })
-  const chartCard = page
-    .getByRole('article')
-    .filter({ has: page.getByRole('heading', { level: 3, name: 'Host network' }) })
-  await expect(chartCard).toBeVisible()
-  await page.mouse.move(2, 2)
-  const chartResting = await chartCard.evaluate((card) => getComputedStyle(card).boxShadow)
-  await chartCard.hover()
-  await page.waitForTimeout(320)
-  const chartHovered = await chartCard.evaluate((card) => ({
-    transform: getComputedStyle(card).transform,
-    shadow: getComputedStyle(card).boxShadow,
-  }))
-  expect(
-    chartHovered.transform === 'none' || chartHovered.transform === 'matrix(1, 0, 0, 1, 0, 0)',
-    'the chart card keeps the plot in place',
-  ).toBe(true)
-  if (hoverCapable) {
-    expect(chartHovered.shadow, 'the chart card still gains the outline/glow').not.toBe(chartResting)
-  }
+for (const theme of ['light', 'dark'] as const) {
+  test('aligns public Emerald cards and isolates Admin in ' + theme, async ({ page }) => {
+    await page.emulateMedia({ colorScheme: theme, reducedMotion: 'no-preference' })
+    await loginAs(page)
+    const hoverCapable = await page.evaluate(
+      () => matchMedia('(hover: hover) and (pointer: fine)').matches,
+    )
+    const background = await normalizedStyle(page, 'background-color', theme === 'light'
+      ? 'rgba(255, 255, 255, 0.6)' : 'oklch(0.141 0.005 285.823 / 0.6)')
+    const opaque = await normalizedStyle(page, 'background-color', theme === 'light'
+      ? 'rgb(255, 255, 255)' : 'oklch(0.141 0.005 285.823)')
+    const font = await normalizedStyle(page, 'font-family', PUBLIC_FONT)
+    const glow = await normalizedStyle(page, 'box-shadow',
+      '0 0 20px oklch(0.596 0.145 163.225 / 10%), 0 0 0 1px oklch(0.596 0.145 163.225 / 10%)')
 
-  // reduced motion removes the summary-card lift in both themes.
-  await page.emulateMedia({ reducedMotion: 'reduce' })
-  await page.goto('/')
-  await expect(page.getByRole('region', { name: 'Home' })).toBeVisible({ timeout: 15_000 })
-  const reducedCard = page.getByRole('article').filter({ hasText: 'Active Nodes' }).first()
-  await page.mouse.move(2, 2)
-  await reducedCard.hover()
-  await page.waitForTimeout(120)
-  expect(
-    await reducedCard.evaluate((card) => getComputedStyle(card).transform),
-    'reduced motion removes the lift in Dark',
-  ).toBe('none')
+    async function checkCard(card: Locator, lifts = false) {
+      await expect(card).toBeVisible({ timeout: 15_000 })
+      await page.mouse.move(2, 2)
+      await expect(card).toHaveCSS('background-color', background)
+      await expect(card).toHaveCSS('font-family', font)
+      await expectBorderless(card)
+      await expect(card).toHaveCSS('backdrop-filter', 'none')
+      await expect(card).toHaveCSS('background-image', 'none')
+      await expectQuietShadow(card)
+      await expect(card).toHaveCSS('transform', 'none')
+      await card.hover()
+      await expect(card).toHaveCSS('background-color', hoverCapable ? opaque : background)
+      await expectBorderless(card)
+      if (hoverCapable && lifts) {
+        await expect(card).toHaveCSS('box-shadow', glow)
+        await expect(card).toHaveCSS('transform', 'matrix(1, 0, 0, 1, 0, -2)')
+      } else {
+        await expectQuietShadow(card)
+        await expect(card).toHaveCSS('transform', 'none')
+      }
+    }
 
-  // One click from Dark reaches Auto; the Playwright default system theme is
-  // Light, so the same reduced-motion contract is verified in both themes.
-  await themeButton(page).click()
-  expect((await resolvedTheme(page)).dark).toBe(false)
-  await page.mouse.move(2, 2)
-  await reducedCard.hover()
-  await page.waitForTimeout(120)
-  expect(
-    await reducedCard.evaluate((card) => getComputedStyle(card).transform),
-    'reduced motion removes the lift in Light',
-  ).toBe('none')
-  await expectNoHorizontalOverflow(page)
-})
+    await expect(page.locator('.home-shell')).toHaveCSS('font-family', font)
+    await expect(themeButton(page)).toHaveCSS('font-family', font)
+    await expect(page.getByRole('combobox', { name: 'Sort' })).toHaveCSS('font-family', font)
+    await expect(page.locator('.dashboard-node-title h2').first()).toHaveCSS('font-weight', '700')
+    await expect(page.locator('.dashboard-node-title h2').first()).toHaveCSS('font-size', '16px')
+    await checkCard(page.getByRole('article').filter({ hasText: 'Active Nodes' }).first())
+    const nodeLink = page.getByRole('link', { name: /Node A/ })
+    const nodeCard = page.locator('.dashboard-node-card').filter({ has: nodeLink })
+    await checkCard(nodeCard, true)
+
+    // A real keyboard traversal retains the whole-card link's visible focus ring.
+    await page.mouse.move(2, 2)
+    await themeButton(page).focus()
+    for (let step = 0; step < 40; step += 1) {
+      if (await nodeLink.evaluate((element) => element === document.activeElement)) break
+      await page.keyboard.press('Tab')
+    }
+    await expect(nodeLink).toBeFocused()
+    await expectFocusedElementHasVisibleFocus(page)
+    await nodeLink.press('Enter')
+    await expect(page.getByRole('heading', { level: 1, name: /Node A/ })).toBeVisible({ timeout: 15_000 })
+    await expect(page.locator('.home-shell')).toHaveCSS('font-family', font)
+    // Cover every rendered information group, summary tile, and chart card,
+    // rather than letting one passing representative hide a stale override.
+    for (const selector of ['.node-info-group', '.node-summary-tile', '.node-metric-card']) {
+      const cards = page.locator('.home-shell ' + selector)
+      expect(await cards.count(), selector + ' fixture coverage').toBeGreaterThan(0)
+      for (const card of await cards.all()) await checkCard(card)
+    }
+
+    await page.goto('/')
+    await expect(nodeLink).toBeVisible({ timeout: 15_000 })
+    // Filters and sorting stay operable on both public surfaces.
+    await page.getByRole('group', { name: 'Network filter' }).getByRole('button').nth(1).click()
+    await page.getByRole('combobox', { name: 'Sort' }).selectOption('head')
+    await page.getByRole('button', { name: 'All Networks', exact: true }).click()
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await nodeCard.hover()
+    await expect(nodeCard).toHaveCSS('transform', 'none')
+    await expect(nodeCard).toHaveCSS('transition-duration', '0s')
+    await expect(nodeCard).toHaveCSS('background-color', hoverCapable ? opaque : background)
+    if (hoverCapable) await expect(nodeCard).toHaveCSS('box-shadow', glow)
+    await expectNoHorizontalOverflow(page)
+
+    // SPA navigation must not leak the public font or borderless surfaces into Admin.
+    await page.getByRole('link', { name: 'Admin', exact: true }).click()
+    await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
+    await expect(page.locator('.admin-shell')).toHaveCSS('font-family',
+      await normalizedStyle(page, 'font-family', ADMIN_FONT))
+    await expect(page.locator('.admin-shell .background-decoration')).toHaveCount(0)
+    await page.goto('/admin/networks')
+    await page.getByRole('button', { name: 'Register a Network' }).click()
+    const adminCard = page.locator('#network-create-form')
+    await expect(adminCard).toBeVisible({ timeout: 15_000 })
+    await expect(adminCard).toHaveCSS('font-family', await normalizedStyle(page, 'font-family', ADMIN_FONT))
+    await expect(adminCard).toHaveCSS('background-color', theme === 'light'
+      ? 'rgba(255, 255, 255, 0.68)' : 'rgba(31, 36, 45, 0.68)')
+    await expect(adminCard).toHaveCSS('border-top-width', '1px')
+    await expect(adminCard).toHaveCSS('border-top-style', 'solid')
+    await expect(adminCard).toHaveCSS('border-top-color', theme === 'light'
+      ? 'rgba(148, 163, 184, 0.22)' : 'rgba(255, 255, 255, 0.12)')
+  })
+}
 
 test('keeps the retained Admin workbench readable in both themes', async ({ page }, testInfo) => {
   await loginAs(page)

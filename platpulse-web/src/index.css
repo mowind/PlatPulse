@@ -36,14 +36,12 @@
   --navy: #ffffff;
   --focus-ring: #059669;
   --shadow-soft: 0 8px 24px rgba(15, 23, 42, 0.06);
-  /* Public card surface (webui.md §11.1): about 60% at rest, becoming opaque
-     with a faint Emerald outline/glow once pointed at on hover-capable
-     devices. Static cards never gain click behaviour or a tab stop. */
-  --public-card-surface: rgba(255, 255, 255, 0.62);
+  /* Emerald default (webui.md §11.1): 60% at rest, opaque on hover-capable
+     devices. Only Home Node cards gain a glow/lift; static cards never gain
+     click behaviour or a tab stop. */
+  --public-card-surface: rgba(255, 255, 255, 0.6);
   --public-card-surface-hover: #ffffff;
-  --public-card-border: rgba(148, 163, 184, 0.18);
-  --public-card-border-hover: rgba(5, 150, 105, 0.3);
-  --public-card-glow: 0 0 20px rgba(5, 150, 105, 0.1), 0 0 0 1px rgba(5, 150, 105, 0.1);
+  --public-card-glow: 0 0 20px oklch(0.596 0.145 163.225 / 10%), 0 0 0 1px oklch(0.596 0.145 163.225 / 10%);
   /* Directional chart series: blue primary plus cyan secondary (webui.md
      §11.1); never colour alone, the legend always names both directions. */
   --node-series-secondary: #06b6d4;
@@ -91,13 +89,10 @@
   --navy: rgb(28 32 41 / 88%);
   --focus-ring: #34d399;
   --shadow-soft: 0 8px 24px rgb(0 0 0 / 45%);
-  /* Calibrated dark public cards: quiet neutral panels over the near-#141923
-     canvas, opaque with a faint Emerald glow on hover-capable devices. */
-  --public-card-surface: rgb(31 36 45 / 62%);
-  --public-card-surface-hover: rgb(31 36 45);
-  --public-card-border: rgb(255 255 255 / 12%);
-  --public-card-border-hover: rgb(48 214 151 / 34%);
-  --public-card-glow: 0 0 20px rgb(0 203 137 / 14%), 0 0 0 1px rgb(0 203 137 / 14%);
+  /* Exact Emerald dark card neutral; the near-#141923 canvas is unchanged. */
+  --public-card-surface: oklch(0.141 0.005 285.823 / 60%);
+  --public-card-surface-hover: oklch(0.141 0.005 285.823);
+  /* Borderless cards and the emerald-600 hover glow are shared with Light. */
   --node-series-secondary: #22d3ee;
 }
 
@@ -1400,7 +1395,7 @@ button {
   margin-top: 1rem;
   color: var(--ink);
   background: var(--public-card-surface);
-  border: 1px solid var(--public-card-border);
+  border: none;
   border-radius: 1rem;
 }
 
@@ -1496,7 +1491,7 @@ button {
   background: rgba(255, 255, 255, 0.68);
   border: 1px solid rgba(148, 163, 184, 0.24);
   border-radius: 1rem;
-  box-shadow: 0 1px 1px rgba(15, 23, 42, 0.025);
+  box-shadow: none;
   backdrop-filter: none;
 }
 
@@ -3137,6 +3132,9 @@ button {
  * ------------------------------------------------------------------------- */
 
 .home-shell {
+  /* Emerald system typography stays scoped: Admin and Login retain Inter. */
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  letter-spacing: normal;
   min-height: 100dvh;
   color-scheme: inherit;
   color: var(--ink);
@@ -3300,16 +3298,16 @@ button {
   gap: 0.75rem;
 }
 
-/* Emerald card surface: translucent enough to let the page wash through, and
-   opaque with a soft emerald halo once pointed at. The 1px ring is painted as a
-   shadow so the card never grows or shifts when it lights up. */
+/* Emerald default cards reveal the page at rest and become opaque on hover.
+   Statistics remain shadow-free; the Home Node hover ring is painted as a
+   shadow, not a border, so it never changes the card dimensions. */
 .dashboard-summary-card,
 .dashboard-node-card,
 .dashboard-empty {
   min-width: 0;
   background: var(--public-card-surface);
-  border: 1px solid var(--public-card-border);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03), 0 1px 3px rgba(15, 23, 42, 0.02);
+  border: none;
+  box-shadow: none;
   transition: background-color 200ms ease, border-color 200ms ease, box-shadow 200ms ease, transform 200ms ease;
 }
 
@@ -3336,9 +3334,10 @@ button {
   grid-row: 1;
   margin: 0;
   color: var(--muted);
-  font-size: 0.78rem;
-  font-weight: 600;
-  letter-spacing: 0.01em;
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1rem;
+  letter-spacing: 0.05em;
 }
 
 .dashboard-summary-card strong {
@@ -3346,9 +3345,9 @@ button {
   grid-row: 2;
   display: block;
   color: var(--ink);
-  font-size: 2rem;
-  font-weight: 750;
-  letter-spacing: -0.045em;
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: -0.025em;
   line-height: 1;
   font-variant-numeric: tabular-nums;
   font-feature-settings: 'tnum' 1;
@@ -3603,7 +3602,8 @@ button {
   padding: 0;
   overflow: hidden;
   border-radius: 0.75rem;
-  transition: background 180ms ease, border-color 180ms ease, transform 180ms ease, box-shadow 180ms ease;
+  box-shadow: 0 0 0 1px transparent;
+  transition: background-color 200ms ease, box-shadow 200ms ease, transform 200ms ease;
 }
 
 .dashboard-node-card-link {
@@ -3621,8 +3621,8 @@ button {
 .dashboard-node-title { display: flex; flex: 1 1 12rem; min-width: 0; gap: 0.72rem; align-items: flex-start; }
 .dashboard-node-title .node-health-marker { margin-top: 0.38rem; }
 .dashboard-node-title > div { min-width: 0; }
-.dashboard-node-title h2 { margin: 0; min-width: 0; color: var(--ink); font-size: 0.96rem; font-weight: 760; letter-spacing: -0.025em; overflow-wrap: anywhere; word-break: break-word; }
-.dashboard-node-title p { margin: 0.22rem 0 0; color: var(--muted); font-size: 0.68rem; font-weight: 600; overflow-wrap: anywhere; }
+.dashboard-node-title h2 { margin: 0; min-width: 0; color: var(--ink); font-size: 1rem; font-weight: 700; letter-spacing: normal; overflow-wrap: anywhere; word-break: break-word; }
+.dashboard-node-title p { margin: 0.22rem 0 0; color: var(--muted); font-size: 0.6875rem; font-weight: 400; overflow-wrap: anywhere; }
 
 /* One reusable grouping primitive for Home cards and the Node Detail hero: a
    semantic group stacks its rows, and pairs them only where a two-column cell
@@ -3682,15 +3682,14 @@ button {
    single dense monitor instead of a stack of differently weighted rows. */
 .dashboard-node-primary .metric-row-value,
 .dashboard-node-resources .metric-row-value,
-.dashboard-node-consensus .metric-row-value { font-size: 0.85rem; font-weight: 650; }
+.dashboard-node-consensus .metric-row-value { font-size: 0.75rem; font-weight: 400; line-height: 1rem; letter-spacing: normal; }
 
-/* A 300-320px card halves into cells of about 140px: the narrowest place where
-   the longest label ("Committed") and a grouped ten-character height
-   ("12,842,022") still share one line. The label drops to the auxiliary tier
-   and both internal gaps tighten, so a pair never has to break a word. */
+/* Tighten gaps in paired cells while retaining Emerald’s 12px metric tier
+   and the existing wrapping safeguards for long labels and values. */
 .dashboard-node-card .metric-group-pairs { column-gap: 0.4rem; }
 .dashboard-node-card .metric-row { column-gap: 0.35rem; }
-.dashboard-node-card .metric-row-label { font-size: 0.7rem; }
+.dashboard-node-card .metric-row-label { font-size: 0.75rem; font-weight: 400; line-height: 1rem; }
+.dashboard-node-card .metric-row-detail { font-weight: 400; line-height: 1.5; }
 .dashboard-node-diagnostic { margin: 0.58rem 0 0; padding: 0.55rem 0 0 0.68rem; color: var(--amber); border-top: 1px dotted rgba(100, 116, 139, 0.28); border-left: 2px solid #f59e0b; font-size: 0.72rem; overflow-wrap: anywhere; }
 .dashboard-empty { display: grid; min-height: 14rem; place-content: center; gap: 0.45rem; padding: 2rem; color: var(--muted); border-radius: 0.5rem; text-align: center; }
 .dashboard-empty strong { color: var(--ink); }
@@ -3708,8 +3707,6 @@ button {
   .home-shell { --home-gutter: 0.85rem; }
   .dashboard-summary-grid { gap: 0.55rem; }
   .dashboard-summary-card { min-height: 6.5rem; padding: 0.85rem; border-radius: 0.7rem; }
-  .dashboard-summary-card p { font-size: 0.72rem; }
-  .dashboard-summary-card strong { font-size: 1.65rem; }
   .dashboard-toolbar { flex-wrap: nowrap; gap: 0.5rem; }
   .dashboard-filter-pills { max-width: calc(100% - 8rem); }
   .dashboard-sort { margin-left: 0; }
@@ -3766,8 +3763,8 @@ button {
 .home-shell .peer-history-table-wrap {
   color: var(--ink);
   background: var(--public-card-surface);
-  border-color: var(--public-card-border);
-  box-shadow: 0 1px 1px rgba(15, 23, 42, 0.025);
+  border: none;
+  box-shadow: none;
   backdrop-filter: none;
 }
 
@@ -3793,10 +3790,27 @@ button {
 .home-shell .node-summary-tile {
   color: var(--ink);
   background: var(--public-card-surface);
-  border: 1px solid var(--public-card-border);
+  border: none;
   border-radius: 0.6rem;
-  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.05);
+  box-shadow: none;
   backdrop-filter: none;
+}
+
+/* Match Emerald's responsive summary and detail field type tiers without
+   changing PlatPulse's grid, content, tabular numerals or semantic colours. */
+.home-shell .node-summary-tile-label { font-size: 0.75rem; line-height: 1rem; font-weight: 500; }
+.home-shell .node-summary-tile-value { font-size: 1rem; line-height: 1.5rem; font-weight: 700; letter-spacing: -0.025em; }
+.home-shell .node-summary-tile-detail { font-weight: 400; line-height: 1.5; }
+.home-shell .node-info-group :is(.metric-row-label, .metric-row-value) { font-size: 0.75rem; line-height: 1rem; font-weight: 400; letter-spacing: normal; }
+.home-shell .node-info-group .metric-row-detail { font-weight: 400; line-height: 1.5; }
+
+@media (min-width: 40rem) {
+  .home-shell .node-summary-tile-value { font-size: 1.5rem; line-height: 2rem; }
+  .home-shell .node-info-group :is(.metric-row-label, .metric-row-value) { font-size: 0.875rem; line-height: 1.25rem; }
+}
+
+@media (min-width: 48rem) {
+  .dashboard-summary-card strong { font-size: 1.5rem; }
 }
 
 .home-shell .node-identity h1,
@@ -3820,7 +3834,7 @@ button {
 .home-shell .node-consensus-runway > div::before { background: #ffffff; border-color: #8b5cf6; box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.12); }
 .home-shell .node-consensus-runway > div:first-child::before { border-color: var(--info); }
 .home-shell .node-consensus-runway > div:last-child::before { border-color: var(--brand-strong); }
-.home-shell .node-metric-card { color: var(--ink); background: var(--public-card-surface); border-color: var(--public-card-border); border-radius: 0.6rem; box-shadow: 0 1px 1px rgba(15, 23, 42, 0.025); backdrop-filter: none; }
+.home-shell .node-metric-card { color: var(--ink); background: var(--public-card-surface); border: none; border-radius: 0.6rem; box-shadow: none; backdrop-filter: none; }
 .home-shell .node-metric-grid-lines line { stroke: rgba(100, 116, 139, 0.18); }
 .home-shell .node-metric-chart-line-secondary { stroke: var(--node-series-secondary); filter: none; }
 .home-shell .node-metric-chart-dot { stroke: #ffffff; }
@@ -3831,7 +3845,7 @@ button {
 .home-shell .node-fact,
 .home-shell .node-signal-card,
 .home-shell .node-headline-metric,
-.home-shell .node-overview-statuses { color: var(--ink); background: var(--public-card-surface); border-color: var(--public-card-border); }
+.home-shell .node-overview-statuses { color: var(--ink); background: var(--public-card-surface); border: none; }
 .home-shell .node-detail-breadcrumb { color: var(--muted); }
 .home-shell .status-badge-ok { color: var(--green); background: var(--green-bg); border-color: rgba(5, 150, 105, 0.2); }
 .home-shell .status-badge-warning { color: var(--amber); background: var(--amber-bg); border-color: rgba(146, 64, 14, 0.2); }
@@ -5188,7 +5202,7 @@ button {
 :root.dark .dashboard-live,
 :root.dark .dashboard-empty {
   background: var(--public-card-surface);
-  border-color: var(--public-card-border);
+  border: none;
 }
 
 :root.dark .node-info-group,
@@ -5196,13 +5210,13 @@ button {
 :root.dark .node-summary-tile,
 :root.dark .home-shell .node-summary-tile {
   background: var(--public-card-surface);
-  border-color: var(--public-card-border);
+  border: none;
 }
 
 :root.dark .node-metric-card,
 :root.dark .home-shell .node-metric-card {
   background: var(--public-card-surface);
-  border-color: var(--public-card-border);
+  border: none;
 }
 
 /* Home Node Detail tabs are owned by the #147 section below; no generic dark
@@ -5292,51 +5306,49 @@ button {
  * undecorated workbench background.
  * ------------------------------------------------------------------------- */
 
-/* Information cards become opaque with a faint Emerald outline/glow and a
-   ~2px lift, only where hovering is a real interaction. The lift is applied to
-   the card, never to the chart plot, and no static card gains a pointer
-   cursor, click handler, or tab stop. */
+/* Emerald default surfaces: only Home Node cards lift/glow. Statistics and
+   detail reading surfaces become opaque without suggesting clickability. */
+.home-shell .node-disclosure,
+.home-shell .peer-history-insight {
+  background: var(--public-card-surface);
+  border: none;
+  box-shadow: none;
+}
+
+.home-shell :is(.node-info-group, .node-summary-tile, .node-metric-card,
+  .node-disclosure, .peer-insight, .geo-insight, .validator-history-entry,
+  .peer-history-table-wrap, .peer-history-insight, .public-network-page .node-card) {
+  transition: background-color 200ms ease;
+}
+
 @media (hover: hover) and (pointer: fine) {
-  .dashboard-summary-card:hover,
-  .dashboard-node-card:hover,
-  .home-shell .public-network-page .node-card:hover,
-  .home-shell .node-info-group:hover,
-  .home-shell .node-summary-tile:hover,
-  .home-shell .peer-insight:hover,
-  .home-shell .geo-insight:hover {
+  .dashboard-node-card:hover {
     background: var(--public-card-surface-hover);
-    border-color: var(--public-card-border-hover);
     box-shadow: var(--public-card-glow);
     transform: translateY(-2px);
   }
 
-  /* Chart and disclosure cards gain the outline/glow without moving the plot
-     or the reading surface. */
-  .home-shell .node-metric-card:hover,
-  .home-shell .node-disclosure:hover,
-  .home-shell .validator-history-entry:hover,
-  .home-shell .peer-history-table-wrap:hover,
-  .home-shell .peer-history-insight:hover {
-    border-color: var(--public-card-border-hover);
-    box-shadow: var(--public-card-glow);
+  .home-shell :is(.dashboard-summary-card, .public-network-page .node-card,
+    .node-info-group, .node-summary-tile, .peer-insight, .geo-insight,
+    .node-metric-card, .node-disclosure, .validator-history-entry,
+    .peer-history-table-wrap, .peer-history-insight):hover {
+    background: var(--public-card-surface-hover);
+    box-shadow: none;
+    transform: none;
   }
 }
 
-/* Keyboard parity for cards that contain an interactive element (the whole-card
-   Node links, the disclosure summary, and the Network card links): the card shows
-   the same highlight as a hovered one, while the focused element keeps its own
-   visible focus ring. Static cards have nothing to focus. */
-.dashboard-node-card:focus-within,
-.home-shell .public-network-page .node-card:focus-within {
+/* Whole-card Node links keep keyboard parity. Other links and disclosure
+   summaries retain their own visible focus outlines, without a card glow. */
+.dashboard-node-card:focus-within {
   background: var(--public-card-surface-hover);
-  border-color: var(--public-card-border-hover);
   box-shadow: var(--public-card-glow);
 }
 
+.home-shell .public-network-page .node-card:focus-within,
 .home-shell .validator-history-entry:focus-within,
 .home-shell .node-disclosure:focus-within {
-  border-color: var(--public-card-border-hover);
-  box-shadow: var(--public-card-glow);
+  background: var(--public-card-surface-hover);
 }
 
 /* reduced-motion removes the lift and the non-essential transition but keeps
@@ -5412,12 +5424,6 @@ button {
 
 :root.dark .home-shell .node-consensus-summary {
   border-block-color: rgba(255, 255, 255, 0.14);
-}
-
-:root.dark .node-disclosure,
-:root.dark .home-shell .node-disclosure {
-  background: var(--public-card-surface);
-  border-color: var(--public-card-border);
 }
 
 :root.dark .dashboard-node-diagnostic { border-top-color: rgba(255, 255, 255, 0.12); }

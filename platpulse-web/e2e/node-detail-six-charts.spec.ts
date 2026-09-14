@@ -195,7 +195,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             await page.screenshot({ path: testInfo.outputPath('node-detail-six-charts.png'), fullPage: true })
           }
 
-          // Chart cards never move; hover-capable devices still gain the glow.
+          // Emerald detail cards become opaque without a glow or lift.
           const hoverCapable = await page.evaluate(
             () => matchMedia('(hover: hover) and (pointer: fine)').matches,
           )
@@ -212,8 +212,11 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             hovered.transform === 'none' || hovered.transform === 'matrix(1, 0, 0, 1, 0, 0)',
             'the six-chart deck never moves on hover',
           ).toBe(true)
+          expect(hovered.shadow, 'chart cards stay shadow-free').toBe(restingShadow)
+          await expect(chartCard).toHaveCSS('box-shadow', 'none')
           if (hoverCapable) {
-            expect(hovered.shadow, 'chart cards gain the Emerald outline/glow').not.toBe(restingShadow)
+            await expect(chartCard).toHaveCSS('background-color', theme === 'light'
+              ? 'rgb(255, 255, 255)' : 'oklch(0.141 0.005 285.823)')
           }
 
           // The observation panels and the diagnostic disclosures are the
@@ -223,9 +226,9 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
           const panelResting = await observationPanel.evaluate((card) => getComputedStyle(card).boxShadow)
           await observationPanel.hover()
           await page.waitForTimeout(220)
-          if (hoverCapable) {
-            expect(await observationPanel.evaluate((card) => getComputedStyle(card).boxShadow), 'the observation panel gains the outline/glow').not.toBe(panelResting)
-          }
+          expect(await observationPanel.evaluate((card) => getComputedStyle(card).boxShadow), 'observation panels stay shadow-free').toBe(panelResting)
+          await expect(observationPanel).toHaveCSS('box-shadow', 'none')
+          await expect(observationPanel).toHaveCSS('transform', 'none')
 
           // Low-frequency technical details open by keyboard and stay in the
           // Public Projection.
