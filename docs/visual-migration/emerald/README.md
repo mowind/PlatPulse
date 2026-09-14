@@ -150,3 +150,38 @@ The failure taxonomy above is the honest state: the migration's own web checks a
 
 `screenshots/<project>/<page>.png` — 25 captures (login, Home, Network detail, Node detail, Admin overview) across the five projects, 3.4 MB. Captured with `EMERALD_EVIDENCE=1 npx playwright test e2e/visual-evidence.spec.ts`. There is no `toHaveScreenshot` assertion anywhere in the repository, so these are evidence and never a gate. **They have not yet been reviewed against upstream's rendering**, so no fidelity claim is made.
 
+
+## 7. Run history (three consecutive full runs, ~30 min each)
+
+| Run | passed | failed | skipped | did not run |
+|---|---|---|---|---|
+| after the migration | 327 | 156 | 57 | 30 |
+| after the 44x44, 360px-overflow, dialog and three restatement fixes | 359 | 129 | 57 | 25 |
+| after the tab-role, aria-selected, oklab, checkbox and reduced-motion fixes | **405** | **96** | 64 | **5** |
+
+The largest single win was a real regression: the migration dropped
+prefers-reduced-motion support, because upstream Emerald ships no such block
+while the retired sheet carried six !important rules. Restoring it in the design
+system removed 33 failures and cleared 20 of the 25 tests that had been aborted
+by cascade.
+
+What still fails (96), and why it needs judgement rather than another sweep:
+
+1. Assertions that encode the pre-migration design, roughly 60. theme.spec card
+   CSS values (15 toHaveCSS), shell.spec geometry (10 toBeGreaterThanOrEqual),
+   home-geo-map.spec composition, release-candidate.spec,
+   node-detail-six-charts.spec. Each has to be restated from Emerald's own
+   values and recorded as an acceptance change.
+2. home-geo-map.spec:728 "stacks the statistics over a compact map on narrow
+   screens" (4). This is an open design decision, not a defect: upstream's
+   mobile composition pulls the statistics up over the map's lower band
+   (-mt-42), while this assertion requires the map to sit entirely above the
+   statistics. The measured overlap is map-bottom 441 against statistics-top
+   290. Either upstream's overlap is accepted and the assertion restated, or the
+   overlap is dropped.
+3. expectVisibleInteractiveTargets still reports one undersized input (8). Every
+   primitive carries a 44px minimum now - Input, Textarea, Select and Checkbox
+   were each verified in the source - so the offending element could not be
+   identified from the log alone. The next step is a targeted locator dump, not
+   a guess.
+4. The rest are click and visibility timeouts cascading from 1 and 2.
