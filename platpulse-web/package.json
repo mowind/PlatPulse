@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prototype:emerald": "vite --host 127.0.0.1 --port 5174 --strictPort --open /prototype/emerald/",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
