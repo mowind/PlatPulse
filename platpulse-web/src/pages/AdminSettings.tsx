@@ -33,7 +33,7 @@ import { cn } from '../lib/utils'
 
 /** Emerald's card shell for the ordered Settings cards. */
 const CARD = cn(
-  'rounded-md border-none transition-all',
+  'min-w-0 rounded-md border-none transition-all',
   SURFACE_CARD,
   'hover:shadow-[0_0_20px,0_0_0_1px] hover:shadow-emerald-600/10',
 )
@@ -60,7 +60,7 @@ export default function AdminSettings() {
         <Link className={TEXT_LINK} to="/admin">← Admin overview</Link>
       </p>
       <h1 className="text-lg font-semibold break-words">Settings</h1>
-      <div data-slot="settings-sections" className="grid max-w-[58rem] gap-3">
+      <div data-slot="settings-sections" className="grid min-w-0 max-w-[58rem] gap-3">
         <HistoryWindowSettings generation={generation} csrfToken={csrfToken} />
         <SiteAccessSettings generation={generation} csrfToken={csrfToken} />
         <GeoProviderSettings generation={generation} csrfToken={csrfToken} />

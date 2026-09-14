@@ -308,8 +308,11 @@ test.describe('Anonymous Home (Guest) toggle', () => {
     await expect(page.getByRole('heading', { level: 1, name: 'Settings' })).toBeVisible()
 
     try {
-      page.on('dialog', (dialog) => void dialog.accept())
+      // The migration replaced this window.confirm with an in-app dialog, so
+      // the transition is confirmed inside the dialog rather than through a
+      // native dialog handler. The assertions are unchanged.
       await page.getByRole('button', { name: 'Make Home Public' }).click()
+      await page.getByRole('dialog').getByRole('button', { name: 'Make Home Public' }).click()
       await expect(page.getByText('Site Access Mode is now Public. Audit was recorded.')).toBeVisible()
 
       // A fresh anonymous context can read the Public projection.
@@ -340,6 +343,7 @@ test.describe('Anonymous Home (Guest) toggle', () => {
       // Disabling closes the open Guest stream: the anonymous tab lands on
       // the login page without flashing prior data.
       await page.getByRole('button', { name: 'Make Home Private' }).click()
+      await page.getByRole('dialog').getByRole('button', { name: 'Make Home Private' }).click()
       await expect(page.getByText('Site Access Mode is now Private. Audit was recorded.')).toBeVisible()
       await expect(guestPage2).toHaveURL(/\/login$/, { timeout: 10_000 })
       await expect(

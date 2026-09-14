@@ -840,7 +840,7 @@ function NodeCard({ node }: { node: PublicNode }) {
         <header className="flex min-w-0 items-start gap-2" role="group" aria-label="Node identity and health">
           <NodeHealthMarker health={node.health} />
           <h2 id={titleId} className="m-0 min-w-0 text-base font-semibold leading-snug">
-            <Link className="break-words hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring" to={'/nodes/' + node.nodeId}>{displayName}</Link>
+            <Link className="inline-flex min-h-11 min-w-11 items-center break-words hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring" to={'/nodes/' + node.nodeId}>{displayName}</Link>
           </h2>
         </header>
         {showHealthReason && <p className="m-0 break-words text-[11px] text-warning-foreground dark:text-warning">{node.healthReason || 'Server health reason unavailable.'}</p>}
