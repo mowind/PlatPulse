@@ -211,7 +211,7 @@ describe('PAGE-ACCESS-AUDIT (Audit review)', () => {
     renderAt('/admin/access/audit')
 
     await screen.findByRole('heading', { level: 1, name: 'Audit log' })
-    const list = () => document.querySelector('.audit-list')?.textContent ?? ''
+    const list = () => document.querySelector('[data-slot="audit-list"]')?.textContent ?? ''
     await waitFor(() => expect(list()).toContain('viewer_created'))
     expect(list()).toContain('session_revoked')
     expect(screen.getByRole('table')).toBeTruthy()
@@ -228,7 +228,7 @@ describe('PAGE-ACCESS-AUDIT (Audit review)', () => {
     // Redaction: the listing and its details carry no password, token, or
     // credential material (filter labels may name the kinds, so the list
     // container is the assertion boundary).
-    const listText = (document.querySelector('.audit-list')?.textContent ?? '').toLowerCase()
+    const listText = (document.querySelector('[data-slot="audit-list"]')?.textContent ?? '').toLowerCase()
     for (const forbidden of ['password', 'credential', 'token', 'csrf']) {
       expect(listText).not.toContain(forbidden)
     }
@@ -255,7 +255,7 @@ describe('PAGE-ACCESS-AUDIT (Audit review)', () => {
     renderAt('/admin/access/audit')
     await screen.findByRole('heading', { level: 1, name: 'Audit log' })
 
-    const list = () => document.querySelector('.audit-list')?.textContent ?? ''
+    const list = () => document.querySelector('[data-slot="audit-list"]')?.textContent ?? ''
     const kindSelect = await screen.findByLabelText('Event kind')
     fireEvent.change(kindSelect, { target: { value: 'login_failed' } })
     // The Server receives the filter and the filtered listing renders.

@@ -180,7 +180,7 @@ function expandDiagnostics(row: HTMLElement): HTMLElement {
   fireEvent.click(toggle)
   expect(toggle.getAttribute('aria-expanded')).toBe('true')
   const detail = row.nextElementSibling as HTMLElement | null
-  expect(detail?.classList.contains('node-detail-row')).toBe(true)
+  expect(detail?.getAttribute('data-slot')).toBe('detail-row')
   expect(toggle.getAttribute('aria-controls')).toBe(detail?.querySelector('td')?.id)
   expect(row.children).toHaveLength(6)
   return detail as HTMLElement

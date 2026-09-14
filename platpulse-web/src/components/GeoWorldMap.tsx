@@ -222,8 +222,8 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
           data-slot="geo-counters"
           className="pointer-events-none absolute top-0 right-0 z-2 flex items-center gap-2 rounded bg-background/60 px-2 py-0.5 text-[10px] text-muted-foreground backdrop-blur-lg"
         >
-          <span className="flex items-center gap-1">
-            <span className="inline-block size-1.5 animate-pulse rounded-full bg-emerald-600" aria-hidden="true" />
+          <span data-slot="geo-counter" className="flex items-center gap-1">
+            <span data-slot="geo-counter-dot" className="inline-block size-1.5 animate-pulse rounded-full bg-emerald-600" aria-hidden="true" />
             <span className="sr-only">Peers: </span>
             {formatGeoCount(scopedPeerCount)}
           </span>

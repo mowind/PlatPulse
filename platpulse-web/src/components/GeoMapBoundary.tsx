@@ -30,7 +30,7 @@ export default class GeoMapBoundary extends Component<GeoMapBoundaryProps, GeoMa
   render() {
     if (this.state.failed) {
       return (
-        <section className="home-geo home-geo-disabled" aria-label={PEER_COUNTRIES_HEADING}>
+        <section className="relative block h-full min-h-40 w-full" aria-label={PEER_COUNTRIES_HEADING}>
           <span className="sr-only" role="status">Map unavailable</span>
         </section>
       )

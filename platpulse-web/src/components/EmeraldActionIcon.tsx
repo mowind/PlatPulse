@@ -11,5 +11,5 @@ const icons = {
 }
 
 export function EmeraldActionIcon({ name }: { name: keyof typeof icons }) {
-  return <svg className="emerald-action-icon" width="18" height="18" viewBox="0 0 48 48" data-icon={name} aria-hidden="true" focusable="false">{icons[name]}</svg>
+  return <svg className="shrink-0" width="18" height="18" viewBox="0 0 48 48" data-icon={name} aria-hidden="true" focusable="false">{icons[name]}</svg>
 }

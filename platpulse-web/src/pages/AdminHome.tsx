@@ -16,6 +16,13 @@ import {
   freshnessLabel,
   livenessLabel,
 } from '../components/StatusBadge'
+import { Alert, AlertDescription } from '../components/ui/alert'
+import { Badge } from '../components/ui/badge'
+import { Button } from '../components/ui/button'
+import { DataTooltip } from '../components/ui/data-tooltip'
+import { Empty } from '../components/ui/empty'
+import { SURFACE_CARD } from '../lib/surface'
+import { cn } from '../lib/utils'
 import type {
   AdminOverview,
   AgentDiagnostic,
@@ -23,6 +30,28 @@ import type {
   AdminNodeListItem,
   NodeDiagnostic,
 } from '../api/generated'
+
+/** Emerald's card surface, applied to every Overview panel. Upstream passes
+ * border-none and leans on the surface recipe plus the hover glow. */
+const PANEL = cn(
+  'min-w-0 rounded-md border-none p-4 text-foreground transition-all',
+  SURFACE_CARD,
+  'hover:shadow-[0_0_20px,0_0_0_1px] hover:shadow-emerald-600/10',
+)
+const PANEL_HEADING = 'flex min-w-0 items-start justify-between gap-3 border-b pb-3'
+const PANEL_TITLE = 'text-sm font-medium'
+const EYEBROW = 'text-xs font-medium tracking-wider text-muted-foreground uppercase'
+const PANEL_STATE = 'flex min-w-0 flex-wrap items-center gap-2 text-sm text-muted-foreground'
+const TABLE_HEAD = 'whitespace-nowrap border-b px-3 py-2 text-left text-xs font-medium text-muted-foreground'
+const TABLE_CELL = 'border-b border-border/60 px-3 py-3 align-top text-sm'
+const MUTED_SMALL = 'mt-1 block text-[11px] text-muted-foreground'
+const TEXT_LINK = 'inline-flex min-h-11 min-w-11 items-center font-medium text-primary hover:underline'
+const SUMMARY_ARROW: Record<string, string> = {
+  violet: 'text-violet-600 dark:text-violet-400',
+  green: 'text-emerald-600 dark:text-emerald-400',
+  slate: 'text-muted-foreground',
+  red: 'text-destructive',
+}
 
 /**
  * PAGE-ADMIN-OVERVIEW (webui.md §8.4): Server-owned attention queue, Node
@@ -45,7 +74,7 @@ export default function AdminHome() {
   }
 
   return (
-    <section className="page admin-overview">
+    <section className="mx-auto flex w-full min-w-0 max-w-[1280px] flex-col gap-4 pb-12">
       <OverviewHeader snapshot={snapshot} query={overview} refreshing={overview.isFetching || diagnostics.isFetching || nodes.isFetching} onRefresh={refreshAll} />
       <AttentionPanel query={overview} />
       {snapshot && <SummaryCards summary={snapshot.summary} />}
@@ -79,24 +108,34 @@ function OverviewHeader({
   onRefresh: () => Promise<void>
 }) {
   return (
-    <header className="admin-overview-header">
-      <div>
-        <span className="eyebrow">Owner triage</span>
-        <h1>Overview</h1>
-        <p>A compact read on what needs intervention across your PlatON estate.</p>
+    <header
+      data-slot="overview-header"
+      className="flex min-w-0 flex-col gap-3 border-b pb-4 md:flex-row md:items-end md:justify-between md:gap-x-8"
+    >
+      <div className="min-w-0">
+        <span className={EYEBROW}>Owner triage</span>
+        <h1 className="mt-1 text-lg font-semibold break-words">Overview</h1>
+        <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
+          A compact read on what needs intervention across your PlatON estate.
+        </p>
       </div>
-      <div className="header-status">
+      <div
+        data-slot="header-status"
+        className="flex flex-wrap items-center gap-2 text-xs font-medium text-muted-foreground md:justify-end md:text-right"
+      >
         {snapshot ? (
           <>
-            Last good snapshot · <RelativeTime timestamp={snapshot.generated_at} />
-            <button
-              type="button"
-              className="refresh-button"
+            <span>
+              Last good snapshot · <RelativeTime timestamp={snapshot.generated_at} />
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
               onClick={() => void onRefresh()}
               disabled={refreshing}
             >
               {query.isFetching ? 'Refreshing…' : 'Refresh'}
-            </button>
+            </Button>
           </>
         ) : query.isError ? (
           'Snapshot unavailable'
@@ -147,18 +186,20 @@ function isAuthoritativelyEmpty(snapshot: AdminOverview, nodes: AdminNodeListIte
 
 function SetupGuide() {
   return (
-    <aside className="panel setup-guide" aria-labelledby="setup-guide-title">
-      <div className="panel-heading">
-        <div>
-          <span className="eyebrow">Next steps</span>
-          <h2 id="setup-guide-title">Set up your first observation</h2>
+    <aside data-slot="setup-guide" className={PANEL} aria-labelledby="setup-guide-title">
+      <div className={PANEL_HEADING}>
+        <div className="min-w-0">
+          <span className={EYEBROW}>Next steps</span>
+          <h2 id="setup-guide-title" className={PANEL_TITLE}>Set up your first observation</h2>
         </div>
       </div>
-      <p>There are no Agents, Nodes, or Networks yet. Complete these steps to begin receiving authoritative observations.</p>
-      <ol>
-        <li><Link to="/admin/networks">Register the expected Network identity</Link>.</li>
+      <p className="mt-3 text-sm text-muted-foreground">
+        There are no Agents, Nodes, or Networks yet. Complete these steps to begin receiving authoritative observations.
+      </p>
+      <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-muted-foreground">
+        <li><Link className={TEXT_LINK} to="/admin/networks">Register the expected Network identity</Link>.</li>
         <li>Provision and start an Agent.</li>
-        <li><Link to="/admin/settings">Configure the Agent's local Node Inventory</Link>.</li>
+        <li><Link className={TEXT_LINK} to="/admin/settings">Configure the Agent's local Node Inventory</Link>.</li>
         <li>Wait for the first accepted Agent Report.</li>
       </ol>
     </aside>
@@ -197,13 +238,29 @@ function SummaryCards({ summary }: { summary: AdminOverview['summary'] }) {
     },
   ]
   return (
-    <nav className="summary-cards" aria-label="Overview summaries">
+    <nav aria-label="Overview summaries" className="grid grid-cols-2 gap-2 md:grid-cols-4 md:gap-3">
       {cards.map((card) => (
-        <Link className={`summary-card accent-${card.accent}`} to={card.href} key={card.label}>
-          <span className="eyebrow">{card.label}</span>
-          <strong>{card.value}</strong>
-          <span>{card.legend}</span>
-          <span className="card-arrow" aria-hidden="true">↗</span>
+        <Link
+          key={card.label}
+          data-slot="summary-card"
+          data-accent={card.accent}
+          to={card.href}
+          className={cn(
+            'flex min-h-[7.5rem] min-w-0 flex-col justify-between gap-2 rounded-md p-3 text-foreground no-underline transition-all',
+            SURFACE_CARD,
+            'hover:-translate-y-0.5 hover:shadow-[0_0_20px,0_0_0_1px] hover:shadow-emerald-600/10',
+          )}
+        >
+          <span className={EYEBROW}>{card.label}</span>
+          <strong className="text-2xl font-bold leading-none tracking-tight tabular-nums md:text-3xl">
+            {card.value}
+          </strong>
+          <span className="text-[11px] leading-snug break-words text-muted-foreground">
+            {card.legend}
+          </span>
+          <span aria-hidden="true" className={cn('text-base', SUMMARY_ARROW[card.accent])}>
+            ↗
+          </span>
         </Link>
       ))}
     </nav>
@@ -227,14 +284,84 @@ function AttentionPanel({ query }: { query: OverviewQuery }) {
   const hiddenCount = Math.max(0, groups.length - 6)
   const criticalCount = (data?.attention ?? []).filter((item) => item.severity === "critical").length
   return (
-    <article className="panel overview-panel attention-panel">
-      <div className="panel-heading"><div><span className="eyebrow">01 · Attention</span><h2>Attention queue</h2></div>{data && <span className="panel-count">{data.attention.length}</span>}</div>
+    <article data-slot="overview-panel" className={PANEL}>
+      <div className={PANEL_HEADING}>
+        <div className="min-w-0">
+          <span className={EYEBROW}>01 · Attention</span>
+          <h2 className={PANEL_TITLE}>Attention queue</h2>
+        </div>
+        {data && <Badge variant="secondary" className="tabular-nums">{data.attention.length}</Badge>}
+      </div>
       <p className="sr-only" role="status">{announcement}</p>
-      {!data && query.isPending && <p className="panel-state" role="status"><StatusBadge status="Starting" tone="neutral" /> Checking the Server for attention…</p>}
-      {!data && query.isError && <p className="panel-state" role="alert"><StatusBadge status="Error" tone="error" /> {query.error instanceof Error ? query.error.message : "Unable to load attention"} <button type="button" className="text-action" onClick={() => void query.refetch()}>Try again</button></p>}
-      {data && query.isRefetchError && <p className="panel-state" role="alert"><StatusBadge status="Error" tone="error" /> Failed to refresh; showing the last successful attention queue. <button type="button" className="text-action" onClick={() => void query.refetch()}>Try again</button></p>}
-      {data && data.attention.length === 0 && <p className="panel-state"><StatusBadge status="Empty" tone="ok" /> No attention items. Nothing needs an Owner right now.</p>}
-      {data && data.attention.length > 0 && <><p className="attention-counts">{data.attention.length} items across {groups.length} subjects · {criticalCount} Critical</p><ul className="attention-list">{visibleGroups.map((group) => <AttentionGroup key={group.key} group={group} expanded={expanded.has(group.key)} onToggle={() => setExpanded((current) => { const next = new Set(current); if (next.has(group.key)) { next.delete(group.key) } else { next.add(group.key) } return next })} />)}</ul>{hiddenCount > 0 && <button type="button" className="quiet-button" onClick={() => setExpanded((current) => { const next = new Set(current); if (next.has("__all__")) { next.delete("__all__") } else { next.add("__all__") } return next })}>{showAll ? "Collapse" : `Show ${hiddenCount} more`}</button>}</>}
+      {!data && query.isPending && (
+        <p className={cn(PANEL_STATE, 'mt-3')} role="status">
+          <StatusBadge status="Starting" tone="neutral" /> Checking the Server for attention…
+        </p>
+      )}
+      {!data && query.isError && (
+        <Alert variant="destructive" className="mt-3">
+          <AlertDescription className="flex flex-wrap items-center gap-2">
+            <StatusBadge status="Error" tone="error" />{' '}
+            {query.error instanceof Error ? query.error.message : 'Unable to load attention'}
+            <Button variant="link" size="sm" onClick={() => void query.refetch()}>Try again</Button>
+          </AlertDescription>
+        </Alert>
+      )}
+      {data && query.isRefetchError && (
+        <Alert variant="destructive" className="mt-3">
+          <AlertDescription className="flex flex-wrap items-center gap-2">
+            <StatusBadge status="Error" tone="error" /> Failed to refresh; showing the last
+            successful attention queue.
+            <Button variant="link" size="sm" onClick={() => void query.refetch()}>Try again</Button>
+          </AlertDescription>
+        </Alert>
+      )}
+      {data && data.attention.length === 0 && (
+        <Empty description="No attention items. Nothing needs an Owner right now." />
+      )}
+      {data && data.attention.length > 0 && (
+        <>
+          <p className="mt-3 text-xs text-muted-foreground">
+            {data.attention.length} items across {groups.length} subjects · {criticalCount} Critical
+          </p>
+          <ul className="mt-2 grid list-none gap-2 p-0">
+            {visibleGroups.map((group) => (
+              <AttentionGroup
+                key={group.key}
+                group={group}
+                expanded={expanded.has(group.key)}
+                onToggle={() => setExpanded((current) => {
+                  const next = new Set(current)
+                  if (next.has(group.key)) {
+                    next.delete(group.key)
+                  } else {
+                    next.add(group.key)
+                  }
+                  return next
+                })}
+              />
+            ))}
+          </ul>
+          {hiddenCount > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-3"
+              onClick={() => setExpanded((current) => {
+                const next = new Set(current)
+                if (next.has('__all__')) {
+                  next.delete('__all__')
+                } else {
+                  next.add('__all__')
+                }
+                return next
+              })}
+            >
+              {showAll ? 'Collapse' : `Show ${hiddenCount} more`}
+            </Button>
+          )}
+        </>
+      )}
     </article>
   )
 }
@@ -278,30 +405,44 @@ function AttentionGroup({ group, expanded, onToggle }: { group: AttentionGroupDa
   const route = safeAttentionRoute(group)
   const additional = group.items.filter((item) => item.id !== primary.id)
   return (
-    <li className={`attention-item attention-group ${severity}`}>
+    <li
+      data-slot="attention-item"
+      data-severity={severity}
+      className={cn(
+        'flex min-w-0 items-start gap-3 rounded-md border border-border/60 border-l-[3px] bg-background/60 p-3',
+        severity === 'critical' && 'border-l-destructive',
+        severity === 'warning' && 'border-l-warning',
+        severity === 'unknown' && 'border-l-muted-foreground',
+      )}
+    >
       <StatusBadge
         status={severity === 'critical' ? 'Critical' : severity === 'warning' ? 'Warning' : 'Unknown'}
         tone={severity === 'critical' ? 'error' : severity === 'warning' ? 'warning' : 'neutral'}
       />
-      <div className="attention-body">
-        <p>
-          <strong>{route ? <Link to={route}>{group.label}</Link> : group.label}</strong> — {primary.message}
+      <div className="min-w-0 flex-1 space-y-1">
+        <p className="break-words">
+          <strong>{route ? <Link className={cn(TEXT_LINK, 'font-semibold')} to={route}>{group.label}</Link> : group.label}</strong> — {primary.message}
         </p>
-        <p className="muted">
+        <p className="break-words text-[11px] text-muted-foreground">
           {primary.kind} · {attentionObservedText(primary.observed_at)}
         </p>
         {additional.length > 0 && (
           <>
-            <button
-              type="button"
-              className="quiet-button"
+            <Button
+              variant="link"
+              size="sm"
+              className="px-0"
               aria-expanded={expanded}
               aria-controls={`attention-details-${group.key}`}
               onClick={onToggle}
             >
               {expanded ? 'Hide additional issues' : `Show ${additional.length} additional issue${additional.length === 1 ? '' : 's'}`}
-            </button>
-            <ul id={`attention-details-${group.key}`} hidden={!expanded}>
+            </Button>
+            <ul
+              id={`attention-details-${group.key}`}
+              hidden={!expanded}
+              className="mt-2 list-disc space-y-1 pl-4 text-[11px] break-words text-muted-foreground"
+            >
               {additional.map((item) => (
                 <li key={item.id}>
                   {item.severity === 'critical' ? 'Critical' : item.severity === 'warning' ? 'Warning' : 'Unknown'} ·{' '}
@@ -352,50 +493,49 @@ function NodePanel({
   }
 
   return (
-    <article className="panel overview-panel node-panel">
-      <div className="panel-heading">
-        <h2>Node Health Summary</h2>
-        {activeNodes.length > 0 && <span className="panel-count">{activeNodes.length}</span>}
+    <article data-slot="overview-panel" className={PANEL}>
+      <div className={PANEL_HEADING}>
+        <h2 className={PANEL_TITLE}>Node Health Summary</h2>
+        {activeNodes.length > 0 && <Badge variant="secondary" className="tabular-nums">{activeNodes.length}</Badge>}
       </div>
       {!nodeQuery.data && nodeQuery.isPending && (
-        <p className="panel-state" role="status">
-          <StatusBadge status="Starting" tone="neutral" /> Loading the Node Health
-          Summary…
+        <p className={cn(PANEL_STATE, 'mt-3')} role="status">
+          <StatusBadge status="Starting" tone="neutral" /> Loading the Node Health Summary…
         </p>
       )}
       {!nodeQuery.data && nodeQuery.isError && (
-        <p className="panel-state" role="alert">
-          <StatusBadge status="Error" tone="error" />{' '}
-          {nodeQuery.error instanceof Error ? nodeQuery.error.message : 'Unable to load Nodes'}
-          <button type="button" className="text-action" onClick={() => void nodeQuery.refetch()}>
-            Try again
-          </button>
-        </p>
+        <Alert variant="destructive" className="mt-3">
+          <AlertDescription className="flex flex-wrap items-center gap-2">
+            <StatusBadge status="Error" tone="error" />{' '}
+            {nodeQuery.error instanceof Error ? nodeQuery.error.message : 'Unable to load Nodes'}
+            <Button variant="link" size="sm" onClick={() => void nodeQuery.refetch()}>
+              Try again
+            </Button>
+          </AlertDescription>
+        </Alert>
       )}
       {nodeQuery.data && nodeQuery.isRefetchError && (
-        <p className="panel-state" role="alert">
-          <StatusBadge status="Error" tone="error" /> Failed to refresh; showing the last
-          successful Node values.
-          <button type="button" className="text-action" onClick={() => void nodeQuery.refetch()}>Try again</button>
-        </p>
+        <Alert variant="destructive" className="mt-3">
+          <AlertDescription className="flex flex-wrap items-center gap-2">
+            <StatusBadge status="Error" tone="error" /> Failed to refresh; showing the last
+            successful Node values.
+            <Button variant="link" size="sm" onClick={() => void nodeQuery.refetch()}>Try again</Button>
+          </AlertDescription>
+        </Alert>
       )}
-      {nodeQuery.data && activeNodes.length === 0 && (
-        <p className="panel-state">
-          <StatusBadge status="Empty" tone="ok" /> No Nodes observed yet.
-        </p>
-      )}
+      {nodeQuery.data && activeNodes.length === 0 && <Empty description="No Nodes observed yet." />}
       {nodeQuery.data && activeNodes.length > 0 && (
-        <div className="table-wrap">
-          <table className="node-table">
+        <div className="mt-3 w-full min-w-0 overflow-x-auto">
+          <table className="w-full min-w-[48rem] border-collapse text-sm">
             <caption className="sr-only">PlatON Node health, freshness, and sync</caption>
             <thead>
               <tr>
-                <th scope="col">Node</th>
-                <th scope="col">Network</th>
-                <th scope="col">Health</th>
-                <th scope="col">Freshness</th>
-                <th scope="col">Head / Sync</th>
-                <th scope="col">Resync</th>
+                <th scope="col" className={TABLE_HEAD}>Node</th>
+                <th scope="col" className={TABLE_HEAD}>Network</th>
+                <th scope="col" className={TABLE_HEAD}>Health</th>
+                <th scope="col" className={TABLE_HEAD}>Freshness</th>
+                <th scope="col" className={TABLE_HEAD}>Head / Sync</th>
+                <th scope="col" className={TABLE_HEAD}>Resync</th>
               </tr>
             </thead>
             <tbody>
@@ -414,9 +554,9 @@ function NodePanel({
         </div>
       )}
       {nodeQuery.data && activeNodes.length > 0 && (
-        <div className="panel-heading">
-          <span className="muted">Showing {visibleNodes.length} of {activeNodes.length} Active Nodes</span>
-          <Link className="text-action" to="/admin/nodes">View all Nodes</Link>
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t pt-3">
+          <span className="text-sm text-muted-foreground">Showing {visibleNodes.length} of {activeNodes.length} Active Nodes</span>
+          <Link className={TEXT_LINK} to="/admin/nodes">View all Nodes</Link>
         </div>
       )}
     </article>
@@ -469,66 +609,71 @@ function NodeRows({
   const detailId = `node-detail-${node.node_id}`
   return (
     <>
-      <tr onKeyDown={collapseOnEscape}>
-        <th scope="row" data-label="Node">
-          <button
+      <tr className="border-b border-border/60" onKeyDown={collapseOnEscape}>
+        <th scope="row" className={cn(TABLE_CELL, 'text-left')}>
+          <Button
             ref={toggleRef}
-            type="button"
-            className="node-toggle"
+            variant="link"
+            size="sm"
+            className="h-auto min-w-11 justify-start px-0 font-semibold"
             aria-expanded={expanded}
             aria-controls={detailId}
             onClick={onToggle}
           >
             <span aria-hidden="true">{expanded ? '▾' : '▸'}</span> {nodeLabel}
-          </button>
-          <small className="muted" title={node.node_id}>
+          </Button>
+          <small className={MUTED_SMALL} title={node.node_id}>
             Node ID · {formatIdentifier(node.node_id)}
           </small>
-          <Link className="text-action" to={`/admin/nodes/${encodeURIComponent(node.node_id)}`}>View Node</Link>
+          <Link className={TEXT_LINK} to={`/admin/nodes/${encodeURIComponent(node.node_id)}`}>View Node</Link>
         </th>
-        <td data-label="Network">
-          {node.network_display_name}
-          <small className="muted">{node.network_key}</small>
+        <td className={TABLE_CELL}>
+          <span className="break-words">{node.network_display_name}</span>
+          <small className={MUTED_SMALL}>{node.network_key}</small>
         </td>
-        <td data-label="Health">
+        <td className={TABLE_CELL}>
           <StatusBadge status={node.health} tone={healthTone(node.health)} />
-          <span className="health-reason">{node.health_reason}</span>
+          <span className="mt-1 block text-xs break-words text-muted-foreground">{node.health_reason}</span>
         </td>
-        <td data-label="Freshness">
+        <td className={TABLE_CELL}>
           <StatusBadge status={freshnessLabel(node.freshness)} tone={freshnessTone(node.freshness)} />
-          <small className="muted">Server-owned freshness</small>
+          <DataTooltip as="span" className="block" content="Freshness is computed by the Server, not the browser.">
+            <small className={MUTED_SMALL}>Server-owned freshness</small>
+          </DataTooltip>
         </td>
-        <td data-label="Head / Sync">
-          {node.current_head ?? 'Unknown'}
-          <small className="muted">{syncSummary(diagnostic)}</small>
+        <td className={TABLE_CELL}>
+          <span className="break-words">{node.current_head ?? 'Unknown'}</span>
+          <small className={MUTED_SMALL}>{syncSummary(diagnostic)}</small>
         </td>
-        <td data-label="Resync">
-          {node.resync_state}
+        <td className={TABLE_CELL}>
+          <span className="break-words">{node.resync_state}</span>
           {diagnostic?.resync_progress ? (
-            <small className="muted">{diagnostic.resync_progress}</small>
+            <small className={MUTED_SMALL}>{diagnostic.resync_progress}</small>
           ) : null}
         </td>
       </tr>
       {expanded && (
-        <tr className="node-detail-row">
-          <td colSpan={6} id={detailId} onKeyDown={collapseOnEscape}>
-            <div className="node-detail">
+        <tr className="border-b border-border/60">
+          <td colSpan={6} id={detailId} onKeyDown={collapseOnEscape} className="p-0">
+            <div className="m-1 mb-3 rounded-md border border-border/60 bg-muted/40 p-3">
               {!diagnostic && diagnosticsQuery.isPending && (
-                <p className="panel-state" role="status">
+                <p className={PANEL_STATE} role="status">
                   <StatusBadge status="Starting" tone="neutral" /> Loading Node diagnostics…
                 </p>
               )}
               {!diagnostic && diagnosticsQuery.isError && (
-                <p className="panel-state" role="alert">
-                  <StatusBadge status="Error" tone="error" /> Node diagnostics are unavailable;
-                  the summary above remains available.
-                  <button type="button" className="text-action" onClick={() => void diagnosticsQuery.refetch()}>
-                    Try again
-                  </button>
-                </p>
+                <Alert variant="destructive">
+                  <AlertDescription className="flex flex-wrap items-center gap-2">
+                    <StatusBadge status="Error" tone="error" /> Node diagnostics are unavailable;
+                    the summary above remains available.
+                    <Button variant="link" size="sm" onClick={() => void diagnosticsQuery.refetch()}>
+                      Try again
+                    </Button>
+                  </AlertDescription>
+                </Alert>
               )}
               {diagnostic && (
-                <dl className="detail-list">
+                <dl className="divide-y divide-border/60">
                   <ComponentRow
                     label="RPC"
                     state={diagnostic.rpc?.state}
@@ -614,9 +759,9 @@ function NodeRows({
                 </dl>
               )}
               {!diagnostic && diagnosticsQuery.data && (
-                <p className="panel-state">
-                  <StatusBadge status="Unknown" tone="neutral" /> No current Agent diagnostic
-                  is available for this Node; the Server-owned summary remains authoritative.
+                <p className={PANEL_STATE}>
+                  <StatusBadge status="Unknown" tone="neutral" /> No current Agent diagnostic is
+                  available for this Node; the Server-owned summary remains authoritative.
                 </p>
               )}
             </div>
@@ -647,15 +792,15 @@ function ComponentRow({
   const tone =
     state === 'error' ? 'error' : state === 'ok' ? 'ok' : state === 'starting' ? 'neutral' : 'neutral'
   return (
-    <div className="component-row">
-      <dt>{label}</dt>
-      <dd>
+    <div className="grid grid-cols-1 gap-1 py-2 sm:grid-cols-[minmax(7rem,0.45fr)_minmax(0,1fr)] sm:gap-2">
+      <dt className="text-xs font-medium tracking-wider text-muted-foreground">{label}</dt>
+      <dd className="m-0 min-w-0 text-sm break-words">
         <StatusBadge status={componentStateLabel(state)} tone={tone} />
         {state === 'error' && errorMessage && (
-          <span className="component-error"> {errorMessage}</span>
+          <span className="font-semibold text-destructive"> {errorMessage}</span>
         )}
-        {detail && <span className="muted"> {detail}</span>}
-        <small className="muted">
+        {detail && <span className="text-muted-foreground"> {detail}</span>}
+        <small className="text-[11px] text-muted-foreground">
           · {state === 'error'
             ? observedAt
               ? `Last good · ${formatObservedAt(observedAt)}`
@@ -680,54 +825,56 @@ function AgentPanel({ query, nodeQuery }: { query: DiagnosticsQuery; nodeQuery: 
     nodesByAgent.set(node.agent_id, existing)
   }
   return (
-    <article className="panel overview-panel agent-panel">
-      <div className="panel-heading">
-        <div>
-          <h2>Agent inventory</h2>
-          <p className="panel-copy">Compact Server-owned reporting, host, evidence, and retained Node summaries.</p>
+    <article data-slot="overview-panel" className={PANEL}>
+      <div className={PANEL_HEADING}>
+        <div className="min-w-0">
+          <h2 className={PANEL_TITLE}>Agent inventory</h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Compact Server-owned reporting, host, evidence, and retained Node summaries.
+          </p>
         </div>
-        {agents.length > 0 && <span className="panel-count">{agents.length}</span>}
+        {agents.length > 0 && <Badge variant="secondary" className="tabular-nums">{agents.length}</Badge>}
       </div>
       {!query.data && query.isPending && (
-        <p className="panel-state" role="status">
+        <p className={cn(PANEL_STATE, 'mt-3')} role="status">
           <StatusBadge status="Starting" tone="neutral" /> Loading Agent state…
         </p>
       )}
       {!query.data && query.isError && (
-        <p className="panel-state" role="alert">
-          <StatusBadge status="Error" tone="error" />{' '}
-          {query.error instanceof Error ? query.error.message : 'Unable to load Agents'}
-          <button type="button" className="text-action" onClick={() => void query.refetch()}>
-            Try again
-          </button>
-        </p>
+        <Alert variant="destructive" className="mt-3">
+          <AlertDescription className="flex flex-wrap items-center gap-2">
+            <StatusBadge status="Error" tone="error" />{' '}
+            {query.error instanceof Error ? query.error.message : 'Unable to load Agents'}
+            <Button variant="link" size="sm" onClick={() => void query.refetch()}>
+              Try again
+            </Button>
+          </AlertDescription>
+        </Alert>
       )}
       {query.data && query.isRefetchError && (
-        <p className="panel-state" role="alert">
-          <StatusBadge status="Error" tone="error" /> Failed to refresh; showing the last
-          successful Agent values.
-          <button type="button" className="text-action" onClick={() => void query.refetch()}>Try again</button>
-        </p>
+        <Alert variant="destructive" className="mt-3">
+          <AlertDescription className="flex flex-wrap items-center gap-2">
+            <StatusBadge status="Error" tone="error" /> Failed to refresh; showing the last
+            successful Agent values.
+            <Button variant="link" size="sm" onClick={() => void query.refetch()}>Try again</Button>
+          </AlertDescription>
+        </Alert>
       )}
-      {query.data && agents.length === 0 && (
-        <p className="panel-state">
-          <StatusBadge status="Empty" tone="ok" /> No Agents enrolled yet.
-        </p>
-      )}
+      {query.data && agents.length === 0 && <Empty description="No Agents enrolled yet." />}
       {query.data && agents.length > 0 && (
-        <div className="table-wrap agent-overview-table-wrap">
-          <table className="node-table agent-overview-table">
+        <div className="mt-3 w-full min-w-0 overflow-x-auto">
+          <table className="w-full min-w-[52rem] border-collapse text-sm">
             <caption className="sr-only">
               Agent inventory overview with reporting, receipt, host resources, evidence, and retained Node summaries
             </caption>
             <thead>
               <tr>
-                <th scope="col">Agent</th>
-                <th scope="col">Reporting</th>
-                <th scope="col">Last received</th>
-                <th scope="col">Host resources</th>
-                <th scope="col">Evidence</th>
-                <th scope="col">Nodes</th>
+                <th scope="col" className={TABLE_HEAD}>Agent</th>
+                <th scope="col" className={TABLE_HEAD}>Reporting</th>
+                <th scope="col" className={TABLE_HEAD}>Last received</th>
+                <th scope="col" className={TABLE_HEAD}>Host resources</th>
+                <th scope="col" className={TABLE_HEAD}>Evidence</th>
+                <th scope="col" className={TABLE_HEAD}>Nodes</th>
               </tr>
             </thead>
             <tbody>
@@ -744,9 +891,9 @@ function AgentPanel({ query, nodeQuery }: { query: DiagnosticsQuery; nodeQuery: 
         </div>
       )}
       {query.data && agents.length > 0 && (
-        <div className="panel-heading">
-          <span className="muted">Showing {visibleAgents.length} of {agents.length} Agents</span>
-          <Link className="text-action" to="/admin/agents">View all Agents</Link>
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t pt-3">
+          <span className="text-sm text-muted-foreground">Showing {visibleAgents.length} of {agents.length} Agents</span>
+          <Link className={TEXT_LINK} to="/admin/agents">View all Agents</Link>
         </div>
       )}
     </article>
@@ -781,47 +928,47 @@ function AgentOverviewRow({
     ? formatBytesUnknown(host.memory_used_bytes) + ' / ' + formatBytesUnknown(host.memory_total_bytes)
     : 'Unknown'
   return (
-    <tr className={spoolRisk || agent.security_event_count > 0 ? 'agent-overview-risk-row' : undefined}>
-      <th scope="row" data-label="Agent">
+    <tr className={cn('border-b border-border/60 align-top', (spoolRisk || agent.security_event_count > 0) && 'bg-destructive/5')}>
+      <th scope="row" className={cn(TABLE_CELL, 'text-left')}>
         <Link
-          className="agent-link"
+          className={cn(TEXT_LINK, 'break-all')}
           aria-label="View Agent"
           to={'/admin/agents/' + encodeURIComponent(agent.agent_id)}
         >
-          <code title={agent.agent_id}>{formatIdentifier(agent.agent_id)}</code>
+          <code className="rounded-sm border bg-muted px-1 py-0.5 text-xs" title={agent.agent_id}>{formatIdentifier(agent.agent_id)}</code>
           <span className="sr-only">View Agent</span>
         </Link>
-        <small className="muted" title={agent.agent_id}>Agent ID · {agent.agent_id}</small>
+        <small className={MUTED_SMALL} title={agent.agent_id}>Agent ID · {agent.agent_id}</small>
       </th>
-      <td data-label="Reporting">
+      <td className={TABLE_CELL}>
         <StatusBadge status={liveness} tone={livenessTone(agent.liveness)} />
-        <small className="muted">Server liveness</small>
+        <small className={MUTED_SMALL}>Server liveness</small>
       </td>
-      <td data-label="Last received">
+      <td className={TABLE_CELL}>
         {agent.last_received_at ? (
           <time dateTime={agent.last_received_at}>{formatObservedAt(agent.last_received_at)}</time>
         ) : (
           <span>{receiptTimeText(agent.last_received_at)}</span>
         )}
-        <small className="muted">{agent.last_report_sequence == null ? 'Never received' : 'Report #' + agent.last_report_sequence}</small>
+        <small className={MUTED_SMALL}>{agent.last_report_sequence == null ? 'Never received' : 'Report #' + agent.last_report_sequence}</small>
       </td>
-      <td data-label="Host resources" className="agent-overview-resources">
-        <dl>
-          <div><dt>CPU</dt><dd>{formatPercent(host?.cpu_percent)}</dd></div>
-          <div><dt>Memory</dt><dd>{memory}</dd></div>
-          <div><dt>RX / TX</dt><dd>{formatBytesPerSecond(host?.network_rx_bytes_per_sec)} / {formatBytesPerSecond(host?.network_tx_bytes_per_sec)}</dd></div>
+      <td className={TABLE_CELL}>
+        <dl className="min-w-0 space-y-1">
+          <div className="flex items-baseline justify-between gap-2"><dt className="text-[11px] text-muted-foreground">CPU</dt><dd className="m-0 min-w-0 font-medium break-words">{formatPercent(host?.cpu_percent)}</dd></div>
+          <div className="flex items-baseline justify-between gap-2"><dt className="text-[11px] text-muted-foreground">Memory</dt><dd className="m-0 min-w-0 font-medium break-words">{memory}</dd></div>
+          <div className="flex items-baseline justify-between gap-2"><dt className="text-[11px] text-muted-foreground">RX / TX</dt><dd className="m-0 min-w-0 font-medium break-words">{formatBytesPerSecond(host?.network_rx_bytes_per_sec)} / {formatBytesPerSecond(host?.network_tx_bytes_per_sec)}</dd></div>
         </dl>
-        <small className="muted">{host ? 'Host snapshot · ' + formatObservedAt(host.updated_at) : 'No Host observation'}</small>
+        <small className={MUTED_SMALL}>{host ? 'Host snapshot · ' + formatObservedAt(host.updated_at) : 'No Host observation'}</small>
       </td>
-      <td data-label="Evidence" className="agent-overview-evidence">
-        <dl>
-          <div><dt>Report gaps</dt><dd>{agent.sequence_gap_count} report gap{agent.sequence_gap_count === 1 ? '' : 's'}</dd></div>
-          <div><dt>Security events</dt><dd>{agent.security_event_count} security event{agent.security_event_count === 1 ? '' : 's'}</dd></div>
-          <div><dt>Spool</dt><dd className={spoolRisk || host?.spool_store_error ? 'diagnostic-critical' : undefined}>{formatSpoolSummary(host)}</dd></div>
-          <div><dt>Clock</dt><dd>{clockStatusLabel(agent.clock_status)}{agent.clock_skew_ms != null ? ' · ' + agent.clock_skew_ms + ' ms skew' : ''}</dd></div>
+      <td className={TABLE_CELL}>
+        <dl className="min-w-0 space-y-1">
+          <div className="flex items-baseline justify-between gap-2"><dt className="text-[11px] text-muted-foreground">Report gaps</dt><dd className="m-0 min-w-0 font-medium break-words">{agent.sequence_gap_count} report gap{agent.sequence_gap_count === 1 ? '' : 's'}</dd></div>
+          <div className="flex items-baseline justify-between gap-2"><dt className="text-[11px] text-muted-foreground">Security events</dt><dd className="m-0 min-w-0 font-medium break-words">{agent.security_event_count} security event{agent.security_event_count === 1 ? '' : 's'}</dd></div>
+          <div className="flex items-baseline justify-between gap-2"><dt className="text-[11px] text-muted-foreground">Spool</dt><dd className={cn('m-0 min-w-0 font-medium break-words', (spoolRisk || host?.spool_store_error) && 'font-semibold text-destructive')}>{formatSpoolSummary(host)}</dd></div>
+          <div className="flex items-baseline justify-between gap-2"><dt className="text-[11px] text-muted-foreground">Clock</dt><dd className="m-0 min-w-0 font-medium break-words">{clockStatusLabel(agent.clock_status)}{agent.clock_skew_ms != null ? ' · ' + agent.clock_skew_ms + ' ms skew' : ''}</dd></div>
         </dl>
       </td>
-      <td data-label="Nodes" className="agent-overview-nodes">
+      <td className={TABLE_CELL}>
         <AgentNodeSummary nodes={nodes} query={nodeQuery} />
       </td>
     </tr>
@@ -830,18 +977,18 @@ function AgentOverviewRow({
 
 function AgentNodeSummary({ nodes, query }: { nodes?: AdminNodeListItem[]; query: NodesQuery }) {
   if (!query.data) {
-    if (query.isPending) return <span className="muted">Loading Node context…</span>
-    if (query.isError) return <span className="diagnostic-critical">Node context unavailable; recover in Nodes</span>
-    return <span className="muted">Node context unavailable</span>
+    if (query.isPending) return <span className="text-muted-foreground">Loading Node context…</span>
+    if (query.isError) return <span className="font-semibold text-destructive">Node context unavailable; recover in Nodes</span>
+    return <span className="text-muted-foreground">Node context unavailable</span>
   }
   if (!nodes || nodes.length === 0) return <span>No Nodes observed yet.</span>
   const active = nodes.filter((node) => node.lifecycle === 'active').length
   const unhealthy = nodes.filter((node) => node.health === 'unhealthy').length
   const unknown = nodes.filter((node) => node.health === 'unknown').length
   return (
-    <div>
-      <strong>{nodes.length} retained Node{nodes.length === 1 ? '' : 's'}</strong>
-      <small className="muted">{active} active · {unhealthy} unhealthy · {unknown} unknown</small>
+    <div className="min-w-0">
+      <strong className="text-sm font-semibold">{nodes.length} retained Node{nodes.length === 1 ? '' : 's'}</strong>
+      <small className={MUTED_SMALL}>{active} active · {unhealthy} unhealthy · {unknown} unknown</small>
     </div>
   )
 }

@@ -711,9 +711,9 @@ describe('App shell with private Home', () => {
     // The container contract is the accepted A calibration rather than the
     // earlier single-hero-card composition: an uncarded identity block, four
     // summary tiles, and three parallel observation panels.
-    expect(document.querySelector('.node-hero-card')).toBeNull()
-    expect(summary.querySelectorAll('.node-summary-tile')).toHaveLength(4)
-    expect(document.querySelectorAll('.node-info-group')).toHaveLength(3)
+    expect(document.querySelector('[data-slot="node-hero-card"]')).toBeNull()
+    expect(summary.querySelectorAll('[data-slot="node-summary-tile"]')).toHaveLength(4)
+    expect(document.querySelectorAll('[data-slot="node-info-group"]')).toHaveLength(3)
     for (const title of ['Chain & consensus', 'PlatON process & Node Data', /^Host resources/]) {
       expect(screen.getByRole('heading', { level: 2, name: title })).toBeTruthy()
     }
@@ -2012,7 +2012,7 @@ describe('Admin MVP route inventory (issue #92)', () => {
       const link = within(adminNav).getByRole('link', { name })
       expect(link.getAttribute('href')).toBe(href)
       expect(link.textContent?.trim()).toBe(glyph + name)
-      const icon = link.querySelector('.admin-nav-icon')
+      const icon = link.querySelector('[data-slot="admin-nav-icon"]')
       expect(icon?.getAttribute('aria-hidden')).toBe('true')
       expect(icon?.textContent).toBe(glyph)
     }
@@ -2359,7 +2359,7 @@ describe('Theme lifecycle (issue #146)', () => {
           route.path + ' stays on the resolved theme',
         ).toBe(true)
         expect(document.querySelector('.background-decoration'), route.path).toBeNull()
-        expect(document.querySelector('.admin-shell'), route.path).not.toBeNull()
+        expect(document.querySelector('[data-slot="admin-shell"]'), route.path).not.toBeNull()
       }
 
       // One click from Dark reaches Auto, which resolves Light under the test
@@ -2390,7 +2390,7 @@ describe('Theme lifecycle (issue #146)', () => {
       expect(
         await screen.findByRole('heading', { level: 1, name: 'Owner access required' }),
       ).toBeTruthy()
-      expect(document.querySelector('.admin-shell')).toBeNull()
+      expect(document.querySelector('[data-slot="admin-shell"]')).toBeNull()
 
       // Home keeps its single Admin entry link and never adopts the Admin nav.
       await navigateTo('/')

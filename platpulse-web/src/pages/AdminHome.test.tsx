@@ -232,7 +232,7 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     expect(details?.textContent).toContain('resync is pending')
     // The primary item labels its own observation time; the grouped item has
     // no timestamp and stays explicitly unknown instead of borrowing one.
-    const group = toggle.closest('.attention-item') as HTMLElement
+    const group = toggle.closest('[data-slot="attention-item"]') as HTMLElement
     expect(group.textContent).toContain('Last observed')
     expect(details?.textContent).toContain('Observation time unknown')
   })
@@ -435,7 +435,7 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     await renderAt('/admin')
 
     // A recorded observation renders its own time, explicitly labelled.
-    const knownItem = (await screen.findByText(/RPC collection failed/)).closest('.attention-item') as HTMLElement
+    const knownItem = (await screen.findByText(/RPC collection failed/)).closest('[data-slot="attention-item"]') as HTMLElement
     expect(knownItem.textContent).toContain('Last observed')
     const observedTime = knownItem.querySelector('time')
     expect(observedTime?.getAttribute('datetime')).toBe(observedAt)
@@ -443,12 +443,12 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
 
     // No observation timestamp: Unknown stays Unknown and never borrows the
     // snapshot refresh time.
-    const unknownItem = (await screen.findByText(/1 security event was recorded/)).closest('.attention-item') as HTMLElement
+    const unknownItem = (await screen.findByText(/1 security event was recorded/)).closest('[data-slot="attention-item"]') as HTMLElement
     expect(unknownItem.textContent).toContain('Observation time unknown')
     expect(unknownItem.querySelector('time')).toBeNull()
     expect(unknownItem.textContent).not.toContain('ago')
 
-    const header = screen.getByText(/Last good snapshot/).closest('.header-status') as HTMLElement
+    const header = screen.getByText(/Last good snapshot/).closest('[data-slot="header-status"]') as HTMLElement
     expect(header.querySelector('time')?.getAttribute('datetime')).toBe(generatedAt)
     expect(header.textContent).toContain('30 seconds ago')
   })

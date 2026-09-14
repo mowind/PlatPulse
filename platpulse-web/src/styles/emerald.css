@@ -8,18 +8,16 @@
  * src/styles/main.css. PlatPulse-specific additions are marked with
  * "PlatPulse deviation" and are listed in docs/visual-migration/emerald/.
  *
- * Layer order (lowest first): the pre-migration sheet is imported into
- * layer(legacy) so it can no longer outrank this design system, while the
- * pages that have not been migrated yet keep rendering. It is deleted, page
- * group by page group, as they move onto the primitives.
+ * This is the ONLY stylesheet. The 5386-line pre-migration sheet that used to
+ * sit beside it was deleted once every page had moved onto these tokens and
+ * the primitives in src/components/ui; nothing is layered underneath it any
+ * more, and there is no second design system to reconcile.
  */
 
-@layer legacy, theme, base, components, utilities;
+@layer theme, base, components, utilities;
 
 @import 'tailwindcss';
 @import 'tw-animate-css';
-@import '../index.css' layer(legacy);
-@import '../pages/AdminOverview.css' layer(legacy);
 
 @custom-variant dark (&:where(.dark, .dark *));
 

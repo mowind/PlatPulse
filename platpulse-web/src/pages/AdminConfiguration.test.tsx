@@ -646,14 +646,18 @@ describe('Admin Settings workflows', () => {
 
     await renderSettings()
     const toggle = screen.getByRole('button', { name: 'Make Home Public' })
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true)
 
     fireEvent.click(toggle)
+    const cancelDialog = await screen.findByRole('dialog')
+    expect(within(cancelDialog).getByText(/Anonymous visitors/)).toBeTruthy()
+    fireEvent.click(within(cancelDialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     expect(putCalls).toBe(0)
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Anonymous visitors'))
 
     publicQueryClient.setQueryData(['public', 'networks', 0], { stale: true })
     fireEvent.click(toggle)
+    const confirmDialog = await screen.findByRole('dialog')
+    fireEvent.click(within(confirmDialog).getByRole('button', { name: 'Make Home Public' }))
     expect(await screen.findByText(/Site Access Mode is now Public/)).toBeTruthy()
     expect(putCalls).toBe(1)
     expect(historyReads).toBe(1)
@@ -704,8 +708,9 @@ describe('Admin Settings workflows', () => {
     expect(await screen.findByText('History Window rejected by Server')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Make Home Public' })).toBeTruthy()
 
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     fireEvent.click(screen.getByRole('button', { name: 'Make Home Public' }))
+    const accessDialog = await screen.findByRole('dialog')
+    fireEvent.click(within(accessDialog).getByRole('button', { name: 'Make Home Public' }))
     expect(await screen.findByText('Site Access transition failed')).toBeTruthy()
     expect((screen.getByLabelText('New window (days)') as HTMLInputElement).value).toBe('14')
     expect(screen.getByRole('heading', { level: 2, name: 'History Window' })).toBeTruthy()

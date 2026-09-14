@@ -4,11 +4,18 @@ import { useAuth } from '../auth/AuthContext'
 import { AuthApiError } from '../api/auth'
 import BackgroundDecoration from '../components/BackgroundDecoration'
 import ThemeToggle from '../components/ThemeToggle'
+import { Alert, AlertDescription } from '../components/ui/alert'
+import { Button } from '../components/ui/button'
+import { Input } from '../components/ui/input'
 
 /**
  * Login page (design §12.2/§12.4): username + password form with labels,
  * keyboard submission, a live error region, and no admin controls. After
  * login the user returns to the route that required authentication.
+ *
+ * The chrome follows Emerald's Login foundation: a centred, cardless form
+ * column inside the shared max-w-[1280px] content column, with the theme
+ * control floating in the page corner.
  */
 export default function LoginPage() {
   const { status, login } = useAuth()
@@ -46,58 +53,74 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="login-page">
+    <main className="relative flex min-h-dvh flex-col" data-slot="login-page">
       <BackgroundDecoration />
-      <div className="login-theme">
+      <div className="absolute top-4 right-4 z-10">
         <ThemeToggle />
       </div>
-      <section className="login-card page" aria-labelledby="login-heading">
-        <h1 id="login-heading">Sign in to PlatPulse</h1>
-        <p className="login-hint">
-          The Home dashboard is private by default. Sign in with your Owner
-          or Viewer account.
-        </p>
-        {sessionExpired && (
-          <p className="form-success" role="status">
-            Your session expired or was revoked. Sign in again to continue.
+      <div className="mx-auto flex w-full max-w-[1280px] flex-1 items-center justify-center px-4 py-12">
+        <section className="w-full max-w-sm" aria-labelledby="login-heading">
+          <h1 id="login-heading" className="text-lg font-semibold">
+            Sign in to PlatPulse
+          </h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            The Home dashboard is private by default. Sign in with your Owner
+            or Viewer account.
           </p>
-        )}
-        {error && (
-          <p className="form-error" role="alert">
-            {error}
-          </p>
-        )}
-        <form onSubmit={handleSubmit} noValidate={false}>
-          <div className="field">
-            <label htmlFor="login-username">Username</label>
-            <input
-              id="login-username"
-              name="username"
-              type="text"
-              autoComplete="username"
-              autoFocus
-              required
-              value={username}
-              onChange={(event) => setUsername(event.target.value)}
-            />
-          </div>
-          <div className="field">
-            <label htmlFor="login-password">Password</label>
-            <input
-              id="login-password"
-              name="password"
-              type="password"
-              autoComplete="current-password"
-              required
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-            />
-          </div>
-          <button type="submit" className="primary-action" disabled={submitting}>
-            {submitting ? 'Signing in…' : 'Sign in'}
-          </button>
-        </form>
-      </section>
+          {sessionExpired && (
+            <Alert role="status" className="mt-4">
+              <AlertDescription>
+                Your session expired or was revoked. Sign in again to continue.
+              </AlertDescription>
+            </Alert>
+          )}
+          {error && (
+            <Alert variant="destructive" className="mt-4">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          )}
+          <form onSubmit={handleSubmit} noValidate={false} className="mt-6 flex flex-col gap-4">
+            <div className="flex flex-col gap-1.5">
+              <label
+                htmlFor="login-username"
+                className="text-xs font-medium tracking-wider text-muted-foreground"
+              >
+                Username
+              </label>
+              <Input
+                id="login-username"
+                name="username"
+                type="text"
+                autoComplete="username"
+                autoFocus
+                required
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label
+                htmlFor="login-password"
+                className="text-xs font-medium tracking-wider text-muted-foreground"
+              >
+                Password
+              </label>
+              <Input
+                id="login-password"
+                name="password"
+                type="password"
+                autoComplete="current-password"
+                required
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+              />
+            </div>
+            <Button type="submit" className="w-full" disabled={submitting}>
+              {submitting ? 'Signing in…' : 'Sign in'}
+            </Button>
+          </form>
+        </section>
+      </div>
     </main>
   )
 }

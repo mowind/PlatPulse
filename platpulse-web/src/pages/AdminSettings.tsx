@@ -14,6 +14,40 @@ import {
 import type { GeoRefreshStatus, GeoStatusDiagnostic } from '../api/generated'
 import { useAuth } from '../auth/AuthContext'
 import { StatusBadge } from '../components/StatusBadge'
+import { Alert, AlertDescription } from '../components/ui/alert'
+import { Button } from '../components/ui/button'
+import { CardX } from '../components/ui/card-x'
+import { DataTooltip } from '../components/ui/data-tooltip'
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../components/ui/dialog'
+import { Input } from '../components/ui/input'
+import { SURFACE_CARD } from '../lib/surface'
+import { cn } from '../lib/utils'
+
+/** Emerald's card shell for the ordered Settings cards. */
+const CARD = cn(
+  'rounded-md border-none transition-all',
+  SURFACE_CARD,
+  'hover:shadow-[0_0_20px,0_0_0_1px] hover:shadow-emerald-600/10',
+)
+const CARD_HEADER = 'flex min-w-0 flex-1 flex-wrap items-start justify-between gap-2'
+const LABEL = 'text-xs font-medium tracking-wider text-muted-foreground'
+const CONSEQUENCE = 'rounded-md border bg-muted/40 p-3 text-xs text-muted-foreground'
+const TEXT_LINK = 'inline-flex min-h-11 min-w-11 items-center font-medium text-primary hover:underline'
+const FIELD = 'flex flex-col gap-1'
+const NOTICE = 'rounded-md border border-success/30 bg-success/10 p-3 text-sm text-success'
+const ERROR = 'rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive'
+const DETAIL_LIST = 'grid grid-cols-1 gap-2 sm:grid-cols-2'
+const DETAIL_ROW = 'min-w-0'
+const DETAIL_DD = 'm-0 text-sm break-words'
+const INLINE_CODE = 'rounded-sm border bg-muted px-1 py-0.5 text-[11px]'
 
 /** PAGE-ADMIN-SETTINGS: concise Owner-only server-wide configuration. */
 export default function AdminSettings() {
@@ -21,10 +55,12 @@ export default function AdminSettings() {
   const csrfToken = status.state === 'authenticated' ? status.csrfToken : ''
 
   return (
-    <section className="page settings-page">
-      <p><Link to="/admin">← Admin overview</Link></p>
-      <h1>Settings</h1>
-      <div className="settings-sections settings-surface">
+    <section className="mx-auto flex w-full min-w-0 max-w-[1280px] flex-col gap-4 pb-12">
+      <p className="m-0">
+        <Link className={TEXT_LINK} to="/admin">← Admin overview</Link>
+      </p>
+      <h1 className="text-lg font-semibold break-words">Settings</h1>
+      <div className="grid max-w-[58rem] gap-3">
         <HistoryWindowSettings generation={generation} csrfToken={csrfToken} />
         <SiteAccessSettings generation={generation} csrfToken={csrfToken} />
         <GeoProviderSettings generation={generation} csrfToken={csrfToken} />
@@ -97,53 +133,63 @@ function HistoryWindowSettings({ generation, csrfToken }: SettingsSectionProps) 
   }
 
   return (
-    <article className="settings-block" aria-labelledby="history-window-heading">
-      <div className="settings-block-heading">
-        <div>
-          <h2 id="history-window-heading">History Window</h2>
-          <p className="muted">Bounded retention for Block Summaries.</p>
+    <CardX
+      role="article"
+      aria-labelledby="history-window-heading"
+      bordered={false}
+      className={CARD}
+      header={
+        <div className={CARD_HEADER}>
+          <div className="min-w-0">
+            <h2 id="history-window-heading" className="text-sm font-medium">History Window</h2>
+            <p className="mt-1 text-xs text-muted-foreground">Bounded retention for Block Summaries.</p>
+          </div>
         </div>
-      </div>
-
-      {!currentWindow && query.isPending && <p role="status">Loading History Window…</p>}
+      }
+    >
+      {!currentWindow && query.isPending && <p role="status" className="text-sm text-muted-foreground">Loading History Window…</p>}
       {!currentWindow && query.isError && (
-        <p className="form-error" role="alert">Unable to load the History Window.</p>
+        <Alert variant="destructive">
+          <AlertDescription>Unable to load the History Window.</AlertDescription>
+        </Alert>
       )}
 
       {currentWindow && (
-        <form className="retention-form settings-form" onSubmit={save} noValidate>
+        <form className="grid gap-4" onSubmit={save} noValidate>
           {query.isError && (
-            <p className="form-error" role="alert">
-              Unable to refresh the History Window. Showing the last successful value.
-            </p>
+            <Alert variant="destructive">
+              <AlertDescription>
+                Unable to refresh the History Window. Showing the last successful value.
+              </AlertDescription>
+            </Alert>
           )}
-          <dl className="detail-list settings-detail-list">
-            <div><dt>Current</dt><dd>{formatDayCount(currentWindow.windowDays)}</dd></div>
-            <div><dt>Default</dt><dd>{formatDayCount(currentWindow.defaultDays)}</dd></div>
-            <div>
-              <dt>Allowed range</dt>
-              <dd>
+          <dl className={DETAIL_LIST}>
+            <div className={DETAIL_ROW}><dt className={LABEL}>Current</dt><dd className={DETAIL_DD}>{formatDayCount(currentWindow.windowDays)}</dd></div>
+            <div className={DETAIL_ROW}><dt className={LABEL}>Default</dt><dd className={DETAIL_DD}>{formatDayCount(currentWindow.defaultDays)}</dd></div>
+            <div className={DETAIL_ROW}>
+              <dt className={LABEL}>Allowed range</dt>
+              <dd className={DETAIL_DD}>
                 <span>{formatDayCount(currentWindow.minDays)}</span>–<span>{formatDayCount(currentWindow.maxDays)}</span>
               </dd>
             </div>
-            <div>
-              <dt>Last updated</dt>
-              <dd>
+            <div className={DETAIL_ROW}>
+              <dt className={LABEL}>Last updated</dt>
+              <dd className={DETAIL_DD}>
                 {currentWindow.updatedAt}
                 {currentWindow.updatedBy ? ' by ' + currentWindow.updatedBy : ''}
               </dd>
             </div>
           </dl>
 
-          <p className="settings-consequence">
+          <p className={CONSEQUENCE}>
             Shortening removes expired history asynchronously. Lengthening cannot recover deleted or missed history.
           </p>
 
-          <div className="field">
-            <label htmlFor="history-window-days">New window (days)</label>
-            <input
+          <div className={FIELD}>
+            <label htmlFor="history-window-days" className={LABEL}>New window (days)</label>
+            <Input
               id="history-window-days"
-              className="settings-number-input"
+              className="max-w-[10rem]"
               type="number"
               min={currentWindow.minDays}
               max={currentWindow.maxDays}
@@ -160,23 +206,23 @@ function HistoryWindowSettings({ generation, csrfToken }: SettingsSectionProps) 
               }}
             />
             {(boundsError || fieldError) && (
-              <p id="history-window-days-error" className="field-error" role="alert">
+              <p id="history-window-days-error" className="text-xs text-destructive" role="alert">
                 {boundsError ?? fieldError}
               </p>
             )}
           </div>
 
           {days !== null && !boundsError && (
-            <div className="impact-preview" aria-live="polite">
-              <h3>Impact preview</h3>
-              {impact.isFetching && <p className="muted">Estimating affected rows…</p>}
+            <div className={CONSEQUENCE} aria-live="polite">
+              <h3 className="text-sm font-medium">Impact preview</h3>
+              {impact.isFetching && <p className="text-xs text-muted-foreground">Estimating affected rows…</p>}
               {impact.isError && (
-                <p className="form-error" role="alert">
+                <p className="text-xs text-destructive" role="alert">
                   Unable to preview the impact. Change the value to retry.
                 </p>
               )}
               {impact.data && impact.data.windowDays === days && (
-                <p>
+                <p className="mt-1">
                   {impact.data.estimatedRows === null || impact.data.estimatedRows === undefined
                     ? 'The number of affected rows is currently unknown.'
                     : <>About <strong>{impact.data.estimatedRows} rows</strong> would be removed when shortening.</>}
@@ -186,26 +232,29 @@ function HistoryWindowSettings({ generation, csrfToken }: SettingsSectionProps) 
             </div>
           )}
 
-          <div className="field">
-            <label htmlFor="history-window-confirmation">Type the change to confirm</label>
-            <input
+          <div className={FIELD}>
+            <label htmlFor="history-window-confirmation" className={LABEL}>Type the change to confirm</label>
+            <Input
               id="history-window-confirmation"
+              className="max-w-[16rem]"
               value={confirmation}
               autoComplete="off"
               aria-invalid={confirmation.length > 0 && !confirmationMatches}
               onChange={(event) => setConfirmation(event.target.value)}
             />
-            <small className="muted">Type <code>{confirmationTarget}</code> to confirm.</small>
+            <small className="text-[11px] text-muted-foreground">
+              Type <code className={INLINE_CODE}>{confirmationTarget}</code> to confirm.
+            </small>
           </div>
 
-          {notice && <p className="form-success" role="status">{notice}</p>}
-          {error && <p className="form-error" role="alert">{error}</p>}
-          <button className="primary-action" type="submit" disabled={!canSave}>
+          {notice && <p className={NOTICE} role="status">{notice}</p>}
+          {error && <p className={ERROR} role="alert">{error}</p>}
+          <Button type="submit" className="justify-self-start" disabled={!canSave}>
             {saving ? 'Saving…' : 'Save History Window'}
-          </button>
+          </Button>
         </form>
       )}
-    </article>
+    </CardX>
   )
 }
 
@@ -214,17 +263,9 @@ function SiteAccessSettings({ generation, csrfToken }: SettingsSectionProps) {
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [pendingMode, setPendingMode] = useState<'public' | 'private' | null>(null)
 
-  async function toggle() {
-    if (!query.data || busy) return
-    const next = query.data.mode === 'public' ? 'private' : 'public'
-    const confirmed = window.confirm(
-      next === 'public'
-        ? 'Make Home Public? Anonymous visitors will be able to read Home.'
-        : 'Make Home Private? Home will require Owner login.',
-    )
-    if (!confirmed) return
-
+  async function apply(next: 'public' | 'private') {
     setBusy(true)
     setNotice(null)
     setError(null)
@@ -244,58 +285,97 @@ function SiteAccessSettings({ generation, csrfToken }: SettingsSectionProps) {
     }
   }
 
-  return (
-    <article className="settings-block" aria-labelledby="site-access-heading">
-      <div className="settings-block-heading">
-        <div>
-          <h2 id="site-access-heading">Site Access Mode</h2>
-          <p className="muted">Public permits anonymous Home reads. Private requires Owner login.</p>
-        </div>
-        {query.data && (
-          <StatusBadge
-            status={query.data.mode === 'public' ? 'Public' : 'Private'}
-            tone={query.data.mode === 'public' ? 'ok' : 'neutral'}
-          />
-        )}
-      </div>
+  function requestChange() {
+    if (!query.data || busy) return
+    setPendingMode(query.data.mode === 'public' ? 'private' : 'public')
+  }
 
-      {!query.data && query.isPending && <p role="status">Loading Site Access Mode…</p>}
+  function confirmChange() {
+    const next = pendingMode
+    setPendingMode(null)
+    if (next) void apply(next)
+  }
+
+  return (
+    <CardX
+      role="article"
+      aria-labelledby="site-access-heading"
+      bordered={false}
+      className={CARD}
+      header={
+        <div className={CARD_HEADER}>
+          <div className="min-w-0">
+            <h2 id="site-access-heading" className="text-sm font-medium">Site Access Mode</h2>
+            <p className="mt-1 text-xs text-muted-foreground">Public permits anonymous Home reads. Private requires Owner login.</p>
+          </div>
+          {query.data && (
+            <StatusBadge
+              status={query.data.mode === 'public' ? 'Public' : 'Private'}
+              tone={query.data.mode === 'public' ? 'ok' : 'neutral'}
+            />
+          )}
+        </div>
+      }
+    >
+      {!query.data && query.isPending && <p role="status" className="text-sm text-muted-foreground">Loading Site Access Mode…</p>}
       {!query.data && query.isError && (
-        <p className="form-error" role="alert">Unable to load Site Access Mode.</p>
+        <Alert variant="destructive">
+          <AlertDescription>Unable to load Site Access Mode.</AlertDescription>
+        </Alert>
       )}
 
       {query.data && (
-        <div className="settings-form">
+        <div className="grid gap-4">
           {query.isError && (
-            <p className="form-error" role="alert">
-              Unable to refresh Site Access Mode. Showing the last successful value.
-            </p>
+            <Alert variant="destructive">
+              <AlertDescription>
+                Unable to refresh Site Access Mode. Showing the last successful value.
+              </AlertDescription>
+            </Alert>
           )}
-          <p>
+          <p className="text-sm">
             {query.data.mode === 'public'
               ? 'Anonymous visitors can read the Home Public Projection.'
               : 'Home is private and requires Owner login.'}
           </p>
-          <p className="muted">
+          <p className="text-xs text-muted-foreground">
             A change closes affected streams, clears sensitive caches, discards older responses, and reloads authoritative state.
           </p>
-          <button
-            className="primary-action"
-            type="button"
-            disabled={busy}
-            onClick={() => void toggle()}
-          >
+          <Button type="button" className="justify-self-start" disabled={busy} onClick={requestChange}>
             {busy
               ? 'Updating…'
               : query.data.mode === 'public'
                 ? 'Make Home Private'
                 : 'Make Home Public'}
-          </button>
-          {notice && <p className="form-success" role="status">{notice}</p>}
-          {error && <p className="form-error" role="alert">{error}</p>}
+          </Button>
+          {notice && <p className={NOTICE} role="status">{notice}</p>}
+          {error && <p className={ERROR} role="alert">{error}</p>}
         </div>
       )}
-    </article>
+
+      <Dialog open={pendingMode !== null} onOpenChange={(open) => { if (!open) setPendingMode(null) }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {pendingMode === 'public' ? 'Make Home Public?' : 'Make Home Private?'}
+            </DialogTitle>
+            <DialogDescription>
+              {pendingMode === 'public'
+                ? 'Anonymous visitors will be able to read Home.'
+                : 'Home will require Owner login.'}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="outline">Cancel</Button>
+            </DialogClose>
+            <Button onClick={confirmChange} disabled={busy}>
+              {pendingMode === 'public' ? 'Make Home Public' : 'Make Home Private'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </CardX>
   )
 }
 
@@ -365,36 +445,48 @@ function GeoProviderSettings({ generation, csrfToken }: SettingsSectionProps) {
   }
 
   return (
-    <article className="settings-block" aria-labelledby="geo-provider-heading">
-      <div className="settings-block-heading">
-        <div>
-          <h2 id="geo-provider-heading">Geo provider</h2>
-          <p className="muted">
-            Country resolution for the Peer addresses the Server already observes.
-          </p>
+    <CardX
+      role="article"
+      aria-labelledby="geo-provider-heading"
+      bordered={false}
+      className={CARD}
+      header={
+        <div className={CARD_HEADER}>
+          <div className="min-w-0">
+            <h2 id="geo-provider-heading" className="text-sm font-medium">Geo provider</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Country resolution for the Peer addresses the Server already observes.
+            </p>
+          </div>
+          {current && (
+            <DataTooltip as="span" content="The Server owns this state; the Owner cannot override it directly.">
+              <StatusBadge
+                status={geoStateLabel(current.state)}
+                tone={current.state === 'error' ? 'error' : current.state === 'disabled' ? 'neutral' : 'ok'}
+              />
+            </DataTooltip>
+          )}
         </div>
-        {current && (
-          <StatusBadge
-            status={geoStateLabel(current.state)}
-            tone={current.state === 'error' ? 'error' : current.state === 'disabled' ? 'neutral' : 'ok'}
-          />
-        )}
-      </div>
-
-      {!current && query.isPending && <p role="status">Loading Geo provider…</p>}
+      }
+    >
+      {!current && query.isPending && <p role="status" className="text-sm text-muted-foreground">Loading Geo provider…</p>}
       {!current && query.isError && (
-        <p className="form-error" role="alert">Unable to load Geo provider status.</p>
+        <Alert variant="destructive">
+          <AlertDescription>Unable to load Geo provider status.</AlertDescription>
+        </Alert>
       )}
 
       {current && (
-        <form className="settings-form" onSubmit={save} noValidate>
+        <form className="grid gap-4" onSubmit={save} noValidate>
           {query.isError && (
-            <p className="form-error" role="alert">
-              Unable to refresh the Geo provider. Showing the last successful value.
-            </p>
+            <Alert variant="destructive">
+              <AlertDescription>
+                Unable to refresh the Geo provider. Showing the last successful value.
+              </AlertDescription>
+            </Alert>
           )}
 
-          <p className="settings-consequence">
+          <p className={CONSEQUENCE}>
             Country resolution runs in the Server's background path and never blocks report
             ingestion. Local MMDB resolves countries from the operator-provided GeoLite2 Country
             database on this Server. Disabled schedules no lookups at all. Peer addresses never
@@ -403,20 +495,21 @@ function GeoProviderSettings({ generation, csrfToken }: SettingsSectionProps) {
           </p>
 
           {externalProviders.map((candidate) => (
-            <p className="settings-consequence" key={candidate.provider} role="note">
+            <p className={CONSEQUENCE} key={candidate.provider} role="note">
               <strong>{candidate.label}.</strong>{' '}
               {candidate.disclosure ?? GENERIC_EXTERNAL_GEO_NOTICE}{' '}
               Only the Owner can select it, and it is never enabled by an upgrade.
             </p>
           ))}
 
-          <fieldset className="field">
-            <legend>Provider</legend>
+          <fieldset className="grid gap-2">
+            <legend className={LABEL}>Provider</legend>
             {current.providers.map((candidate) => (
-              <div key={candidate.provider}>
-                <label htmlFor={'geo-provider-' + candidate.provider}>
+              <div key={candidate.provider} className="flex flex-col gap-1">
+                <label htmlFor={'geo-provider-' + candidate.provider} className="flex min-h-11 items-center gap-2 text-sm">
                   <input
                     id={'geo-provider-' + candidate.provider}
+                    className="size-4 shrink-0 accent-primary"
                     type="radio"
                     name="geo-provider"
                     value={candidate.provider}
@@ -431,68 +524,68 @@ function GeoProviderSettings({ generation, csrfToken }: SettingsSectionProps) {
                   {' '}{candidate.label}
                 </label>
                 {candidate.sends_peer_addresses && (
-                  <small className="muted"> Sends observed Peer public IPs to a third party.</small>
+                  <small className="text-[11px] text-muted-foreground"> Sends observed Peer public IPs to a third party.</small>
                 )}
                 {candidate.unavailable_reason && (
-                  <small className="muted"> {candidate.unavailable_reason}</small>
+                  <small className="text-[11px] text-muted-foreground"> {candidate.unavailable_reason}</small>
                 )}
               </div>
             ))}
           </fieldset>
 
-          <dl className="detail-list settings-detail-list">
-            <div><dt>Current</dt><dd>{current.provider_label}</dd></div>
-            <div><dt>Status</dt><dd>{geoStateLabel(current.state)}</dd></div>
-            <div>
-              <dt>Peer addresses</dt>
-              <dd>
+          <dl className={DETAIL_LIST}>
+            <div className={DETAIL_ROW}><dt className={LABEL}>Current</dt><dd className={DETAIL_DD}>{current.provider_label}</dd></div>
+            <div className={DETAIL_ROW}><dt className={LABEL}>Status</dt><dd className={DETAIL_DD}>{geoStateLabel(current.state)}</dd></div>
+            <div className={DETAIL_ROW}>
+              <dt className={LABEL}>Peer addresses</dt>
+              <dd className={DETAIL_DD}>
                 {currentSendsPeerAddresses
                   ? 'Sent to ' + current.provider_label
                   : 'Stay on this Server'}
               </dd>
             </div>
-            <div>
-              <dt>Local database</dt>
-              <dd>{current.configured ? 'Configured' : 'Not configured'}</dd>
+            <div className={DETAIL_ROW}>
+              <dt className={LABEL}>Local database</dt>
+              <dd className={DETAIL_DD}>{current.configured ? 'Configured' : 'Not configured'}</dd>
             </div>
-            <div>
-              <dt>Cached countries</dt>
-              <dd>{current.cache_country_count}</dd>
+            <div className={DETAIL_ROW}>
+              <dt className={LABEL}>Cached countries</dt>
+              <dd className={DETAIL_DD}>{current.cache_country_count}</dd>
             </div>
-            <div>
-              <dt>Lookups pending</dt>
-              <dd>
+            <div className={DETAIL_ROW}>
+              <dt className={LABEL}>Lookups pending</dt>
+              <dd className={DETAIL_DD}>
                 {current.pending_lookup_count === null || current.pending_lookup_count === undefined
                   ? 'Not scheduled'
                   : current.pending_lookup_count}
               </dd>
             </div>
-            <div>
-              <dt>Last success</dt>
-              <dd>{current.last_success_at ?? 'None yet'}</dd>
+            <div className={DETAIL_ROW}>
+              <dt className={LABEL}>Last success</dt>
+              <dd className={DETAIL_DD}>{current.last_success_at ?? 'None yet'}</dd>
             </div>
             {current.rate_limited_until && (
-              <div>
-                <dt>Rate limited until</dt>
-                <dd>{current.rate_limited_until}</dd>
+              <div className={DETAIL_ROW}>
+                <dt className={LABEL}>Rate limited until</dt>
+                <dd className={DETAIL_DD}>{current.rate_limited_until}</dd>
               </div>
             )}
           </dl>
 
           {current.last_error && (
-            <p className="form-error" role="alert">Provider error: {current.last_error}</p>
+            <p className={ERROR} role="alert">Provider error: {current.last_error}</p>
           )}
 
-          {notice && <p className="form-success" role="status">{notice}</p>}
-          {error && <p className="form-error" role="alert">{error}</p>}
-          <button className="primary-action" type="submit" disabled={!canSave}>
+          {notice && <p className={NOTICE} role="status">{notice}</p>}
+          {error && <p className={ERROR} role="alert">{error}</p>}
+          <Button type="submit" className="justify-self-start" disabled={!canSave}>
             {saving ? 'Saving…' : 'Save Geo provider'}
-          </button>
+          </Button>
         </form>
       )}
 
       {current && <GeoRefreshControl geo={current} csrfToken={csrfToken} />}
-    </article>
+    </CardX>
   )
 }
 
@@ -538,24 +631,25 @@ function GeoRefreshControl({
   }
 
   return (
-    <section className="geo-refresh" aria-labelledby="geo-refresh-heading">
-      <h3 id="geo-refresh-heading">Refresh Peer geolocation</h3>
-      <p className="muted">
+    <section className="mt-4 grid gap-3 border-t pt-4" aria-labelledby="geo-refresh-heading">
+      <h3 id="geo-refresh-heading" className="text-sm font-medium">Refresh Peer geolocation</h3>
+      <p className="text-xs text-muted-foreground">
         Re-resolves every public Peer IP any Network currently references, even when a cached
         country result is still valid. One lookup per distinct IP address; the Peer country map
         counts Peer records per Node.
       </p>
-      <button
-        className="primary-action"
+      <Button
         type="button"
+        variant="outline"
+        className="justify-self-start"
         onClick={() => void start()}
         disabled={disabled}
         aria-busy={running || submitting}
       >
         {running ? 'Refreshing…' : 'Refresh Peer geolocation'}
-      </button>
-      {unavailable && <p className="muted" role="note">{unavailable}</p>}
-      {error && <p className="form-error" role="alert">{error}</p>}
+      </Button>
+      {unavailable && <p className="text-xs text-muted-foreground" role="note">{unavailable}</p>}
+      {error && <p className={ERROR} role="alert">{error}</p>}
       {refresh && <GeoRefreshRunStatus refresh={refresh} currentProviderLabel={geo.provider_label} />}
     </section>
   )
@@ -569,8 +663,8 @@ function GeoRefreshRunStatus({
   currentProviderLabel: string
 }) {
   return (
-    <div className="geo-refresh-status" role="status">
-      <p>
+    <div className="grid gap-3" role="status">
+      <p className="text-sm">
         {refresh.state === 'running' && (
           <>
             Refreshing: {refresh.completed_lookups} of {refresh.total_lookups} IP lookups done
@@ -594,33 +688,33 @@ function GeoRefreshRunStatus({
         )}
       </p>
       {refresh.total_lookups === 0 && (
-        <p className="muted">
+        <p className="text-xs text-muted-foreground">
           No eligible public Peer address is currently referenced by any Network, so there was
           nothing to re-resolve.
         </p>
       )}
-      <dl className="detail-list settings-detail-list">
-        <div><dt>Status</dt><dd>{refreshStateLabel(refresh.state)}</dd></div>
-        <div><dt>Provider for this run</dt><dd>{refresh.provider_label}</dd></div>
-        <div>
-          <dt>IP lookups</dt>
-          <dd>{refresh.completed_lookups} of {refresh.total_lookups} complete</dd>
+      <dl className={DETAIL_LIST}>
+        <div className={DETAIL_ROW}><dt className={LABEL}>Status</dt><dd className={DETAIL_DD}>{refreshStateLabel(refresh.state)}</dd></div>
+        <div className={DETAIL_ROW}><dt className={LABEL}>Provider for this run</dt><dd className={DETAIL_DD}>{refresh.provider_label}</dd></div>
+        <div className={DETAIL_ROW}>
+          <dt className={LABEL}>IP lookups</dt>
+          <dd className={DETAIL_DD}>{refresh.completed_lookups} of {refresh.total_lookups} complete</dd>
         </div>
-        <div><dt>Resolved</dt><dd>{refresh.resolved_lookups}</dd></div>
-        <div><dt>Without a country</dt><dd>{refresh.no_country_lookups}</dd></div>
-        <div><dt>Failed</dt><dd>{refresh.failed_lookups}</dd></div>
+        <div className={DETAIL_ROW}><dt className={LABEL}>Resolved</dt><dd className={DETAIL_DD}>{refresh.resolved_lookups}</dd></div>
+        <div className={DETAIL_ROW}><dt className={LABEL}>Without a country</dt><dd className={DETAIL_DD}>{refresh.no_country_lookups}</dd></div>
+        <div className={DETAIL_ROW}><dt className={LABEL}>Failed</dt><dd className={DETAIL_DD}>{refresh.failed_lookups}</dd></div>
         {refresh.rate_limited_lookups > 0 && (
-          <div><dt>Rate limited</dt><dd>{refresh.rate_limited_lookups}</dd></div>
+          <div className={DETAIL_ROW}><dt className={LABEL}>Rate limited</dt><dd className={DETAIL_DD}>{refresh.rate_limited_lookups}</dd></div>
         )}
-        <div>
-          <dt>Peer records referencing them</dt>
-          <dd>{refresh.peer_records_in_scope}</dd>
+        <div className={DETAIL_ROW}>
+          <dt className={LABEL}>Peer records referencing them</dt>
+          <dd className={DETAIL_DD}>{refresh.peer_records_in_scope}</dd>
         </div>
-        <div><dt>Started</dt><dd>{refresh.started_at}</dd></div>
-        {refresh.finished_at && <div><dt>Finished</dt><dd>{refresh.finished_at}</dd></div>}
+        <div className={DETAIL_ROW}><dt className={LABEL}>Started</dt><dd className={DETAIL_DD}>{refresh.started_at}</dd></div>
+        {refresh.finished_at && <div className={DETAIL_ROW}><dt className={LABEL}>Finished</dt><dd className={DETAIL_DD}>{refresh.finished_at}</dd></div>}
       </dl>
       {refresh.provider_label !== currentProviderLabel && (
-        <p className="muted" role="note">
+        <p className="text-xs text-muted-foreground" role="note">
           This run used {refresh.provider_label}; the current provider is {currentProviderLabel}.
         </p>
       )}

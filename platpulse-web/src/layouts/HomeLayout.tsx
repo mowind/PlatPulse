@@ -101,13 +101,14 @@ function HomeLayoutContent() {
     <div className="flex min-h-screen flex-col">
       <BackgroundDecoration />
       <header
+        data-slot="app-header"
         className={cn(
           'sticky top-0 z-10 border-b border-transparent transition-all duration-200',
           scrolled ? 'backdrop-blur-xl' : 'bg-transparent',
         )}
       >
         <div className="mx-auto flex h-14 max-w-[1280px] items-center justify-between px-4">
-          <Link to="/" className="flex items-center gap-3" aria-label="PlatPulse">
+          <Link to="/" data-slot="app-brand" className="flex min-h-11 items-center gap-3" aria-label="PlatPulse">
             <img className="size-8 shrink-0 rounded-full" src={platpulseMark} alt="" />
             <h3 className="m-0 text-lg font-semibold">PlatPulse</h3>
           </Link>

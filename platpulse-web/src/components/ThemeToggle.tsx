@@ -1,10 +1,12 @@
 import { useTheme } from '../theme/ThemeProvider'
 import { EmeraldActionIcon } from './EmeraldActionIcon'
+import { buttonVariants } from './ui/button'
+import { cn } from '../lib/utils'
 
 /**
  * One control for the whole site: Auto → Light → Dark → Auto. Its accessible
  * name states the current choice and the next action (webui.md §11.1), and it
- * is a 44×44 touch target wherever it appears.
+ * is an Emerald ghost icon button, so it keeps the platform's 44x44 minimum.
  */
 export default function ThemeToggle() {
   const { mode, toggleLabel, cycleTheme } = useTheme()
@@ -12,7 +14,7 @@ export default function ThemeToggle() {
   return (
     <button
       type="button"
-      className="theme-toggle"
+      className={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }))}
       onClick={cycleTheme}
       aria-label={toggleLabel}
       title={toggleLabel}

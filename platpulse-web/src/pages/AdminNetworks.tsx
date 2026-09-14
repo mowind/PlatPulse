@@ -10,6 +10,13 @@ import {
 import { useAuth } from '../auth/AuthContext'
 import { StatusBadge, formatObservedAt, freshnessLabel } from '../components/StatusBadge'
 import { identityBadge, lifecycleLabel, visibilityBadge } from '../nodeLabels'
+import { Badge } from '../components/ui/badge'
+import { Button } from '../components/ui/button'
+import { CardX } from '../components/ui/card-x'
+import { Empty } from '../components/ui/empty'
+import { Input } from '../components/ui/input'
+import { cn } from '../lib/utils'
+import { SURFACE_CARD } from '../lib/surface'
 import type { AdminNetwork, AdminNetworkNode } from '../api/generated'
 
 /**
@@ -21,8 +28,24 @@ import type { AdminNetwork, AdminNetworkNode } from '../api/generated'
  * outcomes stay typed, audited, and visible.
  */
 
+const CARD_SURFACE = cn('rounded-md border-none', SURFACE_CARD)
+
 function shortId(id: string): string {
-  return id.length > 11 ? `${id.slice(0, 8)}…` : id
+  return id.length > 11 ? id.slice(0, 8) + '…' : id
+}
+
+/** Emerald detail grid: label above its value, stacked on narrow viewports. */
+function DetailList({ children }: { children: React.ReactNode }) {
+  return <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">{children}</dl>
+}
+
+function DetailItem({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-xs font-medium tracking-wider text-muted-foreground">{label}</dt>
+      <dd className="mt-0.5 min-w-0 break-words text-sm">{children}</dd>
+    </div>
+  )
 }
 
 /** PAGE-ADMIN-NETWORKS: Registry list plus the explicit create workflow. */
@@ -33,85 +56,101 @@ export default function AdminNetworksList() {
   const [notice, setNotice] = useState<string | null>(null)
 
   return (
-    <section className="page">
-      <h1>Networks</h1>
-      <p className="muted">
-        The Network Registry is the only authority for Network identity. Entries are created
-        and updated only by explicit Owner actions; Agent observations are compared against
-        this tuple and never rewrite it.
-      </p>
-      <div className="page-actions">
-        <button
+    <section className="mx-auto w-full max-w-[1280px] space-y-4">
+      <div className="space-y-1">
+        <h1 className="text-lg font-semibold break-words">Networks</h1>
+        <p className="text-sm text-muted-foreground">
+          The Network Registry is the only authority for Network identity. Entries are created
+          and updated only by explicit Owner actions; Agent observations are compared against
+          this tuple and never rewrite it.
+        </p>
+      </div>
+      <div className="flex flex-wrap items-center gap-3">
+        <Button
           type="button"
-          className="primary-action"
           onClick={() => setCreating((value) => !value)}
           aria-expanded={creating}
           aria-controls="network-create-form"
         >
           {creating ? 'Close form' : 'Register a Network'}
-        </button>
+        </Button>
       </div>
       {notice && (
-        <p className="form-success" role="status">
+        <p className="text-sm text-success" role="status">
           {notice}
         </p>
       )}
       {creating && (
         <NetworkCreateForm
           onRegistered={(displayName) => {
-            setNotice(`Registered ${displayName}.`)
+            setNotice('Registered ' + displayName + '.')
             setCreating(false)
           }}
         />
       )}
       {!query.data && query.isPending && (
-        <p className="panel-state" role="status">
+        <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground" role="status">
           <StatusBadge status="Starting" tone="neutral" /> Loading the Network Registry…
         </p>
       )}
       {!query.data && query.isError && (
-        <p className="panel-state" role="alert">
+        <div
+          className="flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm"
+          role="alert"
+        >
           <StatusBadge status="Error" tone="error" />{' '}
-          {query.error instanceof Error ? query.error.message : 'Unable to load Networks'}
-          <button type="button" className="text-action" onClick={() => void query.refetch()}>
+          <span className="min-w-0 break-words">
+            {query.error instanceof Error ? query.error.message : 'Unable to load Networks'}
+          </span>
+          <Button variant="link" size="sm" onClick={() => void query.refetch()}>
             Try again
-          </button>
-        </p>
+          </Button>
+        </div>
       )}
       {query.data && query.isRefetchError && (
-        <p className="panel-state" role="alert">
+        <div
+          className="flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm"
+          role="alert"
+        >
           <StatusBadge status="Error" tone="error" /> Failed to refresh; showing the last
           successful Registry values.
-        </p>
+        </div>
       )}
       {query.data && query.data.length === 0 && (
-        <p className="panel-state">
-          <StatusBadge status="Empty" tone="ok" /> No Networks registered yet. Register the
-          first one above.
-        </p>
+        <CardX size="medium" className={CARD_SURFACE}>
+          <Empty description="No Networks registered yet. Register the first one above." />
+        </CardX>
       )}
       {query.data && query.data.length > 0 && (
-        <div className="table-wrap">
-          <table className="node-table">
-            <caption className="sr-only">Network Registry identity tuples and Node counts</caption>
-            <thead>
-              <tr>
-                <th scope="col">Network</th>
-                <th scope="col">Chain ID</th>
-                <th scope="col">P2P network</th>
-                <th scope="col">HRP</th>
-                <th scope="col">Genesis</th>
-                <th scope="col">Nodes</th>
-                <th scope="col">Mismatches</th>
-              </tr>
-            </thead>
-            <tbody>
-              {query.data.map((network) => (
-                <NetworkRow key={network.network_key} network={network} />
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <CardX
+          size="medium"
+          className={CARD_SURFACE}
+          contentClassName="p-0"
+          segmented
+          title="Network Registry"
+        >
+          <div className="overflow-x-auto">
+            <table data-slot="network-table" className="w-full text-sm">
+              <caption className="sr-only">Network Registry identity tuples and Node counts</caption>
+              <thead>
+                <tr className="border-b">
+                  <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Network</th>
+                  <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Chain ID</th>
+                  <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">P2P network</th>
+                  <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">HRP</th>
+                  <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Genesis</th>
+                  <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Nodes</th>
+                  <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Mismatches</th>
+                </tr>
+              </thead>
+              <tbody>
+                {query.data.map((network) => (
+                  <NetworkRow key={network.network_key} network={network} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardX>
       )}
     </section>
   )
@@ -119,30 +158,37 @@ export default function AdminNetworksList() {
 
 function NetworkRow({ network }: { network: AdminNetwork }) {
   return (
-    <tr>
-      <th scope="row" data-label="Network">
-        <Link className="agent-link" to={`/admin/networks/${network.network_key}`}>
+    <tr className="border-b border-border/60 align-top">
+      <th scope="row" data-label="Network" className="min-w-0 px-3 py-3 text-left">
+        <Link
+          className="inline-flex min-h-11 min-w-11 items-center break-all font-medium underline-offset-4 hover:underline"
+          to={'/admin/networks/' + network.network_key}
+        >
           {network.display_name}
         </Link>
-        <small className="muted">{network.network_key}</small>
+        <small className="mt-0.5 block text-[11px] text-muted-foreground break-all">{network.network_key}</small>
       </th>
-      <td data-label="Chain ID">{network.chain_id}</td>
-      <td data-label="P2P network">{network.p2p_network_id}</td>
-      <td data-label="HRP">{network.address_hrp}</td>
-      <td data-label="Genesis">
-        <code title={network.genesis_hash}>{shortId(network.genesis_hash)}</code>
+      <td data-label="Chain ID" className="min-w-0 px-3 py-3">
+        <span className="font-bold leading-none tracking-tight">{network.chain_id}</span>
       </td>
-      <td data-label="Nodes">
+      <td data-label="P2P network" className="min-w-0 px-3 py-3">
+        <span className="font-bold leading-none tracking-tight">{network.p2p_network_id}</span>
+      </td>
+      <td data-label="HRP" className="min-w-0 px-3 py-3">{network.address_hrp}</td>
+      <td data-label="Genesis" className="min-w-0 px-3 py-3">
+        <code className="break-all text-[11px]" title={network.genesis_hash}>{shortId(network.genesis_hash)}</code>
+      </td>
+      <td data-label="Nodes" className="min-w-0 px-3 py-3">
         {network.active_node_count} active · {network.retired_node_count} retired
       </td>
-      <td data-label="Mismatches">
+      <td data-label="Mismatches" className="min-w-0 px-3 py-3">
         {network.mismatched_node_count > 0 ? (
-          <>
+          <span className="flex flex-wrap items-center gap-2">
             <StatusBadge status="Mismatched" tone="error" />
-            <span className="muted">{network.mismatched_node_count} Node{network.mismatched_node_count === 1 ? '' : 's'}</span>
-          </>
+            <span className="text-[11px] text-muted-foreground">{network.mismatched_node_count} Node{network.mismatched_node_count === 1 ? '' : 's'}</span>
+          </span>
         ) : (
-          <span className="muted">No mismatch reported</span>
+          <span className="text-[11px] text-muted-foreground">No mismatch reported</span>
         )}
       </td>
     </tr>
@@ -190,27 +236,29 @@ function NetworkCreateForm({ onRegistered }: { onRegistered: (displayName: strin
   }
 
   return (
-    <article id="network-create-form" className="panel" aria-labelledby="network-create-heading">
-      <div className="panel-heading">
-        <h2 id="network-create-heading">Register a Network</h2>
-      </div>
-      <p className="panel-copy">
+    <CardX
+      size="medium"
+      className={CARD_SURFACE}
+      id="network-create-form"
+      header={<h2 className="text-lg font-semibold">Register a Network</h2>}
+    >
+      <p className="text-sm text-muted-foreground">
         The complete identity tuple is required and audited. The Server never creates a
         Network from observed Agent text.
       </p>
-      <form onSubmit={submit} className="stack-form">
-        <div className="field">
-          <label htmlFor="network-key">Network key</label>
-          <input
+      <form onSubmit={submit} className="mt-3 grid max-w-2xl gap-3">
+        <div className="flex flex-col gap-1">
+          <label className="text-xs font-medium tracking-wider text-muted-foreground" htmlFor="network-key">Network key</label>
+          <Input
             id="network-key"
             value={form.networkKey}
             onChange={(event) => setField('networkKey', event.target.value)}
             required
           />
         </div>
-        <div className="field">
-          <label htmlFor="network-display-name">Display name</label>
-          <input
+        <div className="flex flex-col gap-1">
+          <label className="text-xs font-medium tracking-wider text-muted-foreground" htmlFor="network-display-name">Display name</label>
+          <Input
             id="network-display-name"
             value={form.displayName}
             onChange={(event) => setField('displayName', event.target.value)}
@@ -218,9 +266,9 @@ function NetworkCreateForm({ onRegistered }: { onRegistered: (displayName: strin
             maxLength={128}
           />
         </div>
-        <div className="field">
-          <label htmlFor="network-genesis">Genesis hash</label>
-          <input
+        <div className="flex flex-col gap-1">
+          <label className="text-xs font-medium tracking-wider text-muted-foreground" htmlFor="network-genesis">Genesis hash</label>
+          <Input
             id="network-genesis"
             value={form.genesisHash}
             onChange={(event) => setField('genesisHash', event.target.value)}
@@ -228,10 +276,10 @@ function NetworkCreateForm({ onRegistered }: { onRegistered: (displayName: strin
             required
           />
         </div>
-        <div className="field-row">
-          <div className="field">
-            <label htmlFor="network-chain-id">Chain ID</label>
-            <input
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div className="flex flex-col gap-1">
+            <label className="text-xs font-medium tracking-wider text-muted-foreground" htmlFor="network-chain-id">Chain ID</label>
+            <Input
               id="network-chain-id"
               type="number"
               min={0}
@@ -240,9 +288,9 @@ function NetworkCreateForm({ onRegistered }: { onRegistered: (displayName: strin
               required
             />
           </div>
-          <div className="field">
-            <label htmlFor="network-p2p-id">P2P network ID</label>
-            <input
+          <div className="flex flex-col gap-1">
+            <label className="text-xs font-medium tracking-wider text-muted-foreground" htmlFor="network-p2p-id">P2P network ID</label>
+            <Input
               id="network-p2p-id"
               type="number"
               min={0}
@@ -251,9 +299,9 @@ function NetworkCreateForm({ onRegistered }: { onRegistered: (displayName: strin
               required
             />
           </div>
-          <div className="field">
-            <label htmlFor="network-hrp">Address HRP</label>
-            <input
+          <div className="flex flex-col gap-1">
+            <label className="text-xs font-medium tracking-wider text-muted-foreground" htmlFor="network-hrp">Address HRP</label>
+            <Input
               id="network-hrp"
               value={form.addressHrp}
               onChange={(event) => setField('addressHrp', event.target.value)}
@@ -262,16 +310,16 @@ function NetworkCreateForm({ onRegistered }: { onRegistered: (displayName: strin
             />
           </div>
         </div>
-        <button className="primary-action" type="submit">
+        <Button type="submit" className="w-fit">
           Register Network
-        </button>
+        </Button>
       </form>
       {error && (
-        <p className="form-error" role="alert">
+        <p className="mt-3 text-sm text-destructive" role="alert">
           {error}
         </p>
       )}
-    </article>
+    </CardX>
   )
 }
 
@@ -287,49 +335,64 @@ export function AdminNetworkDetailPage() {
 
   if (notFound) {
     return (
-      <section className="page">
-        <h1>Network unavailable</h1>
-        <p>This Network is no longer registered.</p>
+      <section className="mx-auto w-full max-w-[1280px] space-y-4">
+        <div className="space-y-1">
+          <h1 className="text-lg font-semibold">Network unavailable</h1>
+          <p className="text-sm text-muted-foreground">This Network is no longer registered.</p>
+        </div>
       </section>
     )
   }
   return (
-    <section className="page">
-      <h1>
-        {query.data?.display_name ?? networkKey}
-        <span className="heading-muted">{networkKey}</span>
-      </h1>
-      <p className="muted">
-        <Link className="text-action" to="/admin/networks">
-          All Networks
-        </Link>{' '}
-        · expected identity is Registry-owned; observed identity is compared, never trusted.
-      </p>
+    <section className="mx-auto w-full max-w-[1280px] space-y-4">
+      <div className="space-y-1">
+        <h1 className="text-lg font-semibold break-words">
+          {query.data?.display_name ?? networkKey}
+          <span className="mt-0.5 block text-xs font-medium text-muted-foreground break-all">{networkKey}</span>
+        </h1>
+        <p className="text-sm text-muted-foreground">
+          <Link
+            className="inline-flex min-h-11 min-w-11 items-center font-medium underline-offset-4 hover:underline"
+            to="/admin/networks"
+          >
+            All Networks
+          </Link>{' '}
+          · expected identity is Registry-owned; observed identity is compared, never trusted.
+        </p>
+      </div>
       {!query.data && (
         <>
           {query.isPending && (
-            <p className="panel-state" role="status">
+            <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground" role="status">
               <StatusBadge status="Starting" tone="neutral" /> Loading Network state…
             </p>
           )}
           {query.isError && (
-            <p className="panel-state" role="alert">
+            <div
+              className="flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm"
+              role="alert"
+            >
               <StatusBadge status="Error" tone="error" />{' '}
-              {query.error instanceof Error ? query.error.message : 'Unable to load the Network'}
-              <button type="button" className="text-action" onClick={() => void query.refetch()}>
+              <span className="min-w-0 break-words">
+                {query.error instanceof Error ? query.error.message : 'Unable to load the Network'}
+              </span>
+              <Button variant="link" size="sm" onClick={() => void query.refetch()}>
                 Try again
-              </button>
-            </p>
+              </Button>
+            </div>
           )}
         </>
       )}
       {query.data && (
         <>
           {query.isRefetchError && (
-            <p className="panel-state" role="alert">
+            <div
+              className="flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm"
+              role="alert"
+            >
               <StatusBadge status="Error" tone="error" /> Failed to refresh; showing the last
               successful Registry values.
-            </p>
+            </div>
           )}
           <IdentityTuplePanel network={query.data} csrfToken={csrfToken} />
           <NetworkNodesPanel networkKey={query.data.network_key} nodes={query.data.nodes} />
@@ -377,7 +440,7 @@ function IdentityTuplePanel({
         },
         csrfToken,
       )
-      setMessage(`Updated ${result.displayName}.`)
+      setMessage('Updated ' + result.displayName + '.')
       setEditing(false)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to update the Network')
@@ -385,24 +448,29 @@ function IdentityTuplePanel({
   }
 
   return (
-    <article className="panel">
-      <div className="panel-heading">
-        <h2>Expected identity tuple</h2>
-        <button
-          type="button"
-          className="text-action"
-          onClick={() => setEditing((value) => !value)}
-          aria-expanded={editing}
-          aria-controls="network-edit-form"
-        >
-          {editing ? 'Close editor' : 'Edit tuple'}
-        </button>
-      </div>
+    <CardX
+      size="medium"
+      className={CARD_SURFACE}
+      header={
+        <>
+          <h2 className="text-lg font-semibold">Expected identity tuple</h2>
+          <Button
+            variant="link"
+            size="sm"
+            onClick={() => setEditing((value) => !value)}
+            aria-expanded={editing}
+            aria-controls="network-edit-form"
+          >
+            {editing ? 'Close editor' : 'Edit tuple'}
+          </Button>
+        </>
+      }
+    >
       {editing ? (
-        <form id="network-edit-form" onSubmit={submit} className="stack-form">
-          <div className="field">
-            <label htmlFor="network-edit-name">Display name</label>
-            <input
+        <form id="network-edit-form" onSubmit={submit} className="grid max-w-2xl gap-3">
+          <div className="flex flex-col gap-1">
+            <label className="text-xs font-medium tracking-wider text-muted-foreground" htmlFor="network-edit-name">Display name</label>
+            <Input
               id="network-edit-name"
               value={displayName}
               onChange={(event) => setDisplayName(event.target.value)}
@@ -410,19 +478,19 @@ function IdentityTuplePanel({
               maxLength={128}
             />
           </div>
-          <div className="field">
-            <label htmlFor="network-edit-genesis">Genesis hash</label>
-            <input
+          <div className="flex flex-col gap-1">
+            <label className="text-xs font-medium tracking-wider text-muted-foreground" htmlFor="network-edit-genesis">Genesis hash</label>
+            <Input
               id="network-edit-genesis"
               value={genesisHash}
               onChange={(event) => setGenesisHash(event.target.value)}
               required
             />
           </div>
-          <div className="field-row">
-            <div className="field">
-              <label htmlFor="network-edit-chain">Chain ID</label>
-              <input
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="flex flex-col gap-1">
+              <label className="text-xs font-medium tracking-wider text-muted-foreground" htmlFor="network-edit-chain">Chain ID</label>
+              <Input
                 id="network-edit-chain"
                 type="number"
                 min={0}
@@ -431,9 +499,9 @@ function IdentityTuplePanel({
                 required
               />
             </div>
-            <div className="field">
-              <label htmlFor="network-edit-p2p">P2P network ID</label>
-              <input
+            <div className="flex flex-col gap-1">
+              <label className="text-xs font-medium tracking-wider text-muted-foreground" htmlFor="network-edit-p2p">P2P network ID</label>
+              <Input
                 id="network-edit-p2p"
                 type="number"
                 min={0}
@@ -442,9 +510,9 @@ function IdentityTuplePanel({
                 required
               />
             </div>
-            <div className="field">
-              <label htmlFor="network-edit-hrp">Address HRP</label>
-              <input
+            <div className="flex flex-col gap-1">
+              <label className="text-xs font-medium tracking-wider text-muted-foreground" htmlFor="network-edit-hrp">Address HRP</label>
+              <Input
                 id="network-edit-hrp"
                 value={addressHrp}
                 onChange={(event) => setAddressHrp(event.target.value)}
@@ -453,35 +521,29 @@ function IdentityTuplePanel({
               />
             </div>
           </div>
-          <div className="action-row">
+          <div className="flex flex-wrap items-center gap-2">
             {confirming ? (
               <>
-                <span className="muted">
+                <span className="text-[11px] text-muted-foreground">
                   Update the expected identity tuple? Existing Nodes whose observed identity
                   contradicts the new tuple surface as typed mismatches; no Node state changes.
                 </span>
-                <button
-                  className="primary-action"
-                  type="button"
-                  onClick={() => void confirm()}
-                >
+                <Button type="button" onClick={() => void confirm()}>
                   Confirm tuple update
-                </button>
-                <button
-                  className="secondary-action"
+                </Button>
+                <Button
+                  variant="outline"
                   type="button"
                   onClick={() => setConfirming(false)}
                 >
                   Keep editing
-                </button>
+                </Button>
               </>
             ) : (
-              <button className="primary-action" type="submit">
-                Save tuple
-              </button>
+              <Button type="submit">Save tuple</Button>
             )}
-            <button
-              className="secondary-action"
+            <Button
+              variant="outline"
               type="button"
               onClick={() => {
                 setEditing(false)
@@ -489,60 +551,40 @@ function IdentityTuplePanel({
               }}
             >
               Cancel
-            </button>
+            </Button>
           </div>
         </form>
       ) : (
-        <dl className="detail-list">
-          <div>
-            <dt>Display name</dt>
-            <dd>{network.display_name}</dd>
-          </div>
-          <div>
-            <dt>Network key</dt>
-            <dd>
-              <code>{network.network_key}</code>
-            </dd>
-          </div>
-          <div>
-            <dt>Chain ID</dt>
-            <dd>{network.chain_id}</dd>
-          </div>
-          <div>
-            <dt>P2P network ID</dt>
-            <dd>{network.p2p_network_id}</dd>
-          </div>
-          <div>
-            <dt>Address HRP</dt>
-            <dd>{network.address_hrp}</dd>
-          </div>
-          <div>
-            <dt>Genesis hash</dt>
-            <dd>
-              <code>{network.genesis_hash}</code>
-            </dd>
-          </div>
-          <div>
-            <dt>Registered</dt>
-            <dd>{formatObservedAt(network.created_at)}</dd>
-          </div>
-          <div>
-            <dt>Updated</dt>
-            <dd>{formatObservedAt(network.updated_at)}</dd>
-          </div>
-        </dl>
+        <DetailList>
+          <DetailItem label="Display name">{network.display_name}</DetailItem>
+          <DetailItem label="Network key">
+            <code className="break-all text-[11px]">{network.network_key}</code>
+          </DetailItem>
+          <DetailItem label="Chain ID">
+            <span className="font-bold leading-none tracking-tight">{network.chain_id}</span>
+          </DetailItem>
+          <DetailItem label="P2P network ID">
+            <span className="font-bold leading-none tracking-tight">{network.p2p_network_id}</span>
+          </DetailItem>
+          <DetailItem label="Address HRP">{network.address_hrp}</DetailItem>
+          <DetailItem label="Genesis hash">
+            <code className="break-all text-[11px]">{network.genesis_hash}</code>
+          </DetailItem>
+          <DetailItem label="Registered">{formatObservedAt(network.created_at)}</DetailItem>
+          <DetailItem label="Updated">{formatObservedAt(network.updated_at)}</DetailItem>
+        </DetailList>
       )}
       {message && (
-        <p className="form-success" role="status">
+        <p className="mt-3 text-sm text-success" role="status">
           {message}
         </p>
       )}
       {error && (
-        <p className="form-error" role="alert">
+        <p className="mt-3 text-sm text-destructive" role="alert">
           {error}
         </p>
       )}
-    </article>
+    </CardX>
   )
 }
 
@@ -555,39 +597,46 @@ function NetworkNodesPanel({
 }) {
   const mismatched = nodes.filter((node) => node.identity.state === 'mismatched').length
   return (
-    <article className="panel">
-      <div className="panel-heading">
-        <h2>Nodes on this Network</h2>
-        <span className="panel-count">{nodes.length}</span>
-      </div>
+    <CardX
+      size="medium"
+      className={CARD_SURFACE}
+      contentClassName={nodes.length > 0 ? 'p-0' : undefined}
+      header={
+        <>
+          <h2 className="text-lg font-semibold">Nodes on this Network</h2>
+          <Badge variant="secondary">{nodes.length}</Badge>
+        </>
+      }
+    >
       {mismatched > 0 && (
-        <p className="panel-state" role="alert">
+        <div
+          className="m-3 flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm"
+          role="alert"
+        >
           <StatusBadge status="Mismatched" tone="error" /> {mismatched} Node
           {mismatched === 1 ? ' observes' : 's observe'} an identity that contradicts
           this Registry tuple. Their history is not merged until the observation or
           the tuple is corrected.
-        </p>
+        </div>
       )}
       {nodes.length === 0 && (
-        <p className="panel-state">
-          <StatusBadge status="Empty" tone="ok" /> No Nodes declared on this Network yet.
-        </p>
+        <Empty description="No Nodes declared on this Network yet." />
       )}
       {nodes.length > 0 && (
-        <div className="table-wrap">
-          <table className="node-table">
+        <div className="overflow-x-auto">
+          <table data-slot="network-nodes-table" className="w-full text-sm">
             <caption className="sr-only">
               Nodes on {networkKey} with per-Node identity dispositions
             </caption>
             <thead>
-              <tr>
-                <th scope="col">Node</th>
-                <th scope="col">Health</th>
-                <th scope="col">Freshness</th>
-                <th scope="col">Identity</th>
-                <th scope="col">Visibility</th>
-                <th scope="col">Lifecycle</th>
-                <th scope="col">Head</th>
+              <tr className="border-b">
+                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Node</th>
+                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Health</th>
+                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Freshness</th>
+                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Identity</th>
+                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Visibility</th>
+                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Lifecycle</th>
+                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Head</th>
               </tr>
             </thead>
             <tbody>
@@ -598,7 +647,7 @@ function NetworkNodesPanel({
           </table>
         </div>
       )}
-    </article>
+    </CardX>
   )
 }
 
@@ -608,29 +657,34 @@ function NetworkNodeRow({ node }: { node: AdminNetworkNode }) {
   const freshness =
     node.freshness === 'current' ? 'ok' : node.freshness === 'stale' ? 'warning' : 'neutral'
   return (
-    <tr>
-      <th scope="row" data-label="Node">
-        <Link className="agent-link" to={`/admin/nodes/${node.node_id}`}>
+    <tr className="border-b border-border/60 align-top">
+      <th scope="row" data-label="Node" className="min-w-0 px-3 py-3 text-left">
+        <Link
+          className="inline-flex min-h-11 min-w-11 items-center break-all font-medium underline-offset-4 hover:underline"
+          to={'/admin/nodes/' + node.node_id}
+        >
           {node.display_name ?? node.node_id}
         </Link>
-        <small className="muted" title={node.node_id}>
+        <small className="mt-0.5 block text-[11px] text-muted-foreground break-all" title={node.node_id}>
           Node ID · {shortId(node.node_id)}
         </small>
       </th>
-      <td data-label="Health">
+      <td data-label="Health" className="min-w-0 px-3 py-3">
         <StatusBadge status={node.health} tone={health} />
-        <small className="muted">{node.health_reason}</small>
+        <small className="mt-0.5 block text-[11px] text-muted-foreground break-words">{node.health_reason}</small>
       </td>
-      <td data-label="Freshness">
+      <td data-label="Freshness" className="min-w-0 px-3 py-3">
         <StatusBadge status={freshnessLabel(node.freshness)} tone={freshness} />
       </td>
-      <td data-label="Identity">
+      <td data-label="Identity" className="min-w-0 px-3 py-3">
         <StatusBadge status={identity.label} tone={identity.tone} />
         {node.identity.mismatched_fields.length > 0 && (
           <>
-            <small className="muted">{node.identity.mismatched_fields.join(', ')}</small>
+            <small className="mt-0.5 block text-[11px] text-muted-foreground">
+              {node.identity.mismatched_fields.join(', ')}
+            </small>
             {node.identity.observed && (
-              <small className="muted">
+              <small className="mt-0.5 block text-[11px] text-muted-foreground break-words">
                 Observed:{' '}
                 {Object.entries(node.identity.observed)
                   .filter(([, value]) => value != null)
@@ -641,9 +695,11 @@ function NetworkNodeRow({ node }: { node: AdminNetworkNode }) {
           </>
         )}
       </td>
-      <td data-label="Visibility">{visibilityBadge(node.visibility).label}</td>
-      <td data-label="Lifecycle">{lifecycleLabel(node.lifecycle).label}</td>
-      <td data-label="Head">{node.current_head ?? 'Unknown'}</td>
+      <td data-label="Visibility" className="min-w-0 px-3 py-3">{visibilityBadge(node.visibility).label}</td>
+      <td data-label="Lifecycle" className="min-w-0 px-3 py-3">{lifecycleLabel(node.lifecycle).label}</td>
+      <td data-label="Head" className="min-w-0 px-3 py-3">
+        <span className="font-bold leading-none tracking-tight">{node.current_head ?? 'Unknown'}</span>
+      </td>
     </tr>
   )
 }
