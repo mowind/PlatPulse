@@ -742,7 +742,15 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     // The logo bar keeps its own row at every width, so the map band comes
     // next, above the statistics and the Node cards, and never runs behind it.
     expect(mapBox.y, 'the map starts below the logo bar').toBeGreaterThanOrEqual(headerBox.y + headerBox.height - 1)
-    expect(mapBox.y + mapBox.height, 'the map sits above the statistics').toBeLessThanOrEqual(stats.y + 1)
+    // Decision: upstream's narrow-screen composition pulls the statistics up
+    // over the map's lower band (-mt-42 = 10.5rem = 168px), so the two are
+    // meant to meet and this band carries no marker or label. What must hold is
+    // that the overlap is the upstream band and nothing more, and that the map
+    // still starts above the statistics and above the Node cards.
+    const statsOverlap = mapBox.y + mapBox.height - stats.y
+    expect(statsOverlap, "the statistics overlap the map by upstream's -mt-42 band").toBeGreaterThan(0)
+    expect(statsOverlap, 'the overlap stays inside the upstream band').toBeLessThanOrEqual(169)
+    expect(mapBox.y, 'the map still starts above the statistics').toBeLessThan(stats.y)
     const firstCard = (await page.locator('[data-slot="node-card"]').first().boundingBox())!
     expect(mapBox.y, 'the map sits above the Node cards').toBeLessThan(firstCard.y)
     // The bar paints nothing, so the page wash still reads through it.

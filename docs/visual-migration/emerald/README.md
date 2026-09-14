@@ -215,3 +215,28 @@ Two concrete items were also closed here:
 - The input reported by expectVisibleInteractiveTargets was identified with a
   temporary locator dump against a live server, not by guessing. That dump is how
   the line above was found; nothing in the log alone named the element.
+
+## 9. Decision: the narrow-screen statistics-over-map overlap
+
+Upstream Emerald's narrow-screen composition pulls the statistics up over the
+map's lower band with -mt-42 (10.5rem, 168px). The pre-existing PlatPulse
+assertion required the map to sit entirely above the statistics, which the
+upstream composition cannot satisfy.
+
+**Decision (owner-approved, option A): keep upstream's overlap.** The covered
+band carries no marker, label or control, so the readability guarantee the old
+assertion was protecting is not what is at stake - a control being covered is.
+The assertion was therefore restated to pin upstream's geometry instead of
+prohibiting the meeting:
+
+    const statsOverlap = mapBox.y + mapBox.height - stats.y
+    expect(statsOverlap).toBeGreaterThan(0)
+    expect(statsOverlap).toBeLessThanOrEqual(169)
+    expect(mapBox.y).toBeLessThan(stats.y)
+
+Measured overlap at 360x800: 151px, inside the 168px band. Verified by running
+that test on phone-360-touch and phone-390-touch: both pass.
+
+What this decision does NOT license: any overlap that grows past the upstream
+band, or any Node card or interactive control being covered. Those would still
+fail.
