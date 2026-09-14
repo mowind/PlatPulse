@@ -402,3 +402,31 @@ surface for a bordered side column and what makes the measurement meaningful;
 the real contrast of muted-foreground on the page background is above AA.
 
 shell.spec: 52 passed, 3 skipped, 0 failed.
+
+## 17. A real regression found while chasing a column order: the stacked table is gone
+
+agent-lifecycle's priority summary asserts TWO different orders, and they are
+both correct:
+
+- the thead order (line 44): Agent, Reporting status, Last received,
+  Node Inventory, Credentials, Diagnostics;
+- the visual order on a narrow screen (line 164), sorted by each cell's
+  getBoundingClientRect().top: Agent, Reporting status, Last received,
+  Diagnostics, Node Inventory, Credentials.
+
+On main both held: the DOM had Diagnostics last (matching thead), while the
+retired index.css turned the table into stacked cards on small screens and
+placed the Diagnostics card fourth visually.
+
+The migration kept the data-label attributes but not the stacking rules, so the
+migrated table scrolls horizontally instead of stacking, the visual order equals
+the DOM order, and line 164 fails on the narrow projects. Restoring the DOM order
+to match the visual one was tried and is WRONG: it breaks the thead assertion, and
+on main the two orders were deliberately different (DOM order for the header,
+visual order for the narrow layout).
+
+**Open regression:** the narrow-screen stacked-card layout for data-label tables
+must be re-implemented, with the Diagnostics dimension fourth, so both orders hold
+again. This affects every data-label table the migration re-expressed, not only
+the Agent summary - the Admin list matrix and the audit tables use the same
+pattern.
