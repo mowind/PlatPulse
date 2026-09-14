@@ -292,3 +292,23 @@ backdrop, background-image, quiet shadow, transform, hover colour, hover
 borderless, hover glow - and stops on the hover transform, expecting
 matrix(1, 0, 0, 1, 0, -2) from hover:-translate-y-0.5. That is the single next
 thing to look at, and it is one assertion rather than a class of them.
+
+## 12. The 'public Emerald cards' contract passes in both themes
+
+After the fixes in sections 10 and 11 plus four restatements, the largest single
+failure cluster (theme.spec 'aligns public Emerald cards and isolates Admin in
+light/dark') passes on desktop-1280. Each restatement was forced by a decision
+already recorded above:
+
+- The hover lift is asserted by its effect: Tailwind v4 expresses translate-*
+  through the individual 'translate' property, while v3 emitted a transform
+  matrix. Both are the 2px lift; the helper reads whichever is in play.
+- The Admin shell shares the public font now, because the migration resolved the
+  old Inter/system-ui split into Emerald's single stack (deviation 6). The
+  obsolete ADMIN_FONT constant is gone.
+- Admin panels use Emerald's single card surface, so they resolve to the same 60%
+  background as the public cards (deviation 2) rather than the retired 68%
+  admin surface.
+- Admin panels are borderless on all four sides, like Emerald's own cards,
+  instead of carrying a 1px border. The four-side check is stronger than the
+  single-side colour assertion it replaced.

@@ -241,3 +241,31 @@ export async function expectComputedColor(locator: Locator, property: string, ex
     )
     .toBe(true)
 }
+
+/**
+ * Assert a hover lift by its effect rather than by its mechanism. Tailwind v4
+ * expresses translate-* through the individual 'translate' property, while v3
+ * emitted a transform matrix; both are a 2px lift. The vertical offset is read
+ * from whichever mechanism is in play, so the assertion still pins the exact
+ * distance.
+ */
+export async function expectLiftedUp(locator: Locator, pixels: number) {
+  await expect
+    .poll(
+      async () =>
+        locator.evaluate((element, expected) => {
+          const style = getComputedStyle(element)
+          const matrix = style.transform.match(/^matrix\(([^)]+)\)$/)
+          const matrixY = matrix ? Number(matrix[1].split(',')[5]) : null
+          if (matrixY != null && Number.isFinite(matrixY)) return Math.abs(matrixY + expected) < 0.5
+          const translate = style.translate.match(/^(-?[\d.]+)px(?:\s+(-?[\d.]+)px)?$/)
+          if (translate) {
+            const y = translate[2] == null ? 0 : Number(translate[2])
+            return Math.abs(y + expected) < 0.5
+          }
+          return false
+        }, pixels),
+      { message: () => 'the element is lifted by ' + pixels + 'px on hover', timeout: 5000 },
+    )
+    .toBe(true)
+}

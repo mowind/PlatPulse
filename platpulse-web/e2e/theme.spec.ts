@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
-import { E2E_PASSWORD, expectFocusedElementHasVisibleFocus, expectNoHorizontalOverflow, loginAs, expectComputedColor } from './helpers'
+import { E2E_PASSWORD, expectFocusedElementHasVisibleFocus, expectNoHorizontalOverflow, loginAs, expectComputedColor, expectLiftedUp } from './helpers'
 
 /**
  * SCN-THEME-LIFECYCLE (webui.md §11.1 "Theme behavior"): the production
@@ -356,7 +356,6 @@ async function normalizedStyle(page: Page, property: string, value: string) {
 }
 
 const PUBLIC_FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif'
-const ADMIN_FONT = '"Inter Variable", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
 
 async function expectBorderless(card: Locator) {
   for (const side of ['top', 'right', 'bottom', 'left']) {
@@ -400,7 +399,7 @@ for (const theme of ['light', 'dark'] as const) {
       await expectBorderless(card)
       if (hoverCapable && lifts) {
         await expectComputedColor(card, 'box-shadow', glow)
-        await expect(card).toHaveCSS('transform', 'matrix(1, 0, 0, 1, 0, -2)')
+        await expectLiftedUp(card, 2)
       } else {
         await expectQuietShadow(card)
         await expect(card).toHaveCSS('transform', 'none')
@@ -448,26 +447,29 @@ for (const theme of ['light', 'dark'] as const) {
     await expect(nodeCard).toHaveCSS('transform', 'none')
     await expect(nodeCard).toHaveCSS('transition-duration', '0s')
     await expectComputedColor(nodeCard, 'background-color', hoverCapable ? opaque : background)
-    if (hoverCapable) await expect(nodeCard).toHaveCSS('box-shadow', glow)
+    if (hoverCapable) await expectComputedColor(nodeCard, 'box-shadow', glow)
     await expectNoHorizontalOverflow(page)
 
     // SPA navigation must not leak the public font or borderless surfaces into Admin.
     await page.getByRole('link', { name: 'Admin', exact: true }).click()
     await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
-    await expect(page.locator('[data-slot="admin-shell"]')).toHaveCSS('font-family',
-      await normalizedStyle(page, 'font-family', ADMIN_FONT))
+    // The migration resolved the old Inter/system-ui split into Emerald's
+    // single system stack, so public and Admin now share one family
+    // (deviation 6).
+    await expect(page.locator('[data-slot="admin-shell"]')).toHaveCSS('font-family', font)
     await expect(page.locator('[data-slot="admin-shell"] [data-slot="background-decoration"]')).toHaveCount(0)
     await page.goto('/admin/networks')
     await page.getByRole('button', { name: 'Register a Network' }).click()
     const adminCard = page.locator('#network-create-form')
     await expect(adminCard).toBeVisible({ timeout: 15_000 })
-    await expect(adminCard).toHaveCSS('font-family', await normalizedStyle(page, 'font-family', ADMIN_FONT))
-    await expectComputedColor(adminCard, 'background-color', theme === 'light'
-      ? 'rgba(255, 255, 255, 0.68)' : 'rgba(31, 36, 45, 0.68)')
-    await expect(adminCard).toHaveCSS('border-top-width', '1px')
-    await expect(adminCard).toHaveCSS('border-top-style', 'solid')
-    await expectComputedColor(adminCard, 'border-top-color', theme === 'light'
-      ? 'rgba(148, 163, 184, 0.22)' : 'rgba(255, 255, 255, 0.12)')
+    await expect(adminCard).toHaveCSS('font-family', font)
+    // Admin panels now use Emerald's single card surface too, so they
+    // resolve to the same 60% background the public cards do (deviation 2).
+    await expectComputedColor(adminCard, 'background-color', background)
+    // Emerald cards are borderless - its own components pass border-none - while
+    // the retired Admin panel carried a 1px border. Asserting all four sides is
+    // stronger than the single-side colour check this replaces.
+    await expectBorderless(adminCard)
   })
 }
 
