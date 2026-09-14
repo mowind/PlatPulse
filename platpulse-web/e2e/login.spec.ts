@@ -49,6 +49,22 @@ test.describe('Private Home login', () => {
     ).toBeVisible()
   })
 
+  test('signs in with the dark theme active and keeps it on Home', async ({ page }) => {
+    await page.goto('/login')
+    await page.getByRole('button', { name: /^Theme: / }).click()
+    await page.getByRole('button', { name: /^Theme: / }).click()
+    await expect(page.getByRole('button', { name: /^Theme: Dark/ })).toBeVisible()
+
+    await page.getByLabel('Username').fill('admin')
+    await page.getByLabel('Password').fill(E2E_PASSWORD)
+    await page.getByRole('button', { name: 'Sign in' }).click()
+    await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.classList.contains('dark')))
+      .toBe(true)
+    await expectNoHorizontalOverflow(page)
+  })
+
   test('the form is fully keyboard-operable with a visible focus ring', async ({ page }) => {
     await page.goto('/login')
     await expect(page.getByLabel('Username')).toBeFocused()

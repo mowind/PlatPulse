@@ -53,6 +53,35 @@
   letter-spacing: -0.01em;
 }
 
+/* Dark theme tokens (webui.md §11.1 "Theme behavior"). The neutrals and the
+ * near-#141923 canvas are calibrated against the accepted Emerald A
+ * reference; semantic status colors stay distinct rather than inverted. */
+:root.dark {
+  color-scheme: dark;
+  --paper: #141923;
+  --surface: #18181b;
+  --surface-muted: #27272a;
+  --ink: #fafafa;
+  --muted: #9f9fa9;
+  --line: rgb(255 255 255 / 12%);
+  /* Neutral primary controls invert: a light control with dark label. */
+  --indigo: #e5e7eb;
+  --indigo-dark: #f8fafc;
+  --brand: #00cb89;
+  --brand-strong: #30d697;
+  --lime: #d9f99d;
+  --green: #00cb89;
+  --green-bg: rgb(16 185 129 / 14%);
+  --amber: #fba62a;
+  --amber-bg: rgb(245 158 11 / 14%);
+  --red: #ff6467;
+  --red-bg: rgb(239 68 68 / 14%);
+  --info: #79b4f0;
+  --navy: rgb(28 32 41 / 88%);
+  --focus-ring: #34d399;
+  --shadow-soft: 0 8px 24px rgb(0 0 0 / 45%);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -2829,8 +2858,8 @@ button {
  * Emerald light visual language
  *
  * The background geometry is rendered by BackgroundDecoration.tsx and is
- * decorative only. Its default grid is adapted from Tokinx/komari-theme-emerald
- * Background.vue at b7baf4535939cfdda063d731943fc36e3ead4c51 (MIT).
+ * decorative only. Its grid is adapted from Tokinx/komari-theme-emerald
+ * Background.vue at c2c5e88ea19c7cbe18d14a50414e10deca3cc66e (MIT).
  * ------------------------------------------------------------------------- */
 
 .app-shell,
@@ -2951,7 +2980,7 @@ button {
 
 .home-shell {
   min-height: 100dvh;
-  color-scheme: light;
+  color-scheme: inherit;
   color: var(--ink);
   background: var(--paper);
   --home-content-width: 82rem;
@@ -4273,28 +4302,24 @@ button {
  * Admin light operational shell
  * ------------------------------------------------------------------------- */
 
+/* Admin keeps the quiet workbench surface; every other token is inherited
+   from the shared theme so light and dark stay in one place. */
 .admin-shell {
-  --paper: #f8fafc;
   --surface: rgba(255, 255, 255, 0.68);
-  --surface-muted: #f1f5f9;
-  --ink: #1f2937;
-  --muted: #64748b;
   --line: rgba(148, 163, 184, 0.24);
-  --indigo: #262626;
-  --indigo-dark: #111827;
-  --green: #047857;
-  --green-bg: #ecfdf5;
-  --amber: #92400e;
-  --amber-bg: #fffbeb;
-  --red: #b91c1c;
-  --red-bg: #fef2f2;
   --navy: rgba(255, 255, 255, 0.88);
-  --focus-ring: #059669;
-  --shadow-soft: 0 8px 24px rgba(15, 23, 42, 0.06);
   min-height: 100dvh;
-  color-scheme: light;
+  color-scheme: inherit;
   color: var(--ink);
   background: var(--paper);
+}
+
+/* Admin shares the theme tokens but keeps its quiet, undecorated workbench
+ * surface in both themes (webui.md §8.5). */
+:root.dark .admin-shell {
+  --surface: rgb(31 36 45 / 68%);
+  --line: rgb(255 255 255 / 14%);
+  --navy: rgb(28 32 41 / 88%);
 }
 
 .admin-shell .app-header {
@@ -4849,6 +4874,7 @@ button {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .theme-toggle,
   .admin-icon-link,
   .home-geo-marker-body,
   .home-geo-counter-dot,
@@ -4869,4 +4895,304 @@ button {
   .dashboard-node-card:hover {
     transform: none;
   }
+}
+
+/* ---------------------------------------------------------------------------
+ * Production theme control and dual-theme foundation (webui.md §11.1)
+ *
+ * The control cycles Auto → Light → Dark → Auto. The dark rules below are the
+ * shared foundation for every route; per-page fine tuning is deferred to the
+ * later Emerald stage, but no route may become unreadable when the theme
+ * changes.
+ * ------------------------------------------------------------------------- */
+
+.app-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0.35rem 0.65rem;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.74);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 0.55rem;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 650;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+
+.theme-toggle:hover {
+  color: var(--brand-strong);
+  background: #ffffff;
+  border-color: rgba(5, 150, 105, 0.28);
+}
+
+.theme-toggle-icon {
+  font-size: 1rem;
+}
+
+/* Mobile-first: the icon carries the control at narrow widths and the visible
+   label appears once there is room. The accessible name always carries the
+   current mode and the next action. */
+.theme-toggle-label {
+  display: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.login-theme {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  z-index: 2;
+}
+
+@media (min-width: 26rem) {
+  .theme-toggle-label {
+    display: inline;
+  }
+}
+
+:root.dark .theme-toggle {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+:root.dark .theme-toggle:hover {
+  color: var(--brand);
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(52, 211, 153, 0.35);
+}
+
+/* The public top treatment keeps the accepted layered dark mask. */
+:root.dark .background-decoration-gradient {
+  background: linear-gradient(
+    to right,
+    oklch(0.696 0.17 162.48 / 30%),
+    oklch(0.897 0.196 126.665 / 30%)
+  );
+  opacity: 1;
+  -webkit-mask-image: linear-gradient(#000, transparent);
+  mask-image: linear-gradient(#000, transparent);
+}
+
+:root.dark .background-decoration-grid {
+  stroke: rgba(255, 255, 255, 0.05);
+  opacity: 1;
+}
+
+:root.dark .background-decoration-cells {
+  fill: rgba(255, 255, 255, 0.025);
+}
+
+/* Shared shell and surface foundation in the dark theme. */
+:root.dark body {
+  background: var(--paper);
+}
+
+/* The Home header is intentionally transparent in both themes, so only the
+   Admin workbench header gets a dark painted surface (below). */
+
+:root.dark .login-card {
+  background: rgba(25, 29, 37, 0.88);
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5);
+}
+
+:root.dark .primary-action,
+:root.dark .button-primary,
+:root.dark .admin-shell .primary-action,
+:root.dark .admin-shell .button-primary {
+  color: #111827;
+}
+
+:root.dark .danger-action {
+  color: var(--red);
+  border-color: rgba(239, 68, 68, 0.42);
+}
+
+:root.dark .peer-insight,
+:root.dark .geo-insight,
+:root.dark .redaction-note,
+:root.dark .dashboard-live,
+:root.dark .dashboard-empty {
+  background: rgb(31 36 45 / 70%);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+:root.dark .node-hero-card,
+:root.dark .home-shell .node-hero-card {
+  background: rgb(31 36 45 / 72%);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+:root.dark .node-metric-card,
+:root.dark .home-shell .node-metric-card {
+  background: rgb(31 36 45 / 68%);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+:root.dark .node-tabs,
+:root.dark .home-shell .node-tabs {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+:root.dark .home-shell .node-tab[aria-selected='true'] {
+  color: var(--ink);
+  background: rgb(31 36 45 / 92%);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+:root.dark .node-detail {
+  background: rgb(255 255 255 / 5%);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+:root.dark .status-retired,
+:root.dark .panel-count {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+:root.dark .status-badge-neutral,
+:root.dark .home-shell .status-badge-neutral,
+:root.dark .admin-shell .status-badge-neutral {
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+:root.dark .summary-strip,
+:root.dark .admin-shell .summary-strip {
+  background: rgb(31 36 45 / 68%);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+:root.dark .progress-track,
+:root.dark .admin-shell .progress-track,
+:root.dark .metric-row-progress {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+:root.dark .dashboard-filter-pills button,
+:root.dark .dashboard-sort select {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+:root.dark .dashboard-filter-pills button:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+:root.dark .dashboard-sort option {
+  color: var(--ink);
+  background: #1c2029;
+}
+
+:root.dark .dashboard-node-card:hover,
+:root.dark .dashboard-node-card:focus-within {
+  background: rgb(31 36 45 / 92%);
+}
+
+:root.dark .home-geo-counters {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+:root.dark .home-geo-tooltip {
+  color: var(--ink);
+  background: rgba(20, 24, 31, 0.92);
+}
+
+:root.dark .home-shell .peer-history-table-wrap {
+  background: rgb(31 36 45 / 68%);
+}
+
+:root.dark .home-shell .node-overview-statuses {
+  background: rgb(31 36 45 / 64%);
+}
+
+:root.dark .home-shell .node-hero-badges > div {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+:root.dark .admin-shell .app-header {
+  background: rgba(22, 26, 34, 0.9);
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow: none;
+}
+
+:root.dark .admin-shell .sign-out,
+:root.dark .admin-shell .nav-toggle {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+:root.dark .admin-shell .sign-out:hover,
+:root.dark .admin-shell .nav-toggle:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+:root.dark .admin-shell .admin-nav {
+  background: rgba(20, 24, 31, 0.94);
+  border-right-color: rgba(255, 255, 255, 0.12);
+  box-shadow: 8px 0 24px rgba(0, 0, 0, 0.45);
+}
+
+:root.dark .admin-shell .admin-nav a:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+:root.dark .admin-shell .admin-nav-scrim {
+  background: rgba(0, 0, 0, 0.55);
+}
+
+:root.dark .admin-shell .transfer-entry,
+:root.dark .admin-shell .attention-item,
+:root.dark .admin-shell .agent-card {
+  background: rgb(31 36 45 / 62%);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+:root.dark .admin-shell input:not([type='checkbox']):not([type='radio']),
+:root.dark .admin-shell select,
+:root.dark .admin-shell textarea,
+:root.dark .admin-shell .secondary-action,
+:root.dark .admin-shell .secret-value,
+:root.dark .admin-shell .sort-button {
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+:root.dark .admin-shell .table-wrap,
+:root.dark .admin-shell .audit-table-wrap,
+:root.dark .admin-shell .settings-surface,
+:root.dark .admin-shell .agent-summary,
+:root.dark .admin-shell .filter-bar,
+:root.dark .admin-shell .audit-filters {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+:root.dark .admin-shell code {
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+:root.dark .admin-shell table:not(.table-static) tbody tr {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow: none;
 }

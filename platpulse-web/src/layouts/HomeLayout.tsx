@@ -13,6 +13,7 @@ import {
 } from '../api/public'
 import { ServerStatusNotice } from '../components/ServerStatusNotice'
 import BackgroundDecoration from '../components/BackgroundDecoration'
+import ThemeToggle from '../components/ThemeToggle'
 import platpulseMark from '../../../assets/platpulse-mark.png'
 
 /**
@@ -91,9 +92,12 @@ function HomeLayoutContent() {
       <header className="app-header">
         <div className="home-shell-container app-header-inner">
           <Link to="/" className="app-brand" aria-label="PlatPulse"><img className="app-brand-logo" src={platpulseMark} alt="" /><span>PlatPulse</span></Link>
-          {isOwner && <Link to="/admin" className="admin-icon-link" aria-label="Admin" title="Open Admin dashboard">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="6.1" /><circle cx="12" cy="12" r="2.4" /><path d="M12 2.9v3M12 18.1v3M21.1 12h-3M5.9 12h-3M18.36 5.64l-2.05 2.05M5.64 5.64l2.05 2.05M18.36 18.36l-2.05-2.05M5.64 18.36l2.05-2.05" /></svg>
-          </Link>}
+          <div className="app-header-actions">
+            {isOwner && <Link to="/admin" className="admin-icon-link" aria-label="Admin" title="Open Admin dashboard">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="6.1" /><circle cx="12" cy="12" r="2.4" /><path d="M12 2.9v3M12 18.1v3M21.1 12h-3M5.9 12h-3M18.36 5.64l-2.05 2.05M5.64 5.64l2.05 2.05M18.36 18.36l-2.05-2.05M5.64 18.36l2.05-2.05" /></svg>
+            </Link>}
+            <ThemeToggle />
+          </div>
         </div>
       </header>
       <main className="app-main">

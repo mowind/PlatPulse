@@ -4,6 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PlatPulse</title>
+    <!-- Same-origin pre-mount theme script: the Server enforces
+         script-src 'self', so this cannot be inline. See public/theme-init.js. -->
+    <script src="/theme-init.js"></script>
+    <style>
+      :root { background: #f8fafc; }
+      :root.dark { background: #141923; }
+    </style>
   </head>
   <body>
     <div id="root"></div>

@@ -3,7 +3,7 @@ import { onlineManager } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import { adminQueryClient, resetAdminCache } from './api/admin'
-import { resetPublicCache } from './api/public'
+import { applySiteAccessSettings, resetPublicCache } from './api/public'
 import { resetRealtimeCursors } from './api/transport'
 import { client } from './api/generated/client.gen'
 import type { PublicGeoInsight, PublicNode } from './api/generated/types.gen'
@@ -1979,5 +1979,152 @@ describe('Admin MVP route inventory (issue #92)', () => {
         'removed page ' + removed + ' must not be linked from Admin navigation',
       ).toBe(false)
     }
+  })
+})
+
+describe('Theme lifecycle (issue #146)', () => {
+  const THEME_KEY = 'platpulse.themeMode'
+  let system: { matches: boolean; listeners: Set<() => void> }
+  let storage: Storage
+
+  /** jsdom in this setup has no localStorage; install a controllable one. */
+  function installLocalStorage() {
+    const map = new Map<string, string>()
+    const fake = {
+      get length() {
+        return map.size
+      },
+      clear: () => map.clear(),
+      getItem: (key: string) => (map.has(key) ? map.get(key)! : null),
+      key: (index: number) => Array.from(map.keys())[index] ?? null,
+      removeItem: (key: string) => {
+        map.delete(key)
+      },
+      setItem: (key: string, value: string) => {
+        map.set(key, value)
+      },
+    }
+    Object.defineProperty(window, 'localStorage', { value: fake, configurable: true, writable: true })
+    return fake as Storage
+  }
+
+  function installSystemTheme(initialDark: boolean) {
+    system = { matches: initialDark, listeners: new Set() }
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn(() => ({
+        matches: system.matches,
+        media: '(prefers-color-scheme: dark)',
+        onchange: null,
+        addEventListener: (_type: string, listener: () => void) => system.listeners.add(listener),
+        removeEventListener: (_type: string, listener: () => void) => system.listeners.delete(listener),
+        addListener: (listener: () => void) => system.listeners.add(listener),
+        removeListener: (listener: () => void) => system.listeners.delete(listener),
+        dispatchEvent: () => true,
+      })),
+    )
+  }
+
+  function changeSystemTheme(dark: boolean) {
+    system.matches = dark
+    for (const listener of [...system.listeners]) listener()
+  }
+
+  function themeButton() {
+    return screen.getByRole('button', { name: /^Theme: / })
+  }
+
+  async function renderLogin() {
+    mockFetch({ '/api/public/v1/session': () => errorBody('auth_required') })
+    render(<App />)
+    await screen.findByRole('heading', { level: 1, name: 'Sign in to PlatPulse' })
+  }
+
+  beforeEach(() => {
+    storage = installLocalStorage()
+    // The Site Access cache lives at module scope; force the deterministic
+    // private baseline so an unauthenticated render always reaches Login.
+    applySiteAccessSettings({ mode: 'private', authorizationGeneration: 0 })
+    // The router is created once at module scope; sync it back to Home so a
+    // previous test's Admin route cannot leak into this one.
+    act(() => {
+      window.history.replaceState({}, '', '/')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+    document.documentElement.classList.remove('dark')
+    document.documentElement.removeAttribute('data-theme-mode')
+    document.documentElement.style.colorScheme = ''
+    installSystemTheme(false)
+  })
+
+  it('cycles Auto → Light → Dark → Auto, paints the document, and persists', async () => {
+    await renderLogin()
+    expect(themeButton().getAttribute('aria-label')).toBe('Theme: Auto. Switch to Light')
+    expect(document.documentElement.classList.contains('dark')).toBe(false)
+    expect(document.documentElement.style.colorScheme).toBe('light')
+
+    fireEvent.click(themeButton())
+    expect(themeButton().getAttribute('aria-label')).toBe('Theme: Light. Switch to Dark')
+    expect(storage.getItem(THEME_KEY)).toBe('light')
+
+    fireEvent.click(themeButton())
+    expect(themeButton().getAttribute('aria-label')).toBe('Theme: Dark. Switch to Auto')
+    expect(document.documentElement.classList.contains('dark')).toBe(true)
+    expect(document.documentElement.style.colorScheme).toBe('dark')
+    expect(storage.getItem(THEME_KEY)).toBe('dark')
+
+    fireEvent.click(themeButton())
+    expect(themeButton().getAttribute('aria-label')).toBe('Theme: Auto. Switch to Light')
+    expect(storage.getItem(THEME_KEY)).toBe('auto')
+  })
+
+  it('follows system changes in Auto and never overrides an explicit choice', async () => {
+    await renderLogin()
+    expect(document.documentElement.classList.contains('dark')).toBe(false)
+
+    await act(async () => changeSystemTheme(true))
+    expect(document.documentElement.classList.contains('dark')).toBe(true)
+
+    await act(async () => changeSystemTheme(false))
+    expect(document.documentElement.classList.contains('dark')).toBe(false)
+
+    // An explicit Light choice ignores later system changes.
+    fireEvent.click(themeButton())
+    await act(async () => changeSystemTheme(true))
+    expect(themeButton().getAttribute('aria-label')).toBe('Theme: Light. Switch to Dark')
+    expect(document.documentElement.classList.contains('dark')).toBe(false)
+  })
+
+  it('defaults an invalid preference to Auto and still switches with unavailable storage', async () => {
+    storage.setItem(THEME_KEY, 'sepia')
+    await renderLogin()
+    expect(themeButton().getAttribute('aria-label')).toBe('Theme: Auto. Switch to Light')
+
+    const blocked = () => {
+      throw new Error('storage blocked')
+    }
+    storage.getItem = blocked
+    storage.setItem = blocked
+    fireEvent.click(themeButton())
+    expect(themeButton().getAttribute('aria-label')).toBe('Theme: Light. Switch to Dark')
+    fireEvent.click(themeButton())
+    expect(document.documentElement.classList.contains('dark')).toBe(true)
+  })
+
+  it('keeps the resolved theme across Home and Admin navigation', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/public/v1/networks': () => jsonResponse([], 200),
+    })
+    render(<App />)
+    await screen.findByRole('region', { name: 'Home' })
+    fireEvent.click(themeButton())
+    fireEvent.click(themeButton())
+    expect(document.documentElement.classList.contains('dark')).toBe(true)
+
+    await goToAdmin()
+    await screen.findByRole('heading', { level: 1, name: 'Overview' })
+    expect(document.documentElement.classList.contains('dark')).toBe(true)
+    expect(themeButton().getAttribute('aria-label')).toBe('Theme: Dark. Switch to Auto')
   })
 })

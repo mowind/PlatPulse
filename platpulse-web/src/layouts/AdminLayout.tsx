@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 're
 import { Link, NavLink, Outlet, useOutletContext } from 'react-router'
 import { QueryClientProvider } from '@tanstack/react-query'
 import SignOutButton from '../components/SignOutButton'
+import ThemeToggle from '../components/ThemeToggle'
 import { ServerStatusNotice } from '../components/ServerStatusNotice'
 import { RealtimeNotice } from '../components/RealtimeNotice'
 import {
@@ -146,6 +147,7 @@ export default function AdminLayout() {
           >
             <span aria-hidden="true">☰</span> Menu
           </button>
+          <ThemeToggle />
           <SignOutButton />
         </div>
       </header>

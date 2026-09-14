@@ -16,6 +16,7 @@ import AdminSessions from './pages/AdminSessions'
 import AdminAudit from './pages/AdminAudit'
 import AdminSettings from './pages/AdminSettings'
 import { AuthProvider, useAuth } from './auth/AuthContext'
+import { ThemeProvider } from './theme/ThemeProvider'
 import { ensureSiteAccessModeKnown, subscribeSiteAccessMode } from './api/public'
 import HomeDashboard from './components/HomeDashboard'
 import { useHomeRealtimeContext } from './layouts/HomeLayout'
@@ -161,9 +162,11 @@ const router = createBrowserRouter([
 
 export default function App() {
   return (
-    <AuthProvider>
-      <RouterProvider router={router} />
-    </AuthProvider>
+    <ThemeProvider>
+      <AuthProvider>
+        <RouterProvider router={router} />
+      </AuthProvider>
+    </ThemeProvider>
   )
 }
 

@@ -39,7 +39,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::Serialize;
-use tower_http::services::fs::ServeDir;
+use tower_http::services::fs::{ServeDir, ServeFile};
 use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::auth::{
@@ -789,6 +789,15 @@ pub fn build_app(state: AppState) -> Router {
 /// Agent authentication. The marker is only installed by the direct-TLS
 /// serve path; tests and plaintext listeners retain the default.
 pub fn build_app_with_native_tls(state: AppState, native_tls: bool) -> Router {
+    // The pre-mount theme script must run synchronously before the app bundle,
+    // but CSP `script-src 'self'` forbids an inline script and Vite cannot hash
+    // a `public/` file into `assets/`. Serve exactly that root file with
+    // no-cache so it stays fresh; the SPA fallback still owns every other
+    // non-API path.
+    let theme_init_path = state
+        .web_assets()
+        .map(|dir| dir.join("theme-init.js"))
+        .unwrap_or_else(|| PathBuf::from("/nonexistent/platpulse-web/theme-init.js"));
     let assets_dir = state
         .web_assets()
         .map(|dir| dir.join("assets"))
@@ -841,6 +850,13 @@ pub fn build_app_with_native_tls(state: AppState, native_tls: bool) -> Router {
             HeaderValue::from_static("public, max-age=31536000, immutable"),
         ));
 
+    let theme_init = Router::<AppState>::new()
+        .route_service("/theme-init.js", ServeFile::new(theme_init_path))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-cache"),
+        ));
+
     let app = Router::<AppState>::new()
         .nest("/api", api)
         .route("/health/live", get(health::live))
@@ -848,6 +864,7 @@ pub fn build_app_with_native_tls(state: AppState, native_tls: bool) -> Router {
         .route("/metrics", axum::routing::any(api_not_found))
         .route("/metrics/{*rest}", axum::routing::any(api_not_found))
         .merge(assets)
+        .merge(theme_init)
         .fallback(spa_index)
         .layer(SetResponseHeaderLayer::overriding(
             header::CONTENT_SECURITY_POLICY,

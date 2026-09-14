@@ -527,7 +527,7 @@ SCN-OVERVIEW-RESPONSIVE
 
 #### 8.5.1 Scope and precedence
 
-The current presentation uses the shared Admin shell and compact Agents summary, with regression coverage across all retained Admin routes and isolation checks for Home. Preserve the Emerald brand and existing business rules; borrow compact spatial organization, not another product's dark theme, small text, or data model.
+The current presentation uses the shared Admin shell and compact Agents summary, with regression coverage across all retained Admin routes and isolation checks for Home. Preserve the Emerald brand, the shared Auto/Light/Dark theme foundation (§11.1), and existing business rules; borrow compact spatial organization, not another product's small text or data model.
 
 - In scope: Admin background, sidebar, header, content origin, heading scale, shrink/overflow boundaries, Agents summary organization, and existing Agent Detail access to secondary evidence.
 - The current page boundary excludes Server/API expansion, new client-derived state or severity, global status renaming, a comprehensive restyle of unrelated controls, and restoration of removed routes or features. The integrated §8.6 pass covers the Settings/Audit/Overview/Agent Detail information-architecture changes explicitly; Server extensions without SPA routes remain available-but-unrouted.
@@ -554,7 +554,7 @@ Suggested geometry is a baseline, not a rigid height constraint or a measurement
 | Module spacing | 16–24 CSS px |
 | Typical rows | About 48 CSS px single-line / 64 CSS px two-line, growing for important content |
 
-Admin uses a stable Slate-50-like background and quiet white panels, without the public gradient/grid crossing its reading surface. Emerald remains a measured accent. Sidebar selection uses a light Emerald background, stronger text, and a thin side marker; keyboard focus remains separately visible, for example through `:focus-visible`. Do not remove outlines without an accessible replacement. The current contract does not require recoloring every existing primary button.
+Admin uses a stable, undecorated workbench surface in both themes — a Slate-50-like canvas with quiet light panels in Light, and the near-#141923 canvas with quiet dark panels in Dark — without the public gradient/grid crossing its reading surface. Emerald remains a measured accent. Sidebar selection uses a light Emerald background, stronger text, and a thin side marker; keyboard focus remains separately visible, for example through `:focus-visible`. Do not remove outlines without an accessible replacement. The current contract does not require recoloring every existing primary button.
 
 Measure actual container bounds before changing CSS: source inspection found centering and maximum-width rules, but the Admin maximum width need not bind at 1280 CSS pixels. Do not assume every large gap has the same cause. Check combined sidebar reservation, margins, padding, and the correct Flex/Grid shrink boundaries. Apply `min-width: 0` where needed; do not globally break words. Table headers may wrap between words, not split letters. Necessary two-dimensional overflow belongs to the table container, never the page, heading, or action area.
 
@@ -646,6 +646,7 @@ Relative times can expand to absolute UTC or selected timezone. Server timestamp
 - mobile: accessible drawer or equivalent navigation;
 - drawer opening moves focus inside, traps Tab focus, closes on Escape, restores focus to opener, and locks body scroll;
 - no critical action depends on hover;
+- the theme control's accessible name states the current mode and the next action, and it is at least a 44×44 target in every shell;
 - browser back/forward preserves URL filters and detail context;
 - Admin page-group links carry one leading decorative glyph that inherits the label colour. The glyph is `aria-hidden`, so the link's accessible name remains the visible page-group label; it never carries status meaning (§10.3) and never replaces the label. The retained MVP mapping is:
 
@@ -724,12 +725,12 @@ Scenario state is memory-only. No credentials, secrets, production API origins, 
 
 ## 11.1 Accepted Home and Node Detail visual contract (Issues #75 and #97)
 
-The accepted direction from Issue #75 and the compact Home contract from Issue #97 remain the production structural baseline for the public Home surface. The visual layer now adopts the supplied Emerald reference and the inspected Tokinx/komari-theme-emerald source at commit b7baf4535939cfdda063d731943fc36e3ead4c51, without importing its server, pricing, or remote-control data model.
+The accepted direction from Issue #75 and the compact Home contract from Issue #97 remain the production structural baseline for the public Home surface. The visual layer adopts the supplied Emerald reference and the inspected Tokinx/komari-theme-emerald source at commit c2c5e88ea19c7cbe18d14a50414e10deca3cc66e, without importing its server, pricing, or remote-control data model.
 
 ### Visual language
 
-- Home, public Node Detail, and Login use a Slate-50-like light canvas with a restrained Emerald-to-Lime top gradient and low-contrast inclined geometric grid. The background is decorative, pointer-inert, absent from the accessibility tree, and fades before the lower reading surface. Admin retains the Emerald light brand but uses the stable, undecorated workbench background specified in §8.5; this exception does not change Home or Login.
-- Surfaces are quiet white or translucent-white panels with approximately 8px radius, light borders, compact spacing, and minimal shadow. Default panels do not require `backdrop-filter`; menus, forms, dialogs, and other overlays may use more opaque surfaces.
+- The shared theme foundation offers Auto, Light, and Dark (see "Theme behavior" below). Light uses a Slate-50-like canvas; Dark uses a coordinated near-#141923 slate canvas with the same restrained Emerald/Lime top atmosphere. Home, public Node Detail, and Login carry the top gradient and low-contrast inclined SVG grid in both themes. The background is decorative, pointer-inert, absent from the accessibility tree, and fades before the lower reading surface. Admin retains the Emerald brand but uses the stable, undecorated workbench background in both themes as specified in §8.5; this exception does not change Home or Login.
+- Surfaces use one radius, border, spacing, and shadow system. In Light they are quiet white or translucent-white panels with light borders; in Dark they are quiet neutral panels over the near-#141923 canvas with low-alpha light borders and dark shadows. Default panels do not require `backdrop-filter`; menus, forms, dialogs, and other overlays may use more opaque surfaces.
 - Primary numbers and page titles use high contrast and strong weight. Secondary labels, timestamps, identifiers, and explanatory copy are quieter without being reduced below readable body sizes. Important values use tabular numerals where appropriate.
 - Emerald is a measured brand accent and selection cue, not a replacement for every primary action. Neutral primary controls, blue chart series, amber warnings, red destructive/error states, and neutral Unknown/Unsupported states remain distinct.
 - Cards, pills, separators, fine 4px progress tracks, and focus states share one spacing and radius system. Clickable cards may use a 150–200ms hover lift of about 2px and a faint Emerald shadow only on hover-capable devices; static containers do not imply interactivity. Reduced motion removes the lift and non-essential transitions.
@@ -822,6 +823,17 @@ The UI keeps collection state, freshness state, value state, and authorization s
 - Pages expose one logical h1, ordered headings, semantic lists/tables where appropriate, meaningful empty/error regions, and polite live regions only for meaningful transitions.
 - Status uses text plus icon, shape, or an equivalent explanation. Focus rings remain visible against the light canvas and composed surfaces. Reduced motion removes non-essential transitions and does not remove state information.
 
+### Theme behavior (Issue #146)
+
+The production theme lifecycle is a shared foundation, not a per-page option. It applies to public Home, Login, Admin direct entry, and reloads. This stage delivers the lifecycle, the shared visual foundation, and the Login adaptation; per-page fine tuning is a later Emerald slice, and no retained route may become unreadable in the meantime.
+
+- **Three modes.** One control cycles Auto → Light → Dark → Auto. Its accessible name states the current choice and the action it performs (for example, "Theme: Auto. Switch to Light"), it is a 44×44 CSS-pixel target, and it keeps visible keyboard focus. Auto is the default when no valid preference exists.
+- **Auto follows the system live.** A change to the operating-system preference takes effect immediately while Auto is selected. An explicit Light or Dark choice is never overridden by a system change.
+- **Persistence is preference-only.** The selection is stored under a production-owned key (`platpulse.themeMode`) and is isolated from the throwaway prototype key. A missing or invalid value falls back to Auto; unavailable storage must not prevent in-session switching. The preference survives reload and cross-route navigation.
+- **First paint is pre-mount.** The resolved theme, canvas, and browser `color-scheme` are applied by a synchronous same-origin head script (`public/theme-init.js`) before the application module runs, and reconciled when React mounts. It is external rather than inline because the Server enforces `script-src 'self'`. This must hold on direct entry and reload of Home, Login, and Admin, and must not depend on a post-mount correction.
+- **Shared surfaces.** Dark mode overrides the shared shell tokens and the shared shell, cards, forms, tables, navigation, and Login surface; semantic warning/error/success/unknown styling stays distinct rather than inverted, and color alone never carries status.
+- **Login.** Login keeps the fixed Emerald reference at commit `c2c5e88ea19c7cbe18d14a50414e10deca3cc66e` and the accepted A calibration: coordinated light/dark neutrals, the near-#141923 dark canvas, and the actual SVG grid geometry with layered masks rather than an approximate CSS line gradient. The form, loading, invalid-input, failure, and success-redirect states remain readable and operable in both themes, reusing the existing login API without changing Session, permission, Site Access Mode, or redirect rules.
+
 ### Exploration disposition and production boundary
 
 The three throwaway variants (Signal stack, Mission control, Evidence ledger)
@@ -870,6 +882,7 @@ desktop-1280
 | `SCN-OVERVIEW-EMPTY-SETUP` | authoritative zero/Empty values remain visible, safe Networks/Settings guidance appears, and no remote setup or fake-data action exists |
 | `SCN-OVERVIEW-RESPONSIVE` | fixed 360/390/768/1280 layouts, summary transformation, Node cards, Agent stacking, touch/focus/Escape, 200% zoom, reduced motion, and no primary horizontal overflow |
 | `SCN-SITE-ACCESS-PUBLIC` | from `/admin/settings`, switch to Public, allow anonymous Home reads, keep Admin Owner-only, clear affected state, discard stale responses, and record an Audit Event |
+| `SCN-THEME-LIFECYCLE` | Auto → Light → Dark cycle and accessible names; refresh persistence; live system change under Auto; explicit Light/Dark override; invalid/unavailable storage; pre-mount first paint on direct entry; production key isolated from the prototype key; Login, Home, and Admin readable in both themes with keyboard focus, 44×44 targets, no page overflow, and reduced motion (see §11.1) |
 | `SCN-HISTORY-WINDOW-SHORTEN` | from `/admin/settings`, require confirmation, show old/new and impact, remove expired history asynchronously, and record an Audit Event |
 | `SCN-HISTORY-WINDOW-BOUNDS` | out-of-bounds values rejected with field errors, bounds shown |
 
@@ -918,5 +931,6 @@ A page is ready for production implementation only when:
 | Prototype cleanup and production-only route boundary | Issue #89 |
 | Admin navigation leading decorative glyphs (▦ ◈ ◉ ⬡ ⚙ ◫ ☷), `aria-hidden`, no route, authorization, page-title, or DTO change | Confirmed `grill-with-docs` decision; UI-only |
 | Home compact overview (2x2 global statistics + transparent Peer country map), locally hosted Natural Earth basemap with offline generator, map-local degradation, and `SCN-HOME-GEO-MAP` | Issue #133, parent Issue #130; see this document §11.1 |
+| Production Auto/Light/Dark theme lifecycle, shared dual-theme foundation, and Login Emerald A adaptation | Issue #146, child of Issue #145; the final prototype calibration is archived at `d4020316df380d695d80440fa4ce5b503ecf1980` on `prototype/emerald-a` |
 
 Changes to a settled contract require a new decision record and must update the affected `PAGE-*`, `PATTERN-*`, and `SCN-*` references together. OpenAPI or Server policy changes do not silently change WebUI semantics; they require an explicit design review when the user-visible contract changes.
