@@ -399,7 +399,7 @@ for (const theme of ['light', 'dark'] as const) {
       await expectComputedColor(card, 'background-color', hoverCapable ? opaque : background)
       await expectBorderless(card)
       if (hoverCapable && lifts) {
-        await expect(card).toHaveCSS('box-shadow', glow)
+        await expectComputedColor(card, 'box-shadow', glow)
         await expect(card).toHaveCSS('transform', 'matrix(1, 0, 0, 1, 0, -2)')
       } else {
         await expectQuietShadow(card)

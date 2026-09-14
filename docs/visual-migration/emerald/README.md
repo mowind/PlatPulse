@@ -268,3 +268,27 @@ is looking at the hovered state and the element is not hovered. That is the next
 thing to chase - either the hover assertion's mouse path and timing, or
 'hover:bg-background' genuinely not applying on the card. It is now a
 well-labelled failure instead of an ambiguous colour diff.
+
+## 11. The colour family is closed; it was never a palette problem
+
+Three findings, each verified against a live server:
+
+1. **Notation.** 'expectComputedColor' now canonicalises every colour token in a
+   value through a 1x1 canvas, so a box-shadow written with rgba() and the same
+   shadow derived from an oklch token compare equal while the geometry (offsets,
+   blur, spread) must still match exactly. Verified by probe: rgba(255,255,255,0.6)
+   and oklab(1 0 0 / 0.6) both sample to [255,255,255,153].
+2. **Transitions.** The helper polls instead of reading once. A single read
+   caught the interpolated value mid-transition - the card surface transitions
+   over 150ms - which is why the hover assertions appeared to be palette
+   failures. A probe confirmed the hover itself works: the summary card reads
+   oklab(1 0 0 / 0.6) at rest and oklch(1 0 0) on hover, restoring on mouse-out.
+3. **Borderless meant zero-width, not borderless.** Tailwind's preflight leaves
+   border-style: solid on everything, so CardX with bordered={false} and the
+   Home node card produced a zero-width solid border. Both now state border-none.
+
+The whole 'public Emerald cards' test now walks: colour, font, borderless,
+backdrop, background-image, quiet shadow, transform, hover colour, hover
+borderless, hover glow - and stops on the hover transform, expecting
+matrix(1, 0, 0, 1, 0, -2) from hover:-translate-y-0.5. That is the single next
+thing to look at, and it is one assertion rather than a class of them.

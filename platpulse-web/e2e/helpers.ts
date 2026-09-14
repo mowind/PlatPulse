@@ -183,11 +183,17 @@ export async function expectFocusedElementHasVisibleFocus(page: Page) {
  * [-1, -1, -1, -1] and fails loudly rather than passing by accident.
  */
 export async function expectComputedColor(locator: Locator, property: string, expected: string) {
-  const actual = await locator.evaluate(
-    (element, prop) => getComputedStyle(element).getPropertyValue(prop).trim(),
-    property,
-  )
-  const equal = await locator.evaluate(
+  // Poll rather than read once: these surfaces transition (150ms on the card
+  // surface), and a single read catches the interpolated value mid-transition
+  // exactly the way toHaveCSS would not.
+  await expect
+    .poll(
+      async () => {
+        const actual = await locator.evaluate(
+          (element, prop) => getComputedStyle(element).getPropertyValue(prop).trim(),
+          property,
+        )
+        return locator.evaluate(
     (_element, pair) => {
       const sample = (input: string): number[] => {
         const canvas = document.createElement('canvas')
@@ -204,14 +210,34 @@ export async function expectComputedColor(locator: Locator, property: string, ex
         context.fillRect(0, 0, 1, 1)
         return Array.from(context.getImageData(0, 0, 1, 1).data)
       }
-      const left = sample(pair[0])
-      const right = sample(pair[1])
+      // Canonicalise every colour token in the value, not just whole-value
+      // colours, so a box-shadow written with rgba() and the same shadow
+      // derived from an oklch token compare equal while the geometry (offsets,
+      // blur, spread) still has to match exactly. A token the canvas rejects is
+      // left as written, so an unknown notation fails instead of passing.
+      const canonical = (input: string) =>
+        input.replace(
+          /(?:rgba?|oklab|oklch|hsla?|hwb|lab|lch|color)\([^()]*\)|#[0-9a-fA-F]{3,8}\b/g,
+          (token) => {
+            const px = sample(token)
+            return px.some((component) => component < 0) ? token : 'rgba(' + px.join(',') + ')'
+          },
+        )
+      const left = canonical(pair[0])
+      const right = canonical(pair[1])
+      if (left === right) return true
+      // Fall back to component comparison for a bare colour with rounding.
+      const leftPx = sample(pair[0])
+      const rightPx = sample(pair[1])
       return (
-        left.length === right.length &&
-        left.every((component, index) => Math.abs(component - right[index]) <= 1)
+        leftPx.length === rightPx.length &&
+        leftPx.every((component, index) => Math.abs(component - rightPx[index]) <= 1)
       )
     },
     [actual, expected] as [string, string],
   )
-  expect(equal, property + ': ' + actual + ' must equal ' + expected).toBe(true)
+      },
+      { message: () => property + ' should equal ' + expected, timeout: 5000 },
+    )
+    .toBe(true)
 }

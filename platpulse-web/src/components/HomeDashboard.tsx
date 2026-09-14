@@ -256,7 +256,10 @@ function HomeNodeCard({ network, node }: NodeRecord) {
       data-slot="node-card"
       data-tone={tone}
       className={cn(
-        'group/node-card relative h-full w-full rounded-md bg-background/60 transition-all duration-200',
+        // Borderless by design (the surface and its hover ring carry the
+        // card): Tailwind's preflight leaves border-style: solid behind, so
+        // this has to be stated explicitly.
+        'group/node-card relative h-full w-full rounded-md border-none bg-background/60 transition-all duration-200',
         'hover:z-1 hover:-translate-y-0.5 hover:bg-background hover:shadow-[0_0_20px,0_0_0_1px] hover:shadow-emerald-600/10',
         tone === 'bad' && 'shadow-[0_0_0_1px] shadow-red-600/20',
         tone === 'warn' && 'shadow-[0_0_0_1px] shadow-amber-500/20',
