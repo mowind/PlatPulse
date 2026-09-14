@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { expectNoHorizontalOverflow, loginAs } from './helpers'
+import { expectNoHorizontalOverflow, loginAs, openPeerDisclosure } from './helpers'
 
 const PUBLIC_NODE_ID = '0195f2a1-0014-4014-8014-000000000014'
 
@@ -119,11 +119,11 @@ test.describe('SCN-HOME-RESPONSIVE-ACCESSIBILITY / live refresh transport state'
     })
     await page.goto(`/nodes/${nodeId}`)
     await expect(page.getByRole('heading', { level: 1, name: 'Node A' })).toBeVisible()
-    await page.getByRole('tab', { name: 'Network' }).click()
+    await openPeerDisclosure(page)
     await emitRealtime(page, 'invalidation', { resource: 'node', resourceId: nodeId, revision: 2 })
     await expect(page.getByText(/last successful Node data/i)).toBeVisible()
     await expect(page.getByRole('heading', { level: 1, name: 'Node A' })).toBeVisible()
-    await expect(page.getByRole('tab', { name: 'Network' })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByRole('heading', { name: 'Peer history' })).toBeVisible()
     await expectNoHorizontalOverflow(page)
   })
 

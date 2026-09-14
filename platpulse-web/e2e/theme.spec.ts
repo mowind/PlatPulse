@@ -270,12 +270,12 @@ function colorAlpha(color: string): number {
 test('keeps the public Network and Node Detail readable in both themes', async ({ page }) => {
   await loginAs(page)
 
-  // Public Node Detail in Light: the hero metrics and the four chart cards
+  // Public Node Detail in Light: the hero metrics and the six chart cards
   // stay readable against their composed surfaces.
   await page.getByRole('link', { name: /Node A/ }).click()
   await expect(page.getByRole('heading', { level: 1, name: /Node A/ })).toBeVisible({ timeout: 15_000 })
   await expectReadable(page, page.getByText('Process uptime').first())
-  await expectReadable(page, page.getByRole('heading', { level: 3, name: 'Network' }))
+  await expectReadable(page, page.getByRole('heading', { level: 3, name: 'Host network' }))
   await expect(page.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeVisible()
   await expect(page.getByText('Peer diagnostics')).toBeVisible()
   await expectNoHorizontalOverflow(page)
@@ -285,7 +285,7 @@ test('keeps the public Network and Node Detail readable in both themes', async (
   await themeButton(page).click()
   expect((await resolvedTheme(page)).dark).toBe(true)
   await expectReadable(page, page.getByText('Process uptime').first())
-  await expectReadable(page, page.getByRole('heading', { level: 3, name: 'Network' }))
+  await expectReadable(page, page.getByRole('heading', { level: 3, name: 'Host network' }))
   await expect(page.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeVisible()
   await expectNoHorizontalOverflow(page)
 
@@ -343,7 +343,7 @@ test('gives public cards calibrated hover, reduced-motion, and filter feedback',
   await expect(page.getByRole('heading', { level: 1, name: /Node A/ })).toBeVisible({ timeout: 15_000 })
   const chartCard = page
     .getByRole('article')
-    .filter({ has: page.getByRole('heading', { level: 3, name: 'Network' }) })
+    .filter({ has: page.getByRole('heading', { level: 3, name: 'Host network' }) })
   await expect(chartCard).toBeVisible()
   await page.mouse.move(2, 2)
   const chartResting = await chartCard.evaluate((card) => getComputedStyle(card).boxShadow)

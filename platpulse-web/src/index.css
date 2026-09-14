@@ -44,6 +44,9 @@
   --public-card-border: rgba(148, 163, 184, 0.18);
   --public-card-border-hover: rgba(5, 150, 105, 0.3);
   --public-card-glow: 0 0 20px rgba(5, 150, 105, 0.1), 0 0 0 1px rgba(5, 150, 105, 0.1);
+  /* Directional chart series: blue primary plus cyan secondary (webui.md
+     §11.1); never colour alone, the legend always names both directions. */
+  --node-series-secondary: #06b6d4;
   /* Metric cell floor. A Home Node card is about 300-320px wide, and this is
      the narrowest cell in which the longest label ("Committed") and a grouped
      ten-character height ("12,842,022") still share one line. */
@@ -95,6 +98,7 @@
   --public-card-border: rgb(255 255 255 / 12%);
   --public-card-border-hover: rgb(48 214 151 / 34%);
   --public-card-glow: 0 0 20px rgb(0 203 137 / 14%), 0 0 0 1px rgb(0 203 137 / 14%);
+  --node-series-secondary: #22d3ee;
 }
 
 * {
@@ -1320,7 +1324,9 @@ button {
 
 .node-info-metrics {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(15.5rem, 1fr));
+  /* auto-fill, not auto-fit: a singleton group such as Node Data keeps one
+     left-aligned cell instead of stretching across the whole row. */
+  grid-template-columns: repeat(auto-fill, minmax(15.5rem, 1fr));
   gap: 0.6rem 1.1rem;
 }
 
@@ -1431,7 +1437,7 @@ button {
 
 .node-metric-grid {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.75rem;
 }
 
@@ -1439,7 +1445,6 @@ button {
   --node-metric-accent: #4f8cff;
   min-width: 0;
   min-height: 16.5rem;
-  grid-column: span 3;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
@@ -1454,6 +1459,7 @@ button {
 }
 
 .node-metric-blue { --node-metric-accent: #4f8cff; }
+.node-metric-cyan { --node-metric-accent: #06b6d4; }
 .node-metric-violet { --node-metric-accent: #a855f7; }
 .node-metric-amber { --node-metric-accent: #f2b84b; }
 
@@ -1497,6 +1503,12 @@ button {
   min-height: 1rem;
   margin: 0;
   overflow-wrap: anywhere;
+}
+
+.node-metric-series-note {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-style: italic;
 }
 
 .node-metric-chart {
@@ -1561,7 +1573,7 @@ button {
 }
 
 .node-metric-chart-line-secondary {
-  stroke: #8b5cf6;
+  stroke: var(--node-series-secondary);
   filter: none;
 }
 
@@ -1573,7 +1585,7 @@ button {
 }
 
 .node-metric-chart-dot-secondary {
-  fill: #8b5cf6;
+  fill: var(--node-series-secondary);
 }
 
 .node-metric-chart-bar {
@@ -1587,37 +1599,6 @@ button {
   font-size: 22px;
 }
 
-.node-network-rates {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem 1rem;
-}
-
-.node-network-rates > div {
-  min-width: 0;
-  flex: 1 1 7rem;
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.5rem;
-}
-
-.node-network-rates span {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-}
-
-.node-network-rates strong {
-  color: var(--ink);
-  font-size: clamp(0.9rem, 1.6vw, 1.05rem);
-  font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
-}
-
-.node-network-rates > div:first-child strong { color: #7ba7ff; }
-.node-network-rates > div:last-child strong { color: #c195ff; }
-
 .node-chart-key {
   width: 0.48rem;
   height: 0.48rem;
@@ -1629,7 +1610,7 @@ button {
 }
 
 .node-chart-key-secondary {
-  background: #8b5cf6;
+  background: var(--node-series-secondary);
   box-shadow: none;
 }
 
@@ -1658,6 +1639,10 @@ button {
 }
 
 @media (max-width: 60rem) {
+  .node-metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .node-hero-badges {
     flex: 1 1 auto;
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1665,6 +1650,10 @@ button {
 }
 
 @media (max-width: 42rem) {
+  .node-metric-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .node-detail-topline {
     align-items: flex-start;
     flex-direction: column;
@@ -1745,31 +1734,10 @@ button {
     font-size: 0.68rem;
   }
 
-  .node-network-rates {
-    gap: 0.5rem;
-  }
-
-  .node-network-rates > div {
-    gap: 0.25rem;
-  }
-
-  .node-network-rates span {
-    font-size: 0.68rem;
-  }
-
-  .node-network-rates strong {
-    font-size: 0.9rem;
-  }
-
   .node-hero-resources {
     gap: 0.4rem;
     margin-top: 0.55rem;
     padding-top: 0.55rem;
-  }
-
-  .node-metric-card {
-    grid-column: span 6;
-    min-height: 16.5rem;
   }
 
   .node-metric-chart {
@@ -3792,8 +3760,7 @@ button {
 
 .home-shell .node-hero-header h1,
 .home-shell .node-metric-card-heading h3,
-.home-shell .node-metric-value,
-.home-shell .node-network-rates strong { color: var(--ink); }
+.home-shell .node-metric-value { color: var(--ink); }
 .home-shell .node-id-line,
 .home-shell .node-id-line code,
 .home-shell .node-hero-reason,
@@ -3802,7 +3769,6 @@ button {
 .home-shell .node-consensus-runway span,
 .home-shell .node-metric-card-heading span,
 .home-shell .node-metric-card p,
-.home-shell .node-network-rates span,
 .home-shell .node-metric-y-axis,
 .home-shell .node-metric-x-axis { color: var(--muted); }
 .home-shell .node-hero-badges > div { background: rgba(241, 245, 249, 0.62); border-color: rgba(148, 163, 184, 0.22); }
@@ -3813,18 +3779,13 @@ button {
 .home-shell .node-consensus-runway > div::before { background: #ffffff; border-color: #8b5cf6; box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.12); }
 .home-shell .node-consensus-runway > div:first-child::before { border-color: var(--info); }
 .home-shell .node-consensus-runway > div:last-child::before { border-color: var(--brand-strong); }
-.home-shell .node-tabs { background: rgba(226, 232, 240, 0.78); border: 1px solid rgba(148, 163, 184, 0.22); border-radius: 0.6rem; }
-.home-shell .node-tab { color: var(--muted); }
-.home-shell .node-tab[aria-selected='true'] { color: var(--ink); background: #ffffff; box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08); }
 .home-shell .node-metric-card { color: var(--ink); background: var(--public-card-surface); border-color: var(--public-card-border); border-radius: 0.6rem; box-shadow: 0 1px 1px rgba(15, 23, 42, 0.025); backdrop-filter: none; }
 .home-shell .node-metric-grid-lines line { stroke: rgba(100, 116, 139, 0.18); }
-.home-shell .node-metric-chart-line-secondary { stroke: #8b5cf6; filter: none; }
+.home-shell .node-metric-chart-line-secondary { stroke: var(--node-series-secondary); filter: none; }
 .home-shell .node-metric-chart-dot { stroke: #ffffff; }
-.home-shell .node-metric-chart-dot-secondary { fill: #8b5cf6; }
+.home-shell .node-metric-chart-dot-secondary { fill: var(--node-series-secondary); }
 .home-shell .node-metric-chart-empty { fill: var(--muted); }
-.home-shell .node-network-rates > div:first-child strong { color: var(--info); }
-.home-shell .node-network-rates > div:last-child strong { color: #7c3aed; }
-.home-shell .node-chart-key-secondary { background: #8b5cf6; box-shadow: none; }
+.home-shell .node-chart-key-secondary { background: var(--node-series-secondary); box-shadow: none; }
 .home-shell .node-overview-status > span { color: var(--muted); }
 .home-shell .node-fact,
 .home-shell .node-signal-card,
@@ -4294,10 +4255,6 @@ button {
   box-shadow: inset 0 -2px 0 var(--brand-strong);
 }
 
-.home-shell .node-tab:focus-visible {
-  outline-offset: -3px;
-}
-
 .home-shell .node-metric-grid {
   gap: 0.75rem;
 }
@@ -4378,24 +4335,6 @@ button {
 
   .home-shell .node-hero-fact:last-child {
     grid-column: 1 / -1;
-  }
-
-  .home-shell .node-tabs {
-    width: 100%;
-  }
-
-  .home-shell .node-tab {
-    flex: 1 1 0;
-  }
-
-  .home-shell .node-network-rates > div {
-    flex: 1 1 0;
-  }
-
-  .home-shell .node-network-rates span,
-  .home-shell .node-network-rates strong {
-    overflow-wrap: anywhere;
-    white-space: normal;
   }
 
   .home-shell .node-metric-card {
@@ -5332,15 +5271,15 @@ button {
    each Admin surface has one source per theme (issue #148). */
 
 /* ---------------------------------------------------------------------------
- * Emerald public pages dual theme (webui.md §11.1, issue #147)
+ * Emerald public pages dual theme (webui.md §11.1, issues #147 and #150)
  *
- * Home Dashboard, Network Overview, and the current tabbed public Node Detail
+ * Home Dashboard, Network Overview, and the continuous public Node Detail
  * complete the shared theme foundation started in #146: the calibrated ~60%
- * card surfaces, the hover/focus feedback, and the dark adaptations of the
- * public map, separators, charts, and tabs. This slice is visual only — routes,
- * statistics, Network filters/sorting, the Peer country map, the Server-owned
- * Node Health Summary, and the Details/Network tabs with their four charts are
- * unchanged. Admin keeps its quiet undecorated workbench background.
+ * card surfaces, the hover/focus feedback on info groups and disclosures, and
+ * the dark adaptations of the public map, separators, and chart furniture. The
+ * Node Detail six-chart deck is one continuous section; #149 removed the
+ * Details/Network tabs, and no tab rule survives here. Admin keeps its quiet
+ * undecorated workbench background.
  * ------------------------------------------------------------------------- */
 
 /* Information cards become opaque with a faint Emerald outline/glow and a
@@ -5474,14 +5413,11 @@ button {
 
 :root.dark .dashboard-node-diagnostic { border-top-color: rgba(255, 255, 255, 0.12); }
 
-/* Chart furniture: grid lines, dots, and the secondary (violet) series keep
-   readable contrast on the dark canvas. */
+/* Chart furniture: grid lines and dots keep readable contrast on the dark
+   canvas; the secondary series colour comes from --node-series-secondary. */
 :root.dark .home-shell .node-metric-grid-lines line { stroke: rgba(255, 255, 255, 0.14); }
 :root.dark .home-shell .node-metric-chart-dot { stroke: #141923; }
-:root.dark .home-shell .node-metric-chart-line-secondary { stroke: #a78bfa; }
-:root.dark .home-shell .node-metric-chart-dot-secondary { fill: #a78bfa; stroke: #141923; }
-:root.dark .home-shell .node-chart-key-secondary { background: #a78bfa; }
-:root.dark .home-shell .node-network-rates > div:last-child strong { color: #a78bfa; }
+:root.dark .home-shell .node-metric-chart-dot-secondary { stroke: #141923; }
 
 /* Emerald links keep a readable hover on the dark canvas. */
 :root.dark .home-shell .page a:hover { color: var(--brand); }

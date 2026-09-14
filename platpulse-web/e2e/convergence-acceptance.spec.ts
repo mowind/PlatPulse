@@ -4,6 +4,7 @@ import {
   expectNoHorizontalOverflow,
   expectVisibleInteractiveTargets,
   loginAs,
+  openPeerDisclosure,
   setPageZoom,
 } from './helpers'
 
@@ -159,9 +160,7 @@ test.describe('Converged WebUI acceptance (issue #95)', () => {
     // diagnostics disclosure opens in place at every fixed viewport.
     await expect(page.getByRole('tab')).toHaveCount(0)
     await expect(page.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeVisible()
-    const peerDisclosure = page.locator('details.node-disclosure', { hasText: 'Peer diagnostics' })
-    await peerDisclosure.locator('summary').click()
-    await expect(peerDisclosure).toHaveAttribute('open', '')
+    await openPeerDisclosure(page)
     await expect(page.getByRole('heading', { name: 'Peer history' })).toBeVisible()
 
     // Node Detail → Network overview via the breadcrumb (the Home card

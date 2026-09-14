@@ -703,20 +703,26 @@ describe('App shell with private Home', () => {
     expect(hostGroup.textContent).toContain('Host CPU')
     expect(hostGroup.textContent).toContain('Host upload')
     expect(hostGroup.textContent).toContain('shared by every Node')
-    expect(screen.getByRole('heading', { level: 3, name: 'Network' })).toBeTruthy()
+    // The final six-chart order is process CPU %, process memory %, shared
+    // Host upload/download, Peer inbound/outbound, block interval, then
+    // transactions per block; the first four are lines and the last two bars.
+    for (const heading of ['Process CPU', 'Process memory', 'Host network', 'Peer connections', 'Block interval', 'Transactions per block']) {
+      expect(screen.getByRole('heading', { level: 3, name: heading })).toBeTruthy()
+    }
     expect(screen.getAllByText('2.00 KiB/s').length).toBeGreaterThan(0)
     expect(screen.getAllByText('4.00 KiB/s').length).toBeGreaterThan(0)
-    expect(screen.getByRole('heading', { level: 3, name: 'Connections' })).toBeTruthy()
-    const connectionsLegend = screen.getByLabelText('Connections chart legend')
+    const networkLegend = screen.getByLabelText('Host network chart legend')
+    expect(networkLegend.textContent).toContain('Upload')
+    expect(networkLegend.textContent).toContain('Download')
+    const connectionsLegend = screen.getByLabelText('Peer connections chart legend')
     expect(connectionsLegend.textContent).toContain('Inbound')
     expect(connectionsLegend.textContent).toContain('Outbound')
-    expect(screen.getByRole('heading', { level: 3, name: 'Block time' })).toBeTruthy()
+    expect(screen.getAllByText('12.5%').length).toBeGreaterThan(0)
     expect(screen.getByText('2.00 s')).toBeTruthy()
-    expect(screen.getByRole('heading', { level: 3, name: 'Transactions' })).toBeTruthy()
     expect(screen.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeTruthy()
-    expect(screen.getAllByRole('img', { name: /line chart over the last minute/ })).toHaveLength(2)
-    expect(screen.getAllByRole('img', { name: /bar chart over the last minute/ })).toHaveLength(2)
-    expect(screen.getAllByText('1m')).toHaveLength(4)
+    expect(screen.getAllByRole('img', { name: /line chart over the last 60 seconds/ })).toHaveLength(4)
+    expect(screen.getAllByRole('img', { name: /bar chart over the last 60 seconds/ })).toHaveLength(2)
+    expect(screen.getAllByText('60s')).toHaveLength(6)
     expect(screen.queryByRole('progressbar')).toBeNull()
     expect(screen.queryByText('Bounded Block History')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Export public history' })).toBeNull()
@@ -1438,9 +1444,9 @@ describe('App shell with private Home', () => {
       await Promise.resolve()
     })
     expect(await screen.findByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
-    expect(screen.getAllByRole('img', { name: /line chart over the last minute/ })).toHaveLength(2)
-    expect(screen.getAllByRole('img', { name: /bar chart over the last minute/ })).toHaveLength(2)
-    expect(screen.getAllByText('No samples in the last minute')).toHaveLength(4)
+    expect(screen.getAllByRole('img', { name: /line chart over the last 60 seconds/ })).toHaveLength(4)
+    expect(screen.getAllByRole('img', { name: /bar chart over the last 60 seconds/ })).toHaveLength(2)
+    expect(screen.getAllByText('No samples in the last minute')).toHaveLength(6)
     openPeerDisclosure()
     expect(screen.getByRole('heading', { name: 'Peer history' })).toBeTruthy()
 
@@ -2261,13 +2267,13 @@ describe('Theme lifecycle (issue #146)', () => {
       expect(document.documentElement.classList.contains('dark')).toBe(true)
       expect(themeButton().getAttribute('aria-label')).toBe('Theme: Dark. Switch to Auto')
 
-      // The public Node Detail is one continuous reading page with four charts
+      // The public Node Detail is one continuous reading page with six charts
       // and keyboard disclosures instead of Details/Network tabs.
       await navigateTo('/nodes/node-1')
       expect(await screen.findByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
       expect(screen.queryByRole('tab')).toBeNull()
       expect(screen.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeTruthy()
-      expect(screen.getAllByRole('img', { name: /chart over the last minute/ })).toHaveLength(4)
+      expect(screen.getAllByRole('img', { name: /chart over the last 60 seconds/ })).toHaveLength(6)
       expect(document.documentElement.classList.contains('dark')).toBe(true)
 
       // Switching back to Light keeps the same public surfaces usable.

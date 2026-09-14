@@ -10,7 +10,7 @@ import {
   usePublicValidatorAnalytics,
   usePublicValidatorHistory,
 } from '../api/public'
-import type { PublicMetricPoint, PublicNode, PublicValidatorInsight } from '../api/generated'
+import type { PublicMetricPoint, PublicNode, PublicNodeMetricHistory, PublicValidatorInsight } from '../api/generated'
 import { useHomeRealtimeContext } from '../layouts/HomeLayout'
 import { PeerInsight, peerInsightCollectionStatus, peerInsightFreshnessStatus, peerInsightValueStatus } from '../components/PeerInsight'
 import { PeerHistoryInsight, normalizePublicPeerHistory } from '../components/PeerHistoryInsight'
@@ -101,6 +101,7 @@ export function NodePage() {
         ? 'Metric history unavailable'
         : undefined
   const nodeDataProgressValue = nodeDataProgress(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)
+  const metricWindow = describeMetricWindow(metricHistory)
 
   return <section className="page node-detail-page">
     <div className="node-detail-topline">
@@ -134,7 +135,7 @@ export function NodePage() {
 
       <NodeInfoGroup title="Summary" label="Node key summary">
         <MetricRow label="Head" value={formatNumber(node.currentHead)} />
-        <MetricRow label="Sync" value={syncStateLabel(node.syncState)} detail={formatSyncDetail(node)} />
+        <MetricRow label="Sync" value={nodeComponentStateLabel(node.syncState)} detail={formatSyncDetail(node)} />
         <MetricRow label="Peers" value={peerCount(node.peers)} detail={peerBreakdown(node.peers)} />
         <MetricRow label="Process uptime" value={formatDuration(node.processUptimeMs)} />
       </NodeInfoGroup>
@@ -177,12 +178,41 @@ export function NodePage() {
 
     <section className="node-metrics-section" aria-labelledby="node-metrics-title">
       <header className="node-metrics-header">
-        <h2 id="node-metrics-title">Latest 60 seconds</h2>
-        <p>Real retained samples from the fixed public metric-history window; missing intervals stay empty.</p>
+        <h2 id="node-metrics-title">{metricWindow.title}</h2>
+        <p>{metricWindow.detail}</p>
       </header>
       <div className="node-metric-grid">
         <NodeMetricCard
-          label="Network"
+          label="Process CPU"
+          unit="%"
+          value={formatPercent(node.processCpuPercent)}
+          detail={processStatusDetail(node.processState)}
+          tone="blue"
+          fixedMax={100}
+          series={[{ label: 'Process CPU', points: metricHistory?.processCpuPercent ?? [] }]}
+          from={metricHistory?.from}
+          to={metricHistory?.to}
+          windowSeconds={metricHistory?.windowSeconds}
+          axisFormat={formatPercentAxis}
+          historyMessage={metricHistoryMessage}
+        />
+        <NodeMetricCard
+          label="Process memory"
+          unit="%"
+          value={formatPercent(node.processMemoryPercent)}
+          detail={processStatusDetail(node.processState)}
+          tone="cyan"
+          fixedMax={100}
+          series={[{ label: 'Process memory', points: metricHistory?.processMemoryPercent ?? [] }]}
+          from={metricHistory?.from}
+          to={metricHistory?.to}
+          windowSeconds={metricHistory?.windowSeconds}
+          axisFormat={formatPercentAxis}
+          historyMessage={metricHistoryMessage}
+        />
+        <NodeMetricCard
+          label="Host network"
+          unit="bytes/s"
           value={formatRate(node.hostNetworkTxBytesPerSec)}
           detail={'Host upload · download ' + formatRate(node.hostNetworkRxBytesPerSec)}
           tone="blue"
@@ -193,11 +223,13 @@ export function NodePage() {
           showLegend
           from={metricHistory?.from}
           to={metricHistory?.to}
+          windowSeconds={metricHistory?.windowSeconds}
           axisFormat={formatRate}
           historyMessage={metricHistoryMessage}
         />
         <NodeMetricCard
-          label="Connections"
+          label="Peer connections"
+          unit="count"
           value={peerCount(node.peers)}
           detail={peerBreakdown(node.peers)}
           tone="blue"
@@ -208,29 +240,34 @@ export function NodePage() {
           showLegend
           from={metricHistory?.from}
           to={metricHistory?.to}
+          windowSeconds={metricHistory?.windowSeconds}
           axisFormat={formatCountAxis}
           historyMessage={metricHistoryMessage}
         />
         <NodeMetricCard
-          label="Block time"
+          label="Block interval"
+          unit="ms"
           value={blockInterval.value}
           detail={historyQuery.error ? 'History unavailable' : blockInterval.detail}
           tone="amber"
-          series={[{ label: 'Block time', points: metricHistory?.blockIntervalMs ?? [] }]}
+          series={[{ label: 'Block interval', points: metricHistory?.blockIntervalMs ?? [] }]}
           from={metricHistory?.from}
           to={metricHistory?.to}
+          windowSeconds={metricHistory?.windowSeconds}
           axisFormat={formatMillisecondsAxis}
           historyMessage={metricHistoryMessage}
           chartKind="bar"
         />
         <NodeMetricCard
-          label="Transactions"
+          label="Transactions per block"
+          unit="tx/block"
           value={formatNumber(node.latestBlockTransactionCount)}
-          detail="Block Summary transaction count"
+          detail="Transactions in each Block Summary"
           tone="violet"
-          series={[{ label: 'Transactions', points: metricHistory?.transactionCount ?? [] }]}
+          series={[{ label: 'Transactions per block', points: metricHistory?.transactionCount ?? [] }]}
           from={metricHistory?.from}
           to={metricHistory?.to}
+          windowSeconds={metricHistory?.windowSeconds}
           axisFormat={formatCountAxis}
           historyMessage={metricHistoryMessage}
           chartKind="bar"
@@ -301,13 +338,15 @@ type MetricChartProps = {
   axisFormat: (value: number) => string
   message?: string
   kind?: MetricChartKind
+  windowSeconds?: number
 }
 
-function NodeMetricCard({ label, value, detail, tone, series, showLegend = false, from, to, fixedMax, axisFormat, historyMessage, chartKind = 'line', className = '' }: {
+function NodeMetricCard({ label, unit, value, detail, tone, series, showLegend = false, from, to, fixedMax, axisFormat, historyMessage, chartKind = 'line', windowSeconds, className = '' }: {
   label: string
+  unit?: string
   value: string
   detail?: string
-  tone: 'blue' | 'violet' | 'amber'
+  tone: 'blue' | 'cyan' | 'violet' | 'amber'
   series: MetricSeries[]
   showLegend?: boolean
   from?: string
@@ -316,16 +355,23 @@ function NodeMetricCard({ label, value, detail, tone, series, showLegend = false
   axisFormat: (value: number) => string
   historyMessage?: string
   chartKind?: MetricChartKind
+  windowSeconds?: number
   className?: string
 }) {
+  // A direction series that has no retained sample must not disappear behind
+  // its available partner: name it explicitly while the partner keeps plotting.
+  const missingDirections = series.length > 1 && series.some((item) => item.points.length > 0)
+    ? series.filter((item) => item.points.length === 0).map((item) => item.label)
+    : []
   return <article className={`node-metric-card node-metric-${tone} ${className}`.trim()}>
     <div className="node-metric-card-summary">
-      <MetricCardHeading label={label} />
+      <MetricCardHeading label={label} hint={unit} />
       <strong className="node-metric-value">{value}</strong>
     </div>
     {detail && <p>{detail}</p>}
     {showLegend && <MetricSeriesLegend label={label} series={series} />}
-    <MetricChart label={label} series={series} from={from} to={to} fixedMax={fixedMax} axisFormat={axisFormat} message={historyMessage} kind={chartKind} />
+    {missingDirections.length > 0 && <p className="node-metric-series-note">{missingDirections.join(' and ')} unavailable in this window</p>}
+    <MetricChart label={label} series={series} from={from} to={to} fixedMax={fixedMax} axisFormat={axisFormat} message={historyMessage} kind={chartKind} windowSeconds={windowSeconds} />
   </article>
 }
 
@@ -335,7 +381,8 @@ function MetricSeriesLegend({ label, series }: { label: string; series: MetricSe
   </div>
 }
 
-function MetricChart({ label, series, from, to, fixedMax, axisFormat, message, kind = 'line' }: MetricChartProps) {
+function MetricChart({ label, series, from, to, fixedMax, axisFormat, message, kind = 'line', windowSeconds }: MetricChartProps) {
+  const seconds = Number.isFinite(windowSeconds) && (windowSeconds ?? 0) > 0 ? Math.round(windowSeconds as number) : 60
   const gradientId = `node-metric-fill-${useId().replaceAll(':', '')}`
   const fromMs = from ? Date.parse(from) : Number.NaN
   const toMs = to ? Date.parse(to) : Number.NaN
@@ -352,6 +399,7 @@ function MetricChart({ label, series, from, to, fixedMax, axisFormat, message, k
     : []
   const hasPoints = plots.some((item) => item.coordinates.length > 0)
   const chartMessage = message ?? (hasPoints ? undefined : 'No samples in the last minute')
+  const windowLabel = 'over the last ' + seconds + ' seconds'
 
   return <div className="node-metric-chart">
     <div className="node-metric-y-axis" aria-hidden="true">
@@ -359,9 +407,9 @@ function MetricChart({ label, series, from, to, fixedMax, axisFormat, message, k
       <span>{axisFormat(max / 2)}</span>
       <span>{axisFormat(0)}</span>
     </div>
-    <svg viewBox="0 0 600 150" preserveAspectRatio="none" role="img" aria-label={`${label} ${kind} chart over the last minute`}>
-      <title>{label} {kind} chart over the last minute</title>
-      <desc>{chartMessage ? `${label}: ${chartMessage}` : `${series.map((item) => item.label).join(' and ')} values from one minute ago to now`}</desc>
+    <svg viewBox="0 0 600 150" preserveAspectRatio="none" role="img" aria-label={`${label} ${kind} chart ${windowLabel}`}>
+      <title>{label} {kind} chart {windowLabel}</title>
+      <desc>{chartMessage ? `${label}: ${chartMessage}` : `${series.map((item) => item.label).join(' and ')} values from ${seconds} seconds ago to now`}</desc>
       <defs>
         <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor="var(--node-metric-accent)" stopOpacity="0.34" />
@@ -392,7 +440,7 @@ function MetricChart({ label, series, from, to, fixedMax, axisFormat, message, k
       })}
       {chartMessage && <text className="node-metric-chart-empty" x="300" y="78" textAnchor="middle">{chartMessage}</text>}
     </svg>
-    <div className="node-metric-x-axis" aria-hidden="true"><span>1m</span><span>0s</span></div>
+    <div className="node-metric-x-axis" aria-hidden="true"><span>{seconds}s</span><span>0s</span></div>
   </div>
 }
 
@@ -493,6 +541,27 @@ function formatMillisecondsAxis(value: number): string {
   return `${Math.round(value)}ms`
 }
 
+/** The fixed public metrics response owns the window; the section label and
+ *  every chart read the real from/to/windowSeconds instead of inventing a range. */
+function describeMetricWindow(history: PublicNodeMetricHistory | undefined): { title: string; detail: string } {
+  if (!history) {
+    return { title: 'Latest 60 seconds', detail: 'Real retained samples from the fixed public metric-history window.' }
+  }
+  const seconds = Number.isFinite(history.windowSeconds) && history.windowSeconds > 0 ? history.windowSeconds : 60
+  const from = formatUtcDateTime(history.from)
+  const to = formatUtcDateTime(history.to)
+  return {
+    title: 'Latest ' + seconds + ' seconds',
+    detail: 'Real retained samples from ' + from + ' to ' + to + ' UTC; missing intervals stay empty.',
+  }
+}
+
+function formatPercentAxis(value: number): string {
+  if (value >= 100) return '100%'
+  if (value <= 0) return '0%'
+  return value.toFixed(value < 10 ? 1 : 0) + '%'
+}
+
 function latestBlockInterval(history: ReturnType<typeof usePublicNodeHistory>['data']): { value: string; detail: string } {
   const blocks = history?.filter((item) => item.height != null && item.blockTimeMs != null).slice(0, 2) ?? []
   if (blocks.length < 2) return { value: 'Unknown', detail: 'Two Block Summaries are required' }
@@ -506,24 +575,14 @@ function latestBlockInterval(history: ReturnType<typeof usePublicNodeHistory>['d
   return { value, detail: `Block ${latest.height.toLocaleString()} − ${previous.height.toLocaleString()}` }
 }
 
-function syncStateLabel(value: string | null | undefined): string {
-  switch (typeof value === 'string' ? value.trim().toLowerCase() : '') {
-    case 'ok':
-    case 'current':
-    case 'synced':
-      return 'Current'
-    case 'starting':
-    case 'syncing':
-      return 'Starting'
-    case 'error':
-      return 'Error'
-    case 'disabled':
-      return 'Disabled'
-    case 'unsupported':
-      return 'Unsupported'
-    default:
-      return 'Unknown'
-  }
+
+/** A process value is the retained current Public Projection value; when the
+ *  process component is not Current it is explicitly marked as last-good. */
+function processStatusDetail(state: string | null | undefined): string {
+  const label = nodeComponentStateLabel(state)
+  return label === 'Current'
+    ? 'PlatON process · current observation'
+    : 'PlatON process · last-good value retained; collection ' + label
 }
 
 /** Sync progress is only asserted from the Server Observed Network Head when

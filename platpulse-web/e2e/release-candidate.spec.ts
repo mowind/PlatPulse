@@ -6,6 +6,7 @@ import {
   expectNoHorizontalOverflow,
   expectVisibleInteractiveTargets,
   loginAs,
+  openPeerDisclosure,
   setPageZoom,
 } from './helpers'
 
@@ -25,10 +26,7 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     // single page and keyboard-operable disclosures.
     await expect(page.getByRole('tab')).toHaveCount(0)
     await expect(page.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeVisible()
-    const peerDisclosure = page.locator('details.node-disclosure', { hasText: 'Peer diagnostics' })
-    await peerDisclosure.locator('summary').focus()
-    await page.keyboard.press('Enter')
-    await expect(peerDisclosure).toHaveAttribute('open', '')
+    await openPeerDisclosure(page, 'keyboard')
     await expect(page.getByRole('heading', { name: 'Peer history' })).toBeVisible()
     await expectVisibleInteractiveTargets(page)
     await setPageZoom(page, 2)
@@ -282,7 +280,7 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expect(nodeLink).toBeFocused()
     await page.keyboard.press('Enter')
     await expect(page.getByRole('heading', { level: 1, name: 'Node A' })).toBeVisible()
-    await page.getByRole('tab', { name: 'Network' }).click()
+    await openPeerDisclosure(page)
     const detailPeer = page.getByRole('region', { name: 'Peer insight' }).last()
     await expect(detailPeer).toContainText('Peer data current')
     await expect(detailPeer).toContainText('Consensus')
@@ -484,7 +482,7 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expectNoHorizontalOverflow(page)
   })
 
-  test('Node Detail reads continuously with grouped diagnostics and four metric charts without bounded history', async ({ page }) => {
+  test('Node Detail reads continuously with grouped diagnostics and six metric charts without bounded history', async ({ page }) => {
     await loginAs(page)
     await page.getByRole('link', { name: /Node A/ }).click()
     await expect(page.getByRole('heading', { level: 1, name: 'Node A' })).toBeVisible({ timeout: 15_000 })
@@ -498,12 +496,12 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     for (const label of ['Node key summary', 'Node chain and consensus observations', 'PlatON process resources', 'Node data directory', 'Shared Host resources']) {
       await expect(page.getByLabel(label)).toBeVisible()
     }
-    await expect(page.getByText('Head')).toBeVisible()
-    await expect(page.getByText('QC')).toBeVisible()
-    await expect(page.getByText('Locked')).toBeVisible()
-    await expect(page.getByText('Committed')).toBeVisible()
-    await expect(page.getByText('Validator')).toBeVisible()
     const chainGroup = page.getByLabel('Node chain and consensus observations')
+    await expect(page.getByLabel('Node key summary').getByText('Head', { exact: true })).toBeVisible()
+    await expect(chainGroup.getByText('QC', { exact: true })).toBeVisible()
+    await expect(chainGroup.getByText('Locked', { exact: true })).toBeVisible()
+    await expect(chainGroup.getByText('Committed', { exact: true })).toBeVisible()
+    await expect(chainGroup.getByText('Validator', { exact: true })).toBeVisible()
     await expect(chainGroup.getByText('True', { exact: true })).toHaveCount(1)
     await expect(page.getByText('Server updates arrive as invalidations; REST data stays authoritative.', { exact: true })).toHaveCount(0)
     await expect(page.getByText('RPC, sync, and consensus are current', { exact: true })).toHaveCount(0)
@@ -516,20 +514,21 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expectMetricRowsAligned(page.getByLabel('Node key summary'))
     await expectMetricRowsAligned(chainGroup)
     await expect(page.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeVisible()
-    for (const heading of ['Network', 'Connections', 'Block time', 'Transactions']) {
+    // Six charts in the agreed order, from the fixed metrics response.
+    for (const heading of ['Process CPU', 'Process memory', 'Host network', 'Peer connections', 'Block interval', 'Transactions per block']) {
       await expect(page.getByRole('heading', { level: 3, name: heading })).toBeVisible()
     }
     await expect(page.getByText('2.00 s')).toBeVisible()
     const metrics = page.locator('.node-metrics-section')
-    await expect(metrics.getByRole('img', { name: /line chart over the last minute/ })).toHaveCount(2)
-    await expect(metrics.getByRole('img', { name: /bar chart over the last minute/ })).toHaveCount(2)
+    await expect(metrics.getByRole('img', { name: /line chart over the last 60 seconds/ })).toHaveCount(4)
+    await expect(metrics.getByRole('img', { name: /bar chart over the last 60 seconds/ })).toHaveCount(2)
     await expect(metrics.locator('.node-metric-chart-bar')).not.toHaveCount(0)
-    await expect(metrics.getByText('1m', { exact: true })).toHaveCount(4)
+    await expect(metrics.getByText('60s', { exact: true })).toHaveCount(6)
     const cardSizes = await metrics.locator('.node-metric-card').evaluateAll((cards) => cards.map((card) => {
       const box = card.getBoundingClientRect()
       return { width: Math.round(box.width), height: Math.round(box.height) }
     }))
-    expect(cardSizes).toHaveLength(4)
+    expect(cardSizes).toHaveLength(6)
     expect(new Set(cardSizes.map(({ width }) => width)).size).toBe(1)
     expect(new Set(cardSizes.map(({ height }) => height)).size, JSON.stringify(cardSizes)).toBe(1)
     expect(Math.max(...cardSizes.map(({ height }) => height))).toBeLessThanOrEqual(270)
@@ -537,8 +536,7 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expect.poll(() => metrics.locator('.node-metric-card').first().evaluate((card) => getComputedStyle(card, '::before').content)).toBe('none')
     await expect(page.getByText('Bounded Block History')).toHaveCount(0)
     await expect(page.getByRole('button', { name: 'Export public history' })).toHaveCount(0)
-    const peerDisclosure = page.locator('details.node-disclosure', { hasText: 'Peer diagnostics' })
-    await peerDisclosure.locator('summary').click()
+    await openPeerDisclosure(page)
     await expect(page.getByRole('heading', { name: 'Peer history' })).toBeVisible()
     await expectNoHorizontalOverflow(page)
   })
