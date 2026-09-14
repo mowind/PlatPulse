@@ -505,11 +505,11 @@ function GeoProviderSettings({ generation, csrfToken }: SettingsSectionProps) {
             </p>
           ))}
 
-          <fieldset className="grid gap-2">
+          <fieldset className="grid min-w-0 gap-2">
             <legend className={LABEL}>Provider</legend>
             {current.providers.map((candidate) => (
-              <div key={candidate.provider} className="flex flex-col gap-1">
-                <label htmlFor={'geo-provider-' + candidate.provider} className="flex min-h-11 items-center gap-2 text-sm">
+              <div key={candidate.provider} className="flex min-w-0 flex-col gap-1">
+                <label htmlFor={'geo-provider-' + candidate.provider} className="flex min-h-11 min-w-0 items-center gap-2 text-sm">
                   <input
                     id={'geo-provider-' + candidate.provider}
                     className="size-11 shrink-0 accent-primary"

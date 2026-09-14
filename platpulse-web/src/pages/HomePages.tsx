@@ -192,7 +192,7 @@ export function NodePage() {
         <h2 id="node-metrics-title" className="m-0 text-lg font-semibold">{metricWindow.title}</h2>
         <p className="m-0 text-[11px] text-muted-foreground">{metricWindow.detail}</p>
       </header>
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+      <div className="grid auto-rows-fr grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
         <NodeMetricCard
           label="Process CPU"
           unit="%"

@@ -466,7 +466,7 @@ function AgentListRow({ agent }: { agent: AgentDiagnostic }) {
             <span className="text-sm">{credentialSummaryText(agent.credentials)}</span>
           </div>
         </td>
-        <td data-label="Diagnostics" className="min-w-0 px-3 py-3">
+        <td data-label="Diagnostics" className="flex min-w-0 flex-col px-3 py-3">
           <div className="flex flex-col gap-2">
             <dl className="grid grid-cols-1 gap-1">
               <div>
