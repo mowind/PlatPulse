@@ -46,16 +46,14 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(hCard).toBeVisible({ timeout: 15_000 })
 
     // Header: the two-state Node Health marker precedes the Node/Network
-    // identity, and Validator Activity stays the only header text badge. The
-    // whole card is one semantic link, so its accessible name carries that
-    // order.
+    // identity, and it is the card's only status cue. The current SPA renders
+    // Node Validator Activity nowhere, so no Activity badge is rendered in any
+    // state, and the whole card is one semantic link whose accessible name
+    // carries that order.
+    await expect(hCard.locator('.status-badge')).toHaveCount(0)
     await expect(
-      page.getByRole('link', { name: /^Healthy Node H — Producing Card[\s\S]*Producing/ }),
+      page.getByRole('link', { name: /^Healthy Node H — Producing Card/ }),
     ).toHaveCount(1)
-    // Health never trails the Node name and Activity again.
-    await expect(
-      page.getByRole('link', { name: /Node H — Producing Card[\s\S]*Producing[\s\S]*Healthy/ }),
-    ).toHaveCount(0)
 
     // Both compact metric rows carry exactly the required labels and values:
     // Head / Txs / Peers and QC / Locked / Committed / Validator.
@@ -101,16 +99,21 @@ test.describe('Converged Public Home (issue #102)', () => {
       expect(height, 'summary card must stay approximately 6rem high').toBeLessThanOrEqual(120)
     }
 
-    // Desktop 1280 renders two columns; tablet and phones render one. Read
-    // the first two cards after the active Health sort instead of naming a
-    // pair: adding another Active Node may legitimately shift row pairing.
+    // The Node grid fits as many 300px columns as the content width allows:
+    // several at 1280px, two at 768px, one on a phone. Read the first two
+    // cards after the active Health sort instead of naming a pair: adding
+    // another Active Node may legitimately shift row pairing.
     const activeNodeLinks = page.getByLabel('Active Nodes', { exact: true }).getByRole('link')
+    // Park the pointer before measuring: a hovered card lifts by 2px, which
+    // would otherwise read as a different grid row.
+    await page.mouse.move(4, 4)
+    await page.waitForTimeout(250)
     const firstBox = (await activeNodeLinks.first().boundingBox())!
     const secondBox = (await activeNodeLinks.nth(1).boundingBox())!
-    if (testInfo.project.name === 'desktop-1280') {
-      expect(Math.abs(firstBox.y - secondBox.y)).toBeLessThanOrEqual(1)
+    if (testInfo.project.name === 'phone-360-touch' || testInfo.project.name === 'phone-390-touch') {
+      expect(Math.abs(firstBox.y - secondBox.y), 'a phone renders one Node column').toBeGreaterThan(1)
     } else {
-      expect(Math.abs(firstBox.y - secondBox.y)).toBeGreaterThan(1)
+      expect(Math.abs(firstBox.y - secondBox.y), 'desktop and tablet render at least two Node columns').toBeLessThanOrEqual(1)
     }
 
     // The whole card is a 44px+ touch target and every visible control stays
@@ -119,34 +122,17 @@ test.describe('Converged Public Home (issue #102)', () => {
     expect(box.width).toBeGreaterThanOrEqual(44)
     expect(box.height).toBeGreaterThanOrEqual(44)
 
-    // The Validator Activity badge and the Node Health marker stay inside the
-    // card and never overlap. The short Node A card keeps Observing and the
-    // marker on one row even on phones; long names may wrap.
+    // Without an Activity badge the Node Health marker is the only status cue
+    // in the header, and it stays inside the card at every viewport.
     const badgeCard = nodeCard(page, /Node A/)
     await expect(badgeCard).toBeVisible({ timeout: 15_000 })
     const badgeCardBox = (await badgeCard.boundingBox())!
-    const activityBadge = badgeCard.getByText('Observing', { exact: true })
+    await expect(badgeCard.locator('.status-badge')).toHaveCount(0)
     const healthMarker = badgeCard.getByRole('img', { name: 'Healthy' })
-    await expect(activityBadge).toBeVisible()
     await expect(healthMarker).toBeVisible()
-    const activityBox = (await activityBadge.boundingBox())!
     const markerBox = (await healthMarker.boundingBox())!
-    for (const box of [activityBox, markerBox]) {
-      expect(box.x).toBeGreaterThanOrEqual(badgeCardBox.x - 1)
-      expect(box.x + box.width).toBeLessThanOrEqual(badgeCardBox.x + badgeCardBox.width + 1)
-    }
-    expect(
-      activityBox.x + activityBox.width <= markerBox.x + 1 ||
-      markerBox.x + markerBox.width <= activityBox.x + 1 ||
-      activityBox.y + activityBox.height <= markerBox.y + 1 ||
-      markerBox.y + markerBox.height <= activityBox.y + 1,
-    ).toBe(true)
-    if (testInfo.project.name === 'desktop-1280' || testInfo.project.name === 'tablet-768-touch') {
-      // The Activity badge and the Node-name health marker share the header
-      // row: their vertical ranges overlap instead of stacking.
-      expect(activityBox.y).toBeLessThan(markerBox.y + markerBox.height)
-      expect(markerBox.y).toBeLessThan(activityBox.y + activityBox.height)
-    }
+    expect(markerBox.x).toBeGreaterThanOrEqual(badgeCardBox.x - 1)
+    expect(markerBox.x + markerBox.width).toBeLessThanOrEqual(badgeCardBox.x + badgeCardBox.width + 1)
     await expectVisibleInteractiveTargets(page)
     await expectNoHorizontalOverflow(page)
   })
@@ -176,18 +162,20 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(lCard.getByText('Stale', { exact: true })).toHaveCount(4)
 
     // Node M: effective Link with an authoritative no-live-validator result.
+    // No Activity badge exists, so only the consensus Validator membership row
+    // states anything.
     const mCard = nodeCard(page, /Node M/)
-    await expect(mCard.getByText('Observing', { exact: true })).toHaveCount(1)
+    await expect(mCard.locator('.status-badge')).toHaveCount(0)
     await expect(
-      page.getByRole('link', { name: /^Healthy Node M — Validator Observing[\s\S]*Observing/ }),
+      page.getByRole('link', { name: /^Healthy Node M — Validator Observing/ }),
     ).toHaveCount(1)
 
-    // Node N: Provider error retains the last-good Activity and marks it
-    // Stale without changing the independent Node Health marker.
+    // Node N: a Provider error no longer surfaces as an Activity badge, and the
+    // independent Node Health marker is unchanged by it.
     await expect(
-      page.getByRole('link', { name: /^Healthy Node N — Stale Last-Good[\s\S]*Locked \(Stale\)/ }),
+      page.getByRole('link', { name: /^Healthy Node N — Stale Last-Good/ }),
     ).toHaveCount(1)
-    await expect(nodeCard(page, /Node N/).getByText('Locked (Stale)', { exact: true })).toHaveCount(1)
+    await expect(nodeCard(page, /Node N/).locator('.status-badge')).toHaveCount(0)
 
     // Node P has no Node observation; only the Agent-shared Host network
     // observation is known, and missing Node values never become 0 or No.

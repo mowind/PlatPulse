@@ -157,6 +157,39 @@ describe('Public Home dashboard', () => {
     expect(alphaCard.querySelectorAll('.metric-row')).toHaveLength(12)
   })
 
+  it('pairs the dense metric groups so the card reads as one monitor, not a form', () => {
+    render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+
+    const alphaCard = cardOf(nodeCardLink('Alpha'))
+
+    // CPU and Memory share a paired group; Node data keeps the group width so
+    // its used / capacity explanation is never squeezed into half a column.
+    const resources = within(alphaCard).getByLabelText('Node process and host network resources')
+    const pairs = resources.querySelectorAll(':scope > .metric-group-pairs')
+    expect(pairs).toHaveLength(2)
+    expect(pairs[0].querySelectorAll('.metric-row')).toHaveLength(2)
+    expect(pairs[0].textContent).toContain('CPU')
+    expect(pairs[0].textContent).toContain('Memory')
+    expect(pairs[1].textContent).toContain('↑ Up')
+    expect(pairs[1].textContent).toContain('↓ Down')
+    expect(within(resources).getByText('Node data').closest('.metric-group-full')).toBeTruthy()
+
+    // Head and Txs pair; the Peer observation sentence keeps the group width.
+    const highlights = within(alphaCard).getByLabelText('Node highlights')
+    expect(highlights.classList.contains('metric-group-pairs')).toBe(true)
+    expect(within(highlights).getByText('Peers').closest('.metric-group-full')).toBeTruthy()
+
+    // The consensus group pairs QC with Locked; "Committed" and "Validator"
+    // each keep the whole group width, because at a 300-320px card the
+    // Committed label plus a grouped ten-character height does not fit a
+    // paired cell without breaking a word.
+    const consensus = within(alphaCard).getByRole('group', { name: 'Consensus and validator values' })
+    expect(consensus.classList.contains('metric-group-pairs')).toBe(true)
+    expect(consensus.querySelectorAll(':scope > .metric-row')).toHaveLength(2)
+    expect(within(consensus).getByText('Committed').closest('.metric-group-full')).toBeTruthy()
+    expect(within(consensus).getByText('Validator').closest('.metric-group-full')).toBeTruthy()
+  })
+
   it('shows the second compact metric row as QC, Locked, Committed, and Validator', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
@@ -263,7 +296,7 @@ describe('Public Home dashboard', () => {
     expect(within(unknownFreshnessCard).queryByText('Stale')).toBeNull()
   })
 
-  it('renders link-aware Validator Activity as the only header badge with an independent health marker', () => {
+  it('keeps the two-state health marker as the header status cue with no activity badge', () => {
     const linked = (activity: string, activityState: string) => ({
       validatorId: 'validator-a', validatorNodeId: '0xvalidator', displayName: 'Validator A',
       nodeId: 'node-a', linkRole: 'primary', state: activityState === 'stale' ? 'error' : 'fresh',
@@ -291,37 +324,17 @@ describe('Public Home dashboard', () => {
       realtimeStatus="connected" online resetting={false} error={null} loading={false}
     /></BrowserRouter>)
 
-    // Validator Activity stays a text badge (issue #100); Node Health is now a
+    // The current SPA renders Node Validator Activity nowhere, so no activity
+    // or freshness value can put a badge on a Home card. Node Health stays a
     // two-state marker whose accessible name carries the health word (#141).
-    const activeCard = cardOf(nodeCardLink('Active Node'))
-    const activeBadges = activeCard.querySelectorAll('.status-badge')
-    expect(activeBadges).toHaveLength(1)
-    expect(activeBadges[0].textContent).toContain('Producing')
-    expect(within(activeCard).getByText('Producing')).toBeTruthy()
-    expect(within(activeCard).getByRole('img', { name: 'Healthy' })).toBeTruthy()
-
-    // Authoritative empty/not-found renders Observing, not a fabricated label.
-    const observingCard = cardOf(nodeCardLink('Observing Node Mainnet'))
-    expect(within(observingCard).getByText('Observing')).toBeTruthy()
-    expect(observingCard.querySelectorAll('.status-badge')[0]?.textContent).toContain('Observing')
-    expect(within(observingCard).getByRole('img', { name: 'Healthy' })).toBeTruthy()
-
-    // No effective explicit Link renders Observing Activity beside Health.
-    const unknownCard = cardOf(nodeCardLink('Unknown Node'))
-    const unknownBadges = unknownCard.querySelectorAll('.status-badge')
-    expect(unknownBadges).toHaveLength(1)
-    expect(unknownBadges[0].textContent).toContain('Observing')
-    expect(within(unknownCard).getByRole('img', { name: 'Healthy' })).toBeTruthy()
-
-    // Provider failure with a last-good Activity keeps the label and visibly
-    // marks it Stale; the independent health marker stays Healthy.
-    const staleCard = cardOf(nodeCardLink('Stale Node'))
-    const staleBadges = staleCard.querySelectorAll('.status-badge')
-    expect(staleBadges).toHaveLength(1)
-    expect(staleBadges[0].textContent).toContain('Locked')
-    expect(staleBadges[0].textContent).toContain('Stale')
-    expect(within(staleCard).getByRole('img', { name: 'Healthy' })).toBeTruthy()
-    expect(within(staleCard).getByText('Locked (Stale)')).toBeTruthy()
+    for (const name of ['Active Node', 'Observing Node', 'Unknown Node', 'Stale Node']) {
+      const card = cardOf(nodeCardLink(name))
+      expect(card.querySelectorAll('.status-badge')).toHaveLength(0)
+      expect(within(card).getByRole('img', { name: 'Healthy' })).toBeTruthy()
+    }
+    expect(within(cardOf(nodeCardLink('Active Node'))).queryByText('Producing')).toBeNull()
+    expect(within(cardOf(nodeCardLink('Observing Node'))).queryByText('Observing')).toBeNull()
+    expect(within(cardOf(nodeCardLink('Stale Node'))).queryByText('Locked (Stale)')).toBeNull()
   })
 
   it('marks Healthy green and every other Node grey before the name (issue #141)', () => {
@@ -340,9 +353,10 @@ describe('Public Home dashboard', () => {
     expect(within(cardOf(nodeCardLink('Beta'))).getByRole('img', { name: 'Unknown' }).classList.contains('node-health-marker-other')).toBe(true)
     expect(within(cardOf(nodeCardLink('Unhealthy Node'))).getByRole('img', { name: 'Unhealthy' }).classList.contains('node-health-marker-other')).toBe(true)
 
-    // The removed text badge leaves no Node Health word as card text.
+    // No badge remains on the card at all, and no Node Health word is rendered
+    // as card text: the marker's accessible name carries it.
     for (const card of [alphaCard, cardOf(nodeCardLink('Beta')), cardOf(nodeCardLink('Unhealthy Node'))]) {
-      expect(card.querySelectorAll('.status-badge')).toHaveLength(1)
+      expect(card.querySelectorAll('.status-badge')).toHaveLength(0)
       expect(within(card).queryByText('Healthy', { exact: true })).toBeNull()
       expect(within(card).queryByText('Unhealthy', { exact: true })).toBeNull()
     }

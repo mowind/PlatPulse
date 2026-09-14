@@ -180,17 +180,20 @@ test.describe('SCN-HOME-RESPONSIVE-ACCESSIBILITY / live refresh transport state'
       const response = await route.fetch()
       const networks = (await response.json()) as Array<{
         networkKey: string
-        nodes: Array<{ nodeId: string; validator?: { activity?: string; activityState?: string } }>
+        nodes: Array<{ nodeId: string; currentHead?: number | null; validator?: { activity?: string; activityState?: string } }>
       }>
-      // Simulate an authoritative Provider refresh: Node H's canonical
-      // Activity changes from Producing to Active, so the refetched
-      // projection must render the updated badge on Home.
+      // Simulate an authoritative Provider refresh of Node H. Validator
+      // Node Validator Activity is no longer rendered as a Home badge, so the
+      // refreshed projection is observed through a rendered Home value the same
+      // payload carries.
       for (const network of networks) {
         for (const node of network.nodes) {
-          if (node.nodeId === '0195f2a1-0060-4060-8060-000000000060' && node.validator) {
+          if (node.nodeId !== '0195f2a1-0060-4060-8060-000000000060') continue
+          if (node.validator) {
             node.validator.activity = 'active'
             node.validator.activityState = 'current'
           }
+          node.currentHead = 424242
         }
       }
       await route.fulfill({ response, json: networks })
@@ -203,15 +206,13 @@ test.describe('SCN-HOME-RESPONSIVE-ACCESSIBILITY / live refresh transport state'
     await emitRealtime(page, 'invalidation', { resource: 'network', resourceId: 'home-convergence', eventId: 3 })
     await expect.poll(() => networksCalls).toBe(1)
 
-    // The refetched projection renders the updated Provider Activity on the
-    // same layout-owned stream: no per-card or second Home SSE connection
-    // was opened, and the badge switched from Producing to Active (the Node
-    // display name still contains "Producing", so assert the badge content
-    // and its header order through the card's accessible name).
+    // The refetched projection renders on the same layout-owned stream: no
+    // per-card or second Home SSE connection was opened, the card shows the
+    // Head the refreshed payload carried, and no Activity badge appears.
     await expect(
-      page.getByRole('link', { name: /^Healthy Node H — Producing Card[\s\S]*Active/ }),
+      page.getByRole('link', { name: /^Healthy Node H — Producing Card/ }).getByText('424,242', { exact: true }),
     ).toHaveCount(1)
-    await expect(page.getByText('Active', { exact: true })).toHaveCount(1)
+    await expect(page.locator('.dashboard-node-card .status-badge')).toHaveCount(0)
     expect(await realtimeOpened(page)).toBe(1)
     await expectNoHorizontalOverflow(page)
   })

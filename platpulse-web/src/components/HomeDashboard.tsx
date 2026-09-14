@@ -3,7 +3,7 @@ import { Link } from 'react-router'
 import type { PublicConsensusInsight, PublicNetwork, PublicNode } from '../api/generated'
 import { realtimeStreamLabel } from './RealtimeNotice'
 import { peerInsightCollectionStatus, peerInsightFreshnessStatus, peerInsightValueStatus } from './PeerInsight'
-import { NodeHealthMarker, StatusBadge } from './StatusBadge'
+import { NodeHealthMarker } from './StatusBadge'
 import GeoMapBoundary from './GeoMapBoundary'
 import GeoWorldMap from './GeoWorldMap'
 import { formatNodeDataBytes } from '../formatBytes'
@@ -120,7 +120,6 @@ function SummaryCard({ label, value, tone }: { label: string; value: number | nu
  */
 function HomeNodeCard({ network, node }: NodeRecord) {
   const tone = toneFor(node.health)
-  const activity = activityBadge(node)
   const diagnostic = exceptionalDiagnostic(node)
   return (
     <article className={`dashboard-node-card dashboard-node-card-${tone}`}>
@@ -133,15 +132,15 @@ function HomeNodeCard({ network, node }: NodeRecord) {
               <p className="dashboard-node-network">{network.displayName}</p>
             </div>
           </div>
-          <div className="dashboard-node-badges">
-            <StatusBadge status={activity.status} tone={activity.tone} />
-          </div>
         </header>
         <ResourceRow node={node} />
-        <div className="dashboard-node-primary" aria-label="Node highlights">
+        <div className="dashboard-node-primary metric-group metric-group-pairs" aria-label="Node highlights">
           <MetricRow label="Head" value={formatNumber(node.currentHead)} />
           <MetricRow label="Txs" value={formatNumber(node.latestBlockTransactionCount)} />
-          <MetricRow label="Peers" value={formatPeerCount(node)} detail={formatPeerObservation(node)} />
+          {/* The Peer observation sentence can run long, so it keeps the group width. */}
+          <div className="metric-group-full">
+            <MetricRow label="Peers" value={formatPeerCount(node)} detail={formatPeerObservation(node)} />
+          </div>
         </div>
         <ConsensusRow consensus={node.consensus} />
         {diagnostic && <p className="dashboard-node-diagnostic">{diagnostic}</p>}
@@ -153,17 +152,23 @@ function HomeNodeCard({ network, node }: NodeRecord) {
 function ResourceRow({ node }: { node: PublicNode }) {
   const nodeDataProgressValue = nodeDataProgress(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)
   return (
-    <div className="dashboard-node-resources" aria-label="Node process and host network resources">
-      <MetricRow label="CPU" value={formatPercent(node.processCpuPercent)} progress={node.processCpuPercent} />
-      <MetricRow label="Memory" value={formatPercent(node.processMemoryPercent)} progress={node.processMemoryPercent} />
-      <MetricRow
-        label="Node data"
-        value={formatPercent(nodeDataProgressValue)}
-        detail={formatNodeDataBytes(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)}
-        progress={nodeDataProgressValue}
-      />
-      <RateMetric label="↑ Up" value={node.hostNetworkTxBytesPerSec} />
-      <RateMetric label="↓ Down" value={node.hostNetworkRxBytesPerSec} />
+    <div className="dashboard-node-resources metric-group" aria-label="Node process and host network resources">
+      <div className="metric-group metric-group-pairs">
+        <MetricRow label="CPU" value={formatPercent(node.processCpuPercent)} progress={node.processCpuPercent} />
+        <MetricRow label="Memory" value={formatPercent(node.processMemoryPercent)} progress={node.processMemoryPercent} />
+      </div>
+      <div className="metric-group-full">
+        <MetricRow
+          label="Node data"
+          value={formatPercent(nodeDataProgressValue)}
+          detail={formatNodeDataBytes(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)}
+          progress={nodeDataProgressValue}
+        />
+      </div>
+      <div className="metric-group metric-group-pairs">
+        <RateMetric label="↑ Up" value={node.hostNetworkTxBytesPerSec} />
+        <RateMetric label="↓ Down" value={node.hostNetworkRxBytesPerSec} />
+      </div>
     </div>
   )
 }
@@ -211,11 +216,19 @@ function ConsensusRow({ consensus }: { consensus: PublicConsensusInsight | undef
   const status = consensusValueStatus(consensus)
   const detail = status === 'stale' ? 'Stale' : undefined
   return (
-    <div className="dashboard-node-consensus" role="group" aria-label="Consensus and validator values">
+    <div className="dashboard-node-consensus metric-group metric-group-pairs" role="group" aria-label="Consensus and validator values">
       <MetricRow label="QC" value={formatConsensusBlock(consensus?.highestQcBlock, status)} detail={detail} />
       <MetricRow label="Locked" value={formatConsensusBlock(consensus?.highestLockBlock, status)} detail={detail} />
-      <MetricRow label="Committed" value={formatConsensusBlock(consensus?.highestCommitBlock, status)} detail={detail} />
-      <MetricRow label="Validator" value={formatConsensusValidator(consensus, status)} detail={detail} />
+      {/* Measured at the 300-320px card width: "Committed" plus a grouped
+          ten-character height needs about 143px and a paired cell offers about
+          139px, so this unit keeps the whole group width instead of breaking a
+          word or a number. QC and Locked pair above it; Validator follows. */}
+      <div className="metric-group-full">
+        <MetricRow label="Committed" value={formatConsensusBlock(consensus?.highestCommitBlock, status)} detail={detail} />
+      </div>
+      <div className="metric-group-full">
+        <MetricRow label="Validator" value={formatConsensusValidator(consensus, status)} detail={detail} />
+      </div>
     </div>
   )
 }
@@ -292,23 +305,6 @@ function formatPeerObservation(node: PublicNode): string | undefined {
   // remain visible below the value.
   return undefined
 }
-/**
- * Link-aware Validator Activity (issue #100). A Public Node exposes Activity
- * only through its effective explicit Node Validator Link. A Node without
- * an observed activity value renders Observing in the compact Home badge.
- * Provider Activity never affects the separate Node Health marker.
- */
-function activityBadge(node: PublicNode): { status: string; tone: 'ok' | 'warning' | 'error' | 'neutral' } {
-  const validator = node.validator
-  const value = validator?.activity
-  if (!value || value === 'unknown') return { status: 'Observing', tone: 'neutral' }
-  if (value === 'observing') return { status: 'Observing', tone: 'neutral' }
-  const label = value.charAt(0).toUpperCase() + value.slice(1)
-  const stale = validator?.activityState === 'stale'
-  const tone = stale || ['exiting', 'exited', 'verifying', 'locked'].includes(value) ? 'warning' : 'ok'
-  return { status: stale ? `${label} (Stale)` : label, tone }
-}
-
 function healthLabel(value: string): string {
   if (value === 'healthy') return 'Healthy'
   if (value === 'unhealthy') return 'Unhealthy'

@@ -503,11 +503,10 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     }))
     // The hero card is a content-driven four-block summary whose height is not
     // portable across font stacks: the ID line can wrap on one host and not
-    // another, and issue #140 made every resource and height metric a single
-    // full-width row, so the four blocks now measure 604px at 360px on this
-    // host (CI's integer glyph advances render a little shorter). Pin the
-    // compact-hero contract structurally instead, and keep the ceiling as a
-    // coarse net with headroom over the widest observed phone rendering.
+    // another, and at the 360px phone width every metric group falls to one
+    // ~17rem cell per row. Pin the compact-hero contract structurally instead,
+    // and keep the ceiling as a coarse net with headroom over the widest
+    // observed phone rendering.
     expect(heroLayout.children.map(({ className }) => className), JSON.stringify(heroLayout)).toEqual([
       'node-hero-header',
       'node-hero-resources',

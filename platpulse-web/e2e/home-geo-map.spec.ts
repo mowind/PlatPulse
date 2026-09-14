@@ -429,13 +429,14 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
       expect(rgb[1]).toBeGreaterThan(rgb[2])
     }
 
-    // The summary overlays the map band's left edge, below the logo bar, and
-    // the map still runs out to the right of it.
+    // The overview is two real columns rather than a summary laid over the
+    // band: the statistics own the left, the map owns the right, and no card,
+    // landmass, marker, or corner figure is ever layered over the other.
     const intersects = statsBox.x < mapBox.x + mapBox.width && mapBox.x < statsBox.x + statsBox.width
       && statsBox.y < mapBox.y + mapBox.height && mapBox.y < statsBox.y + statsBox.height
-    expect(intersects, 'the summary sits over the map band').toBe(true)
+    expect(intersects, 'the statistics never sit over the map band').toBe(false)
     expect(statsBox.y, 'the summary starts below the logo bar').toBeGreaterThanOrEqual(headerBox.height - 1)
-    expect(mapBox.x + mapBox.width, 'the map reaches the summary’s right edge').toBeGreaterThan(statsBox.x + statsBox.width)
+    expect(mapBox.x, 'the map keeps the right column, clear of the statistics').toBeGreaterThan(statsBox.x + statsBox.width)
     const columns = new Set(facts.map((fact) => Math.round(fact.box.x))).size
     expect(columns, 'the four statistics form a 2x2 grid').toBe(2)
 
@@ -518,41 +519,40 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     const settled = await page.evaluate(() => {
       const facts = [...document.querySelectorAll<HTMLElement>('.dashboard-summary-card')].map(card => card.getBoundingClientRect())
       const map = document.querySelector('.home-geo')!.getBoundingClientRect()
-      // The summary is one block: its right column reaches over the band, so the
-      // block as a whole overlaps. Individual cards are not required to.
+      // The statistics are their own block on the left; the map starts at or
+      // after that block's right edge on every row.
       const summary = {
         left: Math.min(...facts.map(fact => fact.left)),
         right: Math.max(...facts.map(fact => fact.right)),
         top: Math.min(...facts.map(fact => fact.top)),
         bottom: Math.max(...facts.map(fact => fact.bottom)),
       }
-      const mapStillCoversSummary = summary.left < map.right && map.left < summary.right
-        && summary.top < map.bottom && map.top < summary.bottom
+      const mapHoldsItsOwnColumn = map.left >= summary.right
       return {
         cards: facts.length,
         rows: new Set(facts.map(fact => Math.round(fact.top))).size,
         columns: new Set(facts.map(fact => Math.round(fact.left))).size,
         mapSpan: Math.round(map.width),
-        mapStillCoversSummary,
+        mapHoldsItsOwnColumn,
       }
     })
     expect(settled.cards, 'all four statistics are laid out').toBe(4)
     expect(settled.rows, 'statistics keep their 2x2 shape').toBe(2)
     expect(settled.columns, 'statistics keep their two columns').toBe(2)
     expect(settled.mapSpan, 'the band keeps its width: there is no expansion').toBe(Math.round(mapBox.width))
-    expect(settled.mapStillCoversSummary, 'the summary still overlays the band').toBe(true)
+    expect(settled.mapHoldsItsOwnColumn, 'the map holds its own column beside the statistics').toBe(true)
 
     await page.setViewportSize({ width: 1440, height: 900 })
     await expectNoHorizontalOverflow(page)
-    // The summary is a fixed-width overlay (at most 32rem), not a grid fraction:
-    // it must stay readable at the wide viewport and keep sitting over the band.
+    // The statistics keep the smaller grid share and the map the larger one:
+    // the left column stays readable at the wide viewport and the two never touch.
     const wideFacts = await summaryFacts(page)
     const wideStats = unionBox(wideFacts.map((fact) => fact.box))
     const wideMap = (await map.boundingBox())!
-    expect(wideStats.width, 'the summary keeps its own column width').toBeLessThanOrEqual(32 * 16 + 2)
-    expect(wideStats.width, 'the summary is not squeezed').toBeGreaterThanOrEqual(20 * 16)
-    expect(wideStats.x < wideMap.x + wideMap.width && wideMap.x < wideStats.x + wideStats.width,
-      'the summary still overlays the wide band').toBe(true)
+    expect(wideStats.width, 'the statistics keep the smaller share').toBeLessThan(wideMap.width)
+    expect(wideStats.width, 'the statistics stay readable').toBeGreaterThanOrEqual(20 * 16)
+    expect(wideMap.x, 'the map keeps the right column clear of the statistics')
+      .toBeGreaterThanOrEqual(wideStats.x + wideStats.width)
     await capture(page, testInfo, 'home-1440-compact')
     await page.setViewportSize({ width: 1280, height: 800 })
 

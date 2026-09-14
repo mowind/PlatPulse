@@ -16,7 +16,7 @@ import { PeerHistoryInsight, normalizePublicPeerHistory } from '../components/Pe
 import { GeoInsight } from '../components/GeoInsight'
 import { ValidatorInsight } from '../components/ValidatorInsight'
 import { ValidatorAnalytics } from '../components/ValidatorAnalytics'
-import { formatRelativeTime, formatUtcDateTime, NodeHealthMarker, StatusBadge } from '../components/StatusBadge'
+import { formatRelativeTime, formatUtcDateTime, NodeHealthMarker } from '../components/StatusBadge'
 import { RealtimeNotice } from '../components/RealtimeNotice'
 import { formatNodeDataBytes } from '../formatBytes'
 import { nodeDataProgress } from '../nodeData'
@@ -91,7 +91,6 @@ export function NodePage() {
 
   const node = nodeQuery.data
   const health = nodeHealthPresentation(node.health)
-  const activity = nodeActivity(node)
   const blockInterval = latestBlockInterval(historyQuery.data)
   const metricHistory = metricsQuery.data
   const metricHistoryMessage = metricHistory
@@ -123,13 +122,19 @@ export function NodePage() {
             <p className="node-id-line">Node ID <code>{node.nodeId}</code></p>
           </div>
         </div>
-        <div className="node-hero-facts" aria-label="Node status">
-          <div className="node-hero-fact"><span>Node status</span><StatusBadge status={activity.label} tone={activity.tone} /></div>
+        {/* Node Validator Activity is not rendered by the current SPA, so the
+            hero carries no Node-status label; process uptime is the only fact. */}
+        <div className="node-hero-facts">
           <div className="node-hero-fact node-uptime"><span>Process uptime</span><strong>{formatDuration(node.processUptimeMs)}</strong></div>
         </div>
       </header>
 
       {health.tone !== 'ok' && <p className="node-hero-reason">{node.healthReason}</p>}
+      {/* Node Detail reads at the same density as a Home Node card. The hero is
+          far wider than a card, so the groups take as many ~17rem metric cells
+          as the container holds — one row for the three resources and one for
+          the four heights at the Home content width — instead of stretching a
+          two-column pair across the full page and losing the label/value pairs. */}
       <div className="node-hero-resources" aria-label="Node process and storage resources">
         <MetricRow label="CPU" value={formatPercent(node.processCpuPercent)} progress={node.processCpuPercent} />
         <MetricRow label="Memory" value={formatPercent(node.processMemoryPercent)} progress={node.processMemoryPercent} />
@@ -404,14 +409,6 @@ function niceChartMax(value: number): number {
   const normalized = value / magnitude
   const step = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10
   return step * magnitude
-}
-
-function nodeActivity(node: PublicNode): { label: string; tone: 'ok' | 'warning' | 'error' | 'neutral' } {
-  const value = node.validator?.activity
-  if (!value || value === 'unknown' || value === 'observing') return { label: 'Observing', tone: 'neutral' }
-  const label = value.charAt(0).toUpperCase() + value.slice(1)
-  if (node.validator?.activityState === 'stale') return { label: `${label} (Stale)`, tone: 'warning' }
-  return { label, tone: ['exiting', 'exited', 'verifying', 'locked'].includes(value) ? 'warning' : 'ok' }
 }
 
 function formatConsensusValue(value: number | null | undefined, consensus: PublicNode['consensus'] | undefined): string {

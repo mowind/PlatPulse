@@ -36,6 +36,10 @@
   --navy: #ffffff;
   --focus-ring: #059669;
   --shadow-soft: 0 8px 24px rgba(15, 23, 42, 0.06);
+  /* Metric cell floor. A Home Node card is about 300-320px wide, and this is
+     the narrowest cell in which the longest label ("Committed") and a grouped
+     ten-character height ("12,842,022") still share one line. */
+  --metric-cell: 17rem;
   font-family:
     'Inter Variable',
     Inter,
@@ -3048,13 +3052,16 @@ button {
 }
 
 /* The transport container stays mounted so the connected state keeps a stable
-   hook (and "You are offline" can still appear alone); it mirrors
-   .home-stage-content's gap so removing a notice never changes sibling spacing. */
+   hook (and "You are offline" can still appear alone). While it holds no notice
+   it contributes nothing: an always-reserved row would push the statistics
+   below the map's top edge and break the overview's alignment. */
 .dashboard-live-notices {
   display: grid;
   gap: 0.7rem;
   min-width: 0;
 }
+
+.dashboard-live-notices:empty { display: none; }
 
 .dashboard-live {
   display: inline-flex;
@@ -3113,23 +3120,28 @@ button {
 .dashboard-node-card,
 .dashboard-empty {
   min-width: 0;
-  background: rgba(255, 255, 255, 0.6);
-  border: 1px solid rgba(148, 163, 184, 0.22);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.035);
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid rgba(148, 163, 184, 0.17);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03), 0 1px 3px rgba(15, 23, 42, 0.02);
   transition: background-color 200ms ease, border-color 200ms ease, box-shadow 200ms ease, transform 200ms ease;
 }
 
+/* One summary-card spec for all four statistics: the label anchors the top,
+   the number sits at the foot, and both edges line up across the 2x2 block.
+   The height keeps the card from collapsing into an input-sized box without
+   making it a container that has to be filled with decoration. */
 .dashboard-summary-card {
   position: relative;
-  min-height: 5.25rem;
+  min-height: 7.5rem;
   display: grid;
-  grid-template-columns: auto 1fr;
-  grid-template-rows: auto 1fr;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  align-content: space-between;
   align-items: center;
-  gap: 0.2rem 0.6rem;
-  padding: 0.75rem;
+  gap: 0.5rem 0.55rem;
+  padding: 1rem 1.1rem;
   overflow: hidden;
-  border-radius: 0.6rem;
+  border-radius: 0.75rem;
 }
 
 .dashboard-summary-card p {
@@ -3137,8 +3149,9 @@ button {
   grid-row: 1;
   margin: 0;
   color: var(--muted);
-  font-size: 0.75rem;
-  font-weight: 700;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
 }
 
 .dashboard-summary-card strong {
@@ -3146,18 +3159,19 @@ button {
   grid-row: 2;
   display: block;
   color: var(--ink);
-  font-size: clamp(1.5rem, 2.5vw, 2.1rem);
+  font-size: 2rem;
   font-weight: 750;
-  letter-spacing: -0.06em;
+  letter-spacing: -0.045em;
   line-height: 1;
   font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
 }
 
 .dashboard-summary-dot {
   grid-column: 1;
   grid-row: 2;
-  width: 0.55rem;
-  height: 0.55rem;
+  width: 0.5rem;
+  height: 0.5rem;
 }
 
 .dashboard-summary-dot-green { background: var(--brand-strong); }
@@ -3178,6 +3192,7 @@ button {
 .home-stage {
   position: relative;
   display: grid;
+  gap: 0.75rem;
   min-width: 0;
 }
 
@@ -3186,6 +3201,7 @@ button {
 .home-stage-content {
   grid-area: 2 / 1;
   display: grid;
+  align-content: start;
   gap: 0.7rem;
   min-width: 0;
 }
@@ -3238,15 +3254,19 @@ button {
   50% { opacity: 0.5; }
 }
 .home-geo-canvas { position: relative; width: 100%; aspect-ratio: 1000 / 394; }
-.home-geo-svg { display: block; width: 100%; height: 100%; }
-/* Fills, borders and hover follow the Emerald theme's map exactly: the basemap
-   is a 6% slate wash with a matching hairline, a country carrying data takes an
-   emerald wash with a 0.5px emerald border, and pointing at one drops it back to
-   the faint area with an emerald outline. */
-.home-geo-land path { fill: rgba(15, 23, 42, 0.06); stroke: rgba(15, 23, 42, 0.06); stroke-width: 0.5; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
-.home-geo-observed path { fill: rgba(16, 185, 129, 0.36); stroke: rgba(5, 150, 105, 0.92); stroke-width: 0.5; vector-effect: non-scaling-stroke; cursor: pointer; transition: fill 140ms ease, stroke 140ms ease; }
+/* The band's ocean is the page wash itself, so nothing about the map is faded
+   as a whole. A short mask at the extreme left edge — open water in this
+   projection — softens the join with the statistics column; a mask paints, it
+   does not intercept pointers, and it never reaches land. */
+.home-geo-svg { display: block; width: 100%; height: 100%; -webkit-mask-image: linear-gradient(to right, transparent 0, #000 18px); mask-image: linear-gradient(to right, transparent 0, #000 18px); }
+/* Three independent layers, never one washed-out container: ordinary land is a
+   light grey-green, its border a slightly deeper hairline, and a country
+   carrying data takes a translucent mint fill under a stronger Emerald edge
+   that only strengthens on hover instead of dropping back to bare land. */
+.home-geo-land path { fill: #e7ece9; stroke: #cfd8d2; stroke-width: 0.6; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.home-geo-observed path { fill: rgba(16, 185, 129, 0.34); stroke: rgba(5, 150, 105, 0.78); stroke-width: 0.7; vector-effect: non-scaling-stroke; cursor: pointer; transition: fill 140ms ease, stroke 140ms ease; }
 .home-geo-observed path:hover,
-.home-geo-observed path.home-geo-country-active { fill: rgba(15, 23, 42, 0.06); stroke: rgba(5, 150, 105, 0.85); stroke-width: 0.5; }
+.home-geo-observed path.home-geo-country-active { fill: rgba(16, 185, 129, 0.52); stroke: rgba(4, 120, 87, 0.95); stroke-width: 0.8; }
 .home-geo-marker { cursor: pointer; }
 .home-geo-marker-hit { fill: transparent; }
 .home-geo-marker-dot { fill: rgba(5, 150, 105, 0.9); stroke: #ffffff; stroke-width: 1; pointer-events: none; }
@@ -3267,22 +3287,27 @@ button {
 .home-geo-tooltip { position: absolute; z-index: 4; transform: translate(-50%, -100%); width: max-content; max-width: min(180px, 95%); padding: 3px 6px; border: 0; border-radius: 6px; background: rgba(255, 255, 255, 0.8); backdrop-filter: blur(5px); color: rgba(0, 0, 0, 0.85); box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.06), 0 0 16px rgba(0, 0, 0, 0.06); font-size: 12px; line-height: 20px; pointer-events: none; }
 
 @media (min-width: 64rem) {
-  /* Wide screens keep the same two-part stage as narrow ones: the summary sits
-     over the map's left edge while the map keeps the right of the stage. The
-     logo bar stays its own row in the flow above both, so no part of the map is
-     ever layered behind the brand. The map is deliberately wider than the space
-     the summary leaves, so the band still reaches the bottom of the summary
-     instead of leaving a hole beside it. */
+  /* The overview is two real columns rather than a summary floating over the
+     band: the statistics own the left 46% and the map owns the right 54%, so no
+     landmass, marker, or corner figure is ever layered under a card. The row
+     height follows the map's own proportion at that width, and the cards keep
+     their spec height, which leaves only a few pixels of difference at the
+     foot of the left column. */
+  .home-stage {
+    grid-template-columns: minmax(0, 46fr) minmax(0, 54fr);
+    align-items: start;
+    column-gap: 1.25rem;
+  }
+
   .home-stage-content {
     grid-area: 1 / 1;
     align-self: start;
-    width: min(46%, 32rem);
-    z-index: 1;
   }
 
   .home-stage > .home-geo {
-    width: 76%;
-    justify-self: end;
+    grid-area: 1 / 2;
+    width: 100%;
+    justify-self: stretch;
   }
 }
 
@@ -3299,7 +3324,7 @@ button {
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 0.75rem 1rem;
-  margin: 1rem 0 0.75rem;
+  margin: 0.9rem 0 0.7rem;
 }
 
 .dashboard-filter-pills {
@@ -3376,9 +3401,13 @@ button {
 
 .dashboard-sort option { color: var(--ink); background: #ffffff; }
 
+/* Emerald's own Node grid: as many 300px columns as the content width allows.
+   At the 82rem desktop content width that is four columns, three between about
+   1024px and 1439px, two at 768px, and one on phones. A lone Node occupies one
+   column and stays left-aligned instead of stretching to fill the row. */
 .dashboard-node-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 0.75rem;
 }
 
@@ -3386,14 +3415,14 @@ button {
   position: relative;
   padding: 0;
   overflow: hidden;
-  border-radius: 0.5rem;
+  border-radius: 0.75rem;
   transition: background 180ms ease, border-color 180ms ease, transform 180ms ease, box-shadow 180ms ease;
 }
 
 .dashboard-node-card-link {
   display: block;
   height: 100%;
-  padding: 0.9rem;
+  padding: 1rem;
   color: inherit;
   text-decoration: none;
   border-radius: inherit;
@@ -3402,25 +3431,42 @@ button {
 .dashboard-node-card-link:hover { color: inherit; }
 .dashboard-node-card-link:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -3px; }
 .dashboard-node-header { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 0.55rem 0.8rem; }
-.dashboard-node-badges { display: flex; flex-direction: row; flex-wrap: wrap; justify-content: flex-end; align-items: center; flex: 0 1 auto; max-width: 100%; gap: 0.3rem; }
-.dashboard-node-badges .status-badge { min-height: 23px; padding: 0.14rem 0.46rem; border: 1px solid transparent; font-size: 0.62rem; }
-.dashboard-node-badges .status-badge-icon { width: 0.9rem; height: 0.9rem; font-size: 0.58rem; }
 .dashboard-node-title { display: flex; flex: 1 1 12rem; min-width: 0; gap: 0.72rem; align-items: flex-start; }
 .dashboard-node-title .node-health-marker { margin-top: 0.38rem; }
 .dashboard-node-title > div { min-width: 0; }
 .dashboard-node-title h2 { margin: 0; min-width: 0; color: var(--ink); font-size: 0.96rem; font-weight: 760; letter-spacing: -0.025em; overflow-wrap: anywhere; word-break: break-word; }
 .dashboard-node-title p { margin: 0.22rem 0 0; color: var(--muted); font-size: 0.68rem; font-weight: 600; overflow-wrap: anywhere; }
 
-.dashboard-node-primary,
-.dashboard-node-resources,
-.dashboard-node-consensus {
+/* One reusable grouping primitive for Home cards and the Node Detail hero: a
+   semantic group stacks its rows, and pairs them only where a two-column cell
+   still has room for the longest label and the longest value. Below 30rem the
+   group falls back to one full-width data-item / value row per metric. */
+.metric-group {
+  min-width: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 0.58rem;
-  margin-top: 0.7rem;
-  padding-top: 0.65rem;
-  border-top: 1px dotted rgba(100, 116, 139, 0.28);
+  row-gap: 0.55rem;
+  column-gap: 1.1rem;
 }
+
+@media (min-width: 30rem) {
+  .metric-group-pairs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* A row whose explanation can run long keeps the whole group width. */
+.metric-group-full { grid-column: 1 / -1; min-width: 0; }
+
+/* The card body is three information groups — resources, chain highlights, and
+   consensus values. Only the two real boundaries keep a hairline, and it stays
+   fainter than the Emerald reference's dotted rule. */
+.dashboard-node-resources,
+.dashboard-node-primary {
+  margin-top: 0.75rem;
+  padding-top: 0.7rem;
+  border-top: 1px dotted rgba(100, 116, 139, 0.2);
+}
+
+.dashboard-node-consensus { margin-top: 0.7rem; }
 
 /* Shared compact metric row (issue #140): data item left, value flush right on
    the same line, one row per line at every breakpoint. A row with progress puts
@@ -3445,9 +3491,19 @@ button {
 .metric-row:not(:has(.metric-row-progress)) .metric-row-detail { text-align: right; }
 .metric-row-value .metric-row-number { line-height: 1; }
 .metric-row-value .metric-row-unit { margin-left: 0.3rem; letter-spacing: 0; }
-/* Home keeps its quieter resource and consensus value tier. */
+/* Home keeps one quiet value tier across every group so the card reads as a
+   single dense monitor instead of a stack of differently weighted rows. */
+.dashboard-node-primary .metric-row-value,
 .dashboard-node-resources .metric-row-value,
-.dashboard-node-consensus .metric-row-value { font-size: 0.875rem; font-weight: 600; }
+.dashboard-node-consensus .metric-row-value { font-size: 0.85rem; font-weight: 650; }
+
+/* A 300-320px card halves into cells of about 140px: the narrowest place where
+   the longest label ("Committed") and a grouped ten-character height
+   ("12,842,022") still share one line. The label drops to the auxiliary tier
+   and both internal gaps tighten, so a pair never has to break a word. */
+.dashboard-node-card .metric-group-pairs { column-gap: 0.4rem; }
+.dashboard-node-card .metric-row { column-gap: 0.35rem; }
+.dashboard-node-card .metric-row-label { font-size: 0.7rem; }
 .dashboard-node-diagnostic { margin: 0.58rem 0 0; padding: 0.55rem 0 0 0.68rem; color: var(--amber); border-top: 1px dotted rgba(100, 116, 139, 0.28); border-left: 2px solid #f59e0b; font-size: 0.72rem; overflow-wrap: anywhere; }
 .dashboard-empty { display: grid; min-height: 14rem; place-content: center; gap: 0.45rem; padding: 2rem; color: var(--muted); border-radius: 0.5rem; text-align: center; }
 .dashboard-empty strong { color: var(--ink); }
@@ -3470,7 +3526,6 @@ button {
 }
 
 @media (max-width: 48rem) {
-  .dashboard-node-grid { grid-template-columns: 1fr; }
   .dashboard-toolbar { gap: 0.6rem 0.75rem; }
   .dashboard-filter-pills { max-width: calc(100% - 8rem); }
 }
@@ -3478,9 +3533,9 @@ button {
 @media (max-width: 30rem) {
   .home-shell { --home-gutter: 0.85rem; }
   .dashboard-summary-grid { gap: 0.55rem; }
-  .dashboard-summary-card { min-height: 5.5rem; padding: 0.72rem; }
-  .dashboard-summary-card p { font-size: 0.7rem; }
-  .dashboard-summary-card strong { font-size: 1.55rem; }
+  .dashboard-summary-card { min-height: 6.5rem; padding: 0.85rem; border-radius: 0.7rem; }
+  .dashboard-summary-card p { font-size: 0.72rem; }
+  .dashboard-summary-card strong { font-size: 1.65rem; }
   .dashboard-toolbar { flex-wrap: nowrap; gap: 0.5rem; }
   .dashboard-filter-pills { max-width: calc(100% - 8rem); }
   .dashboard-sort { margin-left: 0; }
@@ -3979,11 +4034,6 @@ button {
   text-transform: none;
 }
 
-.home-shell .node-hero-fact .status-badge {
-  width: max-content;
-  max-width: 100%;
-}
-
 .home-shell .node-uptime strong {
   min-width: 0;
   font-size: 0.88rem;
@@ -3992,9 +4042,12 @@ button {
 }
 
 .home-shell .node-hero-resources {
-  gap: 0.7rem;
-  margin-top: 0.75rem;
-  padding-top: 0.75rem;
+  /* Far wider than a Node card, so the three resources fill one row of
+     --metric-cell columns instead of stretching a fixed pair across the page. */
+  grid-template-columns: repeat(auto-fill, minmax(var(--metric-cell), 1fr));
+  gap: 0.55rem 1.1rem;
+  margin-top: 0.7rem;
+  padding-top: 0.7rem;
 }
 
 .home-shell .node-hero-resources .metric-row-label {
@@ -4015,16 +4068,17 @@ button {
 .home-shell .node-consensus-summary {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 0.7rem;
-  margin-top: 0.75rem;
-  padding: 0.75rem 0;
-  border-block: 1px solid rgba(100, 116, 139, 0.25);
+  gap: 0.55rem;
+  margin-top: 0.7rem;
+  padding: 0.7rem 0;
+  border-block: 1px solid rgba(100, 116, 139, 0.22);
 }
 
-.home-shell .node-height-metrics {
+.home-shell .node-height-metrics,
+.home-shell .node-validator-role {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 0.7rem;
+  grid-template-columns: repeat(auto-fill, minmax(var(--metric-cell), 1fr));
+  gap: 0.55rem;
   min-width: 0;
 }
 
@@ -4036,13 +4090,9 @@ button {
   overflow-wrap: anywhere;
 }
 
-.home-shell .node-validator-role {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  padding-top: 0.7rem;
-  border-top: 1px solid rgba(100, 116, 139, 0.2);
-}
+/* Validator membership belongs to the same chain group as the height metrics,
+   so it shares their grid and keeps the group's spacing without a second
+   dividing rule. */
 
 .home-shell .node-hero-footer {
   gap: 1rem;

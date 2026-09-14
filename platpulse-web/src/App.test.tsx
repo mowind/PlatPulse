@@ -657,8 +657,10 @@ describe('App shell with private Home', () => {
 
     expect(await screen.findByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
     expect(screen.getByRole('img', { name: 'Unhealthy' })).toBeTruthy()
-    expect(screen.getByText('Node status')).toBeTruthy()
-    expect(screen.getByText('Producing')).toBeTruthy()
+    // Node Validator Activity is not rendered by the current SPA, so the hero
+    // carries no Node-status label and no activity wording.
+    expect(screen.queryByText('Node status')).toBeNull()
+    expect(screen.queryByText('Producing')).toBeNull()
     expect(screen.getByText('Process uptime')).toBeTruthy()
     expect(screen.getByText('1h 2m')).toBeTruthy()
     expect(screen.getByText('Head')).toBeTruthy()
