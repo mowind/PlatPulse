@@ -312,3 +312,35 @@ already recorded above:
 - Admin panels are borderless on all four sides, like Emerald's own cards,
   instead of carrying a 1px border. The four-side check is stronger than the
   single-side colour assertion it replaced.
+
+## 13. Fifth run: 426 passed / 75 failed / 64 skipped / 5 did not run
+
+Progression: 156 -> 129 -> 96 -> 75 failed (passed 327 -> 359 -> 405 -> 426).
+
+Two fixes came out of that run, both verified with targeted re-runs:
+
+- The overlap assertion from decision A is now gated to the stacked layout. At
+  wider breakpoints the map and the statistics sit side by side in the
+  12-column band, so there is no overlap to measure there and the desktop
+  composition is asserted by its own test.
+- The Geo provider consequence copy embeds fixed HTTPS endpoints. A URL is one
+  unbreakable token, so it widened the 360px page by a couple of pixels; that
+  copy now breaks words.
+
+Remaining failures by spec (each count is across projects):
+
+| spec:line | count | what |
+|---|---|---|
+| home-convergence.spec.ts:41, 140, 199, 237, 266 | 25 | the converged Home card contract: header, both metric rows, summary shell, viewport grid, filtering/sorting, keyboard activation, dark theme |
+| shell.spec.ts:83, 237, 311 | 15 | Admin shell semantics, fixed-viewport alignment, keyboard focus ring |
+| release-candidate.spec.ts:292, 485 | 10 | Public Geo states; Node Detail continuous reading |
+| configuration.spec.ts:44 | 5 | History Window end-to-end save flow (the unit flow was updated, this spec was not re-checked) |
+| agent-lifecycle.spec.ts:38, 229 | 4 | Agent priority summary columns; Agent detail independence |
+| shell.spec.ts:264 | 2 | Admin shell ultrawide |
+| node-detail-six-charts.spec.ts:95 | 2 | the six-chart closure |
+| home-geo-map.spec.ts:482, 728, 786 | 4 | map composition per breakpoint |
+| convergence-acceptance.spec.ts:328, theme.spec.ts:476, agent-lifecycle.spec.ts:229 | 4 | mixed |
+
+The next single target is home-convergence: 25 of the 75 failures, all in the
+old Home card contract, which is the last place where the pre-migration markup
+expectations still dominate.

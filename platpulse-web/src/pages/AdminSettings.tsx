@@ -39,7 +39,7 @@ const CARD = cn(
 )
 const CARD_HEADER = 'flex min-w-0 flex-1 flex-wrap items-start justify-between gap-2'
 const LABEL = 'text-xs font-medium tracking-wider text-muted-foreground'
-const CONSEQUENCE = 'rounded-md border bg-muted/40 p-3 text-xs text-muted-foreground'
+const CONSEQUENCE = 'rounded-md border bg-muted/40 p-3 text-xs break-words text-muted-foreground'
 const TEXT_LINK = 'inline-flex min-h-11 min-w-11 items-center font-medium text-primary hover:underline'
 const FIELD = 'flex flex-col gap-1'
 const NOTICE = 'rounded-md border border-success/30 bg-success/10 p-3 text-sm text-success'
