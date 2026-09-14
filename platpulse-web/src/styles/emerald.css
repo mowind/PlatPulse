@@ -163,3 +163,22 @@
     font-family: var(--font-sans);
   }
 }
+
+/* Reduced motion (PlatPulse deviation): upstream Emerald ships no
+ * prefers-reduced-motion block, and the retired sheet carried six !important
+ * rules for it. PlatPulse requires the behaviour, so it lives here once, in
+ * the design system, rather than scattered across components. The duration is
+ * the literal 0s so that both a string comparison and a parsed float see zero.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0s !important;
+    animation-delay: 0s !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0s !important;
+    transition-delay: 0s !important;
+    scroll-behavior: auto !important;
+  }
+}
