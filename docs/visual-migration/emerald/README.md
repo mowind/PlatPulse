@@ -601,3 +601,22 @@ rows and tags that PlatPulse has no data for.
 
 Items 2 and 3 are the only ones that look like defects of this migration. They are
 not yet fixed, and no fidelity percentage is claimed.
+
+## 25. A real regression found by the comparison: the whole background was invisible
+
+Comparing the crops exposed it. The pre-paint canvas added to index.html during
+this migration set the background on :root (the html element). CSS only propagates
+a BODY background to the canvas while the root element has none; because html had
+one, body painted its own opaque white in the normal-flow step and covered the
+background decoration, which is a z-index:-1 layer painted before it. The wash and
+the inclined grid were therefore never visible on any page, and the translucent
+card surfaces had nothing to be translucent over.
+
+Fixed by moving the pre-paint canvas to the body element (html.dark body for the
+dark theme). A 1:1 crop now shows the emerald-to-lime wash, the inclined 72x56
+grid, and the 60%-opacity cards sitting over both - which is the reference
+composition.
+
+This also invalidates every screenshot captured before it: the evidence set was
+re-captured, and the full suite was re-run because the change touches a surface
+every page renders.
