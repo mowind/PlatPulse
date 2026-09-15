@@ -564,3 +564,40 @@ With the map enabled, the 1440 Home capture shows:
 This is an observation of our own render, not a comparison against upstream's. The
 side-by-side review is still the one acceptance step not performed, and no
 fidelity claim is made until it is.
+
+## 24. First real comparison: our 1440 Home against the local reference image
+
+The repo carries a local design reference, emerald-maps.jpg (2446x1101, a 2x
+capture of roughly 1223 CSS px), which is upstream in maps mode. Comparing it
+with our own desktop-1440 Home capture:
+
+**Same** - the world map in the right half of the top band with the statistics in
+the left half and the toolbar and node-card grid below; the faint slate basemap
+with visible country borders; teal scatter symbols carrying white aggregate
+numerals; the white rounded tooltip; the card surfaces, radii, muted label
+typography, dotted-leader info rows and the table/heading treatment.
+
+**Content differences (expected)** - the reference shows six resource tiles where
+PlatPulse shows four counters (deviation 2, approved); it has many observed
+countries where the seeded Server has one; its node cards carry ping strips, cost
+rows and tags that PlatPulse has no data for.
+
+**Style differences found, to resolve or record:**
+
+1. **The proportional split differs.** The reference image puts the statistics at
+   about 37% of the content width and the map at about 61%. The pinned source
+   (v1.0.12) is a 12-column grid with the statistics at columns 1-6 and the map
+   at 7-12, which is 50/50 and is what this migration implements. The image and
+   the pinned source disagree; the source was followed, and the discrepancy is
+   recorded rather than guessed at.
+2. **The background grid decoration is not visible in our render.** The reference
+   clearly shows the inclined 72x56 grid in the upper left. The classes are
+   upstream's literals, so this needs a computed-style probe of the grid SVG
+   rather than a guess.
+3. **The top wash is fainter in our render** than in the reference.
+4. **The header affordance differs**: the reference shows the current theme name
+   as a chip ("light theme") beside a sun icon; PlatPulse keeps its icon-only
+   theme control with an accessible name.
+
+Items 2 and 3 are the only ones that look like defects of this migration. They are
+not yet fixed, and no fidelity percentage is claimed.
