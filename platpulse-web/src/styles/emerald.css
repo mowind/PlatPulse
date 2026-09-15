@@ -261,3 +261,17 @@
   table[data-slot='audit-table'] thead th:nth-child(4) { width: 22%; }
   table[data-slot='audit-table'] thead th:nth-child(5) { width: 25%; }
 }
+
+/* A fixed table layout gives every column a width share, so a long unbreakable
+ * value must be allowed to break inside its cell instead of overflowing it
+ * (the acceptance matrix measures scrollWidth against clientWidth per cell).
+ * overflow-wrap: anywhere, not break-words: only the former lowers an element's
+ * min-content contribution. */
+@layer components {
+  table[data-slot='agent-table'] td[data-label],
+  table[data-slot='agent-table'] th[data-label],
+  table[data-slot='audit-table'] td[data-label],
+  table[data-slot='audit-table'] th[data-label] {
+    overflow-wrap: anywhere;
+  }
+}

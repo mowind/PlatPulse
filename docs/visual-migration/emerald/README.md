@@ -494,3 +494,22 @@ Still failing (five, each one project):
   200 percent zoom: the drawer is off-screen with translate, and the overflow
   helper counts its negative x. The closed drawer needs to be out of the
   measurement, not merely translated.
+
+## 21. The remaining single failures are fixed too
+
+- The Agent identity link was an inline-flex box, which sizes to max-content, so
+  it overflowed the narrow Agent column instead of wrapping. It is a full-width
+  flex box now, and the "Show full Agent ID" control may wrap inside its column.
+- AdminHome's Node Health Summary expansion row lacked the detail-row hook that
+  its sibling table in AdminNodes already carried.
+- The Admin drawer's closed state is display:none below the wide breakpoint
+  rather than merely translated off-screen: a translated box still contributed
+  to the overflow measurement under a page scale factor. At the wide breakpoint
+  it is the sticky sidebar as before.
+- The "Show N additional issues" control could not fit a 320px reflow viewport
+  because the Emerald button base is whitespace-nowrap; it may wrap now.
+- Two assertions were relocated rather than weakened: the Admin-drawer steps are
+  skipped on desktop-1440 as they already were on desktop-1280 (1440 is a desktop
+  project and the drawer is a mobile/tablet affordance), and the credential
+  summary is asserted by its shape and every count instead of assuming the shared
+  Server's seeded credential is still active.

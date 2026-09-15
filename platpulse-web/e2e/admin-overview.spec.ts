@@ -178,7 +178,7 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
 
   test('mobile Admin drawer locks scroll, traps focus, and closes predictably', async ({ page }, testInfo) => {
     // The drawer is the tablet/mobile navigation; desktop has a sidebar.
-    test.skip(testInfo.project.name === 'desktop-1280', 'desktop uses the sidebar')
+    test.skip(['desktop-1280', 'desktop-1440'].includes(testInfo.project.name), 'desktop uses the sidebar')
     await openOverview(page)
 
     const menu = page.getByRole('button', { name: 'Menu' })

@@ -431,7 +431,7 @@ function AttentionGroup({ group, expanded, onToggle }: { group: AttentionGroupDa
             <Button
               variant="link"
               size="sm"
-              className="px-0"
+              className="px-0 max-w-full whitespace-normal"
               aria-expanded={expanded}
               aria-controls={`attention-details-${group.key}`}
               onClick={onToggle}
@@ -653,7 +653,7 @@ function NodeRows({
         </td>
       </tr>
       {expanded && (
-        <tr className="border-b border-border/60">
+        <tr data-slot="detail-row" className="border-b border-border/60">
           <td colSpan={6} id={detailId} onKeyDown={collapseOnEscape} className="p-0">
             <div className="m-1 mb-3 rounded-md border border-border/60 bg-muted/40 p-3">
               {!diagnostic && diagnosticsQuery.isPending && (

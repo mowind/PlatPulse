@@ -540,7 +540,7 @@ test('keeps the retained Admin workbench readable in both themes', async ({ page
 
   // The mobile/tablet drawer keeps focus entry, scroll lock, Escape close, and
   // focus restoration while Dark is active.
-  if (testInfo.project.name !== 'desktop-1280') {
+  if (!['desktop-1280', 'desktop-1440'].includes(testInfo.project.name)) {
     const menu = page.getByRole('button', { name: 'Menu' })
     await expect(menu).toBeVisible()
     await menu.click()

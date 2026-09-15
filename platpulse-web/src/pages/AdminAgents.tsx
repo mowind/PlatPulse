@@ -133,7 +133,7 @@ function AgentIdentityAccess({ agentId }: { agentId: string }) {
   return (
     <div className="flex min-w-0 flex-col items-start gap-1">
       <Link
-        className="inline-flex min-h-11 min-w-11 items-center break-all font-medium underline-offset-4 hover:underline"
+        className="flex min-h-11 w-full min-w-0 items-center break-all font-medium underline-offset-4 hover:underline"
         to={'/admin/agents/' + encodeURIComponent(agentId)}
       >
         {shortId(agentId)}
@@ -141,6 +141,7 @@ function AgentIdentityAccess({ agentId }: { agentId: string }) {
       <Button
         variant="link"
         size="sm"
+        className="max-w-full whitespace-normal"
         aria-expanded={revealed}
         aria-controls={fullIdPanelId}
         onClick={() => setRevealed((value) => !value)}
