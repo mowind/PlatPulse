@@ -153,7 +153,7 @@ export function NodePage() {
       <SummaryTile label="Process uptime" value={formatDuration(node.processUptimeMs)} />
     </div>
 
-    <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
+    <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-3">
       <NodeInfoGroup title="Chain & consensus" label="Node chain and consensus observations">
         <MetricRow label="QC" value={formatConsensusValue(node.consensus?.highestQcBlock, node.consensus)} />
         <MetricRow label="Locked" value={formatConsensusValue(node.consensus?.highestLockBlock, node.consensus)} />

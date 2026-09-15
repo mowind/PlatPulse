@@ -242,3 +242,22 @@
     table[data-stack] tr > [data-label='Credentials'] { order: 5; }
   }
 }
+
+/* Fixed column shares for the two summary tables, restored from the retired
+ * sheet: without table-layout: fixed a wrapped long detail resizes a
+ * neighbouring column, which the acceptance matrix measures. */
+@layer components {
+  table[data-slot='agent-table'] { table-layout: fixed; }
+  table[data-slot='agent-table'] thead th:nth-child(1) { width: 18%; }
+  table[data-slot='agent-table'] thead th:nth-child(2) { width: 15%; }
+  table[data-slot='agent-table'] thead th:nth-child(3) { width: 17%; }
+  table[data-slot='agent-table'] thead th:nth-child(4) { width: 14%; }
+  table[data-slot='agent-table'] thead th:nth-child(5) { width: 18%; }
+  table[data-slot='agent-table'] thead th:nth-child(6) { width: 18%; }
+  table[data-slot='audit-table'] { table-layout: fixed; }
+  table[data-slot='audit-table'] thead th:nth-child(1) { width: 16%; }
+  table[data-slot='audit-table'] thead th:nth-child(2) { width: 22%; }
+  table[data-slot='audit-table'] thead th:nth-child(3) { width: 15%; }
+  table[data-slot='audit-table'] thead th:nth-child(4) { width: 22%; }
+  table[data-slot='audit-table'] thead th:nth-child(5) { width: 25%; }
+}

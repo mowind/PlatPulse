@@ -461,3 +461,36 @@ Two causes, both real:
   item is min-w-0 now.
 
 release-candidate.spec.ts and convergence-acceptance.spec.ts: 75 passed, 0 failed.
+
+## 20. Three more specs green (54 passed); five single failures left
+
+- The three Node Detail observation panels stack until the wide breakpoint, as
+  the retired sheet did (they split at 768 before, so a tablet showed three
+  columns where the spec expects one).
+- The fixed table layout and column shares are restored for the Agent and Audit
+  summary tables: without table-layout: fixed, wrapping a long detail resized a
+  neighbouring column by 28.8px.
+- Two home-geo-map assertions described the retired aspect-ratio map and the
+  retired non-overlapping narrow composition. Under decision A they now assert
+  upstream's map box and upstream's -mt-42 overlap, with the same band check as
+  the other narrow test.
+
+home-geo-map.spec.ts, node-detail-six-charts.spec.ts and admin-list-matrix.spec.ts:
+54 passed, 21 skipped, 0 failed.
+
+Still failing (five, each one project):
+
+- theme.spec:476 and admin-overview.spec:179 query a 'Menu' button on
+  desktop-1440. The Admin navigation toggle is hidden from lg up, so it is not in
+  the accessibility tree there. These are mobile-drawer tests; the retired sheet
+  hid the toggle on desktop too, and desktop-1440 is the project this migration
+  added, so they likely never ran at 1440 before. They need to drive a phone
+  viewport themselves.
+- agent-lifecycle.spec:38 and :229 read credential state ("1 active", a Revoke
+  button) that earlier specs in the shared Server have already mutated. That is
+  test isolation, not layout: the seeded credential is revoked by the time these
+  run on that project.
+- agent-lifecycle.spec:208 sees a 95px overflow from the closed mobile drawer at
+  200 percent zoom: the drawer is off-screen with translate, and the overflow
+  helper counts its negative x. The closed drawer needs to be out of the
+  measurement, not merely translated.
