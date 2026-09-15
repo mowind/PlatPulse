@@ -620,3 +620,20 @@ composition.
 This also invalidates every screenshot captured before it: the evidence set was
 re-captured, and the full suite was re-run because the change touches a surface
 every page renders.
+
+## 26. After the background fix
+
+fixing the background exposed one assertion that had been reading a proxy rather
+than the thing itself: the pre-mount canvas check read
+getComputedStyle(documentElement).backgroundColor. With the canvas colour now
+propagating from the body (as it must, for the decoration to be visible), the root
+element is transparent and the assertion failed even though the first paint is
+correct. It reads the effective canvas colour now - the root's background, or the
+body's when the root is transparent - which is what "the first paint is the theme
+background" means. theme.spec.ts: 60 passed, 0 failed.
+
+The two style defects from section 24 are therefore fixed: the inclined grid is
+visible and the wash reads at the reference's strength. The remaining recorded
+differences are the 4-vs-6 statistics (approved content), the map box height, the
+header's theme-chip affordance, and the statistics-to-map split where the pinned
+source and the reference image disagree.

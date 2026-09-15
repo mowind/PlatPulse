@@ -238,9 +238,10 @@ test('paints the correct theme before the application module runs on direct entr
       )
       expect(mounted, label + ': the application module must be blocked').toBe(false)
 
-      const canvas = await page.evaluate(
-        () => getComputedStyle(document.documentElement).backgroundColor,
-      )
+      const canvas = await page.evaluate(() => {
+        const root = getComputedStyle(document.documentElement).backgroundColor
+        return root === 'rgba(0, 0, 0, 0)' ? getComputedStyle(document.body).backgroundColor : root
+      })
       expect(canvas, label + ': pre-mount canvas').toBe(testCase.canvas)
     }
   }
