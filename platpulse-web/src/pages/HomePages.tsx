@@ -172,7 +172,7 @@ export function NodePage() {
           <MetricRow
             label="Directory usage"
             value={formatPercent(nodeDataProgressValue)}
-            detail={formatNodeDataBytes(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes) + ' · directory size against the hosting filesystem capacity, not whole-Host disk usage'}
+            detail={(formatNodeDataBytes(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes) ?? 'Unknown') + ' · directory size against the hosting filesystem capacity, not whole-Host disk usage'}
             progress={nodeDataProgressValue}
           />
         </div>

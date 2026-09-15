@@ -549,6 +549,58 @@ describe('App shell with private Home', () => {
     await screen.findByRole('region', { name: 'Home' })
   })
 
+  it.each([
+    { name: 'omitted', size: undefined, capacity: undefined, freshness: 'unknown', usage: 'Unknown', bytes: 'Unknown' },
+    { name: 'null', size: null, capacity: null, freshness: 'unknown', usage: 'Unknown', bytes: 'Unknown' },
+    { name: 'non-zero', size: 2048, capacity: 8192, freshness: 'current', usage: '25.0%', bytes: '2.00 KiB / 8.00 KiB' },
+    { name: 'zero size', size: 0, capacity: 8192, freshness: 'current', usage: '0.0%', bytes: '0 B / 8.00 KiB' },
+    { name: 'zero capacity', size: 0, capacity: 0, freshness: 'current', usage: 'Unknown', bytes: '0 B / 0 B' },
+    { name: 'retained last-good', size: 2048, capacity: 8192, freshness: 'stale', usage: '25.0%', bytes: '2.00 KiB / 8.00 KiB' },
+    { name: 'size only', size: 2048, capacity: null, freshness: 'current', usage: 'Unknown', bytes: '2.00 KiB / —' },
+    { name: 'capacity only', size: null, capacity: 8192, freshness: 'current', usage: 'Unknown', bytes: '— / 8.00 KiB' },
+  ])('renders Node directory usage for $name observations without literal undefined', async ({ size, capacity, freshness, usage, bytes }) => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/public/v1/networks': () => jsonResponse([], 200),
+      '/api/public/v1/nodes/node-1': () => jsonResponse({
+        nodeId: 'node-1',
+        displayName: 'Validator A',
+        networkKey: 'mainnet',
+        health: 'unknown',
+        healthReason: 'Observation unavailable',
+        freshness,
+        peers: { state: 'starting', freshness: 'unknown' },
+        nodeDataDirectorySizeBytes: size,
+        nodeDataDirectoryCapacityBytes: capacity,
+      }, 200),
+    })
+
+    render(<App />)
+    await screen.findByRole('region', { name: 'Home' })
+    try {
+      await act(async () => {
+        window.history.pushState({}, '', '/nodes/node-1')
+        window.dispatchEvent(new PopStateEvent('popstate'))
+      })
+      const directory = await screen.findByRole('group', { name: 'Node data directory' })
+      expect(within(directory).getByText(usage, { exact: true })).toBeTruthy()
+      expect(directory.textContent).not.toContain('undefined')
+      expect(within(directory).getByText(bytes + ' · directory size against the hosting filesystem capacity, not whole-Host disk usage', { exact: true })).toBeTruthy()
+      if (usage === 'Unknown') {
+        expect(within(directory).queryByRole('progressbar')).toBeNull()
+        expect(directory.textContent).not.toContain('0%')
+      } else {
+        expect(within(directory).getByRole('progressbar').getAttribute('aria-valuenow')).toBe(String(parseFloat(usage)))
+      }
+    } finally {
+      await act(async () => {
+        window.history.pushState({}, '', '/')
+        window.dispatchEvent(new PopStateEvent('popstate'))
+      })
+      await screen.findByRole('region', { name: 'Home' })
+    }
+  })
+
   it('renders the production public Node Detail continuous reading contract', async () => {
     window.history.replaceState({}, '', '/')
     mockFetch({
@@ -2100,6 +2152,19 @@ describe('Theme lifecycle (issue #146)', () => {
     document.documentElement.removeAttribute('data-theme-mode')
     document.documentElement.style.colorScheme = ''
     installSystemTheme(false)
+  })
+
+  it('shows the Login brand header without authenticated controls', async () => {
+    await renderLogin()
+    const header = screen.getByRole('banner')
+    const brand = screen.getByRole('link', { name: 'PlatPulse' })
+    expect(header.contains(brand)).toBe(true)
+    expect(brand.getAttribute('href')).toBe('/')
+    expect(brand.querySelector('img')?.getAttribute('src')).toContain('platpulse-mark')
+    expect(brand.querySelector('img')?.getAttribute('alt')).toBe('')
+    expect(header.contains(themeButton())).toBe(true)
+    expect(screen.queryByRole('link', { name: /^Admin$/ })).toBeNull()
+    expect(screen.getAllByRole('main')).toHaveLength(1)
   })
 
   it('cycles Auto → Light → Dark → Auto, paints the document, and persists', async () => {

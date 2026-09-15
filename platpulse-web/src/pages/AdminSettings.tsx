@@ -27,7 +27,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '../components/ui/dialog'
-import { Input } from '../components/ui/input'
+import { Input, Radio } from '../components/ui/input'
 import { SURFACE_CARD } from '../lib/surface'
 import { cn } from '../lib/utils'
 
@@ -510,10 +510,8 @@ function GeoProviderSettings({ generation, csrfToken }: SettingsSectionProps) {
             {current.providers.map((candidate) => (
               <div key={candidate.provider} className="flex min-w-0 flex-col gap-1">
                 <label htmlFor={'geo-provider-' + candidate.provider} className="flex min-h-11 min-w-0 items-center gap-2 text-sm">
-                  <input
+                  <Radio
                     id={'geo-provider-' + candidate.provider}
-                    className="size-11 shrink-0 accent-primary"
-                    type="radio"
                     name="geo-provider"
                     value={candidate.provider}
                     checked={selection === candidate.provider}

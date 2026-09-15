@@ -50,19 +50,59 @@ export function Select({ className, ...props }: React.ComponentProps<'select'>) 
   )
 }
 
-/** Native checkbox with Emerald's focus ring and accent color. */
-export function Checkbox({ className, ...props }: React.ComponentProps<'input'>) {
+type SelectionProps = Omit<React.ComponentProps<'input'>, 'type'>
+
+/**
+ * Keep the native input itself 44px, not just its label. The decorative 16px
+ * indicator follows native CSS state, including uncontrolled/reset/fieldset
+ * state, without replacing browser form, focus or keyboard behavior.
+ */
+function NativeSelection({ className, type, ...props }: SelectionProps & { type: 'checkbox' | 'radio' }) {
   return (
-    <input
-      type="checkbox"
-      data-slot="checkbox"
-      className={cn(
-        'accent-primary size-11 shrink-0 rounded-sm border-input bg-transparent',
-        'focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50',
-        'disabled:cursor-not-allowed disabled:opacity-50',
-        className,
-      )}
-      {...props}
-    />
+    <span className="relative inline-flex size-11 shrink-0 items-center justify-center align-middle">
+      <input
+        {...props}
+        type={type}
+        data-slot={type}
+        className={cn(
+          'peer m-0 size-11 min-h-11 min-w-11 shrink-0 cursor-pointer opacity-0 disabled:cursor-not-allowed',
+          'forced-colors:appearance-auto forced-colors:opacity-100 forced-colors:accent-auto',
+          className,
+        )}
+      />
+      <span
+        aria-hidden="true"
+        data-slot="selection-indicator"
+        className={cn(
+          'pointer-events-none absolute flex size-4 items-center justify-center border border-input bg-transparent shadow-xs dark:bg-input/30',
+          'peer-checked:border-primary peer-checked:bg-primary peer-checked:text-primary-foreground',
+          'peer-focus-visible:border-ring peer-focus-visible:ring-[3px] peer-focus-visible:ring-ring/50',
+          'peer-aria-invalid:border-destructive peer-aria-invalid:ring-[3px] peer-aria-invalid:ring-destructive/20 dark:peer-aria-invalid:ring-destructive/40',
+          'peer-disabled:opacity-50 forced-colors:hidden',
+          type === 'checkbox'
+            ? 'rounded-[4px] peer-checked:[&>svg]:visible peer-indeterminate:border-primary peer-indeterminate:bg-primary peer-indeterminate:text-primary-foreground peer-indeterminate:[&>svg]:hidden peer-indeterminate:[&>span]:visible'
+            : 'rounded-full peer-checked:[&>span]:visible',
+        )}
+      >
+        {type === 'checkbox' ? (
+          <>
+            <svg className="invisible size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+              <path d="m5 12 4 4L19 6" />
+            </svg>
+            <span className="invisible absolute h-0.5 w-2.5 rounded-full bg-current" />
+          </>
+        ) : (
+          <span className="invisible size-1.5 rounded-full bg-current" />
+        )}
+      </span>
+    </span>
   )
+}
+
+export function Checkbox(props: SelectionProps) {
+  return <NativeSelection {...props} type="checkbox" />
+}
+
+export function Radio(props: SelectionProps) {
+  return <NativeSelection {...props} type="radio" />
 }

@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { Navigate, useLocation, useNavigate } from 'react-router'
+import { Link, Navigate, useLocation, useNavigate } from 'react-router'
 import { useAuth } from '../auth/AuthContext'
 import { AuthApiError } from '../api/auth'
 import BackgroundDecoration from '../components/BackgroundDecoration'
@@ -7,6 +7,9 @@ import ThemeToggle from '../components/ThemeToggle'
 import { Alert, AlertDescription } from '../components/ui/alert'
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
+import { useIsScrolled } from '../hooks/use-is-scrolled'
+import { cn } from '../lib/utils'
+import platpulseMark from '../../../assets/platpulse-mark.png'
 
 /**
  * Login page (design §12.2/§12.4): username + password form with labels,
@@ -14,13 +17,14 @@ import { Input } from '../components/ui/input'
  * login the user returns to the route that required authentication.
  *
  * The chrome follows Emerald's Login foundation: a centred, cardless form
- * column inside the shared max-w-[1280px] content column, with the theme
- * control floating in the page corner.
+ * column below the Emerald brand header in the shared max-w-[1280px]
+ * content column. The header exposes only the Home link and theme control.
  */
 export default function LoginPage() {
   const { status, login } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
+  const scrolled = useIsScrolled()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -53,12 +57,24 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="relative flex min-h-dvh flex-col" data-slot="login-page">
+    <div className="relative flex min-h-dvh flex-col" data-slot="login-page">
       <BackgroundDecoration />
-      <div className="absolute top-4 right-4 z-10">
-        <ThemeToggle />
-      </div>
-      <div className="mx-auto flex w-full max-w-[1280px] flex-1 items-center justify-center px-4 py-12">
+      <header
+        data-slot="app-header"
+        className={cn(
+          'sticky top-0 z-10 border-b border-transparent transition-all duration-200',
+          scrolled ? 'backdrop-blur-xl' : 'bg-transparent',
+        )}
+      >
+        <div className="mx-auto flex h-14 max-w-[1280px] items-center justify-between px-4">
+          <Link to="/" data-slot="app-brand" className="flex min-h-11 items-center gap-3" aria-label="PlatPulse">
+            <img className="size-8 shrink-0 rounded-full" src={platpulseMark} alt="" />
+            <span className="text-lg font-semibold">PlatPulse</span>
+          </Link>
+          <ThemeToggle />
+        </div>
+      </header>
+      <main className="mx-auto flex w-full max-w-[1280px] flex-1 items-center justify-center px-4 py-12">
         <section className="w-full max-w-sm" aria-labelledby="login-heading">
           <h1 id="login-heading" className="text-lg font-semibold">
             Sign in to PlatPulse
@@ -120,8 +136,8 @@ export default function LoginPage() {
             </Button>
           </form>
         </section>
-      </div>
-    </main>
+      </main>
+    </div>
   )
 }
 

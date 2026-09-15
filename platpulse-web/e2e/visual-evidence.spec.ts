@@ -20,31 +20,27 @@ test.skip(!enabled, 'set EMERALD_EVIDENCE=1 to capture visual evidence')
 /**
  * The map is an ECharts canvas whose geometry and library are both loaded
  * asynchronously, so a screenshot taken at network idle can catch it empty.
- * Wait until the canvas actually has a painted pixel before capturing, and say
- * so loudly if it never does.
+ * Wait until the canvas actually has a painted pixel before capturing. A missing
+ * or unpainted canvas fails this evidence run instead of producing a blank map.
  */
 async function waitForMapPainted(page: import('@playwright/test').Page) {
   const canvas = page.locator('[data-slot="geo-chart"] canvas').first()
-  if ((await canvas.count()) === 0) return
-  try {
-    await page.waitForFunction(
-      () => {
-        const element = document.querySelector('[data-slot="geo-chart"] canvas') as HTMLCanvasElement | null
-        if (!element) return false
-        const context = element.getContext('2d')
-        if (!context) return false
-        const data = context.getImageData(0, 0, element.width, element.height).data
-        for (let index = 3; index < data.length; index += 4) {
-          if (data[index] > 0) return true
-        }
-        return false
-      },
-      undefined,
-      { timeout: 15_000 },
-    )
-  } catch {
-    console.log('WARNING: the map canvas never painted before the capture')
-  }
+  await expect(canvas).toBeVisible({ timeout: 15_000 })
+  await page.waitForFunction(
+    () => {
+      const element = document.querySelector('[data-slot="geo-chart"] canvas') as HTMLCanvasElement | null
+      if (!element) return false
+      const context = element.getContext('2d')
+      if (!context) return false
+      const data = context.getImageData(0, 0, element.width, element.height).data
+      for (let index = 3; index < data.length; index += 4) {
+        if (data[index] > 0) return true
+      }
+      return false
+    },
+    undefined,
+    { timeout: 15_000 },
+  )
 }
 
 
@@ -52,7 +48,7 @@ async function waitForMapPainted(page: import('@playwright/test').Page) {
  * The Server's seeded Geo provider is Disabled, so the map correctly renders
  * nothing at all. Enable the Local MMDB provider first so the evidence shows the
  * map the acceptance actually cares about. This only touches the throwaway e2e
- * Server state, and it is restored below.
+ * Server state; the evidence harness disposes of that Server after the run.
  */
 async function enableLocalGeoProvider(page: import('@playwright/test').Page) {
   await page.goto('/admin/settings')
@@ -67,26 +63,28 @@ async function enableLocalGeoProvider(page: import('@playwright/test').Page) {
 }
 
 
-/** The Node Detail charts resolve from a history query; waiting for the loading
- *  placeholder to clear keeps the evidence out of a mid-load state. */
+/** Absence of a loading placeholder is not readiness: before the Node query
+ * resolves there are no chart placeholders either. Require the real content
+ * first, then fail (rather than warn) if history never settles. */
 async function waitForChartsSettled(page: import('@playwright/test').Page) {
-  try {
-    await page.getByText('Loading metric history…').first().waitFor({ state: 'detached', timeout: 15_000 })
-  } catch {
-    console.log('WARNING: a metric chart was still loading at capture time')
-  }
+  await expect(page.locator('#node-detail-title')).toBeVisible({ timeout: 15_000 })
+  await expect(page.locator('[data-slot="node-metric-card"]')).toHaveCount(6)
+  await expect(page.getByText('Loading metric history…')).toHaveCount(0, { timeout: 15_000 })
+  await expect(page.getByRole('group', { name: 'Node key summary' })).toBeVisible()
 }
 
 const OUTPUT = '../docs/visual-migration/emerald/screenshots'
 
 /**
- * The acceptance surfaces, not every page: five captures per viewport keeps the
- * evidence reviewable. The remaining Admin pages share the same primitives and
- * shell, and their behaviour is covered by the e2e suite rather than by a
+ * The acceptance surfaces, not every page: six captures per viewport keep the
+ * evidence reviewable, including Settings for native selection controls. Other
+ * Admin pages share the same primitives and shell; their behaviour is covered
+ * by the e2e suite rather than by a
  * screenshot.
  */
 const PAGES: Array<[string, string]> = [
   ['admin.home', '/admin'],
+  ['admin.settings', '/admin/settings'],
 ]
 
 test('capture Emerald migration evidence', async ({ page }, testInfo) => {
@@ -108,19 +106,17 @@ test('capture Emerald migration evidence', async ({ page }, testInfo) => {
   // The public Node Detail is reached through the whole-card link, so the
   // capture never depends on a seeded Node id.
   const nodeLink = page.getByLabel('Active Nodes', { exact: true }).getByRole('link').first()
-  if (await nodeLink.count()) {
-    await nodeLink.click()
-    await page.waitForLoadState('networkidle')
-    await waitForChartsSettled(page)
-    await page.screenshot({ path: dir + '/public.node-detail.png', fullPage: true })
-  }
+  await expect(nodeLink).toBeVisible()
+  await nodeLink.click()
+  await waitForChartsSettled(page)
+  await page.screenshot({ path: dir + '/public.node-detail.png', fullPage: true })
 
   const networkLink = page.locator('a[href^="/networks/"]').first()
-  if (await networkLink.count()) {
-    await networkLink.click()
-    await page.waitForLoadState('networkidle')
-    await page.screenshot({ path: dir + '/public.network-detail.png', fullPage: true })
-  }
+  await expect(networkLink).toBeVisible()
+  await networkLink.click()
+  await expect(page.locator('#network-page-title')).toBeVisible({ timeout: 15_000 })
+  await expect(page.locator('[data-slot="network-nodes-panel"]')).toBeVisible()
+  await page.screenshot({ path: dir + '/public.network-detail.png', fullPage: true })
 
   for (const [name, path] of PAGES) {
     await page.goto(path)

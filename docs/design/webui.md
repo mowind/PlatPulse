@@ -50,6 +50,12 @@ The WebUI must not invent synonyms that blur boundaries. In particular:
 - a successful Peer Snapshot/aggregate with zero peers is authoritative, not Unknown; omitted or unsupported peer capability is not an empty snapshot;
 - recent Block History is bounded by the Server window and is best-effort: normal missed blocks remain absent, while explicit bounded Gap Backfill may recover eligible heights; neither path synthesizes zeroes or fabricated summaries.
 
+### Approved Emerald composition refinements
+
+- At widths of 768px and above, Home allocates the available statistics/map track width in a **37:61** ratio, retaining the 8px gap and the **232px outer band** (including its padding). This explicitly follows the reference image rather than the pinned source’s 6/6 split. Phone stacking is unchanged.
+- Login displays the PlatPulse brand/Home link and the theme control in the same 56px Emerald header treatment and 1280px content column as Home. It exposes no Admin controls and does not mount the Home data shell. The existing form, authentication and redirect behavior are unchanged.
+- Checkbox and radio visuals use 16px indicators inside 44px native input targets. Native grouping, labels, keyboard behavior, form state and disabled fieldsets remain authoritative; the visible indicator carries focus and invalid states. Forced-colors mode restores native rendering instead of relying on decorative colors.
+
 ### 2.1 Fixed status vocabulary
 
 Use these terms in labels, accessible text, filters, and tests:

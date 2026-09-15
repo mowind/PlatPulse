@@ -43,7 +43,7 @@ const PANEL_TITLE = 'text-sm font-medium'
 const EYEBROW = 'text-xs font-medium tracking-wider text-muted-foreground uppercase'
 const PANEL_STATE = 'flex min-w-0 flex-wrap items-center gap-2 text-sm text-muted-foreground'
 const TABLE_HEAD = 'whitespace-nowrap border-b px-3 py-2 text-left text-xs font-medium text-muted-foreground'
-const TABLE_CELL = 'border-b border-border/60 px-3 py-3 align-top text-sm'
+const TABLE_CELL = 'min-w-0 border-b border-border/60 px-3 py-3 align-top text-sm [overflow-wrap:anywhere]'
 const MUTED_SMALL = 'mt-1 block text-[11px] text-muted-foreground'
 const TEXT_LINK = 'inline-flex min-h-11 min-w-11 items-center font-medium text-primary hover:underline'
 const SUMMARY_ARROW: Record<string, string> = {
@@ -526,7 +526,7 @@ function NodePanel({
       {nodeQuery.data && activeNodes.length === 0 && <Empty description="No Nodes observed yet." />}
       {nodeQuery.data && activeNodes.length > 0 && (
         <div className="mt-3 w-full min-w-0 overflow-x-auto">
-          <table className="w-full min-w-[48rem] border-collapse text-sm">
+          <table data-stack className="w-full table-fixed border-collapse text-sm md:min-w-[48rem] md:table-auto">
             <caption className="sr-only">PlatON Node health, freshness, and sync</caption>
             <thead>
               <tr>
@@ -610,42 +610,43 @@ function NodeRows({
   return (
     <>
       <tr className="border-b border-border/60" onKeyDown={collapseOnEscape}>
-        <th scope="row" className={cn(TABLE_CELL, 'text-left')}>
+        <th scope="row" data-label="Node" className={cn(TABLE_CELL, 'text-left')}>
           <Button
             ref={toggleRef}
             variant="link"
             size="sm"
-            className="h-auto min-w-11 justify-start px-0 font-semibold"
+            className="h-auto min-w-11 max-w-full justify-start px-0 text-left font-semibold whitespace-normal md:max-w-[14rem]"
             aria-expanded={expanded}
             aria-controls={detailId}
             onClick={onToggle}
           >
-            <span aria-hidden="true">{expanded ? '▾' : '▸'}</span> {nodeLabel}
+            <span aria-hidden="true" className="shrink-0">{expanded ? '▾' : '▸'}</span>
+            <span className="min-w-0 [overflow-wrap:anywhere]">{nodeLabel}</span>
           </Button>
           <small className={MUTED_SMALL} title={node.node_id}>
             Node ID · {formatIdentifier(node.node_id)}
           </small>
           <Link className={TEXT_LINK} to={`/admin/nodes/${encodeURIComponent(node.node_id)}`}>View Node</Link>
         </th>
-        <td className={TABLE_CELL}>
+        <td data-label="Network" className={TABLE_CELL}>
           <span className="break-words">{node.network_display_name}</span>
           <small className={MUTED_SMALL}>{node.network_key}</small>
         </td>
-        <td className={TABLE_CELL}>
+        <td data-label="Health" className={TABLE_CELL}>
           <StatusBadge status={node.health} tone={healthTone(node.health)} />
           <span className="mt-1 block text-xs break-words text-muted-foreground">{node.health_reason}</span>
         </td>
-        <td className={TABLE_CELL}>
+        <td data-label="Freshness" className={TABLE_CELL}>
           <StatusBadge status={freshnessLabel(node.freshness)} tone={freshnessTone(node.freshness)} />
           <DataTooltip as="span" className="block" content="Freshness is computed by the Server, not the browser.">
             <small className={MUTED_SMALL}>Server-owned freshness</small>
           </DataTooltip>
         </td>
-        <td className={TABLE_CELL}>
+        <td data-label="Head / Sync" className={TABLE_CELL}>
           <span className="break-words">{node.current_head ?? 'Unknown'}</span>
           <small className={MUTED_SMALL}>{syncSummary(diagnostic)}</small>
         </td>
-        <td className={TABLE_CELL}>
+        <td data-label="Resync" className={TABLE_CELL}>
           <span className="break-words">{node.resync_state}</span>
           {diagnostic?.resync_progress ? (
             <small className={MUTED_SMALL}>{diagnostic.resync_progress}</small>
@@ -863,18 +864,19 @@ function AgentPanel({ query, nodeQuery }: { query: DiagnosticsQuery; nodeQuery: 
       {query.data && agents.length === 0 && <Empty description="No Agents enrolled yet." />}
       {query.data && agents.length > 0 && (
         <div className="mt-3 w-full min-w-0 overflow-x-auto">
-          <table className="w-full min-w-[52rem] border-collapse text-sm">
+          {/* Keep Overview field order; the shared stack otherwise orders the full Agent inventory. */}
+          <table data-stack className="w-full table-fixed border-collapse text-sm md:min-w-[52rem] [&_tbody_tr>*]:order-none">
             <caption className="sr-only">
               Agent inventory overview with reporting, receipt, host resources, evidence, and retained Node summaries
             </caption>
             <thead>
               <tr>
-                <th scope="col" className={TABLE_HEAD}>Agent</th>
-                <th scope="col" className={TABLE_HEAD}>Reporting</th>
-                <th scope="col" className={TABLE_HEAD}>Last received</th>
-                <th scope="col" className={TABLE_HEAD}>Host resources</th>
-                <th scope="col" className={TABLE_HEAD}>Evidence</th>
-                <th scope="col" className={TABLE_HEAD}>Nodes</th>
+                <th scope="col" className={cn(TABLE_HEAD, 'md:w-[16%]')}>Agent</th>
+                <th scope="col" className={cn(TABLE_HEAD, 'md:w-[13%]')}>Reporting</th>
+                <th scope="col" className={cn(TABLE_HEAD, 'md:w-[15%]')}>Last received</th>
+                <th scope="col" className={cn(TABLE_HEAD, 'md:w-[21%]')}>Host resources</th>
+                <th scope="col" className={cn(TABLE_HEAD, 'md:w-[22%]')}>Evidence</th>
+                <th scope="col" className={cn(TABLE_HEAD, 'md:w-[13%]')}>Nodes</th>
               </tr>
             </thead>
             <tbody>
@@ -929,7 +931,7 @@ function AgentOverviewRow({
     : 'Unknown'
   return (
     <tr className={cn('border-b border-border/60 align-top', (spoolRisk || agent.security_event_count > 0) && 'bg-destructive/5')}>
-      <th scope="row" className={cn(TABLE_CELL, 'text-left')}>
+      <th scope="row" data-label="Agent" className={cn(TABLE_CELL, 'text-left')}>
         <Link
           className={cn(TEXT_LINK, 'break-all')}
           aria-label="View Agent"
@@ -940,11 +942,11 @@ function AgentOverviewRow({
         </Link>
         <small className={MUTED_SMALL} title={agent.agent_id}>Agent ID · {agent.agent_id}</small>
       </th>
-      <td className={TABLE_CELL}>
+      <td data-label="Reporting" className={TABLE_CELL}>
         <StatusBadge status={liveness} tone={livenessTone(agent.liveness)} />
         <small className={MUTED_SMALL}>Server liveness</small>
       </td>
-      <td className={TABLE_CELL}>
+      <td data-label="Last received" className={TABLE_CELL}>
         {agent.last_received_at ? (
           <time dateTime={agent.last_received_at}>{formatObservedAt(agent.last_received_at)}</time>
         ) : (
@@ -952,7 +954,7 @@ function AgentOverviewRow({
         )}
         <small className={MUTED_SMALL}>{agent.last_report_sequence == null ? 'Never received' : 'Report #' + agent.last_report_sequence}</small>
       </td>
-      <td className={TABLE_CELL}>
+      <td data-label="Host resources" className={TABLE_CELL}>
         <dl className="min-w-0 space-y-1">
           <div className="flex items-baseline justify-between gap-2"><dt className="text-[11px] text-muted-foreground">CPU</dt><dd className="m-0 min-w-0 font-medium break-words">{formatPercent(host?.cpu_percent)}</dd></div>
           <div className="flex items-baseline justify-between gap-2"><dt className="text-[11px] text-muted-foreground">Memory</dt><dd className="m-0 min-w-0 font-medium break-words">{memory}</dd></div>
@@ -960,15 +962,15 @@ function AgentOverviewRow({
         </dl>
         <small className={MUTED_SMALL}>{host ? 'Host snapshot · ' + formatObservedAt(host.updated_at) : 'No Host observation'}</small>
       </td>
-      <td className={TABLE_CELL}>
+      <td data-label="Evidence" className={TABLE_CELL}>
         <dl className="min-w-0 space-y-1">
           <div className="flex items-baseline justify-between gap-2"><dt className="text-[11px] text-muted-foreground">Report gaps</dt><dd className="m-0 min-w-0 font-medium break-words">{agent.sequence_gap_count} report gap{agent.sequence_gap_count === 1 ? '' : 's'}</dd></div>
           <div className="flex items-baseline justify-between gap-2"><dt className="text-[11px] text-muted-foreground">Security events</dt><dd className="m-0 min-w-0 font-medium break-words">{agent.security_event_count} security event{agent.security_event_count === 1 ? '' : 's'}</dd></div>
-          <div className="flex items-baseline justify-between gap-2"><dt className="text-[11px] text-muted-foreground">Spool</dt><dd className={cn('m-0 min-w-0 font-medium break-words', (spoolRisk || host?.spool_store_error) && 'font-semibold text-destructive')}>{formatSpoolSummary(host)}</dd></div>
+          <div className="flex items-baseline justify-between gap-2"><dt className="shrink-0 text-[11px] whitespace-nowrap text-muted-foreground">Spool</dt><dd className={cn('m-0 min-w-0 font-medium break-words', (spoolRisk || host?.spool_store_error) && 'font-semibold text-destructive')}>{formatSpoolSummary(host)}</dd></div>
           <div className="flex items-baseline justify-between gap-2"><dt className="text-[11px] text-muted-foreground">Clock</dt><dd className="m-0 min-w-0 font-medium break-words">{clockStatusLabel(agent.clock_status)}{agent.clock_skew_ms != null ? ' · ' + agent.clock_skew_ms + ' ms skew' : ''}</dd></div>
         </dl>
       </td>
-      <td className={TABLE_CELL}>
+      <td data-label="Nodes" className={TABLE_CELL}>
         <AgentNodeSummary nodes={nodes} query={nodeQuery} />
       </td>
     </tr>
