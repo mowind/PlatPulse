@@ -207,7 +207,7 @@ export default function AdminNodesList() {
           title="Node inventory"
         >
           <div className="overflow-x-auto">
-            <table data-slot="node-table" className="w-full text-sm">
+            <table data-stack data-slot="node-table" className="w-full text-sm">
               <caption className="sr-only">
                 Node inventory: identity, health, freshness, visibility, and lifecycle
               </caption>

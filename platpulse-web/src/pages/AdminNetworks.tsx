@@ -130,7 +130,7 @@ export default function AdminNetworksList() {
           title="Network Registry"
         >
           <div className="overflow-x-auto">
-            <table data-slot="network-table" className="w-full text-sm">
+            <table data-stack data-slot="network-table" className="w-full text-sm">
               <caption className="sr-only">Network Registry identity tuples and Node counts</caption>
               <thead>
                 <tr className="border-b">
@@ -625,7 +625,7 @@ function NetworkNodesPanel({
       )}
       {nodes.length > 0 && (
         <div className="overflow-x-auto">
-          <table data-slot="network-nodes-table" className="w-full text-sm">
+          <table data-stack data-slot="network-nodes-table" className="w-full text-sm">
             <caption className="sr-only">
               Nodes on {networkKey} with per-Node identity dispositions
             </caption>

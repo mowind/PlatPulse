@@ -189,7 +189,7 @@ export default function AdminAudit() {
         {query.data && items.length === 0 && <Empty description="No matching Audit events." />}
         {items.length > 0 && (
           <div data-slot="audit-list" className="overflow-x-auto">
-            <table data-slot="audit-table" className="w-full min-w-[44rem] text-sm">
+            <table data-stack data-slot="audit-table" className="w-full min-w-[44rem] text-sm">
               <caption className="sr-only">
                 Immutable redacted Audit events with time, event, actor, target, and details
               </caption>

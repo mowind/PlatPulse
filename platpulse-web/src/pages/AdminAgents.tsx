@@ -363,7 +363,7 @@ export default function AdminAgentsList() {
           title="Agent inventory"
         >
           <div className="overflow-x-auto">
-            <table data-slot="agent-table" className="w-full text-sm">
+            <table data-stack data-slot="agent-table" className="w-full text-sm">
               <caption className="sr-only">
                 Agent, Server reporting status, receipt time, retained Node inventory, credential validity,
                 and diagnostic evidence

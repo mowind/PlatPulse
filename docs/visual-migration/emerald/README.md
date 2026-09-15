@@ -430,3 +430,18 @@ must be re-implemented, with the Diagnostics dimension fourth, so both orders ho
 again. This affects every data-label table the migration re-expressed, not only
 the Agent summary - the Admin list matrix and the audit tables use the same
 pattern.
+
+## 18. The stacked-table regression is fixed
+
+The retired sheet turned a data-label table into a stack of cards below
+47.9rem, each cell prefixed by its own label, and the Agent priority summary
+kept the product order (identity, reporting and receipt, evidence, inventory,
+credentials) by assigning each dimension an explicit order. The migration kept
+the data-label attributes but dropped those rules, so a migrated table scrolled
+horizontally on a phone instead of stacking - a mobile readability regression,
+not just a test failure.
+
+The rules are restored in emerald.css with Emerald tokens, keyed on a
+data-stack attribute that AdminAgents, AdminNodes, AdminNetworks and AdminAudit
+opt into. The priority-summary test now passes on all five projects (5 passed),
+and the build, lint, typecheck and the unit suite are green.
