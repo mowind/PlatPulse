@@ -66,6 +66,17 @@ async function enableLocalGeoProvider(page: import('@playwright/test').Page) {
   }
 }
 
+
+/** The Node Detail charts resolve from a history query; waiting for the loading
+ *  placeholder to clear keeps the evidence out of a mid-load state. */
+async function waitForChartsSettled(page: import('@playwright/test').Page) {
+  try {
+    await page.getByText('Loading metric history…').first().waitFor({ state: 'detached', timeout: 15_000 })
+  } catch {
+    console.log('WARNING: a metric chart was still loading at capture time')
+  }
+}
+
 const OUTPUT = '../docs/visual-migration/emerald/screenshots'
 
 /**
@@ -100,6 +111,7 @@ test('capture Emerald migration evidence', async ({ page }, testInfo) => {
   if (await nodeLink.count()) {
     await nodeLink.click()
     await page.waitForLoadState('networkidle')
+    await waitForChartsSettled(page)
     await page.screenshot({ path: dir + '/public.node-detail.png', fullPage: true })
   }
 

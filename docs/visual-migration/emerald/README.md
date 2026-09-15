@@ -637,3 +637,29 @@ visible and the wash reads at the reference's strength. The remaining recorded
 differences are the 4-vs-6 statistics (approved content), the map box height, the
 header's theme-chip affordance, and the statistics-to-map split where the pinned
 source and the reference image disagree.
+
+## 27. Reviewing the rest of the evidence
+
+Login and Node Detail at desktop-1440 were reviewed against the same reference.
+
+**Login** now shows the wash and the inclined grid behind a centred, cardless form
+column: muted label typography above each field, Emerald's rounded input surface,
+its neutral near-black primary action ("Sign in"), and the theme control in the
+corner. That matches upstream's treatment of ordinary primary actions.
+
+One structural difference: **the reference's App shell renders its header, and so
+its brand, on every route including the login page; PlatPulse's login page renders
+only the theme control.** Recorded rather than changed, because PlatPulse's login
+page is its own surface and the e2e asserts its current shape.
+
+**Node Detail** shows the accepted A container: an uncarded identity block, four
+summary tiles, three parallel observation panels, then the six 60-second charts.
+The Host resources panel carries the "collected once per Agent; shared by every
+Node it monitors" note and its own progress bars, so the Host de-duplication rule
+is visible on the page rather than only in the data layer. Unknown values read
+Unknown, never zero.
+
+Two evidence-quality notes, both capture artefacts rather than product defects:
+the charts were caught while their history query was still resolving (the capture
+now waits for that placeholder to clear), and the chart loading placeholder is
+what the seeded Server shows when no history has been retained yet.
