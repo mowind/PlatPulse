@@ -540,3 +540,27 @@ Every failure was attributed before it was fixed: a regression of this migration
 recorded), a pre-existing failure on main (proved in git history and disclosed),
 or a test-isolation defect in the shared Server. No assertion was deleted and
 none was weakened to reach zero.
+
+## 23. The map is visible in the evidence now, and the scatter question is answered
+
+The first captures showed an empty band where the map belongs. The cause was not
+a bug: the e2e Server's seeded Geo provider is **Disabled**, so the map correctly
+renders nothing and states "Peer countries · Disabled by server" to assistive
+technology. The evidence capture now enables the Local MMDB provider before
+capturing, so the screenshots show the map the acceptance is about.
+
+With the map enabled, the 1440 Home capture shows:
+
+- the world map in the right six columns of the top band, the four statistics in
+  the left six, which is Emerald's 6/6 composition;
+- the map's upstream faint slate fill and its borders;
+- **a scatter symbol with its aggregate numeral** (a green dot labelled 10 around
+  the seeded country) and the corner counter at "10" - so the scatter does paint
+  on real data. The earlier doubt from a pixel scan is resolved: that scan looked
+  at a Disabled provider, where there is nothing to paint by design;
+- the world vertically cropped inside the band, which is upstream's own
+  composition (its map box is 352px inside a 232px band, shifted up by a sixth).
+
+This is an observation of our own render, not a comparison against upstream's. The
+side-by-side review is still the one acceptance step not performed, and no
+fidelity claim is made until it is.
