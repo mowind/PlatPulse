@@ -233,9 +233,9 @@ export function PeerInsight({
       bordered={false}
       data-slot="peer-insight"
       className={cn('min-w-0 rounded-md border-none', SURFACE_CARD)}
-      contentClassName={cn('flex min-w-0 flex-col gap-3', compact && 'p-3')}
+      contentClassName="!p-0"
     >
-      <section className="min-w-0" aria-labelledby={headingId}>
+      <section className={cn('min-w-0', compact ? 'p-3' : 'p-4')} aria-labelledby={headingId}>
         <div className="flex min-w-0 flex-wrap items-start gap-3">
           <Heading id={headingId} className="m-0 text-sm font-medium">Peer insight</Heading>
         </div>

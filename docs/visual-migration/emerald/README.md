@@ -445,3 +445,19 @@ The rules are restored in emerald.css with Emerald tokens, keyed on a
 data-stack attribute that AdminAgents, AdminNodes, AdminNetworks and AdminAudit
 opt into. The priority-summary test now passes on all five projects (5 passed),
 and the build, lint, typecheck and the unit suite are green.
+
+## 19. release-candidate and convergence-acceptance are green (75 passed)
+
+Two causes, both real:
+
+- The Peer insight region was 32px narrower than the card that contains it,
+  because CardX always applies its own content padding and the labelled region
+  sat inside it. The padding moved inside the region (contentClassName="!p-0"
+  plus p-4/p-3 on the section), so the region fills the card - the same shape
+  upstream uses for its map panel (content-class="h-full !p-0").
+- The Geo provider consequence copy embeds fixed HTTPS endpoints, and
+  overflow-wrap (Tailwind's break-words) does not lower an element's min-content
+  contribution, so a grid item carried a 314px floor inside a 296px box. The
+  item is min-w-0 now.
+
+release-candidate.spec.ts and convergence-acceptance.spec.ts: 75 passed, 0 failed.
