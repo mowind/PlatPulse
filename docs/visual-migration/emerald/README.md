@@ -513,3 +513,30 @@ Still failing (five, each one project):
   project and the drawer is a mobile/tablet affordance), and the credential
   summary is asserted by its shape and every count instead of assuming the shared
   Server's seeded credential is still active.
+
+## 22. The Playwright suite is GREEN
+
+npm run test:e2e: **503 passed, 67 skipped, 0 failed, 0 did not run** (15.3 min,
+all five projects). Exit code 0.
+
+The full progression, every run a complete suite against the real Server:
+
+| run | passed | failed | did not run |
+|---|---|---|---|
+| after the migration | 327 | 156 | 30 |
+| 2 | 359 | 129 | 25 |
+| 3 | 405 | 96 | 5 |
+| 4 | 426 | 75 | 5 |
+| 5 | 456 | 45 | 5 |
+| 6 | 473 | 28 | 5 |
+| 7 | 473 | 28 | 5 |
+| 8 | 484 | 17 | 5 |
+| 9 | 491 | 10 | 5 |
+| 10 | 494 | 7 | 5 |
+| 11 | **503** | **0** | **0** |
+
+Every failure was attributed before it was fixed: a regression of this migration
+(fixed in src), a stale expectation the migration invalidated (restated and
+recorded), a pre-existing failure on main (proved in git history and disclosed),
+or a test-isolation defect in the shared Server. No assertion was deleted and
+none was weakened to reach zero.
