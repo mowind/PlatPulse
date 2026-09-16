@@ -39,8 +39,8 @@ function loadECharts() {
 }
 
 /**
- * Home Peer country map (issue #133), rendered by ECharts exactly as
- * komari-theme-emerald@c2c5e88 NodeEarthMaps.vue renders its world map: the
+ * Home Peer country map (issue #133), rendered by ECharts following
+ * komari-theme-emerald@c2c5e88 NodeEarthMaps.vue, with automatic fitting: the
  * same geometry, the same silent transparent geo coordinate system, the same
  * scatter symbol, the same 8px/14px sizes, white 10px aggregate numerals, and
  * the same tooltip box. The option itself lives in mapChartOption.ts so the
@@ -232,12 +232,15 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
       {failed ? (
         <Empty description="Map unavailable" className="h-full" />
       ) : (
+        // Like Emerald, the desktop canvas is taller than the summary band and
+        // shifted upward. Tie height to width so wide screens cannot shrink the
+        // world back into a shallow strip; the mobile composition stays intact.
         <div
           ref={container}
           role="img"
           aria-label={PEER_COUNTRIES_HEADING + ' map. ' + mapDescription}
           data-slot="geo-chart"
-          className="h-full w-full"
+          className="h-full w-full md:aspect-[2/1] md:h-auto md:-translate-y-1/6"
         />
       )}
       {/* The canvas has no per-country element, so the same figures stay

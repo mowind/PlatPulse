@@ -44,7 +44,14 @@ describe('mapChartOption', () => {
     expect(option.geo.silent).toBe(true)
     expect(option.geo.left).toBe('center')
     expect(option.geo.top).toBe('center')
-    expect(option.geo.width).toBe('100%')
+    // Both layers must auto-fit the available width AND height.
+    for (const layer of [option.geo, option.series[0]]) {
+      expect(layer.left).toBe('center')
+      expect(layer.top).toBe('center')
+      expect(layer.width).toBe('100%')
+      expect(layer.height).toBe('100%')
+      expect(layer.preserveAspect).toBe('contain')
+    }
     expect(option.geo.itemStyle).toEqual({ areaColor: 'transparent', borderColor: 'transparent' })
     // Upstream sets no zoom, center, projection, scaleLimit or boundingCoords,
     // so every ECharts default applies.

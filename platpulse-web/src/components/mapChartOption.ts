@@ -89,8 +89,10 @@ export type MapOptionInput = {
  * transparent `geo` used only as the scatter's coordinate system; a `map`
  * series that paints the polygons; a `scatter` with upstream's symbol, 1px
  * white ring and 10px white aggregate numeral; and upstream's tooltip box.
- * No zoom, center, projection or scaleLimit is set, so every ECharts default
- * matches upstream.
+ * Both layers fill the canvas with preserveAspect: 'contain': this avoids the
+ * implicit 20% padding of automatic sizing without cropping or stretching the
+ * world. Home supplies an independent desktop canvas, not the shallow summary
+ * height. Zoom, geographic center, projection and scaleLimit keep their defaults.
  */
 export function mapChartOption({
   mapName,
@@ -184,6 +186,8 @@ export function mapChartOption({
       left: 'center',
       top: 'center',
       width: '100%',
+      height: '100%',
+      preserveAspect: 'contain',
       silent: true,
       itemStyle: { areaColor: 'transparent', borderColor: 'transparent' },
       emphasis: {
@@ -201,6 +205,8 @@ export function mapChartOption({
         left: 'center',
         top: 'center',
         width: '100%',
+        height: '100%',
+        preserveAspect: 'contain',
         tooltip: { show: false },
         emphasis: {
           label: { show: false },

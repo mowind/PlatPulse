@@ -130,7 +130,8 @@ export default function HomeDashboard({
         </div>
       </div>
 
-      <div className="p-4 pt-0">
+      {/* Keep controls and Node links above the overflowing Emerald map. */}
+      <div className="relative p-4 pt-0">
         <div className="flex flex-nowrap items-start gap-2" aria-label="Node filters and sorting">
           <div className="overflow-x-auto rounded-sm">
             <Tabs
