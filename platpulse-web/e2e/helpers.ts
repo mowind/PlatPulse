@@ -136,12 +136,28 @@ export async function expectVisibleInteractiveTargets(page: Page) {
         rect.height === 0 ||
         (html instanceof HTMLInputElement && html.type === 'hidden')
       ) return []
-      return rect.width < 44 || rect.height < 44
+      let hitHeight = rect.height
+      if (html.matches('.compact-tabs [data-slot="tabs-trigger"]')) {
+        const pseudo = getComputedStyle(html, '::before')
+        const top = rect.top + parseFloat(pseudo.top)
+        const bottom = rect.bottom - parseFloat(pseudo.bottom)
+        // Horizontal tab scrolling intentionally clips offscreen controls;
+        // measure the visible part and require it to hit the actual trigger.
+        const scroller = html.closest('.overflow-x-auto')!.getBoundingClientRect()
+        const left = Math.max(rect.left, scroller.left)
+        const right = Math.min(rect.right, scroller.right)
+        // Partially scrolled-out tabs are exercised after scrollIntoView in
+        // emerald-refinement.spec.ts, not counted as fully exposed targets.
+        if (right - left < rect.width - 1) return []
+        const x = (left + right) / 2
+        if (html.contains(document.elementFromPoint(x, top + 1)) && html.contains(document.elementFromPoint(x, bottom - 1))) hitHeight = bottom - top
+      }
+      return rect.width < 44 || hitHeight < 44
         ? [`${html.tagName.toLowerCase()} ${html.textContent?.trim() || html.getAttribute('aria-label') || ''}`]
         : []
     }),
   )
-  expect(undersized, 'visible interactive controls must be at least 44px').toEqual([])
+  expect(undersized, 'visible interactive controls must have hit-tested targets of at least 44px').toEqual([])
 }
 
 /** Simulate browser zoom by applying its equivalent reduced CSS viewport. */

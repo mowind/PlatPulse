@@ -1,3 +1,4 @@
+import { ChevronRight } from 'lucide-react'
 import type { AdminValidatorHistoryEntry, PublicValidatorHistoryEntry } from '../api/generated'
 
 type Entry = AdminValidatorHistoryEntry | PublicValidatorHistoryEntry
@@ -41,7 +42,7 @@ export function ValidatorHistory({ entries, compact = false }: { entries: Entry[
             key={'historyId' in entry ? entry.historyId : `${entry.kind}-${entry.observedAt}-${index}`}
           >
             <summary className="flex min-h-11 cursor-pointer flex-wrap items-baseline gap-x-2 gap-y-1 px-3 py-2 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
-              <span aria-hidden="true" className="text-muted-foreground transition-transform group-open:rotate-90">▸</span>
+              <ChevronRight size={16} aria-hidden="true" className="text-muted-foreground transition-transform group-open:rotate-90" />
               <span className="min-w-0 break-words font-medium">{entryLabel(entry)}</span>
               <span className="text-[11px] text-muted-foreground">{formatDate(entry.observedAt)}</span>
             </summary>

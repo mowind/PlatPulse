@@ -1,3 +1,4 @@
+import { ArrowUp, ArrowUpDown, ChevronUp, ChevronRight } from 'lucide-react'
 import { useMemo, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 import {
@@ -293,7 +294,7 @@ function SortButton({
       aria-pressed={active}
       onClick={() => onSort(column)}
     >
-      {label} <span aria-hidden="true">{active ? '↑' : '⇅'}</span>
+      {label} {active ? <ArrowUp size={12} aria-hidden="true" /> : <ArrowUpDown size={12} aria-hidden="true" />}
     </Button>
   )
 }
@@ -420,7 +421,7 @@ function NodeListRow({
             onClick={onToggle}
             onKeyDown={collapseOnEscape}
           >
-            <span aria-hidden="true">{expanded ? '▾' : '▸'}</span>
+            <ChevronRight size={16} aria-hidden="true" className={expanded ? "rotate-90" : ""} />
           </Button>{' '}
           <Link
             className="inline-flex min-h-11 min-w-11 items-center break-all font-medium underline-offset-4 hover:underline"
@@ -479,7 +480,7 @@ function NodeListRow({
           <td colSpan={8} id={detailId} onKeyDown={collapseOnEscape} className="p-0">
             <div className="space-y-3 p-3">
               <Button variant="link" size="sm" onClick={onToggle}>
-                Collapse details <span aria-hidden="true">▴</span>
+                Collapse details <ChevronUp size={16} aria-hidden="true" />
               </Button>
               <DetailList>
                 <DetailItem label="Lifecycle guidance">{node.lifecycle_guidance}</DetailItem>

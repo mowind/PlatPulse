@@ -21,7 +21,7 @@ import {
  *  - the screen-reader country list, [data-slot="geo-country-list"], one <li>
  *    per observed country with its count, its stale count, and whether it had
  *    a representative point to plot;
- *  - the abnormal states stay sr-only role="status".
+ *  - abnormal states have a minimal visible role="status".
  *
  * The scatter encoding itself (8px/14px symbols, the white 10px numeral, the
  * tooltip HTML) is covered at the unit level in
@@ -275,16 +275,17 @@ async function expectQuietMap(page: Page) {
   await expect(map.getByText(/Natural Earth|GeoLite|MaxMind|IPinfo|GeoJS/)).toHaveCount(0)
   await expect(map.getByText(/^Scope: |^Known |^Peer observation: |^Map resource: /)).toHaveCount(0)
 
-  // Nothing on the map is written for the eye; the status text stays clipped.
+  // Normal maps remain quiet; any abnormal state must remain visible.
   for (const status of await map.getByRole('status').all()) {
     const presentation = await status.evaluate(element => {
       const box = element.getBoundingClientRect()
       const style = getComputedStyle(element)
       return { width: box.width, height: box.height, clip: style.clip, clipPath: style.clipPath }
     })
-    expect(presentation.width).toBeLessThanOrEqual(1)
-    expect(presentation.height).toBeLessThanOrEqual(1)
-    expect(presentation.clip !== 'auto' || presentation.clipPath !== 'none').toBe(true)
+    expect(presentation.width).toBeGreaterThan(1)
+    expect(presentation.height).toBeGreaterThan(1)
+    expect(presentation.clip).toBe('auto')
+    expect(presentation.clipPath).toBe('none')
   }
 
   // No control lives on the map at all: the expand toggle, the information and
@@ -828,7 +829,7 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     await expectNoHorizontalOverflow(page)
   })
 
-  test('keeps the four statistics global while the filter changes the map scope', async ({ page }) => {
+  test('keeps statistics and map in the selected network scope', async ({ page }) => {
     await openHomeWithGeo(page)
     const map = mapRegion(page)
     await expect(map).toBeVisible({ timeout: 30_000 })
@@ -840,18 +841,20 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     const allNames = await itemNames()
     const before = await summaryValues(page)
 
-    // Filtering re-scopes the map and the Node list; the four statistics stay
-    // global, and a narrower scope may only ever drop countries.
+    // Filtering re-scopes statistics, map and Node list together.
     const pills = page.getByRole('tablist', { name: 'Network filter' })
     for (const name of ['PlatON E2E Network', 'Home Convergence Network With An Extremely Long Display Name']) {
       await pills.getByRole('tab', { name, exact: true }).click()
       await expect(geoChart(page)).toHaveAttribute('aria-label', new RegExp('in scope for ' + name))
       await expect.poll(async () => (await itemNames()).every(label => allNames.includes(label))).toBe(true)
-      expect(await summaryValues(page), 'statistics stay global').toEqual(before)
+      const filtered = await summaryValues(page)
+      expect(filtered.find(item => item.label === 'Active Nodes')?.value).toBe(String(await page.locator('[data-slot="node-card"]').count()))
+      expect(filtered.find(item => item.label === 'Networks')?.value).toBe('1')
     }
 
     await pills.getByRole('tab', { name: 'All Networks', exact: true }).click()
     await expect.poll(() => items.count(), 'the full scope comes back').toBe(allNames.length)
+    expect(await summaryValues(page)).toEqual(before)
     await expectQuietMap(page)
     await expectNoHorizontalOverflow(page)
   })

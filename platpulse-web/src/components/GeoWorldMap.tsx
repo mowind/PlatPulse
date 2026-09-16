@@ -4,7 +4,6 @@ import type { PublicNetwork } from '../api/generated'
 import { homeGeoOverview } from '../homeGeo'
 import { WORLD_MAP_NAME, loadWorldGeoJson, regionNameByCode, type WorldGeoJson } from '../worldGeometry'
 import { mapChartOption, type MapCountry } from './mapChartOption'
-import { Empty } from './ui/empty'
 import {
   PEER_COUNTRIES_DISABLED_NOTICE,
   PEER_COUNTRIES_HEADING,
@@ -189,13 +188,14 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
   const unknownCount = overview.unknownCountryCount
   const countsAvailable = overview.knownCountryCount != null && unknownCount != null
   const neverObserved = overview.scope === 'unobserved'
-  const primaryNotice = status === 'disabled' ? PEER_COUNTRIES_DISABLED_NOTICE
+  const primaryNotice = failed && needsBasemap ? 'Map unavailable'
+    : status === 'disabled' ? PEER_COUNTRIES_DISABLED_NOTICE
     : status === 'starting' ? 'Loading data'
     : !hasProjection ? 'Data unavailable'
     : status === 'empty' ? 'No data'
     : neverObserved ? 'No observations yet'
-    : failed ? 'Map unavailable'
     : status === 'error' ? 'Data unavailable'
+    : status === 'unknown' ? 'Data unknown'
     : status === 'stale' || overview.peerObservation === 'stale' || overview.countries.some((country) => country.staleCount > 0) ? 'Data stale'
     : overview.availablePeerCount === 0 ? 'No data'
     : !countsAvailable ? 'Data unavailable'
@@ -213,10 +213,9 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
     '. Each marker is a Server-provided country representative point, not a Peer location or a Node deployment location.'
 
   return (
-    <section aria-label={PEER_COUNTRIES_HEADING} data-state={status} data-scope={overview.scope} className="relative h-full">
-      {/* An abnormal state stays announced to assistive technology without
-          putting a glyph or a sentence on the map. */}
-      {notice && <span className="sr-only" role="status">{notice}</span>}
+    <section aria-label={PEER_COUNTRIES_HEADING} data-state={status} data-network-filter={networkFilter} data-scope={overview.scope} className="relative h-full">
+      {/* Normal stays quiet; exceptions are visible without moving the canvas. */}
+      {notice && <span data-slot="map-status" className="absolute top-0 left-0 z-10 max-w-[80%] rounded-md bg-background/90 px-2 py-1 text-xs text-muted-foreground" role="status"><span>{primaryNotice}</span>{unknownNotice && <span>{primaryNotice ? " · " : ""}{unknownNotice}</span>}</span>}
       {scopedPeerCount !== null && (
         <p
           data-slot="geo-counters"
@@ -230,7 +229,7 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
         </p>
       )}
       {failed ? (
-        <Empty description="Map unavailable" className="h-full" />
+        <div className="h-full" aria-hidden="true" />
       ) : (
         // Like Emerald, the desktop canvas is taller than the summary band and
         // shifted upward. Tie height to width so wide screens cannot shrink the

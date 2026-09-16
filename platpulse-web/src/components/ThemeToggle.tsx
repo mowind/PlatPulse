@@ -15,7 +15,7 @@ export default function ThemeToggle() {
     <button
       type="button"
       data-slot="theme-toggle"
-      className={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }))}
+      className={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }), 'compact-action border-[6px] border-transparent bg-clip-padding p-0')}
       onClick={cycleTheme}
       aria-label={toggleLabel}
       title={toggleLabel}

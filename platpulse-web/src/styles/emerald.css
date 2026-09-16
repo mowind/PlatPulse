@@ -275,3 +275,32 @@
     overflow-wrap: anywhere;
   }
 }
+
+/* Refinement of the pinned NodeCard anatomy, not another theme. */
+@layer components {
+  [data-slot='metric-row'] { container-type: inline-size; }
+  [data-slot='metric-row-label'] [data-short-label] { display: none; }
+  @container (max-width: 10rem) {
+    [data-slot='metric-row-label'] [data-full-label] { display: none; }
+    [data-slot='metric-row-label'] [data-short-label] { display: inline; }
+  }
+  [data-kind='information'] [data-slot='metric-row-value'] {
+    display: flex;
+    align-items: baseline;
+    justify-content: flex-end;
+    gap: 0.5rem;
+  }
+  [data-kind='information'] [data-slot='metric-row-value']::before {
+    content: '';
+    flex: 1 0 0.25rem;
+    align-self: center;
+    border-top: 2px dotted color-mix(in oklab, var(--muted-foreground) 10%, transparent);
+  }
+  /* Visible 32px shell / 26px triggers. Padding around the scroller leaves
+     each non-overlapping 44px pseudo hit area unclipped. */
+  .compact-tabs [data-slot='tabs-trigger']::before {
+    content: '';
+    position: absolute;
+    inset: -9px 0;
+  }
+}

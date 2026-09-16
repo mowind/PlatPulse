@@ -1,3 +1,4 @@
+import { ChevronUp } from 'lucide-react'
 import { useId, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router'
 import {
@@ -503,7 +504,7 @@ function AgentListRow({ agent }: { agent: AgentDiagnostic }) {
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <strong className="text-sm">Recorded diagnostic evidence</strong>
                 <Button variant="link" size="sm" onClick={() => setDiagnosticsOpen(false)}>
-                  Collapse diagnostics <span aria-hidden="true">▴</span>
+                  Collapse diagnostics <ChevronUp size={16} aria-hidden="true" />
                 </Button>
               </div>
               <ul className="space-y-1" aria-label="Recorded diagnostic evidence">

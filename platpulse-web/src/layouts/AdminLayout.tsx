@@ -1,3 +1,5 @@
+import { Menu, LayoutDashboard, Cpu, Server, Network, Settings, PanelsTopLeft, ListChecks } from 'lucide-react'
+import BackgroundDecoration from '../components/BackgroundDecoration'
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { Link, NavLink, Outlet, useOutletContext } from 'react-router'
 import { QueryClientProvider } from '@tanstack/react-query'
@@ -137,7 +139,8 @@ export default function AdminLayout() {
   }
 
   return (
-    <div className="flex min-h-dvh flex-col bg-background" data-slot="admin-shell">
+    <div className="relative isolate flex min-h-dvh flex-col bg-background" data-slot="admin-shell">
+      <BackgroundDecoration />
       <header
         data-slot="admin-header"
         className={cn(
@@ -179,7 +182,7 @@ export default function AdminLayout() {
               aria-controls="admin-nav"
               onClick={() => setNavOpen((value) => !value)}
             >
-              <span aria-hidden="true">☰</span> Menu
+              <Menu size={16} aria-hidden="true" /> Menu
             </Button>
             <ThemeToggle />
             <div
@@ -200,7 +203,7 @@ export default function AdminLayout() {
           className={cn(
             'fixed inset-y-0 left-0 z-40 flex w-[min(80vw,18rem)] flex-col gap-1 overflow-y-auto border-r border-border/60 bg-background/95 p-4 backdrop-blur-xl transition-transform duration-200 ease-out',
             navOpen ? 'visible translate-x-0' : 'hidden -translate-x-full lg:flex lg:visible lg:translate-x-0',
-            'lg:sticky lg:top-14 lg:z-auto lg:h-[calc(100dvh-3.5rem)] lg:w-[13.5rem] lg:flex-none lg:visible lg:translate-x-0 lg:border-r lg:bg-background lg:backdrop-blur-none',
+            'lg:sticky lg:top-14 lg:z-auto lg:h-[calc(100dvh-3.5rem)] lg:w-[13.5rem] lg:flex-none lg:visible lg:translate-x-0 lg:border-r lg:bg-background/60 lg:backdrop-blur-none',
           )}
           onKeyDown={onNavKeyDown}
         >
@@ -213,8 +216,8 @@ export default function AdminLayout() {
             onClick={closeNav}
             className={({ isActive }) => cn(NAV_LINK, isActive && NAV_LINK_ACTIVE)}
           >
-            <span data-slot="admin-nav-icon" className="w-6 shrink-0 text-center" aria-hidden="true">
-              ▦
+            <span data-slot="admin-nav-icon" className="flex w-6 shrink-0 justify-center" aria-hidden="true">
+              <LayoutDashboard size={18} strokeWidth={2} data-icon="LayoutDashboard" />
             </span>
             Overview
           </NavLink>
@@ -223,8 +226,8 @@ export default function AdminLayout() {
             onClick={closeNav}
             className={({ isActive }) => cn(NAV_LINK, isActive && NAV_LINK_ACTIVE)}
           >
-            <span data-slot="admin-nav-icon" className="w-6 shrink-0 text-center" aria-hidden="true">
-              ◈
+            <span data-slot="admin-nav-icon" className="flex w-6 shrink-0 justify-center" aria-hidden="true">
+              <Cpu size={18} strokeWidth={2} data-icon="Cpu" />
             </span>
             Agents
           </NavLink>
@@ -233,8 +236,8 @@ export default function AdminLayout() {
             onClick={closeNav}
             className={({ isActive }) => cn(NAV_LINK, isActive && NAV_LINK_ACTIVE)}
           >
-            <span data-slot="admin-nav-icon" className="w-6 shrink-0 text-center" aria-hidden="true">
-              ◉
+            <span data-slot="admin-nav-icon" className="flex w-6 shrink-0 justify-center" aria-hidden="true">
+              <Server size={18} strokeWidth={2} data-icon="Server" />
             </span>
             Nodes
           </NavLink>
@@ -243,8 +246,8 @@ export default function AdminLayout() {
             onClick={closeNav}
             className={({ isActive }) => cn(NAV_LINK, isActive && NAV_LINK_ACTIVE)}
           >
-            <span data-slot="admin-nav-icon" className="w-6 shrink-0 text-center" aria-hidden="true">
-              ⬡
+            <span data-slot="admin-nav-icon" className="flex w-6 shrink-0 justify-center" aria-hidden="true">
+              <Network size={18} strokeWidth={2} data-icon="Network" />
             </span>
             Networks
           </NavLink>
@@ -254,8 +257,8 @@ export default function AdminLayout() {
             onClick={closeNav}
             className={({ isActive }) => cn(NAV_LINK, isActive && NAV_LINK_ACTIVE)}
           >
-            <span data-slot="admin-nav-icon" className="w-6 shrink-0 text-center" aria-hidden="true">
-              ⚙
+            <span data-slot="admin-nav-icon" className="flex w-6 shrink-0 justify-center" aria-hidden="true">
+              <Settings size={18} strokeWidth={2} data-icon="Settings" />
             </span>
             Settings
           </NavLink>
@@ -268,8 +271,8 @@ export default function AdminLayout() {
             onClick={closeNav}
             className={({ isActive }) => cn(NAV_LINK, isActive && NAV_LINK_ACTIVE)}
           >
-            <span data-slot="admin-nav-icon" className="w-6 shrink-0 text-center" aria-hidden="true">
-              ◫
+            <span data-slot="admin-nav-icon" className="flex w-6 shrink-0 justify-center" aria-hidden="true">
+              <PanelsTopLeft size={18} strokeWidth={2} data-icon="PanelsTopLeft" />
             </span>
             Sessions
           </NavLink>
@@ -279,8 +282,8 @@ export default function AdminLayout() {
             onClick={closeNav}
             className={({ isActive }) => cn(NAV_LINK, isActive && NAV_LINK_ACTIVE)}
           >
-            <span data-slot="admin-nav-icon" className="w-6 shrink-0 text-center" aria-hidden="true">
-              ☷
+            <span data-slot="admin-nav-icon" className="flex w-6 shrink-0 justify-center" aria-hidden="true">
+              <ListChecks size={18} strokeWidth={2} data-icon="ListChecks" />
             </span>
             Audit
           </NavLink>

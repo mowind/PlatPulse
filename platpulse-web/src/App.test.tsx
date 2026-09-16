@@ -1018,7 +1018,7 @@ describe('App shell with private Home', () => {
     expect(screen.getByRole('img', { name: 'Healthy' })).toBeTruthy()
     fireEvent.click(nodeCard)
     expect(await screen.findByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
-    fireEvent.click(screen.getByRole('link', { name: /← mainnet/ }))
+    fireEvent.click(screen.getByRole('link', { name: /mainnet/ }))
     expect(await screen.findByRole('heading', { level: 1, name: 'Mainnet' })).toBeTruthy()
     expect(screen.getByText('Network overview')).toBeTruthy()
     expect(screen.getByText('PlatON Nodes')).toBeTruthy()
@@ -1122,7 +1122,7 @@ describe('App shell with private Home', () => {
     expect(within(healthyCard).getByRole('link', { name: 'Healthy Node' }).getAttribute('href')).toBe('/nodes/node-healthy')
     expect(within(healthyCard).getByRole('link', { name: 'View details' }).getAttribute('href')).toBe('/nodes/node-healthy')
     expect(within(healthyCard).getByRole('link', { name: 'View details' }).getAttribute('target')).toBeNull()
-    expect(within(healthyCard).getByRole('link', { name: 'View details' }).textContent).toContain('→')
+    expect(within(healthyCard).getByRole('link', { name: 'View details' }).querySelector('svg')?.getAttribute('aria-hidden')).toBe('true')
     expect(within(healthyCard).getByLabelText('Node component status').textContent).toContain('RPC')
     expect(within(healthyCard).getByLabelText('Node component status').textContent).toContain('Sync')
     expect(within(healthyCard).getByLabelText('Node component status').textContent).toContain('Consensus')
@@ -2047,26 +2047,26 @@ describe('Admin MVP route inventory (issue #92)', () => {
     await screen.findByRole('heading', { level: 1, name: 'Overview' })
 
     const adminNav = screen.getByRole('navigation', { name: 'Admin' })
-    // Each retained page group carries one decorative leading glyph. The glyph
+    // Each retained page group carries one decorative leading SVG icon. The glyph
     // is aria-hidden, so the accessible name stays the page-group label while
-    // the visible text leads with the glyph (webui.md §10.1).
+    // the visible icon leads the text (webui.md §10.1).
     const expectedLinks = [
-      { name: 'Overview', href: '/admin', glyph: '▦' },
-      { name: 'Agents', href: '/admin/agents', glyph: '◈' },
-      { name: 'Nodes', href: '/admin/nodes', glyph: '◉' },
-      { name: 'Networks', href: '/admin/networks', glyph: '⬡' },
-      { name: 'Settings', href: '/admin/settings', glyph: '⚙' },
-      { name: 'Sessions', href: '/admin/access/sessions', glyph: '◫' },
-      { name: 'Audit', href: '/admin/access/audit', glyph: '☷' },
+      { name: 'Overview', href: '/admin', glyph: 'LayoutDashboard' },
+      { name: 'Agents', href: '/admin/agents', glyph: 'Cpu' },
+      { name: 'Nodes', href: '/admin/nodes', glyph: 'Server' },
+      { name: 'Networks', href: '/admin/networks', glyph: 'Network' },
+      { name: 'Settings', href: '/admin/settings', glyph: 'Settings' },
+      { name: 'Sessions', href: '/admin/access/sessions', glyph: 'PanelsTopLeft' },
+      { name: 'Audit', href: '/admin/access/audit', glyph: 'ListChecks' },
     ]
     expect(within(adminNav).getAllByRole('link')).toHaveLength(expectedLinks.length)
     for (const { name, href, glyph } of expectedLinks) {
       const link = within(adminNav).getByRole('link', { name })
       expect(link.getAttribute('href')).toBe(href)
-      expect(link.textContent?.trim()).toBe(glyph + name)
+      expect(link.textContent?.trim()).toBe(name)
       const icon = link.querySelector('[data-slot="admin-nav-icon"]')
       expect(icon?.getAttribute('aria-hidden')).toBe('true')
-      expect(icon?.textContent).toBe(glyph)
+      expect(icon?.querySelector('svg')?.getAttribute('data-icon')).toBe(glyph)
     }
     for (const removed of ['History Window', 'Site Access', 'Validators', 'People', 'Alert Rules', 'Incidents', 'Silences', 'Maintenance', 'Deliveries', 'Channels', 'Operations', 'Data', 'Retention', 'Backups', 'Restore', 'Doctor', 'Enroll', 'Recover', 'Rotate']) {
       expect(

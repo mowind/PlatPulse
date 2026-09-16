@@ -1,3 +1,4 @@
+import { Check, X, Clock, CircleHelp, Ban, TriangleAlert, CircleMinus, Ellipsis, Pause, RotateCw, ArrowRight, Circle, type LucideIcon } from 'lucide-react'
 import { Badge } from './ui/badge'
 
 // Status display with text plus icon (design §2.1, §10.3): color is
@@ -5,48 +6,48 @@ import { Badge } from './ui/badge'
 // fixed vocabulary; Server-owned summary words (Node Health severity,
 // attention severity) are presented as the Server sends them (webui.md §5.4).
 
-const STATUS_ICONS: Record<string, string> = {
-  Starting: '…',
-  Current: '✓',
-  Stale: '◔',
-  Error: '✕',
-  Unknown: '?',
-  Disabled: '⊘',
-  Unsupported: '⚠',
-  Empty: '∅',
-  'Evaluation unavailable': '?',
-  'Connecting to live updates': '…',
-  'Live updates paused': '⏸',
-  'Peer data current': '✓',
-  'You are offline': '✕',
+const STATUS_ICONS: Record<string, LucideIcon> = {
+  Starting: Ellipsis,
+  Current: Check,
+  Stale: Clock,
+  Error: X,
+  Unknown: CircleHelp,
+  Disabled: Ban,
+  Unsupported: TriangleAlert,
+  Empty: CircleMinus,
+  'Evaluation unavailable': CircleHelp,
+  'Connecting to live updates': Ellipsis,
+  'Live updates paused': Pause,
+  'Peer data current': Check,
+  'You are offline': X,
   // Server-owned words are presented as the Server sends them (webui.md
   // §5.4): the positive realtime state, the Node Health Summary severity,
   // the attention severity, Operation states (§5.5), and Doctor check
   // states are not WebUI dimensions.
-  Connected: '✓',
-  Healthy: '✓',
-  Unhealthy: '✕',
-  Critical: '✕',
-  Warning: '⚠',
-  healthy: '✓',
-  unhealthy: '✕',
+  Connected: Check,
+  Healthy: Check,
+  Unhealthy: X,
+  Critical: X,
+  Warning: TriangleAlert,
+  healthy: Check,
+  unhealthy: X,
   // Operation states (webui.md §5.5); SucceededWithWarnings is never
   // displayed as plain Success.
-  Queued: '…',
-  Running: '↻',
-  Succeeded: '✓',
-  'Succeeded with warnings': '⚠',
-  Failed: '✕',
-  Cancelled: '⊘',
+  Queued: Ellipsis,
+  Running: RotateCw,
+  Succeeded: Check,
+  'Succeeded with warnings': TriangleAlert,
+  Failed: X,
+  Cancelled: Ban,
   // Doctor check statuses are Server-owned words shown as sent.
-  Pass: '✓',
-  Fail: '✕',
-  'Not configured': '∅',
-  Skipped: '→',
+  Pass: Check,
+  Fail: X,
+  'Not configured': CircleMinus,
+  Skipped: ArrowRight,
   // Restore validation (issue #51): a short-circuited check was never
   // reached and is never presented as a passing result.
-  'Not checked': '∅',
-  'Checking…': '…',
+  'Not checked': CircleMinus,
+  'Checking…': Ellipsis,
 }
 
 /** Server component states map onto the WebUI collection vocabulary. */
@@ -134,7 +135,7 @@ export function StatusBadge({
   status: string
   tone?: 'ok' | 'warning' | 'error' | 'neutral'
 }) {
-  const icon = STATUS_ICONS[status] ?? '·'
+  const Icon = STATUS_ICONS[status] ?? Circle
   return (
     <Badge
       data-slot="status-badge"
@@ -142,7 +143,7 @@ export function StatusBadge({
       variant={tone === 'error' ? 'destructive' : tone === 'ok' ? 'secondary' : 'outline'}
       className="gap-1"
     >
-      <span aria-hidden="true">{icon}</span>
+      <Icon size={12} strokeWidth={2} aria-hidden="true" />
       <span>{status}</span>
     </Badge>
   )

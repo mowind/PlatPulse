@@ -42,5 +42,6 @@ describe('MetricRow', () => {
     const { container: absent } = render(<MetricRow label="CPU" value="Unknown" progress={null} />)
     expect(absent.querySelector('[data-slot="progress-thin"]')).toBeNull()
     expect(absent.querySelector('[role="progressbar"]')).toBeNull()
+    expect(absent.querySelector('[data-slot="metric-unknown-space"]')).not.toBeNull()
   })
 })

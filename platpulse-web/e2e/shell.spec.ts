@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 import {
   expectFocusedElementHasVisibleFocus,
-  expectNoHorizontalOverflow,
+  expectNoHorizontalOverflow, expectVisibleInteractiveTargets,
   loginAs,
 } from './helpers'
 
@@ -66,11 +66,7 @@ test.describe('Authenticated shell', () => {
     await expect(home.getByRole('tab', { name: 'All Networks' })).toHaveAttribute('aria-selected', 'true')
     await home.getByRole('combobox', { name: 'Sort' }).selectOption('head')
 
-    const undersized = await home.locator('button, a, select').evaluateAll((elements) => elements.flatMap((element) => {
-      const rect = element.getBoundingClientRect()
-      return rect.width < 44 || rect.height < 44 ? [element.textContent?.trim() || element.getAttribute('aria-label') || element.tagName] : []
-    }))
-    expect(undersized, 'Home interactive targets must be at least 44px').toEqual([])
+    await expectVisibleInteractiveTargets(page)
     await expectNoHorizontalOverflow(page)
   })
 
@@ -268,7 +264,9 @@ test.describe('Authenticated shell', () => {
     await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
 
     const metrics = await measureAdminWorkbench(page)
-    expect(metrics.decorationCount).toBe(0)
+    expect(metrics.decorationCount).toBe(1)
+    await expect(page.locator('[data-slot="background-decoration"]')).toHaveAttribute('aria-hidden', 'true')
+    await expect(page.locator('[data-slot="background-decoration"]')).toHaveCSS('pointer-events', 'none')
     const expectedPadding = metrics.viewport >= 1024 ? 24 : 16
     expect(metrics.headingFontSize).toBeGreaterThanOrEqual(24)
     expect(metrics.headingFontSize).toBeLessThanOrEqual(28)

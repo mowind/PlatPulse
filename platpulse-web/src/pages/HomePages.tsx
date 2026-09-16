@@ -1,3 +1,4 @@
+import { ArrowLeft, ArrowRight, ChevronRight } from 'lucide-react'
 import { useId } from 'react'
 import type { ReactNode } from 'react'
 import { Link, useParams } from 'react-router'
@@ -47,7 +48,7 @@ export function NetworkPage() {
   const network = query.data
   return <section className={PAGE} aria-labelledby="network-page-title">
     <nav className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-medium" aria-label="Breadcrumb">
-      <Link className="inline-flex min-h-11 min-w-11 items-center text-muted-foreground hover:text-foreground" to="/">← All Networks</Link>
+      <Link className="inline-flex min-h-11 min-w-11 items-center text-muted-foreground hover:text-foreground" to="/"><ArrowLeft size={16} aria-hidden="true" /> All Networks</Link>
       <span aria-hidden="true" className="text-muted-foreground">/</span>
       <span className="text-muted-foreground">Network overview</span>
     </nav>
@@ -121,7 +122,7 @@ export function NodePage() {
   return <section className={PAGE}>
     <div data-slot="node-detail-breadcrumb" className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-medium text-muted-foreground">
-        <Link className="inline-flex min-h-11 min-w-11 items-center hover:text-foreground" to={'/networks/' + node.networkKey}>{'← ' + node.networkKey}</Link>
+        <Link className="inline-flex min-h-11 min-w-11 items-center hover:text-foreground" to={'/networks/' + node.networkKey}><ArrowLeft size={16} aria-hidden="true" />{node.networkKey}</Link>
         <span aria-hidden="true">/</span>
         <span>Node detail</span>
       </div>
@@ -355,7 +356,7 @@ function NodeDisclosure({ title, summaryDetail, children }: { title: string; sum
   return (
     <details data-slot="node-disclosure" className={cn('group mt-4 overflow-hidden', CARD)}>
       <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-baseline gap-x-3 gap-y-1 px-4 py-2.5 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
-        <span data-slot="node-disclosure-marker" aria-hidden="true" className="text-muted-foreground transition-transform group-open:rotate-90">▸</span>
+        <ChevronRight data-slot="node-disclosure-marker" size={16} aria-hidden="true" className="text-muted-foreground transition-transform group-open:rotate-90" />
         <span className="font-semibold">{title}</span>
         {summaryDetail && <span className="text-[11px] text-muted-foreground">{summaryDetail}</span>}
       </summary>
@@ -843,7 +844,7 @@ function NodeCard({ node }: { node: PublicNode }) {
           <NodeOverviewStatus label="Sync" value={node.syncState} />
           <NodeOverviewStatus label="Consensus" value={node.consensusState} />
         </div>
-        <Link className="mt-auto inline-flex min-h-11 min-w-11 items-center justify-end gap-1 text-sm font-semibold text-emerald-600 hover:underline dark:text-emerald-400" to={'/nodes/' + node.nodeId}>View details <span aria-hidden="true">→</span></Link>
+        <Link className="mt-auto inline-flex min-h-11 min-w-11 items-center justify-end gap-1 text-sm font-semibold text-emerald-600 hover:underline dark:text-emerald-400" to={'/nodes/' + node.nodeId}>View details <ArrowRight size={16} aria-hidden="true" /></Link>
       </article>
     </CardX>
   )

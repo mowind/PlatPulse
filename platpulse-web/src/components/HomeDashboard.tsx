@@ -15,7 +15,7 @@ import { Alert, AlertDescription } from './ui/alert'
 import { Empty } from './ui/empty'
 import { Select } from './ui/input'
 import { Tabs, TabsList, TabsTrigger } from './ui/tabs'
-import { EmeraldActionIcon } from './EmeraldActionIcon'
+import { Server, HeartPulse, TriangleAlert, Network, ChevronUp, ChevronDown } from 'lucide-react'
 import { SURFACE_CARD, SURFACE_TOOLBAR } from '../lib/surface'
 import { cn } from '../lib/utils'
 
@@ -76,7 +76,8 @@ export default function HomeDashboard({
   }, [networkFilter, records, sortBy])
 
   const hasProjection = !loading && (error === null || hasLastGood)
-  const healthyCount = hasProjection ? records.filter(({ node }) => isHealthy(node.health)).length : null
+  const scopedNetworks = networkFilter === 'all' ? networks : networks.filter(network => network.networkKey === networkFilter)
+  const healthyCount = hasProjection ? visibleRecords.filter(({ node }) => isHealthy(node.health)).length : null
   const streamLabel = realtimeStreamLabel(realtimeStatus)
   return (
     <section aria-label="Home">
@@ -119,36 +120,36 @@ export default function HomeDashboard({
           className="z-9 -mt-42 col-span-12 row-start-3 grid h-42 grid-cols-12 grid-rows-2 gap-2 min-w-0 md:col-span-1 md:col-start-1 md:row-start-1 md:mt-0 md:h-auto"
           aria-label="Home summary"
         >
-          <SummaryCard label="Active Nodes" value={hasProjection ? records.length : null} tone="green" icon="server" />
+          <SummaryCard label="Active Nodes" value={hasProjection ? visibleRecords.length : null} tone="green" icon="server" />
           <SummaryCard label="Healthy Nodes" value={healthyCount} tone="green" icon="heart" />
           <SummaryCard
             label="Attention"
-            value={healthyCount === null ? null : records.length - healthyCount}
-            tone={healthyCount !== null && records.length === healthyCount ? 'green' : 'red'}
+            value={healthyCount === null ? null : visibleRecords.length - healthyCount}
+            tone={healthyCount !== null && visibleRecords.length === healthyCount ? 'green' : 'red'}
             icon="alert"
           />
-          <SummaryCard label="Networks" value={hasProjection ? networks.length : null} tone="green" icon="network" />
+          <SummaryCard label="Networks" value={hasProjection ? scopedNetworks.length : null} tone="green" icon="network" />
         </div>
       </div>
 
       {/* Keep controls and Node links above the overflowing Emerald map. */}
       <div className="relative p-4 pt-0">
         <div className="flex flex-nowrap items-start gap-2" aria-label="Node filters and sorting">
-          <div className="overflow-x-auto rounded-sm">
+          <div className="overflow-x-auto rounded-sm py-1.5 -my-1.5">
             <Tabs
               value={networkFilter}
               onValueChange={setNetworkFilter}
               className="w-full flex-col gap-4"
             >
-              <TabsList className={cn('h-8 w-max rounded-md', SURFACE_TOOLBAR)} aria-label="Network filter">
-                <TabsTrigger value="all" className="h-6.5 shrink-0 flex-none rounded-sm border-none text-xs shadow-none data-active:text-emerald-600">
+              <TabsList className={cn('compact-tabs min-h-0 group-data-[orientation=horizontal]/tabs:h-8 h-8 w-max rounded-md', SURFACE_TOOLBAR)} aria-label="Network filter">
+                <TabsTrigger value="all" className="min-h-0 h-6.5 shrink-0 flex-none rounded-sm border-none text-xs shadow-none data-[state=active]:text-emerald-600 dark:data-[state=active]:text-emerald-600">
                   All Networks
                 </TabsTrigger>
                 {networks.map((network) => (
                   <TabsTrigger
                     key={network.networkKey}
                     value={network.networkKey}
-                    className="h-6.5 shrink-0 flex-none rounded-sm border-none text-xs shadow-none data-active:text-emerald-600"
+                    className="min-h-0 h-6.5 shrink-0 flex-none rounded-sm border-none text-xs shadow-none data-[state=active]:text-emerald-600 dark:data-[state=active]:text-emerald-600"
                   >
                     {network.displayName}
                   </TabsTrigger>
@@ -159,7 +160,7 @@ export default function HomeDashboard({
           <label className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
             Sort
             <Select
-              className={cn('h-8 w-auto rounded-md border-none shadow-none', SURFACE_TOOLBAR)}
+              className={cn('compact-select h-8 w-auto rounded-md border-x-0 border-y-[6px] border-transparent bg-clip-padding -my-1.5 shadow-none', SURFACE_TOOLBAR)}
               value={sortBy}
               onChange={(event) => setSortBy(event.target.value as SortKey)}
             >
@@ -194,10 +195,10 @@ export default function HomeDashboard({
 }
 
 const SUMMARY_ICONS = {
-  server: 'setting',
-  heart: 'dark-mode',
-  alert: 'sun-one',
-  network: 'moon',
+  server: Server,
+  heart: HeartPulse,
+  alert: TriangleAlert,
+  network: Network,
 } as const
 
 function SummaryCard({
@@ -211,6 +212,7 @@ function SummaryCard({
   tone: 'green' | 'red'
   icon: keyof typeof SUMMARY_ICONS
 }) {
+  const Icon = SUMMARY_ICONS[icon]
   return (
     <CardX
       hoverable
@@ -225,7 +227,7 @@ function SummaryCard({
       <div className="flex h-full flex-col justify-between gap-1">
         <div className="flex items-start justify-between gap-1">
           <span className="text-xs font-medium tracking-wider text-muted-foreground">{label}</span>
-          <EmeraldActionIcon name={SUMMARY_ICONS[icon]} />
+          <Icon size={18} strokeWidth={2} aria-hidden="true" data-icon={icon} />
         </div>
         <div className="flex min-w-0 items-baseline gap-1">
           <strong
@@ -235,7 +237,7 @@ function SummaryCard({
               tone === 'red' && value !== null && value > 0 && 'text-destructive',
             )}
           >
-            {value === null ? '—' : value.toLocaleString()}
+            {value === null ? 'Unknown' : value.toLocaleString()}
           </strong>
         </div>
       </div>
@@ -268,13 +270,13 @@ function HomeNodeCard({ network, node }: NodeRecord) {
       )}
     >
       <Link
-        className="flex h-full flex-col gap-3 rounded-md p-3 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        className="flex h-full flex-col rounded-md focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
         to={`/nodes/${node.nodeId}`}
       >
-        <header className="flex min-w-0 items-center gap-2">
+        <CardX bordered={false} className="h-full bg-transparent" contentClassName="flex flex-col gap-3" header={<>
           <NodeHealthMarker health={node.health} />
           <h2 className="min-w-0 flex-1 truncate text-base font-bold">{nodeLabel(node)}</h2>
-        </header>
+        </>}>
         <p className="truncate text-[11px] text-muted-foreground">{network.displayName}</p>
         {diagnostic && (
           <p data-slot="node-diagnostic" className="text-[11px] text-destructive">
@@ -297,6 +299,7 @@ function HomeNodeCard({ network, node }: NodeRecord) {
           </small>
         )}
         <ConsensusRow consensus={node.consensus} />
+        </CardX>
       </Link>
     </article>
   )
@@ -306,11 +309,11 @@ function ResourceRow({ node }: { node: PublicNode }) {
   const nodeDataProgressValue = nodeDataProgress(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)
   return (
     <div
-      className="grid grid-cols-2 gap-x-3 gap-y-2"
+      className="grid grid-cols-2 gap-x-3 gap-y-1"
       aria-label="Node process and host network resources"
     >
-      <MetricRow label="CPU" value={formatPercent(node.processCpuPercent)} progress={node.processCpuPercent} />
-      <MetricRow label="Memory" value={formatPercent(node.processMemoryPercent)} progress={node.processMemoryPercent} />
+      <MetricRow label="CPU" value={formatPercent(node.processCpuPercent)} progress={node.processCpuPercent ?? null} />
+      <MetricRow label="Memory" value={formatPercent(node.processMemoryPercent)} progress={node.processMemoryPercent ?? null} />
       <MetricRow
         label="Node data"
         value={formatPercent(nodeDataProgressValue)}
@@ -319,8 +322,8 @@ function ResourceRow({ node }: { node: PublicNode }) {
       />
       <div className="col-span-2" role="group" aria-label="Host network speed">
         <MetricRow label="Speed" value={<span className="flex gap-2">
-          <span aria-label={`Upload ${formatRate(node.hostNetworkTxBytesPerSec)}`} className="text-green-600">↑{formatRate(node.hostNetworkTxBytesPerSec)}</span>
-          <span aria-label={`Download ${formatRate(node.hostNetworkRxBytesPerSec)}`} className="text-blue-600">↓{formatRate(node.hostNetworkRxBytesPerSec)}</span>
+          <span aria-label={`Upload ${formatRate(node.hostNetworkTxBytesPerSec)}`} className="inline-flex items-baseline text-green-600"><ChevronUp className="size-3 shrink-0 self-center" aria-hidden="true" />{formatRate(node.hostNetworkTxBytesPerSec)}</span>
+          <span aria-label={`Download ${formatRate(node.hostNetworkRxBytesPerSec)}`} className="inline-flex items-baseline text-blue-600"><ChevronDown className="size-3 shrink-0 self-center" aria-hidden="true" />{formatRate(node.hostNetworkRxBytesPerSec)}</span>
         </span>} />
       </div>
       <div className="col-span-2" role="group" aria-label="Node uptime">
@@ -331,11 +334,11 @@ function ResourceRow({ node }: { node: PublicNode }) {
 }
 
 function formatPercent(value: number | null | undefined) {
-  return value == null ? '—' : `${value.toFixed(1)}%`
+  return value == null ? 'Unknown' : `${value.toFixed(1)}%`
 }
 
 function formatRate(value: number | null | undefined): string {
-  if (value == null || !Number.isFinite(value) || value < 0) return '—'
+  if (value == null || !Number.isFinite(value) || value < 0) return 'Unknown'
   const units = ['bps', 'Kbps', 'Mbps', 'Gbps', 'Tbps']
   let scaled = value * 8
   let unit = 0

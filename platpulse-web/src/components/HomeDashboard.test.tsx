@@ -57,6 +57,19 @@ const summaryValueOf = (label: string) => {
 afterEach(cleanup)
 
 describe('Public Home dashboard', () => {
+  it('scopes all four counters, map and cards to the selected network', () => {
+    const second = { ...network, networkKey: 'testnet', displayName: 'Testnet', nodes: [{ ...network.nodes[0], nodeId: 'gamma', displayName: 'Gamma', networkKey: 'testnet' }] }
+    render(<BrowserRouter><HomeDashboard networks={[network, second]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Testnet' }), { button: 0, ctrlKey: false })
+    expect(summaryValueOf('Active Nodes').textContent).toBe('1')
+    expect(summaryValueOf('Healthy Nodes').textContent).toBe('1')
+    expect(summaryValueOf('Attention').textContent).toBe('0')
+    expect(summaryValueOf('Networks').textContent).toBe('1')
+    expect(screen.queryByRole('link', { name: /Alpha/ })).toBeNull()
+    expect(nodeCardLink('Gamma')).toBeTruthy()
+    expect(screen.getByRole('region', { name: 'Peer countries' }).getAttribute('data-network-filter')).toBe('testnet')
+  })
+
   it('summarizes Server-owned Nodes and preserves authoritative zero peer count', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
@@ -139,8 +152,9 @@ describe('Public Home dashboard', () => {
     expect(nodeDataMetric.querySelector('[data-slot="progress-thin"]')).toBeTruthy()
     expect(nodeDataMetric.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow')).toBe('25')
     expect(within(resources).queryByText('STORAGE')).toBeNull()
-    expect(within(resources).getByText('↑16.4Kbps')).toBeTruthy()
-    expect(within(resources).getByText('↓8.19Kbps')).toBeTruthy()
+    expect(within(resources).getByText('16.4Kbps')).toBeTruthy()
+    expect(within(resources).getByLabelText('Upload 16.4Kbps').querySelector('svg')).not.toBeNull()
+    expect(within(resources).getByText('8.19Kbps')).toBeTruthy()
   })
   it('places full-width Node uptime immediately below the full-width host network speed row', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
@@ -204,7 +218,7 @@ describe('Public Home dashboard', () => {
     expect(triples[0].textContent).toContain('Head120Txs12,345Peers0')
     expect(within(card).getByText('L').getAttribute('aria-label')).toBe('Locked')
     expect(within(card).getByText('C').getAttribute('aria-label')).toBe('Committed')
-    expect(within(card).getByText('Speed').nextElementSibling?.textContent).toBe('↑16.4Kbps↓8.19Kbps')
+    expect(within(card).getByText('Speed').nextElementSibling?.textContent).toBe('16.4Kbps8.19Kbps')
   })
 
   it.each([
@@ -215,18 +229,18 @@ describe('Public Home dashboard', () => {
     [125_000_000, '1Gbps'],
     [125_000_000_000, '1Tbps'],
     [124_999, '1Mbps'],
-    [null, '—'],
+    [null, 'Unknown'],
   ])('formats %s bytes/s using an appropriate speed unit', (rate, expected) => {
     const nodes = [{ ...network.nodes[0], hostNetworkTxBytesPerSec: rate, hostNetworkRxBytesPerSec: 100 }]
     render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
-    expect(within(cardOf(nodeCardLink('Alpha'))).getByText('Speed').nextElementSibling?.textContent).toBe(`↑${expected}↓800bps`)
+    expect(within(cardOf(nodeCardLink('Alpha'))).getByText('Speed').nextElementSibling?.textContent).toBe(`${expected}800bps`)
   })
 
   it('converts bytes per second to decimal Mbps and preserves missing speeds', () => {
     const nodes = [{ ...network.nodes[0], hostNetworkTxBytesPerSec: 1_250_000, hostNetworkRxBytesPerSec: 2_500_000 }, network.nodes[1]]
     render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
-    expect(within(cardOf(nodeCardLink('Alpha'))).getByText('Speed').nextElementSibling?.textContent).toBe('↑10Mbps↓20Mbps')
-    expect(within(cardOf(nodeCardLink('Beta'))).getByText('Speed').nextElementSibling?.textContent).toBe('↑—↓—')
+    expect(within(cardOf(nodeCardLink('Alpha'))).getByText('Speed').nextElementSibling?.textContent).toBe('10Mbps20Mbps')
+    expect(within(cardOf(nodeCardLink('Beta'))).getByText('Speed').nextElementSibling?.textContent).toBe('UnknownUnknown')
   })
 
   it('shows the second compact metric row as QC, Locked, Committed, and Validator', () => {
@@ -528,7 +542,7 @@ describe('Public Home dashboard', () => {
 
   it('does not render loading as fabricated zero-valued summary data', () => {
     render(<BrowserRouter><HomeDashboard networks={[]} realtimeStatus="connecting" online loading resetting={false} error={null} /></BrowserRouter>)
-    expect(screen.getAllByText('—')).toHaveLength(4)
+    expect(screen.getAllByText('Unknown')).toHaveLength(4)
     expect(screen.queryByText('No Active Nodes in this view.')).toBeNull()
   })
 

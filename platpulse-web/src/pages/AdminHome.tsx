@@ -1,3 +1,4 @@
+import { ArrowUpRight, ChevronRight } from 'lucide-react'
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { Link } from 'react-router'
 import {
@@ -258,9 +259,7 @@ function SummaryCards({ summary }: { summary: AdminOverview['summary'] }) {
           <span className="text-[11px] leading-snug break-words text-muted-foreground">
             {card.legend}
           </span>
-          <span aria-hidden="true" className={cn('text-base', SUMMARY_ARROW[card.accent])}>
-            ↗
-          </span>
+          <ArrowUpRight size={16} aria-hidden="true" className={SUMMARY_ARROW[card.accent]} />
         </Link>
       ))}
     </nav>
@@ -620,7 +619,7 @@ function NodeRows({
             aria-controls={detailId}
             onClick={onToggle}
           >
-            <span aria-hidden="true" className="shrink-0">{expanded ? '▾' : '▸'}</span>
+            <ChevronRight size={16} aria-hidden="true" className={cn("shrink-0", expanded && "rotate-90")} />
             <span className="min-w-0 [overflow-wrap:anywhere]">{nodeLabel}</span>
           </Button>
           <small className={MUTED_SMALL} title={node.node_id}>

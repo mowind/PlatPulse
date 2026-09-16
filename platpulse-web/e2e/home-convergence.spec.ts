@@ -58,7 +58,7 @@ test.describe('Converged Public Home (issue #102)', () => {
     // Both compact metric rows carry exactly the required labels and values:
     // Head / Txs / Peers and QC / Locked / Committed / Validator.
     for (const label of ['Head', 'Txs', 'Peers', 'QC', 'Locked', 'Committed', 'Validator']) {
-      await expect(hCard.getByText(label, { exact: true })).toBeVisible()
+      await expect(['Locked', 'Committed'].includes(label) ? hCard.getByLabel(label, { exact: true }) : hCard.getByText(label, { exact: true })).toBeVisible()
     }
     // Every metric is one data-item / value line with the value flush right,
     // at every fixed viewport.
@@ -148,7 +148,8 @@ test.describe('Converged Public Home (issue #102)', () => {
     // No, and a Node without an effective Link has Unknown Activity.
     const kCard = nodeCard(page, /Node K/)
     await expect(kCard).toBeVisible({ timeout: 15_000 })
-    await expect(kCard.getByText('Unknown', { exact: true })).toHaveCount(1)
+    // Txs plus six absent resource values now say Unknown, not an em dash.
+    await expect(kCard.getByText('Unknown', { exact: true })).toHaveCount(7)
     await expect(kCard.getByText('12,842,024', { exact: true })).toHaveCount(3)
     await expect(kCard.getByText('12,842,023', { exact: true })).toHaveCount(1)
     await expect(kCard.getByText('0', { exact: true })).toHaveCount(1)
@@ -183,9 +184,11 @@ test.describe('Converged Public Home (issue #102)', () => {
     // Node P has no Node observation; only the Agent-shared Host network
     // observation is known, and missing Node values never become 0 or No.
     const pCard = nodeCard(page, /Node P/)
-    // Seven Unknown metric values; the health marker is an accessible name,
-    // not card text, so it is not counted here.
-    await expect(pCard.getByText('Unknown', { exact: true })).toHaveCount(7)
+    // All absent metrics are explicit, including resource and uptime values.
+    for (const label of ['CPU', 'Memory', 'Node data', 'Node uptime', 'Head', 'Txs', 'Peers', 'QC', 'Locked', 'Committed', 'Validator']) {
+      const row = pCard.locator('[data-slot="metric-row"]').filter({ has: page.getByText(label, { exact: true }) })
+      await expect(row.locator('[data-slot="metric-row-value"]')).toHaveText('Unknown')
+    }
     await expect(pCard.getByText('0', { exact: true })).toHaveCount(0)
     await expect(pCard.getByText('False', { exact: true })).toHaveCount(0)
     await expect(pCard.getByText('one or more observations are stale or unknown')).toHaveCount(1)

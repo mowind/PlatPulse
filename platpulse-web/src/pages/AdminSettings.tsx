@@ -1,3 +1,4 @@
+import { ArrowLeft } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router'
 import {
@@ -57,7 +58,7 @@ export default function AdminSettings() {
   return (
     <section data-slot="settings-page" className="mx-auto flex w-full min-w-0 max-w-[1280px] flex-col gap-4 pb-12">
       <p className="m-0">
-        <Link className={TEXT_LINK} to="/admin">← Admin overview</Link>
+        <Link className={TEXT_LINK} to="/admin"><ArrowLeft className="inline" size={16} aria-hidden="true" /> Admin overview</Link>
       </p>
       <h1 className="text-lg font-semibold break-words">Settings</h1>
       <div data-slot="settings-sections" className="grid min-w-0 max-w-[58rem] gap-3">

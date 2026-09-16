@@ -119,7 +119,8 @@ function HomeLayoutContent() {
                 to="/admin"
                 aria-label="Admin"
                 title="Open Admin dashboard"
-                className={buttonVariants({ variant: 'ghost', size: 'icon-sm' })}
+                data-slot="admin-action"
+                className={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }), 'border-[6px] border-transparent bg-clip-padding p-0')}
               >
                 <EmeraldActionIcon name="setting" />
               </Link>
