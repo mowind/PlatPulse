@@ -7,6 +7,7 @@ import { NodeHealthMarker } from './StatusBadge'
 import GeoMapBoundary from './GeoMapBoundary'
 import GeoWorldMap from './GeoWorldMap'
 import { formatNodeDataBytes } from '../formatBytes'
+import { formatDuration } from '../formatDuration'
 import { nodeDataProgress } from '../nodeData'
 import { MetricRow } from './MetricRow'
 import { CardX } from './ui/card-x'
@@ -316,10 +317,15 @@ function ResourceRow({ node }: { node: PublicNode }) {
         detail={formatNodeDataBytes(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)}
         progress={nodeDataProgressValue}
       />
-      <MetricRow label="Speed" value={<span className="flex gap-2">
-        <span aria-label={`Upload ${formatRate(node.hostNetworkTxBytesPerSec)}`} className="text-green-600">↑{formatRate(node.hostNetworkTxBytesPerSec)}</span>
-        <span aria-label={`Download ${formatRate(node.hostNetworkRxBytesPerSec)}`} className="text-blue-600">↓{formatRate(node.hostNetworkRxBytesPerSec)}</span>
-      </span>} />
+      <div className="col-span-2" role="group" aria-label="Host network speed">
+        <MetricRow label="Speed" value={<span className="flex gap-2">
+          <span aria-label={`Upload ${formatRate(node.hostNetworkTxBytesPerSec)}`} className="text-green-600">↑{formatRate(node.hostNetworkTxBytesPerSec)}</span>
+          <span aria-label={`Download ${formatRate(node.hostNetworkRxBytesPerSec)}`} className="text-blue-600">↓{formatRate(node.hostNetworkRxBytesPerSec)}</span>
+        </span>} />
+      </div>
+      <div className="col-span-2" role="group" aria-label="Node uptime">
+        <MetricRow label="Node uptime" value={formatDuration(node.processUptimeMs)} />
+      </div>
     </div>
   )
 }

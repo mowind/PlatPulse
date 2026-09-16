@@ -142,6 +142,39 @@ describe('Public Home dashboard', () => {
     expect(within(resources).getByText('↑16.4Kbps')).toBeTruthy()
     expect(within(resources).getByText('↓8.19Kbps')).toBeTruthy()
   })
+  it('places full-width Node uptime immediately below the full-width host network speed row', () => {
+    render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+    const resources = within(cardOf(nodeCardLink('Alpha'))).getByLabelText('Node process and host network resources')
+    const speed = within(resources).getByRole('group', { name: 'Host network speed' })
+    expect(speed.parentElement).toBe(resources)
+    expect(speed.classList.contains('col-span-2')).toBe(true)
+    const uptime = within(resources).getByRole('group', { name: 'Node uptime' })
+    expect(uptime.parentElement).toBe(resources)
+    expect(uptime.classList.contains('col-span-2')).toBe(true)
+    expect(uptime.textContent).toBe('Node uptimeUnknown')
+    expect(speed.nextElementSibling).toBe(uptime)
+    expect(within(speed).getByLabelText('Upload 16.4Kbps')).toBeTruthy()
+    expect(within(speed).getByLabelText('Download 8.19Kbps')).toBeTruthy()
+    expect(within(speed).queryByText('Node data')).toBeNull()
+  })
+
+  it.each([
+    [0, '0s'],
+    [59_999, '59s'],
+    [60_000, '1m'],
+    [3_660_000, '1h 1m'],
+    [183_600_000, '2d 3h'],
+    [null, 'Unknown'],
+    [undefined, 'Unknown'],
+    [-1, 'Unknown'],
+    [NaN, 'Unknown'],
+    [Infinity, 'Unknown'],
+  ])('shows Node process uptime %s as %s', (processUptimeMs, expected) => {
+    const nodes = [{ ...network.nodes[0], processUptimeMs }]
+    render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+    expect(within(cardOf(nodeCardLink('Alpha'))).getByText('Node uptime').nextElementSibling?.textContent).toBe(expected)
+  })
+
   it('renders Node data as a percentage with the used / total byte detail under its progress bar', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
@@ -156,10 +189,10 @@ describe('Public Home dashboard', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
     const alphaCard = cardOf(nodeCardLink('Alpha'))
-    // Resources (CPU, Memory, Node data, Speed), main (Head, Txs,
+    // Resources (CPU, Memory, Node data, Node uptime, Speed), main (Head, Txs,
     // Peers), and consensus (QC, Locked, Committed, Validator). Their shared
     // shape is covered by MetricRow.test.tsx.
-    expect(alphaCard.querySelectorAll('[data-slot="metric-row"]')).toHaveLength(11)
+    expect(alphaCard.querySelectorAll('[data-slot="metric-row"]')).toHaveLength(12)
   })
 
   it('groups Head/Txs/Peers and consensus heights into triple rows', () => {
