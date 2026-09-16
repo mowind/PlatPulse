@@ -1,0 +1,606 @@
+{
+  "commit": "a1eb85ed220b5ec3760930cfbf4a167af80f0951",
+  "viewport": {
+    "width": 360,
+    "height": 800
+  },
+  "browser": "151.0.7922.34",
+  "node": "v26.8.2",
+  "platform": "linux",
+  "measurements": {
+    "normal": [
+      {
+        "slot": "app-brand",
+        "text": "PlatPulse",
+        "width": 141.203125,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "16px"
+      },
+      {
+        "slot": "theme-toggle",
+        "text": "",
+        "width": 44,
+        "height": 44,
+        "paintedHeight": 42,
+        "fontSize": "14px"
+      },
+      {
+        "slot": null,
+        "text": "",
+        "width": 44,
+        "height": 44,
+        "paintedHeight": 42,
+        "fontSize": "14px"
+      },
+      {
+        "slot": "tabs-list",
+        "text": "All NetworksMainnetTestnet",
+        "width": 241.21875,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "16px"
+      },
+      {
+        "slot": "tabs-trigger",
+        "text": "All Networks",
+        "width": 102.40625,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "12px"
+      },
+      {
+        "slot": "tabs-trigger",
+        "text": "Mainnet",
+        "width": 66.40625,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "12px"
+      },
+      {
+        "slot": "tabs-trigger",
+        "text": "Testnet",
+        "width": 66.40625,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "12px"
+      },
+      {
+        "slot": "select",
+        "text": "HealthNameCurrent Head",
+        "width": 137,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "14px"
+      }
+    ],
+    "unknown": [
+      {
+        "slot": "app-brand",
+        "text": "PlatPulse",
+        "width": 141.203125,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "16px"
+      },
+      {
+        "slot": "theme-toggle",
+        "text": "",
+        "width": 44,
+        "height": 44,
+        "paintedHeight": 42,
+        "fontSize": "14px"
+      },
+      {
+        "slot": null,
+        "text": "",
+        "width": 44,
+        "height": 44,
+        "paintedHeight": 42,
+        "fontSize": "14px"
+      },
+      {
+        "slot": "tabs-list",
+        "text": "All NetworksMainnetTestnet",
+        "width": 241.21875,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "16px"
+      },
+      {
+        "slot": "tabs-trigger",
+        "text": "All Networks",
+        "width": 102.40625,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "12px"
+      },
+      {
+        "slot": "tabs-trigger",
+        "text": "Mainnet",
+        "width": 66.40625,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "12px"
+      },
+      {
+        "slot": "tabs-trigger",
+        "text": "Testnet",
+        "width": 66.40625,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "12px"
+      },
+      {
+        "slot": "select",
+        "text": "HealthNameCurrent Head",
+        "width": 137,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "14px"
+      }
+    ],
+    "stale": [
+      {
+        "slot": "app-brand",
+        "text": "PlatPulse",
+        "width": 141.203125,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "16px"
+      },
+      {
+        "slot": "theme-toggle",
+        "text": "",
+        "width": 44,
+        "height": 44,
+        "paintedHeight": 42,
+        "fontSize": "14px"
+      },
+      {
+        "slot": null,
+        "text": "",
+        "width": 44,
+        "height": 44,
+        "paintedHeight": 42,
+        "fontSize": "14px"
+      },
+      {
+        "slot": "tabs-list",
+        "text": "All NetworksMainnetTestnet",
+        "width": 241.21875,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "16px"
+      },
+      {
+        "slot": "tabs-trigger",
+        "text": "All Networks",
+        "width": 102.40625,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "12px"
+      },
+      {
+        "slot": "tabs-trigger",
+        "text": "Mainnet",
+        "width": 66.40625,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "12px"
+      },
+      {
+        "slot": "tabs-trigger",
+        "text": "Testnet",
+        "width": 66.40625,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "12px"
+      },
+      {
+        "slot": "select",
+        "text": "HealthNameCurrent Head",
+        "width": 137,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "14px"
+      }
+    ],
+    "error": [
+      {
+        "slot": "app-brand",
+        "text": "PlatPulse",
+        "width": 141.203125,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "16px"
+      },
+      {
+        "slot": "theme-toggle",
+        "text": "",
+        "width": 44,
+        "height": 44,
+        "paintedHeight": 42,
+        "fontSize": "14px"
+      },
+      {
+        "slot": null,
+        "text": "",
+        "width": 44,
+        "height": 44,
+        "paintedHeight": 42,
+        "fontSize": "14px"
+      },
+      {
+        "slot": "tabs-list",
+        "text": "All NetworksMainnetTestnet",
+        "width": 241.21875,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "16px"
+      },
+      {
+        "slot": "tabs-trigger",
+        "text": "All Networks",
+        "width": 102.40625,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "12px"
+      },
+      {
+        "slot": "tabs-trigger",
+        "text": "Mainnet",
+        "width": 66.40625,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "12px"
+      },
+      {
+        "slot": "tabs-trigger",
+        "text": "Testnet",
+        "width": 66.40625,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "12px"
+      },
+      {
+        "slot": "select",
+        "text": "HealthNameCurrent Head",
+        "width": 137,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "14px"
+      }
+    ],
+    "disabled": [
+      {
+        "slot": "app-brand",
+        "text": "PlatPulse",
+        "width": 141.203125,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "16px"
+      },
+      {
+        "slot": "theme-toggle",
+        "text": "",
+        "width": 44,
+        "height": 44,
+        "paintedHeight": 42,
+        "fontSize": "14px"
+      },
+      {
+        "slot": null,
+        "text": "",
+        "width": 44,
+        "height": 44,
+        "paintedHeight": 42,
+        "fontSize": "14px"
+      },
+      {
+        "slot": "tabs-list",
+        "text": "All NetworksMainnetTestnet",
+        "width": 241.21875,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "16px"
+      },
+      {
+        "slot": "tabs-trigger",
+        "text": "All Networks",
+        "width": 102.40625,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "12px"
+      },
+      {
+        "slot": "tabs-trigger",
+        "text": "Mainnet",
+        "width": 66.40625,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "12px"
+      },
+      {
+        "slot": "tabs-trigger",
+        "text": "Testnet",
+        "width": 66.40625,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "12px"
+      },
+      {
+        "slot": "select",
+        "text": "HealthNameCurrent Head",
+        "width": 137,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "14px"
+      }
+    ],
+    "partial": [
+      {
+        "slot": "app-brand",
+        "text": "PlatPulse",
+        "width": 141.203125,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "16px"
+      },
+      {
+        "slot": "theme-toggle",
+        "text": "",
+        "width": 44,
+        "height": 44,
+        "paintedHeight": 42,
+        "fontSize": "14px"
+      },
+      {
+        "slot": null,
+        "text": "",
+        "width": 44,
+        "height": 44,
+        "paintedHeight": 42,
+        "fontSize": "14px"
+      },
+      {
+        "slot": "tabs-list",
+        "text": "All NetworksMainnetTestnet",
+        "width": 241.21875,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "16px"
+      },
+      {
+        "slot": "tabs-trigger",
+        "text": "All Networks",
+        "width": 102.40625,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "12px"
+      },
+      {
+        "slot": "tabs-trigger",
+        "text": "Mainnet",
+        "width": 66.40625,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "12px"
+      },
+      {
+        "slot": "tabs-trigger",
+        "text": "Testnet",
+        "width": 66.40625,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "12px"
+      },
+      {
+        "slot": "select",
+        "text": "HealthNameCurrent Head",
+        "width": 137,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "14px"
+      }
+    ],
+    "long-name": [
+      {
+        "slot": "app-brand",
+        "text": "PlatPulse",
+        "width": 141.203125,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "16px"
+      },
+      {
+        "slot": "theme-toggle",
+        "text": "",
+        "width": 44,
+        "height": 44,
+        "paintedHeight": 42,
+        "fontSize": "14px"
+      },
+      {
+        "slot": null,
+        "text": "",
+        "width": 44,
+        "height": 44,
+        "paintedHeight": 42,
+        "fontSize": "14px"
+      },
+      {
+        "slot": "tabs-list",
+        "text": "All NetworksMainnetTestnet",
+        "width": 241.21875,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "16px"
+      },
+      {
+        "slot": "tabs-trigger",
+        "text": "All Networks",
+        "width": 102.40625,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "12px"
+      },
+      {
+        "slot": "tabs-trigger",
+        "text": "Mainnet",
+        "width": 66.40625,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "12px"
+      },
+      {
+        "slot": "tabs-trigger",
+        "text": "Testnet",
+        "width": 66.40625,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "12px"
+      },
+      {
+        "slot": "select",
+        "text": "HealthNameCurrent Head",
+        "width": 137,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "14px"
+      }
+    ],
+    "long-value": [
+      {
+        "slot": "app-brand",
+        "text": "PlatPulse",
+        "width": 141.203125,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "16px"
+      },
+      {
+        "slot": "theme-toggle",
+        "text": "",
+        "width": 44,
+        "height": 44,
+        "paintedHeight": 42,
+        "fontSize": "14px"
+      },
+      {
+        "slot": null,
+        "text": "",
+        "width": 44,
+        "height": 44,
+        "paintedHeight": 42,
+        "fontSize": "14px"
+      },
+      {
+        "slot": "tabs-list",
+        "text": "All NetworksMainnetTestnet",
+        "width": 241.21875,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "16px"
+      },
+      {
+        "slot": "tabs-trigger",
+        "text": "All Networks",
+        "width": 102.40625,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "12px"
+      },
+      {
+        "slot": "tabs-trigger",
+        "text": "Mainnet",
+        "width": 66.40625,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "12px"
+      },
+      {
+        "slot": "tabs-trigger",
+        "text": "Testnet",
+        "width": 66.40625,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "12px"
+      },
+      {
+        "slot": "select",
+        "text": "HealthNameCurrent Head",
+        "width": 137,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "14px"
+      }
+    ],
+    "multi-network": [
+      {
+        "slot": "app-brand",
+        "text": "PlatPulse",
+        "width": 141.203125,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "16px"
+      },
+      {
+        "slot": "theme-toggle",
+        "text": "",
+        "width": 44,
+        "height": 44,
+        "paintedHeight": 42,
+        "fontSize": "14px"
+      },
+      {
+        "slot": null,
+        "text": "",
+        "width": 44,
+        "height": 44,
+        "paintedHeight": 42,
+        "fontSize": "14px"
+      },
+      {
+        "slot": "tabs-list",
+        "text": "All NetworksMainnetTestnet",
+        "width": 241.21875,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "16px"
+      },
+      {
+        "slot": "tabs-trigger",
+        "text": "All Networks",
+        "width": 102.40625,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "12px"
+      },
+      {
+        "slot": "tabs-trigger",
+        "text": "Mainnet",
+        "width": 66.40625,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "12px"
+      },
+      {
+        "slot": "tabs-trigger",
+        "text": "Testnet",
+        "width": 66.40625,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "12px"
+      },
+      {
+        "slot": "select",
+        "text": "HealthNameCurrent Head",
+        "width": 137,
+        "height": 44,
+        "paintedHeight": 44,
+        "fontSize": "14px"
+      }
+    ]
+  }
+}

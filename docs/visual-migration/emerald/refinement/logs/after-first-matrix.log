@@ -1,0 +1,213 @@
+npm notice run platpulse-web@0.1.0 npx
+npm notice run 'playwright' test e2e/emerald-refinement.spec.ts e2e/home-convergence.spec.ts e2e/home-geo-map.spec.ts e2e/emerald-decisions.spec.ts e2e/shell.spec.ts e2e/admin-list-matrix.spec.ts
+[WebServer] npm notice run platpulse-web@0.1.0 build
+[WebServer] npm notice run tsc --noEmit && vite build
+[WebServer] [plugin builtin:vite-reporter] 
+[WebServer] (!) Some chunks are larger than 500 kB after minification. Consider:
+[WebServer] - Using dynamic import() to code-split the application
+[WebServer] - Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+[WebServer] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+
+Running 170 tests using 1 worker
+
+  -    1 [phone-360-touch] › e2e/admin-list-matrix.spec.ts:312:3 › SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix › keeps six aligned columns for twelve varied records at 1440/1920/390
+  -    2 [phone-360-touch] › e2e/admin-list-matrix.spec.ts:407:3 › SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix › Audit renders multi-field long details in a cross-column row at 1440/1920/390
+  -    3 [phone-360-touch] › e2e/admin-list-matrix.spec.ts:457:3 › SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix › Overview labels the observation time separately from the snapshot time
+  ✓    4 [phone-360-touch] › e2e/emerald-decisions.spec.ts:4:1 › Login has an accessible brand header in both themes (321ms)
+  ✓    5 [phone-360-touch] › e2e/emerald-decisions.spec.ts:22:1 › selection controls keep compact indicators and native touch and keyboard behavior (1.6s)
+  ✓    6 [phone-360-touch] › e2e/emerald-decisions.spec.ts:64:1 › Home retains the compact band with the approved statistics to map split (1.1s)
+  ✓    7 [phone-360-touch] › e2e/emerald-refinement.spec.ts:26:1 › Radix selected paint, focus, keyboard and shared network scope (2.5s)
+
+  ✓    8 [phone-360-touch] › e2e/emerald-refinement.spec.ts:78:1 › refinement scenarios and measured evidence (5.7s)
+  ✓    9 [phone-360-touch] › e2e/emerald-refinement.spec.ts:139:1 › shared chrome keeps business layout, bundled outline icons and background (1.8s)
+  ✓   10 [phone-360-touch] › e2e/home-convergence.spec.ts:41:3 › Converged Public Home (issue #102) › final card header, both metric rows, summary shell, and viewport grid (1.7s)
+  ✓   11 [phone-360-touch] › e2e/home-convergence.spec.ts:143:3 › Converged Public Home (issue #102) › production-like states stay explicit with readable text across viewports (1.3s)
+  ✓   12 [phone-360-touch] › e2e/home-convergence.spec.ts:205:3 › Converged Public Home (issue #102) › Network filtering and Current Head sorting remain operable with the final card structure (1.4s)
+  ✓   13 [phone-360-touch] › e2e/home-convergence.spec.ts:243:3 › Converged Public Home (issue #102) › the whole card is keyboard-activatable to Node Detail at every fixed viewport (1.5s)
+  ✓   14 [phone-360-touch] › e2e/home-convergence.spec.ts:272:3 › Converged Public Home (issue #102) › keeps the converged Home intact in the dark theme (issue #147) (1.5s)
+  ✓   15 [phone-360-touch] › e2e/home-geo-map.spec.ts:317:3 › Home compact overview and Peer country map (issue #133) › real Server baseline parity and the canvas country tooltip (2.1s)
+  ✓   16 [phone-360-touch] › e2e/home-geo-map.spec.ts:372:3 › Home compact overview and Peer country map (issue #133) › isolated DTO fixture: dense Europe and East Asia keep exact counts and honest points (2.2s)
+  ✓   17 [phone-360-touch] › e2e/home-geo-map.spec.ts:445:3 › Home compact overview and Peer country map (issue #133) › isolated resource fixture: a slow projection and basemap are never written onto the map (1.8s)
+  -   18 [phone-360-touch] › e2e/home-geo-map.spec.ts:483:3 › Home compact overview and Peer country map (issue #133) › composes 2x2 global statistics over a transparent map band on desktop
+  ✓   19 [phone-360-touch] › e2e/home-geo-map.spec.ts:731:3 › Home compact overview and Peer country map (issue #133) › stacks the statistics over a compact map on narrow screens (1.6s)
+  -   20 [phone-360-touch] › e2e/home-geo-map.spec.ts:794:3 › Home compact overview and Peer country map (issue #133) › reaches the 375px phone width declared by the issue
+  ✓   21 [phone-360-touch] › e2e/home-geo-map.spec.ts:832:3 › Home compact overview and Peer country map (issue #133) › keeps statistics and map in the selected network scope (1.9s)
+  ✓   22 [phone-360-touch] › e2e/home-geo-map.spec.ts:862:3 › Home compact overview and Peer country map (issue #133) › isolated DTO fixture: keeps every projection state honest, including never observed and a zero basis (1.8s)
+  ✓   23 [phone-360-touch] › e2e/home-geo-map.spec.ts:897:3 › Home compact overview and Peer country map (issue #133) › degrades locally for a disabled provider and an unavailable basemap (3.4s)
+  ✓   24 [phone-360-touch] › e2e/shell.spec.ts:45:3 › Authenticated shell › Home shell fits the viewport without horizontal overflow (1.1s)
+  ✓   25 [phone-360-touch] › e2e/shell.spec.ts:50:3 › Authenticated shell › Home dashboard exposes the public scan controls at every fixed viewport (1.2s)
+  ✓   26 [phone-360-touch] › e2e/shell.spec.ts:63:3 › Authenticated shell › Home controls remain semantic and touch-sized (1.2s)
+  ✓   27 [phone-360-touch] › e2e/shell.spec.ts:73:3 › Authenticated shell › Admin shell fits the viewport without horizontal overflow (1.2s)
+  ✓   28 [phone-360-touch] › e2e/shell.spec.ts:79:3 › Authenticated shell › Admin shell keeps the unified brand and operational proof semantic (1.4s)
+  ✓   29 [phone-360-touch] › e2e/shell.spec.ts:235:3 › Authenticated shell › Admin connection status stays in shared header context (1.2s)
+  ✓   30 [phone-360-touch] › e2e/shell.spec.ts:261:3 › Authenticated shell › Admin shell keeps aligned content at fixed viewports (1.2s)
+  -   31 [phone-360-touch] › e2e/shell.spec.ts:290:3 › Authenticated shell › Admin shell caps its content column on ultrawide widths
+  ✓   32 [phone-360-touch] › e2e/shell.spec.ts:311:3 › Authenticated shell › Admin Settings keeps aligned content and touch targets (1.3s)
+  ✓   33 [phone-360-touch] › e2e/shell.spec.ts:333:3 › Authenticated shell › Home and Admin navigation is reachable in both directions (1.3s)
+  ✓   34 [phone-360-touch] › e2e/shell.spec.ts:344:3 › Authenticated shell › shell navigation is keyboard-operable with a visible focus ring (1.3s)
+  -   35 [phone-390-touch] › e2e/admin-list-matrix.spec.ts:312:3 › SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix › keeps six aligned columns for twelve varied records at 1440/1920/390
+  -   36 [phone-390-touch] › e2e/admin-list-matrix.spec.ts:407:3 › SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix › Audit renders multi-field long details in a cross-column row at 1440/1920/390
+  -   37 [phone-390-touch] › e2e/admin-list-matrix.spec.ts:457:3 › SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix › Overview labels the observation time separately from the snapshot time
+  ✓   38 [phone-390-touch] › e2e/emerald-decisions.spec.ts:4:1 › Login has an accessible brand header in both themes (288ms)
+  ✓   39 [phone-390-touch] › e2e/emerald-decisions.spec.ts:22:1 › selection controls keep compact indicators and native touch and keyboard behavior (1.6s)
+  ✓   40 [phone-390-touch] › e2e/emerald-decisions.spec.ts:64:1 › Home retains the compact band with the approved statistics to map split (1.1s)
+  ✓   41 [phone-390-touch] › e2e/emerald-refinement.spec.ts:26:1 › Radix selected paint, focus, keyboard and shared network scope (2.6s)
+
+  ✓   42 [phone-390-touch] › e2e/emerald-refinement.spec.ts:78:1 › refinement scenarios and measured evidence (5.6s)
+  ✓   43 [phone-390-touch] › e2e/emerald-refinement.spec.ts:139:1 › shared chrome keeps business layout, bundled outline icons and background (1.5s)
+  ✓   44 [phone-390-touch] › e2e/home-convergence.spec.ts:41:3 › Converged Public Home (issue #102) › final card header, both metric rows, summary shell, and viewport grid (1.7s)
+  ✓   45 [phone-390-touch] › e2e/home-convergence.spec.ts:143:3 › Converged Public Home (issue #102) › production-like states stay explicit with readable text across viewports (1.3s)
+  ✓   46 [phone-390-touch] › e2e/home-convergence.spec.ts:205:3 › Converged Public Home (issue #102) › Network filtering and Current Head sorting remain operable with the final card structure (1.4s)
+  ✓   47 [phone-390-touch] › e2e/home-convergence.spec.ts:243:3 › Converged Public Home (issue #102) › the whole card is keyboard-activatable to Node Detail at every fixed viewport (1.5s)
+  ✓   48 [phone-390-touch] › e2e/home-convergence.spec.ts:272:3 › Converged Public Home (issue #102) › keeps the converged Home intact in the dark theme (issue #147) (1.5s)
+  ✓   49 [phone-390-touch] › e2e/home-geo-map.spec.ts:317:3 › Home compact overview and Peer country map (issue #133) › real Server baseline parity and the canvas country tooltip (2.0s)
+  ✓   50 [phone-390-touch] › e2e/home-geo-map.spec.ts:372:3 › Home compact overview and Peer country map (issue #133) › isolated DTO fixture: dense Europe and East Asia keep exact counts and honest points (2.3s)
+  ✓   51 [phone-390-touch] › e2e/home-geo-map.spec.ts:445:3 › Home compact overview and Peer country map (issue #133) › isolated resource fixture: a slow projection and basemap are never written onto the map (1.8s)
+  -   52 [phone-390-touch] › e2e/home-geo-map.spec.ts:483:3 › Home compact overview and Peer country map (issue #133) › composes 2x2 global statistics over a transparent map band on desktop
+  ✓   53 [phone-390-touch] › e2e/home-geo-map.spec.ts:731:3 › Home compact overview and Peer country map (issue #133) › stacks the statistics over a compact map on narrow screens (1.6s)
+  ✓   54 [phone-390-touch] › e2e/home-geo-map.spec.ts:794:3 › Home compact overview and Peer country map (issue #133) › reaches the 375px phone width declared by the issue (1.8s)
+  ✓   55 [phone-390-touch] › e2e/home-geo-map.spec.ts:832:3 › Home compact overview and Peer country map (issue #133) › keeps statistics and map in the selected network scope (2.0s)
+  ✓   56 [phone-390-touch] › e2e/home-geo-map.spec.ts:862:3 › Home compact overview and Peer country map (issue #133) › isolated DTO fixture: keeps every projection state honest, including never observed and a zero basis (1.9s)
+  ✓   57 [phone-390-touch] › e2e/home-geo-map.spec.ts:897:3 › Home compact overview and Peer country map (issue #133) › degrades locally for a disabled provider and an unavailable basemap (3.0s)
+  ✓   58 [phone-390-touch] › e2e/shell.spec.ts:45:3 › Authenticated shell › Home shell fits the viewport without horizontal overflow (1.1s)
+  ✓   59 [phone-390-touch] › e2e/shell.spec.ts:50:3 › Authenticated shell › Home dashboard exposes the public scan controls at every fixed viewport (1.2s)
+  ✓   60 [phone-390-touch] › e2e/shell.spec.ts:63:3 › Authenticated shell › Home controls remain semantic and touch-sized (1.1s)
+  ✓   61 [phone-390-touch] › e2e/shell.spec.ts:73:3 › Authenticated shell › Admin shell fits the viewport without horizontal overflow (1.2s)
+  ✓   62 [phone-390-touch] › e2e/shell.spec.ts:79:3 › Authenticated shell › Admin shell keeps the unified brand and operational proof semantic (1.4s)
+  ✓   63 [phone-390-touch] › e2e/shell.spec.ts:235:3 › Authenticated shell › Admin connection status stays in shared header context (1.2s)
+  ✓   64 [phone-390-touch] › e2e/shell.spec.ts:261:3 › Authenticated shell › Admin shell keeps aligned content at fixed viewports (1.2s)
+  -   65 [phone-390-touch] › e2e/shell.spec.ts:290:3 › Authenticated shell › Admin shell caps its content column on ultrawide widths
+  ✓   66 [phone-390-touch] › e2e/shell.spec.ts:311:3 › Authenticated shell › Admin Settings keeps aligned content and touch targets (1.3s)
+  ✓   67 [phone-390-touch] › e2e/shell.spec.ts:333:3 › Authenticated shell › Home and Admin navigation is reachable in both directions (1.3s)
+  ✓   68 [phone-390-touch] › e2e/shell.spec.ts:344:3 › Authenticated shell › shell navigation is keyboard-operable with a visible focus ring (1.3s)
+  -   69 [tablet-768-touch] › e2e/admin-list-matrix.spec.ts:312:3 › SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix › keeps six aligned columns for twelve varied records at 1440/1920/390
+  -   70 [tablet-768-touch] › e2e/admin-list-matrix.spec.ts:407:3 › SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix › Audit renders multi-field long details in a cross-column row at 1440/1920/390
+  -   71 [tablet-768-touch] › e2e/admin-list-matrix.spec.ts:457:3 › SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix › Overview labels the observation time separately from the snapshot time
+  ✓   72 [tablet-768-touch] › e2e/emerald-decisions.spec.ts:4:1 › Login has an accessible brand header in both themes (309ms)
+  ✓   73 [tablet-768-touch] › e2e/emerald-decisions.spec.ts:22:1 › selection controls keep compact indicators and native touch and keyboard behavior (1.7s)
+  ✓   74 [tablet-768-touch] › e2e/emerald-decisions.spec.ts:64:1 › Home retains the compact band with the approved statistics to map split (1.2s)
+  ✓   75 [tablet-768-touch] › e2e/emerald-refinement.spec.ts:26:1 › Radix selected paint, focus, keyboard and shared network scope (2.6s)
+
+  ✓   76 [tablet-768-touch] › e2e/emerald-refinement.spec.ts:78:1 › refinement scenarios and measured evidence (5.6s)
+  ✓   77 [tablet-768-touch] › e2e/emerald-refinement.spec.ts:139:1 › shared chrome keeps business layout, bundled outline icons and background (1.6s)
+  ✓   78 [tablet-768-touch] › e2e/home-convergence.spec.ts:41:3 › Converged Public Home (issue #102) › final card header, both metric rows, summary shell, and viewport grid (1.7s)
+  ✓   79 [tablet-768-touch] › e2e/home-convergence.spec.ts:143:3 › Converged Public Home (issue #102) › production-like states stay explicit with readable text across viewports (1.3s)
+  ✓   80 [tablet-768-touch] › e2e/home-convergence.spec.ts:205:3 › Converged Public Home (issue #102) › Network filtering and Current Head sorting remain operable with the final card structure (1.3s)
+  ✓   81 [tablet-768-touch] › e2e/home-convergence.spec.ts:243:3 › Converged Public Home (issue #102) › the whole card is keyboard-activatable to Node Detail at every fixed viewport (1.4s)
+  ✓   82 [tablet-768-touch] › e2e/home-convergence.spec.ts:272:3 › Converged Public Home (issue #102) › keeps the converged Home intact in the dark theme (issue #147) (1.4s)
+  ✓   83 [tablet-768-touch] › e2e/home-geo-map.spec.ts:317:3 › Home compact overview and Peer country map (issue #133) › real Server baseline parity and the canvas country tooltip (2.1s)
+  ✓   84 [tablet-768-touch] › e2e/home-geo-map.spec.ts:372:3 › Home compact overview and Peer country map (issue #133) › isolated DTO fixture: dense Europe and East Asia keep exact counts and honest points (2.2s)
+  ✓   85 [tablet-768-touch] › e2e/home-geo-map.spec.ts:445:3 › Home compact overview and Peer country map (issue #133) › isolated resource fixture: a slow projection and basemap are never written onto the map (1.8s)
+  -   86 [tablet-768-touch] › e2e/home-geo-map.spec.ts:483:3 › Home compact overview and Peer country map (issue #133) › composes 2x2 global statistics over a transparent map band on desktop
+  ✓   87 [tablet-768-touch] › e2e/home-geo-map.spec.ts:731:3 › Home compact overview and Peer country map (issue #133) › stacks the statistics over a compact map on narrow screens (1.6s)
+  -   88 [tablet-768-touch] › e2e/home-geo-map.spec.ts:794:3 › Home compact overview and Peer country map (issue #133) › reaches the 375px phone width declared by the issue
+  ✓   89 [tablet-768-touch] › e2e/home-geo-map.spec.ts:832:3 › Home compact overview and Peer country map (issue #133) › keeps statistics and map in the selected network scope (1.9s)
+  ✓   90 [tablet-768-touch] › e2e/home-geo-map.spec.ts:862:3 › Home compact overview and Peer country map (issue #133) › isolated DTO fixture: keeps every projection state honest, including never observed and a zero basis (1.8s)
+  ✓   91 [tablet-768-touch] › e2e/home-geo-map.spec.ts:897:3 › Home compact overview and Peer country map (issue #133) › degrades locally for a disabled provider and an unavailable basemap (3.6s)
+  ✓   92 [tablet-768-touch] › e2e/shell.spec.ts:45:3 › Authenticated shell › Home shell fits the viewport without horizontal overflow (1.1s)
+  ✓   93 [tablet-768-touch] › e2e/shell.spec.ts:50:3 › Authenticated shell › Home dashboard exposes the public scan controls at every fixed viewport (1.2s)
+  ✓   94 [tablet-768-touch] › e2e/shell.spec.ts:63:3 › Authenticated shell › Home controls remain semantic and touch-sized (1.1s)
+  ✓   95 [tablet-768-touch] › e2e/shell.spec.ts:73:3 › Authenticated shell › Admin shell fits the viewport without horizontal overflow (1.2s)
+  ✓   96 [tablet-768-touch] › e2e/shell.spec.ts:79:3 › Authenticated shell › Admin shell keeps the unified brand and operational proof semantic (1.4s)
+  ✓   97 [tablet-768-touch] › e2e/shell.spec.ts:235:3 › Authenticated shell › Admin connection status stays in shared header context (1.2s)
+  ✓   98 [tablet-768-touch] › e2e/shell.spec.ts:261:3 › Authenticated shell › Admin shell keeps aligned content at fixed viewports (1.4s)
+  -   99 [tablet-768-touch] › e2e/shell.spec.ts:290:3 › Authenticated shell › Admin shell caps its content column on ultrawide widths
+  ✓  100 [tablet-768-touch] › e2e/shell.spec.ts:311:3 › Authenticated shell › Admin Settings keeps aligned content and touch targets (1.3s)
+  ✓  101 [tablet-768-touch] › e2e/shell.spec.ts:333:3 › Authenticated shell › Home and Admin navigation is reachable in both directions (1.3s)
+  ✓  102 [tablet-768-touch] › e2e/shell.spec.ts:344:3 › Authenticated shell › shell navigation is keyboard-operable with a visible focus ring (1.3s)
+  ✓  103 [desktop-1280] › e2e/admin-list-matrix.spec.ts:312:3 › SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix › keeps six aligned columns for twelve varied records at 1440/1920/390 (1.8s)
+  ✓  104 [desktop-1280] › e2e/admin-list-matrix.spec.ts:407:3 › SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix › Audit renders multi-field long details in a cross-column row at 1440/1920/390 (1.0s)
+  ✓  105 [desktop-1280] › e2e/admin-list-matrix.spec.ts:457:3 › SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix › Overview labels the observation time separately from the snapshot time (252ms)
+  ✓  106 [desktop-1280] › e2e/emerald-decisions.spec.ts:4:1 › Login has an accessible brand header in both themes (280ms)
+  ✓  107 [desktop-1280] › e2e/emerald-decisions.spec.ts:22:1 › selection controls keep compact indicators and native touch and keyboard behavior (1.6s)
+  ✓  108 [desktop-1280] › e2e/emerald-decisions.spec.ts:64:1 › Home retains the compact band with the approved statistics to map split (1.1s)
+  ✓  109 [desktop-1280] › e2e/emerald-refinement.spec.ts:26:1 › Radix selected paint, focus, keyboard and shared network scope (2.6s)
+
+  ✓  110 [desktop-1280] › e2e/emerald-refinement.spec.ts:78:1 › refinement scenarios and measured evidence (5.8s)
+  ✓  111 [desktop-1280] › e2e/emerald-refinement.spec.ts:139:1 › shared chrome keeps business layout, bundled outline icons and background (2.0s)
+  ✓  112 [desktop-1280] › e2e/home-convergence.spec.ts:41:3 › Converged Public Home (issue #102) › final card header, both metric rows, summary shell, and viewport grid (1.7s)
+  ✓  113 [desktop-1280] › e2e/home-convergence.spec.ts:143:3 › Converged Public Home (issue #102) › production-like states stay explicit with readable text across viewports (1.2s)
+  ✓  114 [desktop-1280] › e2e/home-convergence.spec.ts:205:3 › Converged Public Home (issue #102) › Network filtering and Current Head sorting remain operable with the final card structure (1.3s)
+  ✓  115 [desktop-1280] › e2e/home-convergence.spec.ts:243:3 › Converged Public Home (issue #102) › the whole card is keyboard-activatable to Node Detail at every fixed viewport (1.4s)
+  ✓  116 [desktop-1280] › e2e/home-convergence.spec.ts:272:3 › Converged Public Home (issue #102) › keeps the converged Home intact in the dark theme (issue #147) (1.5s)
+  ✓  117 [desktop-1280] › e2e/home-geo-map.spec.ts:317:3 › Home compact overview and Peer country map (issue #133) › real Server baseline parity and the canvas country tooltip (2.5s)
+  ✓  118 [desktop-1280] › e2e/home-geo-map.spec.ts:372:3 › Home compact overview and Peer country map (issue #133) › isolated DTO fixture: dense Europe and East Asia keep exact counts and honest points (2.3s)
+  ✓  119 [desktop-1280] › e2e/home-geo-map.spec.ts:445:3 › Home compact overview and Peer country map (issue #133) › isolated resource fixture: a slow projection and basemap are never written onto the map (1.9s)
+  ✘  120 [desktop-1280] › e2e/home-geo-map.spec.ts:483:3 › Home compact overview and Peer country map (issue #133) › composes 2x2 global statistics over a transparent map band on desktop (3.9s)
+  -  121 [desktop-1280] › e2e/home-geo-map.spec.ts:731:3 › Home compact overview and Peer country map (issue #133) › stacks the statistics over a compact map on narrow screens
+  -  122 [desktop-1280] › e2e/home-geo-map.spec.ts:794:3 › Home compact overview and Peer country map (issue #133) › reaches the 375px phone width declared by the issue
+  ✓  123 [desktop-1280] › e2e/home-geo-map.spec.ts:832:3 › Home compact overview and Peer country map (issue #133) › keeps statistics and map in the selected network scope (2.1s)
+  ✓  124 [desktop-1280] › e2e/home-geo-map.spec.ts:862:3 › Home compact overview and Peer country map (issue #133) › isolated DTO fixture: keeps every projection state honest, including never observed and a zero basis (2.0s)
+  ✓  125 [desktop-1280] › e2e/home-geo-map.spec.ts:897:3 › Home compact overview and Peer country map (issue #133) › degrades locally for a disabled provider and an unavailable basemap (3.5s)
+  ✓  126 [desktop-1280] › e2e/shell.spec.ts:45:3 › Authenticated shell › Home shell fits the viewport without horizontal overflow (1.1s)
+  ✓  127 [desktop-1280] › e2e/shell.spec.ts:50:3 › Authenticated shell › Home dashboard exposes the public scan controls at every fixed viewport (1.2s)
+  ✓  128 [desktop-1280] › e2e/shell.spec.ts:63:3 › Authenticated shell › Home controls remain semantic and touch-sized (1.2s)
+  ✓  129 [desktop-1280] › e2e/shell.spec.ts:73:3 › Authenticated shell › Admin shell fits the viewport without horizontal overflow (1.3s)
+  ✓  130 [desktop-1280] › e2e/shell.spec.ts:79:3 › Authenticated shell › Admin shell keeps the unified brand and operational proof semantic (1.4s)
+  ✓  131 [desktop-1280] › e2e/shell.spec.ts:235:3 › Authenticated shell › Admin connection status stays in shared header context (1.2s)
+  ✓  132 [desktop-1280] › e2e/shell.spec.ts:261:3 › Authenticated shell › Admin shell keeps aligned content at fixed viewports (1.5s)
+  ✓  133 [desktop-1280] › e2e/shell.spec.ts:290:3 › Authenticated shell › Admin shell caps its content column on ultrawide widths (1.2s)
+  ✓  134 [desktop-1280] › e2e/shell.spec.ts:311:3 › Authenticated shell › Admin Settings keeps aligned content and touch targets (1.3s)
+  ✓  135 [desktop-1280] › e2e/shell.spec.ts:333:3 › Authenticated shell › Home and Admin navigation is reachable in both directions (1.3s)
+  ✓  136 [desktop-1280] › e2e/shell.spec.ts:344:3 › Authenticated shell › shell navigation is keyboard-operable with a visible focus ring (1.3s)
+  -  137 [desktop-1440] › e2e/admin-list-matrix.spec.ts:312:3 › SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix › keeps six aligned columns for twelve varied records at 1440/1920/390
+  -  138 [desktop-1440] › e2e/admin-list-matrix.spec.ts:407:3 › SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix › Audit renders multi-field long details in a cross-column row at 1440/1920/390
+  -  139 [desktop-1440] › e2e/admin-list-matrix.spec.ts:457:3 › SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix › Overview labels the observation time separately from the snapshot time
+  ✓  140 [desktop-1440] › e2e/emerald-decisions.spec.ts:4:1 › Login has an accessible brand header in both themes (303ms)
+  ✓  141 [desktop-1440] › e2e/emerald-decisions.spec.ts:22:1 › selection controls keep compact indicators and native touch and keyboard behavior (1.6s)
+  ✓  142 [desktop-1440] › e2e/emerald-decisions.spec.ts:64:1 › Home retains the compact band with the approved statistics to map split (1.1s)
+  ✓  143 [desktop-1440] › e2e/emerald-refinement.spec.ts:26:1 › Radix selected paint, focus, keyboard and shared network scope (2.4s)
+
+  ✓  144 [desktop-1440] › e2e/emerald-refinement.spec.ts:78:1 › refinement scenarios and measured evidence (5.9s)
+  ✓  145 [desktop-1440] › e2e/emerald-refinement.spec.ts:139:1 › shared chrome keeps business layout, bundled outline icons and background (2.1s)
+  ✓  146 [desktop-1440] › e2e/home-convergence.spec.ts:41:3 › Converged Public Home (issue #102) › final card header, both metric rows, summary shell, and viewport grid (1.7s)
+  ✓  147 [desktop-1440] › e2e/home-convergence.spec.ts:143:3 › Converged Public Home (issue #102) › production-like states stay explicit with readable text across viewports (1.3s)
+  ✓  148 [desktop-1440] › e2e/home-convergence.spec.ts:205:3 › Converged Public Home (issue #102) › Network filtering and Current Head sorting remain operable with the final card structure (1.3s)
+  ✓  149 [desktop-1440] › e2e/home-convergence.spec.ts:243:3 › Converged Public Home (issue #102) › the whole card is keyboard-activatable to Node Detail at every fixed viewport (1.4s)
+  ✓  150 [desktop-1440] › e2e/home-convergence.spec.ts:272:3 › Converged Public Home (issue #102) › keeps the converged Home intact in the dark theme (issue #147) (1.4s)
+  ✓  151 [desktop-1440] › e2e/home-geo-map.spec.ts:317:3 › Home compact overview and Peer country map (issue #133) › real Server baseline parity and the canvas country tooltip (2.1s)
+  ✓  152 [desktop-1440] › e2e/home-geo-map.spec.ts:372:3 › Home compact overview and Peer country map (issue #133) › isolated DTO fixture: dense Europe and East Asia keep exact counts and honest points (2.2s)
+  ✓  153 [desktop-1440] › e2e/home-geo-map.spec.ts:445:3 › Home compact overview and Peer country map (issue #133) › isolated resource fixture: a slow projection and basemap are never written onto the map (1.9s)
+  -  154 [desktop-1440] › e2e/home-geo-map.spec.ts:483:3 › Home compact overview and Peer country map (issue #133) › composes 2x2 global statistics over a transparent map band on desktop
+  ✓  155 [desktop-1440] › e2e/home-geo-map.spec.ts:731:3 › Home compact overview and Peer country map (issue #133) › stacks the statistics over a compact map on narrow screens (1.6s)
+  -  156 [desktop-1440] › e2e/home-geo-map.spec.ts:794:3 › Home compact overview and Peer country map (issue #133) › reaches the 375px phone width declared by the issue
+  ✓  157 [desktop-1440] › e2e/home-geo-map.spec.ts:832:3 › Home compact overview and Peer country map (issue #133) › keeps statistics and map in the selected network scope (1.9s)
+  ✓  158 [desktop-1440] › e2e/home-geo-map.spec.ts:862:3 › Home compact overview and Peer country map (issue #133) › isolated DTO fixture: keeps every projection state honest, including never observed and a zero basis (1.8s)
+  ✓  159 [desktop-1440] › e2e/home-geo-map.spec.ts:897:3 › Home compact overview and Peer country map (issue #133) › degrades locally for a disabled provider and an unavailable basemap (3.5s)
+  ✓  160 [desktop-1440] › e2e/shell.spec.ts:45:3 › Authenticated shell › Home shell fits the viewport without horizontal overflow (1.1s)
+  ✓  161 [desktop-1440] › e2e/shell.spec.ts:50:3 › Authenticated shell › Home dashboard exposes the public scan controls at every fixed viewport (1.2s)
+  ✓  162 [desktop-1440] › e2e/shell.spec.ts:63:3 › Authenticated shell › Home controls remain semantic and touch-sized (1.2s)
+  ✓  163 [desktop-1440] › e2e/shell.spec.ts:73:3 › Authenticated shell › Admin shell fits the viewport without horizontal overflow (1.2s)
+  ✓  164 [desktop-1440] › e2e/shell.spec.ts:79:3 › Authenticated shell › Admin shell keeps the unified brand and operational proof semantic (1.4s)
+  ✓  165 [desktop-1440] › e2e/shell.spec.ts:235:3 › Authenticated shell › Admin connection status stays in shared header context (1.3s)
+  ✓  166 [desktop-1440] › e2e/shell.spec.ts:261:3 › Authenticated shell › Admin shell keeps aligned content at fixed viewports (1.4s)
+  ✓  167 [desktop-1440] › e2e/shell.spec.ts:290:3 › Authenticated shell › Admin shell caps its content column on ultrawide widths (1.3s)
+  ✓  168 [desktop-1440] › e2e/shell.spec.ts:311:3 › Authenticated shell › Admin Settings keeps aligned content and touch targets (1.2s)
+  ✓  169 [desktop-1440] › e2e/shell.spec.ts:333:3 › Authenticated shell › Home and Admin navigation is reachable in both directions (1.3s)
+  ✓  170 [desktop-1440] › e2e/shell.spec.ts:344:3 › Authenticated shell › shell navigation is keyboard-operable with a visible focus ring (1.3s)
+
+
+  1) [desktop-1280] › e2e/home-geo-map.spec.ts:483:3 › Home compact overview and Peer country map (issue #133) › composes 2x2 global statistics over a transparent map band on desktop 
+
+    Error: the band drives the overview height
+
+    expect(received).toBeGreaterThanOrEqual(expected)
+
+    Expected: >= 385.00001525878906
+    Received:    200
+
+      724 |     expect((await worldBox(page)).height, 'actual world grows beyond the old 136px map').toBeGreaterThan(136)
+      725 |     const compactOverview = await overviewBox(page)
+    > 726 |     expect(compactOverview.height, 'the band drives the overview height').toBeGreaterThanOrEqual(routineBand.height - 1)
+          |                                                                           ^
+      727 |     const toolbarTop = (await page.getByRole('tablist', { name: 'Network filter' }).boundingBox())!.y
+      728 |     expect(routineBand.y + routineBand.height, 'the band never covers the toolbar').toBeLessThanOrEqual(toolbarTop + 1)
+      729 |   })
+        at /home/mowind/repos/rust/PlatPulse/platpulse-web/e2e/home-geo-map.spec.ts:726:75
+
+    Error Context: test-results/home-geo-map-Home-compact--34a1c-sparent-map-band-on-desktop-desktop-1280/error-context.md
+
+  1 failed
+    [desktop-1280] › e2e/home-geo-map.spec.ts:483:3 › Home compact overview and Peer country map (issue #133) › composes 2x2 global statistics over a transparent map band on desktop 
+  24 skipped
+  145 passed (4.5m)

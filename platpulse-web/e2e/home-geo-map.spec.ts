@@ -723,9 +723,15 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     expect(routineBand.height, 'the band is a real top band').toBeGreaterThanOrEqual(190)
     expect((await worldBox(page)).height, 'actual world grows beyond the old 136px map').toBeGreaterThan(136)
     const compactOverview = await overviewBox(page)
-    expect(compactOverview.height, 'the band drives the overview height').toBeGreaterThanOrEqual(routineBand.height - 1)
+    // 6b78964 deliberately restored the overflowing 2:1 Emerald canvas while
+    // retaining the approved 200px content band (232px including padding).
+    // Do not shrink geography back into that band to satisfy the retired guard.
+    expect(compactOverview.height, 'the approved overview content height stays fixed').toBe(200)
+    expect(routineBand.height, 'the overflowing canvas keeps the approved 2:1 aspect').toBeCloseTo(routineBand.width / 2, 0)
     const toolbarTop = (await page.getByRole('tablist', { name: 'Network filter' }).boundingBox())!.y
-    expect(routineBand.y + routineBand.height, 'the band never covers the toolbar').toBeLessThanOrEqual(toolbarTop + 1)
+    expect(compactOverview.y + compactOverview.height, 'the overview content band ends before the toolbar').toBeLessThanOrEqual(toolbarTop + 1)
+    await page.getByRole('combobox', { name: 'Sort', exact: true }).click({ trial: true })
+    await page.getByRole('tab', { name: 'All Networks', exact: true }).click({ trial: true })
   })
 
   test('stacks the statistics over a compact map on narrow screens', async ({ page }) => {

@@ -1,0 +1,93 @@
+npm notice run platpulse-web@0.1.0 test
+npm notice run vitest run src/components/ui/tabs.test.tsx src/components/HomeDashboard.test.tsx
+
+ RUN  v4.1.10 /home/mowind/repos/rust/PlatPulse/platpulse-web
+
+ ❯ src/components/ui/tabs.test.tsx (1 test | 1 failed) 127ms
+   × styles Radix state and orientation, not Reka attributes 126ms
+ ❯ src/components/HomeDashboard.test.tsx (44 tests | 1 failed) 1728ms
+     × scopes all four counters, map and cards to the selected network 202ms
+     ✓ summarizes Server-owned Nodes and preserves authoritative zero peer count 94ms
+     ✓ keeps retained zero peer values and simultaneous failure and staleness visible 111ms
+     ✓ shows the first compact metric row as Head, Txs, and Peers with Unknown on absence 74ms
+     ✓ shows process CPU and memory with Node data and host network rates 41ms
+     ✓ places full-width Node uptime immediately below the full-width host network speed row 32ms
+     ✓ shows Node process uptime 0 as 0s 20ms
+     ✓ shows Node process uptime 59999 as 59s 21ms
+     ✓ shows Node process uptime 60000 as 1m 19ms
+     ✓ shows Node process uptime 3660000 as 1h 1m 19ms
+     ✓ shows Node process uptime 183600000 as 2d 3h 22ms
+     ✓ shows Node process uptime null as Unknown 18ms
+     ✓ shows Node process uptime undefined as Unknown 18ms
+     ✓ shows Node process uptime -1 as Unknown 19ms
+     ✓ shows Node process uptime NaN as Unknown 23ms
+     ✓ shows Node process uptime Infinity as Unknown 18ms
+     ✓ renders Node data as a percentage with the used / total byte detail under its progress bar 27ms
+     ✓ lays every Home metric out as one data-item / value row with its detail below 28ms
+     ✓ groups Head/Txs/Peers and consensus heights into triple rows 31ms
+     ✓ formats 0 bytes/s using an appropriate speed unit 19ms
+     ✓ formats 100 bytes/s using an appropriate speed unit 21ms
+     ✓ formats 125 bytes/s using an appropriate speed unit 18ms
+     ✓ formats 125000 bytes/s using an appropriate speed unit 17ms
+     ✓ formats 125000000 bytes/s using an appropriate speed unit 17ms
+     ✓ formats 125000000000 bytes/s using an appropriate speed unit 20ms
+     ✓ formats 124999 bytes/s using an appropriate speed unit 18ms
+     ✓ formats null bytes/s using an appropriate speed unit 17ms
+     ✓ converts bytes per second to decimal Mbps and preserves missing speeds 34ms
+     ✓ shows the second compact metric row as QC, Locked, Committed, and Validator 54ms
+     ✓ retains last-good consensus values and visibly marks failed or stale collections 172ms
+     ✓ keeps the two-state health marker as the header status cue with no activity badge 81ms
+     ✓ marks Healthy green and every other Node grey before the name (issue #141) 65ms
+     ✓ keeps summary cards to marker, title, and number with a compact shell 54ms
+     ✓ paints Active Nodes, Healthy Nodes, and Networks with the brand-green marker 27ms
+     ✓ reserves the red Attention marker for a non-healthy Active Node 16ms
+     ✓ turns the Attention marker green once every Active Node is healthy 13ms
+     ✓ renders one whole-card Node link with the Network name as plain text 37ms
+     ✓ omits routine prose and component status rows on healthy Nodes 42ms
+     ✓ keeps exactly one short diagnostic line on exceptional Nodes 36ms
+     ✓ filters by Network and sorts by supported operational fields 69ms
+     ✓ keeps transport and authorization state explicit 8ms
+     ✓ sorts an unhealthy Server Health Summary ahead of healthy Nodes 17ms
+     ✓ does not render loading as fabricated zero-valued summary data 7ms
+     ✓ preserves an authoritative empty projection when a refresh fails 9ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/components/HomeDashboard.test.tsx > Public Home dashboard > scopes all four counters, map and cards to the selected network
+AssertionError: expected '3' to be '1' // Object.is equality
+
+Expected: "1"
+Received: "3"
+
+ ❯ src/components/HomeDashboard.test.tsx:64:56
+     62|     render(<BrowserRouter><HomeDashboard networks={[network, second]} …
+     63|     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Testnet' }), …
+     64|     expect(summaryValueOf('Active Nodes').textContent).toBe('1')
+       |                                                        ^
+     65|     expect(summaryValueOf('Healthy Nodes').textContent).toBe('1')
+     66|     expect(summaryValueOf('Attention').textContent).toBe('0')
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/components/ui/tabs.test.tsx > styles Radix state and orientation, not Reka attributes
+AssertionError: expected 'min-h-11 min-w-11 gap-1.5 rounded-md …' to contain 'data-[state=active]:bg-background'
+
+Expected: "data-[state=active]:bg-background"
+Received: "min-h-11 min-w-11 gap-1.5 rounded-md border border-transparent px-2 py-1 text-sm font-medium group-data-vertical/tabs:px-2.5 group-data-vertical/tabs:py-1.5 [&_svg:not([class*=size-])]:size-4 has-data-[icon=inline-end]:pr-1.5 has-data-[icon=inline-start]:pl-1.5 relative inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center whitespace-nowrap text-foreground/60 transition-all group-data-vertical/tabs:w-full group-data-vertical/tabs:justify-start hover:text-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-50 dark:text-muted-foreground dark:hover:text-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 group-data-[variant=line]/tabs-list:bg-transparent group-data-[variant=line]/tabs-list:data-active:bg-transparent dark:group-data-[variant=line]/tabs-list:data-active:border-transparent dark:group-data-[variant=line]/tabs-list:data-active:bg-transparent data-active:bg-background data-active:text-foreground dark:data-active:border-input dark:data-active:bg-input/30 dark:data-active:text-foreground after:absolute after:bg-foreground after:opacity-0 after:transition-opacity group-data-horizontal/tabs:after:inset-x-0 group-data-horizontal/tabs:after:bottom-[-5px] group-data-horizontal/tabs:after:h-0.5 group-data-vertical/tabs:after:inset-y-0 group-data-vertical/tabs:after:-right-1 group-data-vertical/tabs:after:w-0.5 group-data-[variant=line]/tabs-list:data-active:after:opacity-100"
+
+ ❯ src/components/ui/tabs.test.tsx:8:64
+      6|   render(<Tabs defaultValue="a" orientation="vertical"><TabsList><Tabs…
+      7|   expect(screen.getByRole('tab', { name: 'Alpha' }).getAttribute('data…
+      8|   expect(screen.getByRole('tab', { name: 'Alpha' }).className).toConta…
+       |                                                                ^
+      9|   expect(screen.getByRole('tablist').className).toContain('group-data-…
+     10| })
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  2 failed (2)
+      Tests  2 failed | 43 passed (45)
+   Start at  15:42:03
+   Duration  2.65s (transform 172ms, setup 0ms, import 400ms, tests 1.85s, environment 1.01s)
+
