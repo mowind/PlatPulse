@@ -27,7 +27,7 @@ function expectWorldFits(chart: ECharts, width: number, height: number) {
     const xs = pixels.map((point) => point[0])
     const ys = pixels.map((point) => point[1])
     if (width / height === 2) {
-      expect((Math.max(...xs) - Math.min(...xs)) / width, 'world fills desktop canvas').toBeGreaterThan(0.9)
+      expect((Math.max(...xs) - Math.min(...xs)) / width, 'world fills 2:1 canvas').toBeGreaterThan(0.9)
     }
     expect(Math.min(...xs), 'west edge').toBeGreaterThanOrEqual(-0.000001)
     expect(Math.max(...xs), 'east edge').toBeLessThanOrEqual(width)
@@ -41,9 +41,9 @@ function expectWorldFits(chart: ECharts, width: number, height: number) {
   }
 }
 
-// Chart containers, not browser viewports: tall mobile, shallow desktop,
+// Chart containers, not browser viewports: compact mobile, shallow desktop,
 // and the supplied screenshot's approximately 3.8:1 map aspect ratio.
-const sizes = [[328, 352], [358, 352], [440, 200], [760, 200], [850, 200], [1330, 350], [760, 380], [1330, 665]]
+const sizes = [[288, 144], [328, 164], [358, 179], [398, 199], [440, 200], [760, 200], [850, 200], [1330, 350], [760, 380], [1330, 665]]
 
 describe.each([false, true])('world map viewport (dark=%s)', (dark) => {
   it.each(sizes)('fits every geometry point and aligns markers at %d×%d, then on resize', (width, height) => {
@@ -56,10 +56,11 @@ describe.each([false, true])('world map viewport (dark=%s)', (dark) => {
         labelFor: (code) => code,
         dark,
         reducedMotion: true,
+        mobile: width < 736,
       }))
       expectWorldFits(chart, width, height)
       // Exercise the mounted instance's resize path in both aspect ratios.
-      for (const [nextWidth, nextHeight] of [[328, 352], [1330, 350], [width, height]]) {
+      for (const [nextWidth, nextHeight] of [[288, 144], [1330, 350], [width, height]]) {
         chart.resize({ width: nextWidth, height: nextHeight })
         expectWorldFits(chart, nextWidth, nextHeight)
       }

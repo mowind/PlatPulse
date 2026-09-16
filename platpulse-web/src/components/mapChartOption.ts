@@ -82,6 +82,7 @@ export type MapOptionInput = {
   labelFor: (code: string) => string
   dark: boolean
   reducedMotion: boolean
+  mobile?: boolean
 }
 
 /**
@@ -101,8 +102,23 @@ export function mapChartOption({
   labelFor,
   dark,
   reducedMotion,
+  mobile = false,
 }: MapOptionInput): EChartsOption {
-  const colors = dark ? DARK_PALETTE : LIGHT_PALETTE
+  const base = dark ? DARK_PALETTE : LIGHT_PALETTE
+  const colors = mobile ? {
+    ...base,
+    borderColor: dark ? 'rgba(255,255,255,0.15)' : 'rgba(15,23,42,0.16)',
+    activeAreaColor: dark ? 'rgba(16,185,129,0.18)' : 'rgba(16,185,129,0.14)',
+    offlineAreaColor: dark ? 'rgba(234,179,8,0.15)' : 'rgba(202,138,4,0.12)',
+    activeBorderColor: dark ? 'rgba(16,185,129,0.35)' : 'rgba(5,150,105,0.35)',
+    offlineBorderColor: 'rgba(202,138,4,0.35)',
+  } : base
+  // Both coordinate systems must use the same contain fit, independent of data.
+  const layout = {
+    left: 'center', top: 'center', width: '100%', height: '100%',
+    preserveAspect: 'contain' as const,
+  }
+  const byCode = new Map(countries.map(country => [country.code, country]))
 
   // One datum per country, matching ECharts' region name. A datum whose
   // polygon is absent from the asset simply does not paint; its Peer count
@@ -113,6 +129,7 @@ export function mapChartOption({
     const stale = country.staleCount > 0
     return [{
       name,
+      code: country.code,
       value: country.count,
       itemStyle: {
         areaColor: stale ? colors.offlineAreaColor : colors.activeAreaColor,
@@ -136,18 +153,21 @@ export function mapChartOption({
       name: labelFor(country.code),
       code: country.code,
       value: [country.point.lon, country.point.lat, country.count],
-      symbolSize: country.count <= 1 ? MAP_DOT_SINGLE : MAP_DOT_MULTIPLE,
-      label: { show: country.count > 1 },
+      symbolSize: mobile ? 7 : country.count <= 1 ? MAP_DOT_SINGLE : MAP_DOT_MULTIPLE,
+      label: { show: !mobile && country.count > 1 },
       itemStyle: { color: stale ? colors.dotYellow : colors.dotEmerald },
     }]
   })
 
   return {
-    animation: !reducedMotion,
+    animation: !mobile && !reducedMotion,
     animationDurationUpdate: 300,
     animationEasingUpdate: 'cubicOut',
     tooltip: {
       trigger: 'item',
+      triggerOn: mobile ? 'click' : 'mousemove|click|mousewheel',
+      enterable: false,
+      transitionDuration: mobile ? 0 : 0.4,
       confine: true,
       backgroundColor: colors.tooltipBg,
       borderColor: 'transparent',
@@ -155,15 +175,16 @@ export function mapChartOption({
       borderRadius: 6,
       textStyle: { color: colors.text, fontSize: 12, lineHeight: 20 },
       extraCssText:
-        'padding: 3px 6px;backdrop-filter: blur(5px);z-index:9;box-shadow:0 0 0 0.5px ' +
+        'max-width:calc(100vw - 48px);white-space:normal;overflow-wrap:anywhere;padding: 3px 6px;backdrop-filter: blur(5px);z-index:9;box-shadow:0 0 0 0.5px ' +
         colors.tooltipShadow + ', 0 0 16px ' + colors.tooltipShadow,
       formatter: (params) => {
         const single = Array.isArray(params) ? params[0] : params
-        const data = (single as unknown as { data?: { code?: string; value?: number[] } } | undefined)?.data
-        const code = data?.code
-        if (!code) return ''
-        const count = typeof data?.value?.[2] === 'number' ? data.value[2] : 0
-        const country = countries.find((item) => item.code === code)
+        const data = (single as unknown as { data?: { code?: string } } | undefined)?.data
+        const country = data?.code ? byCode.get(data.code) : undefined
+        // Map values are scalars, scatter values are tuples. Resolve both via
+        // the same observed country; an unmatched region is NOT zero records.
+        if (!country) return ''
+        const { code, count } = country
         const flag = '<img src="' + flagSrc(code) + '" style="width:16px;height:16px;vertical-align:middle;margin-right:2px" />'
         const dot = (color: string, label: string) =>
           '<span style="display:flex;gap:4px;align-items:center"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:' +
@@ -183,11 +204,7 @@ export function mapChartOption({
     geo: {
       map: mapName,
       roam: false,
-      left: 'center',
-      top: 'center',
-      width: '100%',
-      height: '100%',
-      preserveAspect: 'contain',
+      ...layout,
       silent: true,
       itemStyle: { areaColor: 'transparent', borderColor: 'transparent' },
       emphasis: {
@@ -202,12 +219,8 @@ export function mapChartOption({
         map: mapName,
         roam: false,
         selectedMode: false,
-        left: 'center',
-        top: 'center',
-        width: '100%',
-        height: '100%',
-        preserveAspect: 'contain',
-        tooltip: { show: false },
+        ...layout,
+        tooltip: { show: true },
         emphasis: {
           label: { show: false },
           itemStyle: { areaColor: colors.borderColor, borderColor: colors.hoverBorderColor, borderWidth: 0.5 },

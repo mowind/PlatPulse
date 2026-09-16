@@ -41,7 +41,7 @@ const sortOptions: Array<{ value: SortKey; label: string }> = [
 /**
  * Home, laid out as Emerald's HomeView + NodeGeneralCards:
  * a 37:61 statistics/map top band at md and above (the approved reference-image
- * split), with statistics pulled over the map on small screens, then the
+ * split), with the map followed by a compact 2×2 summary on small screens, then the
  * network toolbar built from Emerald Tabs, then the node grid at
  * repeat(auto-fill, minmax(300px, 1fr)) with a 12px gap.
  *
@@ -111,13 +111,13 @@ export default function HomeDashboard({
       )}
 
       <div className="grid h-auto grid-cols-12 grid-rows-1 gap-2 p-4 md:h-58 md:grid-cols-[minmax(0,37fr)_minmax(0,61fr)]">
-        <div className="col-span-12 col-start-1 min-w-0 h-88 md:col-span-1 md:col-start-2 md:row-start-1 md:h-full">
+        <div className="col-span-12 col-start-1 min-w-0 aspect-[2/1] md:aspect-auto md:col-span-1 md:col-start-2 md:row-start-1 md:h-full">
           <GeoMapBoundary>
             <GeoWorldMap networks={networks} networkFilter={networkFilter} loading={loading} hasProjection={hasProjection} />
           </GeoMapBoundary>
         </div>
         <div
-          className="z-9 -mt-42 col-span-12 row-start-3 grid h-42 grid-cols-12 grid-rows-2 gap-2 min-w-0 md:col-span-1 md:col-start-1 md:row-start-1 md:mt-0 md:h-auto"
+          className="z-9 col-span-12 row-start-2 grid h-auto grid-cols-12 grid-rows-2 gap-2 min-w-0 md:col-span-1 md:col-start-1 md:row-start-1 md:mt-0 md:h-auto"
           aria-label="Home summary"
         >
           <SummaryCard label="Active Nodes" value={hasProjection ? visibleRecords.length : null} tone="green" icon="server" />

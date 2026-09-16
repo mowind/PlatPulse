@@ -135,3 +135,31 @@ describe('mapChartOption', () => {
     expect(build({ reducedMotion: true }).animation).toBe(false)
   })
 })
+
+
+describe('mobile map density and country hit targets', () => {
+  it.each([false, true])('keeps shared contain fit and honest small markers (dark=%s)', dark => {
+    const option = build({ mobile: true, dark })
+    const desktop = build({ dark })
+    expect(option.animation).toBe(false)
+    expect(option.geo).toEqual(desktop.geo)
+    for (const key of ['left', 'top', 'width', 'height', 'preserveAspect', 'roam']) {
+      expect(option.series[0][key]).toEqual(option.geo[key])
+    }
+    const dots = option.series[1].data as ScatterDatum[]
+    expect(dots.map(dot => dot.value)).toEqual((desktop.series[1].data as ScatterDatum[]).map(dot => dot.value))
+    expect(dots.every(dot => dot.symbolSize === 7 && !dot.label.show)).toBe(true)
+    expect(option.series[0].tooltip).toEqual({ show: true })
+    expect(option.tooltip).toMatchObject({ triggerOn: 'click', confine: true })
+    const polygon = option.tooltip.formatter({ data: { code: 'DE', value: 2 } })
+    expect(polygon).toEqual(option.tooltip.formatter({ data: { code: 'DE', value: [10, 51, 2] } }))
+    expect(polygon).toContain('2 records')
+    expect(polygon).toContain('1 stale')
+    expect(option.tooltip.formatter({ data: { name: 'Unmatched', value: NaN } })).toBe('')
+    expect(option.tooltip.formatter({ data: { code: 'ZZ', value: 0 } })).toBe('')
+    // No representative point: the country region still exposes observed data.
+    const unplotted = build({ mobile: true, countries: [{ code: 'DE', point: null, count: 9, staleCount: 9 }] })
+    expect(unplotted.series[1].data).toEqual([])
+    expect(unplotted.tooltip.formatter({ data: (unplotted.series[0].data as unknown[])[0] })).toContain('9 stale')
+  })
+})

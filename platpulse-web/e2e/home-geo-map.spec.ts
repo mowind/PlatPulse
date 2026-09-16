@@ -246,7 +246,8 @@ async function hoverPaintedMarker(page: Page) {
     })
     return target !== null
   }, { timeout: 20_000, message: 'the scatter paints an emerald country marker' }).toBe(true)
-  await page.mouse.move(target!.x, target!.y)
+  if (page.viewportSize()!.width < 768) await page.touchscreen.tap(target!.x, target!.y)
+  else await page.mouse.move(target!.x, target!.y)
 }
 
 /** Replace the Geo projection of the live Public response with a deterministic
@@ -415,7 +416,7 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
       'Sweden: 14 records (no representative point, not plotted)',
     )
 
-    // A real pointer hover over a painted marker opens the ECharts tooltip with
+    // A real pointer hover (desktop) or tap (mobile) opens the ECharts tooltip with
     // the country's name, its flag image path and its record count — the canvas
     // equivalent of the old per-country hover preview.
     await hoverPaintedMarker(page)
@@ -428,7 +429,8 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     const flag = geoChart(page).locator('img[src^="/assets/flags/"]').first()
     await expect(flag).toBeVisible()
     expect(await flag.getAttribute('src')).toMatch(/^\/assets\/flags\/[a-z]{2}\.svg$/)
-    await page.mouse.move(4, 4)
+    if (page.viewportSize()!.width < 768) await page.touchscreen.tap(4, 4)
+    else await page.mouse.move(4, 4)
     await expect.poll(async () => mapTooltip(page).first().isVisible()).toBe(false)
 
     await capture(page, testInfo, 'fixture-dense-' + testInfo.project.name)

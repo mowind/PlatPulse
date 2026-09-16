@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PublicNetwork } from '../api/generated'
 
@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => ({
   setOption: vi.fn(),
   resize: vi.fn(),
   dispose: vi.fn(),
+  dispatchAction: vi.fn(),
+  on: vi.fn(),
 }))
 
 vi.mock('echarts/core', () => ({ init: mocks.init, registerMap: mocks.registerMap, use: mocks.use }))
@@ -31,6 +33,8 @@ beforeEach(() => {
     setOption: mocks.setOption,
     resize: mocks.resize,
     dispose: mocks.dispose,
+    dispatchAction: mocks.dispatchAction,
+    getZr: () => ({ on: mocks.on }),
   }))
 })
 
@@ -125,6 +129,37 @@ describe('GeoWorldMap', () => {
     await waitFor(() => expect(mocks.setOption).toHaveBeenCalled())
     await waitFor(() => expect(mocks.init).toHaveBeenCalledTimes(1))
     view.unmount()
+    expect(mocks.dispose).toHaveBeenCalledTimes(1)
+  })
+
+  it('updates density on breakpoint changes and resizes without reinitializing', async () => {
+    stubBasemap()
+    let breakpointChange = () => {}
+    let resize = () => {}
+    const query = { matches: true, addEventListener: vi.fn((_type, callback) => { breakpointChange = callback }), removeEventListener: vi.fn() }
+    vi.stubGlobal('matchMedia', () => query)
+    const disconnect = vi.fn()
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback: () => void) { resize = callback }
+      observe() {}
+      disconnect = disconnect
+    })
+    const view = renderMap()
+    await waitFor(() => expect(mocks.init).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(mocks.setOption).toHaveBeenCalled())
+    expect(mocks.setOption.mock.lastCall?.[0].series[1].data[0].symbolSize).toBe(7)
+    expect(mocks.setOption.mock.lastCall?.[0].series[0].data).toEqual(expect.arrayContaining([expect.objectContaining({code: 'DE', value: 2})]))
+    act(() => { query.matches = false; breakpointChange(); resize() })
+    await waitFor(() => expect(mocks.setOption.mock.lastCall?.[0].series[1].data[0].symbolSize).toBe(14))
+    expect(mocks.resize).toHaveBeenCalled()
+    view.rerender(<GeoWorldMap networks={[network()]} networkFilter="mainnet" loading={false} hasProjection />)
+    expect(mocks.init).toHaveBeenCalledTimes(1)
+    const click = mocks.on.mock.calls.find(([name]) => name === 'click')?.[1]
+    act(() => click({ target: undefined }))
+    expect(mocks.dispatchAction).toHaveBeenCalledWith({type: 'hideTip'})
+    view.unmount()
+    expect(disconnect).toHaveBeenCalledTimes(1)
+    expect(query.removeEventListener).toHaveBeenCalled()
     expect(mocks.dispose).toHaveBeenCalledTimes(1)
   })
 

@@ -105,6 +105,20 @@ function useIsDark() {
   return dark
 }
 
+/** Match the layout breakpoint, including orientation changes. */
+function useMobileMap() {
+  const [mobile, setMobile] = useState(() => typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 767px)').matches)
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const query = window.matchMedia('(max-width: 767px)')
+    const update = () => setMobile(query.matches)
+    query.addEventListener('change', update)
+    update()
+    return () => query.removeEventListener('change', update)
+  }, [])
+  return mobile
+}
+
 export default function GeoWorldMap({ networks, networkFilter, loading, hasProjection }: GeoWorldMapProps) {
   const container = useRef<HTMLDivElement>(null)
   const chart = useRef<ECharts | null>(null)
@@ -112,6 +126,7 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
   const [world, setWorld] = useState<{ geojson: WorldGeoJson; names: Map<string, string> } | null>(null)
   const [failed, setFailed] = useState(false)
   const dark = useIsDark()
+  const mobile = useMobileMap()
 
   const overview = useMemo(() => homeGeoOverview(networks, networkFilter), [networks, networkFilter])
   const status: MapStatus = loading
@@ -144,19 +159,33 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
     let disposed = false
     let instance: ECharts | null = null
     let observer: ResizeObserver | null = null
+    const dismissOutside = (event: PointerEvent) => {
+      if (event.target instanceof Node && !element.contains(event.target)) {
+        instance?.dispatchAction({ type: 'hideTip' })
+      }
+    }
+    document.addEventListener('pointerdown', dismissOutside)
     loadECharts()
       .then((core) => {
         if (disposed || !container.current) return
         instance = core.init(container.current)
         chart.current = instance
+        // ZRender receives blank-canvas taps too; ECharts series clicks do not.
+        instance.getZr().on('click', (event) => {
+          if (!event.target) instance?.dispatchAction({ type: 'hideTip' })
+        })
         if (optionRef.current) instance.setOption(optionRef.current)
-        observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => instance?.resize())
+        observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => {
+          instance?.dispatchAction({ type: 'hideTip' })
+          instance?.resize()
+        })
         observer?.observe(container.current)
         if (!observer) instance.resize()
       })
       .catch(() => { if (!disposed) setFailed(true) })
     return () => {
       disposed = true
+      document.removeEventListener('pointerdown', dismissOutside)
       observer?.disconnect()
       instance?.dispose()
       chart.current = null
@@ -164,9 +193,7 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
   }, [world])
 
   const countries = useMemo<MapCountry[]>(
-    () => overview.countries.flatMap((country) => country.point
-      ? [{ code: country.code, point: country.point, count: country.count, staleCount: country.staleCount }]
-      : []),
+    () => overview.countries.map((country) => ({ code: country.code, point: country.point, count: country.count, staleCount: country.staleCount })),
     [overview.countries],
   )
 
@@ -178,11 +205,13 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
       countries,
       labelFor: countryDisplayName,
       dark,
+      mobile,
       reducedMotion: prefersReducedMotion(),
     })
     optionRef.current = option
+    chart.current?.dispatchAction({ type: 'hideTip' })
     chart.current?.setOption(option)
-  }, [world, countries, dark])
+  }, [world, countries, dark, mobile])
 
   const scopedPeerCount = hasProjection && !loading ? overview.availablePeerCount : null
   const unknownCount = overview.unknownCountryCount
@@ -215,7 +244,7 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
   return (
     <section aria-label={PEER_COUNTRIES_HEADING} data-state={status} data-network-filter={networkFilter} data-scope={overview.scope} className="relative h-full">
       {/* Normal stays quiet; exceptions are visible without moving the canvas. */}
-      {notice && <span data-slot="map-status" className="absolute top-0 left-0 z-10 max-w-[80%] rounded-md bg-background/90 px-2 py-1 text-xs text-muted-foreground" role="status"><span>{primaryNotice}</span>{unknownNotice && <span>{primaryNotice ? " · " : ""}{unknownNotice}</span>}</span>}
+      {notice && <span data-slot="map-status" className="absolute top-0 left-0 z-10 max-w-[calc(100%-88px)] md:max-w-[80%] rounded-md bg-background/90 px-2 py-1 text-xs text-muted-foreground" role="status"><span>{primaryNotice}</span>{unknownNotice && <span>{primaryNotice ? " · " : ""}{unknownNotice}</span>}</span>}
       {scopedPeerCount !== null && (
         <p
           data-slot="geo-counters"
@@ -223,7 +252,7 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
         >
           <span data-slot="geo-counter" className="flex items-center gap-1">
             <span data-slot="geo-counter-dot" className="inline-block size-1.5 animate-pulse rounded-full bg-emerald-600" aria-hidden="true" />
-            <span className="sr-only">Peers: </span>
+            <span className="md:sr-only">Peers: </span>
             {formatGeoCount(scopedPeerCount)}
           </span>
         </p>
@@ -233,7 +262,7 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
       ) : (
         // Like Emerald, the desktop canvas is taller than the summary band and
         // shifted upward. Tie height to width so wide screens cannot shrink the
-        // world back into a shallow strip; the mobile composition stays intact.
+        // world back into a shallow strip. Mobile uses its actual 2:1 plot.
         <div
           ref={container}
           role="img"

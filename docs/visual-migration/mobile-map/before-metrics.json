@@ -1,0 +1,242 @@
+[
+  {
+    "width": 320,
+    "height": 740,
+    "theme": "light",
+    "map": {
+      "x": 16,
+      "y": 113,
+      "width": 288,
+      "height": 352,
+      "bottom": 465
+    },
+    "summary": {
+      "x": 16,
+      "y": 313,
+      "width": 288,
+      "height": 168,
+      "bottom": 481
+    },
+    "overflow": false
+  },
+  {
+    "width": 360,
+    "height": 800,
+    "theme": "light",
+    "map": {
+      "x": 16,
+      "y": 113,
+      "width": 328,
+      "height": 352,
+      "bottom": 465
+    },
+    "summary": {
+      "x": 16,
+      "y": 313,
+      "width": 328,
+      "height": 168,
+      "bottom": 481
+    },
+    "overflow": false
+  },
+  {
+    "width": 390,
+    "height": 844,
+    "theme": "light",
+    "map": {
+      "x": 16,
+      "y": 113,
+      "width": 358,
+      "height": 352,
+      "bottom": 465
+    },
+    "summary": {
+      "x": 16,
+      "y": 313,
+      "width": 358,
+      "height": 168,
+      "bottom": 481
+    },
+    "overflow": false
+  },
+  {
+    "width": 430,
+    "height": 900,
+    "theme": "light",
+    "map": {
+      "x": 16,
+      "y": 113,
+      "width": 398,
+      "height": 352,
+      "bottom": 465
+    },
+    "summary": {
+      "x": 16,
+      "y": 313,
+      "width": 398,
+      "height": 168,
+      "bottom": 481
+    },
+    "overflow": false
+  },
+  {
+    "width": 844,
+    "height": 390,
+    "theme": "light",
+    "map": {
+      "x": 327.546875,
+      "y": 71.296875,
+      "width": 500.453125,
+      "height": 250.21875,
+      "bottom": 321.515625
+    },
+    "summary": {
+      "x": 16,
+      "y": 113,
+      "width": 303.546875,
+      "height": 200,
+      "bottom": 313
+    },
+    "overflow": false
+  },
+  {
+    "width": 1440,
+    "height": 900,
+    "theme": "light",
+    "map": {
+      "x": 572.15625,
+      "y": 48.66667175292969,
+      "width": 771.84375,
+      "height": 386,
+      "bottom": 434.6666717529297
+    },
+    "summary": {
+      "x": 96,
+      "y": 113,
+      "width": 468.15625,
+      "height": 200,
+      "bottom": 313
+    },
+    "overflow": false
+  },
+  {
+    "width": 320,
+    "height": 740,
+    "theme": "dark",
+    "map": {
+      "x": 16,
+      "y": 113,
+      "width": 288,
+      "height": 352,
+      "bottom": 465
+    },
+    "summary": {
+      "x": 16,
+      "y": 313,
+      "width": 288,
+      "height": 168,
+      "bottom": 481
+    },
+    "overflow": false
+  },
+  {
+    "width": 360,
+    "height": 800,
+    "theme": "dark",
+    "map": {
+      "x": 16,
+      "y": 113,
+      "width": 328,
+      "height": 352,
+      "bottom": 465
+    },
+    "summary": {
+      "x": 16,
+      "y": 313,
+      "width": 328,
+      "height": 168,
+      "bottom": 481
+    },
+    "overflow": false
+  },
+  {
+    "width": 390,
+    "height": 844,
+    "theme": "dark",
+    "map": {
+      "x": 16,
+      "y": 113,
+      "width": 358,
+      "height": 352,
+      "bottom": 465
+    },
+    "summary": {
+      "x": 16,
+      "y": 313,
+      "width": 358,
+      "height": 168,
+      "bottom": 481
+    },
+    "overflow": false
+  },
+  {
+    "width": 430,
+    "height": 900,
+    "theme": "dark",
+    "map": {
+      "x": 16,
+      "y": 113,
+      "width": 398,
+      "height": 352,
+      "bottom": 465
+    },
+    "summary": {
+      "x": 16,
+      "y": 313,
+      "width": 398,
+      "height": 168,
+      "bottom": 481
+    },
+    "overflow": false
+  },
+  {
+    "width": 844,
+    "height": 390,
+    "theme": "dark",
+    "map": {
+      "x": 327.546875,
+      "y": 71.296875,
+      "width": 500.453125,
+      "height": 250.21875,
+      "bottom": 321.515625
+    },
+    "summary": {
+      "x": 16,
+      "y": 113,
+      "width": 303.546875,
+      "height": 200,
+      "bottom": 313
+    },
+    "overflow": false
+  },
+  {
+    "width": 1440,
+    "height": 900,
+    "theme": "dark",
+    "map": {
+      "x": 572.15625,
+      "y": 48.66667175292969,
+      "width": 771.84375,
+      "height": 386,
+      "bottom": 434.6666717529297
+    },
+    "summary": {
+      "x": 96,
+      "y": 113,
+      "width": 468.15625,
+      "height": 200,
+      "bottom": 313
+    },
+    "overflow": false
+  }
+]
