@@ -55,10 +55,9 @@ test.describe('Converged Public Home (issue #102)', () => {
       page.getByRole('link', { name: /^Healthy Node H — Producing Card/ }),
     ).toHaveCount(1)
 
-    // Both compact metric rows carry exactly the required labels and values:
-    // Head / Txs / Peers and QC / Locked / Committed / Validator.
+    // Business rows carry full labels; membership is a neutral header role.
     for (const label of ['Head', 'Txs', 'Peers', 'QC', 'Locked', 'Committed', 'Validator']) {
-      await expect(['Locked', 'Committed'].includes(label) ? hCard.getByLabel(label, { exact: true }) : hCard.getByText(label, { exact: true })).toBeVisible()
+      await expect(hCard.getByText(label, { exact: true })).toBeVisible()
     }
     // Every metric is one data-item / value line with the value flush right,
     // at every fixed viewport.
@@ -68,10 +67,7 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(hCard.getByText('12,842,024', { exact: true })).toHaveCount(1)
     await expect(hCard.getByText('21', { exact: true })).toHaveCount(1)
     await expect(hCard.getByText('3', { exact: true })).toHaveCount(1)
-    // main's b4b509a moved the Home Validator row to True/False (d46f0ad did
-    // the same for Node Detail) but left this spec on Yes/No, so it had been
-    // red since then. Restated to the source vocabulary.
-    await expect(hCard.getByText('True', { exact: true })).toHaveCount(1)
+    await expect(hCard.locator('[data-slot="validator-role"]')).toHaveText('Validator')
 
     await expectNoVerboseHomeSurface(page)
 
@@ -154,7 +150,7 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(kCard.getByText('12,842,023', { exact: true })).toHaveCount(1)
     await expect(kCard.getByText('0', { exact: true })).toHaveCount(1)
     await expect(kCard.getByText('Empty; authoritative zero')).toBeVisible()
-    await expect(kCard.getByText('False', { exact: true })).toHaveCount(1)
+    await expect(kCard.getByText('Non-validator', { exact: true })).toHaveCount(1)
     await expect(kCard.getByRole('img', { name: 'Healthy' })).toBeVisible()
 
     // Node L: stale last-good consensus keeps the values and marks them.
@@ -162,7 +158,7 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(lCard.getByText('13', { exact: true })).toHaveCount(1)
     await expect(lCard.getByText('12,842,023', { exact: true })).toHaveCount(3)
     await expect(lCard.getByText('12,842,022', { exact: true })).toHaveCount(1)
-    await expect(lCard.getByText('True', { exact: true })).toHaveCount(1)
+    await expect(lCard.locator('[data-slot="validator-role"]')).toHaveText('ValidatorStale')
     await expect(lCard.getByText('Stale', { exact: true })).toHaveCount(4)
 
     // Node M: effective Link with an authoritative no-live-validator result.
@@ -185,12 +181,13 @@ test.describe('Converged Public Home (issue #102)', () => {
     // observation is known, and missing Node values never become 0 or No.
     const pCard = nodeCard(page, /Node P/)
     // All absent metrics are explicit, including resource and uptime values.
-    for (const label of ['CPU', 'Memory', 'Node data', 'Node uptime', 'Head', 'Txs', 'Peers', 'QC', 'Locked', 'Committed', 'Validator']) {
+    for (const label of ['CPU', 'Memory', 'Node data', 'Node uptime', 'Head', 'Txs', 'Peers', 'QC', 'Locked', 'Committed']) {
       const row = pCard.locator('[data-slot="metric-row"]').filter({ has: page.getByText(label, { exact: true }) })
       await expect(row.locator('[data-slot="metric-row-value"]')).toHaveText('Unknown')
     }
+    await expect(pCard.locator('[data-slot="validator-role"]')).toHaveText('Unknown')
     await expect(pCard.getByText('0', { exact: true })).toHaveCount(0)
-    await expect(pCard.getByText('False', { exact: true })).toHaveCount(0)
+    await expect(pCard.getByText('Non-validator', { exact: true })).toHaveCount(0)
     await expect(pCard.getByText('one or more observations are stale or unknown')).toHaveCount(1)
 
     // Node A: the exact Current Head Block Summary proves Txs while the

@@ -304,3 +304,34 @@
     inset: -9px 0;
   }
 }
+
+/* Business values alone use full-size, intrinsic-width rows. Resource rows stay unchanged. */
+[data-slot='node-business-metrics'] [data-slot='metric-row'] {
+  container-type: normal;
+  grid-template-columns: auto minmax(max-content, 1fr);
+  font-size: 14px;
+  line-height: 28px;
+  row-gap: 0;
+  column-gap: 4px;
+}
+[data-slot='node-business-metrics'] [data-slot='metric-row-value'] {
+  white-space: nowrap;
+  overflow-wrap: normal;
+  gap: 4px;
+}
+[data-slot='node-business-metrics'] [data-slot='metric-row-value']::before {
+  flex-basis: 0;
+}
+[data-slot='node-business-metrics'] > [data-slot='metric-row'] [data-slot='metric-row-value'] {
+  font-weight: 600;
+}
+[data-slot='node-counts'] {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 1rem;
+}
+[data-slot='node-counts'] > [data-slot='metric-row'] {
+  /* Equal halves when both fit; intrinsic content forces whole rows to wrap. */
+  flex: 1 1 calc(50% - 0.5rem);
+  min-width: max-content;
+}

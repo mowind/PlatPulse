@@ -139,7 +139,7 @@ describe('Public Home dashboard', () => {
 
     const alphaCard = cardOf(nodeCardLink('Alpha'))
     const resources = within(alphaCard).getByLabelText('Node process and host network resources')
-    const highlights = within(alphaCard).getByLabelText('Node highlights')
+    const highlights = alphaCard.querySelector('[data-slot="node-business-metrics"]')!
     expect(resources.compareDocumentPosition(highlights) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(within(resources).getByText('CPU')).toBeTruthy()
     expect(within(resources).getByText('12.5%')).toBeTruthy()
@@ -204,21 +204,21 @@ describe('Public Home dashboard', () => {
 
     const alphaCard = cardOf(nodeCardLink('Alpha'))
     // Resources (CPU, Memory, Node data, Node uptime, Speed), main (Head, Txs,
-    // Peers), and consensus (QC, Locked, Committed, Validator). Their shared
+    // Peers), and consensus (QC, Locked, Committed). Their shared
     // shape is covered by MetricRow.test.tsx.
-    expect(alphaCard.querySelectorAll('[data-slot="metric-row"]')).toHaveLength(12)
+    expect(alphaCard.querySelectorAll('[data-slot="metric-row"]')).toHaveLength(11)
   })
 
-  it('groups Head/Txs/Peers and consensus heights into triple rows', () => {
+  it('orders full-width business rows before the wrapping count pair and puts the role in the header', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
     const card = cardOf(nodeCardLink('Alpha'))
-    const triples = card.querySelectorAll('[data-slot="metric-triple"]')
-    expect(triples).toHaveLength(2)
-    for (const triple of triples) expect(triple.querySelectorAll(':scope > [data-slot="metric-row"]')).toHaveLength(3)
-    expect(triples[0].textContent).toContain('Head120Txs12,345Peers0')
-    expect(within(card).getByText('L').getAttribute('aria-label')).toBe('Locked')
-    expect(within(card).getByText('C').getAttribute('aria-label')).toBe('Committed')
-    expect(within(card).getByText('Speed').nextElementSibling?.textContent).toBe('16.4Kbps8.19Kbps')
+    expect(card.querySelector('[data-slot="metric-triple"]')).toBeNull()
+    const metrics = card.querySelector('[data-slot="node-business-metrics"]')!
+    expect(Array.from(metrics.querySelectorAll('[data-slot="metric-row-label"]'), el => el.textContent))
+      .toEqual(['Head', 'QC', 'Locked', 'Committed', 'Txs', 'Peers'])
+    expect(metrics.querySelector('[data-short-label]')).toBeNull()
+    expect(metrics.querySelector('[data-slot="validator-role"]')).toBeNull()
+    expect(card.querySelector('[data-slot="card-x-header"] [data-slot="validator-role"]')?.textContent).toBe('Validator')
   })
 
   it.each([
@@ -254,17 +254,17 @@ describe('Public Home dashboard', () => {
     expect(within(alphaCard).getByText('Committed')).toBeTruthy()
     expect(within(alphaCard).getByText('98')).toBeTruthy()
     expect(within(alphaCard).getByText('Validator')).toBeTruthy()
-    // Current successful membership renders Yes, not a badge or color.
-    expect(within(alphaCard).getByText('True')).toBeTruthy()
+    // Current successful membership renders a neutral role badge.
+    expect(within(alphaCard).getByText('Validator')).toBeTruthy()
     expect(within(alphaCard).queryByText('Stale')).toBeNull()
 
     // Never-observed consensus is Unknown for every metric, never zero/No.
     const betaCard = cardOf(nodeCardLink('Beta'))
-    for (const label of ['QC', 'Locked', 'Committed', 'Validator']) {
+    for (const label of ['QC', 'Locked', 'Committed']) {
       expect(within(betaCard).getByText(label)).toBeTruthy()
     }
     expect(within(betaCard).getAllByText('Unknown').length).toBeGreaterThanOrEqual(7)
-    expect(within(betaCard).queryByText('False')).toBeNull()
+    expect(within(betaCard).queryByText('Non-validator')).toBeNull()
   })
 
   it('retains last-good consensus values and visibly marks failed or stale collections', () => {
@@ -309,7 +309,7 @@ describe('Public Home dashboard', () => {
     expect(within(staleCard).getByText('141')).toBeTruthy()
     expect(within(staleCard).getByText('140')).toBeTruthy()
     expect(within(staleCard).getByText('139')).toBeTruthy()
-    expect(within(staleCard).getByText('True')).toBeTruthy()
+    expect(within(staleCard).getByText('Validator')).toBeTruthy()
     expect(within(staleCard).getAllByText('Stale')).toHaveLength(4)
 
     // A failed collection with last-good true keeps the value and is Stale.
@@ -317,13 +317,13 @@ describe('Public Home dashboard', () => {
     expect(within(failedCard).getByText('151')).toBeTruthy()
     expect(within(failedCard).getByText('150')).toBeTruthy()
     expect(within(failedCard).getByText('149')).toBeTruthy()
-    expect(within(failedCard).getByText('True')).toBeTruthy()
+    expect(within(failedCard).getByText('Validator')).toBeTruthy()
     expect(within(failedCard).getAllByText('Stale')).toHaveLength(4)
 
     // A stale successful non-membership keeps No and marks it Stale.
     const staleFalseCard = cardOf(nodeCardLink('Stale False'))
     expect(within(staleFalseCard).getByText('161')).toBeTruthy()
-    expect(within(staleFalseCard).getByText('False')).toBeTruthy()
+    expect(within(staleFalseCard).getByText('Non-validator')).toBeTruthy()
     expect(within(staleFalseCard).getAllByText('Stale')).toHaveLength(4)
 
     // A failed collection without a last-good membership is Unknown, never
@@ -331,12 +331,12 @@ describe('Public Home dashboard', () => {
     const failedNoneCard = cardOf(nodeCardLink('Failed None'))
     expect(within(failedNoneCard).getAllByText('Unknown').length).toBeGreaterThanOrEqual(4)
     expect(within(failedNoneCard).queryByText('Stale')).toBeNull()
-    expect(within(failedNoneCard).queryByText('False')).toBeNull()
+    expect(within(failedNoneCard).queryByText('Non-validator')).toBeNull()
 
     // A current successful non-membership renders No; an observed zero
     // block height is an authoritative zero, never Unknown.
     const falseCard = cardOf(nodeCardLink('Current False'))
-    expect(within(falseCard).getByText('False')).toBeTruthy()
+    expect(within(falseCard).getByText('Non-validator')).toBeTruthy()
     expect(within(falseCard).getAllByText('0').length).toBeGreaterThanOrEqual(4)
     expect(within(falseCard).queryByText('Stale')).toBeNull()
 
@@ -344,8 +344,8 @@ describe('Public Home dashboard', () => {
     // value must not be presented as current Yes/No or block heights.
     const unknownFreshnessCard = cardOf(nodeCardLink('Unknown Freshness'))
     expect(within(unknownFreshnessCard).getAllByText('Unknown').length).toBeGreaterThanOrEqual(4)
-    expect(within(unknownFreshnessCard).queryByText('True')).toBeNull()
-    expect(within(unknownFreshnessCard).queryByText('False')).toBeNull()
+    expect(within(unknownFreshnessCard).queryByText('Validator')).toBeNull()
+    expect(within(unknownFreshnessCard).queryByText('Non-validator')).toBeNull()
     expect(within(unknownFreshnessCard).queryByText('Stale')).toBeNull()
   })
 

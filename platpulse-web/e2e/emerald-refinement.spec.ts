@@ -128,8 +128,9 @@ test('refinement scenarios and measured evidence', async ({ page }, info) => {
       }
       if (scenario === 'long-value') {
         const labels = page.locator('[data-slot="node-card"]').first().locator('[data-short-label]')
-        await expect(labels.first()).toBeVisible()
-        expect(await labels.evaluateAll(els => els.every(el => el.getBoundingClientRect().width > 0))).toBe(true)
+        await expect(labels).toHaveCount(0)
+        await expect(card.getByText('Locked', { exact: true })).toBeVisible()
+        await expect(card.getByText('Committed', { exact: true })).toBeVisible()
         expect(await page.locator('[data-slot="metric-row-value"]').evaluateAll(els => els.every(el => el.scrollWidth <= el.clientWidth + 1))).toBe(true)
       }
     }

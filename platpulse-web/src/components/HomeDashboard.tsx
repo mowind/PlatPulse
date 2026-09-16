@@ -273,9 +273,12 @@ function HomeNodeCard({ network, node }: NodeRecord) {
         className="flex h-full flex-col rounded-md focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
         to={`/nodes/${node.nodeId}`}
       >
-        <CardX bordered={false} className="h-full bg-transparent" contentClassName="flex flex-col gap-3" header={<>
-          <NodeHealthMarker health={node.health} />
-          <h2 className="min-w-0 flex-1 truncate text-base font-bold">{nodeLabel(node)}</h2>
+        <CardX bordered={false} className="h-full bg-transparent" contentClassName="flex flex-col gap-3" headerClassName="flex-wrap" header={<>
+          <div className="flex min-w-0 flex-1 basis-auto items-center gap-2">
+            <NodeHealthMarker health={node.health} />
+            <h2 className="min-w-0 truncate text-base font-bold">{nodeLabel(node)}</h2>
+          </div>
+          <ValidatorBadge consensus={node.consensus} />
         </>}>
         <p className="truncate text-[11px] text-muted-foreground">{network.displayName}</p>
         {diagnostic && (
@@ -284,21 +287,19 @@ function HomeNodeCard({ network, node }: NodeRecord) {
           </p>
         )}
         <ResourceRow node={node} />
-        <div
-          data-slot="metric-triple"
-          className="grid grid-cols-3 gap-x-3 gap-y-1"
-          aria-label="Node highlights"
-        >
+        <div data-slot="node-business-metrics" className="flex flex-col">
           <MetricRow label="Head" value={formatNumber(node.currentHead)} />
-          <MetricRow label="Txs" value={formatNumber(node.latestBlockTransactionCount)} />
-          <MetricRow label="Peers" value={formatPeerCount(node)} />
+          <ConsensusRow consensus={node.consensus} />
+          <div data-slot="node-counts">
+            <MetricRow label="Txs" value={formatNumber(node.latestBlockTransactionCount)} />
+            <MetricRow label="Peers" value={formatPeerCount(node)} />
+          </div>
+          {formatPeerObservation(node) && (
+            <small data-slot="metric-row-detail" className="text-[11px] text-muted-foreground">
+              {formatPeerObservation(node)}
+            </small>
+          )}
         </div>
-        {formatPeerObservation(node) && (
-          <small data-slot="metric-row-detail" className="text-[11px] text-muted-foreground">
-            {formatPeerObservation(node)}
-          </small>
-        )}
-        <ConsensusRow consensus={node.consensus} />
         </CardX>
       </Link>
     </article>
@@ -356,7 +357,7 @@ function formatRate(value: number | null | undefined): string {
 }
 
 /**
- * The final compact metric rows: QC, Locked, Committed and Validator come from
+ * QC, Locked, Committed and the header role badge come from
  * the Node-scoped last-good consensus observation (issue #99). Missing,
  * unsupported, disabled, and never-observed values render Unknown, never zero
  * or No; failed or stale collections keep the last-good values and visibly mark
@@ -366,14 +367,23 @@ function ConsensusRow({ consensus }: { consensus: PublicConsensusInsight | undef
   const status = consensusValueStatus(consensus)
   const detail = status === 'stale' ? 'Stale' : undefined
   return (
-    <div className="flex flex-col gap-1" role="group" aria-label="Consensus and validator values">
-      <div data-slot="metric-triple" className="grid grid-cols-3 gap-x-3 gap-y-1">
-        <MetricRow label="QC" value={formatConsensusBlock(consensus?.highestQcBlock, status)} detail={detail} />
-        <MetricRow label="Locked" shortLabel="L" value={formatConsensusBlock(consensus?.highestLockBlock, status)} detail={detail} />
-        <MetricRow label="Committed" shortLabel="C" value={formatConsensusBlock(consensus?.highestCommitBlock, status)} detail={detail} />
-      </div>
-      <MetricRow label="Validator" value={formatConsensusValidator(consensus, status)} detail={detail} />
+    <div className="flex flex-col" role="group" aria-label="Consensus values">
+      <MetricRow label="QC" value={formatConsensusBlock(consensus?.highestQcBlock, status)} detail={detail} />
+      <MetricRow label="Locked" value={formatConsensusBlock(consensus?.highestLockBlock, status)} detail={detail} />
+      <MetricRow label="Committed" value={formatConsensusBlock(consensus?.highestCommitBlock, status)} detail={detail} />
     </div>
+  )
+}
+
+/** Neutral membership, independent of Node health; keep last-good freshness visible. */
+function ValidatorBadge({ consensus }: { consensus: PublicConsensusInsight | undefined }) {
+  const status = consensusValueStatus(consensus)
+  return (
+    <span data-slot="validator-role" aria-label={`Role: ${formatConsensusValidator(consensus, status)}${status === 'stale' ? ' (Stale)' : ''}`}
+      className="ml-auto inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded border border-border/60 px-1.5 py-0.5 text-[11px] leading-4 text-muted-foreground">
+      {formatConsensusValidator(consensus, status)}
+      {status === 'stale' && <span>Stale</span>}
+    </span>
   )
 }
 
@@ -398,7 +408,7 @@ function formatConsensusBlock(value: number | null | undefined, status: 'current
 
 function formatConsensusValidator(insight: PublicConsensusInsight | undefined, status: 'current' | 'stale' | 'unknown'): string {
   if (status === 'unknown' || insight?.validator == null) return 'Unknown'
-  return insight.validator ? 'True' : 'False'
+  return insight.validator ? 'Validator' : 'Non-validator'
 }
 
 /** One sanitized diagnostic line for exceptional Nodes only (issue #97). */
