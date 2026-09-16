@@ -34,7 +34,7 @@ const NAV_LINK_ACTIVE = 'bg-accent font-semibold text-foreground'
  * fresh stream under the new authorization (design §3.3).
  *
  * The chrome follows Emerald's shell: a sticky h-14 header that gains
- * backdrop-blur-xl only after the page scrolls, a max-w-[1280px] inner row,
+ * backdrop-blur-xl only after the page scrolls, a shared sidebar/workspace header partition,
  * and the Admin page groups as a vertical list of min-h-11 rows on the
  * left. Navigation follows webui.md §10.1: a persistent sidebar on desktop, a
  * collapsible drawer on tablet and mobile that moves focus inside, traps
@@ -139,7 +139,7 @@ export default function AdminLayout() {
   }
 
   return (
-    <div className="relative isolate flex min-h-dvh flex-col bg-background" data-slot="admin-shell">
+    <div className="relative isolate flex min-h-dvh flex-col bg-background [--admin-sidebar:13.5rem] [--admin-padding:1rem] lg:[--admin-padding:1.5rem]" data-slot="admin-shell">
       <BackgroundDecoration />
       <header
         data-slot="admin-header"
@@ -148,11 +148,11 @@ export default function AdminLayout() {
           scrolled ? 'bg-background/60 backdrop-blur-xl' : 'bg-background/60',
         )}
       >
-        <div className="mx-auto flex max-w-[1280px] flex-wrap items-center gap-x-2 gap-y-1 px-4 py-2 lg:h-14 lg:flex-nowrap lg:py-0">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-4 py-2 lg:grid lg:h-14 lg:grid-cols-[var(--admin-sidebar)_minmax(0,1fr)_auto] lg:gap-x-0 lg:px-0 lg:py-0">
           <Link
             to="/"
             data-slot="admin-brand"
-            className="order-1 flex min-h-11 min-w-0 items-center gap-3"
+            className="order-1 flex min-h-11 min-w-0 items-center gap-3 lg:px-4"
             aria-label="PlatPulse"
           >
             <img className="size-8 shrink-0 rounded-full" src={platpulseMark} alt="" />
@@ -161,7 +161,7 @@ export default function AdminLayout() {
           <div
             role="group"
             aria-label="Admin connection status"
-            className="order-3 flex w-full min-w-0 flex-wrap items-center gap-2 [&_p]:m-0 lg:order-2 lg:w-auto lg:flex-1"
+            className="order-3 flex w-full min-w-0 flex-wrap items-center gap-2 [&_p]:m-0 lg:order-2 lg:w-auto lg:px-[var(--admin-padding)]"
           >
             <span className="text-xs font-medium tracking-wider text-muted-foreground">Realtime</span>
             {!resetting && <RealtimeNotice realtime={realtime} surface="admin" />}
@@ -170,7 +170,7 @@ export default function AdminLayout() {
             )}
             <ServerStatusNotice />
           </div>
-          <div className="order-2 ml-auto flex shrink-0 items-center gap-2 lg:order-3 lg:ml-0">
+          <div className="order-2 ml-auto flex shrink-0 items-center gap-2 lg:order-3 lg:ml-0 lg:pr-[var(--admin-padding)]">
             <Button
               ref={navToggleRef}
               type="button"
@@ -203,7 +203,7 @@ export default function AdminLayout() {
           className={cn(
             'fixed inset-y-0 left-0 z-40 flex w-[min(80vw,18rem)] flex-col gap-1 overflow-y-auto border-r border-border/60 bg-background/95 p-4 backdrop-blur-xl transition-transform duration-200 ease-out',
             navOpen ? 'visible translate-x-0' : 'hidden -translate-x-full lg:flex lg:visible lg:translate-x-0',
-            'lg:sticky lg:top-14 lg:z-auto lg:h-[calc(100dvh-3.5rem)] lg:w-[13.5rem] lg:flex-none lg:visible lg:translate-x-0 lg:border-r lg:bg-background/60 lg:backdrop-blur-none',
+            'lg:sticky lg:top-14 lg:z-auto lg:h-[calc(100dvh-3.5rem)] lg:w-[var(--admin-sidebar)] lg:flex-none lg:visible lg:translate-x-0 lg:border-r lg:bg-background/60 lg:backdrop-blur-none',
           )}
           onKeyDown={onNavKeyDown}
         >
@@ -301,8 +301,8 @@ export default function AdminLayout() {
           aria-hidden="true"
         />
         <QueryClientProvider client={adminQueryClient}>
-          <main data-slot="admin-main" className="min-w-0 flex-1 px-4 py-6 lg:px-6">
-            <div data-slot="admin-page" className="mx-auto w-full max-w-[1280px]">
+          <main data-slot="admin-main" className="min-w-0 flex-1 px-[var(--admin-padding)] py-6">
+            <div data-slot="admin-page" className="w-full min-w-0">
               {resetting ? (
                 <p role="status" className="text-sm text-muted-foreground">
                   Revalidating Admin access…

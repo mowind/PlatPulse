@@ -1,4 +1,4 @@
-import { ArrowUpRight, ChevronRight } from 'lucide-react'
+import { ArrowUpRight, ChevronRight, LoaderCircle } from 'lucide-react'
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { Link } from 'react-router'
 import {
@@ -45,14 +45,8 @@ const EYEBROW = 'text-xs font-medium tracking-wider text-muted-foreground upperc
 const PANEL_STATE = 'flex min-w-0 flex-wrap items-center gap-2 text-sm text-muted-foreground'
 const TABLE_HEAD = 'whitespace-nowrap border-b px-3 py-2 text-left text-xs font-medium text-muted-foreground'
 const TABLE_CELL = 'min-w-0 border-b border-border/60 px-3 py-3 align-top text-sm [overflow-wrap:anywhere]'
-const MUTED_SMALL = 'mt-1 block text-[11px] text-muted-foreground'
+const MUTED_SMALL = 'mt-1 block text-xs text-muted-foreground'
 const TEXT_LINK = 'inline-flex min-h-11 min-w-11 items-center font-medium text-primary hover:underline'
-const SUMMARY_ARROW: Record<string, string> = {
-  violet: 'text-violet-600 dark:text-violet-400',
-  green: 'text-emerald-600 dark:text-emerald-400',
-  slate: 'text-muted-foreground',
-  red: 'text-destructive',
-}
 
 /**
  * PAGE-ADMIN-OVERVIEW (webui.md §8.4): Server-owned attention queue, Node
@@ -75,7 +69,7 @@ export default function AdminHome() {
   }
 
   return (
-    <section data-slot="admin-overview" className="mx-auto flex w-full min-w-0 max-w-[1280px] flex-col gap-4 pb-12">
+    <section data-slot="admin-overview" className="flex w-full min-w-0 flex-col gap-4 pb-12">
       <OverviewHeader snapshot={snapshot} query={overview} refreshing={overview.isFetching || diagnostics.isFetching || nodes.isFetching} onRefresh={refreshAll} />
       <AttentionPanel query={overview} />
       {snapshot && <SummaryCards summary={snapshot.summary} />}
@@ -114,11 +108,7 @@ function OverviewHeader({
       className="flex min-w-0 flex-col gap-3 border-b pb-4 md:flex-row md:items-end md:justify-between md:gap-x-8"
     >
       <div className="min-w-0">
-        <span className={EYEBROW}>Owner triage</span>
-        <h1 className="mt-1 text-2xl font-semibold break-words">Overview</h1>
-        <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
-          A compact read on what needs intervention across your PlatON estate.
-        </p>
+        <h1 className="text-2xl font-semibold break-words">Overview</h1>
       </div>
       <div
         data-slot="header-status"
@@ -135,7 +125,8 @@ function OverviewHeader({
               onClick={() => void onRefresh()}
               disabled={refreshing}
             >
-              {query.isFetching ? 'Refreshing…' : 'Refresh'}
+              {refreshing && <LoaderCircle size={16} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />}
+              {refreshing ? 'Refreshing…' : 'Refresh'}
             </Button>
           </>
         ) : query.isError ? (
@@ -214,28 +205,24 @@ function SummaryCards({ summary }: { summary: AdminOverview['summary'] }) {
       value: summary.agents.total,
       legend: `${summary.agents.online} online · ${summary.agents.offline} offline · ${summary.agents.unknown} unknown`,
       href: '/admin/agents',
-      accent: 'violet',
     },
     {
       label: 'Active Nodes',
       value: summary.nodes.active,
       legend: `${summary.nodes.healthy} healthy · ${summary.nodes.unhealthy} unhealthy · ${summary.nodes.unknown} unknown`,
       href: '/admin/nodes?lifecycle=active',
-      accent: 'green',
     },
     {
       label: 'Retired Nodes',
       value: summary.nodes.retired,
       legend: 'Excluded from live health buckets',
       href: '/admin/nodes?lifecycle=retired',
-      accent: 'slate',
     },
     {
       label: 'Networks',
       value: summary.networks.total,
       legend: `${summary.networks.with_identity_mismatch} with Network Identity Mismatch`,
       href: '/admin/networks',
-      accent: 'red',
     },
   ]
   return (
@@ -244,7 +231,6 @@ function SummaryCards({ summary }: { summary: AdminOverview['summary'] }) {
         <Link
           key={card.label}
           data-slot="summary-card"
-          data-accent={card.accent}
           to={card.href}
           className={cn(
             'flex min-h-[7.5rem] min-w-0 flex-col justify-between gap-2 rounded-md p-3 text-foreground no-underline transition-all',
@@ -252,14 +238,16 @@ function SummaryCards({ summary }: { summary: AdminOverview['summary'] }) {
             'hover:-translate-y-0.5 hover:shadow-[0_0_20px,0_0_0_1px] hover:shadow-emerald-600/10',
           )}
         >
-          <span className={EYEBROW}>{card.label}</span>
+          <span className="flex items-center justify-between gap-2">
+            <span className={EYEBROW}>{card.label}</span>
+            <ArrowUpRight size={16} aria-hidden="true" className="shrink-0 text-muted-foreground" />
+          </span>
           <strong className="text-2xl font-bold leading-none tracking-tight tabular-nums md:text-3xl">
             {card.value}
           </strong>
-          <span className="text-[11px] leading-snug break-words text-muted-foreground">
+          <span className="text-xs leading-snug break-words text-muted-foreground">
             {card.legend}
           </span>
-          <ArrowUpRight size={16} aria-hidden="true" className={SUMMARY_ARROW[card.accent]} />
         </Link>
       ))}
     </nav>
@@ -286,10 +274,9 @@ function AttentionPanel({ query }: { query: OverviewQuery }) {
     <article data-slot="overview-panel" className={PANEL}>
       <div className={PANEL_HEADING}>
         <div className="min-w-0">
-          <span className={EYEBROW}>01 · Attention</span>
           <h2 className={PANEL_TITLE}>Attention queue</h2>
         </div>
-        {data && <Badge variant="secondary" className="tabular-nums">{data.attention.length}</Badge>}
+        {data && <Badge variant="secondary" className="tabular-nums">{data.attention.length} items</Badge>}
       </div>
       <p className="sr-only" role="status">{announcement}</p>
       {!data && query.isPending && (
@@ -316,7 +303,7 @@ function AttentionPanel({ query }: { query: OverviewQuery }) {
         </Alert>
       )}
       {data && data.attention.length === 0 && (
-        <Empty description="No attention items. Nothing needs an Owner right now." />
+        <p className="mt-3 text-sm text-muted-foreground">No attention items. Nothing needs an Owner right now.</p>
       )}
       {data && data.attention.length > 0 && (
         <>
@@ -393,6 +380,22 @@ function attentionObservedText(observedAt: string | null | undefined) {
   )
 }
 
+function CopyAgentId({ id }: { id: string }) {
+  const [status, setStatus] = useState('')
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(id)
+      setStatus('Copied')
+    } catch {
+      setStatus('Copy unavailable; select the full ID above to copy.')
+    }
+  }
+  return <>
+    <Button variant="ghost" size="sm" onClick={() => void copy()}>Copy Agent ID</Button>
+    <span role="status">{status}</span>
+  </>
+}
+
 function AttentionGroup({ group, expanded, onToggle }: { group: AttentionGroupData; expanded: boolean; onToggle: () => void }) {
   const primary = group.items.reduce((best, item) => {
     const rank = item.severity === 'critical' ? 0 : item.severity === 'warning' ? 1 : 2
@@ -403,61 +406,61 @@ function AttentionGroup({ group, expanded, onToggle }: { group: AttentionGroupDa
   const severity = known ? primary.severity : "unknown"
   const route = safeAttentionRoute(group)
   const additional = group.items.filter((item) => item.id !== primary.id)
+  const additionalCritical = additional.filter((item) => item.severity === 'critical').length
   return (
-    <li
-      data-slot="attention-item"
-      data-severity={severity}
-      className={cn(
-        'flex min-w-0 items-start gap-3 rounded-md border border-border/60 border-l-[3px] bg-background/60 p-3',
+    <li data-slot="attention-item" data-severity={severity}
+      className={cn('min-w-0 rounded-md border border-border/60 border-l-[3px] bg-background/60 p-3',
         severity === 'critical' && 'border-l-destructive',
         severity === 'warning' && 'border-l-warning',
-        severity === 'unknown' && 'border-l-muted-foreground',
-      )}
-    >
-      <StatusBadge
-        status={severity === 'critical' ? 'Critical' : severity === 'warning' ? 'Warning' : 'Unknown'}
-        tone={severity === 'critical' ? 'error' : severity === 'warning' ? 'warning' : 'neutral'}
-      />
-      <div className="min-w-0 flex-1 space-y-1">
-        <p className="break-words">
-          <strong>{route ? <Link className={cn(TEXT_LINK, 'font-semibold')} to={route}>{group.label}</Link> : group.label}</strong> — {primary.message}
-        </p>
-        <p className="break-words text-[11px] text-muted-foreground">
-          {primary.kind} · {attentionObservedText(primary.observed_at)}
-        </p>
+        severity === 'unknown' && 'border-l-muted-foreground')}>
+      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+        <StatusBadge
+          status={severity === 'critical' ? 'Critical' : severity === 'warning' ? 'Warning' : 'Unknown'}
+          tone={severity === 'critical' ? 'error' : severity === 'warning' ? 'warning' : 'neutral'}
+        />
+        <p className="min-w-0 flex-1 basis-48 text-sm font-medium [overflow-wrap:anywhere]">{primary.message}</p>
+        {route ? <Link className={TEXT_LINK} to={route}>View {group.subjectKind}<ArrowUpRight size={16} aria-hidden="true" /></Link>
+          : <span className="text-xs text-muted-foreground">No detail route available</span>}
+      </div>
+      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+        <span title={group.subjectId} className="min-w-0 [overflow-wrap:anywhere]">
+          {group.subjectKind} · <span>{group.subjectKind === 'agent' && (!group.label || group.label === group.subjectId)
+            ? formatIdentifier(group.subjectId) : group.label}</span>
+        </span>
+        <span>{attentionObservedText(primary.observed_at)}</span>
+        <span className="[overflow-wrap:anywhere]">{primary.kind}</span>
+        {group.subjectKind === 'agent' && (
+          <details className="min-w-0 max-w-full">
+            <summary className="flex min-h-11 min-w-11 cursor-pointer items-center rounded-sm focus-visible:outline-2 focus-visible:outline-ring">Full Agent ID</summary>
+            <code className="select-all [overflow-wrap:anywhere]">{group.subjectId}</code>
+            <CopyAgentId id={group.subjectId} />
+          </details>
+        )}
         {additional.length > 0 && (
-          <>
-            <Button
-              variant="link"
-              size="sm"
-              className="px-0 max-w-full whitespace-normal"
-              aria-expanded={expanded}
-              aria-controls={`attention-details-${group.key}`}
-              onClick={onToggle}
-            >
-              {expanded ? 'Hide additional issues' : `Show ${additional.length} additional issue${additional.length === 1 ? '' : 's'}`}
-            </Button>
-            <ul
-              id={`attention-details-${group.key}`}
-              hidden={!expanded}
-              className="mt-2 list-disc space-y-1 pl-4 text-[11px] break-words text-muted-foreground"
-            >
-              {additional.map((item) => (
-                <li key={item.id}>
-                  {item.severity === 'critical' ? 'Critical' : item.severity === 'warning' ? 'Warning' : 'Unknown'} ·{' '}
-                  {item.message} · {item.kind} · {attentionObservedText(item.observed_at)}
-                </li>
-              ))}
-            </ul>
-          </>
+          <Button variant="link" size="sm" className="max-w-full px-0 whitespace-normal"
+            aria-expanded={expanded} aria-controls={`attention-details-${group.key}`} onClick={onToggle}>
+            {expanded ? 'Hide additional issues' : `Show ${additional.length} additional issue${additional.length === 1 ? '' : 's'}`}
+            {additionalCritical > 0 ? ` · ${additionalCritical} Critical` : ''}
+          </Button>
         )}
       </div>
+      {!expanded && additional.filter((item) => item.kind === 'agent_spool_overflow').map((item) => (
+        <p key={item.id} className="mt-1 text-sm [overflow-wrap:anywhere]">{item.message}</p>
+      ))}
+      {additional.length > 0 && (
+        <ul id={`attention-details-${group.key}`} hidden={!expanded}
+          className="mt-2 list-disc space-y-1 pl-4 text-xs [overflow-wrap:anywhere] text-muted-foreground">
+          {additional.map((item) => (
+            <li key={item.id}>
+              {item.severity === 'critical' ? 'Critical' : item.severity === 'warning' ? 'Warning' : 'Unknown'} ·{' '}
+              {item.message} · {item.kind} · {attentionObservedText(item.observed_at)}
+            </li>
+          ))}
+        </ul>
+      )}
     </li>
   )
 }
-
-
-
 
 type DiagnosticsQuery = ReturnType<typeof useAdminDiagnostics>
 type NodesQuery = ReturnType<typeof useAdminNodes>
@@ -610,22 +613,24 @@ function NodeRows({
     <>
       <tr className="border-b border-border/60" onKeyDown={collapseOnEscape}>
         <th scope="row" data-label="Node" className={cn(TABLE_CELL, 'text-left')}>
-          <Button
-            ref={toggleRef}
-            variant="link"
-            size="sm"
-            className="h-auto min-w-11 max-w-full justify-start px-0 text-left font-semibold whitespace-normal md:max-w-[14rem]"
-            aria-expanded={expanded}
-            aria-controls={detailId}
-            onClick={onToggle}
-          >
-            <ChevronRight size={16} aria-hidden="true" className={cn("shrink-0", expanded && "rotate-90")} />
-            <span className="min-w-0 [overflow-wrap:anywhere]">{nodeLabel}</span>
-          </Button>
+          <div className="grid min-w-0 grid-cols-[minmax(2.75rem,1fr)_auto] items-start gap-2 md:min-w-[12rem]">
+            <Button
+              ref={toggleRef}
+              variant="link"
+              size="sm"
+              className="h-auto min-w-11 max-w-full justify-start px-0 text-left font-semibold whitespace-normal md:max-w-[14rem]"
+              aria-expanded={expanded}
+              aria-controls={detailId}
+              onClick={onToggle}
+            >
+              <ChevronRight size={16} aria-hidden="true" className={cn("shrink-0", expanded && "rotate-90")} />
+              <span className="min-w-0 [overflow-wrap:anywhere]">{nodeLabel}</span>
+            </Button>
+            <Link className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-sm text-primary hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring" aria-label="View Node" title="View Node" to={`/admin/nodes/${encodeURIComponent(node.node_id)}`}><ArrowUpRight size={18} aria-hidden="true" /></Link>
+          </div>
           <small className={MUTED_SMALL} title={node.node_id}>
             Node ID · {formatIdentifier(node.node_id)}
           </small>
-          <Link className={TEXT_LINK} to={`/admin/nodes/${encodeURIComponent(node.node_id)}`}>View Node</Link>
         </th>
         <td data-label="Network" className={TABLE_CELL}>
           <span className="break-words">{node.network_display_name}</span>
@@ -642,7 +647,7 @@ function NodeRows({
           </DataTooltip>
         </td>
         <td data-label="Head / Sync" className={TABLE_CELL}>
-          <span className="break-words">{node.current_head ?? 'Unknown'}</span>
+          <span className="whitespace-nowrap tabular-nums">{node.current_head ?? 'Unknown'}</span>
           <small className={MUTED_SMALL}>{syncSummary(diagnostic)}</small>
         </td>
         <td data-label="Resync" className={TABLE_CELL}>

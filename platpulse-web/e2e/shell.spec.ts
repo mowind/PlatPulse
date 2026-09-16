@@ -287,25 +287,25 @@ test.describe('Authenticated shell', () => {
     await expectNoHorizontalOverflow(page)
   })
 
-  test('Admin shell caps its content column on ultrawide widths', async ({ page }) => {
+  test('Admin shell fills the shared sidebar workspace on wide screens', async ({ page }) => {
     test.skip((page.viewportSize()?.width ?? 0) < 1024, 'Ultrawide measurement belongs to the desktop project')
     await loginAs(page)
     await page.getByRole('link', { name: 'Admin', exact: true }).click()
     await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
 
-    const standard = await measureAdminWorkbench(page)
-    await page.setViewportSize({ width: 2560, height: 800 })
-    const ultrawide = await measureAdminWorkbench(page)
-    // Emerald caps every page at a 1280px content column (deviation 7), so the
-    // Admin workbench no longer expands past it on an ultrawide display. What
-    // must hold is that the column is capped and stays centred.
-    expect(ultrawide.page.width).toBeLessThanOrEqual(1281)
-    expect(ultrawide.page.width).toBeGreaterThanOrEqual(standard.page.width - 1)
-    expect(
-      Math.abs(ultrawide.page.x + ultrawide.page.width / 2 - (ultrawide.main.x + ultrawide.main.width / 2)),
-      'the capped content column stays centred inside the Admin main area',
-    ).toBeLessThanOrEqual(1)
-    await expectNoHorizontalOverflow(page)
+    // ADR 0003 intentionally replaces the old centered 1280px Admin cap.
+    // Assert available-space use and shared header/body alignment instead.
+    for (const width of [1280, 1440, 1920, 2560]) {
+      await page.setViewportSize({ width, height: 900 })
+      const metrics = await measureAdminWorkbench(page)
+      expect(Math.abs(metrics.page.width - (width - metrics.nav.width - 48))).toBeLessThanOrEqual(1)
+      expect(Math.abs(metrics.page.x - metrics.nav.right - 24)).toBeLessThanOrEqual(1)
+      const status = await page.getByRole('group', { name: 'Admin connection status' }).boundingBox()
+      expect(Math.abs(status!.x + 24 - metrics.page.x)).toBeLessThanOrEqual(1)
+      const brand = await page.locator('[data-slot="admin-brand"]').boundingBox()
+      expect(Math.abs(brand!.width - metrics.nav.width)).toBeLessThanOrEqual(1)
+      await expectNoHorizontalOverflow(page)
+    }
   })
 
   test('Admin Settings keeps aligned content and touch targets', async ({ page }) => {

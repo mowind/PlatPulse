@@ -544,6 +544,13 @@ The current presentation uses the shared Admin shell and compact Agents summary,
 
 #### 8.5.2 Shared shell and density
 
+Current authority: ADR 0003 supersedes the initial Emerald implementation’s
+centered 1280px Admin column. The shell owns page padding and a shared 13.5rem
+sidebar/header-brand partition; pages fill the remaining width. Keep Emerald
+BackgroundDecoration, colors, typography and primitives as adopted in ADR 0002;
+the historical workbench surface descriptions below do not authorize replacing
+that theme or removing its background.
+
 Use an Admin-scoped layout rather than modifying the shared public page container. Desktop content begins approximately 24 CSS pixels after the sidebar; page headings, filters, and primary lists share one left alignment line. Wide lists use the remaining horizontal space, including on ultrawide screens, rather than a uniformly centered, capped Admin wrapper. Settings keeps a reasonable inner form width aligned left beneath its normally aligned page heading.
 
 Suggested geometry is a baseline, not a rigid height constraint or a measurement inferred from screenshots:

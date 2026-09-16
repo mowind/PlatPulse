@@ -151,7 +151,7 @@ export default function AdminNodesList() {
   }, [query.data])
 
   return (
-    <section className="mx-auto w-full max-w-[1280px] space-y-4">
+    <section className="w-full min-w-0 space-y-4">
       <div className="space-y-1">
         <h1 className="text-lg font-semibold break-words">Nodes</h1>
         <p className="text-sm text-muted-foreground">
@@ -516,7 +516,7 @@ export function AdminNodeDetail() {
 
   if (notFound) {
     return (
-      <section className="mx-auto w-full max-w-[1280px] space-y-4">
+      <section className="w-full min-w-0 space-y-4">
         <div className="space-y-1">
           <h1 className="text-lg font-semibold">Node unavailable</h1>
           <p className="text-sm text-muted-foreground">This Node is no longer available.</p>
@@ -525,7 +525,7 @@ export function AdminNodeDetail() {
     )
   }
   return (
-    <section className="mx-auto w-full max-w-[1280px] space-y-4">
+    <section className="w-full min-w-0 space-y-4">
       <div className="space-y-1">
         <h1 className="text-lg font-semibold break-words">
           {query.data?.display_name ?? shortId(nodeId)}

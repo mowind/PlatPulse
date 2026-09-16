@@ -314,7 +314,7 @@ export default function AdminAgentsList() {
   const agents = query.data ?? []
 
   return (
-    <section className="mx-auto w-full max-w-[1280px] space-y-4">
+    <section className="w-full min-w-0 space-y-4">
       <div className="space-y-1">
         <h1 className="text-2xl font-semibold break-words">Agents</h1>
         <p className="text-sm text-muted-foreground">
@@ -539,7 +539,7 @@ export function AdminAgentDetail() {
 
   if (notFound) {
     return (
-      <section className="mx-auto w-full max-w-[1280px] space-y-4">
+      <section className="w-full min-w-0 space-y-4">
         <div className="space-y-1">
           <h1 className="text-lg font-semibold">Agent unavailable</h1>
           <p className="text-sm text-muted-foreground">This Agent is no longer available.</p>
@@ -548,7 +548,7 @@ export function AdminAgentDetail() {
     )
   }
   return (
-    <section className="mx-auto w-full max-w-[1280px] space-y-4">
+    <section className="w-full min-w-0 space-y-4">
       <div className="space-y-1">
         <h1 className="text-lg font-semibold break-words">
           Agent {shortId(agentId)}
@@ -1300,7 +1300,7 @@ export function AdminAgentEnroll() {
   }
 
   return (
-    <section className="mx-auto w-full max-w-[1280px] space-y-4">
+    <section className="w-full min-w-0 space-y-4">
       <div className="space-y-1">
         <h1 className="text-lg font-semibold break-words">Enroll a new Agent</h1>
         <p className="text-sm text-muted-foreground">
@@ -1389,7 +1389,7 @@ export function AdminAgentRecover() {
 
   if (notFound) {
     return (
-      <section className="mx-auto w-full max-w-[1280px] space-y-4">
+      <section className="w-full min-w-0 space-y-4">
         <div className="space-y-1">
           <h1 className="text-lg font-semibold">Agent unavailable</h1>
           <p className="text-sm text-muted-foreground">This Agent is no longer available.</p>
@@ -1399,7 +1399,7 @@ export function AdminAgentRecover() {
   }
 
   return (
-    <section className="mx-auto w-full max-w-[1280px] space-y-4">
+    <section className="w-full min-w-0 space-y-4">
       <div className="space-y-1">
         <h1 className="text-lg font-semibold break-words">Recover Agent {agentId ? shortId(agentId) : ''}</h1>
         <p className="text-sm text-muted-foreground">
@@ -1517,7 +1517,7 @@ export function AdminAgentRotate() {
 
   if (notFound) {
     return (
-      <section className="mx-auto w-full max-w-[1280px] space-y-4">
+      <section className="w-full min-w-0 space-y-4">
         <div className="space-y-1">
           <h1 className="text-lg font-semibold">Agent unavailable</h1>
           <p className="text-sm text-muted-foreground">This Agent is no longer available.</p>
@@ -1527,7 +1527,7 @@ export function AdminAgentRotate() {
   }
 
   return (
-    <section className="mx-auto w-full max-w-[1280px] space-y-4">
+    <section className="w-full min-w-0 space-y-4">
       <div className="space-y-1">
         <h1 className="text-lg font-semibold break-words">Rotate credential {agentId ? 'for Agent ' + shortId(agentId) : ''}</h1>
         <p className="text-sm text-muted-foreground">

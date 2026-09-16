@@ -14,7 +14,7 @@ export default defineConfig({
   fullyParallel: true,
   reporter: 'list',
   use: {
-    baseURL: 'http://127.0.0.1:4173',
+    baseURL: `http://127.0.0.1:${process.env.E2E_PORT ?? '4173'}`,
   },
   projects: [
     {
@@ -45,7 +45,7 @@ export default defineConfig({
     // owner create + serve in dev mode) so the auth flow is verified
     // against the same artifact production hosts.
     command: 'bash e2e/start-server.sh',
-    url: 'http://127.0.0.1:4173',
+    url: `http://127.0.0.1:${process.env.E2E_PORT ?? '4173'}`,
     reuseExistingServer: !process.env.CI,
     timeout: 300_000,
   },

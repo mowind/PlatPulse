@@ -1,0 +1,135 @@
+{
+  "generated_at": "2026-09-16T10:56:46Z",
+  "summary": {
+    "agents": {
+      "total": 3,
+      "online": 3,
+      "offline": 0,
+      "unknown": 0
+    },
+    "nodes": {
+      "total": 13,
+      "active": 12,
+      "healthy": 5,
+      "unhealthy": 1,
+      "unknown": 6,
+      "retired": 1
+    },
+    "networks": {
+      "total": 2,
+      "with_identity_mismatch": 1
+    }
+  },
+  "attention": [
+    {
+      "id": "agent_spool_overflow:agent:0195f2a1-0011-4011-8011-000000000011",
+      "kind": "agent_spool_overflow",
+      "severity": "critical",
+      "subject_kind": "agent",
+      "subject_id": "0195f2a1-0011-4011-8011-000000000011",
+      "subject_label": "0195f2a1-0011-4011-8011-000000000011",
+      "message": "the Agent spool overflowed and discarded queued reports",
+      "observed_at": "2026-09-16T10:55:25Z"
+    },
+    {
+      "id": "node_identity_mismatch:node:0195f2a1-0015-4015-8015-000000000015",
+      "kind": "node_identity_mismatch",
+      "severity": "critical",
+      "subject_kind": "node",
+      "subject_id": "0195f2a1-0015-4015-8015-000000000015",
+      "subject_label": "Node B (private)",
+      "message": "the Node identity mismatches the registered Network",
+      "observed_at": "2026-09-16T10:45:45Z"
+    },
+    {
+      "id": "node_unhealthy:node:0195f2a1-0015-4015-8015-000000000015",
+      "kind": "node_unhealthy",
+      "severity": "critical",
+      "subject_kind": "node",
+      "subject_id": "0195f2a1-0015-4015-8015-000000000015",
+      "subject_label": "Node B (private)",
+      "message": "RPC collection failed",
+      "observed_at": "2026-09-16T10:45:45Z"
+    },
+    {
+      "id": "agent_security_event:agent:0195f2a1-0011-4011-8011-000000000011",
+      "kind": "agent_security_event",
+      "severity": "critical",
+      "subject_kind": "agent",
+      "subject_id": "0195f2a1-0011-4011-8011-000000000011",
+      "subject_label": "0195f2a1-0011-4011-8011-000000000011",
+      "message": "2 security events were recorded",
+      "observed_at": null
+    },
+    {
+      "id": "agent_report_gap:agent:0195f2a1-0011-4011-8011-000000000011",
+      "kind": "agent_report_gap",
+      "severity": "warning",
+      "subject_kind": "agent",
+      "subject_id": "0195f2a1-0011-4011-8011-000000000011",
+      "subject_label": "0195f2a1-0011-4011-8011-000000000011",
+      "message": "2 report sequence gaps were recorded",
+      "observed_at": "2026-09-16T10:45:45Z"
+    },
+    {
+      "id": "node_health_unknown:node:0195f2a1-0062-4062-8062-000000000062",
+      "kind": "node_health_unknown",
+      "severity": "warning",
+      "subject_kind": "node",
+      "subject_id": "0195f2a1-0062-4062-8062-000000000062",
+      "subject_label": "Node L — Stale Consensus Membership",
+      "message": "one or more observations are stale or unknown",
+      "observed_at": "2026-09-16T10:45:45Z"
+    },
+    {
+      "id": "node_health_unknown:node:0195f2a1-0016-4016-8016-000000000016",
+      "kind": "node_health_unknown",
+      "severity": "warning",
+      "subject_kind": "node",
+      "subject_id": "0195f2a1-0016-4016-8016-000000000016",
+      "subject_label": "Node C",
+      "message": "one or more observations are stale or unknown",
+      "observed_at": null
+    },
+    {
+      "id": "node_health_unknown:node:0195f2a1-0018-4018-8018-000000000018",
+      "kind": "node_health_unknown",
+      "severity": "warning",
+      "subject_kind": "node",
+      "subject_id": "0195f2a1-0018-4018-8018-000000000018",
+      "subject_label": "Node E (private)",
+      "message": "one or more observations are stale or unknown",
+      "observed_at": null
+    },
+    {
+      "id": "node_health_unknown:node:0195f2a1-0019-4019-8019-000000000019",
+      "kind": "node_health_unknown",
+      "severity": "warning",
+      "subject_kind": "node",
+      "subject_id": "0195f2a1-0019-4019-8019-000000000019",
+      "subject_label": "Node F (transfer)",
+      "message": "one or more observations are stale or unknown",
+      "observed_at": null
+    },
+    {
+      "id": "node_health_unknown:node:0195f2a1-0020-4020-8020-000000000020",
+      "kind": "node_health_unknown",
+      "severity": "warning",
+      "subject_kind": "node",
+      "subject_id": "0195f2a1-0020-4020-8020-000000000020",
+      "subject_label": "Node G (transferred)",
+      "message": "one or more observations are stale or unknown",
+      "observed_at": null
+    },
+    {
+      "id": "node_health_unknown:node:0195f2a1-0065-4065-8065-000000000065",
+      "kind": "node_health_unknown",
+      "severity": "warning",
+      "subject_kind": "node",
+      "subject_id": "0195f2a1-0065-4065-8065-000000000065",
+      "subject_label": "Node P — Never Observed",
+      "message": "one or more observations are stale or unknown",
+      "observed_at": null
+    }
+  ]
+}

@@ -451,14 +451,16 @@ for (const theme of ['light', 'dark'] as const) {
     if (hoverCapable) await expectComputedColor(nodeCard, 'box-shadow', glow)
     await expectNoHorizontalOverflow(page)
 
-    // SPA navigation must not leak the public font or borderless surfaces into Admin.
+    // SPA navigation keeps Emerald typography and surfaces, not the public data shell.
     await page.getByRole('link', { name: 'Admin', exact: true }).click()
     await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
     // The migration resolved the old Inter/system-ui split into Emerald's
     // single system stack, so public and Admin now share one family
     // (deviation 6).
     await expect(page.locator('[data-slot="admin-shell"]')).toHaveCSS('font-family', font)
-    await expect(page.locator('[data-slot="admin-shell"] [data-slot="background-decoration"]')).toHaveCount(0)
+    await expect(page.locator('[data-slot="admin-shell"] [data-slot="background-decoration"]')).toHaveCount(1)
+    await expect(page.locator('[data-slot="admin-shell"] [data-slot="background-decoration"]')).toHaveAttribute('aria-hidden', 'true')
+    await expect(page.locator('[data-slot="admin-shell"] [data-slot="geo-chart"]')).toHaveCount(0)
     await page.goto('/admin/networks')
     await page.getByRole('button', { name: 'Register a Network' }).click()
     const adminCard = page.locator('#network-create-form')
@@ -477,10 +479,13 @@ for (const theme of ['light', 'dark'] as const) {
 test('keeps the retained Admin workbench readable in both themes', async ({ page }, testInfo) => {
   await loginAs(page)
 
-  // The public top treatment never crosses the Admin workbench.
+  // ADR 0003 retains Emerald BackgroundDecoration in Admin; only the workspace
+  // geometry changes. The old zero-decoration assertion predates this contract.
   await page.getByRole('link', { name: 'Admin', exact: true }).click()
   await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
-  await expect(page.locator('[data-slot="admin-shell"] [data-slot="background-decoration"]')).toHaveCount(0)
+  await expect(page.locator('[data-slot="admin-shell"] [data-slot="background-decoration"]')).toHaveCount(1)
+  await expect(page.locator('[data-slot="admin-shell"] [data-slot="background-decoration"]')).toHaveAttribute('aria-hidden', 'true')
+  await expect(page.locator('[data-slot="admin-shell"] [data-slot="geo-chart"]')).toHaveCount(0)
 
   const routes = [
     { path: '/admin', heading: 'Overview' },

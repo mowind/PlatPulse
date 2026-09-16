@@ -56,7 +56,7 @@ export default function AdminNetworksList() {
   const [notice, setNotice] = useState<string | null>(null)
 
   return (
-    <section className="mx-auto w-full max-w-[1280px] space-y-4">
+    <section className="w-full min-w-0 space-y-4">
       <div className="space-y-1">
         <h1 className="text-lg font-semibold break-words">Networks</h1>
         <p className="text-sm text-muted-foreground">
@@ -336,7 +336,7 @@ export function AdminNetworkDetailPage() {
 
   if (notFound) {
     return (
-      <section className="mx-auto w-full max-w-[1280px] space-y-4">
+      <section className="w-full min-w-0 space-y-4">
         <div className="space-y-1">
           <h1 className="text-lg font-semibold">Network unavailable</h1>
           <p className="text-sm text-muted-foreground">This Network is no longer registered.</p>
@@ -345,7 +345,7 @@ export function AdminNetworkDetailPage() {
     )
   }
   return (
-    <section className="mx-auto w-full max-w-[1280px] space-y-4">
+    <section className="w-full min-w-0 space-y-4">
       <div className="space-y-1">
         <h1 className="text-lg font-semibold break-words">
           {query.data?.display_name ?? networkKey}

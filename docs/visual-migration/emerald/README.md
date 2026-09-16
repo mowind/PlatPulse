@@ -820,3 +820,14 @@ No Rust implementation, API contract, auth logic or Server trust boundary was
 changed; Rust checks and OpenAPI regeneration were not rerun for this
 presentation/test-only slice. Changes remain local and uncommitted; nothing
 was pushed and no PR was created.
+
+## Admin workspace follow-up (ADR 0003)
+
+The centered 1280px Admin shell/page rule from the initial Emerald migration is
+superseded by [ADR 0003](../../adr/0003-admin-adaptive-workspace.md). Admin now
+uses the available width beside its existing sidebar; the header shares that
+partition. Emerald visuals and public layout remain unchanged. Local form
+width limits remain valid. The shell geometry test now protects workspace fill
+and shared alignment rather than the former cap.
+
+Matched screenshots and source audit: [Admin workspace evidence](admin-workspace/README.md).

@@ -56,7 +56,7 @@ export default function AdminSettings() {
   const csrfToken = status.state === 'authenticated' ? status.csrfToken : ''
 
   return (
-    <section data-slot="settings-page" className="mx-auto flex w-full min-w-0 max-w-[1280px] flex-col gap-4 pb-12">
+    <section data-slot="settings-page" className="flex w-full min-w-0 flex-col gap-4 pb-12">
       <p className="m-0">
         <Link className={TEXT_LINK} to="/admin"><ArrowLeft className="inline" size={16} aria-hidden="true" /> Admin overview</Link>
       </p>

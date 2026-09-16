@@ -68,6 +68,18 @@ test('Overview priority cells stay visible and long Node names stay bounded', as
   const nodeTable = page.getByRole('table', { name: tables[0].caption })
   const toggle = nodeTable.getByRole('button', { name: LONG_NAME }).first()
   await expect(toggle).toBeVisible()
+  // ADR 0003: expansion and navigation are sibling targets on one action row,
+  // not a View Node link stacked beneath the identifier (or nested in a button).
+  const detailLink = toggle.locator('..').getByRole('link', { name: 'View Node' })
+  await expect(detailLink).toBeVisible()
+  await expect(toggle.locator('a')).toHaveCount(0)
+  await expect(detailLink.locator('button')).toHaveCount(0)
+  const toggleBounds = (await toggle.boundingBox())!
+  const detailBounds = (await detailLink.boundingBox())!
+  expect(Math.abs(toggleBounds.y - detailBounds.y)).toBeLessThanOrEqual(1)
+  expect(detailBounds.x).toBeGreaterThanOrEqual(toggleBounds.x + toggleBounds.width)
+  expect(detailBounds.width).toBeGreaterThanOrEqual(44)
+  expect(detailBounds.height).toBeGreaterThanOrEqual(44)
   const size = await toggle.evaluate((button) => {
     const cell = button.closest('th')!
     return { button: button.getBoundingClientRect().width, cell: cell.getBoundingClientRect().width, table: cell.closest('table')!.getBoundingClientRect().width }
