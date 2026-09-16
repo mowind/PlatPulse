@@ -296,17 +296,20 @@ async function expectQuietMap(page: Page) {
 
   // The one standing figure is the reference theme's corner indicator: a pulsing
   // dot with the total Peer count of exactly the scope the map covers. It must
-  // stay pointer-inert so it never steals a hover from the map under it.
+  // stay pointer-inert on mobile; the desktop badge exposes a native title.
   const counters = map.locator('[data-slot="geo-counters"]')
   if (await counters.count() > 0) {
     const counterBox = (await counters.boundingBox())!
     const pointerEvents = await counters.evaluate(element => getComputedStyle(element).pointerEvents)
-    expect(pointerEvents, 'the corner counters never intercept map pointers').toBe('none')
+    const desktop = page.viewportSize()!.width >= 768
+    expect(pointerEvents).toBe(desktop ? 'auto' : 'none')
+    await expect(counters).toHaveAttribute('aria-label', /Peer records in scope/)
+    await expect(counters).toHaveAttribute('title', /not unique Peers or Node locations/)
     const probe = await page.evaluate(({ x, y }) => {
       const element = document.elementFromPoint(x, y)
       return element ? (element.closest('[data-slot="geo-counters"]') ? 'counter' : 'map') : 'none'
     }, { x: Math.round(counterBox.x + counterBox.width / 2), y: Math.round(counterBox.y + counterBox.height / 2) })
-    expect(probe, 'the map underneath the counters still receives pointers').toBe('map')
+    expect(probe).toBe(desktop ? 'counter' : 'map')
     for (const figure of await counters.locator('[data-slot="geo-counter"]').all()) {
       await expect(figure.locator('[data-slot="geo-counter-dot"]')).toHaveCount(1)
       await expect(figure).toHaveText(/^Peers: [\d,]+$/)

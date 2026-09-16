@@ -109,6 +109,8 @@ describe('GeoWorldMap', () => {
     await screen.findByRole('img')
     const counters = container.querySelector('[data-slot="geo-counters"]')
     expect(counters?.textContent).toContain('7')
+    expect(counters?.getAttribute('aria-label')).toBe('7 Peer records in scope for All Networks')
+    expect(counters?.getAttribute('title')).toContain('not unique Peers or Node locations')
     expect(counters?.className).toContain('pointer-events-none')
   })
 

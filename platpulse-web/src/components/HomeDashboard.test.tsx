@@ -149,6 +149,8 @@ describe('Public Home dashboard', () => {
     expect(within(resources).getByText('12.0 GiB / 48.0 GiB')).toBeTruthy()
     const nodeDataMetric = nodeDataLabel.parentElement as HTMLElement
     expect(nodeDataMetric.getAttribute('data-slot')).toBe('metric-row')
+    expect(nodeDataMetric.parentElement?.className).toBe('md:col-span-2')
+    expect(resources.className).toContain('grid-cols-2')
     expect(nodeDataMetric.querySelector('[data-slot="progress-thin"]')).toBeTruthy()
     expect(nodeDataMetric.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow')).toBe('25')
     expect(within(resources).queryByText('STORAGE')).toBeNull()

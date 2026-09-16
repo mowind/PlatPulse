@@ -132,16 +132,18 @@ export default function HomeDashboard({
         </div>
       </div>
 
-      {/* Keep controls and Node links above the overflowing Emerald map. */}
-      <div className="relative p-4 pt-0">
-        <div className="flex flex-nowrap items-start gap-2" aria-label="Node filters and sorting">
-          <div className="overflow-x-auto rounded-sm py-1.5 -my-1.5">
+      {/* Only the control surfaces sit above the decorative map overflow;
+          the gap between them stays transparent. Wide desktop needs 40px of
+          clearance: the Australian marker otherwise falls inside Sort. */}
+      <div className="relative p-4 pt-0 md:static lg:pt-10">
+        <div className="flex flex-nowrap items-start gap-2 md:items-center" aria-label="Node filters and sorting">
+          <div className="overflow-x-auto rounded-sm py-1.5 -my-1.5 md:relative md:z-10">
             <Tabs
               value={networkFilter}
               onValueChange={setNetworkFilter}
               className="w-full flex-col gap-4"
             >
-              <TabsList className={cn('compact-tabs min-h-0 group-data-[orientation=horizontal]/tabs:h-8 h-8 w-max rounded-md', SURFACE_TOOLBAR)} aria-label="Network filter">
+              <TabsList className={cn('compact-tabs min-h-0 group-data-[orientation=horizontal]/tabs:h-8 h-8 w-max rounded-md md:bg-background', SURFACE_TOOLBAR)} aria-label="Network filter">
                 <TabsTrigger value="all" className="min-h-0 h-6.5 shrink-0 flex-none rounded-sm border-none text-xs shadow-none data-[state=active]:text-emerald-600 dark:data-[state=active]:text-emerald-600">
                   All Networks
                 </TabsTrigger>
@@ -157,10 +159,11 @@ export default function HomeDashboard({
               </TabsList>
             </Tabs>
           </div>
-          <label className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
+          <label className="ml-auto flex items-center gap-2 text-xs text-muted-foreground md:relative md:z-10 md:shrink-0 md:rounded-md md:bg-background md:pl-2">
             Sort
             <Select
-              className={cn('compact-select h-8 w-auto rounded-md border-x-0 border-y-[6px] border-transparent bg-clip-padding -my-1.5 shadow-none', SURFACE_TOOLBAR)}
+              aria-label="Sort"
+              className={cn('compact-select h-8 w-auto rounded-md border-x-0 border-y-[6px] border-transparent bg-clip-padding -my-1.5 shadow-none md:bg-background md:text-foreground dark:md:bg-background', SURFACE_TOOLBAR)}
               value={sortBy}
               onChange={(event) => setSortBy(event.target.value as SortKey)}
             >
@@ -315,12 +318,14 @@ function ResourceRow({ node }: { node: PublicNode }) {
     >
       <MetricRow label="CPU" value={formatPercent(node.processCpuPercent)} progress={node.processCpuPercent ?? null} />
       <MetricRow label="Memory" value={formatPercent(node.processMemoryPercent)} progress={node.processMemoryPercent ?? null} />
-      <MetricRow
-        label="Node data"
-        value={formatPercent(nodeDataProgressValue)}
-        detail={formatNodeDataBytes(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)}
-        progress={nodeDataProgressValue}
-      />
+      <div className="md:col-span-2" data-slot="node-data-resource">
+        <MetricRow
+          label="Node data"
+          value={formatPercent(nodeDataProgressValue)}
+          detail={formatNodeDataBytes(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)}
+          progress={nodeDataProgressValue}
+        />
+      </div>
       <div className="col-span-2" role="group" aria-label="Host network speed">
         <MetricRow label="Speed" value={<span className="flex gap-2">
           <span aria-label={`Upload ${formatRate(node.hostNetworkTxBytesPerSec)}`} className="inline-flex items-baseline text-green-600"><ChevronUp className="size-3 shrink-0 self-center" aria-hidden="true" />{formatRate(node.hostNetworkTxBytesPerSec)}</span>

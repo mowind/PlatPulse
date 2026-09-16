@@ -248,7 +248,10 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
       {scopedPeerCount !== null && (
         <p
           data-slot="geo-counters"
-          className="pointer-events-none absolute top-0 right-0 z-2 flex items-center gap-2 rounded bg-background/60 px-2 py-0.5 text-[10px] text-muted-foreground backdrop-blur-lg"
+          role="note"
+          aria-label={`${formatGeoCount(scopedPeerCount)} Peer records in scope for ${overview.scopeLabel}`}
+          title={`Peer records in scope for ${overview.scopeLabel}; not unique Peers or Node locations.`}
+          className="pointer-events-none md:pointer-events-auto absolute top-0 right-0 z-2 flex items-center gap-2 rounded bg-background/60 px-2 py-0.5 text-[10px] text-muted-foreground backdrop-blur-lg"
         >
           <span data-slot="geo-counter" className="flex items-center gap-1">
             <span data-slot="geo-counter-dot" className="inline-block size-1.5 animate-pulse rounded-full bg-emerald-600" aria-hidden="true" />
