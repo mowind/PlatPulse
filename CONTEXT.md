@@ -68,6 +68,30 @@ _Avoid_: Positional mapping, Inferred validator ownership
 A Server-side Network adapter that supplies Validator current data and snapshots, such as the PlatScan browser-server adapter. Provider failure does not change Node health or erase the last successful Validator value.
 _Avoid_: Agent collector, Validator authority
 
+**Validator Lifetime Block Count**:
+The cumulative number of blocks produced by a Validator over its chain history, independent of when a linked Node entered monitoring or changed its Agent. It is not the number of chain blocks observed by a Node.
+_Avoid_: Observed block count, Blocks since enrollment
+
+**Validator Lifetime Rewards**:
+The cumulative rewards attributed to a Validator over its chain history, including the portions allocated to delegators and the operator, but excluding principal and ordinary transfers. This gross amount is not the operator's net earnings.
+_Avoid_: Operator net earnings, Reward-address balance, Rewards since enrollment
+
+**Validator Rank**:
+A Validator's position in the PlatScan validator ranking within its own Network. It is not a ranking of monitored Nodes or a comparison across Networks.
+_Avoid_: Monitored node rank, Cross-network rank
+
+**Validator Block Production Completion Rate**:
+The cumulative number of blocks actually produced by a Validator divided by its cumulative scheduled block count over its chain history, not its monitoring history. Scheduled counts can include the whole current consensus round before all of its production opportunities have elapsed, so this is not an exact missed-block rate.
+_Avoid_: Share of network blocks, Block interval
+
+**PlatScan 24-Hour Block Production Rate**:
+The Validator production-rate metric that PlatScan labels as 24-hour block production rate, using PlatScan's own statistical window and meaning. It does not assert completion over the exact preceding 86,400 seconds or a calendar day.
+_Avoid_: Strict rolling-24-hour completion, Today's production rate, 24-hour block share
+
+**Effective Delegation Reward Distribution Ratio**:
+The currently effective proportion of applicable Validator rewards allocated to delegators; 20% means delegators receive 20% of those rewards. It is neither the operator commission nor an annualized yield or a pending future ratio.
+_Avoid_: Delegation APY, Operator commission, Pending reward ratio
+
 **Agent Enrollment**:
 The one-time process through which a new Agent establishes its identity with the Server and receives its own revocable credential.
 _Avoid_: Agent login, Permanent install token

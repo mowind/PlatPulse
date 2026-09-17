@@ -18,6 +18,7 @@ import { Tabs, TabsList, TabsTrigger } from './ui/tabs'
 import { Server, HeartPulse, TriangleAlert, Network, ChevronUp, ChevronDown } from 'lucide-react'
 import { SURFACE_CARD, SURFACE_TOOLBAR } from '../lib/surface'
 import { cn } from '../lib/utils'
+import { LinkedValidatorSection } from './LinkedValidator'
 
 type HomeDashboardProps = {
   networks: PublicNetwork[]
@@ -303,6 +304,7 @@ function HomeNodeCard({ network, node }: NodeRecord) {
             </small>
           )}
         </div>
+        <LinkedValidatorSection node={node} />
         </CardX>
       </Link>
     </article>

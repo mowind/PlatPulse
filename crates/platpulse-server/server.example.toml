@@ -40,11 +40,12 @@ development = false
 
 # Optional Server-side PlatScan Validator Provider. The Server is the only
 # component that calls PlatScan (per-Validator POST stakingDetails); the
-# browser and Agent never contact it. `networks` is the bounded registered
-# Network-key allowlist the adapter may query; unlisted Networks stay Unknown.
+# browser and Agent never contact it. Each registered Network key is bound to
+# its own deployment: the detail request carries no Network selector, so a
+# shared allowlist cannot establish source chain identity. An unbound Network
+# is explicitly not configured, never queried.
 # [validator_provider]
-# base_url = "https://scan.platon.network"
-# networks = ["platon-mainnet"]
+# networks = { "platon-mainnet" = "https://scan.platon.network" }
 # refresh_seconds = 60
 # timeout_seconds = 10
 # timezone = "UTC"

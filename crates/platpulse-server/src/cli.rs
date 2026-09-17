@@ -544,12 +544,13 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
     state = state.with_geo_provider(geo_selection);
     if let Some(provider_config) = config.validator_provider.clone() {
         match crate::validator::PlatScanValidatorProvider::new(
-            &provider_config.base_url,
             provider_config.networks.clone(),
             std::time::Duration::from_secs(provider_config.timeout_seconds),
         ) {
             Ok(provider) => {
-                state = state.with_validator_provider(std::sync::Arc::new(provider));
+                state = state
+                    .with_validator_provider(std::sync::Arc::new(provider))
+                    .with_validator_freshness_seconds(provider_config.stale_after_seconds());
             }
             Err(error) => eprintln!(
                 "Validator Provider disabled: {}",

@@ -376,14 +376,19 @@ async fn validator_dto(
             validator_node_id: record.validator_node_id.clone(),
             display_name: record.display_name.clone(),
             state: if row.outcome == "success" {
-                validator::freshness(row.last_good_received_at.as_deref(), crate::auth::now_utc())
-                    .to_owned()
+                validator::freshness(
+                    row.last_good_received_at.as_deref(),
+                    crate::auth::now_utc(),
+                    state.validator_freshness_seconds(),
+                )
+                .to_owned()
             } else {
                 row.outcome.clone()
             },
             freshness: validator::freshness(
                 row.last_good_received_at.as_deref(),
                 crate::auth::now_utc(),
+                state.validator_freshness_seconds(),
             )
             .to_owned(),
             outcome: row.outcome,
@@ -406,9 +411,9 @@ async fn validator_dto(
             Some(AdminValidatorInsight {
                 validator_node_id: record.validator_node_id.clone(),
                 display_name: record.display_name.clone(),
-                state: "unsupported".to_owned(),
+                state: "not_configured".to_owned(),
                 freshness: "unknown".to_owned(),
-                outcome: "unsupported".to_owned(),
+                outcome: "not_configured".to_owned(),
                 source: Some("disabled".to_owned()),
                 provider_timestamp: None,
                 received_at: None,
@@ -1053,6 +1058,7 @@ pub(crate) async fn admin_validator_analytics(
     let freshness = validator::freshness(
         insight.last_good_received_at.as_deref(),
         crate::auth::now_utc(),
+        state.validator_freshness_seconds(),
     );
     let state = if insight.outcome == "success" {
         freshness

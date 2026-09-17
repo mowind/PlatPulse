@@ -5,6 +5,8 @@
 //! Node identity. Link mutations are transactional with their Audit Event and
 //! reject every temporal overlap for one Node before inserting or updating.
 
+use std::collections::BTreeMap;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
@@ -82,6 +84,11 @@ pub enum ValidatorProviderResult {
     Success(ValidatorObservation),
     NotFound,
     AuthoritativeEmpty,
+    /// No PlatScan deployment is bound to this Network. This is distinct from
+    /// a deployment that answered but does not support the request: an
+    /// unconfigured Network must never look like a failed or dead source
+    /// (#154).
+    NotConfigured(String),
     Error(String),
     Unsupported(String),
 }
@@ -107,7 +114,7 @@ impl ValidatorProvider for DisabledValidatorProvider {
     }
 
     async fn fetch(&self, _network_key: &str, _validator_node_id: &str) -> ValidatorProviderResult {
-        ValidatorProviderResult::Unsupported("provider is not configured".to_owned())
+        ValidatorProviderResult::NotConfigured("provider is not configured".to_owned())
     }
 }
 
@@ -118,38 +125,43 @@ pub const MAX_PROVIDER_NETWORK_KEY_LEN: usize = 128;
 /// endpoint. Its response is deliberately reduced to the normalized
 /// observation above; unknown fields and response diagnostics are discarded
 /// at the trust boundary (#101).
+///
+/// Each Network is bound to its own deployment base URL. The detail request
+/// identifies a Validator but carries no Network selector, so a shared
+/// allowlist cannot establish which chain a deployment serves; an unbound
+/// Network is `NotConfigured` and never queried (#154).
 #[derive(Clone)]
 pub struct PlatScanValidatorProvider {
     client: reqwest::Client,
-    base_url: String,
-    networks: Vec<String>,
+    deployments: BTreeMap<String, String>,
 }
 
 impl PlatScanValidatorProvider {
     pub fn new(
-        base_url: &str,
-        networks: Vec<String>,
+        deployments: BTreeMap<String, String>,
         timeout: std::time::Duration,
     ) -> Result<Self, String> {
-        let base_url = normalize_provider_base_url(base_url)?;
-        validate_provider_networks(&networks)?;
+        validate_provider_deployments(&deployments)?;
+        let mut normalized = BTreeMap::new();
+        for (network_key, base_url) in &deployments {
+            normalized.insert(network_key.clone(), normalize_provider_base_url(base_url)?);
+        }
         let client = reqwest::Client::builder()
             .timeout(timeout)
             .build()
             .map_err(|_| "unable to construct PlatScan client".to_owned())?;
         Ok(Self {
             client,
-            base_url,
-            networks,
+            deployments: normalized,
         })
     }
 
-    fn endpoint(&self) -> String {
-        format!("{}/browser-server/staking/stakingDetails", self.base_url)
+    fn endpoint(base_url: &str) -> String {
+        format!("{base_url}/browser-server/staking/stakingDetails")
     }
 
-    fn covers(&self, network_key: &str) -> bool {
-        self.networks.iter().any(|network| network == network_key)
+    fn deployment(&self, network_key: &str) -> Option<&str> {
+        self.deployments.get(network_key).map(String::as_str)
     }
 }
 
@@ -160,11 +172,11 @@ impl ValidatorProvider for PlatScanValidatorProvider {
     }
 
     async fn fetch(&self, network_key: &str, validator_node_id: &str) -> ValidatorProviderResult {
-        if !self.covers(network_key) {
-            return ValidatorProviderResult::Unsupported(
-                "Network is outside configured PlatScan coverage".to_owned(),
+        let Some(base_url) = self.deployment(network_key) else {
+            return ValidatorProviderResult::NotConfigured(
+                "Network has no bound PlatScan deployment".to_owned(),
             );
-        }
+        };
         if !is_platscan_node_id(validator_node_id) {
             return ValidatorProviderResult::Unsupported(
                 "Validator node identifier is not supported by PlatScan".to_owned(),
@@ -173,7 +185,7 @@ impl ValidatorProvider for PlatScanValidatorProvider {
         let body = serde_json::json!({ "nodeId": validator_node_id });
         let response = match self
             .client
-            .post(self.endpoint())
+            .post(Self::endpoint(base_url))
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .json(&body)
             .send()
@@ -253,32 +265,33 @@ pub fn normalize_provider_base_url(raw: &str) -> Result<String, String> {
     Ok(parsed.as_str().trim_end_matches('/').to_owned())
 }
 
-/// A registered Network-key allowlist is bounded and must be explicit: an
-/// unlisted Network is Unsupported and never reaches PlatScan.
-pub fn validate_provider_networks(networks: &[String]) -> Result<(), String> {
-    if networks.is_empty() {
+/// Explicit Network to deployment bindings are bounded and must be explicit:
+/// an unbound Network is NotConfigured and never reaches PlatScan. A
+/// BTreeMap cannot contain duplicate keys, so uniqueness is structural.
+pub fn validate_provider_deployments(deployments: &BTreeMap<String, String>) -> Result<(), String> {
+    if deployments.is_empty() {
         return Err(
-            "PlatScan network coverage must contain at least one registered Network key".to_owned(),
+            "PlatScan deployments must bind at least one registered Network key".to_owned(),
         );
     }
-    if networks.len() > MAX_PROVIDER_NETWORKS {
+    if deployments.len() > MAX_PROVIDER_NETWORKS {
         return Err(format!(
-            "PlatScan network coverage is limited to {MAX_PROVIDER_NETWORKS} keys"
+            "PlatScan deployments are limited to {MAX_PROVIDER_NETWORKS} Network keys"
         ));
     }
-    let mut seen = Vec::new();
-    for network in networks {
+    for (network, base_url) in deployments {
         if network.is_empty()
             || network.trim() != network
             || network.chars().count() > MAX_PROVIDER_NETWORK_KEY_LEN
             || network.chars().any(char::is_control)
         {
-            return Err("PlatScan network coverage contains an invalid Network key".to_owned());
+            return Err("PlatScan deployments contain an invalid Network key".to_owned());
         }
-        if seen.iter().any(|seen| seen == network) {
-            return Err("PlatScan network coverage contains duplicate Network keys".to_owned());
+        if base_url.trim().is_empty() {
+            return Err(format!(
+                "PlatScan deployment for Network {network} has an empty base URL"
+            ));
         }
-        seen.push(network.as_str());
     }
     Ok(())
 }
@@ -1415,11 +1428,20 @@ pub async fn list_insights(
     Ok(rows)
 }
 
-pub fn freshness(last_good_received_at: Option<&str>, now: OffsetDateTime) -> &'static str {
+/// Freshness follows the configured Provider refresh interval rather than a
+/// fixed constant: a last-good observation is fresh while it is no older
+/// than `stale_after_seconds`, which defaults to two refresh intervals
+/// (120s at the 60s default refresh). This keeps a legitimate slower refresh
+/// setting from immediately looking stale (#154).
+pub fn freshness(
+    last_good_received_at: Option<&str>,
+    now: OffsetDateTime,
+    stale_after_seconds: i64,
+) -> &'static str {
     let Some(received_at) = last_good_received_at.and_then(crate::auth::parse_rfc3339) else {
         return "unknown";
     };
-    if (now - received_at).whole_seconds().abs() <= 120 {
+    if (now - received_at).whole_seconds().abs() <= stale_after_seconds.max(1) {
         "fresh"
     } else {
         "stale"
@@ -1740,6 +1762,9 @@ async fn apply_provider_result(
             let (name, diagnostic) = match outcome {
                 ValidatorProviderResult::NotFound => ("not_found", None),
                 ValidatorProviderResult::AuthoritativeEmpty => ("empty", None),
+                ValidatorProviderResult::NotConfigured(value) => {
+                    ("not_configured", Some(provider_diagnostic(value)))
+                }
                 ValidatorProviderResult::Error(value) => {
                     ("error", Some(provider_diagnostic(value)))
                 }
@@ -1979,6 +2004,13 @@ mod tests {
         format!("0x{}", "ab".repeat(64))
     }
 
+    fn deployments(base_url: &str, networks: &[&str]) -> BTreeMap<String, String> {
+        networks
+            .iter()
+            .map(|network| ((*network).to_owned(), base_url.to_owned()))
+            .collect()
+    }
+
     fn platscan_success(node_id: &str, status: i64) -> serde_json::Value {
         serde_json::json!({ "code": 0, "errMsg": "success", "data": { "nodeId": node_id, "status": status } })
     }
@@ -2133,8 +2165,7 @@ mod tests {
         }
         let (base_url, state, handle) = start_mock_platscan(responses, 0).await;
         let provider = PlatScanValidatorProvider::new(
-            &base_url,
-            vec!["platon-mainnet".to_owned()],
+            deployments(&base_url, &["platon-mainnet"]),
             std::time::Duration::from_secs(5),
         )
         .unwrap();
@@ -2160,11 +2191,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn platscan_rejects_invalid_identifiers_and_uncovered_networks_without_request() {
+    async fn platscan_rejects_invalid_identifiers_and_unbound_networks_without_request() {
         let (base_url, state, handle) = start_mock_platscan(Vec::new(), 0).await;
         let provider = PlatScanValidatorProvider::new(
-            &base_url,
-            vec!["platon-mainnet".to_owned()],
+            deployments(&base_url, &["platon-mainnet"]),
             std::time::Duration::from_secs(5),
         )
         .unwrap();
@@ -2182,12 +2212,130 @@ mod tests {
                 ValidatorProviderResult::Unsupported(_)
             ));
         }
+        // An unbound Network is explicitly NotConfigured, never a request to
+        // whichever deployment happens to be configured for another Network.
         assert!(matches!(
             provider.fetch("platon-devnet", &valid).await,
-            ValidatorProviderResult::Unsupported(_)
+            ValidatorProviderResult::NotConfigured(_)
         ));
         assert!(state.requests.lock().unwrap().is_empty());
         handle.abort();
+    }
+
+    #[tokio::test]
+    async fn platscan_routes_each_network_to_its_own_deployment() {
+        let node_id = provider_node_id();
+        let (first_url, first_state, first_handle) = start_mock_platscan(
+            vec![(
+                200,
+                serde_json::to_vec(&platscan_success(&node_id, 2)).unwrap(),
+            )],
+            0,
+        )
+        .await;
+        let (second_url, second_state, second_handle) = start_mock_platscan(
+            vec![(
+                200,
+                serde_json::to_vec(&platscan_success(&node_id, 3)).unwrap(),
+            )],
+            0,
+        )
+        .await;
+        let deployments = BTreeMap::from([
+            ("platon-mainnet".to_owned(), first_url.clone()),
+            ("platon-devnet".to_owned(), second_url.clone()),
+        ]);
+        let provider =
+            PlatScanValidatorProvider::new(deployments, std::time::Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            provider.fetch("platon-mainnet", &node_id).await,
+            ValidatorProviderResult::Success(ValidatorObservation {
+                activity: Some(ValidatorActivity::Active),
+                ..Default::default()
+            })
+        );
+        assert_eq!(
+            provider.fetch("platon-devnet", &node_id).await,
+            ValidatorProviderResult::Success(ValidatorObservation {
+                activity: Some(ValidatorActivity::Producing),
+                ..Default::default()
+            })
+        );
+        assert_eq!(first_state.requests.lock().unwrap().len(), 1);
+        assert_eq!(second_state.requests.lock().unwrap().len(), 1);
+        first_handle.abort();
+        second_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn platscan_refresh_routes_networks_and_persists_each_block_count() {
+        let (_dir, db) = test_db().await;
+        create_network(
+            &db,
+            "platon-devnet",
+            "Devnet",
+            "0x0000000000000000000000000000000000000000000000000000000000000002",
+            2,
+            2,
+            "lat",
+        )
+        .await
+        .unwrap();
+        let owner_id: String =
+            sqlx::query_scalar("SELECT user_id FROM users WHERE username = 'owner'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        // The same Validator identifier on two Networks must never share data.
+        let shared_node_id = provider_node_id();
+        let (mainnet, _) =
+            create_validator(&db, "platon-mainnet", &shared_node_id, None, &owner_id)
+                .await
+                .unwrap();
+        let (devnet, _) = create_validator(&db, "platon-devnet", &shared_node_id, None, &owner_id)
+            .await
+            .unwrap();
+
+        let mainnet_body = serde_json::to_vec(&serde_json::json!({
+            "code": 0,
+            "data": { "nodeId": shared_node_id, "status": 3, "blockQty": 111 }
+        }))
+        .unwrap();
+        let devnet_body = serde_json::to_vec(&serde_json::json!({
+            "code": 0,
+            "data": { "nodeId": shared_node_id, "status": 3, "blockQty": 222 }
+        }))
+        .unwrap();
+        let (mainnet_url, mainnet_state, mainnet_handle) =
+            start_mock_platscan(vec![(200, mainnet_body)], 0).await;
+        let (devnet_url, devnet_state, devnet_handle) =
+            start_mock_platscan(vec![(200, devnet_body)], 0).await;
+        let provider = PlatScanValidatorProvider::new(
+            BTreeMap::from([
+                ("platon-mainnet".to_owned(), mainnet_url),
+                ("platon-devnet".to_owned(), devnet_url),
+            ]),
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+
+        let summary = refresh_all(&db, &provider).await.unwrap();
+        assert_eq!(summary.attempted, 2);
+        assert_eq!(summary.successful, 2);
+        let mainnet_insight = load_insight(&db, &mainnet.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let devnet_insight = load_insight(&db, &devnet.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(mainnet_insight.block_count, Some(111));
+        assert_eq!(devnet_insight.block_count, Some(222));
+        assert_eq!(mainnet_state.requests.lock().unwrap().len(), 1);
+        assert_eq!(devnet_state.requests.lock().unwrap().len(), 1);
+        mainnet_handle.abort();
+        devnet_handle.abort();
     }
 
     #[tokio::test]
@@ -2205,8 +2353,7 @@ mod tests {
         ];
         let (base_url, _state, handle) = start_mock_platscan(responses, 0).await;
         let provider = PlatScanValidatorProvider::new(
-            &base_url,
-            vec!["platon-mainnet".to_owned()],
+            deployments(&base_url, &["platon-mainnet"]),
             std::time::Duration::from_secs(5),
         )
         .unwrap();
@@ -2260,8 +2407,7 @@ mod tests {
         ];
         let (base_url, _state, handle) = start_mock_platscan(responses, 0).await;
         let provider = PlatScanValidatorProvider::new(
-            &base_url,
-            vec!["platon-mainnet".to_owned()],
+            deployments(&base_url, &["platon-mainnet"]),
             std::time::Duration::from_secs(5),
         )
         .unwrap();
@@ -2283,8 +2429,7 @@ mod tests {
         let oversized = vec![b'x'; MAX_PROVIDER_BODY_LEN + 1];
         let (base_url, _state, handle) = start_mock_platscan(vec![(200, oversized)], 0).await;
         let provider = PlatScanValidatorProvider::new(
-            &base_url,
-            vec!["platon-mainnet".to_owned()],
+            deployments(&base_url, &["platon-mainnet"]),
             std::time::Duration::from_secs(5),
         )
         .unwrap();
@@ -2296,8 +2441,7 @@ mod tests {
 
         let (base_url, _state, handle) = start_mock_platscan(Vec::new(), 500).await;
         let provider = PlatScanValidatorProvider::new(
-            &base_url,
-            vec!["platon-mainnet".to_owned()],
+            deployments(&base_url, &["platon-mainnet"]),
             std::time::Duration::from_millis(100),
         )
         .unwrap();
@@ -2309,7 +2453,7 @@ mod tests {
     }
 
     #[test]
-    fn platscan_url_and_network_allowlist_validation_are_bounded() {
+    fn platscan_url_and_network_binding_validation_are_bounded() {
         assert!(normalize_provider_base_url(" https://scan.example.com/ ").is_ok());
         assert_eq!(
             normalize_provider_base_url("https://scan.example.com/base/").unwrap(),
@@ -2329,14 +2473,16 @@ mod tests {
         ] {
             assert!(normalize_provider_base_url(raw).is_err(), "{raw}");
         }
-        assert!(validate_provider_networks(&[]).is_err());
-        assert!(validate_provider_networks(&["".to_owned()]).is_err());
-        assert!(
-            validate_provider_networks(&["platon-mainnet".to_owned(), "platon-mainnet".to_owned()])
-                .is_err()
-        );
-        let many = (0..65).map(|index| format!("n{index}")).collect::<Vec<_>>();
-        assert!(validate_provider_networks(&many).is_err());
+        let empty = BTreeMap::new();
+        assert!(validate_provider_deployments(&empty).is_err());
+        let blank = BTreeMap::from([("".to_owned(), "https://scan.example.com".to_owned())]);
+        assert!(validate_provider_deployments(&blank).is_err());
+        let blank_url = BTreeMap::from([("platon-mainnet".to_owned(), "  ".to_owned())]);
+        assert!(validate_provider_deployments(&blank_url).is_err());
+        let many = (0..65)
+            .map(|index| (format!("n{index}"), "https://scan.example.com".to_owned()))
+            .collect::<BTreeMap<_, _>>();
+        assert!(validate_provider_deployments(&many).is_err());
     }
     #[tokio::test]
     async fn provider_refresh_preserves_last_good_and_confirms_rank_after_two_observations() {
@@ -3130,5 +3276,152 @@ mod tests {
             .unwrap(),
             1
         );
+    }
+
+    #[test]
+    fn freshness_window_defaults_to_two_refresh_intervals() {
+        let now = crate::auth::now_utc();
+        let fresh_at = crate::auth::format_rfc3339(now - time::Duration::seconds(119));
+        let stale_at = crate::auth::format_rfc3339(now - time::Duration::seconds(121));
+        assert_eq!(freshness(Some(&fresh_at), now, 120), "fresh");
+        assert_eq!(freshness(Some(&stale_at), now, 120), "stale");
+        // A slower configured refresh interval keeps the same age fresh.
+        assert_eq!(freshness(Some(&stale_at), now, 600), "fresh");
+        assert_eq!(freshness(None, now, 600), "unknown");
+    }
+
+    #[tokio::test]
+    async fn not_configured_network_is_explicit_and_retains_last_good_block_count() {
+        let (_dir, db) = test_db().await;
+        let owner_id: String =
+            sqlx::query_scalar("SELECT user_id FROM users WHERE username = 'owner'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        let (validator, _) = create_validator(&db, "platon-mainnet", "0xabc", None, &owner_id)
+            .await
+            .unwrap();
+        let provider = FakeProvider {
+            results: std::sync::Mutex::new(vec![
+                ValidatorProviderResult::Success(ValidatorObservation {
+                    provider_timestamp: Some("2025-01-01T00:00:00Z".to_owned()),
+                    activity: Some(ValidatorActivity::Producing),
+                    block_count: Some(100),
+                    ..ValidatorObservation::default()
+                }),
+                ValidatorProviderResult::NotConfigured("no bound deployment".to_owned()),
+            ]),
+            ..FakeProvider::default()
+        };
+        refresh_all(&db, &provider).await.unwrap();
+        let first = load_insight(&db, &validator.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.outcome, "success");
+        assert_eq!(first.block_count, Some(100));
+        assert_eq!(first.activity.as_deref(), Some("producing"));
+
+        let summary = refresh_all(&db, &provider).await.unwrap();
+        assert_eq!(summary.attempted, 1);
+        assert_eq!(summary.successful, 0);
+        let insight = load_insight(&db, &validator.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(insight.outcome, "not_configured");
+        assert_eq!(
+            insight.block_count,
+            Some(100),
+            "last-good count is retained"
+        );
+        assert_eq!(insight.activity.as_deref(), Some("producing"));
+        assert_eq!(insight.last_good_received_at, first.last_good_received_at);
+        assert_eq!(insight.provider_timestamp, first.provider_timestamp);
+        assert_eq!(insight.counter_state, "normal");
+    }
+
+    #[tokio::test]
+    async fn migrated_schema_preserves_existing_last_good_insight_row() {
+        // Migration 0044 widens the outcome CHECK to allow not_configured. A
+        // pre-existing unsupported row keeps its retained last-good values.
+        let (_dir, db) = test_db().await;
+        let owner_id: String =
+            sqlx::query_scalar("SELECT user_id FROM users WHERE username = 'owner'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        let (validator, _) = create_validator(&db, "platon-mainnet", "0xabc", None, &owner_id)
+            .await
+            .unwrap();
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, last_attempt_received_at, last_good_received_at, block_count, counter_state, change_state, candidate_observations, updated_at) VALUES (?, 'platscan', 'unsupported', 'legacy', '2025-01-01T00:00:00Z', ?, ?, 77, 'normal', 'normal', 0, ?)")
+            .bind(&validator.validator_id)
+            .bind(&now)
+            .bind(&now)
+            .bind(&now)
+            .execute(db.pool())
+            .await
+            .unwrap();
+        let insight = load_insight(&db, &validator.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(insight.outcome, "unsupported");
+        assert_eq!(insight.block_count, Some(77));
+        assert_eq!(insight.last_good_received_at.as_deref(), Some(now.as_str()));
+        assert_eq!(
+            insight.provider_timestamp.as_deref(),
+            Some("2025-01-01T00:00:00Z")
+        );
+    }
+
+    #[tokio::test]
+    async fn block_count_survives_database_reopen_without_fabricating_values() {
+        let (dir, db) = test_db().await;
+        let owner_id: String =
+            sqlx::query_scalar("SELECT user_id FROM users WHERE username = 'owner'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        let (validator, _) = create_validator(&db, "platon-mainnet", "0xabc", None, &owner_id)
+            .await
+            .unwrap();
+        let provider = FakeProvider {
+            results: std::sync::Mutex::new(vec![
+                ValidatorProviderResult::Success(ValidatorObservation {
+                    activity: Some(ValidatorActivity::Active),
+                    block_count: Some(55),
+                    ..ValidatorObservation::default()
+                }),
+                ValidatorProviderResult::Success(ValidatorObservation {
+                    activity: Some(ValidatorActivity::Active),
+                    ..ValidatorObservation::default()
+                }),
+            ]),
+            ..FakeProvider::default()
+        };
+        refresh_all(&db, &provider).await.unwrap();
+        let validator_id = validator.validator_id.clone();
+        drop(db);
+
+        let reopened = initialize(ServerDatabaseConfig::new(dir.path().join("server.db")))
+            .await
+            .unwrap();
+        let insight = load_insight(&reopened, &validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(insight.outcome, "success");
+        assert_eq!(insight.block_count, Some(55));
+
+        // A successful observation that omits blockQty is Unknown, never a
+        // fabricated zero.
+        refresh_all(&reopened, &provider).await.unwrap();
+        let insight = load_insight(&reopened, &validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(insight.block_count, None);
     }
 }

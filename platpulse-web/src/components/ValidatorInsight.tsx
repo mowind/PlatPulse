@@ -12,6 +12,7 @@ function stateLabel(state: string): string {
     case 'fresh': return 'Fresh'
     case 'stale': return 'Stale'
     case 'error': return 'Error'
+    case 'not_configured': return 'Not configured'
     case 'unsupported': return 'Unsupported'
     case 'not_found': return 'Not found'
     case 'empty': return 'Empty'

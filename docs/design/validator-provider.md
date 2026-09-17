@@ -6,20 +6,23 @@ to `ValidatorObservation` before it enters the domain or API projections.
 
 ## Network coverage
 
-- When configured, the `[validator_provider]` section of `server.toml` explicitly
-  supplies the PlatScan `base_url`, a bounded `networks` allowlist of configured
-  Network keys (1..=64), `timeout_seconds`, `refresh_seconds`, and the existing
-  analytics `timezone`. Network-list validation checks shape, bounds, and
-  uniqueness; the provider configuration also normalizes the base URL and
-  validates the IANA timezone. None of these checks query the SQLite Network
-  Registry. If the section or its `base_url` is absent, the provider is disabled
-  and the network-list validation is skipped.
-- During refresh, a registered Network whose key is outside the configured
-  allowlist is `Unsupported`: the adapter makes no outbound request and the
-  Public projection shows Unknown Activity, never Observing. When a provider
-  `base_url` is configured, the allowlist must contain at least one configured
-  key; duplicate, blank, control-character, or overlong keys are rejected.
-- The base URL must be an absolute HTTP(S) URL without credentials, query
+- When configured, the `[validator_provider]` section of `server.toml` binds
+  each registered Network key to its own PlatScan deployment base URL in a
+  bounded `networks` table (1..=64 entries), alongside `timeout_seconds`,
+  `refresh_seconds`, and the existing analytics `timezone`. Binding validation
+  checks key shape, bounds, and non-empty URLs; the provider configuration also
+  normalizes each base URL and validates the IANA timezone. None of these checks
+  query the SQLite Network Registry. If the section is absent, the provider is
+  disabled; if it is present without any Network binding, configuration
+  resolution fails.
+- The detail request carries no Network selector, so an allowlist shared by
+  several Networks cannot prove which chain one deployment serves. Each Network
+  is therefore bound to a distinct deployment; a registered Network without a
+  binding is `not_configured`: the adapter makes no outbound request and the
+  Public projection shows an explicit unconfigured state, never Unknown
+  Activity or Observing. Identical Validator identifiers on different Networks
+  are routed to their own deployments and never share stored data (#154).
+- Each base URL must be an absolute HTTP(S) URL without credentials, query
   strings, fragments, or an invalid/missing host. Deployments requiring
   authentication place an authenticated reverse proxy in front of the
   configured endpoint rather than adding provider secrets to `server.toml`.
@@ -75,9 +78,14 @@ guarantees, not claims about an upstream schema.
   currently effective Node Validator Links. A Validator can therefore be
   refreshed even when it temporarily has no active link.
 - Configuration defaults are `refresh_seconds = 60`, `timeout_seconds = 10`, and
-  `timezone = "UTC"`. When a provider `base_url` is configured, refresh is
-  clamped to 1–86,400 seconds, timeout to 1–300 seconds, and the Network
-  allowlist must be non-empty.
+  `timezone = "UTC"`. When provider Network bindings are configured, refresh is
+  clamped to 1–86,400 seconds, timeout to 1–300 seconds, and at least one
+  Network binding is required.
+- A last-good observation is fresh while it is no older than two configured
+  refresh intervals (120s at the default 60s refresh). Freshness therefore
+  follows a valid slower refresh setting instead of a fixed constant, and the
+  Public projection exposes the last successful fetch time plus the upstream
+  cutoff when the source provides one — never a fabricated timestamp.
 - A successful observation updates the current insight and one row per configured
   Validator + timezone + calendar day/month bucket in the daily/monthly analytics
   tables. If the configured timezone changes, the new timezone forms distinct
@@ -85,9 +93,17 @@ guarantees, not claims about an upstream schema.
   state rather than bounded by the provider refresh path. A non-success outcome updates the attempt/outcome
   diagnostic but retains the last-good Activity and optional metrics when they
   exist.
+- Non-success outcomes retain every last-good metric: a `not_configured`,
+  `unsupported`, `error`, `empty`, or `not_found` outcome updates the attempt
+  outcome but never clears a retained cumulative block count or other last-good
+  values, and never fabricates a zero. The cumulative `block_count` is the
+  Validator's chain-history counter, not blocks observed by the monitored Node.
 - Public projection semantics are explicit: `empty`/`not_found` becomes
   `observing`/`current`; a successful canonical Activity is `current` or
   `stale` according to Server receipt age; an error with last-good Activity is
   canonical Activity with `stale`; an error with only metric last-good data,
-  `unsupported`, or no last-good Activity is `unknown`. Provider state never
-  changes Node Health or Server readiness.
+  `unsupported`, `not_configured`, or no last-good Activity is `unknown`.
+  Provider state never changes Node Health or Server readiness.
+- Migration 0044 widens the stored outcome CHECK to accept `not_configured`
+  and copies every existing row verbatim, so pre-existing last-good values
+  survive without fabrication.

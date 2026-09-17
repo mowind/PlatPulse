@@ -758,7 +758,7 @@ fn public_validator_activity(
             Some(value) => (value.to_owned(), "stale".to_owned()),
             None => ("unknown".to_owned(), "unknown".to_owned()),
         },
-        "unsupported" => ("unknown".to_owned(), "unknown".to_owned()),
+        "unsupported" | "not_configured" => ("unknown".to_owned(), "unknown".to_owned()),
         _ => ("unknown".to_owned(), "unknown".to_owned()),
     }
 }
@@ -783,9 +783,12 @@ async fn public_validator_insights(
     Ok(rows
         .into_iter()
         .map(|row| {
-            let freshness =
-                validator::freshness(row.last_good_received_at.as_deref(), crate::auth::now_utc());
-            let outcome = row.outcome.unwrap_or_else(|| "unsupported".to_owned());
+            let freshness = validator::freshness(
+                row.last_good_received_at.as_deref(),
+                crate::auth::now_utc(),
+                state.validator_freshness_seconds(),
+            );
+            let outcome = row.outcome.unwrap_or_else(|| "not_configured".to_owned());
             let state = if outcome == "success" {
                 freshness
             } else {
@@ -2170,7 +2173,11 @@ pub(crate) async fn public_validator_analytics(
     let freshness = insight
         .as_ref()
         .map(|row| {
-            validator::freshness(row.last_good_received_at.as_deref(), crate::auth::now_utc())
+            validator::freshness(
+                row.last_good_received_at.as_deref(),
+                crate::auth::now_utc(),
+                state.validator_freshness_seconds(),
+            )
         })
         .unwrap_or("unknown");
     let state_value = insight
@@ -4142,6 +4149,86 @@ mod tests {
         // A pre-activity success row is never fabricated into a canonical label.
         assert_eq!(validator["activity"], "unknown");
         assert_eq!(validator["activityState"], "unknown");
+        // Cumulative Validator block count and its counter state reach the
+        // Public projection unchanged, with a real last-success time.
+        assert_eq!(validator["blockCount"], 5);
+        assert_eq!(validator["counterState"], "normal");
+        assert_eq!(validator["state"], "fresh");
+        assert_eq!(validator["freshness"], "fresh");
+        assert_eq!(validator["source"], "fixture");
+        assert!(validator["receivedAt"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn public_validator_not_configured_is_explicit_and_retains_last_good_block_count() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        seed_validator_activity(
+            &state,
+            "node-public",
+            "validator-unconfigured",
+            "not_configured",
+            Some("producing"),
+            Some(&now),
+            "2026-01-01T00:00:00Z",
+            None,
+        )
+        .await;
+        sqlx::query("UPDATE current_validator_insights SET block_count = 42, provider_timestamp = '2025-12-31T00:00:00Z' WHERE validator_id = 'validator-unconfigured'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let response = public_networks(State(state)).await;
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let validator = &value[0]["validators"][0];
+        assert_eq!(validator["state"], "not_configured");
+        // A retained last-good block count survives the unconfigured source;
+        // the unconfigured source never fabricates or projects Activity.
+        assert_eq!(validator["blockCount"], 42);
+        assert_eq!(validator["providerTimestamp"], "2025-12-31T00:00:00Z");
+        assert_eq!(validator["activity"], "unknown");
+        assert_eq!(validator["activityState"], "unknown");
+        assert_eq!(validator["freshness"], "fresh");
+    }
+
+    #[tokio::test]
+    async fn public_validator_freshness_follows_configured_refresh_interval() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        let five_minutes_ago =
+            crate::auth::format_rfc3339(crate::auth::now_utc() - time::Duration::minutes(5));
+        seed_validator_activity(
+            &state,
+            "node-public",
+            "validator-slow-refresh",
+            "success",
+            Some("producing"),
+            Some(&five_minutes_ago),
+            "2026-01-01T00:00:00Z",
+            None,
+        )
+        .await;
+
+        // The default window (two 60s intervals) marks this last-good value
+        // stale...
+        let default_state = state.clone();
+        let response = public_networks(State(default_state)).await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value[0]["validators"][0]["state"], "stale");
+
+        // ... while a slower configured refresh keeps the same age fresh.
+        let slow = state.with_validator_freshness_seconds(600);
+        let response = public_networks(State(slow)).await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value[0]["validators"][0]["freshness"], "fresh");
+        assert_eq!(value[0]["validators"][0]["state"], "fresh");
     }
 
     async fn seed_public_activity_node(state: &AppState, node_id: &str) {

@@ -19,6 +19,7 @@ import { GeoInsight } from '../components/GeoInsight'
 import { ValidatorInsight } from '../components/ValidatorInsight'
 import { ValidatorAnalytics } from '../components/ValidatorAnalytics'
 import { formatRelativeTime, formatUtcDateTime, NodeHealthMarker, StatusBadge } from '../components/StatusBadge'
+import { LinkedValidatorSection } from '../components/LinkedValidator'
 import { RealtimeNotice } from '../components/RealtimeNotice'
 import { formatNodeDataBytes } from '../formatBytes'
 import { formatDuration } from '../formatDuration'
@@ -188,6 +189,8 @@ export function NodePage() {
         <MetricRow label="Host download" value={formatRate(node.hostNetworkRxBytesPerSec)} />
       </NodeInfoGroup>
     </div>
+
+    <LinkedValidatorSection node={node} variant="detail" />
 
     <section data-slot="node-metrics-section" className="mt-4" aria-labelledby="node-metrics-title">
       <header className="mb-2 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">

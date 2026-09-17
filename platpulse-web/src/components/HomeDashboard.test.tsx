@@ -554,4 +554,27 @@ describe('Public Home dashboard', () => {
     expect(screen.getByText('No Active Nodes in this view.')).toBeTruthy()
     expect(summaryValueOf('Active Nodes').textContent).toBe('0')
   })
+
+  it('shows the linked Validator cumulative block count and role on the Home card', () => {
+    const linked = {
+      validatorId: 'validator-linked', validatorNodeId: '0xlinked', displayName: 'Validator A',
+      nodeId: 'node-linked', linkRole: 'standby', state: 'fresh', freshness: 'fresh', source: 'platscan',
+      providerTimestamp: '2026-08-25T00:00:00Z', receivedAt: '2026-08-25T00:00:05Z',
+      blockCount: 123456, counterState: 'normal', activity: 'producing', activityState: 'current',
+    }
+    const linkedNode = { ...network.nodes[0], nodeId: 'node-linked', displayName: 'Calico', validator: linked }
+    const unlinkedNode = { ...network.nodes[0], nodeId: 'node-unlinked', displayName: 'Domino', validator: null }
+    render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes: [linkedNode, unlinkedNode] }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+
+    const card = cardOf(nodeCardLink('Calico'))
+    expect(within(card).getByText('Linked Validator')).toBeTruthy()
+    expect(within(card).getByText('Validator A')).toBeTruthy()
+    expect(within(card).getByText('Standby')).toBeTruthy()
+    expect(within(card).getByText('Cumulative blocks')).toBeTruthy()
+    expect(within(card).getByText('123,456')).toBeTruthy()
+
+    const unlinkedCard = cardOf(nodeCardLink('Domino'))
+    expect(within(unlinkedCard).getByText(/Unlinked/)).toBeTruthy()
+    expect(within(unlinkedCard).queryByText('Cumulative blocks')).toBeNull()
+  })
 })

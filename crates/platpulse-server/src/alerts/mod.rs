@@ -1039,6 +1039,9 @@ pub async fn extract_input(
                     "unsupported" => EvalInput::ProviderUnavailable {
                         reason: "Validator provider is unsupported".to_owned(),
                     },
+                    "not_configured" => EvalInput::ProviderUnavailable {
+                        reason: "Network has no configured Validator provider".to_owned(),
+                    },
                     "not_found" => EvalInput::ProviderUnavailable {
                         reason: "Validator was not found by the provider".to_owned(),
                     },
