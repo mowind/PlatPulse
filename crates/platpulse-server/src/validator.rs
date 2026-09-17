@@ -70,7 +70,6 @@ impl ValidatorActivity {
 pub struct ValidatorObservation {
     pub provider_timestamp: Option<String>,
     pub activity: Option<ValidatorActivity>,
-    pub rank: Option<i64>,
     pub stake_amount: Option<String>,
     pub reward_amount: Option<String>,
     pub reward_rate: Option<String>,
@@ -109,11 +108,53 @@ pub enum ValidatorProviderResult {
     Unsupported(String),
 }
 
+/// Bounded page size for the dedicated Network ranking list. The upstream
+/// endpoint accepts up to 1000 rows per page; a smaller page keeps each
+/// bounded response comfortably under the 64 KiB body limit.
+pub const RANKING_PAGE_SIZE: usize = 50;
+/// Hard bound on ranking pages fetched in one refresh.
+pub const MAX_RANKING_PAGES: usize = 50;
+/// Hard bound on a complete live-staking cohort accepted as authoritative.
+pub const MAX_RANKING_COHORT: i64 = 2500;
+
+/// A complete, validated Network ranking list. Ranks are the upstream
+/// positions (1-based) adopted verbatim; PlatPulse never recomputes them over
+/// the monitored Node set or Home filters.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NetworkRanking {
+    /// Ranked entries keyed by PlatScan Validator node identifier.
+    pub entries: BTreeMap<String, i64>,
+    /// Complete cohort size reported by the upstream list (`totalCount`).
+    pub cohort_size: i64,
+}
+
+/// The outcome of one dedicated Network ranking fetch. Ranking is independent
+/// of the per-Validator detail request: a detail failure never triggers a
+/// ranking fallback, and a ranking failure never erases detail metrics (#158).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RankingProviderResult {
+    /// A complete, internally consistent list. Only this establishes an
+    /// authoritative unranked outcome for an absent Validator.
+    Success(Box<NetworkRanking>),
+    NotConfigured(String),
+    Unsupported(String),
+    /// A request failure or a truncated, duplicated, or drifted pagination
+    /// sequence. It never clears a last-good rank.
+    Error(String),
+}
+
 #[async_trait]
 pub trait ValidatorProvider: Send + Sync {
     fn source(&self) -> &str;
 
     async fn fetch(&self, network_key: &str, validator_node_id: &str) -> ValidatorProviderResult;
+
+    /// Fetch the Network's complete live-staking ranking list. Implementations
+    /// that only serve per-Validator detail return `Unsupported` unless they
+    /// override this method (#158).
+    async fn fetch_ranking(&self, _network_key: &str) -> RankingProviderResult {
+        RankingProviderResult::Unsupported("provider does not support Network ranking".to_owned())
+    }
 }
 
 pub type SharedValidatorProvider = Arc<dyn ValidatorProvider>;
@@ -131,6 +172,10 @@ impl ValidatorProvider for DisabledValidatorProvider {
 
     async fn fetch(&self, _network_key: &str, _validator_node_id: &str) -> ValidatorProviderResult {
         ValidatorProviderResult::NotConfigured("provider is not configured".to_owned())
+    }
+
+    async fn fetch_ranking(&self, _network_key: &str) -> RankingProviderResult {
+        RankingProviderResult::NotConfigured("provider is not configured".to_owned())
     }
 }
 
@@ -178,6 +223,10 @@ impl PlatScanValidatorProvider {
 
     fn deployment(&self, network_key: &str) -> Option<&str> {
         self.deployments.get(network_key).map(String::as_str)
+    }
+
+    fn ranking_endpoint(base_url: &str) -> String {
+        format!("{base_url}/browser-server/staking/aliveStakingList")
     }
 }
 
@@ -250,6 +299,124 @@ impl ValidatorProvider for PlatScanValidatorProvider {
             Ok(None) => ValidatorProviderResult::AuthoritativeEmpty,
             Err(error) => ValidatorProviderResult::Error(error),
         }
+    }
+
+    async fn fetch_ranking(&self, network_key: &str) -> RankingProviderResult {
+        let Some(base_url) = self.deployment(network_key) else {
+            return RankingProviderResult::NotConfigured(
+                "Network has no bound PlatScan deployment".to_owned(),
+            );
+        };
+        let mut entries = BTreeMap::new();
+        let mut expected_total: Option<i64> = None;
+        let mut page_no = 1usize;
+        loop {
+            if page_no > MAX_RANKING_PAGES {
+                return RankingProviderResult::Error(
+                    "PlatScan ranking exceeded the page bound".to_owned(),
+                );
+            }
+            let body = serde_json::json!({
+                "pageNo": page_no,
+                "pageSize": RANKING_PAGE_SIZE,
+                "queryStatus": "all",
+            });
+            let response = match self
+                .client
+                .post(Self::ranking_endpoint(base_url))
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(response) => response,
+                Err(_) => {
+                    return RankingProviderResult::Error(
+                        "PlatScan ranking request failed".to_owned(),
+                    );
+                }
+            };
+            match response.status() {
+                StatusCode::NOT_FOUND
+                | StatusCode::NOT_IMPLEMENTED
+                | StatusCode::METHOD_NOT_ALLOWED => {
+                    return RankingProviderResult::Unsupported(
+                        "PlatScan aliveStakingList endpoint is unsupported".to_owned(),
+                    );
+                }
+                status if status.is_client_error() || status.is_server_error() => {
+                    return RankingProviderResult::Error(
+                        "PlatScan returned an unsuccessful ranking response".to_owned(),
+                    );
+                }
+                _ => {}
+            }
+            let bytes = match response.bytes().await {
+                Ok(bytes) if bytes.len() <= MAX_PROVIDER_BODY_LEN => bytes,
+                Ok(_) => {
+                    return RankingProviderResult::Error(
+                        "PlatScan ranking response exceeded the size limit".to_owned(),
+                    );
+                }
+                Err(_) => {
+                    return RankingProviderResult::Error(
+                        "PlatScan ranking response could not be read".to_owned(),
+                    );
+                }
+            };
+            let value: Value = match serde_json::from_slice(&bytes) {
+                Ok(value) => value,
+                Err(_) => {
+                    return RankingProviderResult::Error(
+                        "PlatScan ranking response was malformed".to_owned(),
+                    );
+                }
+            };
+            let page = match normalize_platscan_ranking_response(&value, page_no, RANKING_PAGE_SIZE)
+            {
+                Ok(page) => page,
+                Err(error) => return RankingProviderResult::Error(error),
+            };
+            match expected_total {
+                Some(total) if total != page.total_count => {
+                    return RankingProviderResult::Error(
+                        "PlatScan ranking page count drifted".to_owned(),
+                    );
+                }
+                None => {
+                    if page.total_count > MAX_RANKING_COHORT {
+                        return RankingProviderResult::Error(
+                            "PlatScan ranking cohort exceeded the bound".to_owned(),
+                        );
+                    }
+                    expected_total = Some(page.total_count);
+                }
+                _ => {}
+            }
+            let rows = page.entries.len();
+            for (node_id, rank) in page.entries {
+                if entries.insert(node_id, rank).is_some() {
+                    return RankingProviderResult::Error(
+                        "PlatScan ranking contained a duplicate Validator".to_owned(),
+                    );
+                }
+            }
+            let total = expected_total.unwrap_or_default();
+            let collected = entries.len() as i64;
+            if collected == total {
+                break;
+            }
+            if collected > total || rows < RANKING_PAGE_SIZE {
+                return RankingProviderResult::Error(
+                    "PlatScan ranking response was incomplete".to_owned(),
+                );
+            }
+            page_no += 1;
+        }
+        RankingProviderResult::Success(Box::new(NetworkRanking {
+            entries,
+            cohort_size: expected_total.unwrap_or_default(),
+        }))
     }
 }
 
@@ -330,6 +497,83 @@ fn platscan_status_activity(status: i64) -> Option<ValidatorActivity> {
         7 => Some(ValidatorActivity::Locked),
         _ => None,
     }
+}
+
+struct RankingPage {
+    entries: Vec<(String, i64)>,
+    total_count: i64,
+}
+
+/// Validate one page of the dedicated `aliveStakingList` ranking response.
+/// The upstream returns `RespPage` directly: `code` 0, `totalCount`, and a
+/// `data` array whose `ranking` is the global 1-based position, not a
+/// page-local index. The expected global position is recomputed from the
+/// requested page and row order, so a page-local or drifted rank is a
+/// detectable inconsistency rather than an accepted position (#158).
+fn normalize_platscan_ranking_response(
+    value: &Value,
+    page_no: usize,
+    page_size: usize,
+) -> Result<RankingPage, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "PlatScan ranking response was not an object".to_owned())?;
+    let code = object
+        .get("code")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| "PlatScan ranking response did not contain a success envelope".to_owned())?;
+    if code != 0 {
+        return Err("PlatScan returned an unsuccessful ranking envelope".to_owned());
+    }
+    if let Some(err_msg) = object.get("errMsg") {
+        if !err_msg.is_string() {
+            return Err("PlatScan returned an invalid ranking envelope message".to_owned());
+        }
+    }
+    let total_count = object
+        .get("totalCount")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| "PlatScan ranking response did not contain a total".to_owned())?;
+    if total_count < 0 {
+        return Err("PlatScan returned a negative ranking total".to_owned());
+    }
+    let data = match object.get("data") {
+        Some(Value::Array(data)) => data.as_slice(),
+        Some(Value::Null) => &[],
+        _ => {
+            return Err("PlatScan ranking response did not contain a data list".to_owned());
+        }
+    };
+    if data.len() > page_size {
+        return Err("PlatScan ranking page exceeded the requested size".to_owned());
+    }
+    let base = (page_no.saturating_sub(1)) * page_size;
+    let mut entries = Vec::with_capacity(data.len());
+    for (index, row) in data.iter().enumerate() {
+        let row = row
+            .as_object()
+            .ok_or_else(|| "PlatScan ranking entry was not an object".to_owned())?;
+        let node_id = row
+            .get("nodeId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "PlatScan ranking entry omitted a Validator identifier".to_owned())?;
+        if !is_platscan_node_id(node_id) {
+            return Err("PlatScan ranking entry had an invalid Validator identifier".to_owned());
+        }
+        let ranking = row
+            .get("ranking")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| "PlatScan ranking entry omitted a rank".to_owned())?;
+        let expected = base as i64 + index as i64 + 1;
+        if ranking != expected {
+            return Err("PlatScan ranking was not a consistent global sequence".to_owned());
+        }
+        entries.push((node_id.to_owned(), ranking));
+    }
+    Ok(RankingPage {
+        entries,
+        total_count,
+    })
 }
 
 fn normalize_platscan_response(
@@ -478,7 +722,6 @@ fn normalize_platscan_response(
     let observation = ValidatorObservation {
         provider_timestamp: None,
         activity: Some(activity),
-        rank: read_int(&["ranks", "ranking", "rank"])?,
         stake_amount: read_string(&["stakingValue", "totalValue", "stake"])?,
         reward_amount: read_string(&["rewardValue", "reward"])?,
         reward_rate: read_string(&["deleAnnualizedRate", "rewardRate"])?,
@@ -563,10 +806,9 @@ fn provider_diagnostic(value: String) -> String {
 
 fn observation_key(observation: &ValidatorObservation) -> String {
     let bytes = format!(
-        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
         observation.provider_timestamp,
         observation.activity,
-        observation.rank,
         observation.stake_amount,
         observation.reward_amount,
         observation.reward_rate,
@@ -1273,6 +1515,11 @@ pub struct ValidatorInsightRecord {
     pub last_good_received_at: Option<String>,
     pub last_good_provider_timestamp: Option<String>,
     pub rank: Option<i64>,
+    pub rank_outcome: Option<String>,
+    pub rank_diagnostic: Option<String>,
+    pub rank_last_attempt_received_at: Option<String>,
+    pub rank_last_good_received_at: Option<String>,
+    pub rank_cohort_size: Option<i64>,
     pub stake_amount: Option<String>,
     pub reward_amount: Option<String>,
     pub reward_rate: Option<String>,
@@ -1293,6 +1540,11 @@ pub struct ValidatorInsightRecord {
     pub last_observation_key: Option<String>,
     pub updated_at: String,
 }
+
+/// The canonical column list for loading one current Validator insight. Kept in
+/// one place so the detail apply, the ranking apply, and direct loads cannot
+/// drift apart.
+const INSIGHT_SELECT: &str = "SELECT validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, rank_outcome, rank_diagnostic, rank_last_attempt_received_at, rank_last_good_received_at, rank_cohort_size, stake_amount, reward_amount, reward_rate, delegation_reward_percentage, delegator_count, epoch, block_count, expected_block_count, gen_blocks_rate, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at FROM current_validator_insights WHERE validator_id = ?";
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ValidatorRankingHistoryRecord {
@@ -1436,7 +1688,7 @@ async fn record_daily_snapshot(
     timezone: &str,
 ) -> Result<(bool, String), ValidatorError> {
     let (local_date, month_key, sample_at) = analytics_period(observation, received_at, timezone)?;
-    let result = sqlx::query("INSERT INTO validator_daily_snapshots (snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, provider_timestamp, source, observation_key, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(validator_id, timezone, local_date) DO UPDATE SET snapshot_id=excluded.snapshot_id, month_key=excluded.month_key, sample_at=excluded.sample_at, received_at=excluded.received_at, provider_timestamp=excluded.provider_timestamp, source=excluded.source, observation_key=excluded.observation_key, rank=excluded.rank, stake_amount=excluded.stake_amount, reward_amount=excluded.reward_amount, reward_rate=excluded.reward_rate, delegator_count=excluded.delegator_count, epoch=excluded.epoch, block_count=excluded.block_count WHERE excluded.sample_at > validator_daily_snapshots.sample_at OR (excluded.sample_at = validator_daily_snapshots.sample_at AND excluded.observation_key > validator_daily_snapshots.observation_key)")
+    let result = sqlx::query("INSERT INTO validator_daily_snapshots (snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, provider_timestamp, source, observation_key, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(validator_id, timezone, local_date) DO UPDATE SET snapshot_id=excluded.snapshot_id, month_key=excluded.month_key, sample_at=excluded.sample_at, received_at=excluded.received_at, provider_timestamp=excluded.provider_timestamp, source=excluded.source, observation_key=excluded.observation_key, stake_amount=excluded.stake_amount, reward_amount=excluded.reward_amount, reward_rate=excluded.reward_rate, delegator_count=excluded.delegator_count, epoch=excluded.epoch, block_count=excluded.block_count WHERE excluded.sample_at > validator_daily_snapshots.sample_at OR (excluded.sample_at = validator_daily_snapshots.sample_at AND excluded.observation_key > validator_daily_snapshots.observation_key)")
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(validator_id)
         .bind(timezone)
@@ -1447,7 +1699,6 @@ async fn record_daily_snapshot(
         .bind(observation.provider_timestamp.as_deref())
         .bind(bounded_source(source))
         .bind(observation_key)
-        .bind(observation.rank)
         .bind(observation.stake_amount.as_deref())
         .bind(observation.reward_amount.as_deref())
         .bind(observation.reward_rate.as_deref())
@@ -1571,12 +1822,10 @@ pub async fn load_insight(
     db: &ServerDatabase,
     validator_id: &str,
 ) -> Result<Option<ValidatorInsightRecord>, ValidatorError> {
-    Ok(sqlx::query_as::<_, ValidatorInsightRecord>(
-        "SELECT validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegation_reward_percentage, delegator_count, epoch, block_count, expected_block_count, gen_blocks_rate, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at FROM current_validator_insights WHERE validator_id = ?",
-    )
-    .bind(validator_id)
-    .fetch_optional(db.pool())
-    .await?)
+    Ok(sqlx::query_as::<_, ValidatorInsightRecord>(INSIGHT_SELECT)
+        .bind(validator_id)
+        .fetch_optional(db.pool())
+        .await?)
 }
 
 pub async fn list_insights(
@@ -1584,7 +1833,7 @@ pub async fn list_insights(
     network_key: Option<&str>,
 ) -> Result<Vec<ValidatorInsightRecord>, ValidatorError> {
     let mut sql = String::from(
-        "SELECT i.validator_id, i.source, i.outcome, i.diagnostic, i.provider_timestamp, i.activity, i.last_attempt_received_at, i.last_good_received_at, i.last_good_provider_timestamp, i.rank, i.stake_amount, i.reward_amount, i.reward_rate, i.delegation_reward_percentage, i.delegator_count, i.epoch, i.block_count, i.expected_block_count, i.gen_blocks_rate, i.counter_state, i.change_state, i.candidate_previous_rank, i.candidate_rank, i.candidate_observations, i.candidate_observed_at, i.candidate_provider_timestamp, i.candidate_observation_key, i.last_observation_key, i.updated_at FROM current_validator_insights i JOIN validators v ON v.validator_id = i.validator_id",
+        "SELECT i.validator_id, i.source, i.outcome, i.diagnostic, i.provider_timestamp, i.activity, i.last_attempt_received_at, i.last_good_received_at, i.last_good_provider_timestamp, i.rank, i.rank_outcome, i.rank_diagnostic, i.rank_last_attempt_received_at, i.rank_last_good_received_at, i.rank_cohort_size, i.stake_amount, i.reward_amount, i.reward_rate, i.delegation_reward_percentage, i.delegator_count, i.epoch, i.block_count, i.expected_block_count, i.gen_blocks_rate, i.counter_state, i.change_state, i.candidate_previous_rank, i.candidate_rank, i.candidate_observations, i.candidate_observed_at, i.candidate_provider_timestamp, i.candidate_observation_key, i.last_observation_key, i.updated_at FROM current_validator_insights i JOIN validators v ON v.validator_id = i.validator_id",
     );
     if network_key.is_some() {
         sql.push_str(" WHERE v.network_key = ?");
@@ -1654,10 +1903,23 @@ pub async fn refresh_all_with_channels_in_timezone(
     )
     .fetch_all(db.pool())
     .await?;
+    let mut network_keys: Vec<String> = Vec::new();
     let mut provider_results = Vec::with_capacity(validators.len());
     for (validator_id, network_key, validator_node_id) in validators {
         let result = provider.fetch(&network_key, &validator_node_id).await;
-        provider_results.push((validator_id, network_key, result));
+        if !network_keys.contains(&network_key) {
+            network_keys.push(network_key.clone());
+        }
+        provider_results.push((validator_id, network_key, validator_node_id, result));
+    }
+
+    // The dedicated ranking list is shared by every Validator on a Network:
+    // it is fetched once per distinct Network, never once per monitored Node,
+    // and it is not a fallback triggered by a detail failure (#158).
+    let mut rankings: BTreeMap<String, RankingProviderResult> = BTreeMap::new();
+    for network_key in &network_keys {
+        let result = provider.fetch_ranking(network_key).await;
+        rankings.insert(network_key.clone(), result);
     }
 
     let mut summary = RefreshSummary {
@@ -1665,10 +1927,18 @@ pub async fn refresh_all_with_channels_in_timezone(
         ..RefreshSummary::default()
     };
     let mut tx = db.pool().begin().await?;
-    for (validator_id, network_key, result) in provider_results {
-        let changed =
+    for (validator_id, network_key, validator_node_id, result) in provider_results {
+        let detail =
             apply_provider_result(&mut tx, provider.source(), &validator_id, result, timezone)
                 .await?;
+        // Every Network in this loop was collected above; the defensive arm
+        // keeps a missing result a degraded outcome rather than a panic.
+        let lookup = match rankings.get(&network_key) {
+            Some(result) => ranking_lookup(result, &validator_node_id),
+            None => NetworkRankingLookup::Error("ranking was not collected".to_owned()),
+        };
+        let (ranking_changed, ranking_invalidated) =
+            apply_ranking_result(&mut tx, &validator_id, lookup).await?;
         let alert_changes = crate::alerts::evaluate_validator_in_transaction(
             &mut tx,
             &validator_id,
@@ -1680,13 +1950,13 @@ pub async fn refresh_all_with_channels_in_timezone(
         if alert_changes > 0 {
             summary.alert_invalidations += alert_changes;
         }
-        if changed.0 {
+        if detail.0 {
             summary.successful += 1;
         }
-        if changed.1 {
+        if detail.1 || ranking_changed {
             summary.changed += 1;
         }
-        if changed.2 {
+        if detail.2 || ranking_invalidated {
             summary.invalidations += 1;
             summary.invalidated_network_keys.push(network_key);
             summary.invalidated_validator_ids.push(validator_id);
@@ -1694,6 +1964,56 @@ pub async fn refresh_all_with_channels_in_timezone(
     }
     tx.commit().await?;
     Ok(summary)
+}
+
+/// One Validator's view of the shared Network ranking result. The Network
+/// list is fetched once and looked up per Validator; an absent identifier is
+/// only `Unranked` when the whole list was retrieved completely (#158).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NetworkRankingLookup {
+    Ranked { rank: i64, cohort_size: i64 },
+    Unranked { cohort_size: i64 },
+    NotConfigured(String),
+    Unsupported(String),
+    Error(String),
+}
+
+/// The pending ranking-change candidate used only to debounce the
+/// `validator.ranking_changed` alert. The displayed rank is adopted
+/// immediately, so this state never delays what the API or the UI shows (#158).
+#[derive(Debug, Clone, Default)]
+struct RankingCandidate {
+    previous_rank: Option<i64>,
+    rank: Option<i64>,
+    observations: i64,
+    observed_at: Option<String>,
+    provider_timestamp: Option<String>,
+    observation_key: Option<String>,
+}
+
+fn ranking_lookup(result: &RankingProviderResult, validator_node_id: &str) -> NetworkRankingLookup {
+    match result {
+        RankingProviderResult::Success(ranking) => match ranking.entries.get(validator_node_id) {
+            Some(rank) => NetworkRankingLookup::Ranked {
+                rank: *rank,
+                cohort_size: ranking.cohort_size,
+            },
+            None => NetworkRankingLookup::Unranked {
+                cohort_size: ranking.cohort_size,
+            },
+        },
+        RankingProviderResult::NotConfigured(value) => {
+            NetworkRankingLookup::NotConfigured(value.clone())
+        }
+        RankingProviderResult::Unsupported(value) => {
+            NetworkRankingLookup::Unsupported(value.clone())
+        }
+        RankingProviderResult::Error(value) => NetworkRankingLookup::Error(value.clone()),
+    }
+}
+
+fn ranking_observation_key(rank: i64, cohort_size: i64) -> String {
+    format!("ranking:{rank}/{cohort_size}")
 }
 
 async fn apply_provider_result(
@@ -1704,22 +2024,14 @@ async fn apply_provider_result(
     timezone: &str,
 ) -> Result<(bool, bool, bool), ValidatorError> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
-    let existing = sqlx::query_as::<_, ValidatorInsightRecord>(
-        "SELECT validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegation_reward_percentage, delegator_count, epoch, block_count, expected_block_count, gen_blocks_rate, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at FROM current_validator_insights WHERE validator_id = ?",
-    )
-    .bind(validator_id)
-    .fetch_optional(&mut **tx)
-    .await?;
+    let existing = sqlx::query_as::<_, ValidatorInsightRecord>(INSIGHT_SELECT)
+        .bind(validator_id)
+        .fetch_optional(&mut **tx)
+        .await?;
     match result {
         ValidatorProviderResult::Success(observation) => {
             validate_observation(&observation)?;
             let key = observation_key(&observation);
-            // Activity applies on each validated successful snapshot, never
-            // waiting for ranking-change confirmation, and its own change is
-            // part of the invalidation identity (#100). A validated snapshot
-            // that omits Activity must never erase the last-good canonical
-            // Activity: only a provider failure or an explicit change may
-            // move the stored value.
             let stored_activity = match observation.activity {
                 Some(activity) => Some(activity.as_str()),
                 None => existing.as_ref().and_then(|row| row.activity.as_deref()),
@@ -1731,16 +2043,12 @@ async fn apply_provider_result(
                 .and_then(|row| row.last_observation_key.as_deref())
                 == Some(key.as_str())
             {
-                let counter_state = "normal";
-                let change_state = "normal";
                 sqlx::query(
-                    "UPDATE current_validator_insights SET outcome = 'success', diagnostic = NULL, activity = ?, last_attempt_received_at = ?, last_good_received_at = ?, counter_state = ?, change_state = ?, updated_at = ? WHERE validator_id = ?",
+                    "UPDATE current_validator_insights SET outcome = 'success', diagnostic = NULL, activity = ?, last_attempt_received_at = ?, last_good_received_at = ?, counter_state = 'normal', updated_at = ? WHERE validator_id = ?",
                 )
                 .bind(stored_activity)
                 .bind(&now)
                 .bind(&now)
-                .bind(counter_state)
-                .bind(change_state)
                 .bind(&now)
                 .bind(validator_id)
                 .execute(&mut **tx)
@@ -1763,12 +2071,6 @@ async fn apply_provider_result(
                 ));
             }
 
-            // A rank-less success cannot establish ranking evidence. The first
-            // successful rank establishes the baseline and is never a change.
-            let baseline_exists = existing
-                .as_ref()
-                .is_some_and(|row| row.last_good_received_at.is_some() && row.rank.is_some());
-            let previous_rank = existing.as_ref().and_then(|row| row.rank);
             let decreases = counter_decreases(existing.as_ref(), &observation);
             let counter_changed = !decreases.is_empty();
             let counter_state = if counter_changed {
@@ -1776,86 +2078,6 @@ async fn apply_provider_result(
             } else {
                 "normal"
             };
-
-            let mut candidate_previous_rank = existing
-                .as_ref()
-                .and_then(|row| row.candidate_previous_rank);
-            let mut candidate_rank = existing.as_ref().and_then(|row| row.candidate_rank);
-            let mut candidate_observations = existing
-                .as_ref()
-                .map_or(0, |row| row.candidate_observations);
-            let mut candidate_observed_at = existing
-                .as_ref()
-                .and_then(|row| row.candidate_observed_at.clone());
-            let mut candidate_provider_timestamp = existing
-                .as_ref()
-                .and_then(|row| row.candidate_provider_timestamp.clone());
-            let mut candidate_observation_key = existing
-                .as_ref()
-                .and_then(|row| row.candidate_observation_key.clone());
-            let mut confirmed_ranking_change = false;
-
-            if baseline_exists {
-                match (previous_rank, observation.rank) {
-                    (Some(previous), Some(current)) if previous == current => {
-                        candidate_previous_rank = None;
-                        candidate_rank = None;
-                        candidate_observations = 0;
-                        candidate_observed_at = None;
-                        candidate_provider_timestamp = None;
-                        candidate_observation_key = None;
-                    }
-                    (Some(previous), Some(current))
-                        if candidate_previous_rank == Some(previous)
-                            && candidate_rank == Some(current)
-                            && candidate_observations == 1 =>
-                    {
-                        sqlx::query("INSERT OR IGNORE INTO validator_ranking_history (history_id, validator_id, previous_rank, current_rank, observed_at, provider_timestamp, observation_key, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-                            .bind(uuid::Uuid::new_v4().to_string())
-                            .bind(validator_id)
-                            .bind(previous)
-                            .bind(current)
-                            .bind(&now)
-                            .bind(observation.provider_timestamp.as_deref())
-                            .bind(&key)
-                            .bind(candidate_observed_at.as_deref())
-                            .bind(candidate_provider_timestamp.as_deref())
-                            .bind(candidate_observation_key.as_deref())
-                            .execute(&mut **tx)
-                            .await?;
-                        confirmed_ranking_change = true;
-                        candidate_previous_rank = None;
-                        candidate_rank = None;
-                        candidate_observations = 0;
-                        candidate_observed_at = None;
-                        candidate_provider_timestamp = None;
-                        candidate_observation_key = None;
-                    }
-                    (Some(previous), Some(current)) => {
-                        candidate_previous_rank = Some(previous);
-                        candidate_rank = Some(current);
-                        candidate_observations = 1;
-                        candidate_observed_at = Some(now.clone());
-                        candidate_provider_timestamp = observation.provider_timestamp.clone();
-                        candidate_observation_key = Some(key.clone());
-                    }
-                    _ => {
-                        candidate_previous_rank = None;
-                        candidate_rank = None;
-                        candidate_observations = 0;
-                        candidate_observed_at = None;
-                        candidate_provider_timestamp = None;
-                        candidate_observation_key = None;
-                    }
-                }
-            } else {
-                candidate_previous_rank = None;
-                candidate_rank = None;
-                candidate_observations = 0;
-                candidate_observed_at = None;
-                candidate_provider_timestamp = None;
-                candidate_observation_key = None;
-            }
 
             for (counter_name, previous_value, current_value) in decreases {
                 sqlx::query("INSERT OR IGNORE INTO validator_counter_history (history_id, validator_id, counter_name, previous_value, current_value, observed_at, provider_timestamp, observation_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
@@ -1871,18 +2093,8 @@ async fn apply_provider_result(
                     .await?;
             }
 
-            let stored_rank = if candidate_rank.is_some() && !confirmed_ranking_change {
-                previous_rank
-            } else {
-                observation.rank
-            };
-            let change_state = if confirmed_ranking_change {
-                "ranking_changed"
-            } else {
-                "normal"
-            };
             let source = bounded_source(source);
-            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegation_reward_percentage, delegator_count, epoch, block_count, expected_block_count, gen_blocks_rate, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, ?, 'success', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=NULL, provider_timestamp=excluded.provider_timestamp, activity=excluded.activity, last_attempt_received_at=excluded.last_attempt_received_at, last_good_received_at=excluded.last_good_received_at, last_good_provider_timestamp=excluded.last_good_provider_timestamp, rank=excluded.rank, stake_amount=excluded.stake_amount, reward_amount=excluded.reward_amount, reward_rate=excluded.reward_rate, delegation_reward_percentage=excluded.delegation_reward_percentage, delegator_count=excluded.delegator_count, epoch=excluded.epoch, block_count=excluded.block_count, expected_block_count=excluded.expected_block_count, gen_blocks_rate=excluded.gen_blocks_rate, counter_state=excluded.counter_state, change_state=excluded.change_state, candidate_previous_rank=excluded.candidate_previous_rank, candidate_rank=excluded.candidate_rank, candidate_observations=excluded.candidate_observations, candidate_observed_at=excluded.candidate_observed_at, candidate_provider_timestamp=excluded.candidate_provider_timestamp, candidate_observation_key=excluded.candidate_observation_key, last_observation_key=excluded.last_observation_key, updated_at=excluded.updated_at")
+            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, stake_amount, reward_amount, reward_rate, delegation_reward_percentage, delegator_count, epoch, block_count, expected_block_count, gen_blocks_rate, counter_state, last_observation_key, updated_at) VALUES (?, ?, 'success', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=NULL, provider_timestamp=excluded.provider_timestamp, activity=excluded.activity, last_attempt_received_at=excluded.last_attempt_received_at, last_good_received_at=excluded.last_good_received_at, last_good_provider_timestamp=excluded.last_good_provider_timestamp, stake_amount=excluded.stake_amount, reward_amount=excluded.reward_amount, reward_rate=excluded.reward_rate, delegation_reward_percentage=excluded.delegation_reward_percentage, delegator_count=excluded.delegator_count, epoch=excluded.epoch, block_count=excluded.block_count, expected_block_count=excluded.expected_block_count, gen_blocks_rate=excluded.gen_blocks_rate, counter_state=excluded.counter_state, last_observation_key=excluded.last_observation_key, updated_at=excluded.updated_at")
                 .bind(validator_id)
                 .bind(&source)
                 .bind(observation.provider_timestamp.as_deref())
@@ -1890,7 +2102,6 @@ async fn apply_provider_result(
                 .bind(&now)
                 .bind(&now)
                 .bind(observation.provider_timestamp.as_deref())
-                .bind(stored_rank)
                 .bind(observation.stake_amount.as_deref())
                 .bind(observation.reward_amount.as_deref())
                 .bind(observation.reward_rate.as_deref())
@@ -1901,13 +2112,6 @@ async fn apply_provider_result(
                 .bind(observation.expected_block_count)
                 .bind(observation.gen_blocks_rate.as_deref())
                 .bind(counter_state)
-                .bind(change_state)
-                .bind(candidate_previous_rank)
-                .bind(candidate_rank)
-                .bind(candidate_observations)
-                .bind(candidate_observed_at)
-                .bind(candidate_provider_timestamp)
-                .bind(candidate_observation_key)
                 .bind(&key)
                 .bind(&now)
                 .execute(&mut **tx)
@@ -1925,11 +2129,8 @@ async fn apply_provider_result(
             rebuild_monthly_aggregate(tx, validator_id, timezone, &month_key, &now).await?;
             Ok((
                 true,
-                confirmed_ranking_change || activity_changed,
-                confirmed_ranking_change
-                    || activity_changed
-                    || counter_changed
-                    || analytics_changed,
+                activity_changed,
+                analytics_changed || activity_changed,
             ))
         }
         outcome => {
@@ -1951,7 +2152,7 @@ async fn apply_provider_result(
                 .as_ref()
                 .is_none_or(|row| row.outcome != name || row.diagnostic != diagnostic);
             let source = bounded_source(source);
-            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegation_reward_percentage, delegator_count, epoch, block_count, expected_block_count, gen_blocks_rate, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'normal', 'normal', NULL, NULL, 0, NULL, NULL, NULL, NULL, ?) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=excluded.diagnostic, last_attempt_received_at=excluded.last_attempt_received_at, provider_timestamp=current_validator_insights.provider_timestamp, activity=current_validator_insights.activity, last_good_received_at=current_validator_insights.last_good_received_at, last_good_provider_timestamp=current_validator_insights.last_good_provider_timestamp, rank=current_validator_insights.rank, stake_amount=current_validator_insights.stake_amount, reward_amount=current_validator_insights.reward_amount, reward_rate=current_validator_insights.reward_rate, delegation_reward_percentage=current_validator_insights.delegation_reward_percentage, delegator_count=current_validator_insights.delegator_count, epoch=current_validator_insights.epoch, block_count=current_validator_insights.block_count, expected_block_count=current_validator_insights.expected_block_count, gen_blocks_rate=current_validator_insights.gen_blocks_rate, counter_state=current_validator_insights.counter_state, change_state='normal', candidate_previous_rank=NULL, candidate_rank=NULL, candidate_observations=0, candidate_observed_at=NULL, candidate_provider_timestamp=NULL, candidate_observation_key=NULL, last_observation_key=current_validator_insights.last_observation_key, updated_at=excluded.updated_at")
+            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, last_attempt_received_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=excluded.diagnostic, last_attempt_received_at=excluded.last_attempt_received_at, updated_at=excluded.updated_at")
                 .bind(validator_id)
                 .bind(source)
                 .bind(name)
@@ -1965,13 +2166,154 @@ async fn apply_provider_result(
     }
 }
 
+/// Apply one Validator's shared-Network ranking lookup. Ranking state is
+/// stored independently from detail metrics: a ranking failure updates only
+/// the rank attempt/diagnostic and never clears the detail columns, and a
+/// detail failure never clears a last-good rank (#158).
+async fn apply_ranking_result(
+    tx: &mut Transaction<'_, Sqlite>,
+    validator_id: &str,
+    lookup: NetworkRankingLookup,
+) -> Result<(bool, bool), ValidatorError> {
+    let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+    let existing = sqlx::query_as::<_, ValidatorInsightRecord>(INSIGHT_SELECT)
+        .bind(validator_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    let Some(existing) = existing else {
+        return Ok((false, false));
+    };
+    match lookup {
+        NetworkRankingLookup::Ranked { rank, cohort_size } => {
+            let baseline_exists =
+                existing.rank_last_good_received_at.is_some() && existing.rank.is_some();
+            // The last confirmed rank a change is compared against. When a
+            // change is already pending, the baseline is the value before it;
+            // the pending rank is already the adopted upstream value.
+            let baseline = match (existing.candidate_rank, existing.candidate_previous_rank) {
+                (Some(_), Some(previous)) => Some(previous),
+                _ => existing.rank,
+            };
+            let mut confirmed_ranking_change = false;
+            let candidate = if !baseline_exists || baseline == Some(rank) {
+                // The first rank, an unchanged rank, or a return to the known
+                // baseline: nothing to record.
+                RankingCandidate::default()
+            } else if existing.candidate_rank == Some(rank)
+                && existing.candidate_previous_rank == baseline
+                && existing.candidate_observations == 1
+            {
+                // A consecutive observation of the same new rank confirms the
+                // change for the ranking alert. The displayed rank already
+                // adopted it on the first observation.
+                let previous = baseline.unwrap_or(rank);
+                sqlx::query("INSERT OR IGNORE INTO validator_ranking_history (history_id, validator_id, previous_rank, current_rank, observed_at, provider_timestamp, observation_key, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                    .bind(uuid::Uuid::new_v4().to_string())
+                    .bind(validator_id)
+                    .bind(previous)
+                    .bind(rank)
+                    .bind(&now)
+                    .bind(None::<&str>)
+                    .bind(ranking_observation_key(rank, cohort_size))
+                    .bind(existing.candidate_observed_at.as_deref())
+                    .bind(existing.candidate_provider_timestamp.as_deref())
+                    .bind(existing.candidate_observation_key.as_deref())
+                    .execute(&mut **tx)
+                    .await?;
+                confirmed_ranking_change = true;
+                RankingCandidate::default()
+            } else {
+                // First observation of a change: record it as a candidate for
+                // the alert while still displaying the upstream rank.
+                RankingCandidate {
+                    previous_rank: baseline,
+                    rank: Some(rank),
+                    observations: 1,
+                    observed_at: Some(now.clone()),
+                    provider_timestamp: None,
+                    observation_key: Some(ranking_observation_key(rank, cohort_size)),
+                }
+            };
+
+            // The upstream rank is adopted verbatim and immediately; pending
+            // alert confirmation never delays the displayed position (#158).
+            let stored_rank = Some(rank);
+            let change_state = if confirmed_ranking_change {
+                "ranking_changed"
+            } else {
+                "normal"
+            };
+            let invalidated = existing.rank != stored_rank
+                || existing.rank_outcome.as_deref() != Some("success")
+                || existing.rank_cohort_size != Some(cohort_size)
+                || confirmed_ranking_change;
+            sqlx::query("UPDATE current_validator_insights SET rank = ?, rank_outcome = 'success', rank_diagnostic = NULL, rank_last_attempt_received_at = ?, rank_last_good_received_at = ?, rank_cohort_size = ?, change_state = ?, candidate_previous_rank = ?, candidate_rank = ?, candidate_observations = ?, candidate_observed_at = ?, candidate_provider_timestamp = ?, candidate_observation_key = ?, updated_at = ? WHERE validator_id = ?")
+                .bind(stored_rank)
+                .bind(&now)
+                .bind(&now)
+                .bind(cohort_size)
+                .bind(change_state)
+                .bind(candidate.previous_rank)
+                .bind(candidate.rank)
+                .bind(candidate.observations)
+                .bind(candidate.observed_at)
+                .bind(candidate.provider_timestamp)
+                .bind(candidate.observation_key)
+                .bind(&now)
+                .bind(validator_id)
+                .execute(&mut **tx)
+                .await?;
+            Ok((confirmed_ranking_change, invalidated))
+        }
+        NetworkRankingLookup::Unranked { cohort_size } => {
+            let invalidated = existing.rank.is_some()
+                || existing.rank_outcome.as_deref() != Some("success")
+                || existing.rank_cohort_size != Some(cohort_size)
+                || existing.change_state != "normal";
+            sqlx::query("UPDATE current_validator_insights SET rank = NULL, rank_outcome = 'success', rank_diagnostic = NULL, rank_last_attempt_received_at = ?, rank_last_good_received_at = ?, rank_cohort_size = ?, change_state = 'normal', candidate_previous_rank = NULL, candidate_rank = NULL, candidate_observations = 0, candidate_observed_at = NULL, candidate_provider_timestamp = NULL, candidate_observation_key = NULL, updated_at = ? WHERE validator_id = ?")
+                .bind(&now)
+                .bind(&now)
+                .bind(cohort_size)
+                .bind(&now)
+                .bind(validator_id)
+                .execute(&mut **tx)
+                .await?;
+            Ok((false, invalidated))
+        }
+        failure => {
+            let (name, diagnostic) = match failure {
+                NetworkRankingLookup::NotConfigured(value) => {
+                    ("not_configured", Some(provider_diagnostic(value)))
+                }
+                NetworkRankingLookup::Unsupported(value) => {
+                    ("unsupported", Some(provider_diagnostic(value)))
+                }
+                NetworkRankingLookup::Error(value) => ("error", Some(provider_diagnostic(value))),
+                NetworkRankingLookup::Ranked { .. } | NetworkRankingLookup::Unranked { .. } => {
+                    unreachable!()
+                }
+            };
+            let invalidated = existing.rank_outcome.as_deref() != Some(name)
+                || existing.rank_diagnostic != diagnostic
+                || existing.change_state != "normal";
+            sqlx::query("UPDATE current_validator_insights SET rank_outcome = ?, rank_diagnostic = ?, rank_last_attempt_received_at = ?, change_state = 'normal', candidate_previous_rank = NULL, candidate_rank = NULL, candidate_observations = 0, candidate_observed_at = NULL, candidate_provider_timestamp = NULL, candidate_observation_key = NULL, updated_at = ? WHERE validator_id = ?")
+                .bind(name)
+                .bind(diagnostic)
+                .bind(&now)
+                .bind(&now)
+                .bind(validator_id)
+                .execute(&mut **tx)
+                .await?;
+            Ok((false, invalidated))
+        }
+    }
+}
 fn bounded_source(source: &str) -> String {
     source.chars().take(64).collect()
 }
 
 fn validate_observation(observation: &ValidatorObservation) -> Result<(), ValidatorError> {
     let has_supported_value = observation.activity.is_some()
-        || observation.rank.is_some()
         || observation.stake_amount.is_some()
         || observation.reward_amount.is_some()
         || observation.reward_rate.is_some()
@@ -1986,8 +2328,7 @@ fn validate_observation(observation: &ValidatorObservation) -> Result<(), Valida
             "empty observation".to_owned(),
         ));
     }
-    if observation.rank.is_some_and(|value| value < 0)
-        || observation.delegator_count.is_some_and(|value| value < 0)
+    if observation.delegator_count.is_some_and(|value| value < 0)
         || observation.epoch.is_some_and(|value| value < 0)
         || observation.block_count.is_some_and(|value| value < 0)
         || observation
@@ -2170,6 +2511,8 @@ mod tests {
     struct FakeProvider {
         results: std::sync::Mutex<Vec<ValidatorProviderResult>>,
         calls: std::sync::Mutex<Vec<(String, String)>>,
+        rankings: std::sync::Mutex<Vec<RankingProviderResult>>,
+        ranking_calls: std::sync::Mutex<Vec<String>>,
     }
 
     #[async_trait]
@@ -2189,6 +2532,19 @@ mod tests {
                 .push((network_key.to_owned(), validator_node_id.to_owned()));
             self.results.lock().unwrap().remove(0)
         }
+
+        async fn fetch_ranking(&self, network_key: &str) -> RankingProviderResult {
+            self.ranking_calls
+                .lock()
+                .unwrap()
+                .push(network_key.to_owned());
+            let mut rankings = self.rankings.lock().unwrap();
+            if rankings.is_empty() {
+                RankingProviderResult::Unsupported("fake ranking unsupported".to_owned())
+            } else {
+                rankings.remove(0)
+            }
+        }
     }
 
     fn provider_node_id() -> String {
@@ -2200,6 +2556,44 @@ mod tests {
             .iter()
             .map(|network| ((*network).to_owned(), base_url.to_owned()))
             .collect()
+    }
+
+    fn ranking_with(cohort_size: i64, entries: &[(&str, i64)]) -> RankingProviderResult {
+        let entries = entries
+            .iter()
+            .map(|(node_id, rank)| ((*node_id).to_owned(), *rank))
+            .collect();
+        RankingProviderResult::Success(Box::new(NetworkRanking {
+            entries,
+            cohort_size,
+        }))
+    }
+
+    fn platscan_ranking_response(
+        page_no: usize,
+        page_size: usize,
+        total_count: i64,
+        node_ids: &[String],
+    ) -> serde_json::Value {
+        let base = (page_no - 1) * page_size;
+        let data: Vec<serde_json::Value> = node_ids
+            .iter()
+            .enumerate()
+            .map(|(index, node_id)| {
+                serde_json::json!({
+                    "nodeId": node_id,
+                    "ranking": base as i64 + index as i64 + 1,
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "code": 0,
+            "errMsg": "success",
+            "totalCount": total_count,
+            "displayTotalCount": total_count,
+            "totalPages": (total_count + page_size as i64 - 1) / page_size as i64,
+            "data": data,
+        })
     }
 
     fn platscan_success(node_id: &str, status: i64) -> serde_json::Value {
@@ -2277,6 +2671,10 @@ mod tests {
                 "/browser-server/staking/stakingDetails",
                 axum::routing::post(mock_platscan_handler),
             )
+            .route(
+                "/browser-server/staking/aliveStakingList",
+                axum::routing::post(mock_platscan_handler),
+            )
             .with_state(state.clone());
         let handle = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
@@ -2302,7 +2700,6 @@ mod tests {
                     .unwrap();
             assert_eq!(observation.activity, Some(activity), "status {status}");
             assert_eq!(observation.stake_amount, None);
-            assert_eq!(observation.rank, None);
         }
         assert_eq!(
             normalize_platscan_response(&platscan_success("", 0), &node_id).unwrap(),
@@ -2655,10 +3052,19 @@ mod tests {
             "data": { "nodeId": shared_node_id, "status": 3, "blockQty": 222 }
         }))
         .unwrap();
+        // Each Network's deployment also serves the dedicated ranking list, so
+        // the detail request is followed by exactly one shared list request.
+        let ranking_body = serde_json::to_vec(&platscan_ranking_response(
+            1,
+            RANKING_PAGE_SIZE,
+            1,
+            std::slice::from_ref(&shared_node_id),
+        ))
+        .unwrap();
         let (mainnet_url, mainnet_state, mainnet_handle) =
-            start_mock_platscan(vec![(200, mainnet_body)], 0).await;
+            start_mock_platscan(vec![(200, mainnet_body), (200, ranking_body.clone())], 0).await;
         let (devnet_url, devnet_state, devnet_handle) =
-            start_mock_platscan(vec![(200, devnet_body)], 0).await;
+            start_mock_platscan(vec![(200, devnet_body), (200, ranking_body)], 0).await;
         let provider = PlatScanValidatorProvider::new(
             BTreeMap::from([
                 ("platon-mainnet".to_owned(), mainnet_url),
@@ -2681,8 +3087,18 @@ mod tests {
             .unwrap();
         assert_eq!(mainnet_insight.block_count, Some(111));
         assert_eq!(devnet_insight.block_count, Some(222));
-        assert_eq!(mainnet_state.requests.lock().unwrap().len(), 1);
-        assert_eq!(devnet_state.requests.lock().unwrap().len(), 1);
+        let mainnet_requests = mainnet_state.requests.lock().unwrap().clone();
+        let devnet_requests = devnet_state.requests.lock().unwrap().clone();
+        assert_eq!(mainnet_requests.len(), 2);
+        assert_eq!(devnet_requests.len(), 2);
+        assert_eq!(
+            mainnet_requests[0].path,
+            "/browser-server/staking/stakingDetails"
+        );
+        assert_eq!(
+            mainnet_requests[1].path,
+            "/browser-server/staking/aliveStakingList"
+        );
         mainnet_handle.abort();
         devnet_handle.abort();
     }
@@ -2848,26 +3264,29 @@ mod tests {
             results: std::sync::Mutex::new(vec![
                 ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:00:00Z".to_owned()),
-                    rank: Some(1),
                     stake_amount: Some("123456789012345678901234567890".to_owned()),
                     reward_rate: Some("0.125000000000000001".to_owned()),
                     ..ValidatorObservation::default()
                 })),
                 ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:01:00Z".to_owned()),
-                    rank: Some(2),
                     stake_amount: Some("123456789012345678901234567889".to_owned()),
                     ..ValidatorObservation::default()
                 })),
                 ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:02:00Z".to_owned()),
-                    rank: Some(2),
                     stake_amount: Some("123456789012345678901234567888".to_owned()),
                     ..ValidatorObservation::default()
                 })),
                 ValidatorProviderResult::Error(
                     "provider timeout at https://secret.example".to_owned(),
                 ),
+            ]),
+            rankings: std::sync::Mutex::new(vec![
+                ranking_with(3, &[("0xprovider", 1)]),
+                ranking_with(3, &[("0xprovider", 2)]),
+                ranking_with(3, &[("0xprovider", 2)]),
+                RankingProviderResult::Error("ranking timeout".to_owned()),
             ]),
             ..FakeProvider::default()
         };
@@ -2990,19 +3409,16 @@ mod tests {
                 ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:00:00Z".to_owned()),
                     activity: Some(ValidatorActivity::Active),
-                    rank: Some(1),
                     ..Default::default()
                 })),
                 ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:01:00Z".to_owned()),
                     activity: Some(ValidatorActivity::Producing),
-                    rank: Some(2),
                     ..Default::default()
                 })),
                 ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:02:00Z".to_owned()),
                     activity: Some(ValidatorActivity::Producing),
-                    rank: Some(2),
                     ..Default::default()
                 })),
                 ValidatorProviderResult::Error("provider timeout".to_owned()),
@@ -3011,9 +3427,17 @@ mod tests {
                 // last-good canonical value instead of erasing it.
                 ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:03:00Z".to_owned()),
-                    rank: Some(2),
+                    stake_amount: Some("1".to_owned()),
                     ..Default::default()
                 })),
+            ]),
+            rankings: std::sync::Mutex::new(vec![
+                ranking_with(3, &[("0xactivity", 1)]),
+                ranking_with(3, &[("0xactivity", 2)]),
+                ranking_with(3, &[("0xactivity", 2)]),
+                ranking_with(3, &[("0xactivity", 2)]),
+                ranking_with(3, &[("0xactivity", 2)]),
+                ranking_with(3, &[("0xactivity", 2)]),
             ]),
             ..FakeProvider::default()
         };
@@ -3027,9 +3451,9 @@ mod tests {
         assert_eq!(insight.outcome, "success");
         assert_eq!(insight.activity.as_deref(), Some("active"));
 
-        // Activity applies on the very next successful snapshot even while
-        // the rank change is still pending confirmation: the stored Activity
-        // is already Producing but the retained rank is still 1.
+        // Activity applies on the very next successful snapshot. The upstream
+        // rank is adopted immediately, while the ranking-change alert waits
+        // for the second consecutive observation to confirm.
         let second = refresh_all(&db, &provider).await.unwrap();
         assert_eq!(second.changed, 1);
         assert_eq!(second.invalidations, 1);
@@ -3042,7 +3466,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(insight.activity.as_deref(), Some("producing"));
-        assert_eq!(insight.rank, Some(1));
+        assert_eq!(insight.rank, Some(2));
         assert_eq!(insight.candidate_rank, Some(2));
 
         let third = refresh_all(&db, &provider).await.unwrap();
@@ -3120,80 +3544,70 @@ mod tests {
         let (validator, _) = create_validator(&db, "platon-mainnet", "0xrank", None, &owner_id)
             .await
             .unwrap();
+        fn detail(provider_timestamp: &str) -> ValidatorProviderResult {
+            ValidatorProviderResult::Success(Box::new(ValidatorObservation {
+                provider_timestamp: Some(provider_timestamp.to_owned()),
+                stake_amount: Some("1000".to_owned()),
+                ..ValidatorObservation::default()
+            }))
+        }
         let provider = FakeProvider {
             results: std::sync::Mutex::new(vec![
-                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
-                    provider_timestamp: Some("2025-01-01T00:00:00Z".to_owned()),
-                    rank: Some(1),
-                    ..Default::default()
-                })),
-                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
-                    provider_timestamp: Some("2025-01-01T00:01:00Z".to_owned()),
-                    rank: Some(2),
-                    ..Default::default()
-                })),
-                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
-                    provider_timestamp: Some("2025-01-01T00:01:00Z".to_owned()),
-                    rank: Some(2),
-                    ..Default::default()
-                })),
-                ValidatorProviderResult::Error("temporary failure".to_owned()),
-                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
-                    provider_timestamp: Some("2025-01-01T00:02:00Z".to_owned()),
-                    rank: Some(2),
-                    ..Default::default()
-                })),
-                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
-                    provider_timestamp: Some("2025-01-01T00:03:00Z".to_owned()),
-                    rank: Some(2),
-                    ..Default::default()
-                })),
-                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
-                    provider_timestamp: Some("2025-01-01T00:03:00Z".to_owned()),
-                    rank: Some(2),
-                    ..Default::default()
-                })),
+                detail("2025-01-01T00:00:00Z"),
+                detail("2025-01-01T00:01:00Z"),
+                detail("2025-01-01T00:02:00Z"),
+                ValidatorProviderResult::Error("temporary detail failure".to_owned()),
+                detail("2025-01-01T00:03:00Z"),
+                detail("2025-01-01T00:04:00Z"),
+                detail("2025-01-01T00:05:00Z"),
+            ]),
+            rankings: std::sync::Mutex::new(vec![
+                ranking_with(3, &[("0xrank", 1)]),
+                ranking_with(3, &[("0xrank", 2)]),
+                ranking_with(3, &[("0xrank", 2)]),
+                RankingProviderResult::Error("temporary ranking failure".to_owned()),
+                ranking_with(3, &[("0xrank", 3)]),
+                ranking_with(3, &[("0xrank", 3)]),
+                ranking_with(3, &[("0xrank", 3)]),
             ]),
             ..FakeProvider::default()
         };
 
+        async fn history_count(db: &ServerDatabase, validator_id: &str) -> i64 {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM validator_ranking_history WHERE validator_id = ?",
+            )
+            .bind(validator_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap()
+        }
+
+        // One success establishes the baseline and is never a change.
         refresh_all(&db, &provider).await.unwrap();
+        let baseline = load_insight(&db, &validator.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(baseline.rank, Some(1));
+        assert_eq!(baseline.rank_outcome.as_deref(), Some("success"));
+        assert_eq!(history_count(&db, &validator.validator_id).await, 0);
+
+        // A second distinct rank is a candidate, not yet a confirmed change.
         refresh_all(&db, &provider).await.unwrap();
         let candidate = load_insight(&db, &validator.validator_id)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(candidate.rank, Some(1));
+        assert_eq!(candidate.rank, Some(2));
         assert_eq!(candidate.candidate_rank, Some(2));
+        assert_eq!(history_count(&db, &validator.validator_id).await, 0);
         db.close().await;
         let db = initialize(ServerDatabaseConfig::new(_dir.path().join("server.db")))
             .await
             .unwrap();
-        refresh_all(&db, &provider).await.unwrap();
-        let replayed_candidate = load_insight(&db, &validator.validator_id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(replayed_candidate.rank, Some(1));
-        assert_eq!(replayed_candidate.candidate_rank, Some(2));
-        assert_eq!(
-            sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM validator_ranking_history WHERE validator_id = ?"
-            )
-            .bind(&validator.validator_id)
-            .fetch_one(db.pool())
-            .await
-            .unwrap(),
-            0
-        );
-        refresh_all(&db, &provider).await.unwrap();
-        let after_failure = load_insight(&db, &validator.validator_id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(after_failure.outcome, "error");
-        assert_eq!(after_failure.candidate_rank, None);
-        refresh_all(&db, &provider).await.unwrap();
+
+        // A consecutive successful list confirms the change across restart.
         refresh_all(&db, &provider).await.unwrap();
         let confirmed = load_insight(&db, &validator.validator_id)
             .await
@@ -3201,27 +3615,41 @@ mod tests {
             .unwrap();
         assert_eq!(confirmed.rank, Some(2));
         assert_eq!(confirmed.candidate_rank, None);
-        assert_eq!(
-            sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM validator_ranking_history WHERE validator_id = ?"
-            )
-            .bind(&validator.validator_id)
-            .fetch_one(db.pool())
-            .await
-            .unwrap(),
-            1
-        );
+        assert_eq!(history_count(&db, &validator.validator_id).await, 1);
+
+        // A failed list fetch retains the rank and discards the candidate.
         refresh_all(&db, &provider).await.unwrap();
-        assert_eq!(
-            sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM validator_ranking_history WHERE validator_id = ?"
-            )
-            .bind(&validator.validator_id)
-            .fetch_one(db.pool())
+        let after_failure = load_insight(&db, &validator.validator_id)
             .await
-            .unwrap(),
-            1
-        );
+            .unwrap()
+            .unwrap();
+        assert_eq!(after_failure.rank, Some(2));
+        assert_eq!(after_failure.rank_outcome.as_deref(), Some("error"));
+        assert_eq!(after_failure.candidate_rank, None);
+        assert_eq!(history_count(&db, &validator.validator_id).await, 1);
+
+        // After a failure the next success is a fresh candidate, never a
+        // confirmation stitched across the gap.
+        refresh_all(&db, &provider).await.unwrap();
+        let rearmed = load_insight(&db, &validator.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(rearmed.rank, Some(3));
+        assert_eq!(rearmed.candidate_rank, Some(3));
+        assert_eq!(history_count(&db, &validator.validator_id).await, 1);
+
+        refresh_all(&db, &provider).await.unwrap();
+        let confirmed_again = load_insight(&db, &validator.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(confirmed_again.rank, Some(3));
+        assert_eq!(history_count(&db, &validator.validator_id).await, 2);
+
+        // Replaying the same confirmed list is idempotent.
+        refresh_all(&db, &provider).await.unwrap();
+        assert_eq!(history_count(&db, &validator.validator_id).await, 2);
     }
 
     #[tokio::test]
@@ -3474,19 +3902,16 @@ mod tests {
             results: std::sync::Mutex::new(vec![
                 ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-31T15:30:00Z".to_owned()),
-                    rank: Some(1),
                     stake_amount: Some("10".to_owned()),
                     ..Default::default()
                 })),
                 ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-02-28T15:30:00Z".to_owned()),
-                    rank: Some(2),
                     stake_amount: Some("20".to_owned()),
                     ..Default::default()
                 })),
                 ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-02-28T15:30:00Z".to_owned()),
-                    rank: Some(2),
                     stake_amount: Some("20".to_owned()),
                     ..Default::default()
                 })),
@@ -3517,10 +3942,11 @@ mod tests {
         );
         assert_eq!(daily[0].local_date, "2025-03-01");
         assert_eq!(daily[0].month_key, "2025-03");
-        assert_eq!(daily[0].rank, Some(2));
+        // Ranking is persisted independently from the detail-derived snapshot.
+        assert_eq!(daily[0].rank, None);
         assert_eq!(daily[1].local_date, "2025-02-01");
         assert_eq!(daily[1].month_key, "2025-02");
-        assert_eq!(daily[1].rank, Some(1));
+        assert_eq!(daily[1].rank, None);
 
         let monthly = list_monthly_aggregates(&db, &validator.validator_id, 10)
             .await
@@ -3528,10 +3954,10 @@ mod tests {
         assert_eq!(monthly.len(), 2);
         assert_eq!(monthly[0].month_key, "2025-03");
         assert_eq!(monthly[0].snapshot_count, 1);
-        assert_eq!(monthly[0].rank_last, Some(2));
+        assert_eq!(monthly[0].rank_last, None);
         assert_eq!(monthly[1].month_key, "2025-02");
         assert_eq!(monthly[1].snapshot_count, 1);
-        assert_eq!(monthly[1].rank_last, Some(1));
+        assert_eq!(monthly[1].rank_last, None);
     }
 
     #[tokio::test]
@@ -3549,17 +3975,17 @@ mod tests {
             results: std::sync::Mutex::new(vec![
                 ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:30:00Z".to_owned()),
-                    rank: Some(7),
+                    stake_amount: Some("10".to_owned()),
                     ..Default::default()
                 })),
                 ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:30:00Z".to_owned()),
-                    rank: Some(7),
+                    stake_amount: Some("10".to_owned()),
                     ..Default::default()
                 })),
                 ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:30:00Z".to_owned()),
-                    rank: Some(7),
+                    stake_amount: Some("10".to_owned()),
                     ..Default::default()
                 })),
             ]),
@@ -3579,7 +4005,7 @@ mod tests {
         assert_eq!(daily.len(), 1);
         assert_eq!(daily[0].local_date, "2024-12-31");
         assert_eq!(daily[0].month_key, "2024-12");
-        assert_eq!(daily[0].rank, Some(7));
+        assert_eq!(daily[0].rank, None);
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
                 "SELECT COUNT(*) FROM validator_monthly_aggregates WHERE validator_id = ?"
@@ -3628,11 +4054,14 @@ mod tests {
             results: std::sync::Mutex::new(vec![
                 ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:00:00Z".to_owned()),
-                    rank: Some(3),
                     stake_amount: Some("300".to_owned()),
                     ..Default::default()
                 })),
                 ValidatorProviderResult::Error("provider timeout".to_owned()),
+            ]),
+            rankings: std::sync::Mutex::new(vec![
+                ranking_with(3, &[("0xstate", 3)]),
+                RankingProviderResult::Error("ranking timeout".to_owned()),
             ]),
             ..FakeProvider::default()
         };
@@ -4156,5 +4585,508 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(insight.delegation_reward_percentage, None);
+    }
+    fn ranking_node_id(index: usize) -> String {
+        format!("0x{index:0128x}")
+    }
+
+    #[tokio::test]
+    async fn platscan_ranking_adapter_uses_the_all_cohort_without_a_name_filter() {
+        let node_a = ranking_node_id(1);
+        let node_b = ranking_node_id(2);
+        let body = serde_json::to_vec(&platscan_ranking_response(
+            1,
+            RANKING_PAGE_SIZE,
+            2,
+            &[node_a.clone(), node_b.clone()],
+        ))
+        .unwrap();
+        let (base_url, state, handle) = start_mock_platscan(vec![(200, body)], 0).await;
+        let provider = PlatScanValidatorProvider::new(
+            deployments(&base_url, &["platon-mainnet"]),
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+        match provider.fetch_ranking("platon-mainnet").await {
+            RankingProviderResult::Success(ranking) => {
+                assert_eq!(ranking.cohort_size, 2);
+                assert_eq!(ranking.entries.get(&node_a), Some(&1));
+                assert_eq!(ranking.entries.get(&node_b), Some(&2));
+            }
+            other => panic!("expected a successful ranking, got {other:?}"),
+        }
+        handle.abort();
+        let requests = state.requests.lock().unwrap().clone();
+        assert_eq!(requests.len(), 1, "a single complete page is one request");
+        assert_eq!(requests[0].method, "POST");
+        assert_eq!(requests[0].path, "/browser-server/staking/aliveStakingList");
+        let request_body: Value = serde_json::from_str(&requests[0].body).unwrap();
+        assert_eq!(request_body["queryStatus"], "all");
+        assert_eq!(request_body["pageNo"], 1);
+        assert_eq!(request_body["pageSize"], RANKING_PAGE_SIZE);
+        assert!(
+            request_body.get("key").is_none(),
+            "the ALL cohort must never add a name filter"
+        );
+    }
+
+    #[tokio::test]
+    async fn platscan_ranking_adapter_pages_across_the_cohort_and_keeps_global_ranks() {
+        let first: Vec<String> = (1..=RANKING_PAGE_SIZE).map(ranking_node_id).collect();
+        let target = ranking_node_id(RANKING_PAGE_SIZE + 1);
+        let total = RANKING_PAGE_SIZE as i64 + 1;
+        let page_one = serde_json::to_vec(&platscan_ranking_response(
+            1,
+            RANKING_PAGE_SIZE,
+            total,
+            &first,
+        ))
+        .unwrap();
+        let page_two = serde_json::to_vec(&platscan_ranking_response(
+            2,
+            RANKING_PAGE_SIZE,
+            total,
+            std::slice::from_ref(&target),
+        ))
+        .unwrap();
+        let (base_url, state, handle) =
+            start_mock_platscan(vec![(200, page_one), (200, page_two)], 0).await;
+        let provider = PlatScanValidatorProvider::new(
+            deployments(&base_url, &["platon-mainnet"]),
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+        match provider.fetch_ranking("platon-mainnet").await {
+            RankingProviderResult::Success(ranking) => {
+                assert_eq!(ranking.cohort_size, total);
+                assert_eq!(ranking.entries.len(), RANKING_PAGE_SIZE + 1);
+                assert_eq!(ranking.entries.get(&target), Some(&total));
+            }
+            other => panic!("expected a successful ranking, got {other:?}"),
+        }
+        handle.abort();
+        let requests = state.requests.lock().unwrap().clone();
+        assert_eq!(requests.len(), 2);
+        let second_page: Value = serde_json::from_str(&requests[1].body).unwrap();
+        assert_eq!(second_page["pageNo"], 2);
+    }
+
+    async fn ranking_fetch(responses: Vec<(u16, Vec<u8>)>) -> RankingProviderResult {
+        let (base_url, _state, handle) = start_mock_platscan(responses, 0).await;
+        let provider = PlatScanValidatorProvider::new(
+            deployments(&base_url, &["platon-mainnet"]),
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+        let result = provider.fetch_ranking("platon-mainnet").await;
+        handle.abort();
+        result
+    }
+
+    #[tokio::test]
+    async fn platscan_ranking_adapter_rejects_incomplete_drifted_and_duplicate_pages() {
+        let first: Vec<String> = (1..=RANKING_PAGE_SIZE).map(ranking_node_id).collect();
+        let target = ranking_node_id(RANKING_PAGE_SIZE + 1);
+        let total = RANKING_PAGE_SIZE as i64 + 1;
+        // A short page that never reaches the declared total is incomplete.
+        let short_page = serde_json::to_vec(&platscan_ranking_response(
+            1,
+            RANKING_PAGE_SIZE,
+            total,
+            &[ranking_node_id(1)],
+        ))
+        .unwrap();
+        assert!(matches!(
+            ranking_fetch(vec![(200, short_page)]).await,
+            RankingProviderResult::Error(_)
+        ));
+        // A page whose declared total drifts from the first page is invalid.
+        let page_one = serde_json::to_vec(&platscan_ranking_response(
+            1,
+            RANKING_PAGE_SIZE,
+            total,
+            &first,
+        ))
+        .unwrap();
+        let drift_page = serde_json::to_vec(&platscan_ranking_response(
+            2,
+            RANKING_PAGE_SIZE,
+            total + 1,
+            std::slice::from_ref(&target),
+        ))
+        .unwrap();
+        assert!(matches!(
+            ranking_fetch(vec![(200, page_one.clone()), (200, drift_page)]).await,
+            RankingProviderResult::Error(_)
+        ));
+        // A Validator that appears on two pages cannot be counted twice.
+        let duplicate_page = serde_json::to_vec(&platscan_ranking_response(
+            2,
+            RANKING_PAGE_SIZE,
+            total,
+            &[first[RANKING_PAGE_SIZE - 1].clone()],
+        ))
+        .unwrap();
+        assert!(matches!(
+            ranking_fetch(vec![(200, page_one.clone()), (200, duplicate_page)]).await,
+            RankingProviderResult::Error(_)
+        ));
+        // A page-local rank sequence is a detectable inconsistency, not a rank.
+        let local_rank = serde_json::to_vec(&serde_json::json!({
+            "code": 0,
+            "errMsg": "success",
+            "totalCount": total,
+            "data": [{ "nodeId": target, "ranking": 1 }],
+        }))
+        .unwrap();
+        assert!(matches!(
+            ranking_fetch(vec![(200, page_one), (200, local_rank)]).await,
+            RankingProviderResult::Error(_)
+        ));
+        // A cohort beyond the bound is refused before it can grow the fetch.
+        let oversized = serde_json::to_vec(&serde_json::json!({
+            "code": 0,
+            "totalCount": MAX_RANKING_COHORT + 1,
+            "data": [],
+        }))
+        .unwrap();
+        assert!(matches!(
+            ranking_fetch(vec![(200, oversized)]).await,
+            RankingProviderResult::Error(_)
+        ));
+        // A transport failure and an unsupported endpoint are distinct.
+        assert!(matches!(
+            ranking_fetch(vec![(500, Vec::new())]).await,
+            RankingProviderResult::Error(_)
+        ));
+        assert!(matches!(
+            ranking_fetch(vec![(501, Vec::new())]).await,
+            RankingProviderResult::Unsupported(_)
+        ));
+        assert!(matches!(
+            ranking_fetch(vec![(404, Vec::new())]).await,
+            RankingProviderResult::Unsupported(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn platscan_ranking_routes_each_network_to_its_own_deployment() {
+        let node_a = ranking_node_id(1);
+        let node_b = ranking_node_id(2);
+        let body_a = serde_json::to_vec(&platscan_ranking_response(
+            1,
+            RANKING_PAGE_SIZE,
+            1,
+            std::slice::from_ref(&node_a),
+        ))
+        .unwrap();
+        let body_b = serde_json::to_vec(&platscan_ranking_response(
+            1,
+            RANKING_PAGE_SIZE,
+            1,
+            std::slice::from_ref(&node_b),
+        ))
+        .unwrap();
+        let (base_a, state_a, handle_a) = start_mock_platscan(vec![(200, body_a)], 0).await;
+        let (base_b, state_b, handle_b) = start_mock_platscan(vec![(200, body_b)], 0).await;
+        let mut network_deployments = BTreeMap::new();
+        network_deployments.insert("net-a".to_owned(), base_a);
+        network_deployments.insert("net-b".to_owned(), base_b);
+        let provider =
+            PlatScanValidatorProvider::new(network_deployments, std::time::Duration::from_secs(5))
+                .unwrap();
+        match provider.fetch_ranking("net-a").await {
+            RankingProviderResult::Success(ranking) => {
+                assert_eq!(ranking.entries.get(&node_a), Some(&1));
+                assert_eq!(ranking.entries.get(&node_b), None);
+            }
+            other => panic!("expected a successful ranking, got {other:?}"),
+        }
+        match provider.fetch_ranking("net-b").await {
+            RankingProviderResult::Success(ranking) => {
+                assert_eq!(ranking.entries.get(&node_b), Some(&1));
+                assert_eq!(ranking.entries.get(&node_a), None);
+            }
+            other => panic!("expected a successful ranking, got {other:?}"),
+        }
+        handle_a.abort();
+        handle_b.abort();
+        assert_eq!(state_a.requests.lock().unwrap().len(), 1);
+        assert_eq!(state_b.requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn ranking_is_fetched_once_per_network_not_per_validator() {
+        let (_dir, db) = test_db().await;
+        create_network(
+            &db,
+            "net-a",
+            "Network A",
+            "0x00000000000000000000000000000000000000000000000000000000000000a1",
+            11,
+            11,
+            "lat",
+        )
+        .await
+        .unwrap();
+        create_network(
+            &db,
+            "net-b",
+            "Network B",
+            "0x00000000000000000000000000000000000000000000000000000000000000b1",
+            12,
+            12,
+            "lat",
+        )
+        .await
+        .unwrap();
+        let owner_id: String =
+            sqlx::query_scalar("SELECT user_id FROM users WHERE username = 'owner'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        for node_id in ["0xa", "0xb"] {
+            create_validator(&db, "net-a", node_id, None, &owner_id)
+                .await
+                .unwrap();
+        }
+        create_validator(&db, "net-b", "0xc", None, &owner_id)
+            .await
+            .unwrap();
+        let detail = || {
+            ValidatorProviderResult::Success(Box::new(ValidatorObservation {
+                stake_amount: Some("1".to_owned()),
+                ..ValidatorObservation::default()
+            }))
+        };
+        let provider = FakeProvider {
+            results: std::sync::Mutex::new(vec![detail(), detail(), detail()]),
+            rankings: std::sync::Mutex::new(vec![
+                ranking_with(3, &[("0xa", 1), ("0xb", 1), ("0xc", 1)]),
+                ranking_with(3, &[("0xa", 1), ("0xb", 1), ("0xc", 1)]),
+            ]),
+            ..FakeProvider::default()
+        };
+        refresh_all(&db, &provider).await.unwrap();
+        let calls = provider.ranking_calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 2, "one ranking fetch per distinct Network");
+        assert!(calls.iter().any(|key| key == "net-a"));
+        assert!(calls.iter().any(|key| key == "net-b"));
+        assert_eq!(provider.calls.lock().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn only_a_complete_list_establishes_unranked_and_failures_retain_last_good() {
+        let (_dir, db) = test_db().await;
+        let owner_id: String =
+            sqlx::query_scalar("SELECT user_id FROM users WHERE username = 'owner'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        let (validator, _) = create_validator(&db, "platon-mainnet", "0xabsent", None, &owner_id)
+            .await
+            .unwrap();
+        let detail = || {
+            ValidatorProviderResult::Success(Box::new(ValidatorObservation {
+                stake_amount: Some("11".to_owned()),
+                ..ValidatorObservation::default()
+            }))
+        };
+        let provider = FakeProvider {
+            results: std::sync::Mutex::new(vec![detail(), detail(), detail()]),
+            rankings: std::sync::Mutex::new(vec![
+                ranking_with(2, &[("0xother", 1)]),
+                RankingProviderResult::Error("incomplete page".to_owned()),
+                ranking_with(2, &[("0xabsent", 1)]),
+            ]),
+            ..FakeProvider::default()
+        };
+        // A complete list that omits the Validator is an authoritative unranked.
+        refresh_all(&db, &provider).await.unwrap();
+        let insight = load_insight(&db, &validator.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(insight.rank_outcome.as_deref(), Some("success"));
+        assert_eq!(insight.rank, None);
+        // An incomplete or failed list must never be mistaken for unranked.
+        refresh_all(&db, &provider).await.unwrap();
+        let insight = load_insight(&db, &validator.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(insight.rank_outcome.as_deref(), Some("error"));
+        assert_eq!(insight.rank, None);
+        assert_eq!(insight.stake_amount.as_deref(), Some("11"));
+        // A later complete list that contains the Validator sets the rank.
+        refresh_all(&db, &provider).await.unwrap();
+        let insight = load_insight(&db, &validator.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(insight.rank_outcome.as_deref(), Some("success"));
+        assert_eq!(insight.rank, Some(1));
+        assert_eq!(insight.rank_cohort_size, Some(2));
+    }
+
+    #[tokio::test]
+    async fn ranking_failure_retains_a_last_good_rank_across_detail_failure() {
+        let (_dir, db) = test_db().await;
+        let owner_id: String =
+            sqlx::query_scalar("SELECT user_id FROM users WHERE username = 'owner'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        let (validator, _) = create_validator(&db, "platon-mainnet", "0xkeep", None, &owner_id)
+            .await
+            .unwrap();
+        let provider = FakeProvider {
+            results: std::sync::Mutex::new(vec![
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
+                    stake_amount: Some("7".to_owned()),
+                    ..ValidatorObservation::default()
+                })),
+                ValidatorProviderResult::Error("detail down".to_owned()),
+            ]),
+            rankings: std::sync::Mutex::new(vec![
+                ranking_with(5, &[("0xkeep", 4)]),
+                RankingProviderResult::Error("ranking down".to_owned()),
+            ]),
+            ..FakeProvider::default()
+        };
+        refresh_all(&db, &provider).await.unwrap();
+        // The detail failure retains the ranked value even though the ranking
+        // list also failed: the two sources stay independent.
+        refresh_all(&db, &provider).await.unwrap();
+        let insight = load_insight(&db, &validator.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(insight.outcome, "error");
+        assert_eq!(insight.rank_outcome.as_deref(), Some("error"));
+        assert_eq!(insight.rank, Some(4));
+        assert_eq!(insight.stake_amount.as_deref(), Some("7"));
+        // A detail success that omits a rank update keeps the ranking last-good.
+        let partial = FakeProvider {
+            results: std::sync::Mutex::new(vec![ValidatorProviderResult::Success(Box::new(
+                ValidatorObservation {
+                    stake_amount: Some("8".to_owned()),
+                    ..ValidatorObservation::default()
+                },
+            ))]),
+            ..FakeProvider::default()
+        };
+        refresh_all(&db, &partial).await.unwrap();
+        let insight = load_insight(&db, &validator.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(insight.outcome, "success");
+        assert_eq!(insight.stake_amount.as_deref(), Some("8"));
+        assert_eq!(insight.rank, Some(4));
+    }
+    #[tokio::test]
+    async fn rank_is_adopted_from_the_network_cohort_not_recomputed_over_monitored_nodes() {
+        let (_dir, db) = test_db().await;
+        let owner_id: String =
+            sqlx::query_scalar("SELECT user_id FROM users WHERE username = 'owner'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        let (validator, _) = create_validator(&db, "platon-mainnet", "0xtarget", None, &owner_id)
+            .await
+            .unwrap();
+        let provider = FakeProvider {
+            results: std::sync::Mutex::new(vec![ValidatorProviderResult::Success(Box::new(
+                ValidatorObservation {
+                    stake_amount: Some("1".to_owned()),
+                    ..ValidatorObservation::default()
+                },
+            ))]),
+            // The cohort contains unmonitored Validators, so the position of
+            // the one monitored Validator is the upstream ALL-cohort rank.
+            rankings: std::sync::Mutex::new(vec![ranking_with(
+                10,
+                &[
+                    ("0xother-1", 1),
+                    ("0xother-2", 2),
+                    ("0xother-3", 3),
+                    ("0xtarget", 4),
+                ],
+            )]),
+            ..FakeProvider::default()
+        };
+        refresh_all(&db, &provider).await.unwrap();
+        let insight = load_insight(&db, &validator.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(insight.rank_outcome.as_deref(), Some("success"));
+        assert_eq!(insight.rank, Some(4));
+        assert_eq!(insight.rank_cohort_size, Some(10));
+    }
+
+    #[tokio::test]
+    async fn migration_0047_clears_the_untrusted_legacy_detail_rank() {
+        use sqlx::migrate::Migrator;
+        use sqlx::sqlite::SqlitePoolOptions;
+        use std::borrow::Cow;
+
+        // Build the schema immediately before 0047, seed the old detail-alias
+        // rank, then let Server startup apply 0047.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("server.db");
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(&path)
+                    .create_if_missing(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .unwrap();
+        let pre_0047 = Migrator {
+            migrations: Cow::Owned(
+                crate::database::SERVER_MIGRATOR
+                    .iter()
+                    .filter(|migration| migration.version <= 46)
+                    .cloned()
+                    .collect(),
+            ),
+            ignore_missing: false,
+            locking: true,
+            no_tx: false,
+        };
+        pre_0047.run(&pool).await.unwrap();
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('platon-mainnet', 'Mainnet', '0x0', 1, 1, 'lat', '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES ('validator-legacy-rank', 'platon-mainnet', '0xabc', NULL, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, last_attempt_received_at, last_good_received_at, rank, block_count, updated_at) VALUES ('validator-legacy-rank', 'platscan', 'success', '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z', 5, 100, '2025-01-01T00:00:00Z')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        let db = initialize(ServerDatabaseConfig::new(&path)).await.unwrap();
+        let insight = load_insight(&db, "validator-legacy-rank")
+            .await
+            .unwrap()
+            .unwrap();
+        // The detail alias was never an authoritative ranking source, so the
+        // upgrade drops it rather than exposing an untrusted position.
+        assert_eq!(insight.rank, None);
+        assert_eq!(insight.rank_outcome, None);
+        assert_eq!(insight.block_count, Some(100));
     }
 }

@@ -686,7 +686,25 @@ pub struct PublicValidatorInsight {
     pub source: Option<String>,
     pub provider_timestamp: Option<String>,
     pub received_at: Option<String>,
+    /// PlatScan's position within this Network's complete live-staking ALL
+    /// cohort (including candidates), adopted verbatim and independent of the
+    /// monitored Node set or Home filters. `None` is never zero and never
+    /// means unranked by itself: see `rank_state` (#158).
     pub rank: Option<i64>,
+    /// `ranked`, `unranked`, `error`, `not_configured`, `unsupported`, or
+    /// `unknown`. Only a complete successful list fetch can establish
+    /// `unranked`; a failed, truncated, duplicated, or drifted fetch keeps the
+    /// last-good rank and never fabricates an unranked outcome (#158).
+    pub rank_state: String,
+    /// `fresh`, `stale`, or `unknown` currency of the ranking result, tracked
+    /// independently from the detail `freshness` (#158).
+    pub rank_freshness: String,
+    /// Server receipt time of the last successful ranking list fetch. It is
+    /// distinct from `received_at`, which is the detail fetch time (#158).
+    pub rank_received_at: Option<String>,
+    /// Complete live-staking cohort size from the same successful ranking
+    /// fetch; `None` when no complete list has been obtained (#158).
+    pub rank_cohort_size: Option<i64>,
     pub stake_amount: Option<String>,
     /// Gross cumulative Validator rewards over chain history, including the
     /// operator and delegator allocations (PlatScan `rewardValue`). It
@@ -759,6 +777,9 @@ struct PublicValidatorRow {
     activity: Option<String>,
     last_good_received_at: Option<String>,
     rank: Option<i64>,
+    rank_outcome: Option<String>,
+    rank_last_good_received_at: Option<String>,
+    rank_cohort_size: Option<i64>,
     stake_amount: Option<String>,
     reward_amount: Option<String>,
     reward_rate: Option<String>,
@@ -806,13 +827,38 @@ fn public_validator_activity(
     }
 }
 
+/// Map the linked Validator's independent Network ranking state. Only a
+/// complete successful list establishes `ranked` or `unranked`; a failed or
+/// incomplete fetch retains a last-good rank and reports stale freshness,
+/// while a failure without one is `unknown` and never `unranked` (#158).
+fn public_validator_rank(
+    rank_outcome: Option<&str>,
+    rank: Option<i64>,
+    last_good_received_at: Option<&str>,
+    now: time::OffsetDateTime,
+    stale_after_seconds: i64,
+) -> (String, String) {
+    // A failed fetch with a retained value is stale; without one it is unknown.
+    let retained_freshness = if rank.is_some() { "stale" } else { "unknown" };
+    match rank_outcome {
+        Some("success") => (
+            if rank.is_some() { "ranked" } else { "unranked" }.to_owned(),
+            validator::freshness(last_good_received_at, now, stale_after_seconds).to_owned(),
+        ),
+        Some("error") => ("error".to_owned(), retained_freshness.to_owned()),
+        Some("not_configured") => ("not_configured".to_owned(), retained_freshness.to_owned()),
+        Some("unsupported") => ("unsupported".to_owned(), retained_freshness.to_owned()),
+        _ => ("unknown".to_owned(), "unknown".to_owned()),
+    }
+}
+
 async fn public_validator_insights(
     state: &AppState,
     network_key: &str,
 ) -> Result<Vec<PublicValidatorInsight>, sqlx::Error> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     let rows = sqlx::query_as::<_, PublicValidatorRow>(
-        "SELECT v.validator_id, v.validator_node_id, v.display_name, (SELECT n2.node_id FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1) AS node_id, (SELECT l2.role FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1) AS link_role, i.source, i.outcome, i.provider_timestamp, i.activity, i.last_good_received_at, i.rank, i.stake_amount, i.reward_amount, i.reward_rate, i.delegation_reward_percentage, i.delegator_count, i.epoch, i.block_count, i.expected_block_count, i.gen_blocks_rate, i.counter_state FROM validators v LEFT JOIN current_validator_insights i ON i.validator_id = v.validator_id WHERE v.network_key = ? AND EXISTS (SELECT 1 FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = v.validator_id AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.lifecycle = 'active') ORDER BY v.validator_node_id, v.validator_id",
+        "SELECT v.validator_id, v.validator_node_id, v.display_name, (SELECT n2.node_id FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1) AS node_id, (SELECT l2.role FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1) AS link_role, i.source, i.outcome, i.provider_timestamp, i.activity, i.last_good_received_at, i.rank, i.rank_outcome, i.rank_last_good_received_at, i.rank_cohort_size, i.stake_amount, i.reward_amount, i.reward_rate, i.delegation_reward_percentage, i.delegator_count, i.epoch, i.block_count, i.expected_block_count, i.gen_blocks_rate, i.counter_state FROM validators v LEFT JOIN current_validator_insights i ON i.validator_id = v.validator_id WHERE v.network_key = ? AND EXISTS (SELECT 1 FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = v.validator_id AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.lifecycle = 'active') ORDER BY v.validator_node_id, v.validator_id",
     )
     .bind(&now)
     .bind(&now)
@@ -832,6 +878,7 @@ async fn public_validator_insights(
                 state.validator_freshness_seconds(),
             );
             let outcome = row.outcome.unwrap_or_else(|| "not_configured".to_owned());
+            let stale_after_seconds = state.validator_freshness_seconds();
             let state = if outcome == "success" {
                 freshness
             } else {
@@ -839,6 +886,13 @@ async fn public_validator_insights(
             };
             let (activity, activity_state) =
                 public_validator_activity(&outcome, row.activity.as_deref(), freshness);
+            let (rank_state, rank_freshness) = public_validator_rank(
+                row.rank_outcome.as_deref(),
+                row.rank,
+                row.rank_last_good_received_at.as_deref(),
+                crate::auth::now_utc(),
+                stale_after_seconds,
+            );
             let (block_rate, block_rate_state) =
                 validator::cumulative_block_rate(row.block_count, row.expected_block_count);
             PublicValidatorInsight {
@@ -853,6 +907,10 @@ async fn public_validator_insights(
                 provider_timestamp: row.provider_timestamp,
                 received_at: row.last_good_received_at,
                 rank: row.rank,
+                rank_state,
+                rank_freshness,
+                rank_received_at: row.rank_last_good_received_at,
+                rank_cohort_size: row.rank_cohort_size,
                 stake_amount: row.stake_amount,
                 reward_amount: row.reward_amount,
                 reward_rate: row.reward_rate,
@@ -4209,6 +4267,99 @@ mod tests {
         assert!(validator["receivedAt"].as_str().is_some());
     }
 
+    #[tokio::test]
+    async fn public_validator_rank_is_distinguishable_and_independent_of_detail() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        let stale =
+            crate::auth::format_rfc3339(crate::auth::now_utc() - time::Duration::minutes(10));
+        seed_validator_activity(
+            &state,
+            "node-public",
+            "validator-rank",
+            "success",
+            Some("producing"),
+            Some(&now),
+            "2026-01-01T00:00:00Z",
+            None,
+        )
+        .await;
+
+        async fn first_validator(state: &AppState) -> serde_json::Value {
+            let response = public_networks(State(state.clone())).await;
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap()[0]["validators"][0].clone()
+        }
+
+        // A complete list that contains the Validator is ranked, with its own
+        // fetch time and cohort size separate from the detail freshness.
+        sqlx::query("UPDATE current_validator_insights SET rank = 4, rank_outcome = 'success', rank_last_good_received_at = ?, rank_cohort_size = 300 WHERE validator_id = 'validator-rank'")
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let validator = first_validator(&state).await;
+        assert_eq!(validator["rank"], 4);
+        assert_eq!(validator["rankState"], "ranked");
+        assert_eq!(validator["rankFreshness"], "fresh");
+        assert_eq!(validator["rankCohortSize"], 300);
+        assert!(validator["rankReceivedAt"].as_str().is_some());
+
+        // A complete list that omits the Validator is authoritative unranked,
+        // never zero and never an outage.
+        sqlx::query("UPDATE current_validator_insights SET rank = NULL WHERE validator_id = 'validator-rank'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let validator = first_validator(&state).await;
+        assert!(validator["rank"].is_null());
+        assert_eq!(validator["rankState"], "unranked");
+
+        // A failed list retains the last-good rank and marks it stale; it is
+        // never reported as unranked.
+        sqlx::query("UPDATE current_validator_insights SET rank = 4, rank_outcome = 'error', rank_diagnostic = 'ranking down', rank_last_good_received_at = ? WHERE validator_id = 'validator-rank'")
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let validator = first_validator(&state).await;
+        assert_eq!(validator["rank"], 4);
+        assert_eq!(validator["rankState"], "error");
+        assert_eq!(validator["rankFreshness"], "stale");
+
+        // A failure without any last-good rank is unknown, not unranked.
+        sqlx::query("UPDATE current_validator_insights SET rank = NULL, rank_outcome = 'error', rank_last_good_received_at = NULL WHERE validator_id = 'validator-rank'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let validator = first_validator(&state).await;
+        assert!(validator["rank"].is_null());
+        assert_eq!(validator["rankState"], "error");
+        assert_eq!(validator["rankFreshness"], "unknown");
+
+        // A pre-ranking row stays Unknown rather than a fabricated unranked.
+        sqlx::query("UPDATE current_validator_insights SET rank = NULL, rank_outcome = NULL, rank_last_good_received_at = NULL, rank_cohort_size = NULL WHERE validator_id = 'validator-rank'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let validator = first_validator(&state).await;
+        assert_eq!(validator["rankState"], "unknown");
+        assert_eq!(validator["rankFreshness"], "unknown");
+
+        // Ranking freshness is independent from detail freshness: the detail
+        // observation stays fresh while an old ranking fetch is stale.
+        sqlx::query("UPDATE current_validator_insights SET rank = 7, rank_outcome = 'success', rank_last_good_received_at = ?, rank_cohort_size = 120 WHERE validator_id = 'validator-rank'")
+            .bind(&stale)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let validator = first_validator(&state).await;
+        assert_eq!(validator["state"], "fresh");
+        assert_eq!(validator["rankState"], "ranked");
+        assert_eq!(validator["rankFreshness"], "stale");
+        assert_eq!(validator["rank"], 7);
+    }
     #[tokio::test]
     async fn public_validator_reward_amount_is_exact_gross_and_retained_after_failure() {
         let (_dir, state) = test_state().await;

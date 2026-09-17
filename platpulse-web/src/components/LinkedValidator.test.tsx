@@ -37,6 +37,11 @@ const insight: PublicValidatorInsight = {
   blockRateState: 'ok',
   genBlocksRate: '75.5',
   rewardAmount: '1234.123456789012',
+  rank: 7,
+  rankState: 'ranked',
+  rankFreshness: 'fresh',
+  rankReceivedAt: '2026-08-25T00:00:05Z',
+  rankCohortSize: 300,
   counterState: 'normal',
   activity: 'producing',
   activityState: 'current',
@@ -202,6 +207,54 @@ describe('LinkedValidatorSection', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, state: 'error', freshness: 'stale', delegationRewardPercentage: '20' } }} />)
     expect(screen.getByText('Delegation reward share').nextElementSibling?.textContent).toBe('20.00%')
     expect(screen.getByText(/Showing the last successful value/)).toBeTruthy()
+  })
+
+  it('shows the Network rank and keeps unranked distinct from failure or unknown', () => {
+    render(<LinkedValidatorSection node={{ ...node, validator: insight }} />)
+    expect(screen.getByText('Network rank')).toBeTruthy()
+    expect(screen.getByText('Network rank').nextElementSibling?.textContent).toBe('#7')
+    expect(screen.getAllByText(/complete live-staking ALL cohort/).length).toBeGreaterThan(0)
+
+    cleanup()
+    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, rank: null, rankState: 'unranked' } }} />)
+    expect(screen.getByText('Network rank').nextElementSibling?.textContent).toBe('Unranked')
+    expect(screen.getAllByText(/complete live-staking ALL cohort/).length).toBeGreaterThan(0)
+
+    cleanup()
+    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, rank: null, rankState: 'error' } }} />)
+    expect(screen.getByText('Network rank').nextElementSibling?.textContent).toBe('Unknown')
+    expect(screen.queryByText('Unranked')).toBeNull()
+  })
+
+  it('retains a last-good rank when the list cannot be refreshed and marks the stale ranking', () => {
+    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, state: 'error', freshness: 'stale', rankState: 'error', rankFreshness: 'stale' } }} />)
+    expect(screen.getByText('Network rank').nextElementSibling?.textContent).toBe('#7')
+    expect(screen.getByText(/last successful rank is retained/)).toBeTruthy()
+
+    cleanup()
+    // Detail stays Current while the ranking list itself aged out.
+    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, state: 'fresh', freshness: 'fresh', rankFreshness: 'stale' } }} />)
+    expect(screen.getByText('Current')).toBeTruthy()
+    expect(screen.getByText(/ranking list has not refreshed recently/)).toBeTruthy()
+  })
+
+  it('never presents a failed or absent ranking as unranked or zero', () => {
+    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, rank: null, rankState: 'unknown', rankFreshness: 'unknown' } }} />)
+    expect(screen.getByText('Network rank').nextElementSibling?.textContent).toBe('Unknown')
+    expect(screen.queryByText('Unranked')).toBeNull()
+    expect(screen.queryByText('0')).toBeNull()
+  })
+
+  it('shows the independent ranking success time and cohort in Node detail', () => {
+    render(
+      <LinkedValidatorSection
+        node={{ ...node, validator: { ...insight, rankReceivedAt: '2026-08-20T01:02:03Z', rankCohortSize: 123 } }}
+        variant="detail"
+      />,
+    )
+    expect(screen.getByText('Rank last success')).toBeTruthy()
+    expect(screen.getByText('Rank cohort')).toBeTruthy()
+    expect(screen.getByText('123')).toBeTruthy()
   })
 
   it('maps roles and states to fixed, sanitized public labels', () => {

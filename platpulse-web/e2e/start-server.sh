@@ -690,6 +690,22 @@ with sqlite3.connect(path) as db:
         "INSERT OR IGNORE INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, 'explorer', 'error', 'platscan_http_502', ?, 'locked', ?, ?, ?, 2, '1100', '11', '0.05', 5, 43, 85, 'normal', 'normal', NULL, NULL, 0, NULL, NULL, NULL, 'obs-n', ?)",
         (validator_n_id, fresh, fresh, fresh, fresh, fresh),
     )
+    # Ranking is stored independently from the detail observation (#158). The
+    # account (0030) and Node H carry a fresh ranked result; Node M shows an
+    # authoritative unranked list result; Node N retains a last-good rank after
+    # the ranking list failed. Together they cover the three card states.
+    db.execute(
+        "UPDATE current_validator_insights SET rank_outcome = 'success', rank_last_good_received_at = ?, rank_cohort_size = 300 WHERE validator_id IN (?, ?)",
+        (fresh, validator_id, validator_h_id),
+    )
+    db.execute(
+        "UPDATE current_validator_insights SET rank = NULL, rank_outcome = 'success', rank_last_good_received_at = ?, rank_cohort_size = 300 WHERE validator_id = ?",
+        (fresh, validator_m_id),
+    )
+    db.execute(
+        "UPDATE current_validator_insights SET rank_outcome = 'error', rank_last_good_received_at = ?, rank_cohort_size = 300 WHERE validator_id = ?",
+        (fresh, validator_n_id),
+    )
 PY
 
 # Keep Node A's seeded observations fresh for the whole suite: the

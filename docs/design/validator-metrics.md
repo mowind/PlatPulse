@@ -1,6 +1,6 @@
 # Validator metrics on Home and Node detail
 
-Status: interview decisions confirmed through Q21 and test seams approved. The synthesized implementation specification is published as [GitHub issue #153](https://github.com/mowind/PlatPulse/issues/153), labeled ready-for-agent. The first approved slice — explicit per-Network PlatScan deployment binding and the cumulative Validator block count on both Node views — is implemented by #154. The second slice — gross cumulative Validator rewards, including the delegator allocation, on both Node views with exact-decimal formatting — is implemented by #155. The third slice — the cumulative block production completion rate and PlatScan's own 24-hour production rate on both Node views — is implemented by #156. The fourth slice — the currently effective delegation reward distribution percentage on both Node views — is implemented by #157. The remaining metrics are tracked by #158–#159.
+Status: interview decisions confirmed through Q21 and test seams approved. The synthesized implementation specification is published as [GitHub issue #153](https://github.com/mowind/PlatPulse/issues/153), labeled ready-for-agent. The first approved slice — explicit per-Network PlatScan deployment binding and the cumulative Validator block count on both Node views — is implemented by #154. The second slice — gross cumulative Validator rewards, including the delegator allocation, on both Node views with exact-decimal formatting — is implemented by #155. The third slice — the cumulative block production completion rate and PlatScan's own 24-hour production rate on both Node views — is implemented by #156. The fourth slice — the currently effective delegation reward distribution percentage on both Node views — is implemented by #157. The fifth slice — the Network-scoped PlatScan ranking from the shared `aliveStakingList` cohort on both Node views — is implemented by #158. The Home aggregation slice is tracked by #159.
 
 ## Confirmed metric definitions
 
@@ -38,7 +38,7 @@ The six metrics belong to the currently linked Validator, not the monitored Node
 ## Confirmed delivery and Provider scope
 
 - All six metrics must be implemented end to end; permanent unsupported placeholders do not satisfy completion. Legitimate unlinked, missing, failed, or not-applicable outcomes remain explicit.
-- The user approves dedicated Server-side aliveStakingList collection shared per Network for rank, not an implicit detail-failure fallback. Its failure must not erase independent detail metrics. This supersedes the old detail-only boundary in validator-provider.md; that contract will be reconciled when the final design is confirmed.
+- Dedicated Server-side aliveStakingList collection is shared per Network for rank, not an implicit detail-failure fallback. Its failure must not erase independent detail metrics. This supersedes the old detail-only boundary, which validator-provider.md now reflects (#158).
 - Default refresh remains approximately 60 seconds. Freshness follows the configured refresh interval (default two intervals); display successful fetch time and source cutoff when available. Failures retain last-good data and do not affect Node health.
 - Source-limited monetary precision is accepted, not financial settlement accuracy.
 - Existing rewardRate sourced from deleAnnualizedRate remains distinct from rewardPer delegation distribution.
@@ -64,7 +64,7 @@ The six metrics belong to the currently linked Validator, not the monitored Node
 - Validate separate Network sources and unconfigured Network behavior; no cross-Network amount or block aggregation.
 - Generate the API client from updated OpenAPI and run relevant Rust/Web tests and fixed responsive projects (360/390/768/1280 widths). Document checks actually run and any environmental blockers.
 - No permanent unsupported placeholders for the six requested capabilities on supported, correctly configured deployments. Transient failures and genuine missing/not-applicable states remain visible rather than being replaced by zero.
-- Before feature implementation, obtain final user confirmation of this consolidated scope and reconcile the older validator-provider.md contract, including its no-list-call boundary.
+- The consolidated scope was confirmed and the older validator-provider.md no-list-call boundary is reconciled: ranking is a dedicated shared-per-Network list, independently stored and displayed (#158).
 
 
 ## Upstream source verification

@@ -1792,7 +1792,35 @@ export type PublicValidatorInsight = {
     linkRole?: string | null;
     nodeId?: string | null;
     providerTimestamp?: string | null;
+    /**
+     * PlatScan's position within this Network's complete live-staking ALL
+     * cohort (including candidates), adopted verbatim and independent of the
+     * monitored Node set or Home filters. `None` is never zero and never
+     * means unranked by itself: see `rank_state` (#158).
+     */
     rank?: number | null;
+    /**
+     * Complete live-staking cohort size from the same successful ranking
+     * fetch; `None` when no complete list has been obtained (#158).
+     */
+    rankCohortSize?: number | null;
+    /**
+     * `fresh`, `stale`, or `unknown` currency of the ranking result, tracked
+     * independently from the detail `freshness` (#158).
+     */
+    rankFreshness: string;
+    /**
+     * Server receipt time of the last successful ranking list fetch. It is
+     * distinct from `received_at`, which is the detail fetch time (#158).
+     */
+    rankReceivedAt?: string | null;
+    /**
+     * `ranked`, `unranked`, `error`, `not_configured`, `unsupported`, or
+     * `unknown`. Only a complete successful list fetch can establish
+     * `unranked`; a failed, truncated, duplicated, or drifted fetch keeps the
+     * last-good rank and never fabricates an unranked outcome (#158).
+     */
+    rankState: string;
     receivedAt?: string | null;
     /**
      * Gross cumulative Validator rewards over chain history, including the

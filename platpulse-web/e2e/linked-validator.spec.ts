@@ -2,14 +2,16 @@ import { expect, test } from '@playwright/test'
 import { expectNoHorizontalOverflow, loginAs } from './helpers'
 
 /**
- * Issues #154, #155, and #156: the linked-Validator cumulative block count,
- * gross cumulative rewards, Server-computed production rate, and PlatScan's
- * own 24-hour rate are visible on both Node views — the Home Node card and
- * Node detail — with identity, link role, and freshness, and they never
+ * Issues #154, #155, #156, #157, and #158: the linked-Validator cumulative
+ * block count, gross cumulative rewards, Network-scoped PlatScan rank,
+ * Server-computed production rate, PlatScan's own 24-hour rate, and effective
+ * delegation reward share are visible on both Node views — the Home Node card
+ * and Node detail — with identity, link role, and freshness, and they never
  * overflow the fixed viewports. The rewards value is the source's gross
  * cumulative reward, not the operator's net earnings; the two rates are
  * distinguishable by source, and the cumulative rate is displayed to two
- * decimals on cards and at full Server precision in detail.
+ * decimals on cards and at full Server precision in detail. Rank is adopted
+ * from the Network cohort and never recomputed from the Home filters.
  */
 
 const PUBLIC_NODE_NAME = 'Node A'
@@ -25,8 +27,10 @@ const LINKED_GEN_BLOCKS_RATE_DETAIL = '75.5%'
 // preserves the source digits.
 const LINKED_DELEGATION_SHARE_CARD = '20.00%'
 const LINKED_DELEGATION_SHARE_DETAIL = '20%'
+// The seeded ranking result is a complete Network cohort position.
+const LINKED_RANK = '#2'
 
-test.describe('Linked Validator metrics (#154, #155, #156, #157)', () => {
+test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
   test('shows cumulative blocks, rewards, and both rates on the Home card and Node detail', async ({ page }) => {
     await loginAs(page)
 
@@ -43,6 +47,10 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157)', () => {
       card.getByText('Cumulative rewards', { exact: true }).locator('..').locator('[data-slot="metric-row-value"]'),
     ).toHaveText(LINKED_REWARD)
     await expect(card.getByText('Primary')).toBeVisible()
+    await expect(
+      card.getByText('Network rank', { exact: true }).locator('..').locator('[data-slot="metric-row-value"]'),
+    ).toHaveText(LINKED_RANK)
+    await expect(card.getByText(/complete live-staking ALL cohort/).first()).toBeVisible()
     // The two rates stay distinguishable by label and source, and the
     // cumulative rate is abbreviated to two decimals on the card.
     await expect(
@@ -71,6 +79,9 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157)', () => {
     await expect(detail.getByText(/not operator net earnings/)).toBeVisible()
     await expect(detail.getByText('Primary')).toBeVisible()
     await expect(detail.getByText('Last success', { exact: true })).toBeVisible()
+    await expect(
+      detail.getByText('Network rank', { exact: true }).locator('..').locator('[data-slot="metric-row-value"]'),
+    ).toHaveText(LINKED_RANK)
     // Detail preserves the full Server-computed and source precision.
     await expect(
       detail.getByText('Production rate', { exact: true }).locator('..').locator('[data-slot="metric-row-value"]'),
@@ -81,6 +92,29 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157)', () => {
     await expect(
       detail.getByText('Delegation reward share', { exact: true }).locator('..').locator('[data-slot="metric-row-value"]'),
     ).toHaveText(LINKED_DELEGATION_SHARE_DETAIL)
+
+    await expectNoHorizontalOverflow(page)
+  })
+
+  test('distinguishes an unranked Validator from a retained last-good rank', async ({ page }) => {
+    await loginAs(page)
+
+    // Node M: a complete live-staking cohort list that omits the Validator is
+    // authoritative Unranked, never zero and never a collection failure.
+    const mCard = page.getByRole('link', { name: /Node M/ }).first()
+    await expect(mCard).toBeVisible()
+    await expect(
+      mCard.getByText('Network rank', { exact: true }).locator('..').locator('[data-slot="metric-row-value"]'),
+    ).toHaveText('Unranked')
+
+    // Node N: the ranking list failed, so the last-good rank is retained and
+    // explicitly marked as retained rather than shown as Unranked or zero.
+    const nCard = page.getByRole('link', { name: /Node N/ }).first()
+    await expect(nCard).toBeVisible()
+    await expect(
+      nCard.getByText('Network rank', { exact: true }).locator('..').locator('[data-slot="metric-row-value"]'),
+    ).toHaveText('#2')
+    await expect(nCard.getByText(/last successful rank is retained/)).toBeVisible()
 
     await expectNoHorizontalOverflow(page)
   })

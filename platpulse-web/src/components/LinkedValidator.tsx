@@ -88,6 +88,37 @@ function delegationRewardShareLabel(validator: PublicValidatorInsight, variant: 
   return formatRate(validator.delegationRewardPercentage, variant)
 }
 
+/**
+ * PlatScan's rank within the Network's complete live-staking ALL cohort. Only
+ * a complete successful list can show Unranked; a failed or incomplete list
+ * keeps the last-good rank (marked stale) or Unknown. Rank is never rendered
+ * as zero, and Home filters never redefine it (#158).
+ */
+export function rankLabel(validator: PublicValidatorInsight): string {
+  if (validator.rankState === 'unranked') return 'Unranked'
+  if (validator.rank == null) return 'Unknown'
+  return `#${validator.rank}`
+}
+
+/** Sanitized explanation for the independent ranking state (#158). */
+function rankNote(validator: PublicValidatorInsight): string | null {
+  switch (validator.rankState) {
+    case 'ranked': return validator.rankFreshness === 'stale'
+      ? 'The Network ranking list has not refreshed recently; the last successful rank is shown.'
+      : null
+    case 'unranked': return validator.rankFreshness === 'stale'
+      ? 'The Network ranking list has not refreshed recently; the last complete list did not include this Validator.'
+      : "Not in this Network's complete live-staking ALL cohort."
+    case 'error': return validator.rank == null
+      ? 'The Network ranking list could not be read; no last-good rank is available.'
+      : 'The Network ranking list could not be refreshed; the last successful rank is retained.'
+    case 'not_configured': return 'No Validator source is configured for this Network; no ranking was queried.'
+    case 'unsupported': return 'The Validator source does not support Network ranking.'
+    case 'unknown': return 'No Network ranking has been observed yet.'
+    default: return null
+  }
+}
+
 function stateNote(validator: PublicValidatorInsight): string | null {
   switch (validator.state) {
     case 'not_configured': return 'No Validator source is configured for this Network; no value was queried.'
@@ -102,12 +133,12 @@ function stateNote(validator: PublicValidatorInsight): string | null {
 /**
  * The extensible linked-Validator area shared by the Home Node card and Node
  * detail. It owns the cumulative Validator block count, gross cumulative
- * rewards, the Server-computed cumulative production rate, PlatScan's own
- * 24-hour rate, and the currently effective delegation reward distribution
- * percentage, plus the explicit unlinked / not-configured / never-observed /
- * stale / not-applicable / retained states; later Validator metrics extend the
- * same metric group rather than adding a second region (#154, #155, #156,
- * #157).
+ * rewards, the Network-scoped PlatScan rank, the Server-computed cumulative
+ * production rate, PlatScan's own 24-hour rate, and the currently effective
+ * delegation reward distribution percentage, plus the explicit unlinked /
+ * not-configured / never-observed / stale / unranked / not-applicable /
+ * retained states; later Validator metrics extend the same metric group rather
+ * than adding a second region (#154, #155, #156, #157, #158).
  */
 export function LinkedValidatorSection({ node, variant = 'card' }: { node: PublicNode; variant?: 'card' | 'detail' }) {
   const validator = node.validator
@@ -120,7 +151,8 @@ export function LinkedValidatorSection({ node, variant = 'card' }: { node: Publi
 
   const state = validatorStateLabel(validator.state, validator.freshness)
   const note = stateNote(validator)
-  const retained = validator.state !== 'fresh' && validator.state !== 'stale' && (validator.blockCount != null || validator.rewardAmount != null || validator.blockRate != null || validator.genBlocksRate != null || validator.delegationRewardPercentage != null)
+  const rankState = rankNote(validator)
+  const retained = validator.state !== 'fresh' && validator.state !== 'stale' && (validator.blockCount != null || validator.rewardAmount != null || validator.rank != null || validator.blockRate != null || validator.genBlocksRate != null || validator.delegationRewardPercentage != null)
   // Detail exposes every digit the source provided; cards may abbreviate, but
   // both come from the same exact-decimal string and never through a float.
   const cumulativeRewards = variant === 'detail'
@@ -141,10 +173,13 @@ export function LinkedValidatorSection({ node, variant = 'card' }: { node: Publi
     <div className="mt-2 grid grid-cols-[repeat(auto-fit,minmax(9rem,1fr))] gap-x-4" role="group" aria-label="Linked Validator metrics">
       <MetricRow label="Cumulative blocks" value={blockCountLabel(validator.blockCount)} />
       <MetricRow label="Cumulative rewards" value={cumulativeRewards} />
+      <MetricRow label="Network rank" value={rankLabel(validator)} />
       <MetricRow label="Production rate" value={blockRateLabel(validator, variant)} />
       <MetricRow label="PlatScan 24h rate" value={genBlocksRateLabel(validator, variant)} />
       <MetricRow label="Delegation reward share" value={delegationRewardShareLabel(validator, variant)} />
     </div>
+    {rankState && <p className="m-0 mt-1 text-[11px] text-muted-foreground" role="status">{rankState}</p>}
+    <p className="m-0 mt-1 text-[11px] text-muted-foreground">Rank is PlatScan's position within this Network's complete live-staking ALL cohort, including candidates; it is adopted from the source and is never recomputed from the monitored Nodes or Home filters.</p>
     <p className="m-0 mt-1 text-[11px] text-muted-foreground">Production rate is cumulative actual ÷ cumulative scheduled blocks from the same observation; whole-round duties count before they elapse, so it is not an exact missed-block rate.</p>
     {validator.blockRateState === 'not_applicable' && <p className="m-0 mt-0.5 text-[11px] text-muted-foreground" role="status">The source reported a zero scheduled-block denominator, so a rate is not applicable — not 0%.</p>}
     <p className="m-0 mt-0.5 text-[11px] text-muted-foreground">PlatScan 24h rate uses PlatScan口径: the preceding seven settlement periods excluding the current one, so it is not a strict rolling 24 hours, and a source 0% can also mean insufficient evidence or an upstream error.</p>
@@ -178,6 +213,9 @@ function Provenance({ validator }: { validator: PublicValidatorInsight }) {
   </div>
   return <dl className="m-0 grid grid-cols-[repeat(auto-fit,minmax(9rem,1fr))] gap-x-4 gap-y-2 border-t border-dashed border-border/60 pt-2">
     {fact('Last success', validator.receivedAt ? formatUtcDateTime(validator.receivedAt) : 'Never observed')}
+    // The ranking list is fetched independently, so it has its own success time.
+    {fact('Rank last success', validator.rankReceivedAt ? formatUtcDateTime(validator.rankReceivedAt) : 'Never observed')}
+    {fact('Rank cohort', validator.rankCohortSize != null ? `${validator.rankCohortSize}` : 'Unknown')}
     {fact('Source', validator.source ?? 'Unknown')}
     {fact('Source cutoff', validator.providerTimestamp ? formatUtcDateTime(validator.providerTimestamp) : 'Not provided by the source')}
   </dl>

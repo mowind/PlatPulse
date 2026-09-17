@@ -12145,6 +12145,8 @@
           "validatorNodeId",
           "state",
           "freshness",
+          "rankState",
+          "rankFreshness",
           "blockRateState",
           "counterState",
           "activity",
@@ -12249,7 +12251,31 @@
               "integer",
               "null"
             ],
-            "format": "int64"
+            "format": "int64",
+            "description": "PlatScan's position within this Network's complete live-staking ALL\ncohort (including candidates), adopted verbatim and independent of the\nmonitored Node set or Home filters. `None` is never zero and never\nmeans unranked by itself: see `rank_state` (#158)."
+          },
+          "rankCohortSize": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Complete live-staking cohort size from the same successful ranking\nfetch; `None` when no complete list has been obtained (#158)."
+          },
+          "rankFreshness": {
+            "type": "string",
+            "description": "`fresh`, `stale`, or `unknown` currency of the ranking result, tracked\nindependently from the detail `freshness` (#158)."
+          },
+          "rankReceivedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Server receipt time of the last successful ranking list fetch. It is\ndistinct from `received_at`, which is the detail fetch time (#158)."
+          },
+          "rankState": {
+            "type": "string",
+            "description": "`ranked`, `unranked`, `error`, `not_configured`, `unsupported`, or\n`unknown`. Only a complete successful list fetch can establish\n`unranked`; a failed, truncated, duplicated, or drifted fetch keeps the\nlast-good rank and never fabricates an unranked outcome (#158)."
           },
           "receivedAt": {
             "type": [

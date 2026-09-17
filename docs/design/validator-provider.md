@@ -35,7 +35,31 @@ to `ValidatorObservation` before it enters the domain or API projections.
 - Before any outbound request, the adapter validates the identifier as `0x`
   followed by exactly 128 hexadecimal characters; anything else is
   `Unsupported` and is never sent.
-- The adapter never calls or falls back to `aliveStakingList`.
+- Detail and ranking are independent collections. The adapter never treats
+  the ranking list as a fallback for a failed detail request, and the detail
+  request never carries a rank: the investigated detail response has no
+  ranking alias, so ranking is acquired only from the dedicated
+  `aliveStakingList` endpoint below (#158).
+
+## Ranking request contract
+
+- POST `{base_url}/browser-server/staking/aliveStakingList` with
+  `Content-Type: application/json` and the body
+  `{"pageNo": <n>, "pageSize": 50, "queryStatus": "all"}`.
+- The request never sets the upstream `key` name filter, so the cohort is the
+  Network's complete live-staking ALL set including candidates. The adapter
+  adopts the upstream 1-based `ranking` verbatim and never recomputes a rank
+  over the monitored Node set, a Home filter, or another Network.
+- Paging is bounded (50 rows per page, at most 50 pages, at most 2500 cohort
+  entries). Every page's `totalCount` must match the first page; the global
+  position is recomputed from the requested page and row order; a duplicate
+  Validator, a page-local rank, a short page, or a declared total that is
+  never reached is a detectable inconsistency and degrades the whole fetch to
+  `Error`. A complete, internally consistent list is the only outcome that
+  can establish an unranked Validator; PlatPulse does not claim that upstream
+  paging is an atomic snapshot.
+- `404`/`405`/`501` are `Unsupported`; other 4xx/5xx responses, transport
+  failures, malformed envelopes, and bodies over 64 KiB are `Error`.
 
 ## Response contract
 
@@ -43,6 +67,11 @@ to `ValidatorObservation` before it enters the domain or API projections.
   `{ "code": 0, "errMsg": ..., "data": { "nodeId": ..., "status": ... } }`.
 - `code` must be the integer `0`; `data` must be an object; a known Validator
   must return the exact requested `nodeId` and an integer `status`.
+- The ranking response is the upstream paginated page returned directly:
+  `{ "code": 0, "errMsg": ..., "totalCount": ..., "data": [ { "nodeId": ...,
+  "ranking": ... } ] }`. `code` must be integer `0`, `totalCount` must be a
+  non-negative integer, and every row must carry a valid 130-character
+  `0x`-hex `nodeId` and the next in-sequence global rank (#158).
 - Status mapping: 1 Candidate and 2 Active map to `active`, 3 Producing maps
   to `producing`, 4 Exiting maps to `exiting`, 5 Exited maps to `exited`,
   6 Verifying maps to `verifying`, and 7 Locked maps to `locked`.
@@ -54,7 +83,7 @@ to `ValidatorObservation` before it enters the domain or API projections.
   accepted response, malformed envelopes, mismatched identifiers, invalid types,
   unrecognized statuses, or a body over 64 KiB are degraded `Error` outcomes.
 - Optional metrics are normalized into the Server-owned observation when present:
-  `ranks`/`ranking`/`rank` → `rank`; `stakingValue`/`totalValue`/`stake` →
+  `stakingValue`/`totalValue`/`stake` →
   `stake_amount`; `rewardValue`/`reward` → `reward_amount`;
   `deleAnnualizedRate`/`rewardRate` → `reward_rate`;
   `delegateQty`/`delegatorCount` → `delegator_count`; `epoch` → `epoch`;
@@ -160,3 +189,17 @@ guarantees, not claims about an upstream schema.
 - Migration 0046 adds the nullable `delegation_reward_percentage` column.
   Historical rows keep NULL and the Public projection reports `unknown`; no
   ratio is backfilled.
+- Migration 0047 adds the nullable ranking outcome, diagnostic, attempt time,
+  last-success time, and cohort-size columns and clears the pre-existing
+  `rank` value: the investigated detail response has no authoritative ranking
+  alias, so an upgraded row stays Unknown instead of exposing an untrusted
+  position. No rank is backfilled. The `rank` column then holds the last-good
+  ranking value: a complete successful list may clear it (authoritative
+  unranked), while any failure or incomplete fetch retains it. Ranking has its
+  own last-success time, so detail and ranking freshness are independent and
+  neither failure erases the other's successful values (#158).
+- The detail-derived daily/monthly Validator analytics `rank` is not a ranking
+  source and is no longer populated: it was never an authoritative detail
+  field, and reconstructing historical analytics rank from the dedicated list
+  is intentionally out of scope for this slice. The current insight's dedicated
+  ranking state is the only authoritative rank.

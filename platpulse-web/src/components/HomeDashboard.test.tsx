@@ -356,7 +356,7 @@ describe('Public Home dashboard', () => {
       validatorId: 'validator-a', validatorNodeId: '0xvalidator', displayName: 'Validator A',
       nodeId: 'node-a', linkRole: 'primary', state: activityState === 'stale' ? 'error' : 'fresh',
       freshness: activityState === 'stale' ? 'fresh' : 'fresh', source: 'fake',
-      receivedAt: '2026-08-25T00:00:00Z', blockRateState: 'unknown', counterState: 'normal', activity, activityState,
+      receivedAt: '2026-08-25T00:00:00Z', rankState: 'unknown', rankFreshness: 'unknown', blockRateState: 'unknown', counterState: 'normal', activity, activityState,
     })
     const active = {
       ...network.nodes[0], nodeId: 'node-active', displayName: 'Active Node',
@@ -561,6 +561,7 @@ describe('Public Home dashboard', () => {
       nodeId: 'node-linked', linkRole: 'standby', state: 'fresh', freshness: 'fresh', source: 'platscan',
       providerTimestamp: '2026-08-25T00:00:00Z', receivedAt: '2026-08-25T00:00:05Z',
       blockCount: 123456, expectedBlockCount: 110, blockRate: '90.909091', blockRateState: 'ok',
+      rank: 5, rankState: 'ranked', rankFreshness: 'fresh', rankCohortSize: 300,
       genBlocksRate: '0', delegationRewardPercentage: '20', counterState: 'normal', activity: 'producing', activityState: 'current',
     }
     const linkedNode = { ...network.nodes[0], nodeId: 'node-linked', displayName: 'Calico', validator: linked }

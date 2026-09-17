@@ -77,7 +77,7 @@ The cumulative rewards attributed to a Validator over its chain history, includi
 _Avoid_: Operator net earnings, Reward-address balance, Rewards since enrollment
 
 **Validator Rank**:
-A Validator's position in the PlatScan validator ranking within its own Network. It is not a ranking of monitored Nodes or a comparison across Networks.
+A Validator's position in the PlatScan validator ranking within its own Network. It is not a ranking of monitored Nodes or a comparison across Networks. Only a complete successful live-staking cohort list can establish that a Validator is unranked; a failed or incomplete list leaves the last-good rank, or Unknown when none exists.
 _Avoid_: Monitored node rank, Cross-network rank
 
 **Validator Block Production Completion Rate**:
