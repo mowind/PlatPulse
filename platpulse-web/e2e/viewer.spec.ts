@@ -52,7 +52,7 @@ test.describe('Viewer role boundary', () => {
     // to the filter instead of assuming a fixed second stop.
     await page.keyboard.press('Tab')
     await expect(page.getByRole('link', { name: 'PlatPulse' })).toBeFocused()
-    const allNetworks = page.getByRole('button', { name: 'All Networks' })
+    const allNetworks = page.getByRole('tab', { name: 'All Networks' })
     let reached = false
     for (let step = 0; step < 6 && !reached; step += 1) {
       await page.keyboard.press('Tab')

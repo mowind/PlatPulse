@@ -40,26 +40,44 @@ const network = {
 const nodeCardLink = (name: string) => screen.getByRole('link', { name: new RegExp(name) })
 const cardOf = (link: HTMLElement) => link.closest('article') as HTMLElement
 
-/** The single summary-card marker belonging to the card labelled "label" (issue #142). */
-const dotOf = (label: string) => {
-  const card = screen.getByText(label).closest('article')
+/** The summary card carrying the given label (issue #142). */
+const summaryCardOf = (label: string) => {
+  const card = screen.getByText(label).closest('[data-slot="summary-card"]')
   if (!card) throw new Error(`No summary card for ${label}`)
-  const dot = card.querySelector('.dashboard-summary-dot')
-  if (!dot) throw new Error(`No summary marker for ${label}`)
-  return dot
+  return card as HTMLElement
+}
+
+/** Its value element, which is the number the label announces. */
+const summaryValueOf = (label: string) => {
+  const value = summaryCardOf(label).querySelector('[data-slot="summary-value"]')
+  if (!value) throw new Error(`No summary value for ${label}`)
+  return value
 }
 
 afterEach(cleanup)
 
 describe('Public Home dashboard', () => {
+  it('scopes all four counters, map and cards to the selected network', () => {
+    const second = { ...network, networkKey: 'testnet', displayName: 'Testnet', nodes: [{ ...network.nodes[0], nodeId: 'gamma', displayName: 'Gamma', networkKey: 'testnet' }] }
+    render(<BrowserRouter><HomeDashboard networks={[network, second]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Testnet' }), { button: 0, ctrlKey: false })
+    expect(summaryValueOf('Active Nodes').textContent).toBe('1')
+    expect(summaryValueOf('Healthy Nodes').textContent).toBe('1')
+    expect(summaryValueOf('Attention').textContent).toBe('0')
+    expect(summaryValueOf('Networks').textContent).toBe('1')
+    expect(screen.queryByRole('link', { name: /Alpha/ })).toBeNull()
+    expect(nodeCardLink('Gamma')).toBeTruthy()
+    expect(screen.getByRole('region', { name: 'Peer countries' }).getAttribute('data-network-filter')).toBe('testnet')
+  })
+
   it('summarizes Server-owned Nodes and preserves authoritative zero peer count', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
     expect(screen.queryByText('Live updates connected')).toBeNull()
     expect(document.querySelector('[data-realtime-status="connected"]')).toBeTruthy()
-    expect(screen.getByText('Active Nodes').nextElementSibling?.textContent).toBe('2')
-    expect(screen.getByText('Healthy Nodes').nextElementSibling?.textContent).toBe('1')
-    expect(screen.getByText('Attention').nextElementSibling?.textContent).toBe('1')
+    expect(summaryValueOf('Active Nodes').textContent).toBe('2')
+    expect(summaryValueOf('Healthy Nodes').textContent).toBe('1')
+    expect(summaryValueOf('Attention').textContent).toBe('1')
     const alphaCard = cardOf(nodeCardLink('Alpha'))
     expect(within(alphaCard).getByText('Peers').nextElementSibling?.textContent).toBe('0')
     // A successful zero snapshot stays an authoritative zero, not Unknown.
@@ -121,7 +139,7 @@ describe('Public Home dashboard', () => {
 
     const alphaCard = cardOf(nodeCardLink('Alpha'))
     const resources = within(alphaCard).getByLabelText('Node process and host network resources')
-    const highlights = within(alphaCard).getByLabelText('Node highlights')
+    const highlights = alphaCard.querySelector('[data-slot="node-business-metrics"]')!
     expect(resources.compareDocumentPosition(highlights) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(within(resources).getByText('CPU')).toBeTruthy()
     expect(within(resources).getByText('12.5%')).toBeTruthy()
@@ -130,13 +148,49 @@ describe('Public Home dashboard', () => {
     expect(nodeDataLabel).toBeTruthy()
     expect(within(resources).getByText('12.0 GiB / 48.0 GiB')).toBeTruthy()
     const nodeDataMetric = nodeDataLabel.parentElement as HTMLElement
-    expect(nodeDataMetric.classList.contains('metric-row')).toBe(true)
-    expect(nodeDataMetric.querySelector('.metric-row-progress')).toBeTruthy()
-    expect(nodeDataMetric.style.getPropertyValue('--metric-progress')).toBe('25%')
+    expect(nodeDataMetric.getAttribute('data-slot')).toBe('metric-row')
+    expect(nodeDataMetric.parentElement?.className).toBe('md:col-span-2')
+    expect(resources.className).toContain('grid-cols-2')
+    expect(nodeDataMetric.querySelector('[data-slot="progress-thin"]')).toBeTruthy()
+    expect(nodeDataMetric.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow')).toBe('25')
     expect(within(resources).queryByText('STORAGE')).toBeNull()
-    expect(within(resources).getByText('↑16.4Kbps')).toBeTruthy()
-    expect(within(resources).getByText('↓8.19Kbps')).toBeTruthy()
+    expect(within(resources).getByText('16.4Kbps')).toBeTruthy()
+    expect(within(resources).getByLabelText('Upload 16.4Kbps').querySelector('svg')).not.toBeNull()
+    expect(within(resources).getByText('8.19Kbps')).toBeTruthy()
   })
+  it('places full-width Node uptime immediately below the full-width host network speed row', () => {
+    render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+    const resources = within(cardOf(nodeCardLink('Alpha'))).getByLabelText('Node process and host network resources')
+    const speed = within(resources).getByRole('group', { name: 'Host network speed' })
+    expect(speed.parentElement).toBe(resources)
+    expect(speed.classList.contains('col-span-2')).toBe(true)
+    const uptime = within(resources).getByRole('group', { name: 'Node uptime' })
+    expect(uptime.parentElement).toBe(resources)
+    expect(uptime.classList.contains('col-span-2')).toBe(true)
+    expect(uptime.textContent).toBe('Node uptimeUnknown')
+    expect(speed.nextElementSibling).toBe(uptime)
+    expect(within(speed).getByLabelText('Upload 16.4Kbps')).toBeTruthy()
+    expect(within(speed).getByLabelText('Download 8.19Kbps')).toBeTruthy()
+    expect(within(speed).queryByText('Node data')).toBeNull()
+  })
+
+  it.each([
+    [0, '0s'],
+    [59_999, '59s'],
+    [60_000, '1m'],
+    [3_660_000, '1h 1m'],
+    [183_600_000, '2d 3h'],
+    [null, 'Unknown'],
+    [undefined, 'Unknown'],
+    [-1, 'Unknown'],
+    [NaN, 'Unknown'],
+    [Infinity, 'Unknown'],
+  ])('shows Node process uptime %s as %s', (processUptimeMs, expected) => {
+    const nodes = [{ ...network.nodes[0], processUptimeMs }]
+    render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+    expect(within(cardOf(nodeCardLink('Alpha'))).getByText('Node uptime').nextElementSibling?.textContent).toBe(expected)
+  })
+
   it('renders Node data as a percentage with the used / total byte detail under its progress bar', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
@@ -144,29 +198,29 @@ describe('Public Home dashboard', () => {
     const nodeDataMetric = within(alphaCard).getByText('Node data').parentElement as HTMLElement
     expect(within(nodeDataMetric).getByText('25.0%')).toBeTruthy()
     expect(within(nodeDataMetric).getByText('12.0 GiB / 48.0 GiB')).toBeTruthy()
-    expect(nodeDataMetric.style.getPropertyValue('--metric-progress')).toBe('25%')
+    expect(nodeDataMetric.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow')).toBe('25')
   })
 
   it('lays every Home metric out as one data-item / value row with its detail below', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
     const alphaCard = cardOf(nodeCardLink('Alpha'))
-    // Resources (CPU, Memory, Node data, Speed), main (Head, Txs,
-    // Peers), and consensus (QC, Locked, Committed, Validator). Their shared
+    // Resources (CPU, Memory, Node data, Node uptime, Speed), main (Head, Txs,
+    // Peers), and consensus (QC, Locked, Committed). Their shared
     // shape is covered by MetricRow.test.tsx.
-    expect(alphaCard.querySelectorAll('.metric-row')).toHaveLength(11)
+    expect(alphaCard.querySelectorAll('[data-slot="metric-row"]')).toHaveLength(11)
   })
 
-  it('groups Head/Txs/Peers and consensus heights into triple rows', () => {
+  it('orders full-width business rows before the wrapping count pair and puts the role in the header', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
     const card = cardOf(nodeCardLink('Alpha'))
-    const triples = card.querySelectorAll('.dashboard-metric-triple')
-    expect(triples).toHaveLength(2)
-    for (const triple of triples) expect(triple.querySelectorAll(':scope > .metric-row')).toHaveLength(3)
-    expect(triples[0].textContent).toContain('Head120Txs12,345Peers0')
-    expect(within(card).getByText('L').getAttribute('aria-label')).toBe('Locked')
-    expect(within(card).getByText('C').getAttribute('aria-label')).toBe('Committed')
-    expect(within(card).getByText('Speed').nextElementSibling?.textContent).toBe('↑16.4Kbps↓8.19Kbps')
+    expect(card.querySelector('[data-slot="metric-triple"]')).toBeNull()
+    const metrics = card.querySelector('[data-slot="node-business-metrics"]')!
+    expect(Array.from(metrics.querySelectorAll('[data-slot="metric-row-label"]'), el => el.textContent))
+      .toEqual(['Head', 'QC', 'Locked', 'Committed', 'Txs', 'Peers'])
+    expect(metrics.querySelector('[data-short-label]')).toBeNull()
+    expect(metrics.querySelector('[data-slot="validator-role"]')).toBeNull()
+    expect(card.querySelector('[data-slot="card-x-header"] [data-slot="validator-role"]')?.textContent).toBe('Validator')
   })
 
   it.each([
@@ -177,18 +231,18 @@ describe('Public Home dashboard', () => {
     [125_000_000, '1Gbps'],
     [125_000_000_000, '1Tbps'],
     [124_999, '1Mbps'],
-    [null, '—'],
+    [null, 'Unknown'],
   ])('formats %s bytes/s using an appropriate speed unit', (rate, expected) => {
     const nodes = [{ ...network.nodes[0], hostNetworkTxBytesPerSec: rate, hostNetworkRxBytesPerSec: 100 }]
     render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
-    expect(within(cardOf(nodeCardLink('Alpha'))).getByText('Speed').nextElementSibling?.textContent).toBe(`↑${expected}↓800bps`)
+    expect(within(cardOf(nodeCardLink('Alpha'))).getByText('Speed').nextElementSibling?.textContent).toBe(`${expected}800bps`)
   })
 
   it('converts bytes per second to decimal Mbps and preserves missing speeds', () => {
     const nodes = [{ ...network.nodes[0], hostNetworkTxBytesPerSec: 1_250_000, hostNetworkRxBytesPerSec: 2_500_000 }, network.nodes[1]]
     render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
-    expect(within(cardOf(nodeCardLink('Alpha'))).getByText('Speed').nextElementSibling?.textContent).toBe('↑10Mbps↓20Mbps')
-    expect(within(cardOf(nodeCardLink('Beta'))).getByText('Speed').nextElementSibling?.textContent).toBe('↑—↓—')
+    expect(within(cardOf(nodeCardLink('Alpha'))).getByText('Speed').nextElementSibling?.textContent).toBe('10Mbps20Mbps')
+    expect(within(cardOf(nodeCardLink('Beta'))).getByText('Speed').nextElementSibling?.textContent).toBe('UnknownUnknown')
   })
 
   it('shows the second compact metric row as QC, Locked, Committed, and Validator', () => {
@@ -202,17 +256,17 @@ describe('Public Home dashboard', () => {
     expect(within(alphaCard).getByText('Committed')).toBeTruthy()
     expect(within(alphaCard).getByText('98')).toBeTruthy()
     expect(within(alphaCard).getByText('Validator')).toBeTruthy()
-    // Current successful membership renders Yes, not a badge or color.
-    expect(within(alphaCard).getByText('True')).toBeTruthy()
+    // Current successful membership renders a neutral role badge.
+    expect(within(alphaCard).getByText('Validator')).toBeTruthy()
     expect(within(alphaCard).queryByText('Stale')).toBeNull()
 
     // Never-observed consensus is Unknown for every metric, never zero/No.
     const betaCard = cardOf(nodeCardLink('Beta'))
-    for (const label of ['QC', 'Locked', 'Committed', 'Validator']) {
+    for (const label of ['QC', 'Locked', 'Committed']) {
       expect(within(betaCard).getByText(label)).toBeTruthy()
     }
     expect(within(betaCard).getAllByText('Unknown').length).toBeGreaterThanOrEqual(7)
-    expect(within(betaCard).queryByText('False')).toBeNull()
+    expect(within(betaCard).queryByText('Non-validator')).toBeNull()
   })
 
   it('retains last-good consensus values and visibly marks failed or stale collections', () => {
@@ -257,7 +311,7 @@ describe('Public Home dashboard', () => {
     expect(within(staleCard).getByText('141')).toBeTruthy()
     expect(within(staleCard).getByText('140')).toBeTruthy()
     expect(within(staleCard).getByText('139')).toBeTruthy()
-    expect(within(staleCard).getByText('True')).toBeTruthy()
+    expect(within(staleCard).getByText('Validator')).toBeTruthy()
     expect(within(staleCard).getAllByText('Stale')).toHaveLength(4)
 
     // A failed collection with last-good true keeps the value and is Stale.
@@ -265,13 +319,13 @@ describe('Public Home dashboard', () => {
     expect(within(failedCard).getByText('151')).toBeTruthy()
     expect(within(failedCard).getByText('150')).toBeTruthy()
     expect(within(failedCard).getByText('149')).toBeTruthy()
-    expect(within(failedCard).getByText('True')).toBeTruthy()
+    expect(within(failedCard).getByText('Validator')).toBeTruthy()
     expect(within(failedCard).getAllByText('Stale')).toHaveLength(4)
 
     // A stale successful non-membership keeps No and marks it Stale.
     const staleFalseCard = cardOf(nodeCardLink('Stale False'))
     expect(within(staleFalseCard).getByText('161')).toBeTruthy()
-    expect(within(staleFalseCard).getByText('False')).toBeTruthy()
+    expect(within(staleFalseCard).getByText('Non-validator')).toBeTruthy()
     expect(within(staleFalseCard).getAllByText('Stale')).toHaveLength(4)
 
     // A failed collection without a last-good membership is Unknown, never
@@ -279,12 +333,12 @@ describe('Public Home dashboard', () => {
     const failedNoneCard = cardOf(nodeCardLink('Failed None'))
     expect(within(failedNoneCard).getAllByText('Unknown').length).toBeGreaterThanOrEqual(4)
     expect(within(failedNoneCard).queryByText('Stale')).toBeNull()
-    expect(within(failedNoneCard).queryByText('False')).toBeNull()
+    expect(within(failedNoneCard).queryByText('Non-validator')).toBeNull()
 
     // A current successful non-membership renders No; an observed zero
     // block height is an authoritative zero, never Unknown.
     const falseCard = cardOf(nodeCardLink('Current False'))
-    expect(within(falseCard).getByText('False')).toBeTruthy()
+    expect(within(falseCard).getByText('Non-validator')).toBeTruthy()
     expect(within(falseCard).getAllByText('0').length).toBeGreaterThanOrEqual(4)
     expect(within(falseCard).queryByText('Stale')).toBeNull()
 
@@ -292,8 +346,8 @@ describe('Public Home dashboard', () => {
     // value must not be presented as current Yes/No or block heights.
     const unknownFreshnessCard = cardOf(nodeCardLink('Unknown Freshness'))
     expect(within(unknownFreshnessCard).getAllByText('Unknown').length).toBeGreaterThanOrEqual(4)
-    expect(within(unknownFreshnessCard).queryByText('True')).toBeNull()
-    expect(within(unknownFreshnessCard).queryByText('False')).toBeNull()
+    expect(within(unknownFreshnessCard).queryByText('Validator')).toBeNull()
+    expect(within(unknownFreshnessCard).queryByText('Non-validator')).toBeNull()
     expect(within(unknownFreshnessCard).queryByText('Stale')).toBeNull()
   })
 
@@ -374,13 +428,12 @@ describe('Public Home dashboard', () => {
     expect(screen.queryByText('A live operational view of every Active PlatON Node.')).toBeNull()
     expect(screen.queryByText('Current', { exact: true })).toBeNull()
     expect(screen.queryByRole('heading', { level: 1, name: 'Home' })).toBeNull()
-    const cards = screen.getAllByRole('article').filter((card) => card.className.includes('dashboard-summary-card'))
+    const cards = document.querySelectorAll('[data-slot="summary-card"]')
     expect(cards).toHaveLength(4)
     for (const card of cards) {
-      // exactly one dot, one title, one number — no footer text
-      expect(card.querySelectorAll('.dashboard-summary-dot')).toHaveLength(1)
-      expect(card.querySelectorAll('p')).toHaveLength(1)
-      expect(card.querySelectorAll('strong')).toHaveLength(1)
+      // exactly one marker icon, one title, one number — no footer text
+      expect(card.querySelectorAll('svg')).toHaveLength(1)
+      expect(card.querySelectorAll('[data-slot="summary-value"]')).toHaveLength(1)
       expect(card.querySelectorAll('small')).toHaveLength(0)
     }
   })
@@ -389,7 +442,7 @@ describe('Public Home dashboard', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
     for (const label of ['Active Nodes', 'Healthy Nodes', 'Networks']) {
-      expect(dotOf(label).classList.contains('dashboard-summary-dot-green')).toBe(true)
+      expect(summaryCardOf(label).getAttribute('data-tone')).toBe('green')
     }
   })
 
@@ -397,15 +450,13 @@ describe('Public Home dashboard', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
     // The fixture holds one Healthy and one Unknown Node, so Attention is non-zero.
-    expect(dotOf('Attention').classList.contains('dashboard-summary-dot-red')).toBe(true)
-    expect(dotOf('Attention').classList.contains('dashboard-summary-dot-green')).toBe(false)
+    expect(summaryCardOf('Attention').getAttribute('data-tone')).toBe('red')
   })
 
   it('turns the Attention marker green once every Active Node is healthy', () => {
     render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes: [network.nodes[0]] }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
-    expect(dotOf('Attention').classList.contains('dashboard-summary-dot-green')).toBe(true)
-    expect(dotOf('Attention').classList.contains('dashboard-summary-dot-red')).toBe(false)
+    expect(summaryCardOf('Attention').getAttribute('data-tone')).toBe('green')
   })
 
   it('renders one whole-card Node link with the Network name as plain text', () => {
@@ -449,7 +500,7 @@ describe('Public Home dashboard', () => {
     // Unknown Node: the Server-sanitized health reason is the single line.
     const betaCard = cardOf(nodeCardLink('Beta'))
     expect(within(betaCard).getByText('Never observed')).toBeTruthy()
-    expect(betaCard.querySelectorAll('.dashboard-node-diagnostic')).toHaveLength(1)
+    expect(betaCard.querySelectorAll('[data-slot="node-diagnostic"]')).toHaveLength(1)
     // The unknown peer observation is explicit and never presented as Current.
     expect(within(betaCard).getByText(/No successful Peer snapshot is available/)).toBeTruthy()
     expect(within(betaCard).queryByText('Current observation')).toBeNull()
@@ -458,18 +509,18 @@ describe('Public Home dashboard', () => {
     const gammaCard = cardOf(nodeCardLink('Gamma'))
     expect(within(gammaCard).getByText('Backfilling 10,000 blocks')).toBeTruthy()
     expect(within(gammaCard).queryByText('Current observation')).toBeNull()
-    expect(gammaCard.querySelectorAll('.dashboard-node-diagnostic')).toHaveLength(1)
+    expect(gammaCard.querySelectorAll('[data-slot="node-diagnostic"]')).toHaveLength(1)
   })
 
   it('filters by Network and sorts by supported operational fields', () => {
     const secondNetwork = { ...network, networkKey: 'testnet', displayName: 'Testnet', nodes: [{ ...network.nodes[0], nodeId: 'node-c', displayName: 'Gamma', networkKey: 'testnet', currentHead: 900 }] }
     render(<BrowserRouter><HomeDashboard networks={[network, secondNetwork]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Testnet' }))
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Testnet' }))
     expect(nodeCardLink('Gamma')).toBeTruthy()
     expect(screen.queryByRole('link', { name: /Alpha/ })).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'All Networks' }))
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'All Networks' }))
     fireEvent.change(screen.getByRole('combobox', { name: 'Sort' }), { target: { value: 'head' } })
     const nodeLinks = screen.getAllByRole('link').filter((link) => link.getAttribute('href')?.startsWith('/nodes/'))
     expect(nodeLinks.map((link) => link.getAttribute('href'))).toEqual(['/nodes/node-c', '/nodes/node-a', '/nodes/node-b'])
@@ -493,7 +544,7 @@ describe('Public Home dashboard', () => {
 
   it('does not render loading as fabricated zero-valued summary data', () => {
     render(<BrowserRouter><HomeDashboard networks={[]} realtimeStatus="connecting" online loading resetting={false} error={null} /></BrowserRouter>)
-    expect(screen.getAllByText('—')).toHaveLength(4)
+    expect(screen.getAllByText('Unknown')).toHaveLength(4)
     expect(screen.queryByText('No Active Nodes in this view.')).toBeNull()
   })
 
@@ -501,6 +552,6 @@ describe('Public Home dashboard', () => {
     render(<BrowserRouter><HomeDashboard networks={[]} realtimeStatus="connected" online resetting={false} error="Unable to load Active Nodes" hasLastGood loading={false} /></BrowserRouter>)
     expect(screen.getByText('Unable to load Active Nodes')).toBeTruthy()
     expect(screen.getByText('No Active Nodes in this view.')).toBeTruthy()
-    expect(screen.getByText('Active Nodes').nextElementSibling?.textContent).toBe('0')
+    expect(summaryValueOf('Active Nodes').textContent).toBe('0')
   })
 })

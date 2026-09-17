@@ -1,0 +1,5218 @@
+[
+  {
+    "width": 360,
+    "count": 1,
+    "theme": "light",
+    "overflow": false,
+    "select": {
+      "x": 207,
+      "y": 427,
+      "width": 137,
+      "height": 44,
+      "bottom": 471
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 433,
+      "width": 328,
+      "height": 32,
+      "bottom": 465
+    },
+    "card": {
+      "x": 16,
+      "y": 481,
+      "width": 328,
+      "height": 385.15625,
+      "bottom": 866.15625
+    },
+    "data": {
+      "x": 32,
+      "y": 615.5,
+      "width": 142,
+      "height": 42.65625,
+      "bottom": 658.15625
+    },
+    "resources": {
+      "x": 32,
+      "y": 587.5,
+      "width": 296,
+      "height": 110.65625,
+      "bottom": 698.15625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 433,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 465
+    },
+    "cpu": {
+      "x": 32,
+      "y": 587.5,
+      "width": 142,
+      "height": 24,
+      "bottom": 611.5
+    },
+    "memory": {
+      "x": 186,
+      "y": 587.5,
+      "width": 142,
+      "height": 24,
+      "bottom": 611.5
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 615.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 631.5
+      },
+      {
+        "x": 104.8125,
+        "y": 615.5,
+        "width": 69.1875,
+        "height": 16,
+        "bottom": 631.5
+      },
+      {
+        "x": 32,
+        "y": 635.5,
+        "width": 142,
+        "height": 4,
+        "bottom": 639.5
+      },
+      {
+        "x": 32,
+        "y": 643.5,
+        "width": 142,
+        "height": 14.65625,
+        "bottom": 658.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 710.15625,
+        "width": 296,
+        "height": 28,
+        "bottom": 738.15625
+      },
+      {
+        "x": 32,
+        "y": 738.15625,
+        "width": 296,
+        "height": 28,
+        "bottom": 766.15625
+      },
+      {
+        "x": 32,
+        "y": 766.15625,
+        "width": 296,
+        "height": 28,
+        "bottom": 794.15625
+      },
+      {
+        "x": 32,
+        "y": 794.15625,
+        "width": 296,
+        "height": 28,
+        "bottom": 822.15625
+      }
+    ],
+    "selectBackground": "oklab(1 0 0 / 0.6)",
+    "selectHit": true
+  },
+  {
+    "width": 360,
+    "count": 4,
+    "theme": "light",
+    "overflow": false,
+    "select": {
+      "x": 207,
+      "y": 427,
+      "width": 137,
+      "height": 44,
+      "bottom": 471
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 433,
+      "width": 328,
+      "height": 32,
+      "bottom": 465
+    },
+    "card": {
+      "x": 16,
+      "y": 481,
+      "width": 328,
+      "height": 500.65625,
+      "bottom": 981.65625
+    },
+    "data": {
+      "x": 32,
+      "y": 630.5,
+      "width": 142,
+      "height": 42.65625,
+      "bottom": 673.15625
+    },
+    "resources": {
+      "x": 32,
+      "y": 602.5,
+      "width": 296,
+      "height": 110.65625,
+      "bottom": 713.15625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 433,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 465
+    },
+    "cpu": {
+      "x": 32,
+      "y": 602.5,
+      "width": 142,
+      "height": 24,
+      "bottom": 626.5
+    },
+    "memory": {
+      "x": 186,
+      "y": 602.5,
+      "width": 142,
+      "height": 24,
+      "bottom": 626.5
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 630.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 646.5
+      },
+      {
+        "x": 104.8125,
+        "y": 630.5,
+        "width": 69.1875,
+        "height": 16,
+        "bottom": 646.5
+      },
+      {
+        "x": 32,
+        "y": 650.5,
+        "width": 142,
+        "height": 4,
+        "bottom": 654.5
+      },
+      {
+        "x": 32,
+        "y": 658.5,
+        "width": 142,
+        "height": 14.65625,
+        "bottom": 673.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 725.15625,
+        "width": 296,
+        "height": 28,
+        "bottom": 753.15625
+      },
+      {
+        "x": 32,
+        "y": 753.15625,
+        "width": 296,
+        "height": 56,
+        "bottom": 809.15625
+      },
+      {
+        "x": 32,
+        "y": 809.15625,
+        "width": 296,
+        "height": 56,
+        "bottom": 865.15625
+      },
+      {
+        "x": 32,
+        "y": 865.15625,
+        "width": 296,
+        "height": 56,
+        "bottom": 921.15625
+      }
+    ],
+    "selectBackground": "oklab(1 0 0 / 0.6)",
+    "selectHit": true
+  },
+  {
+    "width": 360,
+    "count": 8,
+    "theme": "light",
+    "overflow": false,
+    "select": {
+      "x": 207,
+      "y": 427,
+      "width": 137,
+      "height": 44,
+      "bottom": 471
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 433,
+      "width": 328,
+      "height": 32,
+      "bottom": 465
+    },
+    "card": {
+      "x": 16,
+      "y": 481,
+      "width": 328,
+      "height": 500.65625,
+      "bottom": 981.65625
+    },
+    "data": {
+      "x": 32,
+      "y": 630.5,
+      "width": 142,
+      "height": 42.65625,
+      "bottom": 673.15625
+    },
+    "resources": {
+      "x": 32,
+      "y": 602.5,
+      "width": 296,
+      "height": 110.65625,
+      "bottom": 713.15625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 433,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 465
+    },
+    "cpu": {
+      "x": 32,
+      "y": 602.5,
+      "width": 142,
+      "height": 24,
+      "bottom": 626.5
+    },
+    "memory": {
+      "x": 186,
+      "y": 602.5,
+      "width": 142,
+      "height": 24,
+      "bottom": 626.5
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 630.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 646.5
+      },
+      {
+        "x": 104.8125,
+        "y": 630.5,
+        "width": 69.1875,
+        "height": 16,
+        "bottom": 646.5
+      },
+      {
+        "x": 32,
+        "y": 650.5,
+        "width": 142,
+        "height": 4,
+        "bottom": 654.5
+      },
+      {
+        "x": 32,
+        "y": 658.5,
+        "width": 142,
+        "height": 14.65625,
+        "bottom": 673.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 725.15625,
+        "width": 296,
+        "height": 28,
+        "bottom": 753.15625
+      },
+      {
+        "x": 32,
+        "y": 753.15625,
+        "width": 296,
+        "height": 56,
+        "bottom": 809.15625
+      },
+      {
+        "x": 32,
+        "y": 809.15625,
+        "width": 296,
+        "height": 56,
+        "bottom": 865.15625
+      },
+      {
+        "x": 32,
+        "y": 865.15625,
+        "width": 296,
+        "height": 56,
+        "bottom": 921.15625
+      }
+    ],
+    "selectBackground": "oklab(1 0 0 / 0.6)",
+    "selectHit": true
+  },
+  {
+    "width": 390,
+    "count": 1,
+    "theme": "light",
+    "overflow": false,
+    "select": {
+      "x": 237,
+      "y": 442,
+      "width": 137,
+      "height": 44,
+      "bottom": 486
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 448,
+      "width": 358,
+      "height": 32,
+      "bottom": 480
+    },
+    "card": {
+      "x": 16,
+      "y": 496,
+      "width": 358,
+      "height": 385.15625,
+      "bottom": 881.15625
+    },
+    "data": {
+      "x": 32,
+      "y": 630.5,
+      "width": 157,
+      "height": 42.65625,
+      "bottom": 673.15625
+    },
+    "resources": {
+      "x": 32,
+      "y": 602.5,
+      "width": 326,
+      "height": 110.65625,
+      "bottom": 713.15625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 448,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 480
+    },
+    "cpu": {
+      "x": 32,
+      "y": 602.5,
+      "width": 157,
+      "height": 24,
+      "bottom": 626.5
+    },
+    "memory": {
+      "x": 201,
+      "y": 602.5,
+      "width": 157,
+      "height": 24,
+      "bottom": 626.5
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 630.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 646.5
+      },
+      {
+        "x": 104.8125,
+        "y": 630.5,
+        "width": 84.1875,
+        "height": 16,
+        "bottom": 646.5
+      },
+      {
+        "x": 32,
+        "y": 650.5,
+        "width": 157,
+        "height": 4,
+        "bottom": 654.5
+      },
+      {
+        "x": 32,
+        "y": 658.5,
+        "width": 157,
+        "height": 14.65625,
+        "bottom": 673.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 725.15625,
+        "width": 326,
+        "height": 28,
+        "bottom": 753.15625
+      },
+      {
+        "x": 32,
+        "y": 753.15625,
+        "width": 326,
+        "height": 28,
+        "bottom": 781.15625
+      },
+      {
+        "x": 32,
+        "y": 781.15625,
+        "width": 326,
+        "height": 28,
+        "bottom": 809.15625
+      },
+      {
+        "x": 32,
+        "y": 809.15625,
+        "width": 326,
+        "height": 28,
+        "bottom": 837.15625
+      }
+    ],
+    "selectBackground": "oklab(1 0 0 / 0.6)",
+    "selectHit": true
+  },
+  {
+    "width": 390,
+    "count": 4,
+    "theme": "light",
+    "overflow": false,
+    "select": {
+      "x": 237,
+      "y": 442,
+      "width": 137,
+      "height": 44,
+      "bottom": 486
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 448,
+      "width": 358,
+      "height": 32,
+      "bottom": 480
+    },
+    "card": {
+      "x": 16,
+      "y": 496,
+      "width": 358,
+      "height": 484.15625,
+      "bottom": 980.15625
+    },
+    "data": {
+      "x": 32,
+      "y": 629,
+      "width": 157,
+      "height": 42.65625,
+      "bottom": 671.65625
+    },
+    "resources": {
+      "x": 32,
+      "y": 601,
+      "width": 326,
+      "height": 110.65625,
+      "bottom": 711.65625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 448,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 480
+    },
+    "cpu": {
+      "x": 32,
+      "y": 601,
+      "width": 157,
+      "height": 24,
+      "bottom": 625
+    },
+    "memory": {
+      "x": 201,
+      "y": 601,
+      "width": 157,
+      "height": 24,
+      "bottom": 625
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 629,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 645
+      },
+      {
+        "x": 104.8125,
+        "y": 629,
+        "width": 84.1875,
+        "height": 16,
+        "bottom": 645
+      },
+      {
+        "x": 32,
+        "y": 649,
+        "width": 157,
+        "height": 4,
+        "bottom": 653
+      },
+      {
+        "x": 32,
+        "y": 657,
+        "width": 157,
+        "height": 14.65625,
+        "bottom": 671.65625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 723.65625,
+        "width": 326,
+        "height": 28,
+        "bottom": 751.65625
+      },
+      {
+        "x": 32,
+        "y": 751.65625,
+        "width": 326,
+        "height": 56,
+        "bottom": 807.65625
+      },
+      {
+        "x": 32,
+        "y": 807.65625,
+        "width": 326,
+        "height": 56,
+        "bottom": 863.65625
+      },
+      {
+        "x": 32,
+        "y": 863.65625,
+        "width": 326,
+        "height": 56,
+        "bottom": 919.65625
+      }
+    ],
+    "selectBackground": "oklab(1 0 0 / 0.6)",
+    "selectHit": true
+  },
+  {
+    "width": 390,
+    "count": 8,
+    "theme": "light",
+    "overflow": false,
+    "select": {
+      "x": 237,
+      "y": 442,
+      "width": 137,
+      "height": 44,
+      "bottom": 486
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 448,
+      "width": 358,
+      "height": 32,
+      "bottom": 480
+    },
+    "card": {
+      "x": 16,
+      "y": 496,
+      "width": 358,
+      "height": 484.15625,
+      "bottom": 980.15625
+    },
+    "data": {
+      "x": 32,
+      "y": 629,
+      "width": 157,
+      "height": 42.65625,
+      "bottom": 671.65625
+    },
+    "resources": {
+      "x": 32,
+      "y": 601,
+      "width": 326,
+      "height": 110.65625,
+      "bottom": 711.65625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 448,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 480
+    },
+    "cpu": {
+      "x": 32,
+      "y": 601,
+      "width": 157,
+      "height": 24,
+      "bottom": 625
+    },
+    "memory": {
+      "x": 201,
+      "y": 601,
+      "width": 157,
+      "height": 24,
+      "bottom": 625
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 629,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 645
+      },
+      {
+        "x": 104.8125,
+        "y": 629,
+        "width": 84.1875,
+        "height": 16,
+        "bottom": 645
+      },
+      {
+        "x": 32,
+        "y": 649,
+        "width": 157,
+        "height": 4,
+        "bottom": 653
+      },
+      {
+        "x": 32,
+        "y": 657,
+        "width": 157,
+        "height": 14.65625,
+        "bottom": 671.65625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 723.65625,
+        "width": 326,
+        "height": 28,
+        "bottom": 751.65625
+      },
+      {
+        "x": 32,
+        "y": 751.65625,
+        "width": 326,
+        "height": 56,
+        "bottom": 807.65625
+      },
+      {
+        "x": 32,
+        "y": 807.65625,
+        "width": 326,
+        "height": 56,
+        "bottom": 863.65625
+      },
+      {
+        "x": 32,
+        "y": 863.65625,
+        "width": 326,
+        "height": 56,
+        "bottom": 919.65625
+      }
+    ],
+    "selectBackground": "oklab(1 0 0 / 0.6)",
+    "selectHit": true
+  },
+  {
+    "width": 768,
+    "count": 1,
+    "theme": "light",
+    "overflow": false,
+    "select": {
+      "x": 615,
+      "y": 323,
+      "width": 137,
+      "height": 44,
+      "bottom": 367
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 329,
+      "width": 736,
+      "height": 32,
+      "bottom": 361
+    },
+    "card": {
+      "x": 16,
+      "y": 377,
+      "width": 362,
+      "height": 385.15625,
+      "bottom": 762.15625
+    },
+    "data": {
+      "x": 32,
+      "y": 511.5,
+      "width": 330,
+      "height": 42.65625,
+      "bottom": 554.15625
+    },
+    "resources": {
+      "x": 32,
+      "y": 483.5,
+      "width": 330,
+      "height": 110.65625,
+      "bottom": 594.15625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 329,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 361
+    },
+    "cpu": {
+      "x": 32,
+      "y": 483.5,
+      "width": 159,
+      "height": 24,
+      "bottom": 507.5
+    },
+    "memory": {
+      "x": 203,
+      "y": 483.5,
+      "width": 159,
+      "height": 24,
+      "bottom": 507.5
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 511.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 527.5
+      },
+      {
+        "x": 104.8125,
+        "y": 511.5,
+        "width": 257.1875,
+        "height": 16,
+        "bottom": 527.5
+      },
+      {
+        "x": 32,
+        "y": 531.5,
+        "width": 330,
+        "height": 4,
+        "bottom": 535.5
+      },
+      {
+        "x": 32,
+        "y": 539.5,
+        "width": 330,
+        "height": 14.65625,
+        "bottom": 554.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 606.15625,
+        "width": 330,
+        "height": 28,
+        "bottom": 634.15625
+      },
+      {
+        "x": 32,
+        "y": 634.15625,
+        "width": 330,
+        "height": 28,
+        "bottom": 662.15625
+      },
+      {
+        "x": 32,
+        "y": 662.15625,
+        "width": 330,
+        "height": 28,
+        "bottom": 690.15625
+      },
+      {
+        "x": 32,
+        "y": 690.15625,
+        "width": 330,
+        "height": 28,
+        "bottom": 718.15625
+      }
+    ],
+    "selectBackground": "oklch(1 0 0)",
+    "selectHit": true
+  },
+  {
+    "width": 768,
+    "count": 4,
+    "theme": "light",
+    "overflow": false,
+    "select": {
+      "x": 615,
+      "y": 323,
+      "width": 137,
+      "height": 44,
+      "bottom": 367
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 329,
+      "width": 736,
+      "height": 32,
+      "bottom": 361
+    },
+    "card": {
+      "x": 16,
+      "y": 377,
+      "width": 362,
+      "height": 484.15625,
+      "bottom": 861.15625
+    },
+    "data": {
+      "x": 32,
+      "y": 510,
+      "width": 330,
+      "height": 42.65625,
+      "bottom": 552.65625
+    },
+    "resources": {
+      "x": 32,
+      "y": 482,
+      "width": 330,
+      "height": 110.65625,
+      "bottom": 592.65625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 329,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 361
+    },
+    "cpu": {
+      "x": 32,
+      "y": 482,
+      "width": 159,
+      "height": 24,
+      "bottom": 506
+    },
+    "memory": {
+      "x": 203,
+      "y": 482,
+      "width": 159,
+      "height": 24,
+      "bottom": 506
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 510,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 526
+      },
+      {
+        "x": 104.8125,
+        "y": 510,
+        "width": 257.1875,
+        "height": 16,
+        "bottom": 526
+      },
+      {
+        "x": 32,
+        "y": 530,
+        "width": 330,
+        "height": 4,
+        "bottom": 534
+      },
+      {
+        "x": 32,
+        "y": 538,
+        "width": 330,
+        "height": 14.65625,
+        "bottom": 552.65625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 604.65625,
+        "width": 330,
+        "height": 28,
+        "bottom": 632.65625
+      },
+      {
+        "x": 32,
+        "y": 632.65625,
+        "width": 330,
+        "height": 56,
+        "bottom": 688.65625
+      },
+      {
+        "x": 32,
+        "y": 688.65625,
+        "width": 330,
+        "height": 56,
+        "bottom": 744.65625
+      },
+      {
+        "x": 32,
+        "y": 744.65625,
+        "width": 330,
+        "height": 56,
+        "bottom": 800.65625
+      }
+    ],
+    "selectBackground": "oklch(1 0 0)",
+    "selectHit": true
+  },
+  {
+    "width": 768,
+    "count": 8,
+    "theme": "light",
+    "overflow": false,
+    "select": {
+      "x": 615,
+      "y": 323,
+      "width": 137,
+      "height": 44,
+      "bottom": 367
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 329,
+      "width": 736,
+      "height": 32,
+      "bottom": 361
+    },
+    "card": {
+      "x": 16,
+      "y": 377,
+      "width": 362,
+      "height": 484.15625,
+      "bottom": 861.15625
+    },
+    "data": {
+      "x": 32,
+      "y": 510,
+      "width": 330,
+      "height": 42.65625,
+      "bottom": 552.65625
+    },
+    "resources": {
+      "x": 32,
+      "y": 482,
+      "width": 330,
+      "height": 110.65625,
+      "bottom": 592.65625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 329,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 361
+    },
+    "cpu": {
+      "x": 32,
+      "y": 482,
+      "width": 159,
+      "height": 24,
+      "bottom": 506
+    },
+    "memory": {
+      "x": 203,
+      "y": 482,
+      "width": 159,
+      "height": 24,
+      "bottom": 506
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 510,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 526
+      },
+      {
+        "x": 104.8125,
+        "y": 510,
+        "width": 257.1875,
+        "height": 16,
+        "bottom": 526
+      },
+      {
+        "x": 32,
+        "y": 530,
+        "width": 330,
+        "height": 4,
+        "bottom": 534
+      },
+      {
+        "x": 32,
+        "y": 538,
+        "width": 330,
+        "height": 14.65625,
+        "bottom": 552.65625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 604.65625,
+        "width": 330,
+        "height": 28,
+        "bottom": 632.65625
+      },
+      {
+        "x": 32,
+        "y": 632.65625,
+        "width": 330,
+        "height": 56,
+        "bottom": 688.65625
+      },
+      {
+        "x": 32,
+        "y": 688.65625,
+        "width": 330,
+        "height": 56,
+        "bottom": 744.65625
+      },
+      {
+        "x": 32,
+        "y": 744.65625,
+        "width": 330,
+        "height": 56,
+        "bottom": 800.65625
+      }
+    ],
+    "selectBackground": "oklch(1 0 0)",
+    "selectHit": true
+  },
+  {
+    "width": 1024,
+    "count": 1,
+    "theme": "light",
+    "overflow": false,
+    "select": {
+      "x": 871,
+      "y": 363,
+      "width": 137,
+      "height": 44,
+      "bottom": 407
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 369,
+      "width": 992,
+      "height": 32,
+      "bottom": 401
+    },
+    "card": {
+      "x": 16,
+      "y": 417,
+      "width": 322.65625,
+      "height": 385.15625,
+      "bottom": 802.15625
+    },
+    "data": {
+      "x": 32,
+      "y": 551.5,
+      "width": 290.65625,
+      "height": 42.65625,
+      "bottom": 594.15625
+    },
+    "resources": {
+      "x": 32,
+      "y": 523.5,
+      "width": 290.65625,
+      "height": 110.65625,
+      "bottom": 634.15625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 369,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 401
+    },
+    "cpu": {
+      "x": 32,
+      "y": 523.5,
+      "width": 139.328125,
+      "height": 24,
+      "bottom": 547.5
+    },
+    "memory": {
+      "x": 183.328125,
+      "y": 523.5,
+      "width": 139.328125,
+      "height": 24,
+      "bottom": 547.5
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 551.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 567.5
+      },
+      {
+        "x": 104.8125,
+        "y": 551.5,
+        "width": 217.84375,
+        "height": 16,
+        "bottom": 567.5
+      },
+      {
+        "x": 32,
+        "y": 571.5,
+        "width": 290.65625,
+        "height": 4,
+        "bottom": 575.5
+      },
+      {
+        "x": 32,
+        "y": 579.5,
+        "width": 290.65625,
+        "height": 14.65625,
+        "bottom": 594.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 646.15625,
+        "width": 290.65625,
+        "height": 28,
+        "bottom": 674.15625
+      },
+      {
+        "x": 32,
+        "y": 674.15625,
+        "width": 290.65625,
+        "height": 28,
+        "bottom": 702.15625
+      },
+      {
+        "x": 32,
+        "y": 702.15625,
+        "width": 290.65625,
+        "height": 28,
+        "bottom": 730.15625
+      },
+      {
+        "x": 32,
+        "y": 730.15625,
+        "width": 290.65625,
+        "height": 28,
+        "bottom": 758.15625
+      }
+    ],
+    "selectBackground": "oklch(1 0 0)",
+    "selectHit": true,
+    "tooltipVisible": true
+  },
+  {
+    "width": 1024,
+    "count": 4,
+    "theme": "light",
+    "overflow": false,
+    "select": {
+      "x": 871,
+      "y": 363,
+      "width": 137,
+      "height": 44,
+      "bottom": 407
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 369,
+      "width": 992,
+      "height": 32,
+      "bottom": 401
+    },
+    "card": {
+      "x": 16,
+      "y": 417,
+      "width": 322.65625,
+      "height": 500.65625,
+      "bottom": 917.65625
+    },
+    "data": {
+      "x": 32,
+      "y": 566.5,
+      "width": 290.65625,
+      "height": 42.65625,
+      "bottom": 609.15625
+    },
+    "resources": {
+      "x": 32,
+      "y": 538.5,
+      "width": 290.65625,
+      "height": 110.65625,
+      "bottom": 649.15625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 369,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 401
+    },
+    "cpu": {
+      "x": 32,
+      "y": 538.5,
+      "width": 139.328125,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "memory": {
+      "x": 183.328125,
+      "y": 538.5,
+      "width": 139.328125,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 566.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 104.8125,
+        "y": 566.5,
+        "width": 217.84375,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 32,
+        "y": 586.5,
+        "width": 290.65625,
+        "height": 4,
+        "bottom": 590.5
+      },
+      {
+        "x": 32,
+        "y": 594.5,
+        "width": 290.65625,
+        "height": 14.65625,
+        "bottom": 609.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 661.15625,
+        "width": 290.65625,
+        "height": 28,
+        "bottom": 689.15625
+      },
+      {
+        "x": 32,
+        "y": 689.15625,
+        "width": 290.65625,
+        "height": 56,
+        "bottom": 745.15625
+      },
+      {
+        "x": 32,
+        "y": 745.15625,
+        "width": 290.65625,
+        "height": 56,
+        "bottom": 801.15625
+      },
+      {
+        "x": 32,
+        "y": 801.15625,
+        "width": 290.65625,
+        "height": 56,
+        "bottom": 857.15625
+      }
+    ],
+    "selectBackground": "oklch(1 0 0)",
+    "selectHit": true
+  },
+  {
+    "width": 1024,
+    "count": 8,
+    "theme": "light",
+    "overflow": false,
+    "select": {
+      "x": 871,
+      "y": 363,
+      "width": 137,
+      "height": 44,
+      "bottom": 407
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 369,
+      "width": 992,
+      "height": 32,
+      "bottom": 401
+    },
+    "card": {
+      "x": 16,
+      "y": 417,
+      "width": 322.65625,
+      "height": 500.65625,
+      "bottom": 917.65625
+    },
+    "data": {
+      "x": 32,
+      "y": 566.5,
+      "width": 290.65625,
+      "height": 42.65625,
+      "bottom": 609.15625
+    },
+    "resources": {
+      "x": 32,
+      "y": 538.5,
+      "width": 290.65625,
+      "height": 110.65625,
+      "bottom": 649.15625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 369,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 401
+    },
+    "cpu": {
+      "x": 32,
+      "y": 538.5,
+      "width": 139.328125,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "memory": {
+      "x": 183.328125,
+      "y": 538.5,
+      "width": 139.328125,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 566.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 104.8125,
+        "y": 566.5,
+        "width": 217.84375,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 32,
+        "y": 586.5,
+        "width": 290.65625,
+        "height": 4,
+        "bottom": 590.5
+      },
+      {
+        "x": 32,
+        "y": 594.5,
+        "width": 290.65625,
+        "height": 14.65625,
+        "bottom": 609.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 661.15625,
+        "width": 290.65625,
+        "height": 28,
+        "bottom": 689.15625
+      },
+      {
+        "x": 32,
+        "y": 689.15625,
+        "width": 290.65625,
+        "height": 56,
+        "bottom": 745.15625
+      },
+      {
+        "x": 32,
+        "y": 745.15625,
+        "width": 290.65625,
+        "height": 56,
+        "bottom": 801.15625
+      },
+      {
+        "x": 32,
+        "y": 801.15625,
+        "width": 290.65625,
+        "height": 56,
+        "bottom": 857.15625
+      }
+    ],
+    "selectBackground": "oklch(1 0 0)",
+    "selectHit": true
+  },
+  {
+    "width": 1280,
+    "count": 1,
+    "theme": "light",
+    "overflow": false,
+    "select": {
+      "x": 1127,
+      "y": 363,
+      "width": 137,
+      "height": 44,
+      "bottom": 407
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 369,
+      "width": 1248,
+      "height": 32,
+      "bottom": 401
+    },
+    "card": {
+      "x": 16,
+      "y": 417,
+      "width": 303,
+      "height": 385.15625,
+      "bottom": 802.15625
+    },
+    "data": {
+      "x": 32,
+      "y": 551.5,
+      "width": 271,
+      "height": 42.65625,
+      "bottom": 594.15625
+    },
+    "resources": {
+      "x": 32,
+      "y": 523.5,
+      "width": 271,
+      "height": 110.65625,
+      "bottom": 634.15625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 369,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 401
+    },
+    "cpu": {
+      "x": 32,
+      "y": 523.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 547.5
+    },
+    "memory": {
+      "x": 173.5,
+      "y": 523.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 547.5
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 551.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 567.5
+      },
+      {
+        "x": 104.8125,
+        "y": 551.5,
+        "width": 198.1875,
+        "height": 16,
+        "bottom": 567.5
+      },
+      {
+        "x": 32,
+        "y": 571.5,
+        "width": 271,
+        "height": 4,
+        "bottom": 575.5
+      },
+      {
+        "x": 32,
+        "y": 579.5,
+        "width": 271,
+        "height": 14.65625,
+        "bottom": 594.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 646.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 674.15625
+      },
+      {
+        "x": 32,
+        "y": 674.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 702.15625
+      },
+      {
+        "x": 32,
+        "y": 702.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 730.15625
+      },
+      {
+        "x": 32,
+        "y": 730.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 758.15625
+      }
+    ],
+    "selectBackground": "oklch(1 0 0)",
+    "selectHit": true,
+    "tooltipVisible": true
+  },
+  {
+    "width": 1280,
+    "count": 4,
+    "theme": "light",
+    "overflow": false,
+    "select": {
+      "x": 1127,
+      "y": 363,
+      "width": 137,
+      "height": 44,
+      "bottom": 407
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 369,
+      "width": 1248,
+      "height": 32,
+      "bottom": 401
+    },
+    "card": {
+      "x": 16,
+      "y": 417,
+      "width": 303,
+      "height": 500.65625,
+      "bottom": 917.65625
+    },
+    "data": {
+      "x": 32,
+      "y": 566.5,
+      "width": 271,
+      "height": 42.65625,
+      "bottom": 609.15625
+    },
+    "resources": {
+      "x": 32,
+      "y": 538.5,
+      "width": 271,
+      "height": 110.65625,
+      "bottom": 649.15625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 369,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 401
+    },
+    "cpu": {
+      "x": 32,
+      "y": 538.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "memory": {
+      "x": 173.5,
+      "y": 538.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 566.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 104.8125,
+        "y": 566.5,
+        "width": 198.1875,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 32,
+        "y": 586.5,
+        "width": 271,
+        "height": 4,
+        "bottom": 590.5
+      },
+      {
+        "x": 32,
+        "y": 594.5,
+        "width": 271,
+        "height": 14.65625,
+        "bottom": 609.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 661.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 689.15625
+      },
+      {
+        "x": 32,
+        "y": 689.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 745.15625
+      },
+      {
+        "x": 32,
+        "y": 745.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 801.15625
+      },
+      {
+        "x": 32,
+        "y": 801.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 857.15625
+      }
+    ],
+    "selectBackground": "oklch(1 0 0)",
+    "selectHit": true
+  },
+  {
+    "width": 1280,
+    "count": 8,
+    "theme": "light",
+    "overflow": false,
+    "select": {
+      "x": 1127,
+      "y": 363,
+      "width": 137,
+      "height": 44,
+      "bottom": 407
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 369,
+      "width": 1248,
+      "height": 32,
+      "bottom": 401
+    },
+    "card": {
+      "x": 16,
+      "y": 417,
+      "width": 303,
+      "height": 500.65625,
+      "bottom": 917.65625
+    },
+    "data": {
+      "x": 32,
+      "y": 566.5,
+      "width": 271,
+      "height": 42.65625,
+      "bottom": 609.15625
+    },
+    "resources": {
+      "x": 32,
+      "y": 538.5,
+      "width": 271,
+      "height": 110.65625,
+      "bottom": 649.15625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 369,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 401
+    },
+    "cpu": {
+      "x": 32,
+      "y": 538.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "memory": {
+      "x": 173.5,
+      "y": 538.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 566.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 104.8125,
+        "y": 566.5,
+        "width": 198.1875,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 32,
+        "y": 586.5,
+        "width": 271,
+        "height": 4,
+        "bottom": 590.5
+      },
+      {
+        "x": 32,
+        "y": 594.5,
+        "width": 271,
+        "height": 14.65625,
+        "bottom": 609.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 661.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 689.15625
+      },
+      {
+        "x": 32,
+        "y": 689.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 745.15625
+      },
+      {
+        "x": 32,
+        "y": 745.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 801.15625
+      },
+      {
+        "x": 32,
+        "y": 801.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 857.15625
+      }
+    ],
+    "selectBackground": "oklch(1 0 0)",
+    "selectHit": true
+  },
+  {
+    "width": 1440,
+    "count": 1,
+    "theme": "light",
+    "overflow": false,
+    "select": {
+      "x": 1207,
+      "y": 363,
+      "width": 137,
+      "height": 44,
+      "bottom": 407
+    },
+    "toolbar": {
+      "x": 96,
+      "y": 369,
+      "width": 1248,
+      "height": 32,
+      "bottom": 401
+    },
+    "card": {
+      "x": 96,
+      "y": 417,
+      "width": 303,
+      "height": 385.15625,
+      "bottom": 802.15625
+    },
+    "data": {
+      "x": 112,
+      "y": 551.5,
+      "width": 271,
+      "height": 42.65625,
+      "bottom": 594.15625
+    },
+    "resources": {
+      "x": 112,
+      "y": 523.5,
+      "width": 271,
+      "height": 110.65625,
+      "bottom": 634.15625
+    },
+    "tabs": {
+      "x": 96,
+      "y": 369,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 401
+    },
+    "cpu": {
+      "x": 112,
+      "y": 523.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 547.5
+    },
+    "memory": {
+      "x": 253.5,
+      "y": 523.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 547.5
+    },
+    "dataParts": [
+      {
+        "x": 112,
+        "y": 551.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 567.5
+      },
+      {
+        "x": 184.8125,
+        "y": 551.5,
+        "width": 198.1875,
+        "height": 16,
+        "bottom": 567.5
+      },
+      {
+        "x": 112,
+        "y": 571.5,
+        "width": 271,
+        "height": 4,
+        "bottom": 575.5
+      },
+      {
+        "x": 112,
+        "y": 579.5,
+        "width": 271,
+        "height": 14.65625,
+        "bottom": 594.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 112,
+        "y": 646.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 674.15625
+      },
+      {
+        "x": 112,
+        "y": 674.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 702.15625
+      },
+      {
+        "x": 112,
+        "y": 702.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 730.15625
+      },
+      {
+        "x": 112,
+        "y": 730.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 758.15625
+      }
+    ],
+    "selectBackground": "oklch(1 0 0)",
+    "selectHit": true,
+    "tooltipVisible": true
+  },
+  {
+    "width": 1440,
+    "count": 4,
+    "theme": "light",
+    "overflow": false,
+    "select": {
+      "x": 1207,
+      "y": 363,
+      "width": 137,
+      "height": 44,
+      "bottom": 407
+    },
+    "toolbar": {
+      "x": 96,
+      "y": 369,
+      "width": 1248,
+      "height": 32,
+      "bottom": 401
+    },
+    "card": {
+      "x": 96,
+      "y": 417,
+      "width": 303,
+      "height": 500.65625,
+      "bottom": 917.65625
+    },
+    "data": {
+      "x": 112,
+      "y": 566.5,
+      "width": 271,
+      "height": 42.65625,
+      "bottom": 609.15625
+    },
+    "resources": {
+      "x": 112,
+      "y": 538.5,
+      "width": 271,
+      "height": 110.65625,
+      "bottom": 649.15625
+    },
+    "tabs": {
+      "x": 96,
+      "y": 369,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 401
+    },
+    "cpu": {
+      "x": 112,
+      "y": 538.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "memory": {
+      "x": 253.5,
+      "y": 538.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "dataParts": [
+      {
+        "x": 112,
+        "y": 566.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 184.8125,
+        "y": 566.5,
+        "width": 198.1875,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 112,
+        "y": 586.5,
+        "width": 271,
+        "height": 4,
+        "bottom": 590.5
+      },
+      {
+        "x": 112,
+        "y": 594.5,
+        "width": 271,
+        "height": 14.65625,
+        "bottom": 609.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 112,
+        "y": 661.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 689.15625
+      },
+      {
+        "x": 112,
+        "y": 689.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 745.15625
+      },
+      {
+        "x": 112,
+        "y": 745.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 801.15625
+      },
+      {
+        "x": 112,
+        "y": 801.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 857.15625
+      }
+    ],
+    "selectBackground": "oklch(1 0 0)",
+    "selectHit": true
+  },
+  {
+    "width": 1440,
+    "count": 8,
+    "theme": "light",
+    "overflow": false,
+    "select": {
+      "x": 1207,
+      "y": 363,
+      "width": 137,
+      "height": 44,
+      "bottom": 407
+    },
+    "toolbar": {
+      "x": 96,
+      "y": 369,
+      "width": 1248,
+      "height": 32,
+      "bottom": 401
+    },
+    "card": {
+      "x": 96,
+      "y": 417,
+      "width": 303,
+      "height": 500.65625,
+      "bottom": 917.65625
+    },
+    "data": {
+      "x": 112,
+      "y": 566.5,
+      "width": 271,
+      "height": 42.65625,
+      "bottom": 609.15625
+    },
+    "resources": {
+      "x": 112,
+      "y": 538.5,
+      "width": 271,
+      "height": 110.65625,
+      "bottom": 649.15625
+    },
+    "tabs": {
+      "x": 96,
+      "y": 369,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 401
+    },
+    "cpu": {
+      "x": 112,
+      "y": 538.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "memory": {
+      "x": 253.5,
+      "y": 538.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "dataParts": [
+      {
+        "x": 112,
+        "y": 566.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 184.8125,
+        "y": 566.5,
+        "width": 198.1875,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 112,
+        "y": 586.5,
+        "width": 271,
+        "height": 4,
+        "bottom": 590.5
+      },
+      {
+        "x": 112,
+        "y": 594.5,
+        "width": 271,
+        "height": 14.65625,
+        "bottom": 609.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 112,
+        "y": 661.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 689.15625
+      },
+      {
+        "x": 112,
+        "y": 689.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 745.15625
+      },
+      {
+        "x": 112,
+        "y": 745.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 801.15625
+      },
+      {
+        "x": 112,
+        "y": 801.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 857.15625
+      }
+    ],
+    "selectBackground": "oklch(1 0 0)",
+    "selectHit": true
+  },
+  {
+    "width": 1920,
+    "count": 1,
+    "theme": "light",
+    "overflow": false,
+    "select": {
+      "x": 1447,
+      "y": 363,
+      "width": 137,
+      "height": 44,
+      "bottom": 407
+    },
+    "toolbar": {
+      "x": 336,
+      "y": 369,
+      "width": 1248,
+      "height": 32,
+      "bottom": 401
+    },
+    "card": {
+      "x": 336,
+      "y": 417,
+      "width": 303,
+      "height": 385.15625,
+      "bottom": 802.15625
+    },
+    "data": {
+      "x": 352,
+      "y": 551.5,
+      "width": 271,
+      "height": 42.65625,
+      "bottom": 594.15625
+    },
+    "resources": {
+      "x": 352,
+      "y": 523.5,
+      "width": 271,
+      "height": 110.65625,
+      "bottom": 634.15625
+    },
+    "tabs": {
+      "x": 336,
+      "y": 369,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 401
+    },
+    "cpu": {
+      "x": 352,
+      "y": 523.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 547.5
+    },
+    "memory": {
+      "x": 493.5,
+      "y": 523.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 547.5
+    },
+    "dataParts": [
+      {
+        "x": 352,
+        "y": 551.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 567.5
+      },
+      {
+        "x": 424.8125,
+        "y": 551.5,
+        "width": 198.1875,
+        "height": 16,
+        "bottom": 567.5
+      },
+      {
+        "x": 352,
+        "y": 571.5,
+        "width": 271,
+        "height": 4,
+        "bottom": 575.5
+      },
+      {
+        "x": 352,
+        "y": 579.5,
+        "width": 271,
+        "height": 14.65625,
+        "bottom": 594.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 352,
+        "y": 646.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 674.15625
+      },
+      {
+        "x": 352,
+        "y": 674.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 702.15625
+      },
+      {
+        "x": 352,
+        "y": 702.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 730.15625
+      },
+      {
+        "x": 352,
+        "y": 730.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 758.15625
+      }
+    ],
+    "selectBackground": "oklch(1 0 0)",
+    "selectHit": true,
+    "tooltipVisible": true
+  },
+  {
+    "width": 1920,
+    "count": 4,
+    "theme": "light",
+    "overflow": false,
+    "select": {
+      "x": 1447,
+      "y": 363,
+      "width": 137,
+      "height": 44,
+      "bottom": 407
+    },
+    "toolbar": {
+      "x": 336,
+      "y": 369,
+      "width": 1248,
+      "height": 32,
+      "bottom": 401
+    },
+    "card": {
+      "x": 336,
+      "y": 417,
+      "width": 303,
+      "height": 500.65625,
+      "bottom": 917.65625
+    },
+    "data": {
+      "x": 352,
+      "y": 566.5,
+      "width": 271,
+      "height": 42.65625,
+      "bottom": 609.15625
+    },
+    "resources": {
+      "x": 352,
+      "y": 538.5,
+      "width": 271,
+      "height": 110.65625,
+      "bottom": 649.15625
+    },
+    "tabs": {
+      "x": 336,
+      "y": 369,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 401
+    },
+    "cpu": {
+      "x": 352,
+      "y": 538.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "memory": {
+      "x": 493.5,
+      "y": 538.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "dataParts": [
+      {
+        "x": 352,
+        "y": 566.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 424.8125,
+        "y": 566.5,
+        "width": 198.1875,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 352,
+        "y": 586.5,
+        "width": 271,
+        "height": 4,
+        "bottom": 590.5
+      },
+      {
+        "x": 352,
+        "y": 594.5,
+        "width": 271,
+        "height": 14.65625,
+        "bottom": 609.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 352,
+        "y": 661.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 689.15625
+      },
+      {
+        "x": 352,
+        "y": 689.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 745.15625
+      },
+      {
+        "x": 352,
+        "y": 745.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 801.15625
+      },
+      {
+        "x": 352,
+        "y": 801.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 857.15625
+      }
+    ],
+    "selectBackground": "oklch(1 0 0)",
+    "selectHit": true
+  },
+  {
+    "width": 1920,
+    "count": 8,
+    "theme": "light",
+    "overflow": false,
+    "select": {
+      "x": 1447,
+      "y": 363,
+      "width": 137,
+      "height": 44,
+      "bottom": 407
+    },
+    "toolbar": {
+      "x": 336,
+      "y": 369,
+      "width": 1248,
+      "height": 32,
+      "bottom": 401
+    },
+    "card": {
+      "x": 336,
+      "y": 417,
+      "width": 303,
+      "height": 500.65625,
+      "bottom": 917.65625
+    },
+    "data": {
+      "x": 352,
+      "y": 566.5,
+      "width": 271,
+      "height": 42.65625,
+      "bottom": 609.15625
+    },
+    "resources": {
+      "x": 352,
+      "y": 538.5,
+      "width": 271,
+      "height": 110.65625,
+      "bottom": 649.15625
+    },
+    "tabs": {
+      "x": 336,
+      "y": 369,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 401
+    },
+    "cpu": {
+      "x": 352,
+      "y": 538.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "memory": {
+      "x": 493.5,
+      "y": 538.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "dataParts": [
+      {
+        "x": 352,
+        "y": 566.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 424.8125,
+        "y": 566.5,
+        "width": 198.1875,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 352,
+        "y": 586.5,
+        "width": 271,
+        "height": 4,
+        "bottom": 590.5
+      },
+      {
+        "x": 352,
+        "y": 594.5,
+        "width": 271,
+        "height": 14.65625,
+        "bottom": 609.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 352,
+        "y": 661.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 689.15625
+      },
+      {
+        "x": 352,
+        "y": 689.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 745.15625
+      },
+      {
+        "x": 352,
+        "y": 745.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 801.15625
+      },
+      {
+        "x": 352,
+        "y": 801.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 857.15625
+      }
+    ],
+    "selectBackground": "oklch(1 0 0)",
+    "selectHit": true
+  },
+  {
+    "width": 360,
+    "count": 1,
+    "theme": "dark",
+    "overflow": false,
+    "select": {
+      "x": 207,
+      "y": 427,
+      "width": 137,
+      "height": 44,
+      "bottom": 471
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 433,
+      "width": 328,
+      "height": 32,
+      "bottom": 465
+    },
+    "card": {
+      "x": 16,
+      "y": 481,
+      "width": 328,
+      "height": 385.15625,
+      "bottom": 866.15625
+    },
+    "data": {
+      "x": 32,
+      "y": 615.5,
+      "width": 142,
+      "height": 42.65625,
+      "bottom": 658.15625
+    },
+    "resources": {
+      "x": 32,
+      "y": 587.5,
+      "width": 296,
+      "height": 110.65625,
+      "bottom": 698.15625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 433,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 465
+    },
+    "cpu": {
+      "x": 32,
+      "y": 587.5,
+      "width": 142,
+      "height": 24,
+      "bottom": 611.5
+    },
+    "memory": {
+      "x": 186,
+      "y": 587.5,
+      "width": 142,
+      "height": 24,
+      "bottom": 611.5
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 615.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 631.5
+      },
+      {
+        "x": 104.8125,
+        "y": 615.5,
+        "width": 69.1875,
+        "height": 16,
+        "bottom": 631.5
+      },
+      {
+        "x": 32,
+        "y": 635.5,
+        "width": 142,
+        "height": 4,
+        "bottom": 639.5
+      },
+      {
+        "x": 32,
+        "y": 643.5,
+        "width": 142,
+        "height": 14.65625,
+        "bottom": 658.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 710.15625,
+        "width": 296,
+        "height": 28,
+        "bottom": 738.15625
+      },
+      {
+        "x": 32,
+        "y": 738.15625,
+        "width": 296,
+        "height": 28,
+        "bottom": 766.15625
+      },
+      {
+        "x": 32,
+        "y": 766.15625,
+        "width": 296,
+        "height": 28,
+        "bottom": 794.15625
+      },
+      {
+        "x": 32,
+        "y": 794.15625,
+        "width": 296,
+        "height": 28,
+        "bottom": 822.15625
+      }
+    ],
+    "selectBackground": "oklab(1 0 0 / 0.045)",
+    "selectHit": true
+  },
+  {
+    "width": 360,
+    "count": 4,
+    "theme": "dark",
+    "overflow": false,
+    "select": {
+      "x": 207,
+      "y": 427,
+      "width": 137,
+      "height": 44,
+      "bottom": 471
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 433,
+      "width": 328,
+      "height": 32,
+      "bottom": 465
+    },
+    "card": {
+      "x": 16,
+      "y": 481,
+      "width": 328,
+      "height": 500.65625,
+      "bottom": 981.65625
+    },
+    "data": {
+      "x": 32,
+      "y": 630.5,
+      "width": 142,
+      "height": 42.65625,
+      "bottom": 673.15625
+    },
+    "resources": {
+      "x": 32,
+      "y": 602.5,
+      "width": 296,
+      "height": 110.65625,
+      "bottom": 713.15625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 433,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 465
+    },
+    "cpu": {
+      "x": 32,
+      "y": 602.5,
+      "width": 142,
+      "height": 24,
+      "bottom": 626.5
+    },
+    "memory": {
+      "x": 186,
+      "y": 602.5,
+      "width": 142,
+      "height": 24,
+      "bottom": 626.5
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 630.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 646.5
+      },
+      {
+        "x": 104.8125,
+        "y": 630.5,
+        "width": 69.1875,
+        "height": 16,
+        "bottom": 646.5
+      },
+      {
+        "x": 32,
+        "y": 650.5,
+        "width": 142,
+        "height": 4,
+        "bottom": 654.5
+      },
+      {
+        "x": 32,
+        "y": 658.5,
+        "width": 142,
+        "height": 14.65625,
+        "bottom": 673.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 725.15625,
+        "width": 296,
+        "height": 28,
+        "bottom": 753.15625
+      },
+      {
+        "x": 32,
+        "y": 753.15625,
+        "width": 296,
+        "height": 56,
+        "bottom": 809.15625
+      },
+      {
+        "x": 32,
+        "y": 809.15625,
+        "width": 296,
+        "height": 56,
+        "bottom": 865.15625
+      },
+      {
+        "x": 32,
+        "y": 865.15625,
+        "width": 296,
+        "height": 56,
+        "bottom": 921.15625
+      }
+    ],
+    "selectBackground": "oklab(1 0 0 / 0.045)",
+    "selectHit": true
+  },
+  {
+    "width": 360,
+    "count": 8,
+    "theme": "dark",
+    "overflow": false,
+    "select": {
+      "x": 207,
+      "y": 427,
+      "width": 137,
+      "height": 44,
+      "bottom": 471
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 433,
+      "width": 328,
+      "height": 32,
+      "bottom": 465
+    },
+    "card": {
+      "x": 16,
+      "y": 481,
+      "width": 328,
+      "height": 500.65625,
+      "bottom": 981.65625
+    },
+    "data": {
+      "x": 32,
+      "y": 630.5,
+      "width": 142,
+      "height": 42.65625,
+      "bottom": 673.15625
+    },
+    "resources": {
+      "x": 32,
+      "y": 602.5,
+      "width": 296,
+      "height": 110.65625,
+      "bottom": 713.15625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 433,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 465
+    },
+    "cpu": {
+      "x": 32,
+      "y": 602.5,
+      "width": 142,
+      "height": 24,
+      "bottom": 626.5
+    },
+    "memory": {
+      "x": 186,
+      "y": 602.5,
+      "width": 142,
+      "height": 24,
+      "bottom": 626.5
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 630.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 646.5
+      },
+      {
+        "x": 104.8125,
+        "y": 630.5,
+        "width": 69.1875,
+        "height": 16,
+        "bottom": 646.5
+      },
+      {
+        "x": 32,
+        "y": 650.5,
+        "width": 142,
+        "height": 4,
+        "bottom": 654.5
+      },
+      {
+        "x": 32,
+        "y": 658.5,
+        "width": 142,
+        "height": 14.65625,
+        "bottom": 673.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 725.15625,
+        "width": 296,
+        "height": 28,
+        "bottom": 753.15625
+      },
+      {
+        "x": 32,
+        "y": 753.15625,
+        "width": 296,
+        "height": 56,
+        "bottom": 809.15625
+      },
+      {
+        "x": 32,
+        "y": 809.15625,
+        "width": 296,
+        "height": 56,
+        "bottom": 865.15625
+      },
+      {
+        "x": 32,
+        "y": 865.15625,
+        "width": 296,
+        "height": 56,
+        "bottom": 921.15625
+      }
+    ],
+    "selectBackground": "oklab(1 0 0 / 0.045)",
+    "selectHit": true
+  },
+  {
+    "width": 390,
+    "count": 1,
+    "theme": "dark",
+    "overflow": false,
+    "select": {
+      "x": 237,
+      "y": 442,
+      "width": 137,
+      "height": 44,
+      "bottom": 486
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 448,
+      "width": 358,
+      "height": 32,
+      "bottom": 480
+    },
+    "card": {
+      "x": 16,
+      "y": 496,
+      "width": 358,
+      "height": 385.15625,
+      "bottom": 881.15625
+    },
+    "data": {
+      "x": 32,
+      "y": 630.5,
+      "width": 157,
+      "height": 42.65625,
+      "bottom": 673.15625
+    },
+    "resources": {
+      "x": 32,
+      "y": 602.5,
+      "width": 326,
+      "height": 110.65625,
+      "bottom": 713.15625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 448,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 480
+    },
+    "cpu": {
+      "x": 32,
+      "y": 602.5,
+      "width": 157,
+      "height": 24,
+      "bottom": 626.5
+    },
+    "memory": {
+      "x": 201,
+      "y": 602.5,
+      "width": 157,
+      "height": 24,
+      "bottom": 626.5
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 630.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 646.5
+      },
+      {
+        "x": 104.8125,
+        "y": 630.5,
+        "width": 84.1875,
+        "height": 16,
+        "bottom": 646.5
+      },
+      {
+        "x": 32,
+        "y": 650.5,
+        "width": 157,
+        "height": 4,
+        "bottom": 654.5
+      },
+      {
+        "x": 32,
+        "y": 658.5,
+        "width": 157,
+        "height": 14.65625,
+        "bottom": 673.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 725.15625,
+        "width": 326,
+        "height": 28,
+        "bottom": 753.15625
+      },
+      {
+        "x": 32,
+        "y": 753.15625,
+        "width": 326,
+        "height": 28,
+        "bottom": 781.15625
+      },
+      {
+        "x": 32,
+        "y": 781.15625,
+        "width": 326,
+        "height": 28,
+        "bottom": 809.15625
+      },
+      {
+        "x": 32,
+        "y": 809.15625,
+        "width": 326,
+        "height": 28,
+        "bottom": 837.15625
+      }
+    ],
+    "selectBackground": "oklab(1 0 0 / 0.045)",
+    "selectHit": true
+  },
+  {
+    "width": 390,
+    "count": 4,
+    "theme": "dark",
+    "overflow": false,
+    "select": {
+      "x": 237,
+      "y": 442,
+      "width": 137,
+      "height": 44,
+      "bottom": 486
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 448,
+      "width": 358,
+      "height": 32,
+      "bottom": 480
+    },
+    "card": {
+      "x": 16,
+      "y": 496,
+      "width": 358,
+      "height": 484.15625,
+      "bottom": 980.15625
+    },
+    "data": {
+      "x": 32,
+      "y": 629,
+      "width": 157,
+      "height": 42.65625,
+      "bottom": 671.65625
+    },
+    "resources": {
+      "x": 32,
+      "y": 601,
+      "width": 326,
+      "height": 110.65625,
+      "bottom": 711.65625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 448,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 480
+    },
+    "cpu": {
+      "x": 32,
+      "y": 601,
+      "width": 157,
+      "height": 24,
+      "bottom": 625
+    },
+    "memory": {
+      "x": 201,
+      "y": 601,
+      "width": 157,
+      "height": 24,
+      "bottom": 625
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 629,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 645
+      },
+      {
+        "x": 104.8125,
+        "y": 629,
+        "width": 84.1875,
+        "height": 16,
+        "bottom": 645
+      },
+      {
+        "x": 32,
+        "y": 649,
+        "width": 157,
+        "height": 4,
+        "bottom": 653
+      },
+      {
+        "x": 32,
+        "y": 657,
+        "width": 157,
+        "height": 14.65625,
+        "bottom": 671.65625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 723.65625,
+        "width": 326,
+        "height": 28,
+        "bottom": 751.65625
+      },
+      {
+        "x": 32,
+        "y": 751.65625,
+        "width": 326,
+        "height": 56,
+        "bottom": 807.65625
+      },
+      {
+        "x": 32,
+        "y": 807.65625,
+        "width": 326,
+        "height": 56,
+        "bottom": 863.65625
+      },
+      {
+        "x": 32,
+        "y": 863.65625,
+        "width": 326,
+        "height": 56,
+        "bottom": 919.65625
+      }
+    ],
+    "selectBackground": "oklab(1 0 0 / 0.045)",
+    "selectHit": true
+  },
+  {
+    "width": 390,
+    "count": 8,
+    "theme": "dark",
+    "overflow": false,
+    "select": {
+      "x": 237,
+      "y": 442,
+      "width": 137,
+      "height": 44,
+      "bottom": 486
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 448,
+      "width": 358,
+      "height": 32,
+      "bottom": 480
+    },
+    "card": {
+      "x": 16,
+      "y": 496,
+      "width": 358,
+      "height": 484.15625,
+      "bottom": 980.15625
+    },
+    "data": {
+      "x": 32,
+      "y": 629,
+      "width": 157,
+      "height": 42.65625,
+      "bottom": 671.65625
+    },
+    "resources": {
+      "x": 32,
+      "y": 601,
+      "width": 326,
+      "height": 110.65625,
+      "bottom": 711.65625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 448,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 480
+    },
+    "cpu": {
+      "x": 32,
+      "y": 601,
+      "width": 157,
+      "height": 24,
+      "bottom": 625
+    },
+    "memory": {
+      "x": 201,
+      "y": 601,
+      "width": 157,
+      "height": 24,
+      "bottom": 625
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 629,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 645
+      },
+      {
+        "x": 104.8125,
+        "y": 629,
+        "width": 84.1875,
+        "height": 16,
+        "bottom": 645
+      },
+      {
+        "x": 32,
+        "y": 649,
+        "width": 157,
+        "height": 4,
+        "bottom": 653
+      },
+      {
+        "x": 32,
+        "y": 657,
+        "width": 157,
+        "height": 14.65625,
+        "bottom": 671.65625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 723.65625,
+        "width": 326,
+        "height": 28,
+        "bottom": 751.65625
+      },
+      {
+        "x": 32,
+        "y": 751.65625,
+        "width": 326,
+        "height": 56,
+        "bottom": 807.65625
+      },
+      {
+        "x": 32,
+        "y": 807.65625,
+        "width": 326,
+        "height": 56,
+        "bottom": 863.65625
+      },
+      {
+        "x": 32,
+        "y": 863.65625,
+        "width": 326,
+        "height": 56,
+        "bottom": 919.65625
+      }
+    ],
+    "selectBackground": "oklab(1 0 0 / 0.045)",
+    "selectHit": true
+  },
+  {
+    "width": 768,
+    "count": 1,
+    "theme": "dark",
+    "overflow": false,
+    "select": {
+      "x": 615,
+      "y": 323,
+      "width": 137,
+      "height": 44,
+      "bottom": 367
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 329,
+      "width": 736,
+      "height": 32,
+      "bottom": 361
+    },
+    "card": {
+      "x": 16,
+      "y": 377,
+      "width": 362,
+      "height": 385.15625,
+      "bottom": 762.15625
+    },
+    "data": {
+      "x": 32,
+      "y": 511.5,
+      "width": 330,
+      "height": 42.65625,
+      "bottom": 554.15625
+    },
+    "resources": {
+      "x": 32,
+      "y": 483.5,
+      "width": 330,
+      "height": 110.65625,
+      "bottom": 594.15625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 329,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 361
+    },
+    "cpu": {
+      "x": 32,
+      "y": 483.5,
+      "width": 159,
+      "height": 24,
+      "bottom": 507.5
+    },
+    "memory": {
+      "x": 203,
+      "y": 483.5,
+      "width": 159,
+      "height": 24,
+      "bottom": 507.5
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 511.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 527.5
+      },
+      {
+        "x": 104.8125,
+        "y": 511.5,
+        "width": 257.1875,
+        "height": 16,
+        "bottom": 527.5
+      },
+      {
+        "x": 32,
+        "y": 531.5,
+        "width": 330,
+        "height": 4,
+        "bottom": 535.5
+      },
+      {
+        "x": 32,
+        "y": 539.5,
+        "width": 330,
+        "height": 14.65625,
+        "bottom": 554.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 606.15625,
+        "width": 330,
+        "height": 28,
+        "bottom": 634.15625
+      },
+      {
+        "x": 32,
+        "y": 634.15625,
+        "width": 330,
+        "height": 28,
+        "bottom": 662.15625
+      },
+      {
+        "x": 32,
+        "y": 662.15625,
+        "width": 330,
+        "height": 28,
+        "bottom": 690.15625
+      },
+      {
+        "x": 32,
+        "y": 690.15625,
+        "width": 330,
+        "height": 28,
+        "bottom": 718.15625
+      }
+    ],
+    "selectBackground": "oklch(0.141 0.005 285.823)",
+    "selectHit": true
+  },
+  {
+    "width": 768,
+    "count": 4,
+    "theme": "dark",
+    "overflow": false,
+    "select": {
+      "x": 615,
+      "y": 323,
+      "width": 137,
+      "height": 44,
+      "bottom": 367
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 329,
+      "width": 736,
+      "height": 32,
+      "bottom": 361
+    },
+    "card": {
+      "x": 16,
+      "y": 377,
+      "width": 362,
+      "height": 484.15625,
+      "bottom": 861.15625
+    },
+    "data": {
+      "x": 32,
+      "y": 510,
+      "width": 330,
+      "height": 42.65625,
+      "bottom": 552.65625
+    },
+    "resources": {
+      "x": 32,
+      "y": 482,
+      "width": 330,
+      "height": 110.65625,
+      "bottom": 592.65625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 329,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 361
+    },
+    "cpu": {
+      "x": 32,
+      "y": 482,
+      "width": 159,
+      "height": 24,
+      "bottom": 506
+    },
+    "memory": {
+      "x": 203,
+      "y": 482,
+      "width": 159,
+      "height": 24,
+      "bottom": 506
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 510,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 526
+      },
+      {
+        "x": 104.8125,
+        "y": 510,
+        "width": 257.1875,
+        "height": 16,
+        "bottom": 526
+      },
+      {
+        "x": 32,
+        "y": 530,
+        "width": 330,
+        "height": 4,
+        "bottom": 534
+      },
+      {
+        "x": 32,
+        "y": 538,
+        "width": 330,
+        "height": 14.65625,
+        "bottom": 552.65625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 604.65625,
+        "width": 330,
+        "height": 28,
+        "bottom": 632.65625
+      },
+      {
+        "x": 32,
+        "y": 632.65625,
+        "width": 330,
+        "height": 56,
+        "bottom": 688.65625
+      },
+      {
+        "x": 32,
+        "y": 688.65625,
+        "width": 330,
+        "height": 56,
+        "bottom": 744.65625
+      },
+      {
+        "x": 32,
+        "y": 744.65625,
+        "width": 330,
+        "height": 56,
+        "bottom": 800.65625
+      }
+    ],
+    "selectBackground": "oklch(0.141 0.005 285.823)",
+    "selectHit": true
+  },
+  {
+    "width": 768,
+    "count": 8,
+    "theme": "dark",
+    "overflow": false,
+    "select": {
+      "x": 615,
+      "y": 323,
+      "width": 137,
+      "height": 44,
+      "bottom": 367
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 329,
+      "width": 736,
+      "height": 32,
+      "bottom": 361
+    },
+    "card": {
+      "x": 16,
+      "y": 377,
+      "width": 362,
+      "height": 484.15625,
+      "bottom": 861.15625
+    },
+    "data": {
+      "x": 32,
+      "y": 510,
+      "width": 330,
+      "height": 42.65625,
+      "bottom": 552.65625
+    },
+    "resources": {
+      "x": 32,
+      "y": 482,
+      "width": 330,
+      "height": 110.65625,
+      "bottom": 592.65625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 329,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 361
+    },
+    "cpu": {
+      "x": 32,
+      "y": 482,
+      "width": 159,
+      "height": 24,
+      "bottom": 506
+    },
+    "memory": {
+      "x": 203,
+      "y": 482,
+      "width": 159,
+      "height": 24,
+      "bottom": 506
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 510,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 526
+      },
+      {
+        "x": 104.8125,
+        "y": 510,
+        "width": 257.1875,
+        "height": 16,
+        "bottom": 526
+      },
+      {
+        "x": 32,
+        "y": 530,
+        "width": 330,
+        "height": 4,
+        "bottom": 534
+      },
+      {
+        "x": 32,
+        "y": 538,
+        "width": 330,
+        "height": 14.65625,
+        "bottom": 552.65625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 604.65625,
+        "width": 330,
+        "height": 28,
+        "bottom": 632.65625
+      },
+      {
+        "x": 32,
+        "y": 632.65625,
+        "width": 330,
+        "height": 56,
+        "bottom": 688.65625
+      },
+      {
+        "x": 32,
+        "y": 688.65625,
+        "width": 330,
+        "height": 56,
+        "bottom": 744.65625
+      },
+      {
+        "x": 32,
+        "y": 744.65625,
+        "width": 330,
+        "height": 56,
+        "bottom": 800.65625
+      }
+    ],
+    "selectBackground": "oklch(0.141 0.005 285.823)",
+    "selectHit": true
+  },
+  {
+    "width": 1024,
+    "count": 1,
+    "theme": "dark",
+    "overflow": false,
+    "select": {
+      "x": 871,
+      "y": 363,
+      "width": 137,
+      "height": 44,
+      "bottom": 407
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 369,
+      "width": 992,
+      "height": 32,
+      "bottom": 401
+    },
+    "card": {
+      "x": 16,
+      "y": 417,
+      "width": 322.65625,
+      "height": 385.15625,
+      "bottom": 802.15625
+    },
+    "data": {
+      "x": 32,
+      "y": 551.5,
+      "width": 290.65625,
+      "height": 42.65625,
+      "bottom": 594.15625
+    },
+    "resources": {
+      "x": 32,
+      "y": 523.5,
+      "width": 290.65625,
+      "height": 110.65625,
+      "bottom": 634.15625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 369,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 401
+    },
+    "cpu": {
+      "x": 32,
+      "y": 523.5,
+      "width": 139.328125,
+      "height": 24,
+      "bottom": 547.5
+    },
+    "memory": {
+      "x": 183.328125,
+      "y": 523.5,
+      "width": 139.328125,
+      "height": 24,
+      "bottom": 547.5
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 551.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 567.5
+      },
+      {
+        "x": 104.8125,
+        "y": 551.5,
+        "width": 217.84375,
+        "height": 16,
+        "bottom": 567.5
+      },
+      {
+        "x": 32,
+        "y": 571.5,
+        "width": 290.65625,
+        "height": 4,
+        "bottom": 575.5
+      },
+      {
+        "x": 32,
+        "y": 579.5,
+        "width": 290.65625,
+        "height": 14.65625,
+        "bottom": 594.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 646.15625,
+        "width": 290.65625,
+        "height": 28,
+        "bottom": 674.15625
+      },
+      {
+        "x": 32,
+        "y": 674.15625,
+        "width": 290.65625,
+        "height": 28,
+        "bottom": 702.15625
+      },
+      {
+        "x": 32,
+        "y": 702.15625,
+        "width": 290.65625,
+        "height": 28,
+        "bottom": 730.15625
+      },
+      {
+        "x": 32,
+        "y": 730.15625,
+        "width": 290.65625,
+        "height": 28,
+        "bottom": 758.15625
+      }
+    ],
+    "selectBackground": "oklch(0.141 0.005 285.823)",
+    "selectHit": true,
+    "tooltipVisible": true
+  },
+  {
+    "width": 1024,
+    "count": 4,
+    "theme": "dark",
+    "overflow": false,
+    "select": {
+      "x": 871,
+      "y": 363,
+      "width": 137,
+      "height": 44,
+      "bottom": 407
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 369,
+      "width": 992,
+      "height": 32,
+      "bottom": 401
+    },
+    "card": {
+      "x": 16,
+      "y": 417,
+      "width": 322.65625,
+      "height": 500.65625,
+      "bottom": 917.65625
+    },
+    "data": {
+      "x": 32,
+      "y": 566.5,
+      "width": 290.65625,
+      "height": 42.65625,
+      "bottom": 609.15625
+    },
+    "resources": {
+      "x": 32,
+      "y": 538.5,
+      "width": 290.65625,
+      "height": 110.65625,
+      "bottom": 649.15625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 369,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 401
+    },
+    "cpu": {
+      "x": 32,
+      "y": 538.5,
+      "width": 139.328125,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "memory": {
+      "x": 183.328125,
+      "y": 538.5,
+      "width": 139.328125,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 566.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 104.8125,
+        "y": 566.5,
+        "width": 217.84375,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 32,
+        "y": 586.5,
+        "width": 290.65625,
+        "height": 4,
+        "bottom": 590.5
+      },
+      {
+        "x": 32,
+        "y": 594.5,
+        "width": 290.65625,
+        "height": 14.65625,
+        "bottom": 609.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 661.15625,
+        "width": 290.65625,
+        "height": 28,
+        "bottom": 689.15625
+      },
+      {
+        "x": 32,
+        "y": 689.15625,
+        "width": 290.65625,
+        "height": 56,
+        "bottom": 745.15625
+      },
+      {
+        "x": 32,
+        "y": 745.15625,
+        "width": 290.65625,
+        "height": 56,
+        "bottom": 801.15625
+      },
+      {
+        "x": 32,
+        "y": 801.15625,
+        "width": 290.65625,
+        "height": 56,
+        "bottom": 857.15625
+      }
+    ],
+    "selectBackground": "oklch(0.141 0.005 285.823)",
+    "selectHit": true
+  },
+  {
+    "width": 1024,
+    "count": 8,
+    "theme": "dark",
+    "overflow": false,
+    "select": {
+      "x": 871,
+      "y": 363,
+      "width": 137,
+      "height": 44,
+      "bottom": 407
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 369,
+      "width": 992,
+      "height": 32,
+      "bottom": 401
+    },
+    "card": {
+      "x": 16,
+      "y": 417,
+      "width": 322.65625,
+      "height": 500.65625,
+      "bottom": 917.65625
+    },
+    "data": {
+      "x": 32,
+      "y": 566.5,
+      "width": 290.65625,
+      "height": 42.65625,
+      "bottom": 609.15625
+    },
+    "resources": {
+      "x": 32,
+      "y": 538.5,
+      "width": 290.65625,
+      "height": 110.65625,
+      "bottom": 649.15625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 369,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 401
+    },
+    "cpu": {
+      "x": 32,
+      "y": 538.5,
+      "width": 139.328125,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "memory": {
+      "x": 183.328125,
+      "y": 538.5,
+      "width": 139.328125,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 566.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 104.8125,
+        "y": 566.5,
+        "width": 217.84375,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 32,
+        "y": 586.5,
+        "width": 290.65625,
+        "height": 4,
+        "bottom": 590.5
+      },
+      {
+        "x": 32,
+        "y": 594.5,
+        "width": 290.65625,
+        "height": 14.65625,
+        "bottom": 609.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 661.15625,
+        "width": 290.65625,
+        "height": 28,
+        "bottom": 689.15625
+      },
+      {
+        "x": 32,
+        "y": 689.15625,
+        "width": 290.65625,
+        "height": 56,
+        "bottom": 745.15625
+      },
+      {
+        "x": 32,
+        "y": 745.15625,
+        "width": 290.65625,
+        "height": 56,
+        "bottom": 801.15625
+      },
+      {
+        "x": 32,
+        "y": 801.15625,
+        "width": 290.65625,
+        "height": 56,
+        "bottom": 857.15625
+      }
+    ],
+    "selectBackground": "oklch(0.141 0.005 285.823)",
+    "selectHit": true
+  },
+  {
+    "width": 1280,
+    "count": 1,
+    "theme": "dark",
+    "overflow": false,
+    "select": {
+      "x": 1127,
+      "y": 363,
+      "width": 137,
+      "height": 44,
+      "bottom": 407
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 369,
+      "width": 1248,
+      "height": 32,
+      "bottom": 401
+    },
+    "card": {
+      "x": 16,
+      "y": 417,
+      "width": 303,
+      "height": 385.15625,
+      "bottom": 802.15625
+    },
+    "data": {
+      "x": 32,
+      "y": 551.5,
+      "width": 271,
+      "height": 42.65625,
+      "bottom": 594.15625
+    },
+    "resources": {
+      "x": 32,
+      "y": 523.5,
+      "width": 271,
+      "height": 110.65625,
+      "bottom": 634.15625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 369,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 401
+    },
+    "cpu": {
+      "x": 32,
+      "y": 523.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 547.5
+    },
+    "memory": {
+      "x": 173.5,
+      "y": 523.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 547.5
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 551.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 567.5
+      },
+      {
+        "x": 104.8125,
+        "y": 551.5,
+        "width": 198.1875,
+        "height": 16,
+        "bottom": 567.5
+      },
+      {
+        "x": 32,
+        "y": 571.5,
+        "width": 271,
+        "height": 4,
+        "bottom": 575.5
+      },
+      {
+        "x": 32,
+        "y": 579.5,
+        "width": 271,
+        "height": 14.65625,
+        "bottom": 594.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 646.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 674.15625
+      },
+      {
+        "x": 32,
+        "y": 674.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 702.15625
+      },
+      {
+        "x": 32,
+        "y": 702.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 730.15625
+      },
+      {
+        "x": 32,
+        "y": 730.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 758.15625
+      }
+    ],
+    "selectBackground": "oklch(0.141 0.005 285.823)",
+    "selectHit": true,
+    "tooltipVisible": true
+  },
+  {
+    "width": 1280,
+    "count": 4,
+    "theme": "dark",
+    "overflow": false,
+    "select": {
+      "x": 1127,
+      "y": 363,
+      "width": 137,
+      "height": 44,
+      "bottom": 407
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 369,
+      "width": 1248,
+      "height": 32,
+      "bottom": 401
+    },
+    "card": {
+      "x": 16,
+      "y": 417,
+      "width": 303,
+      "height": 500.65625,
+      "bottom": 917.65625
+    },
+    "data": {
+      "x": 32,
+      "y": 566.5,
+      "width": 271,
+      "height": 42.65625,
+      "bottom": 609.15625
+    },
+    "resources": {
+      "x": 32,
+      "y": 538.5,
+      "width": 271,
+      "height": 110.65625,
+      "bottom": 649.15625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 369,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 401
+    },
+    "cpu": {
+      "x": 32,
+      "y": 538.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "memory": {
+      "x": 173.5,
+      "y": 538.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 566.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 104.8125,
+        "y": 566.5,
+        "width": 198.1875,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 32,
+        "y": 586.5,
+        "width": 271,
+        "height": 4,
+        "bottom": 590.5
+      },
+      {
+        "x": 32,
+        "y": 594.5,
+        "width": 271,
+        "height": 14.65625,
+        "bottom": 609.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 661.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 689.15625
+      },
+      {
+        "x": 32,
+        "y": 689.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 745.15625
+      },
+      {
+        "x": 32,
+        "y": 745.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 801.15625
+      },
+      {
+        "x": 32,
+        "y": 801.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 857.15625
+      }
+    ],
+    "selectBackground": "oklch(0.141 0.005 285.823)",
+    "selectHit": true
+  },
+  {
+    "width": 1280,
+    "count": 8,
+    "theme": "dark",
+    "overflow": false,
+    "select": {
+      "x": 1127,
+      "y": 363,
+      "width": 137,
+      "height": 44,
+      "bottom": 407
+    },
+    "toolbar": {
+      "x": 16,
+      "y": 369,
+      "width": 1248,
+      "height": 32,
+      "bottom": 401
+    },
+    "card": {
+      "x": 16,
+      "y": 417,
+      "width": 303,
+      "height": 500.65625,
+      "bottom": 917.65625
+    },
+    "data": {
+      "x": 32,
+      "y": 566.5,
+      "width": 271,
+      "height": 42.65625,
+      "bottom": 609.15625
+    },
+    "resources": {
+      "x": 32,
+      "y": 538.5,
+      "width": 271,
+      "height": 110.65625,
+      "bottom": 649.15625
+    },
+    "tabs": {
+      "x": 16,
+      "y": 369,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 401
+    },
+    "cpu": {
+      "x": 32,
+      "y": 538.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "memory": {
+      "x": 173.5,
+      "y": 538.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "dataParts": [
+      {
+        "x": 32,
+        "y": 566.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 104.8125,
+        "y": 566.5,
+        "width": 198.1875,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 32,
+        "y": 586.5,
+        "width": 271,
+        "height": 4,
+        "bottom": 590.5
+      },
+      {
+        "x": 32,
+        "y": 594.5,
+        "width": 271,
+        "height": 14.65625,
+        "bottom": 609.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 32,
+        "y": 661.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 689.15625
+      },
+      {
+        "x": 32,
+        "y": 689.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 745.15625
+      },
+      {
+        "x": 32,
+        "y": 745.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 801.15625
+      },
+      {
+        "x": 32,
+        "y": 801.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 857.15625
+      }
+    ],
+    "selectBackground": "oklch(0.141 0.005 285.823)",
+    "selectHit": true
+  },
+  {
+    "width": 1440,
+    "count": 1,
+    "theme": "dark",
+    "overflow": false,
+    "select": {
+      "x": 1207,
+      "y": 363,
+      "width": 137,
+      "height": 44,
+      "bottom": 407
+    },
+    "toolbar": {
+      "x": 96,
+      "y": 369,
+      "width": 1248,
+      "height": 32,
+      "bottom": 401
+    },
+    "card": {
+      "x": 96,
+      "y": 417,
+      "width": 303,
+      "height": 385.15625,
+      "bottom": 802.15625
+    },
+    "data": {
+      "x": 112,
+      "y": 551.5,
+      "width": 271,
+      "height": 42.65625,
+      "bottom": 594.15625
+    },
+    "resources": {
+      "x": 112,
+      "y": 523.5,
+      "width": 271,
+      "height": 110.65625,
+      "bottom": 634.15625
+    },
+    "tabs": {
+      "x": 96,
+      "y": 369,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 401
+    },
+    "cpu": {
+      "x": 112,
+      "y": 523.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 547.5
+    },
+    "memory": {
+      "x": 253.5,
+      "y": 523.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 547.5
+    },
+    "dataParts": [
+      {
+        "x": 112,
+        "y": 551.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 567.5
+      },
+      {
+        "x": 184.8125,
+        "y": 551.5,
+        "width": 198.1875,
+        "height": 16,
+        "bottom": 567.5
+      },
+      {
+        "x": 112,
+        "y": 571.5,
+        "width": 271,
+        "height": 4,
+        "bottom": 575.5
+      },
+      {
+        "x": 112,
+        "y": 579.5,
+        "width": 271,
+        "height": 14.65625,
+        "bottom": 594.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 112,
+        "y": 646.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 674.15625
+      },
+      {
+        "x": 112,
+        "y": 674.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 702.15625
+      },
+      {
+        "x": 112,
+        "y": 702.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 730.15625
+      },
+      {
+        "x": 112,
+        "y": 730.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 758.15625
+      }
+    ],
+    "selectBackground": "oklch(0.141 0.005 285.823)",
+    "selectHit": true,
+    "tooltipVisible": true
+  },
+  {
+    "width": 1440,
+    "count": 4,
+    "theme": "dark",
+    "overflow": false,
+    "select": {
+      "x": 1207,
+      "y": 363,
+      "width": 137,
+      "height": 44,
+      "bottom": 407
+    },
+    "toolbar": {
+      "x": 96,
+      "y": 369,
+      "width": 1248,
+      "height": 32,
+      "bottom": 401
+    },
+    "card": {
+      "x": 96,
+      "y": 417,
+      "width": 303,
+      "height": 500.65625,
+      "bottom": 917.65625
+    },
+    "data": {
+      "x": 112,
+      "y": 566.5,
+      "width": 271,
+      "height": 42.65625,
+      "bottom": 609.15625
+    },
+    "resources": {
+      "x": 112,
+      "y": 538.5,
+      "width": 271,
+      "height": 110.65625,
+      "bottom": 649.15625
+    },
+    "tabs": {
+      "x": 96,
+      "y": 369,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 401
+    },
+    "cpu": {
+      "x": 112,
+      "y": 538.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "memory": {
+      "x": 253.5,
+      "y": 538.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "dataParts": [
+      {
+        "x": 112,
+        "y": 566.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 184.8125,
+        "y": 566.5,
+        "width": 198.1875,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 112,
+        "y": 586.5,
+        "width": 271,
+        "height": 4,
+        "bottom": 590.5
+      },
+      {
+        "x": 112,
+        "y": 594.5,
+        "width": 271,
+        "height": 14.65625,
+        "bottom": 609.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 112,
+        "y": 661.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 689.15625
+      },
+      {
+        "x": 112,
+        "y": 689.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 745.15625
+      },
+      {
+        "x": 112,
+        "y": 745.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 801.15625
+      },
+      {
+        "x": 112,
+        "y": 801.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 857.15625
+      }
+    ],
+    "selectBackground": "oklch(0.141 0.005 285.823)",
+    "selectHit": true
+  },
+  {
+    "width": 1440,
+    "count": 8,
+    "theme": "dark",
+    "overflow": false,
+    "select": {
+      "x": 1207,
+      "y": 363,
+      "width": 137,
+      "height": 44,
+      "bottom": 407
+    },
+    "toolbar": {
+      "x": 96,
+      "y": 369,
+      "width": 1248,
+      "height": 32,
+      "bottom": 401
+    },
+    "card": {
+      "x": 96,
+      "y": 417,
+      "width": 303,
+      "height": 500.65625,
+      "bottom": 917.65625
+    },
+    "data": {
+      "x": 112,
+      "y": 566.5,
+      "width": 271,
+      "height": 42.65625,
+      "bottom": 609.15625
+    },
+    "resources": {
+      "x": 112,
+      "y": 538.5,
+      "width": 271,
+      "height": 110.65625,
+      "bottom": 649.15625
+    },
+    "tabs": {
+      "x": 96,
+      "y": 369,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 401
+    },
+    "cpu": {
+      "x": 112,
+      "y": 538.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "memory": {
+      "x": 253.5,
+      "y": 538.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "dataParts": [
+      {
+        "x": 112,
+        "y": 566.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 184.8125,
+        "y": 566.5,
+        "width": 198.1875,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 112,
+        "y": 586.5,
+        "width": 271,
+        "height": 4,
+        "bottom": 590.5
+      },
+      {
+        "x": 112,
+        "y": 594.5,
+        "width": 271,
+        "height": 14.65625,
+        "bottom": 609.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 112,
+        "y": 661.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 689.15625
+      },
+      {
+        "x": 112,
+        "y": 689.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 745.15625
+      },
+      {
+        "x": 112,
+        "y": 745.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 801.15625
+      },
+      {
+        "x": 112,
+        "y": 801.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 857.15625
+      }
+    ],
+    "selectBackground": "oklch(0.141 0.005 285.823)",
+    "selectHit": true
+  },
+  {
+    "width": 1920,
+    "count": 1,
+    "theme": "dark",
+    "overflow": false,
+    "select": {
+      "x": 1447,
+      "y": 363,
+      "width": 137,
+      "height": 44,
+      "bottom": 407
+    },
+    "toolbar": {
+      "x": 336,
+      "y": 369,
+      "width": 1248,
+      "height": 32,
+      "bottom": 401
+    },
+    "card": {
+      "x": 336,
+      "y": 417,
+      "width": 303,
+      "height": 385.15625,
+      "bottom": 802.15625
+    },
+    "data": {
+      "x": 352,
+      "y": 551.5,
+      "width": 271,
+      "height": 42.65625,
+      "bottom": 594.15625
+    },
+    "resources": {
+      "x": 352,
+      "y": 523.5,
+      "width": 271,
+      "height": 110.65625,
+      "bottom": 634.15625
+    },
+    "tabs": {
+      "x": 336,
+      "y": 369,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 401
+    },
+    "cpu": {
+      "x": 352,
+      "y": 523.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 547.5
+    },
+    "memory": {
+      "x": 493.5,
+      "y": 523.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 547.5
+    },
+    "dataParts": [
+      {
+        "x": 352,
+        "y": 551.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 567.5
+      },
+      {
+        "x": 424.8125,
+        "y": 551.5,
+        "width": 198.1875,
+        "height": 16,
+        "bottom": 567.5
+      },
+      {
+        "x": 352,
+        "y": 571.5,
+        "width": 271,
+        "height": 4,
+        "bottom": 575.5
+      },
+      {
+        "x": 352,
+        "y": 579.5,
+        "width": 271,
+        "height": 14.65625,
+        "bottom": 594.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 352,
+        "y": 646.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 674.15625
+      },
+      {
+        "x": 352,
+        "y": 674.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 702.15625
+      },
+      {
+        "x": 352,
+        "y": 702.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 730.15625
+      },
+      {
+        "x": 352,
+        "y": 730.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 758.15625
+      }
+    ],
+    "selectBackground": "oklch(0.141 0.005 285.823)",
+    "selectHit": true,
+    "tooltipVisible": true
+  },
+  {
+    "width": 1920,
+    "count": 4,
+    "theme": "dark",
+    "overflow": false,
+    "select": {
+      "x": 1447,
+      "y": 363,
+      "width": 137,
+      "height": 44,
+      "bottom": 407
+    },
+    "toolbar": {
+      "x": 336,
+      "y": 369,
+      "width": 1248,
+      "height": 32,
+      "bottom": 401
+    },
+    "card": {
+      "x": 336,
+      "y": 417,
+      "width": 303,
+      "height": 500.65625,
+      "bottom": 917.65625
+    },
+    "data": {
+      "x": 352,
+      "y": 566.5,
+      "width": 271,
+      "height": 42.65625,
+      "bottom": 609.15625
+    },
+    "resources": {
+      "x": 352,
+      "y": 538.5,
+      "width": 271,
+      "height": 110.65625,
+      "bottom": 649.15625
+    },
+    "tabs": {
+      "x": 336,
+      "y": 369,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 401
+    },
+    "cpu": {
+      "x": 352,
+      "y": 538.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "memory": {
+      "x": 493.5,
+      "y": 538.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "dataParts": [
+      {
+        "x": 352,
+        "y": 566.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 424.8125,
+        "y": 566.5,
+        "width": 198.1875,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 352,
+        "y": 586.5,
+        "width": 271,
+        "height": 4,
+        "bottom": 590.5
+      },
+      {
+        "x": 352,
+        "y": 594.5,
+        "width": 271,
+        "height": 14.65625,
+        "bottom": 609.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 352,
+        "y": 661.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 689.15625
+      },
+      {
+        "x": 352,
+        "y": 689.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 745.15625
+      },
+      {
+        "x": 352,
+        "y": 745.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 801.15625
+      },
+      {
+        "x": 352,
+        "y": 801.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 857.15625
+      }
+    ],
+    "selectBackground": "oklch(0.141 0.005 285.823)",
+    "selectHit": true
+  },
+  {
+    "width": 1920,
+    "count": 8,
+    "theme": "dark",
+    "overflow": false,
+    "select": {
+      "x": 1447,
+      "y": 363,
+      "width": 137,
+      "height": 44,
+      "bottom": 407
+    },
+    "toolbar": {
+      "x": 336,
+      "y": 369,
+      "width": 1248,
+      "height": 32,
+      "bottom": 401
+    },
+    "card": {
+      "x": 336,
+      "y": 417,
+      "width": 303,
+      "height": 500.65625,
+      "bottom": 917.65625
+    },
+    "data": {
+      "x": 352,
+      "y": 566.5,
+      "width": 271,
+      "height": 42.65625,
+      "bottom": 609.15625
+    },
+    "resources": {
+      "x": 352,
+      "y": 538.5,
+      "width": 271,
+      "height": 110.65625,
+      "bottom": 649.15625
+    },
+    "tabs": {
+      "x": 336,
+      "y": 369,
+      "width": 225.21875,
+      "height": 32,
+      "bottom": 401
+    },
+    "cpu": {
+      "x": 352,
+      "y": 538.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "memory": {
+      "x": 493.5,
+      "y": 538.5,
+      "width": 129.5,
+      "height": 24,
+      "bottom": 562.5
+    },
+    "dataParts": [
+      {
+        "x": 352,
+        "y": 566.5,
+        "width": 64.8125,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 424.8125,
+        "y": 566.5,
+        "width": 198.1875,
+        "height": 16,
+        "bottom": 582.5
+      },
+      {
+        "x": 352,
+        "y": 586.5,
+        "width": 271,
+        "height": 4,
+        "bottom": 590.5
+      },
+      {
+        "x": 352,
+        "y": 594.5,
+        "width": 271,
+        "height": 14.65625,
+        "bottom": 609.15625
+      }
+    ],
+    "business": [
+      {
+        "x": 352,
+        "y": 661.15625,
+        "width": 271,
+        "height": 28,
+        "bottom": 689.15625
+      },
+      {
+        "x": 352,
+        "y": 689.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 745.15625
+      },
+      {
+        "x": 352,
+        "y": 745.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 801.15625
+      },
+      {
+        "x": 352,
+        "y": 801.15625,
+        "width": 271,
+        "height": 56,
+        "bottom": 857.15625
+      }
+    ],
+    "selectBackground": "oklch(0.141 0.005 285.823)",
+    "selectHit": true
+  }
+]

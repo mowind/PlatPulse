@@ -1,4 +1,5 @@
-import { useId, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { ChevronUp } from 'lucide-react'
+import { useId, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router'
 import {
   AdminApiError,
@@ -18,6 +19,12 @@ import {
   formatObservedAt,
   livenessLabel,
 } from '../components/StatusBadge'
+import { Button, buttonVariants } from '../components/ui/button'
+import { CardX } from '../components/ui/card-x'
+import { Checkbox, Select } from '../components/ui/input'
+import { Empty } from '../components/ui/empty'
+import { cn } from '../lib/utils'
+import { SURFACE_CARD } from '../lib/surface'
 import type {
   AgentAuditItem,
   AgentCredentialSummary,
@@ -36,8 +43,10 @@ import type {
  * and are gone when the view is left — never in URLs, history, or Audit.
  */
 
+const CARD_SURFACE = cn('rounded-md border-none', SURFACE_CARD)
+
 function shortId(id: string): string {
-  return id.length > 14 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id
+  return id.length > 14 ? id.slice(0, 8) + '…' + id.slice(-4) : id
 }
 
 /** Credential state maps onto the fixed WebUI vocabulary (`Current`,
@@ -58,7 +67,30 @@ function credentialSummaryText(credentials: AgentCredentialSummary[]): string {
   const revoked = credentials.filter((credential) => credential.revoked_at).length
   const inactive = credentials.filter((credential) => !credential.active && !credential.revoked_at).length
   if (credentials.length === 0) return 'None issued'
-  return `${active} active · ${revoked} revoked · ${inactive} inactive (not revoked) · ${credentials.length} total`
+  return String(active) + ' active · ' + revoked + ' revoked · ' + inactive + ' inactive (not revoked) · ' + credentials.length + ' total'
+}
+
+/** Emerald detail grid: label above its value, stacked on narrow viewports. */
+function DetailList({ children }: { children: ReactNode }) {
+  return <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">{children}</dl>
+}
+
+function DetailItem({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-xs font-medium tracking-wider text-muted-foreground">{label}</dt>
+      <dd className="mt-0.5 min-w-0 break-words text-sm">{children}</dd>
+    </div>
+  )
+}
+
+/** Emerald dimension label: uppercase micro-caption, colourless. */
+function DimensionLabel({ children }: { children: ReactNode }) {
+  return (
+    <span className="text-[11px] font-medium tracking-wider text-muted-foreground uppercase">
+      {children}
+    </span>
+  )
 }
 
 function AgentIdCopyControl({ agentId }: { agentId: string }) {
@@ -78,13 +110,17 @@ function AgentIdCopyControl({ agentId }: { agentId: string }) {
   }
 
   return (
-    <span className="agent-copy-control">
-      <button type="button" className="text-action" onClick={() => void copyAgentId()}>
+    <span className="inline-flex flex-wrap items-center gap-2">
+      <Button variant="link" size="sm" onClick={() => void copyAgentId()}>
         Copy Agent ID
-      </button>
-      {copyState === 'copied' && <span className="agent-copy-status" role="status">Copied to clipboard.</span>}
+      </Button>
+      {copyState === 'copied' && (
+        <span className="text-[11px] text-success" role="status">
+          Copied to clipboard.
+        </span>
+      )}
       {copyState === 'failed' && (
-        <span className="agent-copy-status" role="status">
+        <span className="text-[11px] text-muted-foreground" role="status">
           Copy unavailable; select the full Agent ID above.
         </span>
       )}
@@ -96,22 +132,26 @@ function AgentIdentityAccess({ agentId }: { agentId: string }) {
   const [revealed, setRevealed] = useState(false)
   const fullIdPanelId = useId()
   return (
-    <div className="agent-identity-access">
-      <Link className="agent-link" to={`/admin/agents/${encodeURIComponent(agentId)}`}>
+    <div className="flex min-w-0 flex-col items-start gap-1">
+      <Link
+        className="flex min-h-11 w-full min-w-0 items-center break-all font-medium underline-offset-4 hover:underline"
+        to={'/admin/agents/' + encodeURIComponent(agentId)}
+      >
         {shortId(agentId)}
       </Link>
-      <button
-        type="button"
-        className="text-action agent-identity-toggle"
+      <Button
+        variant="link"
+        size="sm"
+        className="max-w-full whitespace-normal"
         aria-expanded={revealed}
         aria-controls={fullIdPanelId}
         onClick={() => setRevealed((value) => !value)}
       >
         {revealed ? 'Hide full Agent ID' : 'Show full Agent ID'}
-      </button>
+      </Button>
       {revealed && (
-        <div id={fullIdPanelId} className="agent-identity-details">
-          <code className="agent-full-id">{agentId}</code>
+        <div id={fullIdPanelId} className="flex min-w-0 flex-col items-start gap-2">
+          <code data-slot="agent-full-id" className="break-all text-[11px]">{agentId}</code>
           <AgentIdCopyControl agentId={agentId} />
         </div>
       )}
@@ -255,12 +295,12 @@ function diagnosticRangeText<T extends number | string>(
   format: (value: T) => string = String,
 ): string {
   if (from == null && to == null) return 'Unknown'
-  return `${from == null ? 'Unknown' : format(from)}–${to == null ? 'Unknown' : format(to)}`
+  return (from == null ? 'Unknown' : format(from)) + '–' + (to == null ? 'Unknown' : format(to))
 }
 
 function diagnosticSequenceRangeText(from: number | null | undefined, to: number | null | undefined): string {
   if (from == null && to == null) return 'Unknown'
-  return `#${from == null ? 'Unknown' : from}–#${to == null ? 'Unknown' : to}`
+  return '#' + (from == null ? 'Unknown' : from) + '–#' + (to == null ? 'Unknown' : to)
 }
 
 function diagnosticMessageText(value: string | null | undefined): string {
@@ -274,64 +314,80 @@ export default function AdminAgentsList() {
   const agents = query.data ?? []
 
   return (
-    <section className="page">
-      <h1>Agents</h1>
-      <p className="muted">
-        Server reporting status, receipt time, retained Node inventory, credential validity,
-        and diagnostics stay separate dimensions. Detailed boot/report state remains on each
-        Agent detail page; Agent Offline is not Node Retired.
-      </p>
+    <section className="w-full min-w-0 space-y-4">
+      <div className="space-y-1">
+        <h1 className="text-2xl font-semibold break-words">Agents</h1>
+        <p className="text-sm text-muted-foreground">
+          Server reporting status, receipt time, retained Node inventory, credential validity,
+          and diagnostics stay separate dimensions. Detailed boot/report state remains on each
+          Agent detail page; Agent Offline is not Node Retired.
+        </p>
+      </div>
       {!query.data && query.isPending && (
-        <p className="panel-state" role="status">
-          <StatusBadge status="Starting" tone="neutral" /> Loading Agent
-          inventory…
+        <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground" role="status">
+          <StatusBadge status="Starting" tone="neutral" /> Loading Agent inventory…
         </p>
       )}
       {!query.data && query.isError && (
-        <p className="panel-state" role="alert">
+        <div
+          className="flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm"
+          role="alert"
+        >
           <StatusBadge status="Error" tone="error" />{' '}
-          {query.error instanceof Error ? query.error.message : 'Unable to load Agents'}
-          <button type="button" className="text-action" onClick={() => void query.refetch()}>
+          <span className="min-w-0 break-words">
+            {query.error instanceof Error ? query.error.message : 'Unable to load Agents'}
+          </span>
+          <Button variant="link" size="sm" onClick={() => void query.refetch()}>
             Try again
-          </button>
-        </p>
+          </Button>
+        </div>
       )}
       {query.data && query.isRefetchError && (
-        <p className="panel-state" role="alert">
+        <div
+          className="flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm"
+          role="alert"
+        >
           <StatusBadge status="Error" tone="error" /> Failed to refresh; showing the last
           successful Agent values.
-        </p>
+        </div>
       )}
       {query.data && agents.length === 0 && (
-        <p className="panel-state">
-          <StatusBadge status="Empty" tone="ok" /> No Agents enrolled yet.
-          Enrollment is not available in this Admin surface.
-        </p>
+        <CardX size="medium" className={CARD_SURFACE}>
+          <Empty description="No Agents enrolled yet. Enrollment is not available in this Admin surface." />
+        </CardX>
       )}
       {query.data && agents.length > 0 && (
-        <div className="table-wrap">
-          <table className="node-table agent-table">
-            <caption className="sr-only">
-              Agent, Server reporting status, receipt time, retained Node inventory, credential validity,
-              and diagnostic evidence
-            </caption>
-            <thead>
-              <tr>
-                <th scope="col">Agent</th>
-                <th scope="col">Reporting status</th>
-                <th scope="col">Last received</th>
-                <th scope="col">Node Inventory</th>
-                <th scope="col">Credentials</th>
-                <th scope="col">Diagnostics</th>
-              </tr>
-            </thead>
-            <tbody>
-              {agents.map((agent) => (
-                <AgentListRow key={agent.agent_id} agent={agent} />
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <CardX
+          size="medium"
+          className={CARD_SURFACE}
+          contentClassName="p-0"
+          segmented
+          title="Agent inventory"
+        >
+          <div className="overflow-x-auto">
+            <table data-stack data-slot="agent-table" className="w-full text-sm">
+              <caption className="sr-only">
+                Agent, Server reporting status, receipt time, retained Node inventory, credential validity,
+                and diagnostic evidence
+              </caption>
+              <thead>
+                <tr className="border-b">
+                  <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Agent</th>
+                  <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Reporting status</th>
+                  <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Last received</th>
+                  <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Node Inventory</th>
+                  <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Credentials</th>
+                  <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Diagnostics</th>
+                </tr>
+              </thead>
+              <tbody>
+                {agents.map((agent) => (
+                  <AgentListRow key={agent.agent_id} agent={agent} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardX>
       )}
     </section>
   )
@@ -347,7 +403,7 @@ function diagnosticBrief(host: HostDiagnostic | null | undefined): string {
   if (byKey.has('host-not-observed')) return 'No Host observation yet'
   if (byKey.has('spool-not-observed')) return 'Spool not observed yet'
   const parts: string[] = []
-  if (byKey.has('queued-reports')) parts.push(`${byKey.get('queued-reports')} queued`)
+  if (byKey.has('queued-reports')) parts.push(byKey.get('queued-reports') + ' queued')
   if (byKey.has('delivery-state')) {
     parts.push(byKey.get('delivery-state') === 'In flight' ? 'delivery in flight' : 'delivery idle')
   }
@@ -362,106 +418,106 @@ function diagnosticBrief(host: HostDiagnostic | null | undefined): string {
   if (byKey.get('report-size') === 'Too large recorded') parts.push('report too large')
   const pendingGaps = byKey.get('pending-history-gaps')
   if (pendingGaps != null && pendingGaps !== '0') {
-    parts.push(`${pendingGaps} pending history gap${pendingGaps === '1' ? '' : 's'}`)
+    parts.push(pendingGaps + ' pending history gap' + (pendingGaps === '1' ? '' : 's'))
   }
   const componentIssues = findings.filter((finding) => finding.key.startsWith('component-')).length
   if (componentIssues > 0) {
-    parts.push(`${componentIssues} Host component issue${componentIssues === 1 ? '' : 's'}`)
+    parts.push(componentIssues + ' Host component issue' + (componentIssues === 1 ? '' : 's'))
   }
   return parts.length > 0 ? parts.join(' · ') : 'Spool observed; no additional evidence'
 }
 
 /** PAGE-ADMIN-AGENTS row: one table cell per summary dimension so the six
  * columns stay aligned. The flex-column layout lives on inner wrappers, never
- * on the `<td>` itself, because a flex `<td>` drops out of the table layout
+ * on the td itself, because a flex td drops out of the table layout
  * and collapses the remaining columns. */
 function AgentListRow({ agent }: { agent: AgentDiagnostic }) {
   const liveness = livenessLabel(agent.liveness)
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
-  const detailId = `agent-diagnostics-${agent.agent_id}`
+  const detailId = 'agent-diagnostics-' + agent.agent_id
   const collapseOnEscape = (event: KeyboardEvent<HTMLElement>) => {
     if (event.key === 'Escape' && diagnosticsOpen) setDiagnosticsOpen(false)
   }
   return (
     <>
-      <tr>
-        <th scope="row" data-label="Agent">
+      <tr className="border-b border-border/60 align-top">
+        <th scope="row" data-label="Agent" className="min-w-0 px-3 py-3 text-left">
           <AgentIdentityAccess agentId={agent.agent_id} />
         </th>
-        <td data-label="Reporting status">
-          <div className="agent-summary-status">
-            <span className="dimension-label">Server liveness</span>
+        <td data-label="Reporting status" className="min-w-0 px-3 py-3">
+          <div className="flex flex-col gap-1">
+            <DimensionLabel>Server liveness</DimensionLabel>
             <StatusBadge status={liveness} tone={livenessTone(agent.liveness)} />
           </div>
         </td>
-        <td data-label="Last received">
-          <div className="agent-summary-receipt">
-            <span className="dimension-label">Server receipt time</span>
-            <span>{receiptTimeText(agent.last_received_at)}</span>
+        <td data-label="Last received" className="min-w-0 px-3 py-3">
+          <div className="flex flex-col gap-1">
+            <DimensionLabel>Server receipt time</DimensionLabel>
+            <span className="text-sm">{receiptTimeText(agent.last_received_at)}</span>
           </div>
         </td>
-        <td data-label="Node Inventory">
-          <div className="agent-summary-inventory">
-            <strong>{agent.nodes.length} retained Node{agent.nodes.length === 1 ? '' : 's'}</strong>
-            <small className="muted">Active + Retired</small>
+        <td data-label="Node Inventory" className="min-w-0 px-3 py-3">
+          <div className="flex flex-col gap-1">
+            <strong className="text-sm">{agent.nodes.length} retained Node{agent.nodes.length === 1 ? '' : 's'}</strong>
+            <small className="text-[11px] text-muted-foreground">Active + Retired</small>
           </div>
         </td>
-        <td data-label="Credentials">
-          <div className="agent-summary-credentials">
-            <span className="dimension-label">Server validity</span>
-            <span>{credentialSummaryText(agent.credentials)}</span>
+        <td data-label="Credentials" className="min-w-0 px-3 py-3">
+          <div className="flex flex-col gap-1">
+            <DimensionLabel>Server validity</DimensionLabel>
+            <span className="text-sm">{credentialSummaryText(agent.credentials)}</span>
           </div>
         </td>
-        <td data-label="Diagnostics">
-          <div className="agent-summary-diagnostics">
-            <dl className="agent-diagnostic-summary">
+        <td data-label="Diagnostics" className="flex min-w-0 flex-col px-3 py-3">
+          <div className="flex flex-col gap-2">
+            <dl className="grid grid-cols-1 gap-1">
               <div>
-                <dt>Recorded gap intervals</dt>
-                <dd>{agent.sequence_gap_count}</dd>
+                <dt className="text-[11px] text-muted-foreground">Recorded gap intervals</dt>
+                <dd className="text-sm font-bold leading-none tracking-tight">{agent.sequence_gap_count}</dd>
               </div>
               <div>
-                <dt>Accumulated recorded security events</dt>
-                <dd>{agent.security_event_count}</dd>
+                <dt className="text-[11px] text-muted-foreground">Accumulated recorded security events</dt>
+                <dd className="text-sm font-bold leading-none tracking-tight">{agent.security_event_count}</dd>
               </div>
             </dl>
-            <p className="agent-diagnostic-brief">
-              <span className="dimension-label">Recorded evidence</span>
+            <p className="text-[11px] text-muted-foreground">
+              <DimensionLabel>Recorded evidence</DimensionLabel>{' '}
               <span>{diagnosticBrief(agent.host)}</span>
             </p>
-            <button
-              type="button"
-              className="text-action"
+            <Button
+              variant="link"
+              size="sm"
               aria-expanded={diagnosticsOpen}
               aria-controls={detailId}
               onClick={() => setDiagnosticsOpen((value) => !value)}
               onKeyDown={collapseOnEscape}
             >
               {diagnosticsOpen ? 'Hide diagnostics' : 'Show diagnostics'}
-            </button>
+            </Button>
           </div>
         </td>
       </tr>
       {diagnosticsOpen && (
-        <tr className="node-detail-row">
-          <td colSpan={6} id={detailId} onKeyDown={collapseOnEscape}>
-            <div className="agent-diagnostic-detail">
-              <div className="agent-diagnostic-detail-heading">
-                <strong>Recorded diagnostic evidence</strong>
-                <button type="button" className="text-action" onClick={() => setDiagnosticsOpen(false)}>
-                  Collapse diagnostics <span aria-hidden="true">▴</span>
-                </button>
+        <tr data-slot="detail-row" className="border-b border-border/60 bg-muted/30">
+          <td colSpan={6} id={detailId} onKeyDown={collapseOnEscape} className="p-0">
+            <div className="space-y-3 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <strong className="text-sm">Recorded diagnostic evidence</strong>
+                <Button variant="link" size="sm" onClick={() => setDiagnosticsOpen(false)}>
+                  Collapse diagnostics <ChevronUp size={16} aria-hidden="true" />
+                </Button>
               </div>
-              <ul className="agent-diagnostic-findings" aria-label="Recorded diagnostic evidence">
+              <ul className="space-y-1" aria-label="Recorded diagnostic evidence">
                 {diagnosticFindings(agent.host).map((finding) => (
-                  <li key={finding.key}>
-                    <span className="diagnostic-finding-label">{finding.label}</span>
-                    <span>{finding.value}</span>
+                  <li key={finding.key} className="flex flex-wrap items-baseline justify-between gap-2 text-sm">
+                    <span className="text-[11px] font-medium text-muted-foreground">{finding.label}</span>
+                    <span className="min-w-0 break-words">{finding.value}</span>
                   </li>
                 ))}
               </ul>
-              <p className="agent-diagnostic-note">
+              <p className="text-[11px] text-muted-foreground">
                 Recorded evidence; Server liveness remains separate.
-                {agent.host ? ` Host snapshot: ${formatObservedAt(agent.host.updated_at)}` : ' No Host snapshot.'}
+                {agent.host ? ' Host snapshot: ' + formatObservedAt(agent.host.updated_at) : ' No Host snapshot.'}
               </p>
             </div>
           </td>
@@ -483,95 +539,110 @@ export function AdminAgentDetail() {
 
   if (notFound) {
     return (
-      <section className="page">
-        <h1>Agent unavailable</h1>
-        <p>This Agent is no longer available.</p>
+      <section className="w-full min-w-0 space-y-4">
+        <div className="space-y-1">
+          <h1 className="text-lg font-semibold">Agent unavailable</h1>
+          <p className="text-sm text-muted-foreground">This Agent is no longer available.</p>
+        </div>
       </section>
     )
   }
   return (
-    <section className="page">
-      <h1>
-        Agent {shortId(agentId)}
-        <span className="heading-muted">{agentId}</span>
-      </h1>
-      <p className="muted">
-        <Link className="text-action" to="/admin/agents">
-          All Agents
-        </Link>{' '}
-        · identity, liveness, boot/report state, Inventory, credentials, and diagnostics
-        stay separate.
-      </p>
+    <section className="w-full min-w-0 space-y-4">
+      <div className="space-y-1">
+        <h1 className="text-lg font-semibold break-words">
+          Agent {shortId(agentId)}
+          <span className="mt-0.5 block text-xs font-medium text-muted-foreground break-all">{agentId}</span>
+        </h1>
+        <p className="text-sm text-muted-foreground">
+          <Link
+            className="inline-flex min-h-11 min-w-11 items-center font-medium underline-offset-4 hover:underline"
+            to="/admin/agents"
+          >
+            All Agents
+          </Link>{' '}
+          · identity, liveness, boot/report state, Inventory, credentials, and diagnostics
+          stay separate.
+        </p>
+      </div>
       {!agent.data && (
         <>
           {agent.isPending && (
-            <p className="panel-state" role="status">
+            <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground" role="status">
               <StatusBadge status="Starting" tone="neutral" /> Loading Agent state…
             </p>
           )}
           {agent.isError && (
-            <p className="panel-state" role="alert">
+            <div
+              className="flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm"
+              role="alert"
+            >
               <StatusBadge status="Error" tone="error" />{' '}
-              {agent.error instanceof Error ? agent.error.message : 'Unable to load the Agent'}
-              <button type="button" className="text-action" onClick={() => void agent.refetch()}>
+              <span className="min-w-0 break-words">
+                {agent.error instanceof Error ? agent.error.message : 'Unable to load the Agent'}
+              </span>
+              <Button variant="link" size="sm" onClick={() => void agent.refetch()}>
                 Try again
-              </button>
-            </p>
+              </Button>
+            </div>
           )}
         </>
       )}
       {agent.data && (
         <>
           {agent.isRefetchError && (
-            <p className="panel-state" role="alert">
+            <div
+              className="flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm"
+              role="alert"
+            >
               <StatusBadge status="Error" tone="error" /> Failed to refresh; showing the last
               successful Agent values.
-            </p>
+            </div>
           )}
           <AgentDetailSummary agent={agent.data} />
-          <section className="agent-detail-section" aria-labelledby="agent-overview-heading">
-            <div className="agent-detail-section-heading">
-              <span className="eyebrow">01</span>
-              <h2 id="agent-overview-heading">Overview</h2>
-              <p className="muted">Identity and the Agent-declared Node Inventory.</p>
+          <section className="space-y-3" aria-labelledby="agent-overview-heading">
+            <div className="space-y-1">
+              <span className="text-[11px] font-medium text-muted-foreground">01</span>
+              <h2 id="agent-overview-heading" className="text-lg font-semibold">Overview</h2>
+              <p className="text-sm text-muted-foreground">Identity and the Agent-declared Node Inventory.</p>
             </div>
-            <div className="agent-detail-grid">
+            <div className="grid gap-3 lg:grid-cols-2">
               <IdentityPanel agent={agent.data} />
               <InventoryPanel nodes={agent.data.nodes} />
             </div>
           </section>
-          <section className="agent-detail-section" aria-labelledby="agent-runtime-heading">
-            <div className="agent-detail-section-heading">
-              <span className="eyebrow">02</span>
-              <h2 id="agent-runtime-heading">Runtime and reporting</h2>
-              <p className="muted">Server liveness remains separate from boot and report lifecycle.</p>
+          <section className="space-y-3" aria-labelledby="agent-runtime-heading">
+            <div className="space-y-1">
+              <span className="text-[11px] font-medium text-muted-foreground">02</span>
+              <h2 id="agent-runtime-heading" className="text-lg font-semibold">Runtime and reporting</h2>
+              <p className="text-sm text-muted-foreground">Server liveness remains separate from boot and report lifecycle.</p>
             </div>
-            <div className="agent-detail-grid">
+            <div className="grid gap-3 lg:grid-cols-2">
               <LivenessPanel agent={agent.data} />
               <BootReportPanel agent={agent.data} />
             </div>
           </section>
-          <section className="agent-detail-section" aria-labelledby="agent-credentials-heading">
-            <div className="agent-detail-section-heading">
-              <span className="eyebrow">03</span>
-              <h2 id="agent-credentials-heading">Credentials</h2>
-              <p className="muted">Server-owned credential validity and explicit revocation.</p>
+          <section className="space-y-3" aria-labelledby="agent-credentials-heading">
+            <div className="space-y-1">
+              <span className="text-[11px] font-medium text-muted-foreground">03</span>
+              <h2 id="agent-credentials-heading" className="text-lg font-semibold">Credentials</h2>
+              <p className="text-sm text-muted-foreground">Server-owned credential validity and explicit revocation.</p>
             </div>
             <CredentialsPanel agent={agent.data} onConflictReload={() => void agent.refetch()} />
           </section>
-          <section className="agent-detail-section" aria-labelledby="agent-diagnostics-heading">
-            <div className="agent-detail-section-heading">
-              <span className="eyebrow">04</span>
-              <h2 id="agent-diagnostics-heading">Diagnostics</h2>
-              <p className="muted">Recorded evidence is shown without inferring current recovery or failure.</p>
+          <section className="space-y-3" aria-labelledby="agent-diagnostics-heading">
+            <div className="space-y-1">
+              <span className="text-[11px] font-medium text-muted-foreground">04</span>
+              <h2 id="agent-diagnostics-heading" className="text-lg font-semibold">Diagnostics</h2>
+              <p className="text-sm text-muted-foreground">Recorded evidence is shown without inferring current recovery or failure.</p>
             </div>
             <DiagnosticsPanel agent={agent.data} />
           </section>
-          <section className="agent-detail-section" aria-labelledby="agent-audit-heading">
-            <div className="agent-detail-section-heading">
-              <span className="eyebrow">05</span>
-              <h2 id="agent-audit-heading">Audit</h2>
-              <p className="muted">Immutable, redacted lifecycle events for this Agent.</p>
+          <section className="space-y-3" aria-labelledby="agent-audit-heading">
+            <div className="space-y-1">
+              <span className="text-[11px] font-medium text-muted-foreground">05</span>
+              <h2 id="agent-audit-heading" className="text-lg font-semibold">Audit</h2>
+              <p className="text-sm text-muted-foreground">Immutable, redacted lifecycle events for this Agent.</p>
             </div>
             <AuditTrailPanel audit={audit} agentId={agentId} />
           </section>
@@ -592,58 +663,78 @@ function AgentDetailSummary({ agent }: { agent: AgentDiagnostic }) {
   const activeCredentials = agent.credentials.filter((credential) => credential.active).length
   const bootStatus = agent.boot_status && agent.boot_status !== 'unknown' ? agent.boot_status : 'Unknown'
   return (
-    <section className="agent-summary" aria-labelledby="agent-summary-heading">
-      <div className="agent-summary-header">
-        <div>
-          <span className="eyebrow">Agent summary</span>
-          <h2 id="agent-summary-heading">{shortId(agent.agent_id)}</h2>
-          <p className="agent-summary-id">
-            <code title={agent.agent_id}>{formatIdentifier(agent.agent_id)}</code>
+    <section
+      className={cn('space-y-3 rounded-md border-none p-4', SURFACE_CARD)}
+      aria-labelledby="agent-summary-heading"
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 space-y-1">
+          <span className="text-[11px] font-medium tracking-wider text-muted-foreground uppercase">Agent summary</span>
+          <h2 id="agent-summary-heading" className="text-lg font-semibold break-all">
+            {shortId(agent.agent_id)}
+          </h2>
+          <p className="flex min-w-0 flex-wrap items-center gap-2">
+            <code className="break-all text-[11px]" title={agent.agent_id}>{formatIdentifier(agent.agent_id)}</code>
             <span className="sr-only">Full Agent ID: {agent.agent_id}</span>
             <AgentIdCopyControl agentId={agent.agent_id} />
           </p>
         </div>
-        <div className="agent-summary-statuses" aria-label="Current Agent dimensions">
-          <div>
-            <span className="dimension-label">Server liveness</span>
+        <div className="flex flex-wrap items-start gap-4" aria-label="Current Agent dimensions">
+          <div className="flex flex-col gap-1">
+            <DimensionLabel>Server liveness</DimensionLabel>
             <StatusBadge status={liveness} tone={livenessTone(agent.liveness)} />
           </div>
-          <div>
-            <span className="dimension-label">Boot status</span>
-            <strong className="agent-summary-plain-status">{bootStatus}</strong>
+          <div className="flex flex-col gap-1">
+            <DimensionLabel>Boot status</DimensionLabel>
+            <strong className="text-sm">{bootStatus}</strong>
           </div>
-          <div>
-            <span className="dimension-label">Active credentials</span>
-            <strong>{activeCredentials} active · {agent.credentials.length} total</strong>
+          <div className="flex flex-col gap-1">
+            <DimensionLabel>Active credentials</DimensionLabel>
+            <strong className="text-sm">{activeCredentials} active · {agent.credentials.length} total</strong>
           </div>
         </div>
       </div>
-      <dl className="agent-summary-facts">
+      <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <div>
-          <dt>Agent Epoch</dt>
-          <dd>{agent.agent_epoch}</dd>
+          <dt className="text-xs font-medium tracking-wider text-muted-foreground">Agent Epoch</dt>
+          <dd className="text-sm font-bold leading-none tracking-tight">{agent.agent_epoch}</dd>
         </div>
         <div>
-          <dt>Last received</dt>
-          <dd>{receiptTimeText(agent.last_received_at)}</dd>
+          <dt className="text-xs font-medium tracking-wider text-muted-foreground">Last received</dt>
+          <dd className="text-sm">{receiptTimeText(agent.last_received_at)}</dd>
         </div>
         <div>
-          <dt>Report sequence</dt>
-          <dd>{agent.last_report_sequence == null ? 'Never received' : '#' + agent.last_report_sequence}</dd>
+          <dt className="text-xs font-medium tracking-wider text-muted-foreground">Report sequence</dt>
+          <dd className="text-sm">{agent.last_report_sequence == null ? 'Never received' : '#' + agent.last_report_sequence}</dd>
         </div>
         <div>
-          <dt>Declared Nodes</dt>
-          <dd>{agent.nodes.length}</dd>
+          <dt className="text-xs font-medium tracking-wider text-muted-foreground">Declared Nodes</dt>
+          <dd className="text-sm font-bold leading-none tracking-tight">{agent.nodes.length}</dd>
         </div>
       </dl>
       {warnings.length > 0 && (
-        <div className="agent-summary-warnings" role="note" aria-label="Important Agent warnings">
-          <h3>Important warnings</h3>
-          <ul>
+        <div className="space-y-2" role="note" aria-label="Important Agent warnings">
+          <h3 className="text-sm font-medium">Important warnings</h3>
+          <ul className="space-y-1">
             {warnings.map((warning, index) => (
-              <li key={warning.kind + '-' + index} className={'agent-summary-warning-' + warning.kind}>
-                <strong>{warning.kind === 'current' ? 'Current state' : warning.kind === 'recorded' ? 'Recorded history' : 'Unknown'}</strong>
-                <span>{warning.message}</span>
+              <li
+                key={warning.kind + '-' + index}
+                data-kind={warning.kind}
+                className="flex flex-wrap items-baseline gap-2 text-sm"
+              >
+                <strong
+                  className={cn(
+                    'text-[11px] font-medium tracking-wider uppercase',
+                    warning.kind === 'current'
+                      ? 'text-warning'
+                      : warning.kind === 'recorded'
+                        ? 'text-destructive'
+                        : 'text-muted-foreground',
+                  )}
+                >
+                  {warning.kind === 'current' ? 'Current state' : warning.kind === 'recorded' ? 'Recorded history' : 'Unknown'}
+                </strong>
+                <span className="min-w-0 break-words">{warning.message}</span>
               </li>
             ))}
           </ul>
@@ -694,143 +785,97 @@ function agentSummaryWarnings(agent: AgentDiagnostic): AgentSummaryWarning[] {
 
 function IdentityPanel({ agent }: { agent: AgentDiagnostic }) {
   return (
-    <article className="panel">
-      <h3>Identity</h3>
-      <dl className="detail-list">
-        <div>
-          <dt>Agent ID</dt>
-          <dd className="agent-detail-identity">
-            <code className="agent-full-id">{agent.agent_id}</code>
-          </dd>
-        </div>
-        <div>
-          <dt>Agent Epoch</dt>
-          <dd>{agent.agent_epoch}</dd>
-        </div>
-        <div>
-          <dt>Capabilities</dt>
-          <dd>
-            {agent.capabilities.length > 0 ? agent.capabilities.join(', ') : 'Unsupported'}
-          </dd>
-        </div>
-      </dl>
-    </article>
+    <CardX size="medium" className={CARD_SURFACE} header={<h3 className="text-sm font-medium">Identity</h3>}>
+      <DetailList>
+        <DetailItem label="Agent ID">
+          <code className="break-all text-[11px]">{agent.agent_id}</code>
+        </DetailItem>
+        <DetailItem label="Agent Epoch">{agent.agent_epoch}</DetailItem>
+        <DetailItem label="Capabilities">
+          {agent.capabilities.length > 0 ? agent.capabilities.join(', ') : 'Unsupported'}
+        </DetailItem>
+      </DetailList>
+    </CardX>
   )
 }
 
 function LivenessPanel({ agent }: { agent: AgentDiagnostic }) {
   const liveness = livenessLabel(agent.liveness)
   return (
-    <article className="panel">
-      <h3>Liveness</h3>
-      <dl className="detail-list">
-        <div>
-          <dt>Server liveness</dt>
-          <dd><StatusBadge status={liveness} tone={livenessTone(agent.liveness)} /></dd>
-        </div>
-        <div>
-          <dt>Server receipt time</dt>
-          <dd>{receiptTimeText(agent.last_received_at)}</dd>
-        </div>
-      </dl>
-    </article>
+    <CardX size="medium" className={CARD_SURFACE} header={<h3 className="text-sm font-medium">Liveness</h3>}>
+      <DetailList>
+        <DetailItem label="Server liveness">
+          <StatusBadge status={liveness} tone={livenessTone(agent.liveness)} />
+        </DetailItem>
+        <DetailItem label="Server receipt time">{receiptTimeText(agent.last_received_at)}</DetailItem>
+      </DetailList>
+    </CardX>
   )
 }
 
 function BootReportPanel({ agent }: { agent: AgentDiagnostic }) {
   return (
-    <article className="panel">
-      <h3>Boot and report state</h3>
-      <dl className="detail-list">
-        <div>
-          <dt>Boot status</dt>
-          <dd>{agent.boot_status}</dd>
-        </div>
-        <div>
-          <dt>Full active boot ID</dt>
-          <dd><code>{agent.active_boot_id ?? 'Unknown'}</code></dd>
-        </div>
-        <div>
-          <dt>Previous boot ID</dt>
-          <dd><code>{agent.previous_boot_id ?? 'None'}</code></dd>
-        </div>
-        <div>
-          <dt>Close report ID</dt>
-          <dd><code>{agent.close_report_id ?? 'None'}</code></dd>
-        </div>
-        <div>
-          <dt>Report sequence</dt>
-          <dd>{agent.last_report_sequence == null ? 'Never received' : `sequence #${agent.last_report_sequence}`}</dd>
-        </div>
-        <div>
-          <dt>Shutdown state</dt>
-          <dd>
-            {agent.shutdown_state}
-            {agent.shutdown_forced ? ' · forced' : ''}
-            {agent.shutdown_last_error ? ` · ${agent.shutdown_last_error}` : ''}
-          </dd>
-        </div>
-        <div>
-          <dt>Shutdown report ID</dt>
-          <dd><code>{agent.shutdown_report_id ?? 'None'}</code></dd>
-        </div>
-        <div>
-          <dt>Shutdown report sequence</dt>
-          <dd>{agent.shutdown_report_sequence ?? 'None'}</dd>
-        </div>
-        <div>
-          <dt>Shutdown started</dt>
-          <dd>{formatObservedAt(agent.shutdown_started_at)}</dd>
-        </div>
-        <div>
-          <dt>Shutdown deadline</dt>
-          <dd>{formatObservedAt(agent.shutdown_deadline_at)}</dd>
-        </div>
-        <div>
-          <dt>Shutdown finished</dt>
-          <dd>{formatObservedAt(agent.shutdown_finished_at)}</dd>
-        </div>
-        <div>
-          <dt>Unresolved shutdown range</dt>
-          <dd>{agent.shutdown_unresolved_range ? agent.shutdown_unresolved_range.join('–') : 'None'}</dd>
-        </div>
-        <div>
-          <dt>Shutdown updated</dt>
-          <dd>{formatObservedAt(agent.shutdown_updated_at)}</dd>
-        </div>
-      </dl>
-    </article>
+    <CardX size="medium" className={CARD_SURFACE} header={<h3 className="text-sm font-medium">Boot and report state</h3>}>
+      <DetailList>
+        <DetailItem label="Boot status">{agent.boot_status}</DetailItem>
+        <DetailItem label="Full active boot ID">
+          <code className="break-all text-[11px]">{agent.active_boot_id ?? 'Unknown'}</code>
+        </DetailItem>
+        <DetailItem label="Previous boot ID">
+          <code className="break-all text-[11px]">{agent.previous_boot_id ?? 'None'}</code>
+        </DetailItem>
+        <DetailItem label="Close report ID">
+          <code className="break-all text-[11px]">{agent.close_report_id ?? 'None'}</code>
+        </DetailItem>
+        <DetailItem label="Report sequence">
+          {agent.last_report_sequence == null ? 'Never received' : 'sequence #' + agent.last_report_sequence}
+        </DetailItem>
+        <DetailItem label="Shutdown state">
+          {agent.shutdown_state}
+          {agent.shutdown_forced ? ' · forced' : ''}
+          {agent.shutdown_last_error ? ' · ' + agent.shutdown_last_error : ''}
+        </DetailItem>
+        <DetailItem label="Shutdown report ID">
+          <code className="break-all text-[11px]">{agent.shutdown_report_id ?? 'None'}</code>
+        </DetailItem>
+        <DetailItem label="Shutdown report sequence">{agent.shutdown_report_sequence ?? 'None'}</DetailItem>
+        <DetailItem label="Shutdown started">{formatObservedAt(agent.shutdown_started_at)}</DetailItem>
+        <DetailItem label="Shutdown deadline">{formatObservedAt(agent.shutdown_deadline_at)}</DetailItem>
+        <DetailItem label="Shutdown finished">{formatObservedAt(agent.shutdown_finished_at)}</DetailItem>
+        <DetailItem label="Unresolved shutdown range">
+          {agent.shutdown_unresolved_range ? agent.shutdown_unresolved_range.join('–') : 'None'}
+        </DetailItem>
+        <DetailItem label="Shutdown updated">{formatObservedAt(agent.shutdown_updated_at)}</DetailItem>
+      </DetailList>
+    </CardX>
   )
 }
 
 function InventoryPanel({ nodes }: { nodes: NodeDiagnostic[] }) {
   return (
-    <article className="panel">
-      <h3>Inventory</h3>
+    <CardX size="medium" className={CARD_SURFACE} header={<h3 className="text-sm font-medium">Inventory</h3>}>
       {nodes.length === 0 && (
-        <p className="panel-state">
-          <StatusBadge status="Empty" tone="ok" /> No PlatON Nodes declared by this Agent yet.
-        </p>
+        <Empty description="No PlatON Nodes declared by this Agent yet." />
       )}
       {nodes.length > 0 && (
-        <ul className="inventory-list">
+        <ul className="space-y-2">
           {nodes.map((node) => (
-            <li key={node.node_id} className="inventory-item">
-              <span>
-                <strong>{node.display_name ?? node.node_id}</strong>{' '}
-                <small className="muted" title={`Full Node ID: ${node.node_id}`}>
+            <li key={node.node_id} className="flex flex-wrap items-center gap-3 text-sm">
+              <span className="min-w-0">
+                <strong className="break-words">{node.display_name ?? node.node_id}</strong>{' '}
+                <small className="text-[11px] text-muted-foreground" title={'Full Node ID: ' + node.node_id}>
                   <span aria-hidden="true">{shortId(node.node_id)}</span>
                   <span className="sr-only">Full Node ID: {node.node_id}</span>
                 </small>
               </span>
-              <span className="muted">{node.network_key}</span>
-              <span>{node.lifecycle}</span>
+              <span className="text-[11px] text-muted-foreground">{node.network_key}</span>
+              <span className="text-[11px]">{node.lifecycle}</span>
               <StatusBadge status={node.visibility} tone="neutral" />
             </li>
           ))}
         </ul>
       )}
-    </article>
+    </CardX>
   )
 }
 
@@ -858,7 +903,7 @@ function CredentialsPanel({
     setError(null)
     try {
       const result = await revokeAgentCredential(agent.agent_id, credentialId, csrfToken)
-      setMessage(`Credential revoked at ${formatObservedAt(result.revoked_at)}.`)
+      setMessage('Credential revoked at ' + formatObservedAt(result.revoked_at) + '.')
       setConfirmingId(null)
     } catch (caught) {
       // Typed conflicts reload the authoritative state (PATTERN-CONFLICT-
@@ -876,79 +921,83 @@ function CredentialsPanel({
   }
 
   return (
-    <article className="panel" id="credentials">
-      <h3>Credential records</h3>
-      <p className="muted">
+    <CardX
+      size="medium"
+      className={CARD_SURFACE}
+      id="credentials"
+      header={<h3 className="text-sm font-medium">Credential records</h3>}
+    >
+      <p className="text-sm text-muted-foreground">
         Only non-sensitive credential ids and lifecycle instants are shown; secrets are
         never stored or displayed again.
       </p>
       {message && (
-        <p className="form-success" role="status">
+        <p className="mt-2 text-sm text-success" role="status">
           {message}
         </p>
       )}
       {error && (
-        <p className="form-error" role="alert">
+        <p className="mt-2 text-sm text-destructive" role="alert">
           {error}
         </p>
       )}
       {agent.credentials.length === 0 && (
-        <p className="panel-state">
-          <StatusBadge status="Empty" tone="ok" /> No credentials issued yet.
-        </p>
+        <div className="mt-2">
+          <Empty description="No credentials issued yet." />
+        </div>
       )}
       {agent.credentials.length > 0 && (
-        <ul className="credential-list">
+        <ul className="mt-3 space-y-3">
           {agent.credentials.map((credential) => {
             const state = credentialStatus(credential)
             return (
-              <li key={credential.credential_id} className="credential-item">
-                <div className="credential-main">
-                  <span className="credential-id">{credential.credential_id}</span>
+              <li key={credential.credential_id} data-slot="credential-item" className="space-y-1 rounded-sm border border-border/60 p-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="break-all text-[11px]">{credential.credential_id}</span>
                   <StatusBadge status={state.label} tone={state.tone} />
                   {credential.revoke_after && credential.active && (
-                    <small className="muted">
+                    <small className="text-[11px] text-muted-foreground">
                       Overlap expires {formatObservedAt(credential.revoke_after)}
                     </small>
                   )}
                 </div>
-                <small className="muted">
+                <small className="block text-[11px] text-muted-foreground">
                   Issued {formatObservedAt(credential.created_at)}
-                  {credential.revoked_at ? ` · revoked ${formatObservedAt(credential.revoked_at)}` : ''}
+                  {credential.revoked_at ? ' · revoked ' + formatObservedAt(credential.revoked_at) : ''}
                 </small>
                 {credential.active && (
-                  <div className="credential-actions">
+                  <div className="flex flex-wrap items-center gap-2">
                     {confirmingId === credential.credential_id ? (
                       <>
-                        <span className="confirm-copy">
+                        <span className="text-[11px] text-muted-foreground">
                           Revoke now? The Agent stops authenticating immediately.
                         </span>
-                        <button
-                          type="button"
-                          className="danger-action"
+                        <Button
+                          variant="destructive"
+                          size="sm"
                           onClick={() => void revoke(credential.credential_id)}
                           disabled={busy}
                         >
                           {busy ? 'Revoking…' : 'Confirm revoke'}
-                        </button>
-                        <button
-                          type="button"
-                          className="text-action"
+                        </Button>
+                        <Button
+                          variant="link"
+                          size="sm"
                           onClick={() => setConfirmingId(null)}
                           disabled={busy}
                         >
                           Cancel
-                        </button>
+                        </Button>
                       </>
                     ) : (
-                      <button
-                        type="button"
-                        className="text-action"
+                      <Button
+                        variant="link"
+                        size="sm"
                         onClick={() => setConfirmingId(credential.credential_id)}
                         disabled={busy}
                       >
                         Revoke
-                      </button>
+                      </Button>
                     )}
                   </div>
                 )}
@@ -957,149 +1006,101 @@ function CredentialsPanel({
           })}
         </ul>
       )}
-    </article>
+    </CardX>
   )
 }
 
 function DiagnosticsPanel({ agent }: { agent: AgentDiagnostic }) {
   const host = agent.host
   return (
-    <article className="panel">
-      <h3>Host and component evidence</h3>
-      <p className="muted diagnostic-evidence-note">
+    <CardX
+      size="medium"
+      className={CARD_SURFACE}
+      header={<h3 className="text-sm font-medium">Host and component evidence</h3>}
+    >
+      <p className="text-sm text-muted-foreground">
         {host
           ? 'Recorded evidence from the latest Host observation; it does not infer current failure or recovery. Server liveness remains independent.'
           : 'No Host observation is available; absent diagnostic fields remain unknown.'}
       </p>
-      <dl className="detail-list diagnostic-detail-list">
-        <div>
-          <dt>Clock</dt>
-          <dd>
+      <div className="mt-3">
+        <DetailList>
+          <DetailItem label="Clock">
             {agent.clock_status}
-            {agent.clock_skew_ms != null ? ` · skew ${agent.clock_skew_ms} ms` : ''}
-          </dd>
-        </div>
-        <div>
-          <dt>Recorded gap intervals</dt>
-          <dd>{agent.sequence_gap_count}</dd>
-        </div>
-        <div>
-          <dt>Accumulated recorded security events</dt>
-          <dd>{agent.security_event_count}</dd>
-        </div>
-        {!host && (
-          <div>
-            <dt>Host observation</dt>
-            <dd>No host observation yet</dd>
-          </div>
-        )}
-        {host && (
-          <>
-            <div>
-              <dt>Host observation</dt>
-              <dd>{formatObservedAt(host.updated_at)}</dd>
-            </div>
-            <div>
-              <dt>Host CPU</dt>
-              <dd>{formatPercent(host.cpu_percent)}</dd>
-            </div>
-            <div>
-              <dt>Host memory used / total</dt>
-              <dd>{formatBytesUnknown(host.memory_used_bytes)} / {formatBytesUnknown(host.memory_total_bytes)}</dd>
-            </div>
-            <div>
-              <dt>Host load (1 / 5 / 15)</dt>
-              <dd>{host.load1 == null ? 'Unknown' : host.load1} / {host.load5 == null ? 'Unknown' : host.load5} / {host.load15 == null ? 'Unknown' : host.load15}</dd>
-            </div>
-            <div>
-              <dt>Host network RX / TX</dt>
-              <dd>{formatBytesPerSecond(host.network_rx_bytes_per_sec)} / {formatBytesPerSecond(host.network_tx_bytes_per_sec)}</dd>
-            </div>
-            <div>
-              <dt>Host components</dt>
-              <dd>
+            {agent.clock_skew_ms != null ? ' · skew ' + agent.clock_skew_ms + ' ms' : ''}
+          </DetailItem>
+          <DetailItem label="Recorded gap intervals">{agent.sequence_gap_count}</DetailItem>
+          <DetailItem label="Accumulated recorded security events">{agent.security_event_count}</DetailItem>
+          {!host && (
+            <DetailItem label="Host observation">No host observation yet</DetailItem>
+          )}
+          {host && (
+            <>
+              <DetailItem label="Host observation">{formatObservedAt(host.updated_at)}</DetailItem>
+              <DetailItem label="Host CPU">{formatPercent(host.cpu_percent)}</DetailItem>
+              <DetailItem label="Host memory used / total">
+                {formatBytesUnknown(host.memory_used_bytes)} / {formatBytesUnknown(host.memory_total_bytes)}
+              </DetailItem>
+              <DetailItem label="Host load (1 / 5 / 15)">
+                {host.load1 == null ? 'Unknown' : host.load1} / {host.load5 == null ? 'Unknown' : host.load5} / {host.load15 == null ? 'Unknown' : host.load15}
+              </DetailItem>
+              <DetailItem label="Host network RX / TX">
+                {formatBytesPerSecond(host.network_rx_bytes_per_sec)} / {formatBytesPerSecond(host.network_tx_bytes_per_sec)}
+              </DetailItem>
+              <DetailItem label="Host components">
                 {host.components.length === 0 ? 'None observed' : (
-                  <ul className="diagnostic-component-list">
+                  <ul className="space-y-2">
                     {host.components.map((component) => (
-                      <li key={component.component}>
+                      <li key={component.component} className="min-w-0">
                         <strong>{component.component}</strong>: {component.state}
                         {component.error_code ? ' · ' + component.error_code : ''}
                         {component.error_message ? ' · ' + component.error_message : ''}
-                        <small className="muted diagnostic-component-meta">
+                        <small className="mt-0.5 block text-[11px] text-muted-foreground">
                           attempted {formatObservedAt(component.attempted_at)} · observed {formatObservedAt(component.observed_at)} · received {formatObservedAt(component.received_at)} · state revision {component.state_revision} · value revision {component.value_revision}
                         </small>
                       </li>
                     ))}
                   </ul>
                 )}
-              </dd>
-            </div>
-            <div>
-              <dt>Spool observation</dt>
-              <dd>{hasSpoolObservation(host) ? 'Observed' : 'Not observed yet'}</dd>
-            </div>
-            <div>
-              <dt>Spool evidence</dt>
-              <dd>{spoolDiagnosticText(host)}</dd>
-            </div>
-            <div>
-              <dt>Spool queued reports</dt>
-              <dd>{host.spool_queued_reports ?? 'Unknown'}</dd>
-            </div>
-            <div>
-              <dt>Spool delivery state</dt>
-              <dd>{host.spool_in_flight == null ? 'Unknown' : host.spool_in_flight ? 'In flight' : 'Idle'}</dd>
-            </div>
-            <div>
-              <dt>Spool bytes / capacity</dt>
-              <dd>{formatBytesUnknown(host.spool_queued_bytes)} / {formatBytesUnknown(host.spool_capacity_bytes)}</dd>
-            </div>
-            <div>
-              <dt>Spool oldest / maximum age</dt>
-              <dd>
+              </DetailItem>
+              <DetailItem label="Spool observation">{hasSpoolObservation(host) ? 'Observed' : 'Not observed yet'}</DetailItem>
+              <DetailItem label="Spool evidence">{spoolDiagnosticText(host)}</DetailItem>
+              <DetailItem label="Spool queued reports">{host.spool_queued_reports ?? 'Unknown'}</DetailItem>
+              <DetailItem label="Spool delivery state">
+                {host.spool_in_flight == null ? 'Unknown' : host.spool_in_flight ? 'In flight' : 'Idle'}
+              </DetailItem>
+              <DetailItem label="Spool bytes / capacity">
+                {formatBytesUnknown(host.spool_queued_bytes)} / {formatBytesUnknown(host.spool_capacity_bytes)}
+              </DetailItem>
+              <DetailItem label="Spool oldest / maximum age">
                 {host.spool_oldest_queued_age_ms == null ? 'Unknown' : host.spool_oldest_queued_age_ms + ' ms'} / {host.spool_max_age_seconds == null ? 'Unknown' : host.spool_max_age_seconds + ' s'}
-              </dd>
-            </div>
-            <div>
-              <dt>Last spool delivery</dt>
-              <dd>{host.spool_last_delivery_at == null ? 'Unknown' : formatObservedAt(host.spool_last_delivery_at)}</dd>
-            </div>
-            <div>
-              <dt>Last delivery error</dt>
-              <dd>{diagnosticMessageText(host.spool_last_delivery_error)}</dd>
-            </div>
-            <div>
-              <dt>Dropped sequence range</dt>
-              <dd>{diagnosticRangeText(host.spool_dropped_sequence_from, host.spool_dropped_sequence_to)}</dd>
-            </div>
-            <div>
-              <dt>Dropped height range</dt>
-              <dd>{diagnosticRangeText(host.spool_dropped_height_from, host.spool_dropped_height_to)}</dd>
-            </div>
-            <div>
-              <dt>Dropped time range</dt>
-              <dd>{diagnosticRangeText(host.spool_dropped_time_from, host.spool_dropped_time_to, formatObservedAt)}</dd>
-            </div>
-            <div>
-              <dt>Pending history gaps</dt>
-              <dd>{host.spool_pending_history_gaps ?? 'Unknown'}</dd>
-            </div>
-            <div>
-              <dt>Report size state</dt>
-              <dd>{host.spool_report_too_large == null ? 'Unknown' : host.spool_report_too_large ? 'Too large' : 'Within limit'}</dd>
-            </div>
-            <div>
-              <dt>Spool store fatal</dt>
-              <dd>{host.spool_store_fatal == null ? 'Unknown' : host.spool_store_fatal ? 'Yes' : 'No'}</dd>
-            </div>
-            <div>
-              <dt>Spool store error</dt>
-              <dd>{diagnosticMessageText(host.spool_store_error)}</dd>
-            </div>
-          </>
-        )}
-      </dl>
-    </article>
+              </DetailItem>
+              <DetailItem label="Last spool delivery">
+                {host.spool_last_delivery_at == null ? 'Unknown' : formatObservedAt(host.spool_last_delivery_at)}
+              </DetailItem>
+              <DetailItem label="Last delivery error">{diagnosticMessageText(host.spool_last_delivery_error)}</DetailItem>
+              <DetailItem label="Dropped sequence range">
+                {diagnosticRangeText(host.spool_dropped_sequence_from, host.spool_dropped_sequence_to)}
+              </DetailItem>
+              <DetailItem label="Dropped height range">
+                {diagnosticRangeText(host.spool_dropped_height_from, host.spool_dropped_height_to)}
+              </DetailItem>
+              <DetailItem label="Dropped time range">
+                {diagnosticRangeText(host.spool_dropped_time_from, host.spool_dropped_time_to, formatObservedAt)}
+              </DetailItem>
+              <DetailItem label="Pending history gaps">{host.spool_pending_history_gaps ?? 'Unknown'}</DetailItem>
+              <DetailItem label="Report size state">
+                {host.spool_report_too_large == null ? 'Unknown' : host.spool_report_too_large ? 'Too large' : 'Within limit'}
+              </DetailItem>
+              <DetailItem label="Spool store fatal">
+                {host.spool_store_fatal == null ? 'Unknown' : host.spool_store_fatal ? 'Yes' : 'No'}
+              </DetailItem>
+              <DetailItem label="Spool store error">{diagnosticMessageText(host.spool_store_error)}</DetailItem>
+            </>
+          )}
+        </DetailList>
+      </div>
+    </CardX>
   )
 }
 
@@ -1112,38 +1113,42 @@ function AuditTrailPanel({
 }) {
   const items = audit.data?.items ?? []
   return (
-    <article className="panel" id="audit">
-      <h3>Audit trail</h3>
-      <p className="muted">
+    <CardX size="medium" className={CARD_SURFACE} id="audit" header={<h3 className="text-sm font-medium">Audit trail</h3>}>
+      <p className="text-sm text-muted-foreground">
         Redacted immutable events for this Agent. One-time secrets never appear in Audit.
       </p>
       {!audit.data && audit.isPending && (
-        <p className="panel-state" role="status">
+        <p className="mt-2 flex flex-wrap items-center gap-2 text-sm text-muted-foreground" role="status">
           <StatusBadge status="Starting" tone="neutral" /> Loading the Audit trail…
         </p>
       )}
       {!audit.data && audit.isError && (
-        <p className="panel-state" role="alert">
+        <div
+          className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm"
+          role="alert"
+        >
           <StatusBadge status="Error" tone="error" />{' '}
-          {audit.error instanceof Error ? audit.error.message : 'Unable to load the Audit trail'}
-          <button type="button" className="text-action" onClick={() => void audit.refetch()}>
+          <span className="min-w-0 break-words">
+            {audit.error instanceof Error ? audit.error.message : 'Unable to load the Audit trail'}
+          </span>
+          <Button variant="link" size="sm" onClick={() => void audit.refetch()}>
             Try again
-          </button>
-        </p>
+          </Button>
+        </div>
       )}
       {audit.data && items.length === 0 && (
-        <p className="panel-state">
-          <StatusBadge status="Empty" tone="ok" /> No Audit events for this Agent yet.
-        </p>
+        <div className="mt-2">
+          <Empty description="No Audit events for this Agent yet." />
+        </div>
       )}
       {audit.data && items.length > 0 && (
-        <ul className="audit-list">
+        <ul className="mt-3 space-y-3">
           {items.map((item) => (
             <AuditItemRow key={item.audit_event_id} item={item} agentId={agentId} />
           ))}
         </ul>
       )}
-    </article>
+    </CardX>
   )
 }
 
@@ -1152,19 +1157,19 @@ function AuditItemRow({ item, agentId }: { item: AgentAuditItem; agentId: string
   const summary =
     detail && typeof detail === 'object'
       ? Object.entries(detail as Record<string, unknown>)
-          .map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(', ') : String(value)}`)
+          .map(([key, value]) => key + ': ' + (Array.isArray(value) ? value.join(', ') : String(value)))
           .join(' · ')
       : ''
   return (
-    <li className="audit-item">
-      <div className="audit-main">
-        <strong>{item.event_kind}</strong>
-        <small className="muted">
+    <li className="space-y-1 rounded-sm border border-border/60 p-2">
+      <div className="flex flex-col gap-0.5">
+        <strong className="break-words">{item.event_kind}</strong>
+        <small className="text-[11px] text-muted-foreground">
           {formatObservedAt(item.created_at)} · {item.actor_username ?? 'local-cli'} · event #
           {item.audit_event_id}
         </small>
       </div>
-      {summary && <p className="audit-details muted">{summary}</p>}
+      {summary && <p className="text-sm text-muted-foreground break-words">{summary}</p>}
       <AuditContextLink agentId={agentId} />
     </li>
   )
@@ -1183,24 +1188,30 @@ function AuditContextLink({
   requestId?: string
 }) {
   return (
-    <p className="muted audit-context">
+    <p className="flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
       Recorded in the redacted Audit trail
       {agentId ? (
         <>
           {' · '}
-          <Link className="text-action" to={`/admin/agents/${agentId}#audit`}>
+          <Link
+            className="inline-flex min-h-11 min-w-11 items-center font-medium text-foreground underline-offset-4 hover:underline"
+            to={'/admin/agents/' + agentId + '#audit'}
+          >
             view Agent audit
           </Link>
         </>
       ) : (
         <>
           {' · '}
-          <Link className="text-action" to="/admin/access/audit">
+          <Link
+            className="inline-flex min-h-11 min-w-11 items-center font-medium text-foreground underline-offset-4 hover:underline"
+            to="/admin/access/audit"
+          >
             review the redacted Audit log
           </Link>
         </>
       )}
-      {requestId ? ` · request ${requestId}` : ''}
+      {requestId ? ' · request ' + requestId : ''}
     </p>
   )
 }
@@ -1219,16 +1230,16 @@ function OneTimeSecret({ secret, label }: { secret: string; label: string }) {
     }
   }
   return (
-    <div className="secret-panel" role="status">
+    <div className="space-y-2 rounded-md border border-warning/40 bg-warning/5 p-3" role="status">
       <p>
         <strong>{label}</strong>
       </p>
-      <code className="secret-value">{secret}</code>
-      <button type="button" className="primary-action" onClick={() => void copySecret()}>
+      <code className="block break-all rounded-sm bg-muted p-2 text-[11px]">{secret}</code>
+      <Button type="button" onClick={() => void copySecret()}>
         Copy secret
-      </button>
-      {copied && <p className="form-success">Copied to clipboard.</p>}
-      <p className="secret-warning">
+      </Button>
+      {copied && <p className="text-sm text-success">Copied to clipboard.</p>}
+      <p className="text-[11px] text-muted-foreground">
         This secret is shown exactly once and cannot be recovered. It never appears in URLs,
         browser history, logs, or the Audit trail. Copy it now and store it with the Agent
         configuration.
@@ -1249,17 +1260,17 @@ function LifetimeField({
   label: string
 }) {
   return (
-    <div className="field">
-      <label htmlFor={id}>{label}</label>
-      <select id={id} value={value} onChange={(event) => onChange(Number(event.target.value))}>
+    <div className="flex flex-col gap-1">
+      <label className="text-xs font-medium tracking-wider text-muted-foreground" htmlFor={id}>{label}</label>
+      <Select id={id} value={value} onChange={(event) => onChange(Number(event.target.value))}>
         <option value={1}>1 hour</option>
         <option value={6}>6 hours</option>
         <option value={12}>12 hours</option>
         <option value={24}>24 hours (default)</option>
         <option value={72}>72 hours</option>
         <option value={168}>7 days</option>
-      </select>
-      <p className="field-hint">Single use; expires after the selected window.</p>
+      </Select>
+      <p className="text-[11px] text-muted-foreground">Single use; expires after the selected window.</p>
     </div>
   )
 }
@@ -1289,48 +1300,56 @@ export function AdminAgentEnroll() {
   }
 
   return (
-    <section className="page">
-      <h1>Enroll a new Agent</h1>
-      <p className="muted">
-        <Link className="text-action" to="/admin/agents">
-          All Agents
-        </Link>{' '}
-        · the Server issues a short-lived, single-use Enrollment Token. The Agent exchanges
-        it once for a stable identity and an Agent Credential; the token cannot enroll twice.
-      </p>
+    <section className="w-full min-w-0 space-y-4">
+      <div className="space-y-1">
+        <h1 className="text-lg font-semibold break-words">Enroll a new Agent</h1>
+        <p className="text-sm text-muted-foreground">
+          <Link
+            className="inline-flex min-h-11 min-w-11 items-center font-medium underline-offset-4 hover:underline"
+            to="/admin/agents"
+          >
+            All Agents
+          </Link>{' '}
+          · the Server issues a short-lived, single-use Enrollment Token. The Agent exchanges
+          it once for a stable identity and an Agent Credential; the token cannot enroll twice.
+        </p>
+      </div>
       {result ? (
-        <div className="success-panel">
-          <h2>Enrollment token created</h2>
+        <CardX size="medium" className={CARD_SURFACE} header={<h2 className="text-lg font-semibold">Enrollment token created</h2>}>
           <OneTimeSecret secret={result.token} label="One-time Enrollment Token" />
-          <p className="muted">
+          <p className="mt-3 text-sm text-muted-foreground">
             Token id {result.token_id} · expires {formatObservedAt(result.expires_at)} · shown
             exactly once.
           </p>
-          <AuditContextLink agentId="" requestId={result.request_id} />
-          <p className="muted">
+          <div className="mt-2">
+            <AuditContextLink agentId="" requestId={result.request_id} />
+          </div>
+          <p className="mt-2 text-sm text-muted-foreground">
             Recorded as a redacted <code>enrollment_token_created</code> Audit event.
           </p>
-          <Link className="primary-action" to="/admin/agents">
+          <Link className={cn(buttonVariants(), 'mt-3 w-fit')} to="/admin/agents">
             Back to Agents
           </Link>
-        </div>
+        </CardX>
       ) : (
-        <form onSubmit={submit} className="single-form">
-          <LifetimeField
-            id="enroll-lifetime"
-            label="Token lifetime"
-            value={expiresInHours}
-            onChange={setExpiresInHours}
-          />
-          <button className="primary-action" type="submit" disabled={busy}>
-            Create enrollment token
-          </button>
-          {error && (
-            <p className="form-error" role="alert">
-              {error}
-            </p>
-          )}
-        </form>
+        <CardX size="medium" className={CARD_SURFACE} header={<h2 className="text-lg font-semibold">Token lifetime</h2>}>
+          <form onSubmit={submit} className="grid max-w-xl gap-3">
+            <LifetimeField
+              id="enroll-lifetime"
+              label="Token lifetime"
+              value={expiresInHours}
+              onChange={setExpiresInHours}
+            />
+            <Button type="submit" className="w-fit" disabled={busy}>
+              Create enrollment token
+            </Button>
+            {error && (
+              <p className="text-sm text-destructive" role="alert">
+                {error}
+              </p>
+            )}
+          </form>
+        </CardX>
       )}
     </section>
   )
@@ -1370,85 +1389,94 @@ export function AdminAgentRecover() {
 
   if (notFound) {
     return (
-      <section className="page">
-        <h1>Agent unavailable</h1>
-        <p>This Agent is no longer available.</p>
+      <section className="w-full min-w-0 space-y-4">
+        <div className="space-y-1">
+          <h1 className="text-lg font-semibold">Agent unavailable</h1>
+          <p className="text-sm text-muted-foreground">This Agent is no longer available.</p>
+        </div>
       </section>
     )
   }
 
   return (
-    <section className="page">
-      <h1>Recover Agent {agentId ? shortId(agentId) : ''}</h1>
-      <p className="muted">
-        <Link className="text-action" to={`/admin/agents/${agentId}`}>
-          Back to Agent detail
-        </Link>
-      </p>
+    <section className="w-full min-w-0 space-y-4">
+      <div className="space-y-1">
+        <h1 className="text-lg font-semibold break-words">Recover Agent {agentId ? shortId(agentId) : ''}</h1>
+        <p className="text-sm text-muted-foreground">
+          <Link
+            className="inline-flex min-h-11 min-w-11 items-center font-medium underline-offset-4 hover:underline"
+            to={'/admin/agents/' + agentId}
+          >
+            Back to Agent detail
+          </Link>
+        </p>
+      </div>
       {agent.data && (
-        <p className="panel-state">
+        <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
           Current Agent Epoch:{' '}
-          <StatusBadge status={`${agent.data.agent_epoch}`} tone="neutral" /> · liveness{' '}
+          <StatusBadge status={String(agent.data.agent_epoch)} tone="neutral" /> · liveness{' '}
           <StatusBadge status={livenessLabel(agent.data.liveness)} tone="neutral" />
         </p>
       )}
       {!agent.data && agent.isPending && (
-        <p className="panel-state" role="status">
+        <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground" role="status">
           <StatusBadge status="Starting" tone="neutral" /> Loading Agent state…
         </p>
       )}
       {result ? (
-        <div className="success-panel">
-          <h2>Recovery token created</h2>
+        <CardX size="medium" className={CARD_SURFACE} header={<h2 className="text-lg font-semibold">Recovery token created</h2>}>
           <OneTimeSecret secret={result.token} label="One-time Recovery Token" />
-          <p className="muted">
+          <p className="mt-3 text-sm text-muted-foreground">
             Token id {result.token_id} · expires {formatObservedAt(result.expires_at)}.
           </p>
-          <p className="warning-copy">
+          <p className="mt-2 text-sm text-warning">
             When the Agent exchanges this token its Epoch advances from {result.agent_epoch} to{' '}
             {result.agent_epoch + 1}, every existing credential is revoked, and a fresh
             credential is issued — the same Agent identity is preserved, never duplicated.
           </p>
-          <AuditContextLink agentId={agentId} requestId={result.request_id} />
-          <Link className="primary-action" to={`/admin/agents/${agentId}`}>
+          <div className="mt-2">
+            <AuditContextLink agentId={agentId} requestId={result.request_id} />
+          </div>
+          <Link className={cn(buttonVariants(), 'mt-3 w-fit')} to={'/admin/agents/' + agentId}>
             Back to Agent detail
           </Link>
-        </div>
+        </CardX>
       ) : (
-        <form onSubmit={submit} className="single-form">
-          <div className="warning-copy">
-            <strong>What recovery does:</strong> advances the Agent Epoch, revokes every
-            existing credential, and issues a fresh credential through the one-time token.
-            It does not create a duplicate Agent and cannot be undone. Use it when credentials
-            are lost or compromised.
-          </div>
-          <LifetimeField
-            id="recover-lifetime"
-            label="Token lifetime"
-            value={expiresInHours}
-            onChange={setExpiresInHours}
-          />
-          <div className="field checkbox-field">
-            <label htmlFor="recover-confirm">
-              <input
-                id="recover-confirm"
-                type="checkbox"
-                checked={confirmed}
-                onChange={(event) => setConfirmed(event.target.checked)}
-              />
-              I understand: recovery advances the Agent Epoch and revokes every existing
-              credential; it cannot be undone and never creates a duplicate Agent.
-            </label>
-          </div>
-          <button className="primary-action" type="submit" disabled={busy || !confirmed}>
-            Create recovery token
-          </button>
-          {error && (
-            <p className="form-error" role="alert">
-              {error}
-            </p>
-          )}
-        </form>
+        <CardX size="medium" className={CARD_SURFACE} header={<h2 className="text-lg font-semibold">Create a recovery token</h2>}>
+          <form onSubmit={submit} className="grid max-w-xl gap-3">
+            <div className="text-sm text-warning">
+              <strong>What recovery does:</strong> advances the Agent Epoch, revokes every
+              existing credential, and issues a fresh credential through the one-time token.
+              It does not create a duplicate Agent and cannot be undone. Use it when credentials
+              are lost or compromised.
+            </div>
+            <LifetimeField
+              id="recover-lifetime"
+              label="Token lifetime"
+              value={expiresInHours}
+              onChange={setExpiresInHours}
+            />
+            <div>
+              <label className="flex min-h-11 items-center gap-2 text-sm" htmlFor="recover-confirm">
+                <Checkbox
+                  id="recover-confirm"
+                  checked={confirmed}
+                  onChange={(event) => setConfirmed(event.target.checked)}
+                />
+                I understand: recovery advances the Agent Epoch and revokes every existing
+                credential; it cannot be undone and never creates a duplicate Agent.
+              </label>
+            </div>
+            <Button type="submit" className="w-fit" disabled={busy || !confirmed}>
+              Create recovery token
+            </Button>
+            {error && (
+              <p className="text-sm text-destructive" role="alert">
+                {error}
+              </p>
+            )}
+          </form>
+        </CardX>
       )}
     </section>
   )
@@ -1489,113 +1517,121 @@ export function AdminAgentRotate() {
 
   if (notFound) {
     return (
-      <section className="page">
-        <h1>Agent unavailable</h1>
-        <p>This Agent is no longer available.</p>
+      <section className="w-full min-w-0 space-y-4">
+        <div className="space-y-1">
+          <h1 className="text-lg font-semibold">Agent unavailable</h1>
+          <p className="text-sm text-muted-foreground">This Agent is no longer available.</p>
+        </div>
       </section>
     )
   }
 
   return (
-    <section className="page">
-      <h1>Rotate credential {agentId ? `for Agent ${shortId(agentId)}` : ''}</h1>
-      <p className="muted">
-        <Link className="text-action" to={`/admin/agents/${agentId}`}>
-          Back to Agent detail
-        </Link>
-      </p>
+    <section className="w-full min-w-0 space-y-4">
+      <div className="space-y-1">
+        <h1 className="text-lg font-semibold break-words">Rotate credential {agentId ? 'for Agent ' + shortId(agentId) : ''}</h1>
+        <p className="text-sm text-muted-foreground">
+          <Link
+            className="inline-flex min-h-11 min-w-11 items-center font-medium underline-offset-4 hover:underline"
+            to={'/admin/agents/' + agentId}
+          >
+            Back to Agent detail
+          </Link>
+        </p>
+      </div>
       {result ? (
-        <div className="success-panel">
-          <h2>Credential rotated</h2>
+        <CardX size="medium" className={CARD_SURFACE} header={<h2 className="text-lg font-semibold">Credential rotated</h2>}>
           <OneTimeSecret secret={result.credential} label="New Agent Credential" />
-          <p className="muted">
+          <p className="mt-3 text-sm text-muted-foreground">
             Credential id {result.credential_id} · overlap {result.overlap_hours} hour
             {result.overlap_hours === 1 ? '' : 's'}
             {result.revoked_previous_ids.length > 0
               ? ' · previous credential(s) revoked immediately'
               : result.overlap_credential_ids.length > 0
-                ? ` · previous credential(s) stay valid until ${formatObservedAt(result.revoke_after)}`
+                ? ' · previous credential(s) stay valid until ' + formatObservedAt(result.revoke_after)
                 : ' · no previous valid credential remained'}
             {result.revoked_previous_ids.length > 0
-              ? ` · revoked: ${result.revoked_previous_ids.join(', ')}`
+              ? ' · revoked: ' + result.revoked_previous_ids.join(', ')
               : ''}
             {result.overlap_credential_ids.length > 0
-              ? ` · overlap: ${result.overlap_credential_ids.join(', ')}`
+              ? ' · overlap: ' + result.overlap_credential_ids.join(', ')
               : ''}
           </p>
-          <p className="warning-copy">
+          <p className="mt-2 text-sm text-warning">
             The Agent Epoch was not changed. Install the new credential on the Agent before
             the overlap expires; the previous credential stops working at that instant.
           </p>
-          <AuditContextLink agentId={agentId} requestId={result.request_id} />
-          <Link className="primary-action" to={`/admin/agents/${agentId}`}>
+          <div className="mt-2">
+            <AuditContextLink agentId={agentId} requestId={result.request_id} />
+          </div>
+          <Link className={cn(buttonVariants(), 'mt-3 w-fit')} to={'/admin/agents/' + agentId}>
             Back to Agent detail
           </Link>
-        </div>
+        </CardX>
       ) : (
-        <form onSubmit={submit} className="single-form">
-          <div className="warning-copy">
-            <strong>What rotation does:</strong> issues a fresh credential and keeps the
-            previous one valid through an explicit overlap window (or revokes it immediately
-            when chosen). The Agent Epoch is untouched and no duplicate Agent is created.
-          </div>
-          <div className="field">
-            <label htmlFor="rotate-overlap">Overlap window</label>
-            <select
-              id="rotate-overlap"
-              value={overlapHours}
-              onChange={(event) => setOverlapHours(Number(event.target.value))}
-            >
-              <option value={1}>1 hour</option>
-              <option value={6}>6 hours</option>
-              <option value={12}>12 hours</option>
-              <option value={24}>24 hours (default)</option>
-              <option value={72}>72 hours</option>
-              <option value={168}>7 days</option>
-            </select>
-            <p className="field-hint">
-              The previous credential stays valid for this long after rotation, then stops
-              authenticating automatically.
-            </p>
-          </div>
-          <div className="field checkbox-field">
-            <label htmlFor="rotate-revoke-previous">
-              <input
-                id="rotate-revoke-previous"
-                type="checkbox"
-                checked={revokePrevious}
-                onChange={(event) => setRevokePrevious(event.target.checked)}
-              />
-              Revoke the previous credential immediately
-            </label>
-            <p className="field-hint">
-              Choose this only when the previous credential is compromised or already
-              installed on the replacement configuration. Immediate revocation cannot be
-              undone.
-            </p>
-          </div>
-          <div className="field checkbox-field">
-            <label htmlFor="rotate-confirm">
-              <input
-                id="rotate-confirm"
-                type="checkbox"
-                checked={confirmed}
-                onChange={(event) => setConfirmed(event.target.checked)}
-              />
-              I understand: rotation issues a new credential and the previous one stops
-              working at the end of the overlap window (or immediately when revocation is
-              selected); the Agent Epoch is untouched.
-            </label>
-          </div>
-          <button className="primary-action" type="submit" disabled={busy || !confirmed}>
-            Rotate credential
-          </button>
-          {error && (
-            <p className="form-error" role="alert">
-              {error}
-            </p>
-          )}
-        </form>
+        <CardX size="medium" className={CARD_SURFACE} header={<h2 className="text-lg font-semibold">Rotate the Agent credential</h2>}>
+          <form onSubmit={submit} className="grid max-w-xl gap-3">
+            <div className="text-sm text-warning">
+              <strong>What rotation does:</strong> issues a fresh credential and keeps the
+              previous one valid through an explicit overlap window (or revokes it immediately
+              when chosen). The Agent Epoch is untouched and no duplicate Agent is created.
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs font-medium tracking-wider text-muted-foreground" htmlFor="rotate-overlap">Overlap window</label>
+              <Select
+                id="rotate-overlap"
+                value={overlapHours}
+                onChange={(event) => setOverlapHours(Number(event.target.value))}
+              >
+                <option value={1}>1 hour</option>
+                <option value={6}>6 hours</option>
+                <option value={12}>12 hours</option>
+                <option value={24}>24 hours (default)</option>
+                <option value={72}>72 hours</option>
+                <option value={168}>7 days</option>
+              </Select>
+              <p className="text-[11px] text-muted-foreground">
+                The previous credential stays valid for this long after rotation, then stops
+                authenticating automatically.
+              </p>
+            </div>
+            <div>
+              <label className="flex min-h-11 items-center gap-2 text-sm" htmlFor="rotate-revoke-previous">
+                <Checkbox
+                  id="rotate-revoke-previous"
+                  checked={revokePrevious}
+                  onChange={(event) => setRevokePrevious(event.target.checked)}
+                />
+                Revoke the previous credential immediately
+              </label>
+              <p className="text-[11px] text-muted-foreground">
+                Choose this only when the previous credential is compromised or already
+                installed on the replacement configuration. Immediate revocation cannot be
+                undone.
+              </p>
+            </div>
+            <div>
+              <label className="flex min-h-11 items-center gap-2 text-sm" htmlFor="rotate-confirm">
+                <Checkbox
+                  id="rotate-confirm"
+                  checked={confirmed}
+                  onChange={(event) => setConfirmed(event.target.checked)}
+                />
+                I understand: rotation issues a new credential and the previous one stops
+                working at the end of the overlap window (or immediately when revocation is
+                selected); the Agent Epoch is untouched.
+              </label>
+            </div>
+            <Button type="submit" className="w-fit" disabled={busy || !confirmed}>
+              Rotate credential
+            </Button>
+            {error && (
+              <p className="text-sm text-destructive" role="alert">
+                {error}
+              </p>
+            )}
+          </form>
+        </CardX>
       )}
     </section>
   )

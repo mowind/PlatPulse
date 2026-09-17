@@ -1,0 +1,510 @@
+npm notice run platpulse-web@0.1.0 test
+npm notice run vitest run
+
+ RUN  v4.1.10 /home/mowind/repos/rust/PlatPulse/platpulse-web
+
+ ✓ scripts/generate-api.test.mjs (5 tests) 10ms
+ ✓ src/homeGeo.test.ts (9 tests) 12ms
+ ✓ src/components/mapChartOption.test.ts (7 tests) 12ms
+ ✓ src/theme.test.ts (10 tests) 22ms
+ ✓ src/components/MetricRow.test.tsx (4 tests) 137ms
+ ✓ src/api/transport.test.ts (3 tests) 17ms
+ ✓ src/api/public.test.ts (5 tests) 29ms
+ ✓ src/components/ui/tabs.test.tsx (2 tests) 341ms
+ ✓ src/components/ValidatorInsight.test.tsx (3 tests) 119ms
+ ✓ src/components/NodeHealthMarker.test.tsx (8 tests) 282ms
+ ✓ src/components/GeoWorldMap.test.tsx (9 tests) 422ms
+ ✓ src/components/ui/input.test.tsx (9 tests) 546ms
+     ✓ keeps checkbox input hit sizing separate from its decorative indicator  317ms
+ ✓ src/components/ValidatorAnalytics.test.tsx (3 tests) 438ms
+     ✓ renders public daily/monthly tables and a chart alternative  383ms
+ ✓ src/components/PeerHistoryInsight.test.tsx (4 tests) 365ms
+     ✓ renders bounded aggregate summaries without peer identifiers or addresses  316ms
+ ✓ src/components/ThemeToggle.test.tsx (3 tests) 225ms
+ ✓ src/components/GeoInsight.test.tsx (10 tests) 364ms
+ ✓ src/components/PeerInsight.test.tsx (8 tests) 530ms
+     ✓ puts primary counts first and reduces a healthy snapshot to one quiet summary  306ms
+(node:785970) ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.
+(Use `node --trace-warnings ...` to show where the warning was created)
+stderr | src/pages/AdminNetworks.test.tsx > PAGE-ADMIN-NETWORKS (Network Registry) > lists the complete validated identity tuple with Node counts and typed mismatch outcomes
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+(node:786003) ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.
+(Use `node --trace-warnings ...` to show where the warning was created)
+stderr | src/pages/AdminNodes.test.tsx > PAGE-ADMIN-NODES (Node inventory) > lists every Node as its own row with separate health, freshness, identity, visibility, and lifecycle dimensions
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+(node:785989) ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:785969) ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.
+(Use `node --trace-warnings ...` to show where the warning was created)
+stderr | src/pages/AdminAccess.test.tsx > PAGE-ACCESS-SESSIONS (Human Sessions) > lists coarse session metadata and marks the current session
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+(node:785971) ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:786000) ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.
+(Use `node --trace-warnings ...` to show where the warning was created)
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > shows Starting while the Server summary is loading
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+(node:785983) ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.
+(Use `node --trace-warnings ...` to show where the warning was created)
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > shows Starting while the Server summary is loading
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNetworks.test.tsx > PAGE-ADMIN-NETWORKS (Network Registry) > lists the complete validated identity tuple with Node counts and typed mismatch outcomes
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNetworks.test.tsx > PAGE-ADMIN-NETWORKS (Network Registry) > lists the complete validated identity tuple with Node counts and typed mismatch outcomes
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNodes.test.tsx > PAGE-ADMIN-NODES (Node inventory) > lists every Node as its own row with separate health, freshness, identity, visibility, and lifecycle dimensions
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > shows Starting while the Server summary is loading
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAccess.test.tsx > PAGE-ACCESS-SESSIONS (Human Sessions) > lists coarse session metadata and marks the current session
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNodes.test.tsx > PAGE-ADMIN-NODES (Node inventory) > lists every Node as its own row with separate health, freshness, identity, visibility, and lifecycle dimensions
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAccess.test.tsx > PAGE-ACCESS-SESSIONS (Human Sessions) > lists coarse session metadata and marks the current session
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNetworks.test.tsx > PAGE-ADMIN-NETWORKS (Network Registry) > does not present zero reported mismatches as Current or verified identity
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNetworks.test.tsx > PAGE-ADMIN-NETWORKS (Network Registry) > does not present zero reported mismatches as Current or verified identity
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNetworks.test.tsx > PAGE-ADMIN-NETWORKS (Network Registry) > does not present zero reported mismatches as Current or verified identity
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAccess.test.tsx > PAGE-ACCESS-SESSIONS (Human Sessions) > revokes a session after explicit confirmation
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNetworks.test.tsx > PAGE-ADMIN-NETWORKS (Network Registry) > registers a Network only through the explicit Owner workflow with the full tuple
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAccess.test.tsx > PAGE-ACCESS-SESSIONS (Human Sessions) > revokes a session after explicit confirmation
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNodes.test.tsx > PAGE-ADMIN-NODES (Node inventory) > filters through URL state and preserves it in back/forward
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNetworks.test.tsx > PAGE-ADMIN-NETWORKS (Network Registry) > registers a Network only through the explicit Owner workflow with the full tuple
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAccess.test.tsx > PAGE-ACCESS-SESSIONS (Human Sessions) > revokes a session after explicit confirmation
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNodes.test.tsx > PAGE-ADMIN-NODES (Node inventory) > filters through URL state and preserves it in back/forward
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > shows an Error state when the Server summary fails initially
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > shows an Error state when the Server summary fails initially
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNodes.test.tsx > PAGE-ADMIN-NODES (Node inventory) > shows the Empty state when no Nodes exist
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAccess.test.tsx > PAGE-ACCESS-SESSIONS (Human Sessions) > keeps the current session when revoking all others
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > shows an Error state when the Server summary fails initially
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNodes.test.tsx > PAGE-ADMIN-NODES (Node inventory) > shows the Empty state when no Nodes exist
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNetworks.test.tsx > PAGE-ADMIN-NETWORKS (Network Registry) > registers a Network only through the explicit Owner workflow with the full tuple
+An update to AdminNetworksList inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+stderr | src/pages/AdminAccess.test.tsx > PAGE-ACCESS-SESSIONS (Human Sessions) > keeps the current session when revoking all others
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNetworks.test.tsx > PAGE-ADMIN-NETWORKS (Network Registry) > surfaces a rejected tuple as a field-level error and preserves the draft
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > shows the six-column priority summary with independent evidence
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNodes.test.tsx > PAGE-ADMIN-NODES (Node inventory) > shows the Empty state when no Nodes exist
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNetworks.test.tsx > PAGE-ADMIN-NETWORKS (Network Registry) > surfaces a rejected tuple as a field-level error and preserves the draft
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAccess.test.tsx > PAGE-ACCESS-SESSIONS (Human Sessions) > keeps the current session when revoking all others
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNodes.test.tsx > PAGE-ADMIN-NODES (Node inventory) > shows the Server-owned detail with mismatch diagnostics and last-good values
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > shows the six-column priority summary with independent evidence
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNodes.test.tsx > PAGE-ADMIN-NODES (Node inventory) > shows the Server-owned detail with mismatch diagnostics and last-good values
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNodes.test.tsx > PAGE-ADMIN-NODES (Node inventory) > shows the Server-owned detail with mismatch diagnostics and last-good values
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > shows the six-column priority summary with independent evidence
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAccess.test.tsx > PAGE-ACCESS-SESSIONS (Human Sessions) > shows a typed conflict when a session was already revoked
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNetworks.test.tsx > PAGE-ADMIN-NETWORKS (Network Registry) > shows the detail with per-Node identity dispositions and the expected tuple
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAccess.test.tsx > PAGE-ACCESS-SESSIONS (Human Sessions) > shows a typed conflict when a session was already revoked
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNetworks.test.tsx > PAGE-ADMIN-NETWORKS (Network Registry) > shows the detail with per-Node identity dispositions and the expected tuple
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAccess.test.tsx > PAGE-ACCESS-SESSIONS (Human Sessions) > shows a typed conflict when a session was already revoked
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNetworks.test.tsx > PAGE-ADMIN-NETWORKS (Network Registry) > shows the detail with per-Node identity dispositions and the expected tuple
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > keeps last-good Agent values visible after a failed refresh
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > keeps last-good Agent values visible after a failed refresh
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > keeps last-good Agent values visible after a failed refresh
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAccess.test.tsx > PAGE-ACCESS-AUDIT (Audit review) > lists immutable redacted events with detail expansion and target links
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAccess.test.tsx > PAGE-ACCESS-AUDIT (Audit review) > lists immutable redacted events with detail expansion and target links
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAccess.test.tsx > PAGE-ACCESS-AUDIT (Audit review) > lists immutable redacted events with detail expansion and target links
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAccess.test.tsx > PAGE-ACCESS-AUDIT (Audit review) > lists immutable redacted events with detail expansion and target links
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNetworks.test.tsx > PAGE-ADMIN-NETWORKS (Network Registry) > updates the Registry tuple with an audited confirmation and refetches
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > distinguishes an omitted Server receipt time as Unknown
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNetworks.test.tsx > PAGE-ADMIN-NETWORKS (Network Registry) > updates the Registry tuple with an audited confirmation and refetches
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > distinguishes an omitted Server receipt time as Unknown
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNetworks.test.tsx > PAGE-ADMIN-NETWORKS (Network Registry) > updates the Registry tuple with an audited confirmation and refetches
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > distinguishes an omitted Server receipt time as Unknown
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNodes.test.tsx > PAGE-ADMIN-NODES (Node inventory) > shows the mismatch as a blocking diagnostic distinct from health
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNodes.test.tsx > PAGE-ADMIN-NODES (Node inventory) > shows the mismatch as a blocking diagnostic distinct from health
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNodes.test.tsx > PAGE-ADMIN-NODES (Node inventory) > shows the mismatch as a blocking diagnostic distinct from health
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > distinguishes an explicit null Server receipt time as Never received
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > distinguishes an explicit null Server receipt time as Never received
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > distinguishes an explicit null Server receipt time as Never received
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNodes.test.tsx > PAGE-ADMIN-NODES (Node inventory) > shows the Retired lifecycle from Node Inventory, separate from health
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAccess.test.tsx > PAGE-ACCESS-AUDIT (Audit review) > filters by event kind and loads older pages with the cursor
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNodes.test.tsx > PAGE-ADMIN-NODES (Node inventory) > shows the Retired lifecycle from Node Inventory, separate from health
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > reveals the complete Agent ID and reports clipboard failure without claiming success
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAccess.test.tsx > PAGE-ACCESS-AUDIT (Audit review) > filters by event kind and loads older pages with the cursor
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNodes.test.tsx > PAGE-ADMIN-NODES (Node inventory) > shows the Retired lifecycle from Node Inventory, separate from health
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAccess.test.tsx > PAGE-ACCESS-AUDIT (Audit review) > filters by event kind and loads older pages with the cursor
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAccess.test.tsx > PAGE-ACCESS-AUDIT (Audit review) > filters by event kind and loads older pages with the cursor
+The current testing environment is not configured to support act(...)
+
+ ✓ src/pages/AdminNetworks.test.tsx (6 tests) 1150ms
+     ✓ lists the complete validated identity tuple with Node counts and typed mismatch outcomes  324ms
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > reveals the complete Agent ID and reports clipboard failure without claiming success
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAccess.test.tsx > PAGE-ACCESS-AUDIT (Audit review) > filters by event kind and loads older pages with the cursor
+An update to AdminAudit inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > reveals the complete Agent ID and reports clipboard failure without claiming success
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAccess.test.tsx > PAGE-ACCESS-AUDIT (Audit review) > filters by event kind and loads older pages with the cursor
+An update to AdminAudit inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+stderr | src/pages/AdminNodes.test.tsx > PAGE-ADMIN-NODES (Node inventory) > keeps Stale and Error diagnostics explicit, never as Healthy or zeros
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > shows the Empty state without an unavailable enrollment action
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNodes.test.tsx > PAGE-ADMIN-NODES (Node inventory) > keeps Stale and Error diagnostics explicit, never as Healthy or zeros
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNodes.test.tsx > PAGE-ADMIN-NODES (Node inventory) > keeps Stale and Error diagnostics explicit, never as Healthy or zeros
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > shows the Empty state without an unavailable enrollment action
+The current testing environment is not configured to support act(...)
+
+ ✓ src/pages/AdminAccess.test.tsx (6 tests) 1264ms
+     ✓ lists coarse session metadata and marks the current session  389ms
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > shows the Empty state without an unavailable enrollment action
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > keeps Current reporting separate from multiple recorded diagnostics
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNodes.test.tsx > PAGE-ADMIN-NODES (Node inventory) > updates the Server-owned display name and shows the confirmation
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > keeps Current reporting separate from multiple recorded diagnostics
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > keeps Current reporting separate from multiple recorded diagnostics
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNodes.test.tsx > PAGE-ADMIN-NODES (Node inventory) > updates the Server-owned display name and shows the confirmation
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNodes.test.tsx > PAGE-ADMIN-NODES (Node inventory) > updates the Server-owned display name and shows the confirmation
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > distinguishes no Host observation from an unobserved spool
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > distinguishes no Host observation from an unobserved spool
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > distinguishes no Host observation from an unobserved spool
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > distinguishes an unobserved spool from an authoritative zero queue
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > distinguishes an unobserved spool from an authoritative zero queue
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNodes.test.tsx > PAGE-ADMIN-NODES (Node inventory) > shows a non-leaking unavailable state for an unknown Node
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > distinguishes an unobserved spool from an authoritative zero queue
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNodes.test.tsx > PAGE-ADMIN-NODES (Node inventory) > shows a non-leaking unavailable state for an unknown Node
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminNodes.test.tsx > PAGE-ADMIN-NODES (Node inventory) > shows a non-leaking unavailable state for an unknown Node
+The current testing environment is not configured to support act(...)
+
+ ✓ src/pages/AdminNodes.test.tsx (9 tests) 1527ms
+     ✓ lists every Node as its own row with separate health, freshness, identity, visibility, and lifecycle dimensions  439ms
+     ✓ shows the Server-owned detail with mismatch diagnostics and last-good values  329ms
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > qualifies retained delivery timestamps and metadata-only spool evidence
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > qualifies retained delivery timestamps and metadata-only spool evidence
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENTS (Agent lifecycle) > qualifies retained delivery timestamps and metadata-only spool evidence
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENT-DETAIL > shows identity, credentials with revoke, inventory, diagnostics, and the redacted audit trail
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENT-DETAIL > shows identity, credentials with revoke, inventory, diagnostics, and the redacted audit trail
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENT-DETAIL > shows identity, credentials with revoke, inventory, diagnostics, and the redacted audit trail
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENT-DETAIL > revokes a credential through explicit confirmation and refetches state
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENT-DETAIL > revokes a credential through explicit confirmation and refetches state
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENT-DETAIL > revokes a credential through explicit confirmation and refetches state
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENT-DETAIL > preserves Cancel and blocks duplicate revoke requests while busy
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENT-DETAIL > preserves Cancel and blocks duplicate revoke requests while busy
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENT-DETAIL > preserves Cancel and blocks duplicate revoke requests while busy
+The current testing environment is not configured to support act(...)
+
+ ✓ src/components/HomeDashboard.test.tsx (44 tests) 2925ms
+     ✓ scopes all four counters, map and cards to the selected network  406ms
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENT-DETAIL > shows a typed conflict and reloads the authoritative state
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENT-DETAIL > shows a typed conflict and reloads the authoritative state
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENT-DETAIL > shows a typed conflict and reloads the authoritative state
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENT-DETAIL > shows a typed conflict and reloads the authoritative state
+An update to AdminAgentDetail inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENT-DETAIL > shows the non-leaking unavailable state for an unknown Agent
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENT-DETAIL > shows the non-leaking unavailable state for an unknown Agent
+The current testing environment is not configured to support act(...)
+
+stderr | src/pages/AdminAgents.test.tsx > PAGE-ADMIN-AGENT-DETAIL > shows the non-leaking unavailable state for an unknown Agent
+The current testing environment is not configured to support act(...)
+
+ ✓ src/pages/AdminAgents.test.tsx (17 tests) 2650ms
+     ✓ shows Starting while the Server summary is loading  488ms
+     ✓ shows identity, credentials with revoke, inventory, diagnostics, and the redacted audit trail  415ms
+ ✓ src/pages/AdminHome.test.tsx (18 tests) 2669ms
+     ✓ prioritizes attention, Node health and Agent inventory; legacy Geo and Operations content is absent  739ms
+     ✓ preserves expansion across Node refetches and closes when the Node leaves the visible set  311ms
+ ✓ src/pages/AdminConfiguration.test.tsx (16 tests) 3485ms
+     ✓ renders one Settings page with ordered independent configuration cards  608ms
+     ✓ forces a real Geo refresh and reports per-address progress with terminal counts  1169ms
+ ✓ src/App.test.tsx (63 tests) 6026ms
+   ✓ renders 'successful non-zero data' through the public Network route  433ms
+     ✓ renders the production public Node Detail continuous reading contract  510ms
+     ✓ reaches every MVP Admin page through the production router  316ms
+ ✓ src/components/mapChartLayout.test.ts (16 tests) 8498ms
+     ✓ fits every geometry point and aligns markers at 328×352, then on resize  1101ms
+     ✓ fits every geometry point and aligns markers at 358×352, then on resize  754ms
+     ✓ fits every geometry point and aligns markers at 440×200, then on resize  711ms
+     ✓ fits every geometry point and aligns markers at 760×200, then on resize  555ms
+     ✓ fits every geometry point and aligns markers at 850×200, then on resize  549ms
+     ✓ fits every geometry point and aligns markers at 1330×350, then on resize  464ms
+     ✓ fits every geometry point and aligns markers at 760×380, then on resize  428ms
+     ✓ fits every geometry point and aligns markers at 1330×665, then on resize  422ms
+     ✓ fits every geometry point and aligns markers at 328×352, then on resize  419ms
+     ✓ fits every geometry point and aligns markers at 358×352, then on resize  405ms
+     ✓ fits every geometry point and aligns markers at 440×200, then on resize  426ms
+     ✓ fits every geometry point and aligns markers at 760×200, then on resize  430ms
+     ✓ fits every geometry point and aligns markers at 850×200, then on resize  410ms
+     ✓ fits every geometry point and aligns markers at 1330×350, then on resize  617ms
+     ✓ fits every geometry point and aligns markers at 760×380, then on resize  415ms
+     ✓ fits every geometry point and aligns markers at 1330×665, then on resize  386ms
+
+ Test Files  26 passed (26)
+      Tests  297 passed (297)
+   Start at  16:03:12
+   Duration  10.74s (transform 10.22s, setup 0ms, import 24.18s, tests 34.07s, environment 37.82s)
+

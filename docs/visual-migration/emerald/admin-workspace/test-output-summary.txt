@@ -1,0 +1,69 @@
+Final unit tests
+ Test Files  26 passed (26)
+      Tests  307 passed (307)
+   Start at  19:10:41
+   Duration  11.15s (transform 9.41s, setup 0ms, import 21.06s, tests 31.76s, environment 34.08s)
+
+
+Final production build
+
+✓ built in 560ms
+[plugin builtin:vite-reporter]
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+
+Final Admin/core browser tests
+  ✓  119 [desktop-1440] › e2e/shell.spec.ts:333:3 › Authenticated shell › Home and Admin navigation is reachable in both directions (1.3s)
+  ✓  120 [desktop-1440] › e2e/shell.spec.ts:344:3 › Authenticated shell › shell navigation is keyboard-operable with a visible focus ring (1.3s)
+
+  29 skipped
+  91 passed (2.4m)
+
+Final theme/readability tests
+  ✓  13 [desktop-1440] › e2e/theme.spec.ts:374:3 › aligns public Emerald cards and isolates Admin in light (5.9s)
+  ✓  14 [desktop-1440] › e2e/theme.spec.ts:374:3 › aligns public Emerald cards and isolates Admin in dark (5.7s)
+  ✓  15 [desktop-1440] › e2e/theme.spec.ts:479:1 › keeps the retained Admin workbench readable in both themes (3.2s)
+
+  15 passed (1.3m)
+
+Final Node action geometry tests
+  ✓  3 [tablet-768-touch] › e2e/overview-responsive-evidence.spec.ts:7:1 › Overview priority cells stay visible and long Node names stay bounded (1.9s)
+  ✓  4 [desktop-1280] › e2e/overview-responsive-evidence.spec.ts:7:1 › Overview priority cells stay visible and long Node names stay bounded (2.1s)
+  ✓  5 [desktop-1440] › e2e/overview-responsive-evidence.spec.ts:7:1 › Overview priority cells stay visible and long Node names stay bounded (1.7s)
+
+  5 passed (21.5s)
+
+Before screenshots
+Running 1 test using 1 worker
+
+  ✓  1 [desktop-1280] › e2e/admin-workspace-evidence.spec.ts:9:1 › matched Admin workspace evidence (7.0s)
+
+  1 passed (7.7s)
+
+After screenshots
+Running 1 test using 1 worker
+
+  ✓  1 [desktop-1280] › e2e/admin-workspace-evidence.spec.ts:9:1 › matched Admin workspace evidence (7.2s)
+
+  1 passed (7.8s)
+
+Unresolved public phone regression
+
+    Expected: >= 80
+    Received:    62
+
+       95 |       await expect(card).toHaveText(`${label} ${value}`, { useInnerText: true })
+       96 |       const height = (await card.boundingBox())!.height
+    >  97 |       expect(height, 'summary card must stay approximately 6rem high').toBeGreaterThanOrEqual(80)
+          |                                                                        ^
+       98 |       expect(height, 'summary card must stay approximately 6rem high').toBeLessThanOrEqual(120)
+       99 |     }
+      100 |
+        at /home/mowind/repos/rust/PlatPulse/platpulse-web/e2e/home-convergence.spec.ts:97:72
+
+    Error Context: ../../../../../../tmp/admin-public-followup-results/home-convergence-Converged-ecf05-ary-shell-and-viewport-grid-phone-390-touch/error-context.md
+
+  1 failed
+    [phone-390-touch] › e2e/home-convergence.spec.ts:41:3 › Converged Public Home (issue #102) › final card header, both metric rows, summary shell, and viewport grid

@@ -50,13 +50,12 @@ test.describe('Converged Public Home (issue #102)', () => {
     // Node Validator Activity nowhere, so no Activity badge is rendered in any
     // state, and the whole card is one semantic link whose accessible name
     // carries that order.
-    await expect(hCard.locator('.status-badge')).toHaveCount(0)
+    await expect(hCard.locator('[data-slot="status-badge"]')).toHaveCount(0)
     await expect(
       page.getByRole('link', { name: /^Healthy Node H — Producing Card/ }),
     ).toHaveCount(1)
 
-    // Both compact metric rows carry exactly the required labels and values:
-    // Head / Txs / Peers and QC / Locked / Committed / Validator.
+    // Business rows carry full labels; membership is a neutral header role.
     for (const label of ['Head', 'Txs', 'Peers', 'QC', 'Locked', 'Committed', 'Validator']) {
       await expect(hCard.getByText(label, { exact: true })).toBeVisible()
     }
@@ -68,7 +67,7 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(hCard.getByText('12,842,024', { exact: true })).toHaveCount(1)
     await expect(hCard.getByText('21', { exact: true })).toHaveCount(1)
     await expect(hCard.getByText('3', { exact: true })).toHaveCount(1)
-    await expect(hCard.getByText('Yes', { exact: true })).toHaveCount(1)
+    await expect(hCard.locator('[data-slot="validator-role"]')).toHaveText('Validator')
 
     await expectNoVerboseHomeSurface(page)
 
@@ -127,7 +126,7 @@ test.describe('Converged Public Home (issue #102)', () => {
     const badgeCard = nodeCard(page, /Node A/)
     await expect(badgeCard).toBeVisible({ timeout: 15_000 })
     const badgeCardBox = (await badgeCard.boundingBox())!
-    await expect(badgeCard.locator('.status-badge')).toHaveCount(0)
+    await expect(badgeCard.locator('[data-slot="status-badge"]')).toHaveCount(0)
     const healthMarker = badgeCard.getByRole('img', { name: 'Healthy' })
     await expect(healthMarker).toBeVisible()
     const markerBox = (await healthMarker.boundingBox())!
@@ -145,12 +144,13 @@ test.describe('Converged Public Home (issue #102)', () => {
     // No, and a Node without an effective Link has Unknown Activity.
     const kCard = nodeCard(page, /Node K/)
     await expect(kCard).toBeVisible({ timeout: 15_000 })
-    await expect(kCard.getByText('Unknown', { exact: true })).toHaveCount(1)
+    // Txs plus six absent resource values now say Unknown, not an em dash.
+    await expect(kCard.getByText('Unknown', { exact: true })).toHaveCount(7)
     await expect(kCard.getByText('12,842,024', { exact: true })).toHaveCount(3)
     await expect(kCard.getByText('12,842,023', { exact: true })).toHaveCount(1)
     await expect(kCard.getByText('0', { exact: true })).toHaveCount(1)
     await expect(kCard.getByText('Empty; authoritative zero')).toBeVisible()
-    await expect(kCard.getByText('No', { exact: true })).toHaveCount(1)
+    await expect(kCard.getByText('Non-validator', { exact: true })).toHaveCount(1)
     await expect(kCard.getByRole('img', { name: 'Healthy' })).toBeVisible()
 
     // Node L: stale last-good consensus keeps the values and marks them.
@@ -158,14 +158,14 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(lCard.getByText('13', { exact: true })).toHaveCount(1)
     await expect(lCard.getByText('12,842,023', { exact: true })).toHaveCount(3)
     await expect(lCard.getByText('12,842,022', { exact: true })).toHaveCount(1)
-    await expect(lCard.getByText('Yes', { exact: true })).toHaveCount(1)
+    await expect(lCard.locator('[data-slot="validator-role"]')).toHaveText('ValidatorStale')
     await expect(lCard.getByText('Stale', { exact: true })).toHaveCount(4)
 
     // Node M: effective Link with an authoritative no-live-validator result.
     // No Activity badge exists, so only the consensus Validator membership row
     // states anything.
     const mCard = nodeCard(page, /Node M/)
-    await expect(mCard.locator('.status-badge')).toHaveCount(0)
+    await expect(mCard.locator('[data-slot="status-badge"]')).toHaveCount(0)
     await expect(
       page.getByRole('link', { name: /^Healthy Node M — Validator Observing/ }),
     ).toHaveCount(1)
@@ -175,16 +175,19 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(
       page.getByRole('link', { name: /^Healthy Node N — Stale Last-Good/ }),
     ).toHaveCount(1)
-    await expect(nodeCard(page, /Node N/).locator('.status-badge')).toHaveCount(0)
+    await expect(nodeCard(page, /Node N/).locator('[data-slot="status-badge"]')).toHaveCount(0)
 
     // Node P has no Node observation; only the Agent-shared Host network
     // observation is known, and missing Node values never become 0 or No.
     const pCard = nodeCard(page, /Node P/)
-    // Seven Unknown metric values; the health marker is an accessible name,
-    // not card text, so it is not counted here.
-    await expect(pCard.getByText('Unknown', { exact: true })).toHaveCount(7)
+    // All absent metrics are explicit, including resource and uptime values.
+    for (const label of ['CPU', 'Memory', 'Node data', 'Node uptime', 'Head', 'Txs', 'Peers', 'QC', 'Locked', 'Committed']) {
+      const row = pCard.locator('[data-slot="metric-row"]').filter({ has: page.getByText(label, { exact: true }) })
+      await expect(row.locator('[data-slot="metric-row-value"]')).toHaveText('Unknown')
+    }
+    await expect(pCard.locator('[data-slot="validator-role"]')).toHaveText('Unknown')
     await expect(pCard.getByText('0', { exact: true })).toHaveCount(0)
-    await expect(pCard.getByText('No', { exact: true })).toHaveCount(0)
+    await expect(pCard.getByText('Non-validator', { exact: true })).toHaveCount(0)
     await expect(pCard.getByText('one or more observations are stale or unknown')).toHaveCount(1)
 
     // Node A: the exact Current Head Block Summary proves Txs while the
@@ -201,13 +204,13 @@ test.describe('Converged Public Home (issue #102)', () => {
 
     // Filter to the convergence Network: only its cards remain, and the long
     // display name never creates a nested link or overflow.
-    await page.getByRole('button', { name: CONVERGENCE_NETWORK_NAME, exact: true }).click()
+    await page.getByRole('tab', { name: CONVERGENCE_NETWORK_NAME, exact: true }).click()
     await expect(nodeCard(page, /Node H/)).toBeVisible({ timeout: 15_000 })
     await expect(nodeCard(page, /Node A/)).toHaveCount(0)
     await expect(nodeCard(page, /Node P/)).toBeVisible()
     await expectNoHorizontalOverflow(page)
 
-    await page.getByRole('button', { name: 'All Networks', exact: true }).click()
+    await page.getByRole('tab', { name: 'All Networks', exact: true }).click()
     await expect(nodeCard(page, /Node A/)).toBeVisible()
     // An authenticated Owner sees every Active Node on Home. The legacy
     // per-Node visibility value must not hide Node B from the site-wide Home
@@ -239,9 +242,9 @@ test.describe('Converged Public Home (issue #102)', () => {
 
     // Narrow to the convergence Network first so tab order is bounded, then
     // tab to the whole-card Node H link and activate with Enter.
-    await page.getByRole('button', { name: CONVERGENCE_NETWORK_NAME, exact: true }).click()
+    await page.getByRole('tab', { name: CONVERGENCE_NETWORK_NAME, exact: true }).click()
     await expect(nodeCard(page, /Node H/)).toBeVisible({ timeout: 15_000 })
-    await page.getByRole('button', { name: 'All Networks', exact: true }).focus()
+    await page.getByRole('tab', { name: 'All Networks', exact: true }).focus()
 
     let activeHref = ''
     for (let i = 0; i < 30; i++) {
@@ -282,11 +285,11 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(nodeCard(page, /Node L/).getByText('Stale', { exact: true })).toHaveCount(4)
 
     // Filtering stays operable on the dark surface and bounds the tab order.
-    await page.getByRole('button', { name: CONVERGENCE_NETWORK_NAME, exact: true }).click()
+    await page.getByRole('tab', { name: CONVERGENCE_NETWORK_NAME, exact: true }).click()
     await expect(nodeCard(page, /Node H/)).toBeVisible()
 
     // The whole-card link keeps an independent visible focus ring in Dark.
-    await page.getByRole('button', { name: CONVERGENCE_NETWORK_NAME, exact: true }).focus()
+    await page.getByRole('tab', { name: CONVERGENCE_NETWORK_NAME, exact: true }).focus()
     let activeHref = ''
     for (let index = 0; index < 30; index++) {
       await page.keyboard.press('Tab')
@@ -298,7 +301,7 @@ test.describe('Converged Public Home (issue #102)', () => {
 
     // Sorting stays operable and the full list comes back.
     await page.getByRole('combobox', { name: 'Sort' }).selectOption('head')
-    await page.getByRole('button', { name: 'All Networks', exact: true }).click()
+    await page.getByRole('tab', { name: 'All Networks', exact: true }).click()
     await expectNoHorizontalOverflow(page)
   })
 })

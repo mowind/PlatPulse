@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 import {
   expectFocusedElementHasVisibleFocus,
-  expectNoHorizontalOverflow,
+  expectNoHorizontalOverflow, expectVisibleInteractiveTargets,
   loginAs,
 } from './helpers'
 
@@ -19,7 +19,7 @@ async function measureAdminWorkbench(page: Page) {
     const header = document.querySelector('header')
     const nav = document.querySelector('nav[aria-label="Admin"]')
     const main = document.querySelector('main')
-    const pageContent = main?.querySelector(':scope > .page')
+    const pageContent = main?.querySelector('[data-slot="admin-page"]')
     const heading = main?.querySelector('h1')
     if (!header || !nav || !main || !pageContent || !heading) {
       throw new Error('Admin workbench geometry surfaces are missing')
@@ -36,7 +36,7 @@ async function measureAdminWorkbench(page: Page) {
       page: box(pageContent),
       heading: box(heading),
       headingFontSize: Number.parseFloat(getComputedStyle(heading).fontSize),
-      decorationCount: document.querySelectorAll('.background-decoration').length,
+      decorationCount: document.querySelectorAll('[data-slot="background-decoration"]').length,
     }
   })
 }
@@ -53,8 +53,8 @@ test.describe('Authenticated shell', () => {
     await expect(page.getByText('Healthy Nodes', { exact: true })).toBeVisible()
     await expect(page.getByText('Attention', { exact: true })).toBeVisible()
     await expect(page.getByText('Networks', { exact: true })).toBeVisible()
-    await expect(page.getByRole('group', { name: 'Network filter' })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'All Networks' })).toHaveAttribute('aria-pressed', 'true')
+    await expect(page.getByRole('tablist', { name: 'Network filter' })).toBeVisible()
+    await expect(page.getByRole('tab', { name: 'All Networks' })).toHaveAttribute('aria-selected', 'true')
     await expect(page.getByRole('combobox', { name: 'Sort' })).toBeVisible()
     await expect(page.getByRole('link', { name: 'Admin', exact: true })).toHaveAttribute('href', '/admin')
     await expectNoHorizontalOverflow(page)
@@ -63,14 +63,10 @@ test.describe('Authenticated shell', () => {
   test('Home controls remain semantic and touch-sized', async ({ page }) => {
     await loginAs(page)
     const home = page.getByRole('region', { name: 'Home' })
-    await expect(home.getByRole('button', { name: 'All Networks' })).toHaveAttribute('aria-pressed', 'true')
+    await expect(home.getByRole('tab', { name: 'All Networks' })).toHaveAttribute('aria-selected', 'true')
     await home.getByRole('combobox', { name: 'Sort' }).selectOption('head')
 
-    const undersized = await home.locator('button, a, select').evaluateAll((elements) => elements.flatMap((element) => {
-      const rect = element.getBoundingClientRect()
-      return rect.width < 44 || rect.height < 44 ? [element.textContent?.trim() || element.getAttribute('aria-label') || element.tagName] : []
-    }))
-    expect(undersized, 'Home interactive targets must be at least 44px').toEqual([])
+    await expectVisibleInteractiveTargets(page)
     await expectNoHorizontalOverflow(page)
   })
 
@@ -112,10 +108,24 @@ test.describe('Authenticated shell', () => {
         throw new Error('Admin visual proof surfaces are missing')
       }
 
+      // Resolve through the browser rather than regex-parsing the string:
+      // Tailwind's oklch tokens serialise as oklab(1 0 0 / 0.6), whose digits a
+      // regex reads as near-black RGB.
       const parseColor = (value: string) => {
-        const channels = value.match(/[\d.]+/g)?.map(Number) ?? []
-        if (channels.length < 3) throw new Error(`Unsupported computed color: ${value}`)
-        return { red: channels[0], green: channels[1], blue: channels[2], alpha: channels[3] ?? 1 }
+        const canvas = document.createElement('canvas')
+        canvas.width = 1
+        canvas.height = 1
+        const context = canvas.getContext('2d')
+        if (!context) throw new Error('a 2d context is required to read a colour')
+        context.fillStyle = '#010203'
+        context.fillStyle = value
+        if (context.fillStyle === '#010203' && value.trim().toLowerCase() !== '#010203') {
+          throw new Error(`Unsupported computed color: ${value}`)
+        }
+        context.clearRect(0, 0, 1, 1)
+        context.fillRect(0, 0, 1, 1)
+        const [red, green, blue, alpha] = context.getImageData(0, 0, 1, 1).data
+        return { red, green, blue, alpha: alpha / 255 }
       }
       const luminance = ({ red, green, blue }: ReturnType<typeof parseColor>) => {
         const linear = [red, green, blue].map((channel) => {
@@ -169,10 +179,24 @@ test.describe('Authenticated shell', () => {
     const validatorAddress = page.getByPlaceholder('0x…')
     await expect(validatorAddress).toBeVisible()
     const placeholderContrast = await validatorAddress.evaluate((input) => {
+      // Resolve through the browser rather than regex-parsing the string:
+      // Tailwind's oklch tokens serialise as oklab(1 0 0 / 0.6), whose digits a
+      // regex reads as near-black RGB.
       const parseColor = (value: string) => {
-        const channels = value.match(/[\d.]+/g)?.map(Number) ?? []
-        if (channels.length < 3) throw new Error(`Unsupported computed color: ${value}`)
-        return { red: channels[0], green: channels[1], blue: channels[2], alpha: channels[3] ?? 1 }
+        const canvas = document.createElement('canvas')
+        canvas.width = 1
+        canvas.height = 1
+        const context = canvas.getContext('2d')
+        if (!context) throw new Error('a 2d context is required to read a colour')
+        context.fillStyle = '#010203'
+        context.fillStyle = value
+        if (context.fillStyle === '#010203' && value.trim().toLowerCase() !== '#010203') {
+          throw new Error(`Unsupported computed color: ${value}`)
+        }
+        context.clearRect(0, 0, 1, 1)
+        context.fillRect(0, 0, 1, 1)
+        const [red, green, blue, alpha] = context.getImageData(0, 0, 1, 1).data
+        return { red, green, blue, alpha: alpha / 255 }
       }
       const composite = (front: ReturnType<typeof parseColor>, back: ReturnType<typeof parseColor>) => ({
         red: front.red * front.alpha + back.red * (1 - front.alpha),
@@ -190,7 +214,7 @@ test.describe('Authenticated shell', () => {
         return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
       }
       const shell = document.querySelector('header')?.parentElement
-      const panel = input.closest('article')
+      const panel = input.closest('article, [role="article"]')
       if (!shell || !panel) throw new Error('Admin form visual surfaces are missing')
       const shellColor = parseColor(getComputedStyle(shell).backgroundColor)
       const panelColor = composite(parseColor(getComputedStyle(panel).backgroundColor), shellColor)
@@ -240,7 +264,9 @@ test.describe('Authenticated shell', () => {
     await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
 
     const metrics = await measureAdminWorkbench(page)
-    expect(metrics.decorationCount).toBe(0)
+    expect(metrics.decorationCount).toBe(1)
+    await expect(page.locator('[data-slot="background-decoration"]')).toHaveAttribute('aria-hidden', 'true')
+    await expect(page.locator('[data-slot="background-decoration"]')).toHaveCSS('pointer-events', 'none')
     const expectedPadding = metrics.viewport >= 1024 ? 24 : 16
     expect(metrics.headingFontSize).toBeGreaterThanOrEqual(24)
     expect(metrics.headingFontSize).toBeLessThanOrEqual(28)
@@ -261,18 +287,25 @@ test.describe('Authenticated shell', () => {
     await expectNoHorizontalOverflow(page)
   })
 
-  test('Admin shell expands on ultrawide widths', async ({ page }) => {
+  test('Admin shell fills the shared sidebar workspace on wide screens', async ({ page }) => {
     test.skip((page.viewportSize()?.width ?? 0) < 1024, 'Ultrawide measurement belongs to the desktop project')
     await loginAs(page)
     await page.getByRole('link', { name: 'Admin', exact: true }).click()
     await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
 
-    const standard = await measureAdminWorkbench(page)
-    await page.setViewportSize({ width: 2560, height: 800 })
-    const ultrawide = await measureAdminWorkbench(page)
-    expect(ultrawide.page.width).toBeGreaterThan(standard.page.width * 1.5)
-    expect(Math.abs(ultrawide.heading.x - standard.heading.x)).toBeLessThanOrEqual(1)
-    await expectNoHorizontalOverflow(page)
+    // ADR 0003 intentionally replaces the old centered 1280px Admin cap.
+    // Assert available-space use and shared header/body alignment instead.
+    for (const width of [1280, 1440, 1920, 2560]) {
+      await page.setViewportSize({ width, height: 900 })
+      const metrics = await measureAdminWorkbench(page)
+      expect(Math.abs(metrics.page.width - (width - metrics.nav.width - 48))).toBeLessThanOrEqual(1)
+      expect(Math.abs(metrics.page.x - metrics.nav.right - 24)).toBeLessThanOrEqual(1)
+      const status = await page.getByRole('group', { name: 'Admin connection status' }).boundingBox()
+      expect(Math.abs(status!.x + 24 - metrics.page.x)).toBeLessThanOrEqual(1)
+      const brand = await page.locator('[data-slot="admin-brand"]').boundingBox()
+      expect(Math.abs(brand!.width - metrics.nav.width)).toBeLessThanOrEqual(1)
+      await expectNoHorizontalOverflow(page)
+    }
   })
 
   test('Admin Settings keeps aligned content and touch targets', async ({ page }) => {
@@ -283,9 +316,9 @@ test.describe('Authenticated shell', () => {
     await expect(page.getByRole('link', { name: /Admin overview/ })).toBeVisible()
 
     const geometry = await page.evaluate(() => {
-      const heading = document.querySelector('.settings-page > h1')
-      const sections = document.querySelector('.settings-sections')
-      const breadcrumb = document.querySelector('.settings-page > p:first-child a')
+      const heading = document.querySelector('[data-slot="settings-page"] > h1')
+      const sections = document.querySelector('[data-slot="settings-sections"]')
+      const breadcrumb = document.querySelector('[data-slot="settings-page"] > p:first-child a')
       if (!heading || !sections || !breadcrumb) throw new Error('Settings geometry surfaces are missing')
       const headingBox = heading.getBoundingClientRect()
       const sectionsBox = sections.getBoundingClientRect()
@@ -314,8 +347,15 @@ test.describe('Authenticated shell', () => {
     // Tab from the brand to the Admin icon and verify the focus ring is visible.
     await page.keyboard.press('Tab')
     await expect(page.getByRole('link', { name: 'PlatPulse' })).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: 'Admin', exact: true })).toBeFocused()
+    // The header also carries the theme control, so the Admin icon is not
+    // necessarily the next tab stop. Walk to it, as the public shell's spec does.
+    const adminLink = page.getByRole('link', { name: 'Admin', exact: true })
+    let adminFocused = false
+    for (let step = 0; step < 6 && !adminFocused; step += 1) {
+      await page.keyboard.press('Tab')
+      adminFocused = await adminLink.evaluate((element) => element === document.activeElement)
+    }
+    expect(adminFocused, 'the Admin icon is reachable by keyboard').toBe(true)
     await expectFocusedElementHasVisibleFocus(page)
 
     // Enter activates the focused link without a pointer.

@@ -1,0 +1,351 @@
+[
+  {
+    "node_id": "0195f2a1-0060-4060-8060-000000000060",
+    "agent_id": "0195f2a1-0023-4023-8023-000000000023",
+    "display_name": "Node H — Producing Card With A Very Long Display Name That Must Not Overflow",
+    "network_key": "home-convergence",
+    "network_display_name": "Home Convergence Network With An Extremely Long Display Name",
+    "lifecycle": "active",
+    "lifecycle_guidance": "Active: present in the latest valid Agent Inventory. The Agent-local configuration stays authoritative for this Node; the Server never pushes Endpoint or lifecycle changes.",
+    "visibility": "public",
+    "inventory_revision": 1,
+    "first_seen_at": "2026-08-12T08:00:00Z",
+    "updated_at": "2026-08-12T08:00:00Z",
+    "rpc_endpoint": "ws://[REDACTED_IP]:****",
+    "health": "healthy",
+    "health_reason": "RPC, sync, and consensus are current",
+    "freshness": "current",
+    "current_head": 12842025,
+    "resync_state": "normal",
+    "identity": {
+      "state": "unknown",
+      "observed": {
+        "genesis_hash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+        "chain_id": 210425,
+        "p2p_network_id": 210425,
+        "address_hrp": "lat"
+      },
+      "mismatched_fields": []
+    }
+  },
+  {
+    "node_id": "0195f2a1-0061-4061-8061-000000000061",
+    "agent_id": "0195f2a1-0023-4023-8023-000000000023",
+    "display_name": "Node K — Missing Current Head Block Summary",
+    "network_key": "home-convergence",
+    "network_display_name": "Home Convergence Network With An Extremely Long Display Name",
+    "lifecycle": "active",
+    "lifecycle_guidance": "Active: present in the latest valid Agent Inventory. The Agent-local configuration stays authoritative for this Node; the Server never pushes Endpoint or lifecycle changes.",
+    "visibility": "public",
+    "inventory_revision": 1,
+    "first_seen_at": "2026-08-12T08:00:00Z",
+    "updated_at": "2026-08-12T08:00:00Z",
+    "rpc_endpoint": "ws://[REDACTED_IP]:****",
+    "health": "healthy",
+    "health_reason": "RPC, sync, and consensus are current",
+    "freshness": "current",
+    "current_head": 12842024,
+    "resync_state": "normal",
+    "identity": {
+      "state": "unknown",
+      "observed": {
+        "genesis_hash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+        "chain_id": 210425,
+        "p2p_network_id": 210425,
+        "address_hrp": "lat"
+      },
+      "mismatched_fields": []
+    }
+  },
+  {
+    "node_id": "0195f2a1-0062-4062-8062-000000000062",
+    "agent_id": "0195f2a1-0023-4023-8023-000000000023",
+    "display_name": "Node L — Stale Consensus Membership",
+    "network_key": "home-convergence",
+    "network_display_name": "Home Convergence Network With An Extremely Long Display Name",
+    "lifecycle": "active",
+    "lifecycle_guidance": "Active: present in the latest valid Agent Inventory. The Agent-local configuration stays authoritative for this Node; the Server never pushes Endpoint or lifecycle changes.",
+    "visibility": "public",
+    "inventory_revision": 1,
+    "first_seen_at": "2026-08-12T08:00:00Z",
+    "updated_at": "2026-08-12T08:00:00Z",
+    "rpc_endpoint": "ws://[REDACTED_IP]:****",
+    "health": "unknown",
+    "health_reason": "one or more observations are stale or unknown",
+    "freshness": "stale",
+    "current_head": 12842023,
+    "resync_state": "normal",
+    "identity": {
+      "state": "unknown",
+      "observed": {
+        "genesis_hash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+        "chain_id": 210425,
+        "p2p_network_id": 210425,
+        "address_hrp": "lat"
+      },
+      "mismatched_fields": []
+    }
+  },
+  {
+    "node_id": "0195f2a1-0063-4063-8063-000000000063",
+    "agent_id": "0195f2a1-0023-4023-8023-000000000023",
+    "display_name": "Node M — Validator Observing",
+    "network_key": "home-convergence",
+    "network_display_name": "Home Convergence Network With An Extremely Long Display Name",
+    "lifecycle": "active",
+    "lifecycle_guidance": "Active: present in the latest valid Agent Inventory. The Agent-local configuration stays authoritative for this Node; the Server never pushes Endpoint or lifecycle changes.",
+    "visibility": "public",
+    "inventory_revision": 1,
+    "first_seen_at": "2026-08-12T08:00:00Z",
+    "updated_at": "2026-08-12T08:00:00Z",
+    "rpc_endpoint": "ws://[REDACTED_IP]:****",
+    "health": "healthy",
+    "health_reason": "RPC, sync, and consensus are current",
+    "freshness": "current",
+    "current_head": 12842022,
+    "resync_state": "normal",
+    "identity": {
+      "state": "unknown",
+      "observed": {
+        "genesis_hash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+        "chain_id": 210425,
+        "p2p_network_id": 210425,
+        "address_hrp": "lat"
+      },
+      "mismatched_fields": []
+    }
+  },
+  {
+    "node_id": "0195f2a1-0064-4064-8064-000000000064",
+    "agent_id": "0195f2a1-0023-4023-8023-000000000023",
+    "display_name": "Node N — Stale Last-Good Provider Activity",
+    "network_key": "home-convergence",
+    "network_display_name": "Home Convergence Network With An Extremely Long Display Name",
+    "lifecycle": "active",
+    "lifecycle_guidance": "Active: present in the latest valid Agent Inventory. The Agent-local configuration stays authoritative for this Node; the Server never pushes Endpoint or lifecycle changes.",
+    "visibility": "public",
+    "inventory_revision": 1,
+    "first_seen_at": "2026-08-12T08:00:00Z",
+    "updated_at": "2026-08-12T08:00:00Z",
+    "rpc_endpoint": "ws://[REDACTED_IP]:****",
+    "health": "healthy",
+    "health_reason": "RPC, sync, and consensus are current",
+    "freshness": "current",
+    "current_head": 12842021,
+    "resync_state": "normal",
+    "identity": {
+      "state": "unknown",
+      "observed": {
+        "genesis_hash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+        "chain_id": 210425,
+        "p2p_network_id": 210425,
+        "address_hrp": "lat"
+      },
+      "mismatched_fields": []
+    }
+  },
+  {
+    "node_id": "0195f2a1-0065-4065-8065-000000000065",
+    "agent_id": "0195f2a1-0023-4023-8023-000000000023",
+    "display_name": "Node P — Never Observed",
+    "network_key": "home-convergence",
+    "network_display_name": "Home Convergence Network With An Extremely Long Display Name",
+    "lifecycle": "active",
+    "lifecycle_guidance": "Active: present in the latest valid Agent Inventory. The Agent-local configuration stays authoritative for this Node; the Server never pushes Endpoint or lifecycle changes.",
+    "visibility": "public",
+    "inventory_revision": 1,
+    "first_seen_at": "2026-08-12T08:00:00Z",
+    "updated_at": "2026-08-12T08:00:00Z",
+    "rpc_endpoint": "ws://[REDACTED_IP]:****",
+    "health": "unknown",
+    "health_reason": "one or more observations are stale or unknown",
+    "freshness": "unknown",
+    "current_head": null,
+    "resync_state": "normal",
+    "identity": {
+      "state": "unknown",
+      "observed": null,
+      "mismatched_fields": []
+    }
+  },
+  {
+    "node_id": "0195f2a1-0014-4014-8014-000000000014",
+    "agent_id": "0195f2a1-0011-4011-8011-000000000011",
+    "display_name": "Node A",
+    "network_key": "platon-e2e",
+    "network_display_name": "PlatON E2E Network",
+    "lifecycle": "active",
+    "lifecycle_guidance": "Active: present in the latest valid Agent Inventory. The Agent-local configuration stays authoritative for this Node; the Server never pushes Endpoint or lifecycle changes.",
+    "visibility": "public",
+    "inventory_revision": 1,
+    "first_seen_at": "2026-08-12T08:00:00Z",
+    "updated_at": "2026-08-12T08:00:00Z",
+    "rpc_endpoint": "ws://[REDACTED_IP]:****",
+    "health": "healthy",
+    "health_reason": "RPC, sync, and consensus are current",
+    "freshness": "current",
+    "current_head": 12842019,
+    "resync_state": "normal",
+    "identity": {
+      "state": "matched",
+      "observed": {
+        "genesis_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+        "chain_id": 210425,
+        "p2p_network_id": 210425,
+        "address_hrp": "lat"
+      },
+      "mismatched_fields": []
+    }
+  },
+  {
+    "node_id": "0195f2a1-0015-4015-8015-000000000015",
+    "agent_id": "0195f2a1-0011-4011-8011-000000000011",
+    "display_name": "Node B (private)",
+    "network_key": "platon-e2e",
+    "network_display_name": "PlatON E2E Network",
+    "lifecycle": "active",
+    "lifecycle_guidance": "Active: present in the latest valid Agent Inventory. The Agent-local configuration stays authoritative for this Node; the Server never pushes Endpoint or lifecycle changes.",
+    "visibility": "private",
+    "inventory_revision": 1,
+    "first_seen_at": "2026-08-12T08:00:00Z",
+    "updated_at": "2026-08-12T08:00:00Z",
+    "rpc_endpoint": "ws://[REDACTED_IP]:****",
+    "health": "unhealthy",
+    "health_reason": "RPC collection failed",
+    "freshness": "stale",
+    "current_head": 12842018,
+    "resync_state": "normal",
+    "identity": {
+      "state": "mismatched",
+      "observed": {
+        "genesis_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+        "chain_id": 999999,
+        "p2p_network_id": 210425,
+        "address_hrp": "lat"
+      },
+      "mismatched_fields": [
+        "chain_id"
+      ]
+    }
+  },
+  {
+    "node_id": "0195f2a1-0016-4016-8016-000000000016",
+    "agent_id": "0195f2a1-0011-4011-8011-000000000011",
+    "display_name": "Node C",
+    "network_key": "platon-e2e",
+    "network_display_name": "PlatON E2E Network",
+    "lifecycle": "active",
+    "lifecycle_guidance": "Active: present in the latest valid Agent Inventory. The Agent-local configuration stays authoritative for this Node; the Server never pushes Endpoint or lifecycle changes.",
+    "visibility": "private",
+    "inventory_revision": 1,
+    "first_seen_at": "2026-08-12T08:00:00Z",
+    "updated_at": "2026-08-12T08:00:00Z",
+    "rpc_endpoint": "ws://[REDACTED_IP]:****",
+    "health": "unknown",
+    "health_reason": "one or more observations are stale or unknown",
+    "freshness": "unknown",
+    "current_head": null,
+    "resync_state": "normal",
+    "identity": {
+      "state": "unknown",
+      "observed": null,
+      "mismatched_fields": []
+    }
+  },
+  {
+    "node_id": "0195f2a1-0017-4017-8017-000000000017",
+    "agent_id": "0195f2a1-0011-4011-8011-000000000011",
+    "display_name": "Node D (retired)",
+    "network_key": "platon-e2e",
+    "network_display_name": "PlatON E2E Network",
+    "lifecycle": "retired",
+    "lifecycle_guidance": "Retired: the latest Agent Inventory no longer declares this Node. Reactivation requires declaring the same Node ID again in the Agent-local TOML configuration and submitting a new Inventory; the Server never changes Node lifecycle remotely.",
+    "visibility": "private",
+    "inventory_revision": 1,
+    "first_seen_at": "2026-08-12T08:00:00Z",
+    "updated_at": "2026-08-12T08:00:00Z",
+    "rpc_endpoint": "ws://[REDACTED_IP]:****",
+    "health": "unknown",
+    "health_reason": "node is retired",
+    "freshness": "unknown",
+    "current_head": null,
+    "resync_state": "normal",
+    "identity": {
+      "state": "unknown",
+      "observed": null,
+      "mismatched_fields": []
+    }
+  },
+  {
+    "node_id": "0195f2a1-0018-4018-8018-000000000018",
+    "agent_id": "0195f2a1-0011-4011-8011-000000000011",
+    "display_name": "Node E (private)",
+    "network_key": "platon-e2e",
+    "network_display_name": "PlatON E2E Network",
+    "lifecycle": "active",
+    "lifecycle_guidance": "Active: present in the latest valid Agent Inventory. The Agent-local configuration stays authoritative for this Node; the Server never pushes Endpoint or lifecycle changes.",
+    "visibility": "private",
+    "inventory_revision": 1,
+    "first_seen_at": "2026-08-12T08:00:00Z",
+    "updated_at": "2026-08-12T08:00:00Z",
+    "rpc_endpoint": "ws://[REDACTED_IP]:****",
+    "health": "unknown",
+    "health_reason": "one or more observations are stale or unknown",
+    "freshness": "unknown",
+    "current_head": null,
+    "resync_state": "normal",
+    "identity": {
+      "state": "unknown",
+      "observed": null,
+      "mismatched_fields": []
+    }
+  },
+  {
+    "node_id": "0195f2a1-0019-4019-8019-000000000019",
+    "agent_id": "0195f2a1-0011-4011-8011-000000000011",
+    "display_name": "Node F (transfer)",
+    "network_key": "platon-e2e",
+    "network_display_name": "PlatON E2E Network",
+    "lifecycle": "active",
+    "lifecycle_guidance": "Active: present in the latest valid Agent Inventory. The Agent-local configuration stays authoritative for this Node; the Server never pushes Endpoint or lifecycle changes.",
+    "visibility": "private",
+    "inventory_revision": 1,
+    "first_seen_at": "2026-08-12T08:00:00Z",
+    "updated_at": "2026-08-12T08:00:00Z",
+    "rpc_endpoint": "ws://[REDACTED_IP]:****",
+    "health": "unknown",
+    "health_reason": "one or more observations are stale or unknown",
+    "freshness": "unknown",
+    "current_head": null,
+    "resync_state": "normal",
+    "identity": {
+      "state": "unknown",
+      "observed": null,
+      "mismatched_fields": []
+    }
+  },
+  {
+    "node_id": "0195f2a1-0020-4020-8020-000000000020",
+    "agent_id": "0195f2a1-0021-4021-8021-000000000021",
+    "display_name": "Node G (transferred)",
+    "network_key": "platon-e2e",
+    "network_display_name": "PlatON E2E Network",
+    "lifecycle": "active",
+    "lifecycle_guidance": "Active: present in the latest valid Agent Inventory. The Agent-local configuration stays authoritative for this Node; the Server never pushes Endpoint or lifecycle changes.",
+    "visibility": "private",
+    "inventory_revision": 1,
+    "first_seen_at": "2026-08-12T08:00:00Z",
+    "updated_at": "2026-08-12T08:00:00Z",
+    "rpc_endpoint": "ws://[REDACTED_IP]:****",
+    "health": "unknown",
+    "health_reason": "one or more observations are stale or unknown",
+    "freshness": "unknown",
+    "current_head": null,
+    "resync_state": "normal",
+    "identity": {
+      "state": "unknown",
+      "observed": null,
+      "mismatched_fields": []
+    }
+  }
+]

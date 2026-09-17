@@ -1,0 +1,22 @@
+npm notice run platpulse-web@0.1.0 npx
+npm notice run 'playwright' test e2e/emerald-refinement.spec.ts --grep measured evidence|shared chrome
+
+Running 10 tests using 1 worker
+
+
+  ✓   1 [phone-360-touch] › e2e/emerald-refinement.spec.ts:78:1 › refinement scenarios and measured evidence (5.7s)
+  ✓   2 [phone-360-touch] › e2e/emerald-refinement.spec.ts:139:1 › shared chrome keeps business layout, bundled outline icons and background (1.5s)
+
+  ✓   3 [phone-390-touch] › e2e/emerald-refinement.spec.ts:78:1 › refinement scenarios and measured evidence (5.5s)
+  ✓   4 [phone-390-touch] › e2e/emerald-refinement.spec.ts:139:1 › shared chrome keeps business layout, bundled outline icons and background (1.5s)
+
+  ✓   5 [tablet-768-touch] › e2e/emerald-refinement.spec.ts:78:1 › refinement scenarios and measured evidence (5.9s)
+  ✓   6 [tablet-768-touch] › e2e/emerald-refinement.spec.ts:139:1 › shared chrome keeps business layout, bundled outline icons and background (1.6s)
+
+  ✓   7 [desktop-1280] › e2e/emerald-refinement.spec.ts:78:1 › refinement scenarios and measured evidence (5.8s)
+  ✓   8 [desktop-1280] › e2e/emerald-refinement.spec.ts:139:1 › shared chrome keeps business layout, bundled outline icons and background (1.6s)
+
+  ✓   9 [desktop-1440] › e2e/emerald-refinement.spec.ts:78:1 › refinement scenarios and measured evidence (6.0s)
+  ✓  10 [desktop-1440] › e2e/emerald-refinement.spec.ts:139:1 › shared chrome keeps business layout, bundled outline icons and background (1.7s)
+
+  10 passed (39.9s)

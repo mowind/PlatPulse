@@ -41,20 +41,16 @@ export function RealtimeNotice({ realtime, surface = 'public' }: { realtime: Rea
     : realtime.status === 'disconnected' ? 'warning' : 'neutral'
 
   return (
-    <div className="realtime-notices" aria-live="polite" data-realtime-status={realtime.status}>
+    <div className="flex min-w-0 flex-wrap items-center gap-2" aria-live="polite" data-realtime-status={realtime.status}>
       {streamLabel && (
-        <p
-          className="realtime-notice"
-          role="status"
-          aria-label={streamLabel}
-        >
+        <span className="inline-flex min-w-0" role="status" aria-label={streamLabel}>
           <StatusBadge status={streamLabel} tone={streamTone} />
-        </p>
+        </span>
       )}
       {!realtime.online && (
-        <p className="realtime-notice">
+        <span className="inline-flex min-w-0">
           <StatusBadge status="You are offline" tone="warning" />
-        </p>
+        </span>
       )}
     </div>
   )

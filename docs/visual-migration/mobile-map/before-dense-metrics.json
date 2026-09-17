@@ -1,0 +1,42 @@
+[
+  {
+    "width": 390,
+    "height": 844,
+    "theme": "light",
+    "map": {
+      "x": 16,
+      "y": 113,
+      "width": 358,
+      "height": 352,
+      "bottom": 465
+    },
+    "summary": {
+      "x": 16,
+      "y": 313,
+      "width": 358,
+      "height": 168,
+      "bottom": 481
+    },
+    "overflow": false
+  },
+  {
+    "width": 390,
+    "height": 844,
+    "theme": "dark",
+    "map": {
+      "x": 16,
+      "y": 113,
+      "width": 358,
+      "height": 352,
+      "bottom": 465
+    },
+    "summary": {
+      "x": 16,
+      "y": 313,
+      "width": 358,
+      "height": 168,
+      "bottom": 481
+    },
+    "overflow": false
+  }
+]

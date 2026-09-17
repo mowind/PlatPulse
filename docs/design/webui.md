@@ -50,6 +50,12 @@ The WebUI must not invent synonyms that blur boundaries. In particular:
 - a successful Peer Snapshot/aggregate with zero peers is authoritative, not Unknown; omitted or unsupported peer capability is not an empty snapshot;
 - recent Block History is bounded by the Server window and is best-effort: normal missed blocks remain absent, while explicit bounded Gap Backfill may recover eligible heights; neither path synthesizes zeroes or fabricated summaries.
 
+### Approved Emerald composition refinements
+
+- At widths of 768px and above, Home allocates the available statistics/map track width in a **37:61** ratio, retaining the 8px gap and the **232px outer band** (including its padding). This explicitly follows the reference image rather than the pinned source’s 6/6 split. Phone stacking is unchanged.
+- Login displays the PlatPulse brand/Home link and the theme control in the same 56px Emerald header treatment and 1280px content column as Home. It exposes no Admin controls and does not mount the Home data shell. The existing form, authentication and redirect behavior are unchanged.
+- Checkbox and radio visuals use 16px indicators inside 44px native input targets. Native grouping, labels, keyboard behavior, form state and disabled fieldsets remain authoritative; the visible indicator carries focus and invalid states. Forced-colors mode restores native rendering instead of relying on decorative colors.
+
 ### 2.1 Fixed status vocabulary
 
 Use these terms in labels, accessible text, filters, and tests:
@@ -537,6 +543,13 @@ The current presentation uses the shared Admin shell and compact Agents summary,
 - Authorization, Public/Admin separation, redaction, last-good semantics, REST authority, query namespaces, SSE invalidation/reset, URL/back-navigation context, and mutation contracts in §§3–7 remain in force. Do not introduce new API operations or optimistic business state.
 
 #### 8.5.2 Shared shell and density
+
+Current authority: ADR 0003 supersedes the initial Emerald implementation’s
+centered 1280px Admin column. The shell owns page padding and a shared 13.5rem
+sidebar/header-brand partition; pages fill the remaining width. Keep Emerald
+BackgroundDecoration, colors, typography and primitives as adopted in ADR 0002;
+the historical workbench surface descriptions below do not authorize replacing
+that theme or removing its background.
 
 Use an Admin-scoped layout rather than modifying the shared public page container. Desktop content begins approximately 24 CSS pixels after the sidebar; page headings, filters, and primary lists share one left alignment line. Wide lists use the remaining horizontal space, including on ultrawide screens, rather than a uniformly centered, capped Admin wrapper. Settings keeps a reasonable inner form width aligned left beneath its normally aligned page heading.
 

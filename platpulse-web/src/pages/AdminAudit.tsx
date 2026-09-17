@@ -3,7 +3,18 @@ import { Link } from 'react-router'
 import { useAdminAudit, type AuditFilters } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
 import { StatusBadge, formatObservedAt } from '../components/StatusBadge'
+import { Badge } from '../components/ui/badge'
+import { Button } from '../components/ui/button'
+import { CardX } from '../components/ui/card-x'
+import { DataTooltip } from '../components/ui/data-tooltip'
+import { Empty } from '../components/ui/empty'
+import { Select } from '../components/ui/input'
+import { cn } from '../lib/utils'
+import { SURFACE_CARD } from '../lib/surface'
 import type { AuditItem } from '../api/generated'
+
+const TH = 'px-3 py-2 text-left text-xs font-medium text-muted-foreground'
+const TD = 'px-3 py-2 align-top'
 
 /**
  * PAGE-ACCESS-AUDIT (design §18.2, issue #47): immutable, redacted Audit
@@ -67,21 +78,31 @@ export default function AdminAudit() {
   }
 
   return (
-    <section className="page">
-      <h1>Audit log</h1>
-      <p className="muted">
-        Immutable, redacted record of administrative and security mutations.
-        Events cannot be edited or deleted from the UI.
-      </p>
+    <section className="w-full" data-slot="audit-page">
+      <header className="flex flex-col gap-1">
+        <h1 className="text-lg font-semibold">Audit log</h1>
+        <p className="text-sm text-muted-foreground">
+          Immutable, redacted record of administrative and security mutations.
+          Events cannot be edited or deleted from the UI.
+        </p>
+      </header>
       {error && (
-        <p className="form-error" role="alert">
+        <p
+          role="alert"
+          className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+        >
           {error}
         </p>
       )}
-      <div className="audit-filters">
-        <div className="field">
-          <label htmlFor="audit-event-kind">Event kind</label>
-          <select
+      <div className="mt-4 grid gap-3 sm:max-w-xl sm:grid-cols-2" data-slot="audit-filters">
+        <div className="flex flex-col gap-1.5">
+          <label
+            htmlFor="audit-event-kind"
+            className="text-xs font-medium tracking-wider text-muted-foreground"
+          >
+            Event kind
+          </label>
+          <Select
             id="audit-event-kind"
             value={eventKind}
             onChange={(event) => {
@@ -96,11 +117,16 @@ export default function AdminAudit() {
                 {kind}
               </option>
             ))}
-          </select>
+          </Select>
         </div>
-        <div className="field">
-          <label htmlFor="audit-target-kind">Target</label>
-          <select
+        <div className="flex flex-col gap-1.5">
+          <label
+            htmlFor="audit-target-kind"
+            className="text-xs font-medium tracking-wider text-muted-foreground"
+          >
+            Target
+          </label>
+          <Select
             id="audit-target-kind"
             value={targetKind}
             onChange={(event) => {
@@ -116,46 +142,74 @@ export default function AdminAudit() {
             <option value="network">Network</option>
             <option value="session">Session</option>
             <option value="access">Access</option>
-          </select>
+          </Select>
         </div>
       </div>
-      <article className="panel">
-        <div className="panel-heading">
-          <h2>Events</h2>
-          {query.data && <span className="panel-count">{items.length}</span>}
-        </div>
+      <CardX
+        size="medium"
+        bordered={false}
+        segmented
+        data-slot="audit-panel"
+        className={cn('mt-4 rounded-md', SURFACE_CARD)}
+        header={
+          <div className="flex w-full items-center gap-2">
+            <h2 className="min-w-0 flex-1 truncate text-sm font-medium">Events</h2>
+            <DataTooltip
+              placement="left"
+              content="Detail bodies are the stored redacted after-bodies: ids, instants, and counts only. Events are append-only and can never be edited or deleted from the UI."
+            >
+              <Button variant="ghost" size="icon-sm" aria-label="About redacted Audit details">
+                ?
+              </Button>
+            </DataTooltip>
+            {query.data && (
+              <Badge variant="secondary" data-slot="audit-count">
+                {items.length}
+              </Badge>
+            )}
+          </div>
+        }
+      >
         {!query.data && query.isPending && (
-          <p className="panel-state" role="status">
+          <div role="status" className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
             <StatusBadge status="Starting" tone="neutral" /> Loading the Audit log…
-          </p>
+          </div>
         )}
         {!query.data && query.isError && (
-          <p className="panel-state" role="alert">
-            <StatusBadge status="Error" tone="error" />{' '}
-            {query.error instanceof Error ? query.error.message : 'Unable to load the Audit log'}
-            <button type="button" className="text-action" onClick={() => void query.refetch()}>
+          <div role="alert" className="flex flex-wrap items-center gap-2 py-6 text-sm">
+            <StatusBadge status="Error" tone="error" />
+            <span className="text-destructive">
+              {query.error instanceof Error ? query.error.message : 'Unable to load the Audit log'}
+            </span>
+            <Button variant="ghost" size="sm" onClick={() => void query.refetch()}>
               Try again
-            </button>
-          </p>
+            </Button>
+          </div>
         )}
-        {query.data && items.length === 0 && (
-          <p className="panel-state">
-            <StatusBadge status="Empty" tone="ok" /> No matching Audit events.
-          </p>
-        )}
+        {query.data && items.length === 0 && <Empty description="No matching Audit events." />}
         {items.length > 0 && (
-          <div className="audit-list audit-table-wrap">
-            <table className="audit-table table-static">
+          <div data-slot="audit-list" className="overflow-x-auto">
+            <table data-stack data-slot="audit-table" className="w-full min-w-[44rem] text-sm">
               <caption className="sr-only">
                 Immutable redacted Audit events with time, event, actor, target, and details
               </caption>
               <thead>
-                <tr>
-                  <th scope="col">Time</th>
-                  <th scope="col">Event</th>
-                  <th scope="col">Actor</th>
-                  <th scope="col">Target</th>
-                  <th scope="col">Details</th>
+                <tr className="border-b border-border">
+                  <th scope="col" className={TH}>
+                    Time
+                  </th>
+                  <th scope="col" className={TH}>
+                    Event
+                  </th>
+                  <th scope="col" className={TH}>
+                    Actor
+                  </th>
+                  <th scope="col" className={TH}>
+                    Target
+                  </th>
+                  <th scope="col" className={TH}>
+                    Details
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -172,11 +226,11 @@ export default function AdminAudit() {
           </div>
         )}
         {query.data?.nextBefore != null && (
-          <button type="button" className="text-action" onClick={loadOlder}>
+          <Button variant="ghost" size="sm" className="mt-3" onClick={loadOlder}>
             Load older events
-          </button>
+          </Button>
         )}
-      </article>
+      </CardX>
     </section>
   )
 }
@@ -230,42 +284,63 @@ function AuditRow({
   }
   return (
     <>
-      <tr>
-        <td data-label="Time">
+      <tr className="border-b border-border/60 align-top">
+        <td className={cn(TD, 'whitespace-nowrap')} data-label="Time">
           <time dateTime={item.createdAt}>{formatObservedAt(item.createdAt)}</time>
         </td>
-        <th scope="row" data-label="Event">
-          <span className="audit-event-kind">{item.eventKind}</span>
-          <small className="muted">event #{item.auditEventId}</small>
+        <th scope="row" className={cn(TD, 'text-left font-medium')} data-label="Event">
+          <Badge variant="secondary" className="font-mono">
+            {item.eventKind}
+          </Badge>
+          <small className="mt-0.5 block text-[11px] text-muted-foreground">
+            event #{item.auditEventId}
+          </small>
         </th>
-        <td data-label="Actor">{item.actorUsername ?? 'local-cli'}</td>
-        <td data-label="Target">
-          {target ? <Link to={target.to}>{target.label}</Link> : item.targetId}
-          <small className="muted">{item.targetKind}</small>
+        <td className={TD} data-label="Actor">
+          {item.actorUsername ?? 'local-cli'}
         </td>
-        <td data-label="Details">
-          <button
-            type="button"
-            className="text-action audit-details-toggle"
+        <td className={TD} data-label="Target">
+          {target ? (
+            <Link
+              to={target.to}
+              className="inline-flex min-h-11 min-w-11 max-w-full items-center break-words"
+            >
+              {target.label}
+            </Link>
+          ) : (
+            item.targetId
+          )}
+          <small className="mt-0.5 block text-[11px] text-muted-foreground">
+            {item.targetKind}
+          </small>
+        </td>
+        <td className={TD} data-label="Details">
+          <Button
+            variant="ghost"
+            size="sm"
+            data-slot="audit-details-toggle"
             onClick={onToggle}
             onKeyDown={collapseOnEscape}
             aria-expanded={expanded}
             aria-controls={detailsId}
           >
             {expanded ? 'Hide details' : 'Show details'}
-          </button>
+          </Button>
         </td>
       </tr>
       {expanded && (
-        <tr className="node-detail-row">
-          <td colSpan={5} id={detailsId} onKeyDown={collapseOnEscape}>
+        <tr data-slot="audit-detail-row" className="border-b border-border/60">
+          <td colSpan={5} id={detailsId} className="p-0" onKeyDown={collapseOnEscape}>
             <div
-              className="audit-details"
+              data-slot="audit-details"
+              className="p-3"
               role="region"
               aria-label={'Redacted details for Audit event ' + item.auditEventId}
             >
               {item.details == null ? (
-                <p className="muted">No redacted detail was recorded for this event.</p>
+                <p className="text-sm text-muted-foreground">
+                  No redacted detail was recorded for this event.
+                </p>
               ) : (
                 <RedactedDetails details={item.details} />
               )}
@@ -281,14 +356,18 @@ function AuditRow({
  * list so a screen reader can navigate them without a wide table. */
 function RedactedDetails({ details }: { details: unknown }) {
   if (typeof details !== 'object' || details === null || Array.isArray(details)) {
-    return <p className="muted">{JSON.stringify(details)}</p>
+    return <p className="text-sm text-muted-foreground">{JSON.stringify(details)}</p>
   }
   return (
-    <dl className="detail-list">
+    <dl className="grid gap-1">
       {Object.entries(details as Record<string, unknown>).map(([key, value]) => (
-        <div key={key}>
-          <dt>{key}</dt>
-          <dd>{typeof value === 'object' ? JSON.stringify(value) : String(value)}</dd>
+        <div key={key} className="grid gap-0.5 sm:grid-cols-[minmax(8rem,auto)_minmax(0,1fr)] sm:gap-2">
+          <dt className="text-xs font-medium tracking-wider text-muted-foreground [overflow-wrap:anywhere]">
+            {key}
+          </dt>
+          <dd className="min-w-0 text-sm [overflow-wrap:anywhere]">
+            {typeof value === 'object' ? JSON.stringify(value) : String(value)}
+          </dd>
         </div>
       ))}
     </dl>

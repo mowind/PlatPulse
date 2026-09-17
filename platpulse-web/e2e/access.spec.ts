@@ -195,7 +195,7 @@ test.describe('PAGE-ACCESS-AUDIT (Audit review)', () => {
     await page.goto('/admin/access/audit')
     await expect(page.getByRole('heading', { level: 1, name: 'Audit log' })).toBeVisible()
 
-    const auditItems = page.locator('.audit-list tbody tr:not(.node-detail-row)')
+    const auditItems = page.locator('[data-slot="audit-list"] tbody tr:not([data-slot="audit-detail-row"])')
     // The unfiltered listing is the newest 50 events; the whole parallel
     // suite generates hundreds of session_created events, so the seeded
     // and suite mutations are asserted through the Server-side filters
@@ -242,9 +242,9 @@ test.describe('PAGE-ACCESS-AUDIT (Audit review)', () => {
     const actionWidthBefore = (await actionCell.boundingBox())?.width ?? 0
     await firstItem.getByRole('button', { name: 'Show details' }).click()
     const detailRow = firstItem.locator('xpath=following-sibling::tr[1]')
-    await expect(detailRow).toHaveClass(/node-detail-row/)
+    await expect(detailRow).toHaveAttribute('data-slot', 'audit-detail-row')
     await expect(detailRow.locator('td')).toHaveAttribute('colspan', '5')
-    const details = detailRow.locator('.audit-details')
+    const details = detailRow.locator('[data-slot="audit-details"]')
     await expect(details).toBeVisible()
     await expect(details.getByText(/pp_session_/)).toHaveCount(0)
     await expect(details.getByText(/\$argon2id/)).toHaveCount(0)
@@ -268,21 +268,21 @@ test.describe('PAGE-ACCESS-AUDIT (Audit review)', () => {
     await page.goto('/admin/access/audit')
     await expect(page.getByRole('heading', { level: 1, name: 'Audit log' })).toBeVisible()
 
-    const rows = page.locator('.audit-list tbody tr:not(.node-detail-row)')
+    const rows = page.locator('[data-slot="audit-list"] tbody tr:not([data-slot="audit-detail-row"])')
     await expect(rows.first()).toBeVisible({ timeout: 15_000 })
     await expect(rows.first().getByRole('button', { name: 'Show details' })).toBeVisible()
     await rows.first().getByRole('button', { name: 'Show details' }).click()
     const detailRow = rows.first().locator('xpath=following-sibling::tr[1]')
-    await expect(detailRow).toHaveClass(/node-detail-row/)
+    await expect(detailRow).toHaveAttribute('data-slot', 'audit-detail-row')
     await expect(detailRow.locator('td')).toHaveAttribute('colspan', '5')
-    await expect(detailRow.locator('.audit-details')).toBeVisible()
+    await expect(detailRow.locator('[data-slot="audit-details"]')).toBeVisible()
     await page.keyboard.press('Escape')
     await expect(rows.first().getByRole('button', { name: 'Show details' })).toBeVisible()
-    await expect(page.locator('.audit-list tr.node-detail-row')).toHaveCount(0)
+    await expect(page.locator('[data-slot="audit-list"] tr[data-slot="audit-detail-row"]')).toHaveCount(0)
 
     // Filters size to their content instead of spanning the reading width.
     const widths = await page
-      .locator('.audit-filters select')
+      .locator('[data-slot="audit-filters"] select')
       .evaluateAll((selects) => selects.map((select) => select.getBoundingClientRect().width))
     expect(widths.length).toBeGreaterThan(0)
     for (const width of widths) expect(width).toBeLessThan(420)
@@ -308,8 +308,11 @@ test.describe('Anonymous Home (Guest) toggle', () => {
     await expect(page.getByRole('heading', { level: 1, name: 'Settings' })).toBeVisible()
 
     try {
-      page.on('dialog', (dialog) => void dialog.accept())
+      // The migration replaced this window.confirm with an in-app dialog, so
+      // the transition is confirmed inside the dialog rather than through a
+      // native dialog handler. The assertions are unchanged.
       await page.getByRole('button', { name: 'Make Home Public' }).click()
+      await page.getByRole('dialog').getByRole('button', { name: 'Make Home Public' }).click()
       await expect(page.getByText('Site Access Mode is now Public. Audit was recorded.')).toBeVisible()
 
       // A fresh anonymous context can read the Public projection.
@@ -340,6 +343,7 @@ test.describe('Anonymous Home (Guest) toggle', () => {
       // Disabling closes the open Guest stream: the anonymous tab lands on
       // the login page without flashing prior data.
       await page.getByRole('button', { name: 'Make Home Private' }).click()
+      await page.getByRole('dialog').getByRole('button', { name: 'Make Home Private' }).click()
       await expect(page.getByText('Site Access Mode is now Private. Audit was recorded.')).toBeVisible()
       await expect(guestPage2).toHaveURL(/\/login$/, { timeout: 10_000 })
       await expect(

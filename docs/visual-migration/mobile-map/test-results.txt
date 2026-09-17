@@ -1,0 +1,36 @@
+npm notice run platpulse-web@0.1.0 lint
+npm notice run eslint .
+npm notice run platpulse-web@0.1.0 typecheck
+npm notice run tsc --noEmit
+
+ Test Files  26 passed (26)
+      Tests  304 passed (304)
+   Start at  18:32:45
+   Duration  10.45s (transform 7.99s, setup 0ms, import 20.07s, tests 30.71s, environment 35.18s)
+
+dist/assets/index-DaNG3_fQ.js                           708.40 kB │ gzip: 197.50 kB
+
+[plugin builtin:vite-reporter] 
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 576ms
+npm notice run platpulse-web@0.1.0 npx
+npm notice run 'playwright' test e2e/mobile-map-responsive.spec.ts --project=phone-390-touch
+
+Running 1 test using 1 worker
+
+  ✓  1 [phone-390-touch] › e2e/mobile-map-responsive.spec.ts:9:1 › mobile contain layout, touch targets, rotation and honest exception states (11.3s)
+
+  1 passed (11.9s)
+npm notice run platpulse-web@0.1.0 npx
+npm notice run 'playwright' test e2e/home-geo-map.spec.ts --grep dense Europe --project=phone-360-touch --project=phone-390-touch --project=desktop-1440
+
+Running 3 tests using 1 worker
+
+  ✓  1 [phone-360-touch] › e2e/home-geo-map.spec.ts:373:3 › Home compact overview and Peer country map (issue #133) › isolated DTO fixture: dense Europe and East Asia keep exact counts and honest points (2.2s)
+  ✓  2 [phone-390-touch] › e2e/home-geo-map.spec.ts:373:3 › Home compact overview and Peer country map (issue #133) › isolated DTO fixture: dense Europe and East Asia keep exact counts and honest points (2.2s)
+  ✓  3 [desktop-1440] › e2e/home-geo-map.spec.ts:373:3 › Home compact overview and Peer country map (issue #133) › isolated DTO fixture: dense Europe and East Asia keep exact counts and honest points (3.2s)
+
+  3 passed (9.7s)

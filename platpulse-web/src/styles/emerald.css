@@ -1,0 +1,337 @@
+/* PlatPulse WebUI design system.
+ *
+ * Visual authority: komari-theme-emerald (https://github.com/Tokinx/komari-theme-emerald)
+ * at commit c2c5e88ea19c7cbe18d14a50414e10deca3cc66e (tag v1.0.12), MIT, Copyright (c) 2026 Tokinx.
+ *
+ * The token block, the @theme inline mapping, the base layer, and the
+ * scrollbar rule below are copied verbatim from that commit's
+ * src/styles/main.css. PlatPulse-specific additions are marked with
+ * "PlatPulse deviation" and are listed in docs/visual-migration/emerald/.
+ *
+ * This is the ONLY stylesheet. The 5386-line pre-migration sheet that used to
+ * sit beside it was deleted once every page had moved onto these tokens and
+ * the primitives in src/components/ui; nothing is layered underneath it any
+ * more, and there is no second design system to reconcile.
+ */
+
+@layer theme, base, components, utilities;
+
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+* {
+  scrollbar-color: var(--ring) transparent;
+  scrollbar-width: thin;
+}
+
+:root {
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.141 0.005 285.823);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.141 0.005 285.823);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.141 0.005 285.823);
+  --primary: oklch(0.21 0.006 285.885);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.967 0.001 286.375);
+  --secondary-foreground: oklch(0.21 0.006 285.885);
+  --muted: oklch(0.967 0.001 286.375);
+  --muted-foreground: oklch(0.552 0.016 285.938);
+  --accent: oklch(0.967 0.001 286.375);
+  --accent-foreground: oklch(0.21 0.006 285.885);
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
+  --warning: oklch(0.768 0.155 70);
+  --warning-foreground: oklch(0.21 0.006 285.885);
+  --success: oklch(0.696 0.17 162.48);
+  --success-foreground: oklch(0.985 0 0);
+  --info: oklch(0.6 0.118 230);
+  --info-foreground: oklch(0.985 0 0);
+  --border: oklch(0.92 0.004 286.32);
+  --input: oklch(0.92 0.004 286.32);
+  --ring: oklch(0.705 0.015 286.067);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --radius: 0.625rem;
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+.dark {
+  --background: oklch(0.141 0.005 285.823);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.21 0.006 285.885);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.21 0.006 285.885);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.92 0.004 286.32);
+  --primary-foreground: oklch(0.21 0.006 285.885);
+  --secondary: oklch(0.274 0.006 286.033);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.274 0.006 286.033);
+  --muted-foreground: oklch(0.705 0.015 286.067);
+  --accent: oklch(0.274 0.006 286.033);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --destructive-foreground: oklch(0.985 0 0);
+  --warning: oklch(0.79 0.16 70);
+  --warning-foreground: oklch(0.141 0.005 285.823);
+  --success: oklch(0.74 0.17 162);
+  --success-foreground: oklch(0.141 0.005 285.823);
+  --info: oklch(0.68 0.13 230);
+  --info-foreground: oklch(0.141 0.005 285.823);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.552 0.016 285.938);
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+}
+
+/* PlatPulse deviation (decision Q3-A): Emerald distinguishes only online and
+ * offline. These aliases keep every PlatPulse observation state inside
+ * Emerald's own palette instead of introducing a second one. */
+:root,
+.dark {
+  --status-healthy: var(--success);
+  --status-warning: var(--warning);
+  --status-critical: var(--destructive);
+  --status-unknown: var(--muted-foreground);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --font-sans: var(--font-sans);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  /* PlatPulse deviation (decision Q3-A): observation-state aliases. */
+  --color-status-healthy: var(--status-healthy);
+  --color-status-warning: var(--status-warning);
+  --color-status-critical: var(--status-critical);
+  --color-status-unknown: var(--status-unknown);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  html {
+    font-family: var(--font-sans);
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+  }
+}
+
+/* Reduced motion (PlatPulse deviation): upstream Emerald ships no
+ * prefers-reduced-motion block, and the retired sheet carried six !important
+ * rules for it. PlatPulse requires the behaviour, so it lives here once, in
+ * the design system, rather than scattered across components. The duration is
+ * the literal 0s so that both a string comparison and a parsed float see zero.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0s !important;
+    animation-delay: 0s !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0s !important;
+    transition-delay: 0s !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Responsive data-label tables (restored)
+ *
+ * The retired sheet turned a data-label table into a stack of cards below a
+ * breakpoint, each cell prefixed by its own label. The migration kept the
+ * data-label attributes but dropped these rules, so a migrated table scrolled
+ * horizontally instead. Restored here with Emerald tokens for every table that
+ * opts in with data-stack. The Agent priority summary keeps the product order:
+ * identity, reporting and receipt, evidence, inventory, credentials.
+ * ------------------------------------------------------------------------- */
+@layer components {
+  @media (max-width: 47.9rem) {
+    table[data-stack] thead {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
+    }
+
+    table[data-stack] tbody tr {
+      display: flex;
+      flex-direction: column;
+      margin-bottom: 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 0.375rem;
+      background-color: var(--card);
+      padding: 0.35rem 0.75rem;
+    }
+
+    table[data-stack] td[data-label],
+    table[data-stack] th[data-label] {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 0.25rem;
+      padding: 0.35rem 0;
+      border: 0;
+    }
+
+    table[data-stack] td[data-label]::before,
+    table[data-stack] th[data-label]::before {
+      content: attr(data-label);
+      font-size: 0.68rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted-foreground);
+    }
+
+    table[data-stack] tr > [data-label='Agent'] { order: 1; }
+    table[data-stack] tr > [data-label='Reporting status'] { order: 2; }
+    table[data-stack] tr > [data-label='Last received'] { order: 2; }
+    table[data-stack] tr > [data-label='Diagnostics'] { order: 3; }
+    table[data-stack] tr > [data-label='Node Inventory'] { order: 4; }
+    table[data-stack] tr > [data-label='Credentials'] { order: 5; }
+  }
+}
+
+/* Fixed column shares for the two summary tables, restored from the retired
+ * sheet: without table-layout: fixed a wrapped long detail resizes a
+ * neighbouring column, which the acceptance matrix measures. */
+@layer components {
+  table[data-slot='agent-table'] { table-layout: fixed; }
+  table[data-slot='agent-table'] thead th:nth-child(1) { width: 18%; }
+  table[data-slot='agent-table'] thead th:nth-child(2) { width: 15%; }
+  table[data-slot='agent-table'] thead th:nth-child(3) { width: 17%; }
+  table[data-slot='agent-table'] thead th:nth-child(4) { width: 14%; }
+  table[data-slot='agent-table'] thead th:nth-child(5) { width: 18%; }
+  table[data-slot='agent-table'] thead th:nth-child(6) { width: 18%; }
+  table[data-slot='audit-table'] { table-layout: fixed; }
+  table[data-slot='audit-table'] thead th:nth-child(1) { width: 16%; }
+  table[data-slot='audit-table'] thead th:nth-child(2) { width: 22%; }
+  table[data-slot='audit-table'] thead th:nth-child(3) { width: 15%; }
+  table[data-slot='audit-table'] thead th:nth-child(4) { width: 22%; }
+  table[data-slot='audit-table'] thead th:nth-child(5) { width: 25%; }
+}
+
+/* A fixed table layout gives every column a width share, so a long unbreakable
+ * value must be allowed to break inside its cell instead of overflowing it
+ * (the acceptance matrix measures scrollWidth against clientWidth per cell).
+ * overflow-wrap: anywhere, not break-words: only the former lowers an element's
+ * min-content contribution. */
+@layer components {
+  table[data-slot='agent-table'] td[data-label],
+  table[data-slot='agent-table'] th[data-label],
+  table[data-slot='audit-table'] td[data-label],
+  table[data-slot='audit-table'] th[data-label] {
+    overflow-wrap: anywhere;
+  }
+}
+
+/* Refinement of the pinned NodeCard anatomy, not another theme. */
+@layer components {
+  [data-slot='metric-row'] { container-type: inline-size; }
+  [data-slot='metric-row-label'] [data-short-label] { display: none; }
+  @container (max-width: 10rem) {
+    [data-slot='metric-row-label'] [data-full-label] { display: none; }
+    [data-slot='metric-row-label'] [data-short-label] { display: inline; }
+  }
+  [data-kind='information'] [data-slot='metric-row-value'] {
+    display: flex;
+    align-items: baseline;
+    justify-content: flex-end;
+    gap: 0.5rem;
+  }
+  [data-kind='information'] [data-slot='metric-row-value']::before {
+    content: '';
+    flex: 1 0 0.25rem;
+    align-self: center;
+    border-top: 2px dotted color-mix(in oklab, var(--muted-foreground) 10%, transparent);
+  }
+  /* Visible 32px shell / 26px triggers. Padding around the scroller leaves
+     each non-overlapping 44px pseudo hit area unclipped. */
+  .compact-tabs [data-slot='tabs-trigger']::before {
+    content: '';
+    position: absolute;
+    inset: -9px 0;
+  }
+}
+
+/* Business values alone use full-size, intrinsic-width rows. Resource rows stay unchanged. */
+[data-slot='node-business-metrics'] [data-slot='metric-row'] {
+  container-type: normal;
+  grid-template-columns: auto minmax(max-content, 1fr);
+  font-size: 14px;
+  line-height: 28px;
+  row-gap: 0;
+  column-gap: 4px;
+}
+[data-slot='node-business-metrics'] [data-slot='metric-row-value'] {
+  white-space: nowrap;
+  overflow-wrap: normal;
+  gap: 4px;
+}
+[data-slot='node-business-metrics'] [data-slot='metric-row-value']::before {
+  flex-basis: 0;
+}
+[data-slot='node-business-metrics'] > [data-slot='metric-row'] [data-slot='metric-row-value'] {
+  font-weight: 600;
+}
+[data-slot='node-counts'] {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 1rem;
+}
+[data-slot='node-counts'] > [data-slot='metric-row'] {
+  /* Equal halves when both fit; intrinsic content forces whole rows to wrap. */
+  flex: 1 1 calc(50% - 0.5rem);
+  min-width: max-content;
+}

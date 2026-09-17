@@ -158,6 +158,59 @@ afterEach(() => {
   adminQueryClient.clear()
 })
 describe('PAGE-ADMIN-OVERVIEW', () => {
+  it.each(['nodes', 'agents'])('keeps Refresh busy after Overview completes while %s still refreshes', async (pendingPanel) => {
+    let refreshing = false
+    let release!: (response: Response) => void
+    const pending = new Promise<Response>((resolve) => { release = resolve })
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/overview': () => jsonResponse(OVERVIEW, 200),
+      '/api/admin/v1/nodes': () => refreshing && pendingPanel === 'nodes' ? pending : jsonResponse([NODE], 200),
+      '/api/admin/v1/agents': () => refreshing && pendingPanel === 'agents' ? pending : jsonResponse([AGENT], 200),
+    })
+    await renderAt('/admin')
+    const button = await screen.findByRole('button', { name: 'Refresh' })
+    refreshing = true
+    await act(async () => button.click())
+    await waitFor(() => expect(adminQueryClient.getQueryCache().findAll().find((query) =>
+      query.queryKey.includes('overview'))?.state.fetchStatus).toBe('idle'))
+    expect(screen.getByRole('button', { name: 'Refreshing…' })).toBe(button)
+    expect((button as HTMLButtonElement).disabled).toBe(true)
+    expect(button.querySelector('svg')).toBeTruthy()
+    await act(async () => release(jsonResponse(pendingPanel === 'nodes' ? [NODE] : [AGENT], 200)))
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Refresh' }) as HTMLButtonElement).disabled).toBe(false))
+  })
+
+  it('distinguishes subjects and Critical items and exposes discarded reports without expanding', async () => {
+    const id = '0195f2a1-0011-4011-8011-000000000011'
+    const item = { ...OVERVIEW.attention[0], subject_kind: 'agent', subject_id: id, subject_label: id }
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/overview': () => jsonResponse({ ...OVERVIEW, attention: [
+        { ...item, id: 'fatal', kind: 'agent_spool_fatal', message: 'Durable reports are at risk' },
+        { ...item, id: 'overflow', kind: 'agent_spool_overflow', message: 'The spool discarded queued reports' },
+      ] }, 200),
+      '/api/admin/v1/nodes': () => jsonResponse([NODE], 200),
+      '/api/admin/v1/agents': () => jsonResponse([AGENT], 200),
+    })
+    await renderAt('/admin')
+    const toggle = await screen.findByRole('button', { name: 'Show 1 additional issue · 1 Critical' })
+    const group = toggle.closest('[data-slot="attention-item"]') as HTMLElement
+    expect(screen.getByText('2 items across 1 subjects · 2 Critical')).toBeTruthy()
+    expect(within(group).getAllByText('The spool discarded queued reports').some((element) => !element.closest('[hidden]'))).toBe(true)
+    expect(within(group).getByText(id).closest('details')).toBeTruthy()
+    expect(within(group).getByRole('link', { name: 'View agent' }).getAttribute('href')).toBe(`/admin/agents/${id}`)
+    await act(async () => toggle.click())
+    expect(document.getElementById(toggle.getAttribute('aria-controls')!)?.hasAttribute('hidden')).toBe(false)
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { clipboard: { writeText } })
+    const identity = within(group).getByText(id).closest('details')!
+    await act(async () => { identity.open = true })
+    await act(async () => within(identity).getByRole('button', { name: 'Copy Agent ID' }).click())
+    expect(writeText).toHaveBeenCalledWith(id)
+    expect(within(identity).getByRole('status').textContent).toBe('Copied')
+  })
+
   it('prioritizes attention, Node health and Agent inventory; legacy Geo and Operations content is absent', async () => {
     const fetchMock = mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
@@ -232,7 +285,7 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     expect(details?.textContent).toContain('resync is pending')
     // The primary item labels its own observation time; the grouped item has
     // no timestamp and stays explicitly unknown instead of borrowing one.
-    const group = toggle.closest('.attention-item') as HTMLElement
+    const group = toggle.closest('[data-slot="attention-item"]') as HTMLElement
     expect(group.textContent).toContain('Last observed')
     expect(details?.textContent).toContain('Observation time unknown')
   })
@@ -435,7 +488,7 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     await renderAt('/admin')
 
     // A recorded observation renders its own time, explicitly labelled.
-    const knownItem = (await screen.findByText(/RPC collection failed/)).closest('.attention-item') as HTMLElement
+    const knownItem = (await screen.findByText(/RPC collection failed/)).closest('[data-slot="attention-item"]') as HTMLElement
     expect(knownItem.textContent).toContain('Last observed')
     const observedTime = knownItem.querySelector('time')
     expect(observedTime?.getAttribute('datetime')).toBe(observedAt)
@@ -443,12 +496,12 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
 
     // No observation timestamp: Unknown stays Unknown and never borrows the
     // snapshot refresh time.
-    const unknownItem = (await screen.findByText(/1 security event was recorded/)).closest('.attention-item') as HTMLElement
+    const unknownItem = (await screen.findByText(/1 security event was recorded/)).closest('[data-slot="attention-item"]') as HTMLElement
     expect(unknownItem.textContent).toContain('Observation time unknown')
     expect(unknownItem.querySelector('time')).toBeNull()
     expect(unknownItem.textContent).not.toContain('ago')
 
-    const header = screen.getByText(/Last good snapshot/).closest('.header-status') as HTMLElement
+    const header = screen.getByText(/Last good snapshot/).closest('[data-slot="header-status"]') as HTMLElement
     expect(header.querySelector('time')?.getAttribute('datetime')).toBe(generatedAt)
     expect(header.textContent).toContain('30 seconds ago')
   })

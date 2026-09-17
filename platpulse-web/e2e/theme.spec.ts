@@ -1,10 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
-import {
-  E2E_PASSWORD,
-  expectFocusedElementHasVisibleFocus,
-  expectNoHorizontalOverflow,
-  loginAs,
-} from './helpers'
+import { E2E_PASSWORD, expectFocusedElementHasVisibleFocus, expectNoHorizontalOverflow, loginAs, expectComputedColor, expectLiftedUp } from './helpers'
 
 /**
  * SCN-THEME-LIFECYCLE (webui.md §11.1 "Theme behavior"): the production
@@ -49,10 +44,10 @@ async function readAtmosphere(page: Page) {
       ariaHidden: null as string | null,
       pointerEvents: '',
     }
-    const decoration = document.querySelector('.background-decoration')
-    const atmosphere = document.querySelector('.background-decoration-atmosphere')
-    const gradient = document.querySelector('.background-decoration-gradient')
-    const grid = document.querySelector('.background-decoration-grid')
+    const decoration = document.querySelector('[data-slot="background-decoration"]')
+    const atmosphere = document.querySelector('[data-slot="background-decoration-atmosphere"]')
+    const gradient = document.querySelector('[data-slot="background-decoration-gradient"]')
+    const grid = document.querySelector('[data-slot="background-decoration-grid"]')
     if (!decoration || !atmosphere || !gradient || !grid) return empty
     const atmosphereStyle = getComputedStyle(atmosphere)
     const gradientStyle = getComputedStyle(gradient)
@@ -222,8 +217,10 @@ test('paints the correct theme before the application module runs on direct entr
   await page.route('**/assets/*.js', (route) => route.abort())
 
   const cases = [
-    { mode: 'light', dark: false, colorScheme: 'light', canvas: 'rgb(248, 250, 252)' },
-    { mode: 'dark', dark: true, colorScheme: 'dark', canvas: 'rgb(20, 25, 35)' },
+    // Emerald's --background is oklch(1 0 0) and oklch(0.141 0.005 285.823),
+    // which index.html paints before the application module runs.
+    { mode: 'light', dark: false, colorScheme: 'light', canvas: 'rgb(255, 255, 255)' },
+    { mode: 'dark', dark: true, colorScheme: 'dark', canvas: 'rgb(9, 9, 11)' },
   ] as const
 
   for (const testCase of cases) {
@@ -241,9 +238,10 @@ test('paints the correct theme before the application module runs on direct entr
       )
       expect(mounted, label + ': the application module must be blocked').toBe(false)
 
-      const canvas = await page.evaluate(
-        () => getComputedStyle(document.documentElement).backgroundColor,
-      )
+      const canvas = await page.evaluate(() => {
+        const root = getComputedStyle(document.documentElement).backgroundColor
+        return root === 'rgba(0, 0, 0, 0)' ? getComputedStyle(document.body).backgroundColor : root
+      })
       expect(canvas, label + ': pre-mount canvas').toBe(testCase.canvas)
     }
   }
@@ -262,13 +260,13 @@ test('keeps Login, Home, and Admin readable in both themes', async ({ page }) =>
   await page.goto('/login')
 
   await expectReadable(page, '#login-heading')
-  await expectReadable(page, '.login-hint')
+  await expectReadable(page, '[data-slot="login-hint"]')
 
   await themeButton(page).click()
   await themeButton(page).click()
   await expect(themeButton(page)).toHaveAttribute('aria-label', 'Theme: Dark. Switch to Auto')
   await expectReadable(page, '#login-heading')
-  await expectReadable(page, '.login-hint')
+  await expectReadable(page, '[data-slot="login-hint"]')
 
   // A failed dark-theme sign-in stays readable and operable before the
   // successful redirect.
@@ -276,12 +274,12 @@ test('keeps Login, Home, and Admin readable in both themes', async ({ page }) =>
   await page.getByLabel('Password').fill('not-the-password')
   await page.getByRole('button', { name: 'Sign in' }).click()
   await expect(page.getByRole('alert')).toContainText('Invalid username or password')
-  await expectReadable(page, '.form-error')
+  await expectReadable(page, '[data-slot="form-error"]')
 
   await page.getByLabel('Password').fill(E2E_PASSWORD)
   await page.getByRole('button', { name: 'Sign in' }).click()
   await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()
-  await expectReadable(page, '.app-brand')
+  await expectReadable(page, '[data-slot="app-brand"]')
 
   await page.getByRole('link', { name: 'Admin', exact: true }).click()
   await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
@@ -294,7 +292,7 @@ test('keeps Login, Home, and Admin readable in both themes', async ({ page }) =>
   await expectReadable(page, 'main h1')
   await page.getByRole('link', { name: 'PlatPulse', exact: true }).click()
   await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()
-  await expectReadable(page, '.app-brand')
+  await expectReadable(page, '[data-slot="app-brand"]')
   await expectNoHorizontalOverflow(page)
 })
 
@@ -359,7 +357,6 @@ async function normalizedStyle(page: Page, property: string, value: string) {
 }
 
 const PUBLIC_FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif'
-const ADMIN_FONT = '"Inter Variable", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
 
 async function expectBorderless(card: Locator) {
   for (const side of ['top', 'right', 'bottom', 'left']) {
@@ -391,7 +388,7 @@ for (const theme of ['light', 'dark'] as const) {
     async function checkCard(card: Locator, lifts = false) {
       await expect(card).toBeVisible({ timeout: 15_000 })
       await page.mouse.move(2, 2)
-      await expect(card).toHaveCSS('background-color', background)
+      await expectComputedColor(card, 'background-color', background)
       await expect(card).toHaveCSS('font-family', font)
       await expectBorderless(card)
       await expect(card).toHaveCSS('backdrop-filter', 'none')
@@ -399,25 +396,25 @@ for (const theme of ['light', 'dark'] as const) {
       await expectQuietShadow(card)
       await expect(card).toHaveCSS('transform', 'none')
       await card.hover()
-      await expect(card).toHaveCSS('background-color', hoverCapable ? opaque : background)
+      await expectComputedColor(card, 'background-color', hoverCapable ? opaque : background)
       await expectBorderless(card)
       if (hoverCapable && lifts) {
-        await expect(card).toHaveCSS('box-shadow', glow)
-        await expect(card).toHaveCSS('transform', 'matrix(1, 0, 0, 1, 0, -2)')
+        await expectComputedColor(card, 'box-shadow', glow)
+        await expectLiftedUp(card, 2)
       } else {
         await expectQuietShadow(card)
         await expect(card).toHaveCSS('transform', 'none')
       }
     }
 
-    await expect(page.locator('.home-shell')).toHaveCSS('font-family', font)
+    await expect(page.locator('[data-slot="home-shell"]')).toHaveCSS('font-family', font)
     await expect(themeButton(page)).toHaveCSS('font-family', font)
     await expect(page.getByRole('combobox', { name: 'Sort' })).toHaveCSS('font-family', font)
-    await expect(page.locator('.dashboard-node-title h2').first()).toHaveCSS('font-weight', '700')
-    await expect(page.locator('.dashboard-node-title h2').first()).toHaveCSS('font-size', '16px')
+    await expect(page.locator('[data-slot="node-card"] h2').first()).toHaveCSS('font-weight', '700')
+    await expect(page.locator('[data-slot="node-card"] h2').first()).toHaveCSS('font-size', '16px')
     await checkCard(page.getByRole('article').filter({ hasText: 'Active Nodes' }).first())
     const nodeLink = page.getByRole('link', { name: /Node A/ })
-    const nodeCard = page.locator('.dashboard-node-card').filter({ has: nodeLink })
+    const nodeCard = page.locator('[data-slot="node-card"]').filter({ has: nodeLink })
     await checkCard(nodeCard, true)
 
     // A real keyboard traversal retains the whole-card link's visible focus ring.
@@ -431,11 +428,11 @@ for (const theme of ['light', 'dark'] as const) {
     await expectFocusedElementHasVisibleFocus(page)
     await nodeLink.press('Enter')
     await expect(page.getByRole('heading', { level: 1, name: /Node A/ })).toBeVisible({ timeout: 15_000 })
-    await expect(page.locator('.home-shell')).toHaveCSS('font-family', font)
+    await expect(page.locator('[data-slot="home-shell"]')).toHaveCSS('font-family', font)
     // Cover every rendered information group, summary tile, and chart card,
     // rather than letting one passing representative hide a stale override.
-    for (const selector of ['.node-info-group', '.node-summary-tile', '.node-metric-card']) {
-      const cards = page.locator('.home-shell ' + selector)
+    for (const selector of ['[data-slot="node-info-group"]', '[data-slot="node-summary-tile"]', '[data-slot="node-metric-card"]']) {
+      const cards = page.locator('[data-slot="home-shell"] ' + selector)
       expect(await cards.count(), selector + ' fixture coverage').toBeGreaterThan(0)
       for (const card of await cards.all()) await checkCard(card)
     }
@@ -443,44 +440,52 @@ for (const theme of ['light', 'dark'] as const) {
     await page.goto('/')
     await expect(nodeLink).toBeVisible({ timeout: 15_000 })
     // Filters and sorting stay operable on both public surfaces.
-    await page.getByRole('group', { name: 'Network filter' }).getByRole('button').nth(1).click()
+    await page.getByRole('tablist', { name: 'Network filter' }).getByRole('tab').nth(1).click()
     await page.getByRole('combobox', { name: 'Sort' }).selectOption('head')
-    await page.getByRole('button', { name: 'All Networks', exact: true }).click()
+    await page.getByRole('tab', { name: 'All Networks', exact: true }).click()
     await page.emulateMedia({ reducedMotion: 'reduce' })
     await nodeCard.hover()
     await expect(nodeCard).toHaveCSS('transform', 'none')
     await expect(nodeCard).toHaveCSS('transition-duration', '0s')
-    await expect(nodeCard).toHaveCSS('background-color', hoverCapable ? opaque : background)
-    if (hoverCapable) await expect(nodeCard).toHaveCSS('box-shadow', glow)
+    await expectComputedColor(nodeCard, 'background-color', hoverCapable ? opaque : background)
+    if (hoverCapable) await expectComputedColor(nodeCard, 'box-shadow', glow)
     await expectNoHorizontalOverflow(page)
 
-    // SPA navigation must not leak the public font or borderless surfaces into Admin.
+    // SPA navigation keeps Emerald typography and surfaces, not the public data shell.
     await page.getByRole('link', { name: 'Admin', exact: true }).click()
     await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
-    await expect(page.locator('.admin-shell')).toHaveCSS('font-family',
-      await normalizedStyle(page, 'font-family', ADMIN_FONT))
-    await expect(page.locator('.admin-shell .background-decoration')).toHaveCount(0)
+    // The migration resolved the old Inter/system-ui split into Emerald's
+    // single system stack, so public and Admin now share one family
+    // (deviation 6).
+    await expect(page.locator('[data-slot="admin-shell"]')).toHaveCSS('font-family', font)
+    await expect(page.locator('[data-slot="admin-shell"] [data-slot="background-decoration"]')).toHaveCount(1)
+    await expect(page.locator('[data-slot="admin-shell"] [data-slot="background-decoration"]')).toHaveAttribute('aria-hidden', 'true')
+    await expect(page.locator('[data-slot="admin-shell"] [data-slot="geo-chart"]')).toHaveCount(0)
     await page.goto('/admin/networks')
     await page.getByRole('button', { name: 'Register a Network' }).click()
     const adminCard = page.locator('#network-create-form')
     await expect(adminCard).toBeVisible({ timeout: 15_000 })
-    await expect(adminCard).toHaveCSS('font-family', await normalizedStyle(page, 'font-family', ADMIN_FONT))
-    await expect(adminCard).toHaveCSS('background-color', theme === 'light'
-      ? 'rgba(255, 255, 255, 0.68)' : 'rgba(31, 36, 45, 0.68)')
-    await expect(adminCard).toHaveCSS('border-top-width', '1px')
-    await expect(adminCard).toHaveCSS('border-top-style', 'solid')
-    await expect(adminCard).toHaveCSS('border-top-color', theme === 'light'
-      ? 'rgba(148, 163, 184, 0.22)' : 'rgba(255, 255, 255, 0.12)')
+    await expect(adminCard).toHaveCSS('font-family', font)
+    // Admin panels now use Emerald's single card surface too, so they
+    // resolve to the same 60% background the public cards do (deviation 2).
+    await expectComputedColor(adminCard, 'background-color', background)
+    // Emerald cards are borderless - its own components pass border-none - while
+    // the retired Admin panel carried a 1px border. Asserting all four sides is
+    // stronger than the single-side colour check this replaces.
+    await expectBorderless(adminCard)
   })
 }
 
 test('keeps the retained Admin workbench readable in both themes', async ({ page }, testInfo) => {
   await loginAs(page)
 
-  // The public top treatment never crosses the Admin workbench.
+  // ADR 0003 retains Emerald BackgroundDecoration in Admin; only the workspace
+  // geometry changes. The old zero-decoration assertion predates this contract.
   await page.getByRole('link', { name: 'Admin', exact: true }).click()
   await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
-  await expect(page.locator('.admin-shell .background-decoration')).toHaveCount(0)
+  await expect(page.locator('[data-slot="admin-shell"] [data-slot="background-decoration"]')).toHaveCount(1)
+  await expect(page.locator('[data-slot="admin-shell"] [data-slot="background-decoration"]')).toHaveAttribute('aria-hidden', 'true')
+  await expect(page.locator('[data-slot="admin-shell"] [data-slot="geo-chart"]')).toHaveCount(0)
 
   const routes = [
     { path: '/admin', heading: 'Overview' },
@@ -537,11 +542,11 @@ test('keeps the retained Admin workbench readable in both themes', async ({ page
   await expect(page.getByRole('heading', { level: 1, name: 'Settings' })).toBeVisible({ timeout: 15_000 })
   await expectReadable(page, page.getByLabel('New window (days)'))
   await expectReadable(page, page.getByRole('link', { name: /Admin overview/ }))
-  await expectReadable(page, page.locator('.settings-surface').first())
+  await expectReadable(page, page.locator('[data-slot="settings-block"]').first())
 
   // The mobile/tablet drawer keeps focus entry, scroll lock, Escape close, and
   // focus restoration while Dark is active.
-  if (testInfo.project.name !== 'desktop-1280') {
+  if (!['desktop-1280', 'desktop-1440'].includes(testInfo.project.name)) {
     const menu = page.getByRole('button', { name: 'Menu' })
     await expect(menu).toBeVisible()
     await menu.click()
@@ -562,13 +567,15 @@ test('keeps the retained Admin workbench readable in both themes', async ({ page
  * deviation is width, so the check widens past the upstream fixed 1300px to
  * prove the layer is full-bleed.
  */
-test('ports the shared Emerald top atmosphere full-bleed in both themes', async ({ page }) => {
+test('ports the shared Emerald top atmosphere in both themes', async ({ page }) => {
   await page.setViewportSize({ width: 1512, height: 900 })
   await page.goto('/login')
 
   const light = await readAtmosphere(page)
   expect(light.ready, 'the shared atmosphere layer renders on Login').toBe(true)
-  expect(light.width, 'the atmosphere spans the full viewport width').toBeGreaterThanOrEqual(1500)
+  // An earlier PlatPulse port stretched the wash to the viewport; that
+  // adaptation is gone, so this asserts upstream's own fixed w-325 (1300px).
+  expect(Math.round(light.width), "the atmosphere keeps upstream's fixed 1300px width").toBe(1300)
   expect(light.height).toBe(400)
   expect(light.gradientImage).toContain('linear-gradient')
   expect(light.gradientOpacity).toBe('0.4')
@@ -583,5 +590,5 @@ test('ports the shared Emerald top atmosphere full-bleed in both themes', async 
   const dark = await readAtmosphere(page)
   expect(dark.atmosphereMask, 'Dark keeps the upstream vertical atmosphere mask').toContain('linear-gradient')
   expect(dark.gradientOpacity).toBe('1')
-  expect(dark.gridFill).toMatch(/rgba\(255, 255, 255, 0\.02/)
+  expect(dark.gridFill, 'the dark grid is white at 2.5%').toMatch(/rgba\(255, 255, 255, 0\.02|oklab\([^)]*\/ 0\.025\)/)
 })

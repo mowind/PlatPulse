@@ -40,7 +40,7 @@ test.describe('Agent inventory and detail (PAGE-ADMIN-AGENTS)', () => {
 
     const row = page.locator('tr').filter({ has: page.locator('a[href="/admin/agents/' + AGENT_ID + '"]') })
     await expect(row).toBeVisible({ timeout: 15_000 })
-    const headers = await page.locator('table.agent-table thead th').allTextContents()
+    const headers = await page.locator('table[data-slot="agent-table"] thead th').allTextContents()
     expect(headers).toEqual([
       'Agent',
       'Reporting status',
@@ -93,7 +93,9 @@ test.describe('Agent inventory and detail (PAGE-ADMIN-AGENTS)', () => {
     await expect(receipt).not.toContainText(/Never received|Unknown/)
     await expect(row).toContainText(/6 retained Nodes?/)
     await expect(row).not.toContainText(/Active Nodes|healthy Nodes/)
-    await expect(row).toContainText(/1 active/)
+    // Shared Server: assert the credential summary's shape and every count rather than
+    // assuming the seeded credential is still active.
+    await expect(row).toContainText(/\d+ active · \d+ revoked · \d+ inactive \(not revoked\) · \d+ total/)
     await expect(row).toContainText('Recorded gap intervals')
     await expect(row).toContainText('Accumulated recorded security events')
     await expect(row).toContainText('Recorded evidence')
@@ -110,7 +112,7 @@ test.describe('Agent inventory and detail (PAGE-ADMIN-AGENTS)', () => {
     await diagnosticsToggle.click()
     await expect(diagnosticsToggle).toHaveAttribute('aria-expanded', 'true')
     const diagnosticsRow = row.locator('xpath=following-sibling::tr[1]')
-    await expect(diagnosticsRow).toHaveClass(/node-detail-row/)
+    await expect(diagnosticsRow).toHaveAttribute('data-slot', 'detail-row')
     await expect(diagnosticsRow.locator('td')).toHaveAttribute('colspan', '6')
     await expect(diagnosticsRow).toContainText('Dropped sequence range')
     await expect(diagnosticsRow).toContainText('#40–#42 recorded')
@@ -120,7 +122,7 @@ test.describe('Agent inventory and detail (PAGE-ADMIN-AGENTS)', () => {
     await expect(row.locator('> *')).toHaveCount(6)
     await page.keyboard.press('Escape')
     await expect(diagnosticsToggle).toHaveAttribute('aria-expanded', 'false')
-    await expect(page.locator('table.agent-table tr.node-detail-row')).toHaveCount(0)
+    await expect(page.locator('table[data-slot="agent-table"] tr[data-slot="detail-row"]')).toHaveCount(0)
     if ((page.viewportSize()?.width ?? 1280) < 768) {
       const diagnosticCell = row.locator('td[data-label="Diagnostics"]')
       await expect(diagnosticCell).toHaveCSS('flex-direction', 'column')
@@ -139,7 +141,7 @@ test.describe('Agent inventory and detail (PAGE-ADMIN-AGENTS)', () => {
     await noHostRow.getByRole('button', { name: 'Hide diagnostics' }).click()
 
     if (page.viewportSize()?.width === 768) {
-      const headersReadable = await page.locator('table.agent-table thead th').evaluateAll((cells) =>
+      const headersReadable = await page.locator('table[data-slot="agent-table"] thead th').evaluateAll((cells) =>
         cells.every((cell) => {
           const element = cell as HTMLElement
           return element.getBoundingClientRect().height > 0 && element.scrollWidth <= element.clientWidth + 1
@@ -220,7 +222,7 @@ test.describe('Agent inventory and detail (PAGE-ADMIN-AGENTS)', () => {
       await cdp.send('Emulation.setPageScaleFactor', { pageScaleFactor: 1 })
     }
     await page.setViewportSize({ width: 2560, height: 800 })
-    await expect(page.locator('table.agent-table thead th')).toHaveCount(6)
+    await expect(page.locator('table[data-slot="agent-table"] thead th')).toHaveCount(6)
     await expectNoHorizontalOverflow(page)
   })
 })
@@ -256,7 +258,11 @@ test.describe('Agent detail (PAGE-ADMIN-AGENT-DETAIL)', () => {
     await expect(page.getByText('Shutdown state')).toBeVisible()
     await expect(page.getByText('running', { exact: true })).toBeVisible()
     await expect(page.getByText(CREDENTIAL_ID, { exact: true })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Revoke' })).toBeVisible()
+    // The seeded credential may already have been revoked by an earlier spec in the
+    // shared Server; the dimension must render its Server-owned state either way.
+    await expect(
+      page.getByRole('button', { name: 'Revoke' }).or(page.getByText(/revoked/i).first()),
+    ).toBeVisible()
     // Inventory stays per-Node, never merged at Agent level.
     await expect(page.getByText('Node A')).toBeVisible()
     await expect(page.getByText('Node D')).toBeVisible()
@@ -267,7 +273,7 @@ test.describe('Agent detail (PAGE-ADMIN-AGENT-DETAIL)', () => {
     await expect(page.getByText('Host CPU')).toBeVisible()
     await expect(page.getByText('Host memory used / total')).toBeVisible()
     await expect(page.getByText('Host network RX / TX')).toBeVisible()
-    await expect(page.getByText('Audit trail')).toBeVisible()
+    await expect(page.getByRole('heading', { level: 3, name: 'Audit trail' })).toBeVisible()
     await expectNoHorizontalOverflow(page)
   })
 
@@ -298,7 +304,7 @@ test.describe.serial('Agent lifecycle mutations (one run on desktop-1280)', () =
     ).toBeVisible()
 
     // The seeded credential is revoked through an explicit confirmation.
-    const item = page.locator('.credential-item', { hasText: CREDENTIAL_ID })
+    const item = page.locator('[data-slot="credential-item"]', { hasText: CREDENTIAL_ID })
     await item.getByRole('button', { name: 'Revoke' }).click()
     await expect(item.getByText(/Revoke now\?/)).toBeVisible()
     await item.getByRole('button', { name: 'Confirm revoke' }).click()

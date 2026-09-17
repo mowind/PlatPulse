@@ -1,0 +1,46 @@
+npm notice run platpulse-web@0.1.0 npx
+npm notice run 'playwright' test e2e/emerald-refinement.spec.ts --grep Radix selected --project=phone-390-touch --project=desktop-1440
+
+Running 2 tests using 1 worker
+
+  ✘  1 [phone-390-touch] › e2e/emerald-refinement.spec.ts:26:1 › Radix selected paint, focus, keyboard and shared network scope (1.7s)
+  ✘  2 [desktop-1440] › e2e/emerald-refinement.spec.ts:26:1 › Radix selected paint, focus, keyboard and shared network scope (1.6s)
+
+
+  1) [phone-390-touch] › e2e/emerald-refinement.spec.ts:26:1 › Radix selected paint, focus, keyboard and shared network scope 
+
+    Error: expect(received).not.toBe(expected) // Object.is equality
+
+    Expected: not "rgba(0, 0, 0, 0)"
+
+      39 |     await expectVisibleInteractiveTargets(page)
+      40 |     const colors = await main.evaluate(el => ({ bg: getComputedStyle(el).backgroundColor, fg: getComputedStyle(el).color, inactive: getComputedStyle(el.nextElementSibling!).color }))
+    > 41 |     expect(colors.bg).not.toBe('rgba(0, 0, 0, 0)')
+         |                           ^
+      42 |     const expectedBackground = await page.evaluate(isDark => {
+      43 |       const probe = document.createElement('span')
+      44 |       probe.style.backgroundColor = isDark ? 'color-mix(in oklab, var(--input) 30%, transparent)' : 'var(--background)'
+        at /home/mowind/repos/rust/PlatPulse/platpulse-web/e2e/emerald-refinement.spec.ts:41:27
+
+    Error Context: test-results/emerald-refinement-Radix-s-dd959-rd-and-shared-network-scope-phone-390-touch/error-context.md
+
+  2) [desktop-1440] › e2e/emerald-refinement.spec.ts:26:1 › Radix selected paint, focus, keyboard and shared network scope 
+
+    Error: expect(received).not.toBe(expected) // Object.is equality
+
+    Expected: not "rgba(0, 0, 0, 0)"
+
+      39 |     await expectVisibleInteractiveTargets(page)
+      40 |     const colors = await main.evaluate(el => ({ bg: getComputedStyle(el).backgroundColor, fg: getComputedStyle(el).color, inactive: getComputedStyle(el.nextElementSibling!).color }))
+    > 41 |     expect(colors.bg).not.toBe('rgba(0, 0, 0, 0)')
+         |                           ^
+      42 |     const expectedBackground = await page.evaluate(isDark => {
+      43 |       const probe = document.createElement('span')
+      44 |       probe.style.backgroundColor = isDark ? 'color-mix(in oklab, var(--input) 30%, transparent)' : 'var(--background)'
+        at /home/mowind/repos/rust/PlatPulse/platpulse-web/e2e/emerald-refinement.spec.ts:41:27
+
+    Error Context: test-results/emerald-refinement-Radix-s-dd959-rd-and-shared-network-scope-desktop-1440/error-context.md
+
+  2 failed
+    [phone-390-touch] › e2e/emerald-refinement.spec.ts:26:1 › Radix selected paint, focus, keyboard and shared network scope 
+    [desktop-1440] › e2e/emerald-refinement.spec.ts:26:1 › Radix selected paint, focus, keyboard and shared network scope 

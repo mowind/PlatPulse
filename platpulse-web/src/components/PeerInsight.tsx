@@ -1,6 +1,9 @@
 import { useId } from 'react'
 import type { PublicPeerInsight } from '../api/generated'
 import { componentStateLabel, formatObservedAt, freshnessLabel, StatusBadge } from './StatusBadge'
+import { CardX } from './ui/card-x'
+import { SURFACE_CARD } from '../lib/surface'
+import { cn } from '../lib/utils'
 
 /**
  * Peer state is presented as independent collection, freshness, and value
@@ -136,16 +139,27 @@ function PeerMetricGroup({
 }) {
   const title = name === 'primary' ? 'Primary peer counts' : 'Secondary peer counts'
   return (
-    <div className={`peer-metric-group peer-metric-group-${name}`} role="group" aria-label={title}>
+    <div
+      className={cn('min-w-0', name === 'secondary' && 'border-t border-dashed border-border/60 pt-3')}
+      role="group"
+      aria-label={title}
+    >
       <h3 className="sr-only">{title}</h3>
-      <dl className={`peer-summary-list peer-summary-${name}`}>
+      <dl className="m-0 grid grid-cols-3 gap-3">
         {metrics.map((metric, index) => (
-          <div key={metric.label}>
-            <dt>{metric.label}</dt>
-            <dd>
-              <strong>{count(metric.value)}</strong>
+          <div className="min-w-0" key={metric.label}>
+            <dt className="break-words text-xs font-medium tracking-wider text-muted-foreground">{metric.label}</dt>
+            <dd className="m-0 mt-1 grid min-w-0 gap-1">
+              <strong
+                className={cn(
+                  'min-w-0 break-words font-bold leading-none tracking-tight tabular-nums',
+                  name === 'primary' ? 'text-lg md:text-xl' : 'text-sm md:text-base',
+                )}
+              >
+                {count(metric.value)}
+              </strong>
               {qualifyFirstValue && index === 0 && (
-                <small className="peer-value-qualification">Showing last successful snapshot</small>
+                <small className="max-w-48 break-words text-[11px] text-muted-foreground">Showing last successful snapshot</small>
               )}
             </dd>
           </div>
@@ -165,21 +179,21 @@ function PeerStatusDimensions({
   valueStatus: string
 }) {
   return (
-    <div className="peer-status-dimensions" aria-label="Peer collection, freshness, and value status">
+    <div className="flex min-w-0 flex-wrap items-center gap-2" aria-label="Peer collection, freshness, and value status">
       {collectionStatus !== 'Current' && (
-        <div className="peer-status-dimension" data-dimension="collection">
+        <div className="min-w-0" data-dimension="collection">
           <span className="sr-only">Collection </span>
           <StatusBadge status={collectionStatus} tone={statusTone(collectionStatus)} />
         </div>
       )}
       {freshnessStatus !== 'Current' && (
-        <div className="peer-status-dimension" data-dimension="freshness">
+        <div className="min-w-0" data-dimension="freshness">
           <span className="sr-only">Freshness </span>
           <StatusBadge status={freshnessStatus} tone={statusTone(freshnessStatus)} />
         </div>
       )}
       {valueStatus === 'Unknown' && (
-        <div className="peer-status-dimension" data-dimension="value">
+        <div className="min-w-0" data-dimension="value">
           <span className="sr-only">Value </span>
           <StatusBadge status="Unknown" tone="neutral" />
         </div>
@@ -215,27 +229,34 @@ export function PeerInsight({
   ]
 
   return (
-    <section className={`peer-insight${compact ? ' peer-insight-compact' : ''}`} aria-labelledby={headingId}>
-      <div className="peer-insight-heading">
-        <Heading id={headingId}>Peer insight</Heading>
-      </div>
-      <div className="peer-metric-groups">
-        <PeerMetricGroup name="primary" metrics={primaryMetrics} qualifyFirstValue={qualifyFirstValue} />
-        <PeerMetricGroup name="secondary" metrics={secondaryMetrics} qualifyFirstValue={false} />
-      </div>
-      <div className="peer-insight-status" aria-label="Peer data status">
-        {isCurrent ? (
-          <StatusBadge status="Peer data current" tone="ok" />
-        ) : (
-          <PeerStatusDimensions
-            collectionStatus={collectionStatus}
-            freshnessStatus={freshnessStatus}
-            valueStatus={valueStatus}
-          />
-        )}
-      </div>
-      <p className="peer-insight-note">{note(collectionStatus, freshnessStatus, valueStatus, hasValue)}</p>
-      <p className="peer-observation-time">{observationDetail(insight)}</p>
-    </section>
+    <CardX
+      bordered={false}
+      data-slot="peer-insight"
+      className={cn('min-w-0 rounded-md border-none', SURFACE_CARD)}
+      contentClassName="!p-0"
+    >
+      <section className={cn('min-w-0', compact ? 'p-3' : 'p-4')} aria-labelledby={headingId}>
+        <div className="flex min-w-0 flex-wrap items-start gap-3">
+          <Heading id={headingId} className="m-0 text-sm font-medium">Peer insight</Heading>
+        </div>
+        <div className="mt-3 grid min-w-0 gap-4">
+          <PeerMetricGroup name="primary" metrics={primaryMetrics} qualifyFirstValue={qualifyFirstValue} />
+          <PeerMetricGroup name="secondary" metrics={secondaryMetrics} qualifyFirstValue={false} />
+        </div>
+        <div className="mt-3 flex min-w-0 items-center" aria-label="Peer data status">
+          {isCurrent ? (
+            <StatusBadge status="Peer data current" tone="ok" />
+          ) : (
+            <PeerStatusDimensions
+              collectionStatus={collectionStatus}
+              freshnessStatus={freshnessStatus}
+              valueStatus={valueStatus}
+            />
+          )}
+        </div>
+        <p className="m-0 mt-3 break-words text-sm text-muted-foreground">{note(collectionStatus, freshnessStatus, valueStatus, hasValue)}</p>
+        <p className="m-0 mt-1 break-words text-[11px] text-muted-foreground">{observationDetail(insight)}</p>
+      </section>
+    </CardX>
   )
 }

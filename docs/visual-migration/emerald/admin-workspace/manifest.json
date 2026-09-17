@@ -1,0 +1,61 @@
+{
+  "baseline_commit": "d08b2a82e42cbdf399a5e3ef732c865eedd7f86e",
+  "after_revision": "uncommitted working tree on baseline_commit",
+  "branch": "feat/webui-emerald-visual-migration",
+  "viewport_widths": [
+    360,
+    390,
+    768,
+    1280,
+    1440,
+    1920
+  ],
+  "viewport_heights": {
+    "phone": 844,
+    "other": 900
+  },
+  "themes": [
+    "light",
+    "dark"
+  ],
+  "browser_clock": "2026-08-12T08:01:00Z",
+  "fixtures": {
+    "fixtures/agents.json": "84e229aa7bd9ecc312b1e3af85274871483f5d6c17bf2fdd7a59c29b0214e407",
+    "fixtures/nodes.json": "f77f39fecc50bbfab13a5fcb2b9a7f8664e007da6a3391b5a9e2630844d06ecf",
+    "fixtures/overview.json": "324104f183bf8db7fada55fb97678a4793b5335d54fc5484532eefff42ef4216"
+  },
+  "screenshots": {
+    "before/1280-dark.png": "f8abc46ee730591097ce778287e79536b995c2e5b441ef8c488ab5d949ac1822",
+    "before/1280-light.png": "14108687fbbb81edf1638fbe14a64c4ae83f10fb11f644f4927cf927ce4a2323",
+    "before/1440-dark.png": "f0ca0c6ae19ba6ec5bacd4382c43e54d154b4c60440bbe0e5697ba0e83f5b01b",
+    "before/1440-light.png": "07934b8d15677b1505e7a11744634201b5dea2ca3c03af5148c1fff26114fa36",
+    "before/1920-dark.png": "a029a76accb4136f4a83c76c3dd22a811c582c807ca9e2cd636b09a9a6226700",
+    "before/1920-light.png": "df6481e774fc453736255323ee250bcad977d9079d0c0be8dc0e52eb1ae8c5ed",
+    "before/360-dark.png": "0cfa30f84dafe6310adb5069e8aa6a80a3caa91e375018fe9fbc28de8f0105e3",
+    "before/360-light.png": "7da1be904a1bf2844cbd82dca047c7f34d1b313d561f45416a4d9cec6d0d991c",
+    "before/390-dark.png": "d08de4d40548407e2b4fea4a5c5793263c2c0f9d6de9661baad6dd810b6a1e29",
+    "before/390-light.png": "3ec4e4e2ad8deac67bbcd6675f9620733cbc6a3882ae5dda99350f7cdbf1b166",
+    "before/768-dark.png": "1b05c7924c56584814d025a4dc99e94a6b2fd8a05b722b1a62ab33c4b9aebc8a",
+    "before/768-light.png": "4cbd3b19a190b487dfadb0dd8a7789e43b856870a5a9d877d7cce4513eca9478",
+    "after/1280-dark.png": "b18b2915e8abcd10a39b6a51232bdaf1561123c73d3e408dbdf106e829786720",
+    "after/1280-light.png": "479f21fdf56cd09087c2bbb1d8057693da40ae4e978cad308e03d7298ae4a69c",
+    "after/1440-dark.png": "0769de8e70b880680dd83fbd60e3301b3a0caff66e5caeb8a49eeef6528a13a0",
+    "after/1440-light.png": "774e4aa451e03ca146423fb58f7201ebfd3da86cb352d0af321d92a2742cad68",
+    "after/1920-dark.png": "98f9a3f8088a624751fee91542fdf6ecc95f2a299bdce83f5a1a05829c18a3c5",
+    "after/1920-light.png": "73577e0ab483a0fb5aff03a08e12cccf896cb136c60c087a17c3d8ea8abd8efb",
+    "after/360-dark.png": "d2328f30f5e071a331351fe2d45fdb420f6bb183c6b69282ff309fc7f8a2edcf",
+    "after/360-light.png": "6f5ea597e44fdace72a6088852112fa4e2a907387d46e34669bfd8cfd230bc62",
+    "after/390-dark.png": "f55154132c44edcbfba55eac875f52b6ba604cb4faef5ca9c9f95c8a7ea3e5d8",
+    "after/390-light.png": "632104873a70cce9e8f602b1661d06cf97aa359206d4da47d74c7def1e55d955",
+    "after/768-dark.png": "511f5919559505726910e13a4d1a3af1dd0c09c886531511bd260a324b297881",
+    "after/768-light.png": "a6112c5ce03961eab137896df4e6a5a0e4da9ab3f3dbb954ff9f9cb3f2913c3b"
+  },
+  "after_source_sha256": {
+    "platpulse-web/src/layouts/AdminLayout.tsx": "e15c5860678bf69bc51cb524521854f368238e25eb6c3669117de39fe9dd37fd",
+    "platpulse-web/src/pages/AdminHome.tsx": "d48816ea97887e3d2fc19bb9ed83a0bd5a14441db64adc7f8a981216f142a920",
+    "platpulse-web/src/pages/AdminAgents.tsx": "271070495edfbcda4530f394733b5735c70b652d9a47230032b64f7bf70ddd95",
+    "platpulse-web/src/pages/AdminNodes.tsx": "67f71bb2398146b778a83d2cd4b55805d316b6d07874e85e944afbdc5e1e4b30",
+    "platpulse-web/src/pages/AdminNetworks.tsx": "5d59bc93cdcf822b634fabcd5889e99a3e1945e514c5d45420cf65e0b1716f6d",
+    "platpulse-web/src/pages/AdminSettings.tsx": "0bfd50eef437ab3257797d47985f79783817d2d93d39ebb65610936377c33fb5"
+  }
+}

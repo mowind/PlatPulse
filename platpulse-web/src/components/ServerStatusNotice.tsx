@@ -25,5 +25,12 @@ export function useServerStatus(): ServerStatus {
 export function ServerStatusNotice() {
   const status = useServerStatus()
   if (status === 'live') return null
-  return <p className="server-status" aria-live="polite">{status === 'checking' ? 'Checking server status…' : 'Server is temporarily unavailable. Retrying automatically.'}</p>
+  return (
+    <p
+      className="mx-4 mb-4 rounded-md border border-warning/40 bg-warning/10 px-4 py-3 text-sm text-warning-foreground dark:text-warning"
+      aria-live="polite"
+    >
+      {status === 'checking' ? 'Checking server status…' : 'Server is temporarily unavailable. Retrying automatically.'}
+    </p>
+  )
 }

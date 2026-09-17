@@ -105,12 +105,13 @@ test.describe('SCN-HOME-RESPONSIVE-ACCESSIBILITY / live refresh transport state'
     await loginAs(page)
     const nodeId = PUBLIC_NODE_ID
 
-    let nodeCalls = 0
+    // Initialize a last-good view before injecting a refresh failure. Counting
+    // requests conflates initialization retries/revalidation with the event below.
+    let failRefresh = false
     await page.route('**/api/public/v1/nodes/*', async (route) => {
       const path = new URL(route.request().url()).pathname
       if (!path.endsWith(`/nodes/${nodeId}`)) return route.continue()
-      nodeCalls += 1
-      if (nodeCalls === 1) return route.continue()
+      if (!failRefresh) return route.continue()
       await route.fulfill({
         status: 503,
         contentType: 'application/json',
@@ -120,6 +121,7 @@ test.describe('SCN-HOME-RESPONSIVE-ACCESSIBILITY / live refresh transport state'
     await page.goto(`/nodes/${nodeId}`)
     await expect(page.getByRole('heading', { level: 1, name: 'Node A' })).toBeVisible()
     await openPeerDisclosure(page)
+    failRefresh = true
     await emitRealtime(page, 'invalidation', { resource: 'node', resourceId: nodeId, revision: 2 })
     await expect(page.getByText(/last successful Node data/i)).toBeVisible()
     await expect(page.getByRole('heading', { level: 1, name: 'Node A' })).toBeVisible()
@@ -212,7 +214,7 @@ test.describe('SCN-HOME-RESPONSIVE-ACCESSIBILITY / live refresh transport state'
     await expect(
       page.getByRole('link', { name: /^Healthy Node H — Producing Card/ }).getByText('424,242', { exact: true }),
     ).toHaveCount(1)
-    await expect(page.locator('.dashboard-node-card .status-badge')).toHaveCount(0)
+    await expect(page.locator('[data-slot="node-card"] [data-slot="status-badge"]')).toHaveCount(0)
     expect(await realtimeOpened(page)).toBe(1)
     await expectNoHorizontalOverflow(page)
   })

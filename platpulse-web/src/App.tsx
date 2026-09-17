@@ -18,6 +18,8 @@ import AdminSettings from './pages/AdminSettings'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import { ThemeProvider } from './theme/ThemeProvider'
 import { ensureSiteAccessModeKnown, subscribeSiteAccessMode } from './api/public'
+import { CardX } from './components/ui/card-x'
+import { SURFACE_CARD } from './lib/surface'
 import HomeDashboard from './components/HomeDashboard'
 import { useHomeRealtimeContext } from './layouts/HomeLayout'
 
@@ -30,8 +32,10 @@ import { useHomeRealtimeContext } from './layouts/HomeLayout'
  */
 function CheckingAccess() {
   return (
-    <main className="app-main">
-      <p role="status">Checking access…</p>
+    <main className="mx-auto max-w-[1280px] p-4">
+      <p role="status" className="text-sm text-muted-foreground">
+        Checking access…
+      </p>
     </main>
   )
 }
@@ -105,13 +109,14 @@ function RequireOwner({ children }: { children: ReactNode }) {
 
 function OwnerRequiredPanel() {
   return (
-    <section className="page">
-      <h1>Owner access required</h1>
-      <p>The Admin dashboard is restricted to Owners.</p>
-      <p className="muted">
-        This session cannot view Admin data. Sign in with an Owner account to
-        continue.
-      </p>
+    <section className="mx-auto max-w-[1280px] p-4">
+      <CardX bordered={false} className={SURFACE_CARD}>
+        <h1 className="text-lg font-semibold">Owner access required</h1>
+        <p className="mt-2 text-sm">The Admin dashboard is restricted to Owners.</p>
+        <p className="mt-2 text-sm text-muted-foreground">
+          This session cannot view Admin data. Sign in with an Owner account to continue.
+        </p>
+      </CardX>
     </section>
   )
 }
@@ -191,9 +196,13 @@ function HomeIndex() {
 
 function AdminSectionFallback() {
   return (
-    <section className="page">
-      <h1>Section not found</h1>
-      <p>This Admin section is not part of the current MVP surface.</p>
+    <section className="mx-auto max-w-[1280px] p-4">
+      <CardX bordered={false} className={SURFACE_CARD}>
+        <h1 className="text-lg font-semibold">Section not found</h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          This Admin section is not part of the current MVP surface.
+        </p>
+      </CardX>
     </section>
   )
 }

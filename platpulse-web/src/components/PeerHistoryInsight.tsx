@@ -1,5 +1,8 @@
 import type { AdminPeerHistory, PublicPeerHistory } from '../api/generated'
 import { StatusBadge, formatObservedAt } from './StatusBadge'
+import { CardX } from './ui/card-x'
+import { SURFACE_CARD } from '../lib/surface'
+import { cn } from '../lib/utils'
 
 export type PeerHistoryCountry = {
   countryCode: string
@@ -70,49 +73,54 @@ function Summary({ aggregate }: { aggregate: PeerHistoryAggregate | undefined })
     ['CBFT lag (avg)', aggregate?.cbftLag.average],
   ]
   return (
-    <dl className="peer-history-summary">
+    <dl className="my-3 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
       {fields.map(([name, fieldValue]) => (
-        <div key={name}>
-          <dt>{name}</dt>
-          <dd>{value(fieldValue)}</dd>
+        <div className="min-w-0" key={name}>
+          <dt className="break-words text-xs font-medium tracking-wider text-muted-foreground">{name}</dt>
+          <dd className="m-0 mt-1 break-words text-base font-bold tabular-nums">{value(fieldValue)}</dd>
         </div>
       ))}
     </dl>
   )
 }
 
+const TH_CLASS = 'border-b px-2 py-2 text-left text-xs font-medium text-muted-foreground'
+const TD_CLASS = 'border-b border-border/60 px-2 py-2 align-top'
+
 function AggregateTable({ title, rows }: { title: string; rows: PeerHistoryAggregate[] }) {
   return (
-    <div className="peer-history-table-wrap">
-      <h3>{title}</h3>
+    <div className="mt-3 min-w-0">
+      <h3 className="m-0 mb-2 text-sm font-medium">{title}</h3>
       {rows.length === 0 ? (
-        <p className="muted">No retained aggregate buckets are available.</p>
+        <p className="m-0 text-sm text-muted-foreground">No retained aggregate buckets are available.</p>
       ) : (
-        <table className="peer-history-table">
-          <caption className="sr-only">{title} Peer aggregate history</caption>
-          <thead>
-            <tr>
-              <th scope="col">Bucket</th>
-              <th scope="col">Samples</th>
-              <th scope="col">Peers</th>
-              <th scope="col">In / Out</th>
-              <th scope="col">Arrivals / Departures</th>
-              <th scope="col">Countries</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => (
-              <tr key={row.bucketStart}>
-                <th scope="row">{formatObservedAt(row.bucketStart)}</th>
-                <td data-label="Samples">{value(row.sampleCount)}</td>
-                <td data-label="Peers">{value(row.averagePeers ?? row.totalPeers)}</td>
-                <td data-label="In / Out">{value(row.inboundCount)} / {value(row.outboundCount)}</td>
-                <td data-label="Arrivals / Departures">{value(row.arrivals)} / {value(row.departures)}</td>
-                <td data-label="Countries">{row.countries.length === 0 ? 'No known countries' : row.countries.map((country) => `${country.countryCode} ${value(country.count)}`).join(', ')} · {value(row.knownCountryCount)} known · {value(row.unknownCountryCount)} unknown</td>
+        <div className="w-full overflow-x-auto">
+          <table className="w-full border-collapse text-sm">
+            <caption className="sr-only">{title} Peer aggregate history</caption>
+            <thead>
+              <tr>
+                <th scope="col" className={TH_CLASS}>Bucket</th>
+                <th scope="col" className={TH_CLASS}>Samples</th>
+                <th scope="col" className={TH_CLASS}>Peers</th>
+                <th scope="col" className={TH_CLASS}>In / Out</th>
+                <th scope="col" className={TH_CLASS}>Arrivals / Departures</th>
+                <th scope="col" className={TH_CLASS}>Countries</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.bucketStart} className="border-b border-border/60">
+                  <th scope="row" className={cn(TD_CLASS, 'font-medium')}>{formatObservedAt(row.bucketStart)}</th>
+                  <td data-label="Samples" className={TD_CLASS}>{value(row.sampleCount)}</td>
+                  <td data-label="Peers" className={TD_CLASS}>{value(row.averagePeers ?? row.totalPeers)}</td>
+                  <td data-label="In / Out" className={TD_CLASS}>{value(row.inboundCount)} / {value(row.outboundCount)}</td>
+                  <td data-label="Arrivals / Departures" className={TD_CLASS}>{value(row.arrivals)} / {value(row.departures)}</td>
+                  <td data-label="Countries" className={TD_CLASS}>{row.countries.length === 0 ? 'No known countries' : row.countries.map((country) => `${country.countryCode} ${value(country.count)}`).join(', ')} · {value(row.knownCountryCount)} known · {value(row.unknownCountryCount)} unknown</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   )
@@ -136,35 +144,48 @@ export function PeerHistoryInsight({
   const hasHistory = Boolean(!loading && history && (history.fiveMinute.length > 0 || history.hourly.length > 0))
 
   return (
-    <section className="panel peer-history-insight" aria-labelledby={admin ? 'admin-peer-history' : 'public-peer-history'}>
-      <div className="panel-heading">
-        <h2 id={admin ? 'admin-peer-history' : 'public-peer-history'}>Peer history</h2>
-        <div className="peer-dimensions" aria-label="Peer history dimensions">
-          <div><span className="peer-dimension-label">Collection</span><StatusBadge status={state} tone={tone(loading ? 'starting' : error ? 'error' : history?.state ?? 'unknown')} /></div>
-          <div><span className="peer-dimension-label">Freshness</span><StatusBadge status={freshness} tone={tone(history?.freshness ?? 'unknown')} /></div>
+    <CardX
+      bordered={false}
+      data-slot="peer-history-insight"
+      className={cn('mt-3 min-w-0 rounded-md border-none', SURFACE_CARD)}
+      contentClassName="flex min-w-0 flex-col gap-2"
+    >
+      <section className="min-w-0" aria-labelledby={admin ? 'admin-peer-history' : 'public-peer-history'}>
+        <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
+          <h2 id={admin ? 'admin-peer-history' : 'public-peer-history'} className="m-0 text-sm font-medium">Peer history</h2>
+          <div className="flex min-w-0 flex-wrap items-center gap-3" aria-label="Peer history dimensions">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium tracking-wider text-muted-foreground">Collection</span>
+              <StatusBadge status={state} tone={tone(loading ? 'starting' : error ? 'error' : history?.state ?? 'unknown')} />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium tracking-wider text-muted-foreground">Freshness</span>
+              <StatusBadge status={freshness} tone={tone(history?.freshness ?? 'unknown')} />
+            </div>
+          </div>
         </div>
-      </div>
-      {!hasHistory ? (
-        <p className="panel-state">
-          {loading
-            ? 'History is Starting; loading retained aggregate buckets…'
-            : error
-              ? 'History is Error; the aggregate history service could not be reached. Last-good data is unavailable.'
-              : 'History is Unknown; no aggregate bucket is available yet. The absence is not rendered as zero.'}
-        </p>
-      ) : (
-        <>
-          {error ? <p className="panel-state" role="alert">Latest history request failed; showing retained last-good aggregates.</p> : null}
-          <Summary aggregate={latest} />
-          <p className="muted">
-            {history?.state === 'empty' ? 'No Peers are currently observed. ' : ''}
-            Latest {latestWindow} bucket: {latest ? formatObservedAt(latest.bucketStart) : 'Unknown'} · last observed {latest ? formatObservedAt(latest.lastObservedAt) : 'Unknown'}.
+        {!hasHistory ? (
+          <p className="m-0 mt-2 text-sm text-muted-foreground">
+            {loading
+              ? 'History is Starting; loading retained aggregate buckets…'
+              : error
+                ? 'History is Error; the aggregate history service could not be reached. Last-good data is unavailable.'
+                : 'History is Unknown; no aggregate bucket is available yet. The absence is not rendered as zero.'}
           </p>
-          <AggregateTable title="Five-minute history" rows={history?.fiveMinute ?? []} />
-          <AggregateTable title="Hourly history" rows={history?.hourly ?? []} />
-        </>
-      )}
-    </section>
+        ) : (
+          <>
+            {error ? <p className="m-0 mt-2 text-sm text-destructive" role="alert">Latest history request failed; showing retained last-good aggregates.</p> : null}
+            <Summary aggregate={latest} />
+            <p className="m-0 text-sm text-muted-foreground">
+              {history?.state === 'empty' ? 'No Peers are currently observed. ' : ''}
+              Latest {latestWindow} bucket: {latest ? formatObservedAt(latest.bucketStart) : 'Unknown'} · last observed {latest ? formatObservedAt(latest.lastObservedAt) : 'Unknown'}.
+            </p>
+            <AggregateTable title="Five-minute history" rows={history?.fiveMinute ?? []} />
+            <AggregateTable title="Hourly history" rows={history?.hourly ?? []} />
+          </>
+        )}
+      </section>
+    </CardX>
   )
 }
 
