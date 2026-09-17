@@ -77,6 +77,14 @@ pub struct ValidatorObservation {
     pub delegator_count: Option<i64>,
     pub epoch: Option<i64>,
     pub block_count: Option<i64>,
+    /// Cumulative scheduled blocks from the same successful observation as
+    /// `block_count`. `None` means the source omitted it; `Some(0)` is an
+    /// authoritative "no scheduled duties" denominator (#156).
+    pub expected_block_count: Option<i64>,
+    /// PlatScan's own 24-hour production rate as a percentage string without
+    /// the `%` sign. It is source-reported, not a locally reconstructed
+    /// rolling window (#156).
+    pub gen_blocks_rate: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -410,6 +418,41 @@ fn normalize_platscan_response(
         }
         Ok(Some(parsed))
     };
+    // A percentage may arrive as a bounded decimal string with an optional
+    // trailing `%` (the investigated source emits e.g. "90.909091%"), or as a
+    // non-negative JSON number. It is normalized to percentage points without
+    // the sign so the Public projection and both Node views share one unit
+    // (#156). Fractional JSON numbers are accepted here because a rate is not
+    // an exact monetary amount; only exponent notation is rejected rather than
+    // fabricating digits.
+    let read_percentage = |names: &[&str]| -> Result<Option<String>, String> {
+        let Some(value) = names.iter().find_map(|name| data.get(*name)) else {
+            return Ok(None);
+        };
+        if value.is_null() {
+            return Ok(None);
+        }
+        if let Some(text) = value.as_str() {
+            return normalize_percentage_value(text);
+        }
+        if let Some(integer) = value.as_i64() {
+            return normalize_percentage_value(&integer.to_string());
+        }
+        if let Some(integer) = value.as_u64() {
+            return normalize_percentage_value(&integer.to_string());
+        }
+        if let Some(number) = value.as_f64() {
+            if !number.is_finite() || number < 0.0 {
+                return Err("PlatScan returned an invalid percentage".to_owned());
+            }
+            let text = value.to_string();
+            if text.contains(['e', 'E']) {
+                return Err("PlatScan returned an invalid percentage".to_owned());
+            }
+            return normalize_percentage_value(&text);
+        }
+        Err("PlatScan returned an invalid percentage".to_owned())
+    };
     let observation = ValidatorObservation {
         provider_timestamp: None,
         activity: Some(activity),
@@ -420,11 +463,14 @@ fn normalize_platscan_response(
         delegator_count: read_int(&["delegateQty", "delegatorCount"])?,
         epoch: read_int(&["epoch"])?,
         block_count: read_int(&["blockQty", "blockCount"])?,
+        expected_block_count: read_int(&["expectBlockQty", "expectedBlockQty"])?,
+        gen_blocks_rate: read_percentage(&["genBlocksRate", "generatedBlocksRate"])?,
     };
     for value in [
         observation.stake_amount.as_deref(),
         observation.reward_amount.as_deref(),
         observation.reward_rate.as_deref(),
+        observation.gen_blocks_rate.as_deref(),
     ]
     .into_iter()
     .flatten()
@@ -439,6 +485,20 @@ fn normalize_bounded_text(value: &str) -> Result<Option<String>, String> {
         return Err("Provider returned an invalid bounded value".to_owned());
     }
     Ok(Some(value.to_owned()))
+}
+
+fn normalize_percentage_value(value: &str) -> Result<Option<String>, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let unsigned = value.strip_suffix('%').unwrap_or(value).trim();
+    if unsigned.is_empty() {
+        return Err("PlatScan returned an invalid percentage".to_owned());
+    }
+    validate_nonnegative_decimal(unsigned)
+        .map_err(|_| "PlatScan returned an invalid percentage".to_owned())?;
+    Ok(Some(unsigned.to_owned()))
 }
 
 fn validate_nonnegative_decimal(value: &str) -> Result<(), String> {
@@ -466,7 +526,7 @@ fn provider_diagnostic(value: String) -> String {
 
 fn observation_key(observation: &ValidatorObservation) -> String {
     let bytes = format!(
-        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
         observation.provider_timestamp,
         observation.activity,
         observation.rank,
@@ -475,11 +535,65 @@ fn observation_key(observation: &ValidatorObservation) -> String {
         observation.reward_rate,
         observation.delegator_count,
         observation.epoch,
-        observation.block_count
+        observation.block_count,
+        observation.expected_block_count,
+        observation.gen_blocks_rate
     );
     let mut hash = Sha256::new();
     hash.update(bytes.as_bytes());
     format!("{:x}", hash.finalize())
+}
+
+/// Cumulative actual / cumulative scheduled blocks from one successful
+/// observation (#156). The returned percentage string carries no `%` sign and
+/// is rounded half-up to six decimal places, mirroring the source's own rate
+/// precision. Never combine a fresh numerator with an older denominator: both
+/// inputs come from the same stored row.
+///
+/// * A `Some(0)` denominator is `not_applicable` — no scheduled duties —
+///   regardless of whether the numerator is known, and is deliberately not
+///   rendered as 0% or 100%.
+/// * A missing half of the pair is `unknown`, never a synthesized zero.
+/// * `ok` is the only state that carries a value.
+pub fn cumulative_block_rate(
+    block_count: Option<i64>,
+    expected_block_count: Option<i64>,
+) -> (Option<String>, &'static str) {
+    match (block_count, expected_block_count) {
+        (_, Some(0)) => (None, "not_applicable"),
+        (Some(block_count), Some(expected_block_count)) => (
+            Some(completion_rate_percentage(
+                block_count,
+                expected_block_count,
+            )),
+            "ok",
+        ),
+        _ => (None, "unknown"),
+    }
+}
+
+/// Scale used by `completion_rate_percentage`: six fractional decimal places.
+const RATE_SCALE: i128 = 1_000_000;
+
+/// Render `numerator / denominator × 100` as a percentage string without the
+/// `%` sign. Integer arithmetic only: the ratio never round-trips through a
+/// binary float, and trailing zeros beyond the source's integer precision are
+/// trimmed.
+fn completion_rate_percentage(numerator: i64, denominator: i64) -> String {
+    debug_assert!(denominator > 0);
+    let numerator = i128::from(numerator.max(0));
+    let denominator = i128::from(denominator);
+    let scaled = (numerator * 100 * RATE_SCALE * 2 + denominator) / (denominator * 2);
+    let integer = scaled / RATE_SCALE;
+    let fraction = scaled % RATE_SCALE;
+    if fraction == 0 {
+        return integer.to_string();
+    }
+    let mut fraction = format!("{fraction:06}");
+    while fraction.ends_with('0') {
+        fraction.pop();
+    }
+    format!("{integer}.{fraction}")
 }
 
 fn decimal_decreased(previous: Option<&str>, current: Option<&str>) -> bool {
@@ -1127,6 +1241,8 @@ pub struct ValidatorInsightRecord {
     pub delegator_count: Option<i64>,
     pub epoch: Option<i64>,
     pub block_count: Option<i64>,
+    pub expected_block_count: Option<i64>,
+    pub gen_blocks_rate: Option<String>,
     pub counter_state: String,
     pub change_state: String,
     pub candidate_previous_rank: Option<i64>,
@@ -1417,7 +1533,7 @@ pub async fn load_insight(
     validator_id: &str,
 ) -> Result<Option<ValidatorInsightRecord>, ValidatorError> {
     Ok(sqlx::query_as::<_, ValidatorInsightRecord>(
-        "SELECT validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at FROM current_validator_insights WHERE validator_id = ?",
+        "SELECT validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, expected_block_count, gen_blocks_rate, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at FROM current_validator_insights WHERE validator_id = ?",
     )
     .bind(validator_id)
     .fetch_optional(db.pool())
@@ -1429,7 +1545,7 @@ pub async fn list_insights(
     network_key: Option<&str>,
 ) -> Result<Vec<ValidatorInsightRecord>, ValidatorError> {
     let mut sql = String::from(
-        "SELECT i.validator_id, i.source, i.outcome, i.diagnostic, i.provider_timestamp, i.activity, i.last_attempt_received_at, i.last_good_received_at, i.last_good_provider_timestamp, i.rank, i.stake_amount, i.reward_amount, i.reward_rate, i.delegator_count, i.epoch, i.block_count, i.counter_state, i.change_state, i.candidate_previous_rank, i.candidate_rank, i.candidate_observations, i.candidate_observed_at, i.candidate_provider_timestamp, i.candidate_observation_key, i.last_observation_key, i.updated_at FROM current_validator_insights i JOIN validators v ON v.validator_id = i.validator_id",
+        "SELECT i.validator_id, i.source, i.outcome, i.diagnostic, i.provider_timestamp, i.activity, i.last_attempt_received_at, i.last_good_received_at, i.last_good_provider_timestamp, i.rank, i.stake_amount, i.reward_amount, i.reward_rate, i.delegator_count, i.epoch, i.block_count, i.expected_block_count, i.gen_blocks_rate, i.counter_state, i.change_state, i.candidate_previous_rank, i.candidate_rank, i.candidate_observations, i.candidate_observed_at, i.candidate_provider_timestamp, i.candidate_observation_key, i.last_observation_key, i.updated_at FROM current_validator_insights i JOIN validators v ON v.validator_id = i.validator_id",
     );
     if network_key.is_some() {
         sql.push_str(" WHERE v.network_key = ?");
@@ -1550,7 +1666,7 @@ async fn apply_provider_result(
 ) -> Result<(bool, bool, bool), ValidatorError> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     let existing = sqlx::query_as::<_, ValidatorInsightRecord>(
-        "SELECT validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at FROM current_validator_insights WHERE validator_id = ?",
+        "SELECT validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, expected_block_count, gen_blocks_rate, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at FROM current_validator_insights WHERE validator_id = ?",
     )
     .bind(validator_id)
     .fetch_optional(&mut **tx)
@@ -1727,7 +1843,7 @@ async fn apply_provider_result(
                 "normal"
             };
             let source = bounded_source(source);
-            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, ?, 'success', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=NULL, provider_timestamp=excluded.provider_timestamp, activity=excluded.activity, last_attempt_received_at=excluded.last_attempt_received_at, last_good_received_at=excluded.last_good_received_at, last_good_provider_timestamp=excluded.last_good_provider_timestamp, rank=excluded.rank, stake_amount=excluded.stake_amount, reward_amount=excluded.reward_amount, reward_rate=excluded.reward_rate, delegator_count=excluded.delegator_count, epoch=excluded.epoch, block_count=excluded.block_count, counter_state=excluded.counter_state, change_state=excluded.change_state, candidate_previous_rank=excluded.candidate_previous_rank, candidate_rank=excluded.candidate_rank, candidate_observations=excluded.candidate_observations, candidate_observed_at=excluded.candidate_observed_at, candidate_provider_timestamp=excluded.candidate_provider_timestamp, candidate_observation_key=excluded.candidate_observation_key, last_observation_key=excluded.last_observation_key, updated_at=excluded.updated_at")
+            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, expected_block_count, gen_blocks_rate, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, ?, 'success', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=NULL, provider_timestamp=excluded.provider_timestamp, activity=excluded.activity, last_attempt_received_at=excluded.last_attempt_received_at, last_good_received_at=excluded.last_good_received_at, last_good_provider_timestamp=excluded.last_good_provider_timestamp, rank=excluded.rank, stake_amount=excluded.stake_amount, reward_amount=excluded.reward_amount, reward_rate=excluded.reward_rate, delegator_count=excluded.delegator_count, epoch=excluded.epoch, block_count=excluded.block_count, expected_block_count=excluded.expected_block_count, gen_blocks_rate=excluded.gen_blocks_rate, counter_state=excluded.counter_state, change_state=excluded.change_state, candidate_previous_rank=excluded.candidate_previous_rank, candidate_rank=excluded.candidate_rank, candidate_observations=excluded.candidate_observations, candidate_observed_at=excluded.candidate_observed_at, candidate_provider_timestamp=excluded.candidate_provider_timestamp, candidate_observation_key=excluded.candidate_observation_key, last_observation_key=excluded.last_observation_key, updated_at=excluded.updated_at")
                 .bind(validator_id)
                 .bind(&source)
                 .bind(observation.provider_timestamp.as_deref())
@@ -1742,6 +1858,8 @@ async fn apply_provider_result(
                 .bind(observation.delegator_count)
                 .bind(observation.epoch)
                 .bind(observation.block_count)
+                .bind(observation.expected_block_count)
+                .bind(observation.gen_blocks_rate.as_deref())
                 .bind(counter_state)
                 .bind(change_state)
                 .bind(candidate_previous_rank)
@@ -1793,7 +1911,7 @@ async fn apply_provider_result(
                 .as_ref()
                 .is_none_or(|row| row.outcome != name || row.diagnostic != diagnostic);
             let source = bounded_source(source);
-            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'normal', 'normal', NULL, NULL, 0, NULL, NULL, NULL, NULL, ?) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=excluded.diagnostic, last_attempt_received_at=excluded.last_attempt_received_at, provider_timestamp=current_validator_insights.provider_timestamp, activity=current_validator_insights.activity, last_good_received_at=current_validator_insights.last_good_received_at, last_good_provider_timestamp=current_validator_insights.last_good_provider_timestamp, rank=current_validator_insights.rank, stake_amount=current_validator_insights.stake_amount, reward_amount=current_validator_insights.reward_amount, reward_rate=current_validator_insights.reward_rate, delegator_count=current_validator_insights.delegator_count, epoch=current_validator_insights.epoch, block_count=current_validator_insights.block_count, counter_state=current_validator_insights.counter_state, change_state='normal', candidate_previous_rank=NULL, candidate_rank=NULL, candidate_observations=0, candidate_observed_at=NULL, candidate_provider_timestamp=NULL, candidate_observation_key=NULL, last_observation_key=current_validator_insights.last_observation_key, updated_at=excluded.updated_at")
+            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, expected_block_count, gen_blocks_rate, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'normal', 'normal', NULL, NULL, 0, NULL, NULL, NULL, NULL, ?) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=excluded.diagnostic, last_attempt_received_at=excluded.last_attempt_received_at, provider_timestamp=current_validator_insights.provider_timestamp, activity=current_validator_insights.activity, last_good_received_at=current_validator_insights.last_good_received_at, last_good_provider_timestamp=current_validator_insights.last_good_provider_timestamp, rank=current_validator_insights.rank, stake_amount=current_validator_insights.stake_amount, reward_amount=current_validator_insights.reward_amount, reward_rate=current_validator_insights.reward_rate, delegator_count=current_validator_insights.delegator_count, epoch=current_validator_insights.epoch, block_count=current_validator_insights.block_count, expected_block_count=current_validator_insights.expected_block_count, gen_blocks_rate=current_validator_insights.gen_blocks_rate, counter_state=current_validator_insights.counter_state, change_state='normal', candidate_previous_rank=NULL, candidate_rank=NULL, candidate_observations=0, candidate_observed_at=NULL, candidate_provider_timestamp=NULL, candidate_observation_key=NULL, last_observation_key=current_validator_insights.last_observation_key, updated_at=excluded.updated_at")
                 .bind(validator_id)
                 .bind(source)
                 .bind(name)
@@ -1819,7 +1937,9 @@ fn validate_observation(observation: &ValidatorObservation) -> Result<(), Valida
         || observation.reward_rate.is_some()
         || observation.delegator_count.is_some()
         || observation.epoch.is_some()
-        || observation.block_count.is_some();
+        || observation.block_count.is_some()
+        || observation.expected_block_count.is_some()
+        || observation.gen_blocks_rate.is_some();
     if !has_supported_value {
         return Err(ValidatorError::InvalidProviderObservation(
             "empty observation".to_owned(),
@@ -1829,6 +1949,9 @@ fn validate_observation(observation: &ValidatorObservation) -> Result<(), Valida
         || observation.delegator_count.is_some_and(|value| value < 0)
         || observation.epoch.is_some_and(|value| value < 0)
         || observation.block_count.is_some_and(|value| value < 0)
+        || observation
+            .expected_block_count
+            .is_some_and(|value| value < 0)
     {
         return Err(ValidatorError::InvalidProviderObservation(
             "negative integer".to_owned(),
@@ -1838,6 +1961,7 @@ fn validate_observation(observation: &ValidatorObservation) -> Result<(), Valida
         observation.stake_amount.as_deref(),
         observation.reward_amount.as_deref(),
         observation.reward_rate.as_deref(),
+        observation.gen_blocks_rate.as_deref(),
     ]
     .into_iter()
     .flatten()
@@ -3575,5 +3699,204 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(insight.block_count, None);
+    }
+
+    #[test]
+    fn cumulative_block_rate_is_exact_and_never_mixes_observations() {
+        assert_eq!(
+            cumulative_block_rate(Some(100), Some(110)),
+            (Some("90.909091".to_owned()), "ok")
+        );
+        assert_eq!(
+            cumulative_block_rate(Some(1), Some(2)),
+            (Some("50".to_owned()), "ok")
+        );
+        assert_eq!(
+            cumulative_block_rate(Some(2), Some(3)),
+            (Some("66.666667".to_owned()), "ok")
+        );
+        assert_eq!(
+            cumulative_block_rate(Some(0), Some(5)),
+            (Some("0".to_owned()), "ok")
+        );
+        // A known zero denominator is not applicable, never 0% or 100%,
+        // whether or not the numerator is known.
+        assert_eq!(
+            cumulative_block_rate(Some(0), Some(0)),
+            (None, "not_applicable")
+        );
+        assert_eq!(
+            cumulative_block_rate(None, Some(0)),
+            (None, "not_applicable")
+        );
+        // An incomplete pair stays unknown rather than mixing observations.
+        assert_eq!(cumulative_block_rate(Some(200), None), (None, "unknown"));
+        assert_eq!(cumulative_block_rate(None, Some(50)), (None, "unknown"));
+        assert_eq!(cumulative_block_rate(None, None), (None, "unknown"));
+    }
+
+    #[test]
+    fn platscan_normalizes_both_rate_inputs_and_rejects_invalid_percentages() {
+        let node_id = provider_node_id();
+        let body = serde_json::json!({
+            "code": 0,
+            "data": {
+                "nodeId": node_id,
+                "status": 3,
+                "blockQty": 100,
+                "expectBlockQty": 110,
+                "genBlocksRate": "90.909091%"
+            }
+        });
+        let observation = normalize_platscan_response(&body, &node_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(observation.expected_block_count, Some(110));
+        assert_eq!(observation.gen_blocks_rate.as_deref(), Some("90.909091"));
+
+        // A source-reported zero percentage is retained as a source value,
+        // distinct from a genuinely missing field.
+        let zero = serde_json::json!({
+            "code": 0,
+            "data": { "nodeId": node_id, "status": 3, "genBlocksRate": "0%" }
+        });
+        assert_eq!(
+            normalize_platscan_response(&zero, &node_id)
+                .unwrap()
+                .unwrap()
+                .gen_blocks_rate
+                .as_deref(),
+            Some("0")
+        );
+        let missing = serde_json::json!({
+            "code": 0,
+            "data": { "nodeId": node_id, "status": 3 }
+        });
+        assert_eq!(
+            normalize_platscan_response(&missing, &node_id)
+                .unwrap()
+                .unwrap()
+                .gen_blocks_rate,
+            None
+        );
+
+        // A JSON number is a legal rate, including a fractional one; a rate is
+        // not an exact monetary amount, so it is not held to the amount rule.
+        let numeric = serde_json::json!({
+            "code": 0,
+            "data": { "nodeId": node_id, "status": 3, "genBlocksRate": 12.5 }
+        });
+        assert_eq!(
+            normalize_platscan_response(&numeric, &node_id)
+                .unwrap()
+                .unwrap()
+                .gen_blocks_rate
+                .as_deref(),
+            Some("12.5")
+        );
+
+        // Malformed, stray-percent, or negative values degrade the whole
+        // observation to Error instead of synthesizing 0%.
+        for invalid in [
+            serde_json::json!({ "code": 0, "data": { "nodeId": node_id, "status": 3, "genBlocksRate": "12%%" } }),
+            serde_json::json!({ "code": 0, "data": { "nodeId": node_id, "status": 3, "genBlocksRate": "%12" } }),
+            serde_json::json!({ "code": 0, "data": { "nodeId": node_id, "status": 3, "genBlocksRate": "abc" } }),
+            serde_json::json!({ "code": 0, "data": { "nodeId": node_id, "status": 3, "genBlocksRate": -1 } }),
+            serde_json::json!({ "code": 0, "data": { "nodeId": node_id, "status": 3, "expectBlockQty": -1 } }),
+        ] {
+            assert!(
+                normalize_platscan_response(&invalid, &node_id).is_err(),
+                "invalid payload {invalid}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn block_rates_persist_retain_last_good_and_never_splice_observations() {
+        let (dir, db) = test_db().await;
+        let owner_id: String =
+            sqlx::query_scalar("SELECT user_id FROM users WHERE username = 'owner'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        let (validator, _) = create_validator(&db, "platon-mainnet", "0xabc", None, &owner_id)
+            .await
+            .unwrap();
+        let validator_id = validator.validator_id.clone();
+        let provider = FakeProvider {
+            results: std::sync::Mutex::new(vec![ValidatorProviderResult::Success(
+                ValidatorObservation {
+                    provider_timestamp: Some("2025-01-01T00:00:00Z".to_owned()),
+                    activity: Some(ValidatorActivity::Producing),
+                    block_count: Some(100),
+                    expected_block_count: Some(110),
+                    gen_blocks_rate: Some("90.909091".to_owned()),
+                    ..ValidatorObservation::default()
+                },
+            )]),
+            ..FakeProvider::default()
+        };
+        refresh_all(&db, &provider).await.unwrap();
+        let insight = load_insight(&db, &validator_id).await.unwrap().unwrap();
+        assert_eq!(insight.block_count, Some(100));
+        assert_eq!(insight.expected_block_count, Some(110));
+        assert_eq!(insight.gen_blocks_rate.as_deref(), Some("90.909091"));
+
+        // Restart persistence: the rate rows survive a database reopen.
+        drop(db);
+        let reopened = initialize(ServerDatabaseConfig::new(dir.path().join("server.db")))
+            .await
+            .unwrap();
+        let insight = load_insight(&reopened, &validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(insight.expected_block_count, Some(110));
+        assert_eq!(insight.gen_blocks_rate.as_deref(), Some("90.909091"));
+
+        // A non-success outcome retains every last-good rate value.
+        let failure = FakeProvider {
+            results: std::sync::Mutex::new(vec![ValidatorProviderResult::Error(
+                "platscan failed".to_owned(),
+            )]),
+            ..FakeProvider::default()
+        };
+        refresh_all(&reopened, &failure).await.unwrap();
+        let insight = load_insight(&reopened, &validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(insight.outcome, "error");
+        assert_eq!(insight.expected_block_count, Some(110));
+        assert_eq!(insight.gen_blocks_rate.as_deref(), Some("90.909091"));
+        assert_eq!(
+            cumulative_block_rate(insight.block_count, insight.expected_block_count),
+            (Some("90.909091".to_owned()), "ok")
+        );
+
+        // A later success with a fresh numerator but no denominator clears the
+        // pair: the new numerator is never divided by the older denominator.
+        let partial = FakeProvider {
+            results: std::sync::Mutex::new(vec![ValidatorProviderResult::Success(
+                ValidatorObservation {
+                    activity: Some(ValidatorActivity::Producing),
+                    block_count: Some(200),
+                    ..ValidatorObservation::default()
+                },
+            )]),
+            ..FakeProvider::default()
+        };
+        refresh_all(&reopened, &partial).await.unwrap();
+        let insight = load_insight(&reopened, &validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(insight.block_count, Some(200));
+        assert_eq!(insight.expected_block_count, None);
+        assert_eq!(insight.gen_blocks_rate, None);
+        assert_eq!(
+            cumulative_block_rate(insight.block_count, insight.expected_block_count),
+            (None, "unknown")
+        );
     }
 }

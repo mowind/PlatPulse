@@ -1,5 +1,6 @@
 import type { PublicNode, PublicValidatorInsight } from '../api/generated'
 import { formatAmountCompact, formatAmountExact } from '../lib/amount'
+import { formatRatePercent2, formatRatePercentExact } from '../lib/rate'
 import { MetricRow } from './MetricRow'
 import { CardX } from './ui/card-x'
 import { formatUtcDateTime } from './StatusBadge'
@@ -54,6 +55,28 @@ function blockCountLabel(blockCount: number | null | undefined): string {
   return blockCount == null ? 'Unknown' : blockCount.toLocaleString()
 }
 
+/**
+ * The cumulative completion rate is a Server computation over the same
+ * observation's numerator and denominator. Its state is explicit: a known zero
+ * denominator is Not applicable (no scheduled duties), an incomplete pair is
+ * Unknown, and only `ok` carries a rate (#156).
+ */
+function formatRate(value: string | null | undefined, variant: 'card' | 'detail'): string {
+  if (value == null) return 'Unknown'
+  return variant === 'detail' ? formatRatePercentExact(value) : formatRatePercent2(value)
+}
+
+function blockRateLabel(validator: PublicValidatorInsight, variant: 'card' | 'detail'): string {
+  if (validator.blockRateState === 'not_applicable') return 'Not applicable'
+  if (validator.blockRateState !== 'ok') return 'Unknown'
+  return formatRate(validator.blockRate, variant)
+}
+
+/** PlatScan's own source-reported 24-hour rate; never locally reconstructed. */
+function genBlocksRateLabel(validator: PublicValidatorInsight, variant: 'card' | 'detail'): string {
+  return formatRate(validator.genBlocksRate, variant)
+}
+
 function stateNote(validator: PublicValidatorInsight): string | null {
   switch (validator.state) {
     case 'not_configured': return 'No Validator source is configured for this Network; no value was queried.'
@@ -67,10 +90,11 @@ function stateNote(validator: PublicValidatorInsight): string | null {
 
 /**
  * The extensible linked-Validator area shared by the Home Node card and Node
- * detail. It owns the cumulative Validator block count and gross cumulative
- * rewards and the explicit unlinked / not-configured / never-observed / stale /
- * retained states; later Validator metrics extend the same metric group rather
- * than adding a second region (#154, #155).
+ * detail. It owns the cumulative Validator block count, gross cumulative
+ * rewards, the Server-computed cumulative production rate, and PlatScan's own
+ * 24-hour rate, plus the explicit unlinked / not-configured / never-observed /
+ * stale / not-applicable / retained states; later Validator metrics extend the
+ * same metric group rather than adding a second region (#154, #155, #156).
  */
 export function LinkedValidatorSection({ node, variant = 'card' }: { node: PublicNode; variant?: 'card' | 'detail' }) {
   const validator = node.validator
@@ -83,7 +107,7 @@ export function LinkedValidatorSection({ node, variant = 'card' }: { node: Publi
 
   const state = validatorStateLabel(validator.state, validator.freshness)
   const note = stateNote(validator)
-  const retained = validator.state !== 'fresh' && validator.state !== 'stale' && (validator.blockCount != null || validator.rewardAmount != null)
+  const retained = validator.state !== 'fresh' && validator.state !== 'stale' && (validator.blockCount != null || validator.rewardAmount != null || validator.blockRate != null || validator.genBlocksRate != null)
   // Detail exposes every digit the source provided; cards may abbreviate, but
   // both come from the same exact-decimal string and never through a float.
   const cumulativeRewards = variant === 'detail'
@@ -104,7 +128,12 @@ export function LinkedValidatorSection({ node, variant = 'card' }: { node: Publi
     <div className="mt-2 grid grid-cols-[repeat(auto-fit,minmax(9rem,1fr))] gap-x-4" role="group" aria-label="Linked Validator metrics">
       <MetricRow label="Cumulative blocks" value={blockCountLabel(validator.blockCount)} />
       <MetricRow label="Cumulative rewards" value={cumulativeRewards} />
+      <MetricRow label="Production rate" value={blockRateLabel(validator, variant)} />
+      <MetricRow label="PlatScan 24h rate" value={genBlocksRateLabel(validator, variant)} />
     </div>
+    <p className="m-0 mt-1 text-[11px] text-muted-foreground">Production rate is cumulative actual ÷ cumulative scheduled blocks from the same observation; whole-round duties count before they elapse, so it is not an exact missed-block rate.</p>
+    {validator.blockRateState === 'not_applicable' && <p className="m-0 mt-0.5 text-[11px] text-muted-foreground" role="status">The source reported a zero scheduled-block denominator, so a rate is not applicable — not 0%.</p>}
+    <p className="m-0 mt-0.5 text-[11px] text-muted-foreground">PlatScan 24h rate uses PlatScan口径: the preceding seven settlement periods excluding the current one, so it is not a strict rolling 24 hours, and a source 0% can also mean insufficient evidence or an upstream error.</p>
     {validator.rewardAmount != null && <>
       <p className="m-0 mt-1 text-[11px] text-muted-foreground">Cumulative rewards are gross: they include the operator and delegator allocations and are not operator net earnings.</p>
       {variant === 'detail' && <p className="m-0 mt-0.5 text-[11px] text-muted-foreground">Amounts use the Network native unit; detail shows all precision the source provides.</p>}

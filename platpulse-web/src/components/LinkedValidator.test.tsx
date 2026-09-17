@@ -32,6 +32,10 @@ const insight: PublicValidatorInsight = {
   providerTimestamp: '2026-08-25T00:00:00Z',
   receivedAt: '2026-08-25T00:00:05Z',
   blockCount: 4321,
+  expectedBlockCount: 110,
+  blockRate: '90.909091',
+  blockRateState: 'ok',
+  genBlocksRate: '75.5',
   rewardAmount: '1234.123456789012',
   counterState: 'normal',
   activity: 'producing',
@@ -127,6 +131,47 @@ describe('LinkedValidatorSection', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, state: 'error', freshness: 'stale', blockCount: null, rewardAmount: '42.5' } }} />)
     expect(screen.getByText('Cumulative rewards').nextElementSibling?.textContent).toBe('42.5')
     expect(screen.getByText(/Showing the last successful cumulative value/)).toBeTruthy()
+  })
+
+  it('shows both production rates with their distinct source meanings', () => {
+    render(<LinkedValidatorSection node={{ ...node, validator: insight }} />)
+    expect(screen.getByText('Production rate').nextElementSibling?.textContent).toBe('90.91%')
+    expect(screen.getByText('PlatScan 24h rate').nextElementSibling?.textContent).toBe('75.50%')
+    expect(screen.getByText(/not an exact missed-block rate/)).toBeTruthy()
+    expect(screen.getByText(/PlatScan口径/)).toBeTruthy()
+    expect(screen.getByText(/seven settlement periods excluding the current one/)).toBeTruthy()
+  })
+
+  it('distinguishes a zero scheduled denominator from an incomplete pair', () => {
+    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, blockRate: null, blockRateState: 'not_applicable' } }} />)
+    expect(screen.getByText('Production rate').nextElementSibling?.textContent).toBe('Not applicable')
+    expect(screen.getByText(/zero scheduled-block denominator/)).toBeTruthy()
+
+    cleanup()
+    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, blockRate: null, blockRateState: 'unknown' } }} />)
+    expect(screen.getByText('Production rate').nextElementSibling?.textContent).toBe('Unknown')
+  })
+
+  it('keeps a source-reported zero 24h rate distinct from a missing one', () => {
+    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, genBlocksRate: '0' } }} />)
+    expect(screen.getByText('PlatScan 24h rate').nextElementSibling?.textContent).toBe('0.00%')
+
+    cleanup()
+    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, genBlocksRate: null } }} />)
+    expect(screen.getByText('PlatScan 24h rate').nextElementSibling?.textContent).toBe('Unknown')
+  })
+
+  it('retains a last-good rate after a source failure and marks it retained', () => {
+    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, state: 'error', freshness: 'stale', genBlocksRate: '0' } }} />)
+    expect(screen.getByText('PlatScan 24h rate').nextElementSibling?.textContent).toBe('0.00%')
+    expect(screen.getByText('Production rate').nextElementSibling?.textContent).toBe('90.91%')
+    expect(screen.getByText(/Showing the last successful cumulative value/)).toBeTruthy()
+  })
+
+  it('shows the full available rate precision only in Node detail', () => {
+    render(<LinkedValidatorSection node={{ ...node, validator: insight }} variant="detail" />)
+    expect(screen.getByText('Production rate').nextElementSibling?.textContent).toBe('90.909091%')
+    expect(screen.getByText('PlatScan 24h rate').nextElementSibling?.textContent).toBe('75.5%')
   })
 
   it('maps roles and states to fixed, sanitized public labels', () => {

@@ -57,10 +57,16 @@ to `ValidatorObservation` before it enters the domain or API projections.
   `ranks`/`ranking`/`rank` → `rank`; `stakingValue`/`totalValue`/`stake` →
   `stake_amount`; `rewardValue`/`reward` → `reward_amount`;
   `deleAnnualizedRate`/`rewardRate` → `reward_rate`;
-  `delegateQty`/`delegatorCount` → `delegator_count`; `epoch` → `epoch`; and
-  `blockQty`/`blockCount` → `block_count`. Integer fields accept non-negative
+  `delegateQty`/`delegatorCount` → `delegator_count`; `epoch` → `epoch`;
+  `blockQty`/`blockCount` → `block_count`; `expectBlockQty`/`expectedBlockQty`
+  → `expected_block_count`; and `genBlocksRate`/`generatedBlocksRate` →
+  `gen_blocks_rate` (#156). Integer fields accept non-negative
   JSON integers or base-10 integer strings; fractional syntax and malformed
-  non-empty values are invalid. Amount/rate fields accept bounded strings or
+  non-empty values are invalid. A `genBlocksRate` value may be a bounded
+  decimal string with an optional trailing `%` or a non-negative JSON number;
+  it is normalized to percentage points without the sign, and a stray `%`,
+  malformed text, or exponent notation is invalid rather than a fabricated `0`.
+  Amount/rate fields accept bounded strings or
   integral JSON numbers and must contain only non-negative decimal syntax. A
   fractional or exponent JSON number is rejected because serde_json has already
   converted it to binary floating point, so its exact source digits are
@@ -74,6 +80,19 @@ to `ValidatorObservation` before it enters the domain or API projections.
   source serializes LAT values truncated downward to at most 12 decimal places,
   and those exact digits cross the trust boundary as a bounded decimal string
   that is never parsed into binary floating point (#155).
+- `expected_block_count` is the same observation's cumulative scheduled-block
+  denominator for the Server-computed completion rate (#156). Both inputs come
+  from one successful observation, so a fresh numerator is never divided by an
+  older denominator; a known zero denominator is `not_applicable` and an
+  incomplete pair is `unknown`, never a synthesized `0%`. The rate is not an
+  exact missed-block rate because whole-round duties are counted before they
+  elapse.
+- `gen_blocks_rate` is projected directly as PlatScan's own 24-hour rate. The
+  investigated implementation sums the preceding seven settlement periods
+  excluding the current one and can return `0%` for absent evidence or an
+  upstream error; the Public contract therefore labels it PlatScan口径 rather
+  than a strict rolling 86,400-second window, and retains a source `0`
+  independently of the locally computed completion rate.
 - The 64 KiB response limit is checked after `Response.bytes()` has read the
   response. It is a post-buffer validation bound, not a streaming memory cap.
   JSON is validated at the trust boundary, and diagnostics are redacted and
@@ -105,8 +124,11 @@ guarantees, not claims about an upstream schema.
   exist.
 - Non-success outcomes retain every last-good metric: a `not_configured`,
   `unsupported`, `error`, `empty`, or `not_found` outcome updates the attempt
-  outcome but never clears a retained cumulative block count, gross cumulative
-  reward, or other last-good values, and never fabricates a zero. The cumulative
+  outcome but never clears a retained cumulative block count, scheduled-block
+  denominator, gross cumulative reward, PlatScan 24-hour rate, or other
+  last-good values, and never fabricates a zero. A later successful observation
+  that omits a field replaces that field with Unknown rather than retaining a
+  value from a different observation. The cumulative
   `block_count` is the Validator's chain-history counter, not blocks observed by
   the monitored Node; `reward_amount` is the gross lifetime reward, not the
   operator's net earnings.
@@ -119,3 +141,7 @@ guarantees, not claims about an upstream schema.
 - Migration 0044 widens the stored outcome CHECK to accept `not_configured`
   and copies every existing row verbatim, so pre-existing last-good values
   survive without fabrication.
+- Migration 0045 adds the nullable `expected_block_count` and
+  `gen_blocks_rate` columns. Historical rows keep NULL, which the Public
+  projection reports as `unknown`; no value is backfilled with a fabricated
+  rate.

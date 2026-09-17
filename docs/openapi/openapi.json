@@ -12145,6 +12145,7 @@
           "validatorNodeId",
           "state",
           "freshness",
+          "blockRateState",
           "counterState",
           "activity",
           "activityState"
@@ -12163,7 +12164,19 @@
               "integer",
               "null"
             ],
-            "format": "int64"
+            "format": "int64",
+            "description": "Cumulative Validator produced blocks over chain history (PlatScan\n`blockQty`), not blocks observed by the monitored Node. `None` means\nnever observed; `Some(0)` is an authoritative zero (#154)."
+          },
+          "blockRate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Cumulative actual / cumulative scheduled blocks from the same\nobservation, as a percentage string without the `%` sign (for example\n`90.909091`). The Server never mixes a fresh numerator with an older\ndenominator. It is **not** an exact missed-block rate: whole-round\nscheduled duties are counted before they elapse. `None` is either\nunknown or not applicable — see `block_rate_state` (#156)."
+          },
+          "blockRateState": {
+            "type": "string",
+            "description": "`ok`, `not_applicable`, or `unknown`. `not_applicable` is a known\nzero scheduled-block denominator (no production duties), never 0% or\n100%; `unknown` means the pair is incomplete. Only `ok` carries a value\nin `block_rate` (#156)."
           },
           "counterState": {
             "type": "string"
@@ -12188,8 +12201,23 @@
             ],
             "format": "int64"
           },
+          "expectedBlockCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Cumulative scheduled-block denominator from the **same** successful\nobservation as `block_count` (PlatScan `expectBlockQty`). `None` means\nunknown; `Some(0)` is an authoritative \"no scheduled duties\" value that\nmust never be presented as a rate (#156)."
+          },
           "freshness": {
             "type": "string"
+          },
+          "genBlocksRate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "PlatScan's own 24-hour production rate, normalized to a percentage\nstring without the `%` sign and taken directly from `genBlocksRate`.\nThe investigated source sums the preceding seven settlement periods\nexcluding the current one, so it is not a strict rolling 86,400-second\nwindow, and a source-reported `0` can also mean absent evidence or an\nupstream error. `None` means unknown, never a synthesized zero (#156)."
           },
           "linkRole": {
             "type": [

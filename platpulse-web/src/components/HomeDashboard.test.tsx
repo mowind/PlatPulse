@@ -356,7 +356,7 @@ describe('Public Home dashboard', () => {
       validatorId: 'validator-a', validatorNodeId: '0xvalidator', displayName: 'Validator A',
       nodeId: 'node-a', linkRole: 'primary', state: activityState === 'stale' ? 'error' : 'fresh',
       freshness: activityState === 'stale' ? 'fresh' : 'fresh', source: 'fake',
-      receivedAt: '2026-08-25T00:00:00Z', counterState: 'normal', activity, activityState,
+      receivedAt: '2026-08-25T00:00:00Z', blockRateState: 'unknown', counterState: 'normal', activity, activityState,
     })
     const active = {
       ...network.nodes[0], nodeId: 'node-active', displayName: 'Active Node',
@@ -555,12 +555,13 @@ describe('Public Home dashboard', () => {
     expect(summaryValueOf('Active Nodes').textContent).toBe('0')
   })
 
-  it('shows the linked Validator cumulative block count and role on the Home card', () => {
+  it('shows the linked Validator cumulative block count, rates, and role on the Home card', () => {
     const linked = {
       validatorId: 'validator-linked', validatorNodeId: '0xlinked', displayName: 'Validator A',
       nodeId: 'node-linked', linkRole: 'standby', state: 'fresh', freshness: 'fresh', source: 'platscan',
       providerTimestamp: '2026-08-25T00:00:00Z', receivedAt: '2026-08-25T00:00:05Z',
-      blockCount: 123456, counterState: 'normal', activity: 'producing', activityState: 'current',
+      blockCount: 123456, expectedBlockCount: 110, blockRate: '90.909091', blockRateState: 'ok',
+      genBlocksRate: '0', counterState: 'normal', activity: 'producing', activityState: 'current',
     }
     const linkedNode = { ...network.nodes[0], nodeId: 'node-linked', displayName: 'Calico', validator: linked }
     const unlinkedNode = { ...network.nodes[0], nodeId: 'node-unlinked', displayName: 'Domino', validator: null }
@@ -572,6 +573,10 @@ describe('Public Home dashboard', () => {
     expect(within(card).getByText('Standby')).toBeTruthy()
     expect(within(card).getByText('Cumulative blocks')).toBeTruthy()
     expect(within(card).getByText('123,456')).toBeTruthy()
+    // Both rates are visible on the card without hover or expansion, and the
+    // card abbreviates the computed rate while keeping a source 0% a value.
+    expect(within(card).getByText('Production rate').nextElementSibling?.textContent).toBe('90.91%')
+    expect(within(card).getByText('PlatScan 24h rate').nextElementSibling?.textContent).toBe('0.00%')
 
     const unlinkedCard = cardOf(nodeCardLink('Domino'))
     expect(within(unlinkedCard).getByText(/Unlinked/)).toBeTruthy()

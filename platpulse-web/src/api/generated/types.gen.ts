@@ -1737,12 +1737,49 @@ export type PublicValidatorInsight = {
      * when the last-good timestamp is still within the freshness window.
      */
     activityState: string;
+    /**
+     * Cumulative Validator produced blocks over chain history (PlatScan
+     * `blockQty`), not blocks observed by the monitored Node. `None` means
+     * never observed; `Some(0)` is an authoritative zero (#154).
+     */
     blockCount?: number | null;
+    /**
+     * Cumulative actual / cumulative scheduled blocks from the same
+     * observation, as a percentage string without the `%` sign (for example
+     * `90.909091`). The Server never mixes a fresh numerator with an older
+     * denominator. It is **not** an exact missed-block rate: whole-round
+     * scheduled duties are counted before they elapse. `None` is either
+     * unknown or not applicable — see `block_rate_state` (#156).
+     */
+    blockRate?: string | null;
+    /**
+     * `ok`, `not_applicable`, or `unknown`. `not_applicable` is a known
+     * zero scheduled-block denominator (no production duties), never 0% or
+     * 100%; `unknown` means the pair is incomplete. Only `ok` carries a value
+     * in `block_rate` (#156).
+     */
+    blockRateState: string;
     counterState: string;
     delegatorCount?: number | null;
     displayName?: string | null;
     epoch?: number | null;
+    /**
+     * Cumulative scheduled-block denominator from the **same** successful
+     * observation as `block_count` (PlatScan `expectBlockQty`). `None` means
+     * unknown; `Some(0)` is an authoritative "no scheduled duties" value that
+     * must never be presented as a rate (#156).
+     */
+    expectedBlockCount?: number | null;
     freshness: string;
+    /**
+     * PlatScan's own 24-hour production rate, normalized to a percentage
+     * string without the `%` sign and taken directly from `genBlocksRate`.
+     * The investigated source sums the preceding seven settlement periods
+     * excluding the current one, so it is not a strict rolling 86,400-second
+     * window, and a source-reported `0` can also mean absent evidence or an
+     * upstream error. `None` means unknown, never a synthesized zero (#156).
+     */
+    genBlocksRate?: string | null;
     linkRole?: string | null;
     nodeId?: string | null;
     providerTimestamp?: string | null;

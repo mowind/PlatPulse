@@ -698,7 +698,34 @@ pub struct PublicValidatorInsight {
     pub reward_rate: Option<String>,
     pub delegator_count: Option<i64>,
     pub epoch: Option<i64>,
+    /// Cumulative Validator produced blocks over chain history (PlatScan
+    /// `blockQty`), not blocks observed by the monitored Node. `None` means
+    /// never observed; `Some(0)` is an authoritative zero (#154).
     pub block_count: Option<i64>,
+    /// Cumulative scheduled-block denominator from the **same** successful
+    /// observation as `block_count` (PlatScan `expectBlockQty`). `None` means
+    /// unknown; `Some(0)` is an authoritative "no scheduled duties" value that
+    /// must never be presented as a rate (#156).
+    pub expected_block_count: Option<i64>,
+    /// Cumulative actual / cumulative scheduled blocks from the same
+    /// observation, as a percentage string without the `%` sign (for example
+    /// `90.909091`). The Server never mixes a fresh numerator with an older
+    /// denominator. It is **not** an exact missed-block rate: whole-round
+    /// scheduled duties are counted before they elapse. `None` is either
+    /// unknown or not applicable — see `block_rate_state` (#156).
+    pub block_rate: Option<String>,
+    /// `ok`, `not_applicable`, or `unknown`. `not_applicable` is a known
+    /// zero scheduled-block denominator (no production duties), never 0% or
+    /// 100%; `unknown` means the pair is incomplete. Only `ok` carries a value
+    /// in `block_rate` (#156).
+    pub block_rate_state: String,
+    /// PlatScan's own 24-hour production rate, normalized to a percentage
+    /// string without the `%` sign and taken directly from `genBlocksRate`.
+    /// The investigated source sums the preceding seven settlement periods
+    /// excluding the current one, so it is not a strict rolling 86,400-second
+    /// window, and a source-reported `0` can also mean absent evidence or an
+    /// upstream error. `None` means unknown, never a synthesized zero (#156).
+    pub gen_blocks_rate: Option<String>,
     pub counter_state: String,
     /// Canonical last-good Validator Activity (`active`, `producing`,
     /// `exiting`, `exited`, `verifying`, `locked`) or `observing`/`unknown`.
@@ -731,6 +758,8 @@ struct PublicValidatorRow {
     delegator_count: Option<i64>,
     epoch: Option<i64>,
     block_count: Option<i64>,
+    expected_block_count: Option<i64>,
+    gen_blocks_rate: Option<String>,
     counter_state: Option<String>,
 }
 
@@ -775,7 +804,7 @@ async fn public_validator_insights(
 ) -> Result<Vec<PublicValidatorInsight>, sqlx::Error> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     let rows = sqlx::query_as::<_, PublicValidatorRow>(
-        "SELECT v.validator_id, v.validator_node_id, v.display_name, (SELECT n2.node_id FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1) AS node_id, (SELECT l2.role FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1) AS link_role, i.source, i.outcome, i.provider_timestamp, i.activity, i.last_good_received_at, i.rank, i.stake_amount, i.reward_amount, i.reward_rate, i.delegator_count, i.epoch, i.block_count, i.counter_state FROM validators v LEFT JOIN current_validator_insights i ON i.validator_id = v.validator_id WHERE v.network_key = ? AND EXISTS (SELECT 1 FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = v.validator_id AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.lifecycle = 'active') ORDER BY v.validator_node_id, v.validator_id",
+        "SELECT v.validator_id, v.validator_node_id, v.display_name, (SELECT n2.node_id FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1) AS node_id, (SELECT l2.role FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1) AS link_role, i.source, i.outcome, i.provider_timestamp, i.activity, i.last_good_received_at, i.rank, i.stake_amount, i.reward_amount, i.reward_rate, i.delegator_count, i.epoch, i.block_count, i.expected_block_count, i.gen_blocks_rate, i.counter_state FROM validators v LEFT JOIN current_validator_insights i ON i.validator_id = v.validator_id WHERE v.network_key = ? AND EXISTS (SELECT 1 FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = v.validator_id AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.lifecycle = 'active') ORDER BY v.validator_node_id, v.validator_id",
     )
     .bind(&now)
     .bind(&now)
@@ -802,6 +831,8 @@ async fn public_validator_insights(
             };
             let (activity, activity_state) =
                 public_validator_activity(&outcome, row.activity.as_deref(), freshness);
+            let (block_rate, block_rate_state) =
+                validator::cumulative_block_rate(row.block_count, row.expected_block_count);
             PublicValidatorInsight {
                 validator_id: row.validator_id,
                 validator_node_id: row.validator_node_id,
@@ -820,6 +851,10 @@ async fn public_validator_insights(
                 delegator_count: row.delegator_count,
                 epoch: row.epoch,
                 block_count: row.block_count,
+                expected_block_count: row.expected_block_count,
+                block_rate,
+                block_rate_state: block_rate_state.to_owned(),
+                gen_blocks_rate: row.gen_blocks_rate,
                 counter_state: row.counter_state.unwrap_or_else(|| "normal".to_owned()),
                 activity,
                 activity_state,
@@ -4300,6 +4335,146 @@ mod tests {
         );
         assert_eq!(validators[0]["validatorNodeId"], "0xvalidator-b");
         assert_eq!(validators[0]["rewardAmount"], "222.222222222222");
+    }
+
+    #[tokio::test]
+    async fn public_validator_block_rate_uses_one_observation_and_labels_zero_denominator() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        seed_validator_activity(
+            &state,
+            "node-public",
+            "validator-rate",
+            "success",
+            Some("producing"),
+            Some(&now),
+            "2026-01-01T00:00:00Z",
+            None,
+        )
+        .await;
+        sqlx::query("UPDATE current_validator_insights SET block_count = 100, expected_block_count = 110, gen_blocks_rate = '75.5' WHERE validator_id = 'validator-rate'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let response = public_networks(State(state.clone())).await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let validator = &value[0]["validators"][0];
+        assert_eq!(validator["expectedBlockCount"], 110);
+        assert_eq!(validator["blockRate"], "90.909091");
+        assert_eq!(validator["blockRateState"], "ok");
+        assert_eq!(validator["genBlocksRate"], "75.5");
+
+        // A known zero scheduled-block denominator is Not applicable, never a
+        // 0% or 100% rate, and the source 24h rate stays independent.
+        sqlx::query("UPDATE current_validator_insights SET block_count = 0, expected_block_count = 0 WHERE validator_id = 'validator-rate'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let response = public_networks(State(state.clone())).await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let validator = &value[0]["validators"][0];
+        assert!(validator["blockRate"].is_null());
+        assert_eq!(validator["blockRateState"], "not_applicable");
+        assert_eq!(validator["genBlocksRate"], "75.5");
+
+        // A fresh numerator without a denominator is Unknown: the Server never
+        // divides it by the previous observation's denominator.
+        sqlx::query("UPDATE current_validator_insights SET block_count = 200, expected_block_count = NULL WHERE validator_id = 'validator-rate'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let response = public_networks(State(state.clone())).await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let validator = &value[0]["validators"][0];
+        assert!(validator["blockRate"].is_null());
+        assert_eq!(validator["blockRateState"], "unknown");
+    }
+
+    #[tokio::test]
+    async fn public_validator_gen_blocks_rate_keeps_source_zero_and_last_good_on_failure() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        seed_validator_activity(
+            &state,
+            "node-public",
+            "validator-gen-rate",
+            "success",
+            Some("producing"),
+            Some(&now),
+            "2026-01-01T00:00:00Z",
+            None,
+        )
+        .await;
+
+        // The investigated source emits an explicit "0%" for absent evidence
+        // or an upstream error; a successful field is reproduced as 0.
+        sqlx::query("UPDATE current_validator_insights SET gen_blocks_rate = '0' WHERE validator_id = 'validator-gen-rate'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let response = public_networks(State(state.clone())).await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value[0]["validators"][0]["genBlocksRate"], "0");
+
+        // A local failure retains the last-good source value and marks the
+        // overall state errored; it never rewrites the value as unknown.
+        sqlx::query("UPDATE current_validator_insights SET outcome = 'error' WHERE validator_id = 'validator-gen-rate'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let response = public_networks(State(state.clone())).await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let validator = &value[0]["validators"][0];
+        assert_eq!(validator["state"], "error");
+        assert_eq!(validator["genBlocksRate"], "0");
+
+        // A successful response that omits the field is Unknown, never a
+        // synthesized 0.
+        sqlx::query("UPDATE current_validator_insights SET outcome = 'success', gen_blocks_rate = NULL WHERE validator_id = 'validator-gen-rate'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let response = public_networks(State(state.clone())).await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(value[0]["validators"][0]["genBlocksRate"].is_null());
+    }
+
+    #[tokio::test]
+    async fn public_validator_legacy_row_reports_unknown_rates_without_backfill() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        seed_validator_activity(
+            &state,
+            "node-public",
+            "validator-legacy",
+            "success",
+            Some("producing"),
+            Some(&now),
+            "2026-01-01T00:00:00Z",
+            None,
+        )
+        .await;
+
+        let response = public_networks(State(state)).await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let validator = &value[0]["validators"][0];
+        // Migration 0045 adds the columns without values: historical rows stay
+        // Unknown rather than acquiring a fabricated rate.
+        assert!(validator["expectedBlockCount"].is_null());
+        assert!(validator["blockRate"].is_null());
+        assert_eq!(validator["blockRateState"], "unknown");
+        assert!(validator["genBlocksRate"].is_null());
     }
 
     #[tokio::test]

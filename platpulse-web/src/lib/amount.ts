@@ -9,13 +9,12 @@
  * removes nothing that the source did not provide.
  */
 
-/** A nonnegative decimal string: `12`, `12.`, `.5`, or `12.5`. */
-const DECIMAL_AMOUNT = /^(?:\d+(?:\.\d*)?|\.\d+)$/
+import { NONNEGATIVE_DECIMAL } from './decimal'
 
 type DecimalParts = { integer: string; fractional: string }
 
 function parseDecimalAmount(value: string | null | undefined): DecimalParts | null {
-  if (typeof value !== 'string' || !DECIMAL_AMOUNT.test(value)) return null
+  if (typeof value !== 'string' || !NONNEGATIVE_DECIMAL.test(value)) return null
   const [rawInteger, rawFractional = ''] = value.split('.')
   const integer = (rawInteger === '' ? '0' : rawInteger).replace(/^0+(?=\d)/, '')
   return { integer, fractional: rawFractional }

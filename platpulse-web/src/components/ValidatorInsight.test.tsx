@@ -21,6 +21,7 @@ const fresh: PublicValidatorInsight = {
   delegatorCount: 12,
   epoch: 4,
   blockCount: 99,
+  blockRateState: 'unknown',
   counterState: 'normal',
   activity: 'active',
   activityState: 'current',
