@@ -32,6 +32,7 @@ const insight: PublicValidatorInsight = {
   providerTimestamp: '2026-08-25T00:00:00Z',
   receivedAt: '2026-08-25T00:00:05Z',
   blockCount: 4321,
+  rewardAmount: '1234.123456789012',
   counterState: 'normal',
   activity: 'producing',
   activityState: 'current',
@@ -97,6 +98,35 @@ describe('LinkedValidatorSection', () => {
   it('never presents an absent source cutoff as a fabricated time', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, providerTimestamp: null } }} variant="detail" />)
     expect(screen.getByText('Not provided by the source')).toBeTruthy()
+  })
+
+  it('shows gross cumulative rewards on the card and abbreviates them exactly', () => {
+    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, rewardAmount: '1234567.89' } }} />)
+    expect(screen.getByText('Cumulative rewards')).toBeTruthy()
+    expect(screen.getByText('Cumulative rewards').nextElementSibling?.textContent).toBe('1.23M')
+    expect(screen.getByText(/not operator net earnings/)).toBeTruthy()
+    expect(screen.getByText(/delegator allocations/)).toBeTruthy()
+  })
+
+  it('shows the source full precision and native unit in Node detail', () => {
+    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, rewardAmount: '1234567.890123456789' } }} variant="detail" />)
+    expect(screen.getByText('Cumulative rewards').nextElementSibling?.textContent).toBe('1,234,567.890123456789')
+    expect(screen.getByText(/Network native unit/)).toBeTruthy()
+  })
+
+  it('keeps a source-reported zero reward distinct from unknown', () => {
+    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, rewardAmount: '0' } }} />)
+    expect(screen.getByText('Cumulative rewards').nextElementSibling?.textContent).toBe('0')
+
+    cleanup()
+    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, rewardAmount: null } }} />)
+    expect(screen.getByText('Cumulative rewards').nextElementSibling?.textContent).toBe('Unknown')
+  })
+
+  it('retains a last-good reward after a source failure even without a block count', () => {
+    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, state: 'error', freshness: 'stale', blockCount: null, rewardAmount: '42.5' } }} />)
+    expect(screen.getByText('Cumulative rewards').nextElementSibling?.textContent).toBe('42.5')
+    expect(screen.getByText(/Showing the last successful cumulative value/)).toBeTruthy()
   })
 
   it('maps roles and states to fixed, sanitized public labels', () => {

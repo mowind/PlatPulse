@@ -1,6 +1,6 @@
 # Validator metrics on Home and Node detail
 
-Status: interview decisions confirmed through Q21 and test seams approved. The synthesized implementation specification is published as [GitHub issue #153](https://github.com/mowind/PlatPulse/issues/153), labeled ready-for-agent. The first approved slice — explicit per-Network PlatScan deployment binding and the cumulative Validator block count on both Node views — is implemented by #154. The remaining metrics are tracked by #155–#159.
+Status: interview decisions confirmed through Q21 and test seams approved. The synthesized implementation specification is published as [GitHub issue #153](https://github.com/mowind/PlatPulse/issues/153), labeled ready-for-agent. The first approved slice — explicit per-Network PlatScan deployment binding and the cumulative Validator block count on both Node views — is implemented by #154. The second slice — gross cumulative Validator rewards, including the delegator allocation, on both Node views with exact-decimal formatting — is implemented by #155. The remaining metrics are tracked by #156–#159.
 
 ## Confirmed metric definitions
 

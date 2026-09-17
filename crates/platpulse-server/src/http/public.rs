@@ -688,6 +688,12 @@ pub struct PublicValidatorInsight {
     pub received_at: Option<String>,
     pub rank: Option<i64>,
     pub stake_amount: Option<String>,
+    /// Gross cumulative Validator rewards over chain history, including the
+    /// operator and delegator allocations (PlatScan `rewardValue`). It
+    /// excludes principal and ordinary transfers and is **not** the operator's
+    /// net earnings: the Server never subtracts `totalDeleReward` and never
+    /// derives a historical net value from the current distribution ratio.
+    /// `None` means unknown, never zero (#155).
     pub reward_amount: Option<String>,
     pub reward_rate: Option<String>,
     pub delegator_count: Option<i64>,
@@ -4157,6 +4163,143 @@ mod tests {
         assert_eq!(validator["freshness"], "fresh");
         assert_eq!(validator["source"], "fixture");
         assert!(validator["receivedAt"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn public_validator_reward_amount_is_exact_gross_and_retained_after_failure() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        seed_validator_activity(
+            &state,
+            "node-public",
+            "validator-reward",
+            "success",
+            Some("producing"),
+            Some(&now),
+            "2026-01-01T00:00:00Z",
+            None,
+        )
+        .await;
+        // A 12-decimal native-unit value reaches the Public projection with
+        // every source digit intact; it is never parsed into binary floating
+        // point. A source-reported zero is a real value.
+        sqlx::query("UPDATE current_validator_insights SET reward_amount = '1234567.890123456789' WHERE validator_id = 'validator-reward'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let response = public_networks(State(state.clone())).await;
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let validator = &value[0]["validators"][0];
+        assert_eq!(validator["rewardAmount"], "1234567.890123456789");
+        assert_eq!(validator["state"], "fresh");
+
+        // A later source failure retains the exact last-good gross reward and
+        // never rewrites it as zero.
+        sqlx::query("UPDATE current_validator_insights SET outcome = 'error' WHERE validator_id = 'validator-reward'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let response = public_networks(State(state.clone())).await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let validator = &value[0]["validators"][0];
+        assert_eq!(validator["state"], "error");
+        assert_eq!(validator["rewardAmount"], "1234567.890123456789");
+
+        // Server freshness expiry marks the retained reward stale, never
+        // unknown and never zero.
+        sqlx::query("UPDATE current_validator_insights SET outcome = 'success', last_good_received_at = ? WHERE validator_id = 'validator-reward'")
+            .bind(crate::auth::format_rfc3339(
+                crate::auth::now_utc() - time::Duration::minutes(10),
+            ))
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let response = public_networks(State(state)).await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let validator = &value[0]["validators"][0];
+        assert_eq!(validator["state"], "stale");
+        assert_eq!(validator["rewardAmount"], "1234567.890123456789");
+    }
+
+    #[tokio::test]
+    async fn public_validator_reward_follows_the_effective_link_without_splicing() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        seed_validator_activity(
+            &state,
+            "node-public",
+            "validator-a",
+            "success",
+            Some("producing"),
+            Some(&now),
+            "2026-01-01T00:00:00Z",
+            None,
+        )
+        .await;
+        sqlx::query("UPDATE current_validator_insights SET reward_amount = '111.111111111111' WHERE validator_id = 'validator-a'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        // Validator B is registered with its own history but has no effective
+        // link yet.
+        sqlx::query("INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES ('validator-b', 'mainnet', '0xvalidator-b', 'Validator B', ?, ?)")
+            .bind(&now)
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, last_attempt_received_at, last_good_received_at, reward_amount, counter_state, change_state, candidate_observations, updated_at) VALUES ('validator-b', 'fixture', 'success', ?, ?, '222.222222222222', 'normal', 'normal', 0, ?)")
+            .bind(&now)
+            .bind(&now)
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let response = public_networks(State(state.clone())).await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            value[0]["validators"][0]["validatorNodeId"],
+            "0xvalidator-a"
+        );
+        assert_eq!(
+            value[0]["validators"][0]["rewardAmount"],
+            "111.111111111111"
+        );
+
+        // The effective Link moves from A to B: the Node presents B's full
+        // cumulative reward, never A+B and never a spliced history.
+        sqlx::query("UPDATE node_validator_links SET valid_until = '2026-02-01T00:00:00Z' WHERE validator_id = 'validator-a'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, valid_from, created_at, updated_at) VALUES ('link-validator-b', 'node-public', 'validator-b', 'primary', '2026-02-01T00:00:00Z', ?, ?)")
+            .bind(&now)
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let response = public_networks(State(state)).await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let validators = value[0]["validators"].as_array().unwrap();
+        assert_eq!(
+            validators.len(),
+            1,
+            "only the newly linked Validator is effective: {validators:?}"
+        );
+        assert_eq!(validators[0]["validatorNodeId"], "0xvalidator-b");
+        assert_eq!(validators[0]["rewardAmount"], "222.222222222222");
     }
 
     #[tokio::test]

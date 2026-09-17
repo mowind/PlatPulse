@@ -12226,7 +12226,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "Gross cumulative Validator rewards over chain history, including the\noperator and delegator allocations (PlatScan `rewardValue`). It\nexcludes principal and ordinary transfers and is **not** the operator's\nnet earnings: the Server never subtracts `totalDeleReward` and never\nderives a historical net value from the current distribution ratio.\n`None` means unknown, never zero (#155)."
           },
           "rewardRate": {
             "type": [

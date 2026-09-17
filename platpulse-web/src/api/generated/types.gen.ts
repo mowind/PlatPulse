@@ -1748,6 +1748,14 @@ export type PublicValidatorInsight = {
     providerTimestamp?: string | null;
     rank?: number | null;
     receivedAt?: string | null;
+    /**
+     * Gross cumulative Validator rewards over chain history, including the
+     * operator and delegator allocations (PlatScan `rewardValue`). It
+     * excludes principal and ordinary transfers and is **not** the operator's
+     * net earnings: the Server never subtracts `totalDeleReward` and never
+     * derives a historical net value from the current distribution ratio.
+     * `None` means unknown, never zero (#155).
+     */
     rewardAmount?: string | null;
     rewardRate?: string | null;
     source?: string | null;

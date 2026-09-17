@@ -362,7 +362,23 @@ fn normalize_platscan_response(
             Some(value) if !value.is_empty() => value.to_owned(),
             Some(_) => return Ok(None),
             None if value.is_null() => return Ok(None),
-            None if value.is_number() => value.to_string(),
+            // A JSON number with a fractional or exponent part has already
+            // been converted to a binary float by serde_json, so its exact
+            // source digits are unrecoverable. Accept integral numbers
+            // exactly and reject the rest instead of corrupting an amount
+            // (#155).
+            None if value.is_number() => {
+                if let Some(integer) = value.as_i64() {
+                    integer.to_string()
+                } else if let Some(integer) = value.as_u64() {
+                    integer.to_string()
+                } else {
+                    return Err(
+                        "PlatScan returned a numeric amount that cannot be represented exactly"
+                            .to_owned(),
+                    );
+                }
+            }
             _ => return Err("PlatScan returned an invalid text value".to_owned()),
         };
         normalize_bounded_text(&value)
@@ -2143,6 +2159,93 @@ mod tests {
         assert!(validate_observation(&ValidatorObservation::default()).is_err());
     }
 
+    #[test]
+    fn platscan_reward_value_is_gross_cumulative_not_netted_or_back_computed() {
+        let node_id = provider_node_id();
+        // The investigated detail response also carries totalDeleReward,
+        // rewardPer, and nextRewardPer. The cumulative reward must be the
+        // source's gross rewardValue: never netted with the delegator total,
+        // never back-computed from the current distribution ratio, and never
+        // rounded through binary floating point.
+        let body = serde_json::json!({
+            "code": 0,
+            "errMsg": "success",
+            "data": {
+                "nodeId": node_id,
+                "status": 3,
+                "blockQty": 100,
+                "expectBlockQty": 110,
+                "rewardValue": "1234567.890123456789",
+                "totalDeleReward": "999.999",
+                "rewardPer": 20,
+                "nextRewardPer": 25,
+                "deleAnnualizedRate": "0.05"
+            }
+        });
+        let observation = normalize_platscan_response(&body, &node_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            observation.reward_amount.as_deref(),
+            Some("1234567.890123456789")
+        );
+        // The annualized yield stays a separate field; rewardPer is not it.
+        assert_eq!(observation.reward_rate.as_deref(), Some("0.05"));
+        // A fractional JSON number is already a binary float when parsed, so
+        // it must degrade to Error instead of silently losing digits. The
+        // payload is parsed from wire text to prove the real path.
+        let fractional_number: Value = serde_json::from_str(&format!(
+            r#"{{"code": 0, "data": {{"nodeId": "{node_id}", "status": 3, "rewardValue": 1234567.890123456789}}}}"#
+        ))
+        .unwrap();
+        assert!(normalize_platscan_response(&fractional_number, &node_id).is_err());
+        // ... while an integral JSON number is exact and accepted.
+        let integral_number = serde_json::json!({
+            "code": 0,
+            "data": { "nodeId": node_id, "status": 3, "rewardValue": 100 }
+        });
+        assert_eq!(
+            normalize_platscan_response(&integral_number, &node_id)
+                .unwrap()
+                .unwrap()
+                .reward_amount
+                .as_deref(),
+            Some("100")
+        );
+    }
+
+    #[tokio::test]
+    async fn platscan_adapter_maps_exact_gross_reward_through_controlled_http() {
+        let node_id = provider_node_id();
+        let body = serde_json::to_vec(&serde_json::json!({
+            "code": 0,
+            "errMsg": "success",
+            "data": {
+                "nodeId": node_id,
+                "status": 3,
+                "rewardValue": "1234567.890123456789",
+                "totalDeleReward": "1.0",
+                "rewardPer": 20
+            }
+        }))
+        .unwrap();
+        let (base_url, state, handle) = start_mock_platscan(vec![(200, body)], 0).await;
+        let provider = PlatScanValidatorProvider::new(
+            deployments(&base_url, &["platon-mainnet"]),
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+        match provider.fetch("platon-mainnet", &node_id).await {
+            ValidatorProviderResult::Success(observation) => assert_eq!(
+                observation.reward_amount.as_deref(),
+                Some("1234567.890123456789")
+            ),
+            other => panic!("expected a successful observation, got {other:?}"),
+        }
+        assert_eq!(state.requests.lock().unwrap().len(), 1);
+        handle.abort();
+    }
+
     #[tokio::test]
     async fn platscan_adapter_posts_staking_details_and_maps_every_status() {
         let node_id = provider_node_id();
@@ -2927,6 +3030,55 @@ mod tests {
             1
         );
     }
+
+    #[tokio::test]
+    async fn reward_amount_decrease_is_recorded_as_a_counter_correction() {
+        let (_dir, db) = test_db().await;
+        let owner_id: String =
+            sqlx::query_scalar("SELECT user_id FROM users WHERE username = 'owner'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        let (validator, _) = create_validator(&db, "platon-mainnet", "0xreward", None, &owner_id)
+            .await
+            .unwrap();
+        let provider = FakeProvider {
+            results: std::sync::Mutex::new(vec![
+                ValidatorProviderResult::Success(ValidatorObservation {
+                    reward_amount: Some("500.000000000012".to_owned()),
+                    ..Default::default()
+                }),
+                ValidatorProviderResult::Success(ValidatorObservation {
+                    reward_amount: Some("499.999999999999".to_owned()),
+                    ..Default::default()
+                }),
+            ]),
+            ..FakeProvider::default()
+        };
+        refresh_all(&db, &provider).await.unwrap();
+        refresh_all(&db, &provider).await.unwrap();
+
+        let insight = load_insight(&db, &validator.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        // The exact 12-decimal source value is retained and the falling
+        // cumulative reward is flagged as a reset/correction rather than
+        // silently rewritten as normal growth.
+        assert_eq!(insight.reward_amount.as_deref(), Some("499.999999999999"));
+        assert_eq!(insight.counter_state, "counter_reset");
+        let row = sqlx::query_as::<_, ValidatorCounterHistoryRecord>(
+            "SELECT history_id, validator_id, counter_name, previous_value, current_value, observed_at, provider_timestamp, observation_key FROM validator_counter_history WHERE validator_id = ?",
+        )
+        .bind(&validator.validator_id)
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(row.counter_name, "reward_amount");
+        assert_eq!(row.previous_value, "500.000000000012");
+        assert_eq!(row.current_value, "499.999999999999");
+    }
+
     #[tokio::test]
     async fn ending_a_link_preserves_history_and_allows_replacement() {
         let (_dir, db) = test_db().await;

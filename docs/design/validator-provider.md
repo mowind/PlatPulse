@@ -61,9 +61,19 @@ to `ValidatorObservation` before it enters the domain or API projections.
   `blockQty`/`blockCount` → `block_count`. Integer fields accept non-negative
   JSON integers or base-10 integer strings; fractional syntax and malformed
   non-empty values are invalid. Amount/rate fields accept bounded strings or
-  JSON numbers and must contain only non-negative decimal syntax. Null or empty
+  integral JSON numbers and must contain only non-negative decimal syntax. A
+  fractional or exponent JSON number is rejected because serde_json has already
+  converted it to binary floating point, so its exact source digits are
+  unrecoverable; the demonstrated source emits decimal strings. Null or empty
   optional values remain absent; other invalid values degrade the result to
   `Error`.
+- `reward_amount` is the gross cumulative Validator reward over chain history,
+  including the operator and delegator allocations. The adapter never subtracts
+  `totalDeleReward` and never derives a historical net reward from the current
+  `rewardPer`/`nextRewardPer`; those fields are not read. The investigated
+  source serializes LAT values truncated downward to at most 12 decimal places,
+  and those exact digits cross the trust boundary as a bounded decimal string
+  that is never parsed into binary floating point (#155).
 - The 64 KiB response limit is checked after `Response.bytes()` has read the
   response. It is a post-buffer validation bound, not a streaming memory cap.
   JSON is validated at the trust boundary, and diagnostics are redacted and
@@ -95,9 +105,11 @@ guarantees, not claims about an upstream schema.
   exist.
 - Non-success outcomes retain every last-good metric: a `not_configured`,
   `unsupported`, `error`, `empty`, or `not_found` outcome updates the attempt
-  outcome but never clears a retained cumulative block count or other last-good
-  values, and never fabricates a zero. The cumulative `block_count` is the
-  Validator's chain-history counter, not blocks observed by the monitored Node.
+  outcome but never clears a retained cumulative block count, gross cumulative
+  reward, or other last-good values, and never fabricates a zero. The cumulative
+  `block_count` is the Validator's chain-history counter, not blocks observed by
+  the monitored Node; `reward_amount` is the gross lifetime reward, not the
+  operator's net earnings.
 - Public projection semantics are explicit: `empty`/`not_found` becomes
   `observing`/`current`; a successful canonical Activity is `current` or
   `stale` according to Server receipt age; an error with last-good Activity is

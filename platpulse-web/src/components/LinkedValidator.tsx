@@ -1,4 +1,5 @@
 import type { PublicNode, PublicValidatorInsight } from '../api/generated'
+import { formatAmountCompact, formatAmountExact } from '../lib/amount'
 import { MetricRow } from './MetricRow'
 import { CardX } from './ui/card-x'
 import { formatUtcDateTime } from './StatusBadge'
@@ -66,10 +67,10 @@ function stateNote(validator: PublicValidatorInsight): string | null {
 
 /**
  * The extensible linked-Validator area shared by the Home Node card and Node
- * detail. It owns the cumulative Validator block count and the explicit
- * unlinked / not-configured / never-observed / stale / retained states; later
- * Validator metrics extend the same metric group rather than adding a second
- * region (#154).
+ * detail. It owns the cumulative Validator block count and gross cumulative
+ * rewards and the explicit unlinked / not-configured / never-observed / stale /
+ * retained states; later Validator metrics extend the same metric group rather
+ * than adding a second region (#154, #155).
  */
 export function LinkedValidatorSection({ node, variant = 'card' }: { node: PublicNode; variant?: 'card' | 'detail' }) {
   const validator = node.validator
@@ -82,7 +83,12 @@ export function LinkedValidatorSection({ node, variant = 'card' }: { node: Publi
 
   const state = validatorStateLabel(validator.state, validator.freshness)
   const note = stateNote(validator)
-  const retained = validator.state !== 'fresh' && validator.state !== 'stale' && validator.blockCount != null
+  const retained = validator.state !== 'fresh' && validator.state !== 'stale' && (validator.blockCount != null || validator.rewardAmount != null)
+  // Detail exposes every digit the source provided; cards may abbreviate, but
+  // both come from the same exact-decimal string and never through a float.
+  const cumulativeRewards = variant === 'detail'
+    ? formatAmountExact(validator.rewardAmount)
+    : formatAmountCompact(validator.rewardAmount)
   const body = <>
     <header className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
       <h3 className="m-0 text-xs font-medium tracking-wider text-muted-foreground">Linked Validator</h3>
@@ -97,7 +103,12 @@ export function LinkedValidatorSection({ node, variant = 'card' }: { node: Publi
     {note && <p className="m-0 mt-1 text-[11px] text-muted-foreground">{note}</p>}
     <div className="mt-2 grid grid-cols-[repeat(auto-fit,minmax(9rem,1fr))] gap-x-4" role="group" aria-label="Linked Validator metrics">
       <MetricRow label="Cumulative blocks" value={blockCountLabel(validator.blockCount)} />
+      <MetricRow label="Cumulative rewards" value={cumulativeRewards} />
     </div>
+    {validator.rewardAmount != null && <>
+      <p className="m-0 mt-1 text-[11px] text-muted-foreground">Cumulative rewards are gross: they include the operator and delegator allocations and are not operator net earnings.</p>
+      {variant === 'detail' && <p className="m-0 mt-0.5 text-[11px] text-muted-foreground">Amounts use the Network native unit; detail shows all precision the source provides.</p>}
+    </>}
     {validator.counterState === 'counter_reset' && <p className="m-0 mt-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive" role="status">Counter reset or correction observed; the prior value was not treated as normal growth.</p>}
     {retained && <p className="m-0 mt-1 text-[11px] text-muted-foreground">Showing the last successful cumulative value; the current source state is unavailable.</p>}
     {variant === 'detail' && <Provenance validator={validator} />}
