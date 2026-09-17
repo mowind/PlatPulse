@@ -19,6 +19,7 @@ import { Server, HeartPulse, TriangleAlert, Network, ChevronUp, ChevronDown } fr
 import { SURFACE_CARD, SURFACE_TOOLBAR } from '../lib/surface'
 import { cn } from '../lib/utils'
 import { LinkedValidatorSection } from './LinkedValidator'
+import { ValidatorTotalsSection } from './ValidatorTotals'
 
 type HomeDashboardProps = {
   networks: PublicNetwork[]
@@ -174,6 +175,8 @@ export default function HomeDashboard({
             </Select>
           </label>
         </div>
+
+        {hasProjection && <ValidatorTotalsSection networks={scopedNetworks} />}
 
         <div className="mt-4">
           {loading || (error && !hasLastGood) ? null : visibleRecords.length === 0 ? (

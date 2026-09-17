@@ -671,6 +671,10 @@ pub struct PublicNetwork {
     pub geo: PublicGeoInsight,
     pub validators: Vec<PublicValidatorInsight>,
     pub nodes: Vec<PublicNode>,
+    /// Deduplicated, exact current-selection Cumulative Validator totals for
+    /// this Network. The browser selects which Network groups to show; it
+    /// never adds up duplicate Node projections itself (#159).
+    pub validator_summary: PublicValidatorSummary,
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone)]
@@ -762,6 +766,66 @@ pub struct PublicValidatorInsight {
     /// Provider failure with a last-good Activity is always `stale`, even
     /// when the last-good timestamp is still within the freshness window.
     pub activity_state: String,
+}
+
+/// Per-Network cumulative total for one metric, deduplicated by Validator.
+///
+/// The Server owns the eligible set, the deduplication, the exact arithmetic,
+/// and the coverage metadata, so Home never sums duplicate Node projections.
+/// Coverage is tracked for blocks and rewards independently because one metric
+/// can be missing while the other has a value (#159).
+#[derive(Debug, Serialize, ToSchema, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicValidatorBlockTotal {
+    /// Exact known-value sum over the eligible Validators. `None` means no
+    /// eligible Validator reported a value; it is never a fabricated zero.
+    pub known_sum: Option<i64>,
+    /// Distinct eligible Validators this metric should cover.
+    pub expected_count: i64,
+    /// Eligible Validators contributing a known value, including retained
+    /// stale last-good values.
+    pub valued_count: i64,
+    /// Contributing Validators whose value is not current (a retained
+    /// last-good value after a failed or aged collection).
+    pub stale_count: i64,
+    /// `complete`, `partial`, or `unknown` coverage of `expected_count`.
+    /// `partial` is a known-values subtotal, not a complete total.
+    pub state: String,
+}
+
+/// Exact-decimal counterpart of `PublicValidatorBlockTotal` for gross
+/// cumulative Validator rewards. `known_sum` is a bounded decimal string in
+/// the Network native unit; it never round-trips through binary floating point.
+#[derive(Debug, Serialize, ToSchema, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicValidatorRewardTotal {
+    pub known_sum: Option<String>,
+    pub expected_count: i64,
+    pub valued_count: i64,
+    pub stale_count: i64,
+    pub state: String,
+}
+
+/// Home's current-selection Cumulative Validator summary for one Network.
+///
+/// Membership is the Network's Active Nodes; temporarily offline Active Nodes
+/// stay in scope and Retired Nodes do not. Every distinct Validator referenced
+/// by an effective Node Validator Link is counted once regardless of primary,
+/// standby, or observer role, and Validators are never shared across Networks.
+/// Totals can fall when filters, effective Links, or Active membership change;
+/// they are not an ownership ledger and are not guaranteed monotonic (#159).
+#[derive(Debug, Serialize, ToSchema, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicValidatorSummary {
+    pub blocks: PublicValidatorBlockTotal,
+    pub rewards: PublicValidatorRewardTotal,
+    /// Distinct eligible Validators referenced by an effective Link.
+    pub eligible_validator_count: i64,
+    /// Active Nodes with an effective Link.
+    pub linked_node_count: i64,
+    /// Active Nodes without any effective Link, reported separately so an
+    /// unlinked Node is never mistaken for a zero-valued Validator.
+    pub unlinked_node_count: i64,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -990,6 +1054,79 @@ fn associate_node_validators(
         associated.node_id = Some(link.node_id.clone());
         associated.link_role = Some(link.role.clone());
         node.validator = Some(associated);
+    }
+}
+
+/// Coverage label for one metric: a total is never presented as complete while
+/// an eligible Validator is missing a value, and a total with no values at all
+/// is unknown rather than zero.
+fn validation_coverage_state(valued_count: i64, expected_count: i64) -> &'static str {
+    if valued_count == 0 {
+        "unknown"
+    } else if valued_count < expected_count {
+        "partial"
+    } else {
+        "complete"
+    }
+}
+
+/// Reduce the effective-link Validator set to one Network's deduplicated
+/// cumulative totals. `validators` is already the distinct eligible set (one
+/// row per Validator referenced by an effective Link on an Active Node), so a
+/// primary/standby/observer pair sharing one Validator contributes once. Each
+/// metric keeps its own coverage counts: a Validator can have a block count and
+/// no reward, or vice versa.
+pub(crate) fn public_validator_summary(
+    validators: &[PublicValidatorInsight],
+    nodes: &[PublicNode],
+) -> PublicValidatorSummary {
+    let expected_count = validators.len() as i64;
+    let mut block_sum: Option<i64> = None;
+    let mut block_valued = 0_i64;
+    let mut block_stale = 0_i64;
+    let mut reward_sum: Option<String> = None;
+    let mut reward_valued = 0_i64;
+    let mut reward_stale = 0_i64;
+    for validator in validators {
+        // A retained last-good value is stale unless the latest successful
+        // observation is still current; Provider detail state is unaffected by
+        // the independent ranking collection.
+        let stale = validator.state != "fresh";
+        if let Some(value) = validator.block_count.filter(|value| *value >= 0) {
+            block_sum = Some(block_sum.unwrap_or_default().saturating_add(value));
+            block_valued += 1;
+            if stale {
+                block_stale += 1;
+            }
+        }
+        if let Some(value) = validator.reward_amount.as_deref() {
+            if validator::accumulate_decimal(&mut reward_sum, value) {
+                reward_valued += 1;
+                if stale {
+                    reward_stale += 1;
+                }
+            }
+        }
+    }
+    let linked_node_count = nodes.iter().filter(|node| node.validator.is_some()).count() as i64;
+    PublicValidatorSummary {
+        blocks: PublicValidatorBlockTotal {
+            known_sum: block_sum,
+            expected_count,
+            valued_count: block_valued,
+            stale_count: block_stale,
+            state: validation_coverage_state(block_valued, expected_count).to_owned(),
+        },
+        rewards: PublicValidatorRewardTotal {
+            known_sum: reward_sum,
+            expected_count,
+            valued_count: reward_valued,
+            stale_count: reward_stale,
+            state: validation_coverage_state(reward_valued, expected_count).to_owned(),
+        },
+        eligible_validator_count: expected_count,
+        linked_node_count,
+        unlinked_node_count: nodes.len() as i64 - linked_node_count,
     }
 }
 
@@ -2500,6 +2637,7 @@ pub(crate) async fn public_networks(State(state): State<AppState>) -> Response {
                 geo: unknown_public_geo_insight(),
                 validators: Vec::new(),
                 nodes: vec![node],
+                validator_summary: public_validator_summary(&[], &[]),
             });
         }
     }
@@ -2512,6 +2650,8 @@ pub(crate) async fn public_networks(State(state): State<AppState>) -> Response {
                     Ok(links) => {
                         network.validators = validators;
                         associate_node_validators(&network.validators, &links, &mut network.nodes);
+                        network.validator_summary =
+                            public_validator_summary(&network.validators, &network.nodes);
                     }
                     Err(_) => {
                         return error_response(
@@ -2604,6 +2744,7 @@ pub(crate) async fn public_network(
         }
     };
     associate_node_validators(&validators, &links, &mut nodes);
+    let validator_summary = public_validator_summary(&validators, &nodes);
     Json(PublicNetwork {
         network_key,
         display_name,
@@ -2611,6 +2752,7 @@ pub(crate) async fn public_network(
         geo,
         validators,
         nodes,
+        validator_summary,
     })
     .into_response()
 }
@@ -5174,6 +5316,319 @@ mod tests {
         assert_eq!(nodes.len(), 2);
         assert_eq!(nodes[0]["nodeId"], "node-private");
         assert_eq!(nodes[1]["nodeId"], "node-public");
+    }
+
+    /// Seed one eligible Validator with its explicit Link and (optionally) a
+    /// current detail insight. A `None` received time leaves the Validator
+    /// registered and linked with no insight row, which is exactly the
+    /// never-observed state coverage must count rather than skip.
+    #[allow(clippy::too_many_arguments)]
+    async fn seed_summary_validator(
+        state: &AppState,
+        network_key: &str,
+        node_id: &str,
+        validator_id: &str,
+        role: &str,
+        block_count: Option<i64>,
+        reward_amount: Option<&str>,
+        received_at: Option<&str>,
+    ) {
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        sqlx::query("INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+            .bind(validator_id)
+            .bind(network_key)
+            .bind(format!("0x{validator_id}"))
+            .bind(validator_id)
+            .bind(&now)
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, valid_from, valid_until, created_at, updated_at) VALUES (?, ?, ?, ?, '2026-01-01T00:00:00Z', NULL, ?, ?)")
+            .bind(format!("link-{validator_id}"))
+            .bind(node_id)
+            .bind(validator_id)
+            .bind(role)
+            .bind(&now)
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        if let Some(received_at) = received_at {
+            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, 'fixture', 'success', NULL, NULL, 'producing', ?, ?, NULL, NULL, ?, NULL, NULL, NULL, ?, 'normal', 'normal', NULL, NULL, 0, NULL, NULL, NULL, NULL, ?)")
+                .bind(validator_id)
+                .bind(&now)
+                .bind(received_at)
+                .bind(reward_amount)
+                .bind(block_count)
+                .bind(&now)
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+        }
+    }
+
+    async fn public_summary(state: &AppState, network_key: &str) -> serde_json::Value {
+        let response = public_networks(State(state.clone())).await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        value
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|network| network["networkKey"] == network_key)
+            .cloned()
+            .unwrap_or_else(|| panic!("Network {network_key} is in the Public list"))
+    }
+
+    #[tokio::test]
+    async fn public_validator_summary_deduplicates_and_separates_networks_with_independent_coverage()
+     {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        let stale =
+            crate::auth::format_rfc3339(crate::auth::now_utc() - time::Duration::minutes(10));
+        for node_id in [
+            "node-standby",
+            "node-offline",
+            "node-partial",
+            "node-gap",
+            "node-unlinked",
+        ] {
+            seed_public_activity_node(&state, node_id).await;
+        }
+        // A second Network proves unrelated chains and units never combine.
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('testnet', 'Test Network', '0xtestnet', 2, 2, 'lat', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ('node-testnet', 'agent-public-test', 'testnet', 'Testnet node', 'ws://127.0.0.1:1', 'active', 'public', 1, ?, ?)")
+            .bind(&now)
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        // One Validator shared by a primary and a standby Node: it must be
+        // counted once with the role ignored.
+        seed_summary_validator(
+            &state,
+            "mainnet",
+            "node-public",
+            "validator-shared",
+            "primary",
+            Some(100),
+            Some("10.5"),
+            Some(&now),
+        )
+        .await;
+        sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, valid_from, valid_until, created_at, updated_at) VALUES ('link-validator-shared-standby', 'node-standby', 'validator-shared', 'standby', '2026-01-01T00:00:00Z', NULL, ?, ?)")
+            .bind(&now)
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        // A stale last-good value still contributes, marked stale.
+        seed_summary_validator(
+            &state,
+            "mainnet",
+            "node-private",
+            "validator-stale",
+            "observer",
+            Some(5),
+            Some("0.25"),
+            Some(&stale),
+        )
+        .await;
+        // A temporarily offline Active Node stays in scope.
+        seed_summary_validator(
+            &state,
+            "mainnet",
+            "node-offline",
+            "validator-offline",
+            "primary",
+            Some(1000),
+            Some("1.000000000001"),
+            Some(&now),
+        )
+        .await;
+        // A block count without a reward makes the two coverages differ.
+        seed_summary_validator(
+            &state,
+            "mainnet",
+            "node-gap",
+            "validator-gap",
+            "primary",
+            Some(3),
+            None,
+            Some(&now),
+        )
+        .await;
+        // Never observed: eligible but with no value, so not a zero.
+        seed_summary_validator(
+            &state,
+            "mainnet",
+            "node-partial",
+            "validator-partial",
+            "primary",
+            None,
+            None,
+            None,
+        )
+        .await;
+        // Linked only to a Retired Node: never eligible.
+        seed_summary_validator(
+            &state,
+            "mainnet",
+            "node-retired",
+            "validator-retired",
+            "primary",
+            Some(999),
+            Some("9"),
+            Some(&now),
+        )
+        .await;
+        seed_summary_validator(
+            &state,
+            "testnet",
+            "node-testnet",
+            "validator-testnet",
+            "primary",
+            Some(7),
+            Some("2"),
+            Some(&now),
+        )
+        .await;
+        // A Network whose only eligible Validator has no value at all shows
+        // Unknown, never a fabricated zero.
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('quietnet', 'Quiet Network', '0xquietnet', 3, 3, 'lat', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ('node-quiet', 'agent-public-test', 'quietnet', 'Quiet node', 'ws://127.0.0.1:1', 'active', 'public', 1, ?, ?)")
+            .bind(&now)
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        seed_summary_validator(
+            &state,
+            "quietnet",
+            "node-quiet",
+            "validator-quiet",
+            "primary",
+            None,
+            None,
+            None,
+        )
+        .await;
+
+        let mainnet = public_summary(&state, "mainnet").await;
+        let summary = &mainnet["validatorSummary"];
+        assert_eq!(mainnet["validators"].as_array().unwrap().len(), 5);
+        assert_eq!(summary["eligibleValidatorCount"], 5);
+        assert_eq!(summary["linkedNodeCount"], 6);
+        assert_eq!(summary["unlinkedNodeCount"], 1);
+        // Deduplicated: 100 + 5 + 1000 + 3, not counting the shared Validator
+        // twice and excluding the Retired-only Validator.
+        assert_eq!(summary["blocks"]["knownSum"], 1108);
+        assert_eq!(summary["blocks"]["expectedCount"], 5);
+        assert_eq!(summary["blocks"]["valuedCount"], 4);
+        assert_eq!(summary["blocks"]["staleCount"], 1);
+        assert_eq!(summary["blocks"]["state"], "partial");
+        // Exact decimal sum including the widest source precision.
+        assert_eq!(summary["rewards"]["knownSum"], "11.750000000001");
+        assert_eq!(summary["rewards"]["expectedCount"], 5);
+        assert_eq!(summary["rewards"]["valuedCount"], 3);
+        assert_eq!(summary["rewards"]["staleCount"], 1);
+        assert_eq!(summary["rewards"]["state"], "partial");
+
+        let testnet = public_summary(&state, "testnet").await;
+        assert_eq!(testnet["validatorSummary"]["blocks"]["knownSum"], 7);
+        assert_eq!(testnet["validatorSummary"]["rewards"]["knownSum"], "2");
+        assert_eq!(testnet["validatorSummary"]["blocks"]["state"], "complete");
+        assert_eq!(testnet["validatorSummary"]["unlinkedNodeCount"], 0);
+
+        let quiet = public_summary(&state, "quietnet").await;
+        assert_eq!(
+            quiet["validatorSummary"]["blocks"]["knownSum"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            quiet["validatorSummary"]["rewards"]["knownSum"],
+            serde_json::Value::Null
+        );
+        assert_eq!(quiet["validatorSummary"]["blocks"]["state"], "unknown");
+        assert_eq!(quiet["validatorSummary"]["rewards"]["valuedCount"], 0);
+        assert_eq!(quiet["validatorSummary"]["eligibleValidatorCount"], 1);
+
+        // The single-Network detail endpoint exposes the identical summary, so
+        // Home's filter selection and the API cannot drift.
+        let detail = public_network(
+            State(state),
+            Path("mainnet".to_owned()),
+            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
+        )
+        .await;
+        let detail_body = to_bytes(detail.into_body(), usize::MAX).await.unwrap();
+        let detail_value: serde_json::Value = serde_json::from_slice(&detail_body).unwrap();
+        assert_eq!(detail_value["validatorSummary"], *summary);
+    }
+
+    #[tokio::test]
+    async fn public_validator_summary_uses_the_effective_validator_after_a_link_switch() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        seed_summary_validator(
+            &state,
+            "mainnet",
+            "node-public",
+            "validator-a",
+            "primary",
+            Some(100),
+            Some("10"),
+            Some(&now),
+        )
+        .await;
+        let before = public_summary(&state, "mainnet").await;
+        assert_eq!(before["validatorSummary"]["blocks"]["knownSum"], 100);
+        assert_eq!(before["validatorSummary"]["rewards"]["knownSum"], "10");
+
+        // The effective Link moves A -> B: the summary presents B's full
+        // cumulative value, never A + B and never a negative asset flow.
+        sqlx::query("UPDATE node_validator_links SET valid_until = '2026-02-01T00:00:00Z' WHERE validator_id = 'validator-a'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        // B's Link starts exactly when A's ends, so the same Node never has
+        // two overlapping effective Links.
+        sqlx::query("INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES ('validator-b', 'mainnet', '0xvalidator-b', 'validator-b', ?, ?)")
+            .bind(&now)
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, valid_from, valid_until, created_at, updated_at) VALUES ('link-validator-b', 'node-public', 'validator-b', 'primary', '2026-02-01T00:00:00Z', NULL, ?, ?)")
+            .bind(&now)
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, last_attempt_received_at, last_good_received_at, reward_amount, block_count, updated_at) VALUES ('validator-b', 'fixture', 'success', ?, ?, '2', 5, ?)")
+            .bind(&now)
+            .bind(&now)
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let after = public_summary(&state, "mainnet").await;
+        assert_eq!(after["validators"].as_array().unwrap().len(), 1);
+        assert_eq!(after["validatorSummary"]["eligibleValidatorCount"], 1);
+        assert_eq!(after["validatorSummary"]["blocks"]["knownSum"], 5);
+        assert_eq!(after["validatorSummary"]["blocks"]["state"], "complete");
+        assert_eq!(after["validatorSummary"]["rewards"]["knownSum"], "2");
     }
 
     async fn seed_public_analytics_row(state: &AppState, validator_id: &str, node_id: &str) {

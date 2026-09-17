@@ -1549,6 +1549,12 @@ export type PublicNetwork = {
     networkKey: string;
     nodes: Array<PublicNode>;
     peers: PublicPeerInsight;
+    /**
+     * Deduplicated, exact current-selection Cumulative Validator totals for
+     * this Network. The browser selects which Network groups to show; it
+     * never adds up duplicate Node projections itself (#159).
+     */
+    validatorSummary: PublicValidatorSummary;
     validators: Array<PublicValidatorInsight>;
 };
 
@@ -1684,6 +1690,41 @@ export type PublicValidatorAnalyticsResponse = {
     monthly: Array<PublicValidatorMonthlyAggregate>;
     state: string;
     validatorId: string;
+};
+
+/**
+ * Per-Network cumulative total for one metric, deduplicated by Validator.
+ *
+ * The Server owns the eligible set, the deduplication, the exact arithmetic,
+ * and the coverage metadata, so Home never sums duplicate Node projections.
+ * Coverage is tracked for blocks and rewards independently because one metric
+ * can be missing while the other has a value (#159).
+ */
+export type PublicValidatorBlockTotal = {
+    /**
+     * Distinct eligible Validators this metric should cover.
+     */
+    expectedCount: number;
+    /**
+     * Exact known-value sum over the eligible Validators. `None` means no
+     * eligible Validator reported a value; it is never a fabricated zero.
+     */
+    knownSum?: number | null;
+    /**
+     * Contributing Validators whose value is not current (a retained
+     * last-good value after a failed or aged collection).
+     */
+    staleCount: number;
+    /**
+     * `complete`, `partial`, or `unknown` coverage of `expected_count`.
+     * `partial` is a known-values subtotal, not a complete total.
+     */
+    state: string;
+    /**
+     * Eligible Validators contributing a known value, including retained
+     * stale last-good values.
+     */
+    valuedCount: number;
 };
 
 export type PublicValidatorDailySnapshot = {
@@ -1854,6 +1895,47 @@ export type PublicValidatorMonthlyAggregate = {
     snapshotCount: number;
     stakeLast?: string | null;
     timezone: string;
+};
+
+/**
+ * Exact-decimal counterpart of `PublicValidatorBlockTotal` for gross
+ * cumulative Validator rewards. `known_sum` is a bounded decimal string in
+ * the Network native unit; it never round-trips through binary floating point.
+ */
+export type PublicValidatorRewardTotal = {
+    expectedCount: number;
+    knownSum?: string | null;
+    staleCount: number;
+    state: string;
+    valuedCount: number;
+};
+
+/**
+ * Home's current-selection Cumulative Validator summary for one Network.
+ *
+ * Membership is the Network's Active Nodes; temporarily offline Active Nodes
+ * stay in scope and Retired Nodes do not. Every distinct Validator referenced
+ * by an effective Node Validator Link is counted once regardless of primary,
+ * standby, or observer role, and Validators are never shared across Networks.
+ * Totals can fall when filters, effective Links, or Active membership change;
+ * they are not an ownership ledger and are not guaranteed monotonic (#159).
+ */
+export type PublicValidatorSummary = {
+    blocks: PublicValidatorBlockTotal;
+    /**
+     * Distinct eligible Validators referenced by an effective Link.
+     */
+    eligibleValidatorCount: number;
+    /**
+     * Active Nodes with an effective Link.
+     */
+    linkedNodeCount: number;
+    rewards: PublicValidatorRewardTotal;
+    /**
+     * Active Nodes without any effective Link, reported separately so an
+     * unlinked Node is never mistaken for a zero-valued Validator.
+     */
+    unlinkedNodeCount: number;
 };
 
 export type ReadyComponent = {

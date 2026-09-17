@@ -92,6 +92,10 @@ _Avoid_: Strict rolling-24-hour completion, Today's production rate, 24-hour blo
 The currently effective proportion of applicable Validator rewards allocated to delegators; 20% means delegators receive 20% of those rewards. It is neither the operator commission nor an annualized yield or a pending future ratio.
 _Avoid_: Delegation APY, Operator commission, Pending reward ratio
 
+**Current-Selection Validator Summary**:
+The Server-owned totals of the distinct Validators linked to the Active Nodes in the current Home selection, grouped by Network and deduplicated by Validator regardless of primary, standby, or observer role. Blocks and rewards are reported separately, each with its known-value total, eligible-Validator count, valued count, and stale count. It describes the current selection rather than an ownership ledger, and it can decrease when filters, effective Links, or Active membership change.
+_Avoid_: Portfolio total, Node-summed total, Cross-network total
+
 **Agent Enrollment**:
 The one-time process through which a new Agent establishes its identity with the Server and receives its own revocable credential.
 _Avoid_: Agent login, Permanent install token

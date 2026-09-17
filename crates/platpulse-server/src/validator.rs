@@ -784,6 +784,122 @@ fn validate_nonnegative_decimal(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// One parsed bounded nonnegative decimal: a normalized integer part and the
+/// source's exact fractional digits. Trailing fractional zeros are part of the
+/// value and are preserved, because the aggregate must not invent or discard
+/// source precision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DecimalAmount {
+    integer: String,
+    fractional: String,
+}
+
+/// Parse a bounded nonnegative decimal string without touching binary floating
+/// point. Accepts the same syntax as the trust boundary: at least one digit,
+/// at most one dot, bounded length, and no control characters.
+fn parse_decimal_amount(value: &str) -> Option<DecimalAmount> {
+    if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) {
+        return None;
+    }
+    let mut dots = 0;
+    let mut digits = 0;
+    for character in value.chars() {
+        match character {
+            '0'..='9' => digits += 1,
+            '.' => dots += 1,
+            _ => return None,
+        }
+    }
+    if digits == 0 || dots > 1 {
+        return None;
+    }
+    let (whole, fractional) = value.split_once('.').unwrap_or((value, ""));
+    Some(DecimalAmount {
+        integer: whole.trim_start_matches('0').to_owned(),
+        fractional: fractional.to_owned(),
+    })
+}
+
+/// Render a parsed amount, treating an all-zero integer part as `0`.
+fn render_decimal_amount(amount: &DecimalAmount) -> String {
+    let integer = if amount.integer.is_empty() {
+        "0"
+    } else {
+        amount.integer.as_str()
+    };
+    if amount.fractional.is_empty() {
+        integer.to_owned()
+    } else {
+        format!("{integer}.{}", amount.fractional)
+    }
+}
+
+/// Left-pad an amount's integer part and right-pad its fractional part so two
+/// amounts can be added digit-by-digit at a shared scale.
+fn scaled_decimal_digits(
+    amount: &DecimalAmount,
+    integer_width: usize,
+    fraction_width: usize,
+) -> String {
+    let mut digits = String::with_capacity(integer_width + fraction_width);
+    for _ in amount.integer.len()..integer_width {
+        digits.push('0');
+    }
+    digits.push_str(&amount.integer);
+    digits.push_str(&amount.fractional);
+    for _ in amount.fractional.len()..fraction_width {
+        digits.push('0');
+    }
+    digits
+}
+
+/// Add two equal-length digit strings and return the (possibly one digit
+/// longer) base-10 sum.
+fn add_decimal_digits(left: &str, right: &str) -> String {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    let mut result = vec![0_u8; left.len() + 1];
+    let mut carry = 0_u8;
+    for index in (0..left.len()).rev() {
+        let sum = (left[index] - b'0') + (right[index] - b'0') + carry;
+        result[index + 1] = b'0' + (sum % 10);
+        carry = sum / 10;
+    }
+    result[0] = b'0' + carry;
+    String::from_utf8(result).expect("decimal digits are ASCII")
+}
+
+/// Fold one bounded nonnegative decimal string into an exact running total.
+///
+/// Provider amounts cross the trust boundary as source-precision decimal
+/// strings and must never round-trip through binary floating point, so the
+/// aggregate is plain string arithmetic. `total` starts as `None` (no known
+/// value) and only becomes `Some` for an accepted value. The return value
+/// reports whether `value` was accepted, so the caller can keep its coverage
+/// and stale counts exact instead of guessing from the total.
+pub fn accumulate_decimal(total: &mut Option<String>, value: &str) -> bool {
+    let Some(incoming) = parse_decimal_amount(value) else {
+        return false;
+    };
+    let Some(current) = total.as_deref() else {
+        *total = Some(render_decimal_amount(&incoming));
+        return true;
+    };
+    let current = parse_decimal_amount(current)
+        .expect("an accumulated total stays a bounded nonnegative decimal");
+    let integer_width = current.integer.len().max(incoming.integer.len());
+    let fraction_width = current.fractional.len().max(incoming.fractional.len());
+    let left = scaled_decimal_digits(&current, integer_width, fraction_width);
+    let right = scaled_decimal_digits(&incoming, integer_width, fraction_width);
+    let sum = add_decimal_digits(&left, &right);
+    let split = sum.len() - fraction_width;
+    *total = Some(render_decimal_amount(&DecimalAmount {
+        integer: sum[..split].trim_start_matches('0').to_owned(),
+        fractional: sum[split..].to_owned(),
+    }));
+    true
+}
+
 /// Whether a validated nonnegative decimal string is greater than `max`.
 /// The integer part is compared directly, so a percentage never round-trips
 /// through a binary float.
@@ -4115,6 +4231,60 @@ mod tests {
         // A slower configured refresh interval keeps the same age fresh.
         assert_eq!(freshness(Some(&stale_at), now, 600), "fresh");
         assert_eq!(freshness(None, now, 600), "unknown");
+    }
+
+    #[test]
+    fn decimal_accumulation_is_exact_and_rejects_malformed_values() {
+        // Large integer and fractional magnitudes keep every source digit; a
+        // binary float would already have lost them.
+        let mut total: Option<String> = None;
+        assert!(accumulate_decimal(
+            &mut total,
+            "111111111111111111111.111111111111"
+        ));
+        assert!(accumulate_decimal(
+            &mut total,
+            "222222222222222222222.222222222222"
+        ));
+        assert_eq!(total.as_deref(), Some("333333333333333333333.333333333333"));
+        // Mixed precision pads to the widest source scale and preserves
+        // trailing fractional zeros.
+        let mut mixed: Option<String> = None;
+        assert!(accumulate_decimal(&mut mixed, "10"));
+        assert!(accumulate_decimal(&mut mixed, "0.10"));
+        assert!(accumulate_decimal(&mut mixed, "2.2"));
+        assert_eq!(mixed.as_deref(), Some("12.30"));
+        // Leading-dot and trailing-dot syntax normalizes without inventing
+        // precision beyond the source.
+        let mut dotted: Option<String> = None;
+        assert!(accumulate_decimal(&mut dotted, ".5"));
+        assert!(accumulate_decimal(&mut dotted, ".5"));
+        assert_eq!(dotted.as_deref(), Some("1.0"));
+        let mut trailing_dot: Option<String> = None;
+        assert!(accumulate_decimal(&mut trailing_dot, "12."));
+        assert!(accumulate_decimal(&mut trailing_dot, "1"));
+        assert_eq!(trailing_dot.as_deref(), Some("13"));
+        // A valid zero stays a real value, distinct from "no value at all".
+        let mut zero: Option<String> = None;
+        assert!(accumulate_decimal(&mut zero, "0"));
+        assert!(accumulate_decimal(&mut zero, "0.000"));
+        assert_eq!(zero.as_deref(), Some("0.000"));
+        // Malformed values are rejected without changing the running total.
+        let mut rejected: Option<String> = None;
+        assert!(accumulate_decimal(&mut rejected, "7"));
+        for malformed in ["", "abc", "1e3", "-1", "1.2.3", "0x10", " 1"] {
+            assert!(
+                !accumulate_decimal(&mut rejected, malformed),
+                "{malformed:?} must be rejected"
+            );
+        }
+        assert_eq!(rejected.as_deref(), Some("7"));
+        // An all-zero run normalizes the integer part instead of leaving
+        // unbounded leading zeros.
+        let mut leading: Option<String> = None;
+        assert!(accumulate_decimal(&mut leading, "000.5"));
+        assert!(accumulate_decimal(&mut leading, "000.5"));
+        assert_eq!(leading.as_deref(), Some("1.0"));
     }
 
     #[tokio::test]

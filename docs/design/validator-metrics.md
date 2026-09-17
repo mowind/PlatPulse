@@ -1,6 +1,6 @@
 # Validator metrics on Home and Node detail
 
-Status: interview decisions confirmed through Q21 and test seams approved. The synthesized implementation specification is published as [GitHub issue #153](https://github.com/mowind/PlatPulse/issues/153), labeled ready-for-agent. The first approved slice — explicit per-Network PlatScan deployment binding and the cumulative Validator block count on both Node views — is implemented by #154. The second slice — gross cumulative Validator rewards, including the delegator allocation, on both Node views with exact-decimal formatting — is implemented by #155. The third slice — the cumulative block production completion rate and PlatScan's own 24-hour production rate on both Node views — is implemented by #156. The fourth slice — the currently effective delegation reward distribution percentage on both Node views — is implemented by #157. The fifth slice — the Network-scoped PlatScan ranking from the shared `aliveStakingList` cohort on both Node views — is implemented by #158. The Home aggregation slice is tracked by #159.
+Status: interview decisions confirmed through Q21 and test seams approved. The synthesized implementation specification is published as [GitHub issue #153](https://github.com/mowind/PlatPulse/issues/153), labeled ready-for-agent. The first approved slice — explicit per-Network PlatScan deployment binding and the cumulative Validator block count on both Node views — is implemented by #154. The second slice — gross cumulative Validator rewards, including the delegator allocation, on both Node views with exact-decimal formatting — is implemented by #155. The third slice — the cumulative block production completion rate and PlatScan's own 24-hour production rate on both Node views — is implemented by #156. The fourth slice — the currently effective delegation reward distribution percentage on both Node views — is implemented by #157. The fifth slice — the Network-scoped PlatScan ranking from the shared `aliveStakingList` cohort on both Node views — is implemented by #158. The sixth slice — the current-selection, per-Network deduplicated cumulative-block and gross-reward Home summary with independent coverage metadata — is implemented by #159.
 
 ## Confirmed metric definitions
 
@@ -24,6 +24,14 @@ The six metrics belong to the currently linked Validator, not the monitored Node
 - Aggregate available last-good values. An incomplete aggregate is a known-values subtotal, not a complete total. Show independent coverage and stale counts for each metric, for example 9/10 Validators with values, including one stale.
 - Show unknown when no values are available. Show unlinked Node counts separately; do not treat them as zero-value Validators.
 - These are metrics of linked Validators, not a claim of asset ownership. Aggregates can decrease when filters, effective links, or Active membership change.
+
+## Implemented Home aggregation contract (#159)
+
+- Each Public `PublicNetwork` carries a `validatorSummary` computed entirely by the Server. Home selects which already-computed Network groups to show; it never adds duplicate Node projections and never combines Networks.
+- Per metric (blocks and rewards separately) the summary exposes `knownSum`, `expectedCount`, `valuedCount`, `staleCount`, and a `state` of `complete`, `partial`, or `unknown`. Blocks sum as an exact integer; rewards sum as a bounded decimal string.
+- Membership is the Network's Active Nodes (temporarily offline Active Nodes included, Retired excluded) and the distinct Validators referenced by effective Node Validator Links regardless of primary, standby, or observer role. One Validator with several linked Nodes counts once; the same identifier on another Network counts separately.
+- Reward totals use exact string arithmetic (`accumulate_decimal`), so large and fractional values never round-trip through binary floating point. No value means Unknown rather than zero; a legitimate source zero stays a value; partial coverage is a known-values subtotal; contributing last-good values that are no longer current are counted stale. `linkedNodeCount` and `unlinkedNodeCount` are reported separately so an unlinked Node is never a zero-valued Validator.
+- Home renders the `ValidatorTotalsSection` for the current filter directly (no hover or expansion required), showing each Network's block and reward totals, per-metric coverage, stale counts, and the unlinked Node count.
 
 ## Confirmed Node presentation and edge cases
 

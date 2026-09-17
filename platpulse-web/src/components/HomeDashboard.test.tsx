@@ -34,6 +34,13 @@ const network = {
       validator: null,
     },
   ],
+  validatorSummary: {
+    blocks: { knownSum: 100, expectedCount: 1, valuedCount: 1, staleCount: 0, state: 'complete' },
+    rewards: { knownSum: '10', expectedCount: 1, valuedCount: 1, staleCount: 0, state: 'complete' },
+    eligibleValidatorCount: 1,
+    linkedNodeCount: 1,
+    unlinkedNodeCount: 1,
+  },
 } satisfies PublicNetwork
 
 /** Node card links carry the whole card as their accessible name (issue #97). */

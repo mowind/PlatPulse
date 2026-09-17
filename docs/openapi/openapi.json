@@ -11419,7 +11419,8 @@
           "peers",
           "geo",
           "validators",
-          "nodes"
+          "nodes",
+          "validatorSummary"
         ],
         "properties": {
           "displayName": {
@@ -11439,6 +11440,10 @@
           },
           "peers": {
             "$ref": "#/components/schemas/PublicPeerInsight"
+          },
+          "validatorSummary": {
+            "$ref": "#/components/schemas/PublicValidatorSummary",
+            "description": "Deduplicated, exact current-selection Cumulative Validator totals for\nthis Network. The browser selects which Network groups to show; it\nnever adds up duplicate Node projections itself (#159)."
           },
           "validators": {
             "type": "array",
@@ -11990,6 +11995,45 @@
           }
         }
       },
+      "PublicValidatorBlockTotal": {
+        "type": "object",
+        "description": "Per-Network cumulative total for one metric, deduplicated by Validator.\n\nThe Server owns the eligible set, the deduplication, the exact arithmetic,\nand the coverage metadata, so Home never sums duplicate Node projections.\nCoverage is tracked for blocks and rewards independently because one metric\ncan be missing while the other has a value (#159).",
+        "required": [
+          "expectedCount",
+          "valuedCount",
+          "staleCount",
+          "state"
+        ],
+        "properties": {
+          "expectedCount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Distinct eligible Validators this metric should cover."
+          },
+          "knownSum": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Exact known-value sum over the eligible Validators. `None` means no\neligible Validator reported a value; it is never a fabricated zero."
+          },
+          "staleCount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Contributing Validators whose value is not current (a retained\nlast-good value after a failed or aged collection)."
+          },
+          "state": {
+            "type": "string",
+            "description": "`complete`, `partial`, or `unknown` coverage of `expected_count`.\n`partial` is a known-values subtotal, not a complete total."
+          },
+          "valuedCount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Eligible Validators contributing a known value, including retained\nstale last-good values."
+          }
+        }
+      },
       "PublicValidatorDailySnapshot": {
         "type": "object",
         "required": [
@@ -12404,6 +12448,73 @@
           },
           "timezone": {
             "type": "string"
+          }
+        }
+      },
+      "PublicValidatorRewardTotal": {
+        "type": "object",
+        "description": "Exact-decimal counterpart of `PublicValidatorBlockTotal` for gross\ncumulative Validator rewards. `known_sum` is a bounded decimal string in\nthe Network native unit; it never round-trips through binary floating point.",
+        "required": [
+          "expectedCount",
+          "valuedCount",
+          "staleCount",
+          "state"
+        ],
+        "properties": {
+          "expectedCount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "knownSum": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "staleCount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "state": {
+            "type": "string"
+          },
+          "valuedCount": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "PublicValidatorSummary": {
+        "type": "object",
+        "description": "Home's current-selection Cumulative Validator summary for one Network.\n\nMembership is the Network's Active Nodes; temporarily offline Active Nodes\nstay in scope and Retired Nodes do not. Every distinct Validator referenced\nby an effective Node Validator Link is counted once regardless of primary,\nstandby, or observer role, and Validators are never shared across Networks.\nTotals can fall when filters, effective Links, or Active membership change;\nthey are not an ownership ledger and are not guaranteed monotonic (#159).",
+        "required": [
+          "blocks",
+          "rewards",
+          "eligibleValidatorCount",
+          "linkedNodeCount",
+          "unlinkedNodeCount"
+        ],
+        "properties": {
+          "blocks": {
+            "$ref": "#/components/schemas/PublicValidatorBlockTotal"
+          },
+          "eligibleValidatorCount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Distinct eligible Validators referenced by an effective Link."
+          },
+          "linkedNodeCount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Active Nodes with an effective Link."
+          },
+          "rewards": {
+            "$ref": "#/components/schemas/PublicValidatorRewardTotal"
+          },
+          "unlinkedNodeCount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Active Nodes without any effective Link, reported separately so an\nunlinked Node is never mistaken for a zero-valued Validator."
           }
         }
       },
