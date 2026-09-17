@@ -794,13 +794,11 @@ struct DecimalAmount {
     fractional: String,
 }
 
-/// Parse a bounded nonnegative decimal string without touching binary floating
-/// point. Accepts the same syntax as the trust boundary: at least one digit,
-/// at most one dot, bounded length, and no control characters.
-fn parse_decimal_amount(value: &str) -> Option<DecimalAmount> {
-    if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) {
-        return None;
-    }
+/// Parse nonnegative decimal syntax only: at least one digit, at most one dot.
+/// It deliberately carries no length bound, because it is also used to re-read
+/// an accumulated total, which can legitimately grow past any single source
+/// value length by exactly the carry it needs to stay exact.
+fn parse_decimal_digits(value: &str) -> Option<DecimalAmount> {
     let mut dots = 0;
     let mut digits = 0;
     for character in value.chars() {
@@ -818,6 +816,16 @@ fn parse_decimal_amount(value: &str) -> Option<DecimalAmount> {
         integer: whole.trim_start_matches('0').to_owned(),
         fractional: fractional.to_owned(),
     })
+}
+
+/// Parse one bounded source decimal without touching binary floating point.
+/// Accepts the same syntax as the trust boundary: at least one digit, at most
+/// one dot, bounded length, and no control characters.
+fn parse_decimal_amount(value: &str) -> Option<DecimalAmount> {
+    if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) {
+        return None;
+    }
+    parse_decimal_digits(value)
 }
 
 /// Render a parsed amount, treating an all-zero integer part as `0`.
@@ -885,8 +893,12 @@ pub fn accumulate_decimal(total: &mut Option<String>, value: &str) -> bool {
         *total = Some(render_decimal_amount(&incoming));
         return true;
     };
-    let current = parse_decimal_amount(current)
-        .expect("an accumulated total stays a bounded nonnegative decimal");
+    // The running total is always produced by render_decimal_amount, so it is
+    // valid by construction; it is deliberately not re-subjected to the
+    // per-source length bound, which would panic once the carry exceeds 256
+    // digits.
+    let current = parse_decimal_digits(current)
+        .expect("an accumulated total is always a valid nonnegative decimal");
     let integer_width = current.integer.len().max(incoming.integer.len());
     let fraction_width = current.fractional.len().max(incoming.fractional.len());
     let left = scaled_decimal_digits(&current, integer_width, fraction_width);
@@ -4285,6 +4297,21 @@ mod tests {
         assert!(accumulate_decimal(&mut leading, "000.5"));
         assert!(accumulate_decimal(&mut leading, "000.5"));
         assert_eq!(leading.as_deref(), Some("1.0"));
+    }
+
+    #[test]
+    fn decimal_accumulation_grows_past_the_source_bound_without_panicking() {
+        // Each source value is within the 256-character trust-boundary bound,
+        // but the exact running total legitimately grows one digit past it.
+        // Re-reading that total must not re-apply the source bound and panic.
+        let huge = "9".repeat(256);
+        let mut total: Option<String> = None;
+        for _ in 0..3 {
+            assert!(accumulate_decimal(&mut total, &huge));
+        }
+        let expected = format!("2{}7", "9".repeat(255));
+        assert_eq!(total.as_deref(), Some(expected.as_str()));
+        assert_eq!(expected.len(), 257);
     }
 
     #[tokio::test]

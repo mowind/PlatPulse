@@ -5500,6 +5500,13 @@ mod tests {
             Some(&now),
         )
         .await;
+        // The same on-chain Validator identifier registered on another Network
+        // is a distinct identity there and must never share this Network's
+        // totals.
+        sqlx::query("UPDATE validators SET validator_node_id = (SELECT validator_node_id FROM validators WHERE validator_id = 'validator-shared') WHERE validator_id = 'validator-testnet'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
         // A Network whose only eligible Validator has no value at all shows
         // Unknown, never a fabricated zero.
         sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('quietnet', 'Quiet Network', '0xquietnet', 3, 3, 'lat', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
@@ -5545,6 +5552,13 @@ mod tests {
         assert_eq!(summary["rewards"]["state"], "partial");
 
         let testnet = public_summary(&state, "testnet").await;
+        // The same on-chain identifier appears in both Networks, but each
+        // Network keeps its own identity and total.
+        assert_eq!(
+            testnet["validators"][0]["validatorNodeId"],
+            "0xvalidator-shared"
+        );
+        assert_eq!(testnet["validators"][0]["validatorId"], "validator-testnet");
         assert_eq!(testnet["validatorSummary"]["blocks"]["knownSum"], 7);
         assert_eq!(testnet["validatorSummary"]["rewards"]["knownSum"], "2");
         assert_eq!(testnet["validatorSummary"]["blocks"]["state"], "complete");
