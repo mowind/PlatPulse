@@ -28,7 +28,7 @@ The six metrics belong to the currently linked Validator, not the monitored Node
 ## Implemented Home aggregation contract (#159)
 
 - Each Public `PublicNetwork` carries a `validatorSummary` computed entirely by the Server. Home selects which already-computed Network groups to show; it never adds duplicate Node projections and never combines Networks.
-- Per metric (blocks and rewards separately) the summary exposes `knownSum`, `expectedCount`, `valuedCount`, `staleCount`, and a `state` of `complete`, `partial`, or `unknown`. Blocks sum as an exact integer; rewards sum as a bounded decimal string.
+- Per metric (blocks and rewards separately) the summary exposes `knownSum`, `expectedCount`, `valuedCount`, `staleCount`, and a `state` of `complete`, `partial`, or `unknown`. Both sums cross the API as decimal strings (or null when unknown). Blocks use integer digits without i64 saturation or JavaScript-number rounding; rewards preserve the source decimal precision. Individual Validator `blockCount` remains an integer. Consumers must not coerce the aggregate `knownSum` to a JavaScript number.
 - Membership is the Network's Active Nodes (temporarily offline Active Nodes included, Retired excluded) and the distinct Validators referenced by effective Node Validator Links regardless of primary, standby, or observer role. One Validator with several linked Nodes counts once; the same identifier on another Network counts separately.
 - Reward totals use exact string arithmetic (`accumulate_decimal`), so large and fractional values never round-trip through binary floating point. No value means Unknown rather than zero; a legitimate source zero stays a value; partial coverage is a known-values subtotal; contributing last-good values that are no longer current are counted stale. `linkedNodeCount` and `unlinkedNodeCount` are reported separately so an unlinked Node is never a zero-valued Validator.
 - Home renders the `ValidatorTotalsSection` for the current filter directly (no hover or expansion required), showing each Network's block and reward totals, per-metric coverage, stale counts, and the unlinked Node count.
@@ -57,9 +57,11 @@ The six metrics belong to the currently linked Validator, not the monitored Node
 - Server configuration explicitly binds each Network to its corresponding PlatScan deployment. This configuration support is in scope; a shared allowlist is not evidence that one deployment serves multiple Networks.
 - Networks without a configured source show not configured. Full completion means all six capabilities work on correctly configured Networks with upstream support, not invented coverage of Networks without a PlatScan service.
 
-## Verification remaining before implementation acceptance
+## Deployment validation and remaining limitations
 
-- Validate per-Network Provider deployment mapping, upstream version, fixtures, field units, historical coverage, resets/corrections, and paging consistency. Upstream source analysis alone does not prove deployment compatibility.
+- Mainnet response compatibility was checked on 2026-09-17 against the user-designated `https://scan.platon.network/`. The deployment self-identifies as PlatON Mainnet (chain ID 210425); five ALL-cohort pages and one detail response are preserved byte-for-byte with request metadata and SHA-256 hashes. See [the mainnet validation record](platscan-mainnet-validation.md) for source/schema reconciliation and scope.
+- The captured responses are replayed through the existing HTTP adapter, refresh, real temporary SQLite and Public API in `platscan_mainnet_capture_reaches_public_api_and_retains_independent_last_good`. No live endpoint is a CI dependency.
+- The deployed browser-server revision, complete historical indexing and atomicity of multi-page results remain unknown. A Validator software `version`, HTTP Date, join time or leave time is not a deployment revision or source cutoff. Reset/correction and outage semantics continue to use controlled regression tests; one live capture cannot prove them for all upstream history.
 - Prior research blockers for operator net earnings and strict rolling24h below are retained as evidence for rejected mappings; those two requirements have now been superseded.
 
 ## Acceptance checklist
@@ -75,9 +77,34 @@ The six metrics belong to the currently linked Validator, not the monitored Node
 - The consolidated scope was confirmed and the older validator-provider.md no-list-call boundary is reconciled: ranking is a dedicated shared-per-Network list, independently stored and displayed (#158).
 
 
+## 2026-09-17 acceptance follow-up
+
+The three identified follow-up items are implemented:
+
+- Actual mainnet detail, full declared ALL cohort, configuration and provenance are captured in [the deployment validation record](platscan-mainnet-validation.md). The unmodified list/detail bodies pass the existing HTTP adapter → refresh → temporary SQLite → Public API path, including independent rank/detail last-good retention after controlled failures.
+- Linked Validator metrics now use two shrinkable columns on Home cards and Node detail. Playwright checks actual three-row/two-column geometry, long identities, full-precision reward values and cell/page overflow, including the 360px detail layout.
+- Block totals use exact decimal strings across the Server/API/client/UI rather than saturated i64 values or JavaScript numbers. Public API and rendering regressions cover `i64::MAX + 1`, `i64::MAX + i64::MAX`, `2^53 + 1`, and valid zero; per-Validator counts are unchanged.
+
+Checks actually run for this follow-up:
+
+| Check | Result |
+| --- | --- |
+| Raw capture SHA-256 verification | All seven recorded response bodies match provenance |
+| `cargo fmt --check` | Passed |
+| `cargo clippy --all-targets --all-features -- -D warnings` | Passed |
+| `cargo test --workspace` | Passed, including 444 Server library tests and the mainnet capture replay |
+| Server `--print-openapi` compared with committed-path spec | Byte-identical to the updated spec |
+| Regenerate browser client | Identical hashes before/after regeneration |
+| Web lint, strict typecheck, tests, production build | Passed; 351 tests |
+| `linked-validator.spec.ts` + `validator-summary.spec.ts` | 25/25 passed across phone-360-touch, phone-390-touch, tablet-768-touch, desktop-1280, desktop-1440 |
+| `git diff --check` | Passed |
+| `cargo deny check` / `cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0253` | Failed on existing dependency advisory findings; see below |
+
+Dependency safety is **not green**: the unchanged lockfile contains `rustls 0.23.43`, affected by [RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285), whose reported fix is >=0.23.45. The tools also report unmaintained `derivative`/`paste` and yanked `chacha20` warnings. No dependency update or advisory suppression was included in this Validator acceptance patch. These failures must not be described as a successful security check. The complete unrelated Playwright suite was not rerun; the five-project Validator acceptance suites above were run.
+
 ## Upstream source verification
 
-Research examined official browser-server revision `6daa5ad2e878474869407314a73a219ac49c8b51`. These findings do not establish the deployed PlatScan revision, complete indexing, or live response compatibility. Deployment fixtures remain necessary.
+Research examined official browser-server revision `6daa5ad2e878474869407314a73a219ac49c8b51`. The [2026-09-17 mainnet capture](platscan-mainnet-validation.md) independently establishes response compatibility for that deployment at capture time and supplies the deployment fixtures. Neither source research nor this capture establishes the deployed revision, complete indexing, financial accuracy or future service compatibility.
 
 - `blockQty` and `expectBlockQty` map to node-identity cumulative counters retained across re-staking. Expected blocks are scheduled in whole consensus rounds, so their ratio is not necessarily an elapsed-slot completion rate during an unfinished round. Indexer history completeness remains unverified.
 - `rewardValue` is gross fee + block + staking rewards, with special treatment for initial nodes. `rewardValue - totalDeleReward` is only a candidate: consistent settlement boundaries, initial-node handling, history, and precision remain unverified. No verified drop-in lifetime operator earnings mapping was found.

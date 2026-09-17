@@ -12012,11 +12012,10 @@
           },
           "knownSum": {
             "type": [
-              "integer",
+              "string",
               "null"
             ],
-            "format": "int64",
-            "description": "Exact known-value sum over the eligible Validators. `None` means no\neligible Validator reported a value; it is never a fabricated zero."
+            "description": "Exact base-10 integer sum over the eligible Validators, serialized as a\nstring to avoid both i64 overflow and JavaScript number precision loss.\n`None` means no eligible Validator reported a value, never a fabricated zero."
           },
           "staleCount": {
             "type": "integer",

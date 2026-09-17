@@ -1,4 +1,5 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type Locator } from '@playwright/test'
+import type { PublicNetwork, PublicNode } from '../src/api/generated'
 import { expectNoHorizontalOverflow, loginAs } from './helpers'
 
 /**
@@ -29,6 +30,35 @@ const LINKED_DELEGATION_SHARE_CARD = '20.00%'
 const LINKED_DELEGATION_SHARE_DETAIL = '20%'
 // The seeded ranking result is a complete Network cohort position.
 const LINKED_RANK = '#2'
+
+/** Assert rendered geometry, not a CSS class or visibility alone: six cells
+ * must form three rows of two, with no overflowing labels or exact values. */
+async function expectTwoColumnMetrics(scope: Locator) {
+  const metrics = scope.getByRole('group', { name: 'Linked Validator metrics' })
+  const cells = metrics.locator(':scope > [data-slot="metric-row"]')
+  await expect(cells).toHaveCount(6)
+  const boxes = await cells.evaluateAll(elements => elements.map(element => {
+    const box = element.getBoundingClientRect()
+    return { x: box.x, y: box.y, right: box.right, bottom: box.bottom, width: box.width }
+  }))
+  for (let index = 0; index < boxes.length; index += 2) {
+    const left = boxes[index]
+    const right = boxes[index + 1]
+    expect(left.width).toBeGreaterThan(0)
+    expect(right.width).toBeCloseTo(left.width, 0)
+    expect(right.x).toBeGreaterThan(left.right)
+    expect(right.y).toBeCloseTo(left.y, 0)
+    expect(left.x).toBeCloseTo(boxes[0].x, 0)
+    expect(right.x).toBeCloseTo(boxes[1].x, 0)
+    if (index > 0) {
+      expect(left.y).toBeGreaterThanOrEqual(Math.max(boxes[index - 2].bottom, boxes[index - 1].bottom))
+    }
+  }
+  const overflowing = await metrics.locator('[data-slot]').evaluateAll(elements => elements
+    .filter(element => element.scrollWidth > element.clientWidth + 1)
+    .map(element => element.textContent))
+  expect(overflowing, 'metric labels and values must wrap within their cells').toEqual([])
+}
 
 test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
   test('shows cumulative blocks, rewards, and both rates on the Home card and Node detail', async ({ page }) => {
@@ -65,6 +95,8 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
       card.getByText('Delegation reward share', { exact: true }).locator('..').locator('[data-slot="metric-row-value"]'),
     ).toHaveText(LINKED_DELEGATION_SHARE_CARD)
     await expect(card.getByText(/not annualized yield, operator commission/).first()).toBeVisible()
+    await expectTwoColumnMetrics(card)
+    await expectNoHorizontalOverflow(page)
 
     // Node detail: the same linked Validator area plus the exact-value caveat
     // and provenance.
@@ -92,7 +124,42 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
     await expect(
       detail.getByText('Delegation reward share', { exact: true }).locator('..').locator('[data-slot="metric-row-value"]'),
     ).toHaveText(LINKED_DELEGATION_SHARE_DETAIL)
+    await expectTwoColumnMetrics(detail)
 
+    await expectNoHorizontalOverflow(page)
+  })
+
+  test('keeps long Validator identities and exact rewards within two columns on both Node views', async ({ page }) => {
+    const identity = '0x' + 'ab'.repeat(64)
+    const reward = '123456789012345678901234567890.123456789012'
+    const exactReward = '123,456,789,012,345,678,901,234,567,890.123456789012'
+    const withLongValidator = (node: PublicNode): PublicNode => {
+      if (node.nodeId !== PUBLIC_NODE_ID || !node.validator) return node
+      return { ...node, validator: { ...node.validator, displayName: null, validatorNodeId: identity, rewardAmount: reward } }
+    }
+    // Alter only the public presentation fixture; never mutate the shared
+    // Server database or make long-value rendering depend on live PlatScan.
+    await page.route('**/api/public/v1/networks', async route => {
+      const response = await route.fetch()
+      const networks: PublicNetwork[] = await response.json()
+      await route.fulfill({ response, json: networks.map(network => ({ ...network, nodes: network.nodes.map(withLongValidator) })) })
+    })
+    await page.route('**/api/public/v1/nodes/' + PUBLIC_NODE_ID, async route => {
+      const response = await route.fetch()
+      const node: PublicNode = await response.json()
+      await route.fulfill({ response, json: withLongValidator(node) })
+    })
+    await loginAs(page)
+    const card = page.getByRole('link', { name: new RegExp(PUBLIC_NODE_NAME) }).first()
+    await expect(card.getByText(identity, { exact: true })).toBeVisible()
+    await expectTwoColumnMetrics(card)
+    await expectNoHorizontalOverflow(page)
+
+    await page.goto('/nodes/' + PUBLIC_NODE_ID)
+    const detail = page.getByRole('region', { name: 'Linked Validator' })
+    await expect(detail.getByText(identity, { exact: true })).toBeVisible()
+    await expect(detail.getByText(exactReward, { exact: true })).toBeVisible()
+    await expectTwoColumnMetrics(detail)
     await expectNoHorizontalOverflow(page)
   })
 

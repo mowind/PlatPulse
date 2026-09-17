@@ -2810,6 +2810,152 @@ mod tests {
         (format!("http://{addr}"), state, handle)
     }
 
+    /// Replay the unmodified mainnet HTTP bodies, not a synthetic approximation.
+    /// Capture requests, hashes, date and pinned source reconciliation are in
+    /// tests/fixtures/platscan-mainnet/provenance.json and
+    /// docs/design/platscan-mainnet-validation.md. CI never contacts PlatScan.
+    #[tokio::test]
+    async fn platscan_mainnet_capture_reaches_public_api_and_retains_independent_last_good() {
+        use axum::body::to_bytes;
+        use axum::extract::State;
+
+        const DETAIL: &[u8] =
+            include_bytes!("../tests/fixtures/platscan-mainnet/staking-details.json");
+        const PAGES: [&[u8]; 5] = [
+            include_bytes!("../tests/fixtures/platscan-mainnet/alive-staking-list-page-1.json"),
+            include_bytes!("../tests/fixtures/platscan-mainnet/alive-staking-list-page-2.json"),
+            include_bytes!("../tests/fixtures/platscan-mainnet/alive-staking-list-page-3.json"),
+            include_bytes!("../tests/fixtures/platscan-mainnet/alive-staking-list-page-4.json"),
+            include_bytes!("../tests/fixtures/platscan-mainnet/alive-staking-list-page-5.json"),
+        ];
+        const NODE_ID: &str = "0xc6c2f9185236d29b3deb0a463b10bf65c88fed993128b422b1f5e1c8fcf7f32e8c8d0a896b3969303c85b4815cf42715c06dfcd33c5b5dc3e78b4159d7f771e2";
+        let (dir, db) = test_db().await;
+        let owner_id: String =
+            sqlx::query_scalar("SELECT user_id FROM users WHERE username = 'owner'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        let (validator, _) = create_validator(&db, "platon-mainnet", NODE_ID, None, &owner_id)
+            .await
+            .unwrap();
+        create_link(
+            &db,
+            "node-1",
+            &validator.validator_id,
+            "observer",
+            "2025-01-01T00:00:00Z",
+            None,
+            &owner_id,
+        )
+        .await
+        .unwrap();
+        let pepper_path = dir.path().join("pepper");
+        crate::secrets::create_pepper_file(&pepper_path).unwrap();
+        let auth = crate::auth::AuthConfig::development(
+            crate::secrets::load_pepper_file(&pepper_path).unwrap(),
+            "http://127.0.0.1:8080".to_owned(),
+        );
+        let app_state = crate::http::AppState::new(db, None, auth);
+
+        // Initial success, detail success with failed ranking, then detail failure
+        // with successful ranking. Outages are controlled mutations, not captures.
+        let mut responses = vec![(200, DETAIL.to_vec())];
+        responses.extend(PAGES.iter().map(|body| (200, body.to_vec())));
+        responses.extend([(200, DETAIL.to_vec()), (503, Vec::new()), (503, Vec::new())]);
+        responses.extend(PAGES.iter().map(|body| (200, body.to_vec())));
+        let (base_url, mock, handle) = start_mock_platscan(responses, 0).await;
+        let provider = PlatScanValidatorProvider::new(
+            deployments(&base_url, &["platon-mainnet"]),
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+
+        async fn public_network(state: &crate::http::AppState) -> Value {
+            let response = crate::http::public::public_networks(State(state.clone())).await;
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            serde_json::from_slice::<Value>(&body).unwrap()[0].clone()
+        }
+        assert_eq!(
+            refresh_all(app_state.db(), &provider)
+                .await
+                .unwrap()
+                .successful,
+            1
+        );
+        let network = public_network(&app_state).await;
+        let insight = &network["nodes"][0]["validator"];
+        assert_eq!(insight["validatorNodeId"], NODE_ID);
+        assert_eq!(insight["linkRole"], "observer");
+        assert_eq!(insight["source"], "platscan");
+        assert_eq!(insight["blockCount"], 1_016_869);
+        assert_eq!(insight["expectedBlockCount"], 1_018_630);
+        assert_eq!(insight["rewardAmount"], "7893196.068697377541");
+        assert_eq!(insight["rewardRate"], "3.58");
+        assert_eq!(insight["delegationRewardPercentage"], "90");
+        // The deployment genuinely reports >100%; do not cap it or substitute
+        // the local historical completion rate for this source-defined metric.
+        assert_eq!(insight["genBlocksRate"], "100.1493");
+        assert_eq!(insight["blockRate"], "99.827121");
+        assert_eq!(insight["blockRateState"], "ok");
+        assert_eq!(insight["rank"], 1);
+        assert_eq!(insight["rankCohortSize"], 240);
+        assert_eq!(insight["rankState"], "ranked");
+        assert_eq!(insight["rankFreshness"], "fresh");
+        assert_eq!(insight["state"], "fresh");
+        assert!(insight["receivedAt"].is_string());
+        assert!(insight["rankReceivedAt"].is_string());
+        assert!(insight["providerTimestamp"].is_null());
+        assert_eq!(network["validatorSummary"]["blocks"]["knownSum"], "1016869");
+        assert_eq!(
+            network["validatorSummary"]["rewards"]["knownSum"],
+            "7893196.068697377541"
+        );
+        assert_eq!(network["validatorSummary"]["blocks"]["state"], "complete");
+        let health_before = network["nodes"][0]["health"].clone();
+        {
+            let requests = mock.requests.lock().unwrap();
+            assert_eq!(requests.len(), 6);
+            assert_eq!(requests[0].path, "/browser-server/staking/stakingDetails");
+            assert_eq!(
+                serde_json::from_str::<Value>(&requests[0].body).unwrap(),
+                serde_json::json!({"nodeId": NODE_ID})
+            );
+            for (index, request) in requests[1..].iter().enumerate() {
+                assert_eq!(request.path, "/browser-server/staking/aliveStakingList");
+                assert_eq!(
+                    serde_json::from_str::<Value>(&request.body).unwrap(),
+                    serde_json::json!({"pageNo": index + 1, "pageSize": 50, "queryStatus": "all"})
+                );
+            }
+        }
+
+        refresh_all(app_state.db(), &provider).await.unwrap();
+        let network = public_network(&app_state).await;
+        let insight = &network["nodes"][0]["validator"];
+        assert_eq!(insight["state"], "fresh");
+        assert_eq!(insight["rank"], 1);
+        assert_eq!(insight["rankState"], "error");
+        assert_eq!(insight["rankFreshness"], "stale");
+        assert_eq!(insight["rewardAmount"], "7893196.068697377541");
+        assert_eq!(network["validatorSummary"]["blocks"]["staleCount"], 0);
+
+        refresh_all(app_state.db(), &provider).await.unwrap();
+        let network = public_network(&app_state).await;
+        let insight = &network["nodes"][0]["validator"];
+        assert_eq!(insight["state"], "error");
+        assert_eq!(insight["rankState"], "ranked");
+        assert_eq!(insight["rankFreshness"], "fresh");
+        assert_eq!(insight["blockCount"], 1_016_869);
+        assert_eq!(insight["rewardAmount"], "7893196.068697377541");
+        assert_eq!(insight["genBlocksRate"], "100.1493");
+        assert_eq!(insight["delegationRewardPercentage"], "90");
+        assert_eq!(network["validatorSummary"]["blocks"]["staleCount"], 1);
+        assert_eq!(network["validatorSummary"]["rewards"]["staleCount"], 1);
+        assert_eq!(network["nodes"][0]["health"], health_before);
+        handle.abort();
+    }
+
     #[test]
     fn platscan_normalization_maps_statuses_and_allows_activity_only_snapshots() {
         let node_id = provider_node_id();

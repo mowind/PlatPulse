@@ -4,7 +4,7 @@ import type {
   PublicValidatorRewardTotal,
   PublicValidatorSummary,
 } from '../api/generated'
-import { formatAmountCompact } from '../lib/amount'
+import { formatAmountCompact, formatAmountExact } from '../lib/amount'
 import { MetricRow } from './MetricRow'
 import { SURFACE_CARD } from '../lib/surface'
 import { cn } from '../lib/utils'
@@ -26,7 +26,7 @@ function coverageLabel(total: Coverage): string {
 
 /** A total with no known values is Unknown, never a fabricated zero. */
 function blockTotalValue(total: PublicValidatorBlockTotal): string {
-  return total.knownSum == null ? 'Unknown' : total.knownSum.toLocaleString()
+  return formatAmountExact(total.knownSum)
 }
 
 /** Sums arrive as exact decimal strings and are abbreviated only for display;

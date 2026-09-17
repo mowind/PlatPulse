@@ -163,14 +163,17 @@ export function LinkedValidatorSection({ node, variant = 'card' }: { node: Publi
       <h3 className="m-0 text-xs font-medium tracking-wider text-muted-foreground">Linked Validator</h3>
       <span className="shrink-0 rounded-full border border-border px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">{validatorRoleLabel(validator.linkRole)}</span>
     </header>
-    <p className="m-0 mt-1 min-w-0 break-words text-sm font-semibold">{validator.displayName || validator.validatorNodeId}</p>
+    <p className="m-0 mt-1 min-w-0 text-sm font-semibold [overflow-wrap:anywhere]">{validator.displayName || validator.validatorNodeId}</p>
     <p className="m-0 mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground" role="status">
       <span className={cn('inline-block size-1.5 shrink-0 rounded-full', stateDotClass(validator.state))} aria-hidden="true" />
       <span className="font-medium text-foreground">{state}</span>
       {validator.state === 'stale' && validator.freshness === 'stale' && <span>· last successful value retained</span>}
     </p>
     {note && <p className="m-0 mt-1 text-[11px] text-muted-foreground">{note}</p>}
-    <div className="mt-2 grid grid-cols-[repeat(auto-fit,minmax(9rem,1fr))] gap-x-4" role="group" aria-label="Linked Validator metrics">
+    {/* Two shrinkable columns also fit the 296px detail content at 360px.
+        Bound both parts of each metric row so labels and exact amounts wrap
+        inside their cell without squeezing the neighbouring metric. */}
+    <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-3 [&>[data-slot=metric-row]]:min-w-0 [&>[data-slot=metric-row]]:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] [&_[data-slot=metric-row-label]]:min-w-0 [&_[data-slot=metric-row-label]]:whitespace-normal [&_[data-slot=metric-row-label]]:[overflow-wrap:anywhere]" role="group" aria-label="Linked Validator metrics">
       <MetricRow label="Cumulative blocks" value={blockCountLabel(validator.blockCount)} />
       <MetricRow label="Cumulative rewards" value={cumulativeRewards} />
       <MetricRow label="Network rank" value={rankLabel(validator)} />

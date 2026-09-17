@@ -1,0 +1,4 @@
+# Preserve captured HTTP entity bytes and their recorded SHA-256 on checkout.
+*.json -text
+# The deployment config uses CRLF; retain it rather than rewriting evidence.
+config.json whitespace=cr-at-eol

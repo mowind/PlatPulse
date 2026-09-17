@@ -777,9 +777,10 @@ pub struct PublicValidatorInsight {
 #[derive(Debug, Serialize, ToSchema, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PublicValidatorBlockTotal {
-    /// Exact known-value sum over the eligible Validators. `None` means no
-    /// eligible Validator reported a value; it is never a fabricated zero.
-    pub known_sum: Option<i64>,
+    /// Exact base-10 integer sum over the eligible Validators, serialized as a
+    /// string to avoid both i64 overflow and JavaScript number precision loss.
+    /// `None` means no eligible Validator reported a value, never a fabricated zero.
+    pub known_sum: Option<String>,
     /// Distinct eligible Validators this metric should cover.
     pub expected_count: i64,
     /// Eligible Validators contributing a known value, including retained
@@ -1081,7 +1082,7 @@ pub(crate) fn public_validator_summary(
     nodes: &[PublicNode],
 ) -> PublicValidatorSummary {
     let expected_count = validators.len() as i64;
-    let mut block_sum: Option<i64> = None;
+    let mut block_sum: Option<String> = None;
     let mut block_valued = 0_i64;
     let mut block_stale = 0_i64;
     let mut reward_sum: Option<String> = None;
@@ -1093,7 +1094,9 @@ pub(crate) fn public_validator_summary(
         // the independent ranking collection.
         let stale = validator.state != "fresh";
         if let Some(value) = validator.block_count.filter(|value| *value >= 0) {
-            block_sum = Some(block_sum.unwrap_or_default().saturating_add(value));
+            // Every accepted i64 count is a valid bounded decimal; keep the
+            // aggregate as digits instead of saturating or sending a JSON number.
+            validator::accumulate_decimal(&mut block_sum, &value.to_string());
             block_valued += 1;
             if stale {
                 block_stale += 1;
@@ -5539,7 +5542,7 @@ mod tests {
         assert_eq!(summary["unlinkedNodeCount"], 1);
         // Deduplicated: 100 + 5 + 1000 + 3, not counting the shared Validator
         // twice and excluding the Retired-only Validator.
-        assert_eq!(summary["blocks"]["knownSum"], 1108);
+        assert_eq!(summary["blocks"]["knownSum"], "1108");
         assert_eq!(summary["blocks"]["expectedCount"], 5);
         assert_eq!(summary["blocks"]["valuedCount"], 4);
         assert_eq!(summary["blocks"]["staleCount"], 1);
@@ -5559,7 +5562,7 @@ mod tests {
             "0xvalidator-shared"
         );
         assert_eq!(testnet["validators"][0]["validatorId"], "validator-testnet");
-        assert_eq!(testnet["validatorSummary"]["blocks"]["knownSum"], 7);
+        assert_eq!(testnet["validatorSummary"]["blocks"]["knownSum"], "7");
         assert_eq!(testnet["validatorSummary"]["rewards"]["knownSum"], "2");
         assert_eq!(testnet["validatorSummary"]["blocks"]["state"], "complete");
         assert_eq!(testnet["validatorSummary"]["unlinkedNodeCount"], 0);
@@ -5591,6 +5594,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn public_validator_summary_keeps_block_totals_exact_beyond_integer_boundaries() {
+        for (left, right, expected) in [
+            (i64::MAX, 1, "9223372036854775808"),
+            (i64::MAX, i64::MAX, "18446744073709551614"),
+            (9_007_199_254_740_992, 1, "9007199254740993"),
+            (0, 0, "0"),
+        ] {
+            let (_dir, state) = test_state().await;
+            seed_public_data(&state).await;
+            let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+            for (node_id, validator_id, count) in [
+                ("node-public", "validator-left", left),
+                ("node-private", "validator-right", right),
+            ] {
+                seed_summary_validator(
+                    &state,
+                    "mainnet",
+                    node_id,
+                    validator_id,
+                    "primary",
+                    Some(count),
+                    None,
+                    Some(&now),
+                )
+                .await;
+            }
+
+            // Read the serialized Public API, not the accumulator: JSON numbers
+            // would still lose precision in browser consumers even after fixing
+            // the Server's i64 overflow. Individual counts retain their contract.
+            let network = public_summary(&state, "mainnet").await;
+            let summary = &network["validatorSummary"];
+            assert_eq!(summary["blocks"]["knownSum"].as_str(), Some(expected));
+            assert_eq!(summary["blocks"]["expectedCount"], 2);
+            assert_eq!(summary["blocks"]["valuedCount"], 2);
+            assert_eq!(summary["blocks"]["staleCount"], 0);
+            assert_eq!(summary["blocks"]["state"], "complete");
+            let validators = network["validators"].as_array().unwrap();
+            let validator = validators
+                .iter()
+                .find(|validator| validator["validatorId"] == "validator-left")
+                .unwrap();
+            assert_eq!(validator["blockCount"].as_i64(), Some(left));
+            assert_eq!(summary["rewards"]["knownSum"], serde_json::Value::Null);
+            assert_eq!(summary["rewards"]["state"], "unknown");
+
+            let detail = public_network(
+                State(state),
+                Path("mainnet".to_owned()),
+                Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
+            )
+            .await;
+            let body = to_bytes(detail.into_body(), usize::MAX).await.unwrap();
+            let detail: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(detail["validatorSummary"], *summary);
+        }
+    }
+
+    #[tokio::test]
     async fn public_validator_summary_uses_the_effective_validator_after_a_link_switch() {
         let (_dir, state) = test_state().await;
         seed_public_data(&state).await;
@@ -5607,7 +5669,7 @@ mod tests {
         )
         .await;
         let before = public_summary(&state, "mainnet").await;
-        assert_eq!(before["validatorSummary"]["blocks"]["knownSum"], 100);
+        assert_eq!(before["validatorSummary"]["blocks"]["knownSum"], "100");
         assert_eq!(before["validatorSummary"]["rewards"]["knownSum"], "10");
 
         // The effective Link moves A -> B: the summary presents B's full
@@ -5640,7 +5702,7 @@ mod tests {
         let after = public_summary(&state, "mainnet").await;
         assert_eq!(after["validators"].as_array().unwrap().len(), 1);
         assert_eq!(after["validatorSummary"]["eligibleValidatorCount"], 1);
-        assert_eq!(after["validatorSummary"]["blocks"]["knownSum"], 5);
+        assert_eq!(after["validatorSummary"]["blocks"]["knownSum"], "5");
         assert_eq!(after["validatorSummary"]["blocks"]["state"], "complete");
         assert_eq!(after["validatorSummary"]["rewards"]["knownSum"], "2");
     }

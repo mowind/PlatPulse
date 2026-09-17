@@ -35,7 +35,7 @@ const network = {
     },
   ],
   validatorSummary: {
-    blocks: { knownSum: 100, expectedCount: 1, valuedCount: 1, staleCount: 0, state: 'complete' },
+    blocks: { knownSum: '100', expectedCount: 1, valuedCount: 1, staleCount: 0, state: 'complete' },
     rewards: { knownSum: '10', expectedCount: 1, valuedCount: 1, staleCount: 0, state: 'complete' },
     eligibleValidatorCount: 1,
     linkedNodeCount: 1,

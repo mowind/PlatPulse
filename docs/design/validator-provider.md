@@ -27,6 +27,26 @@ to `ValidatorObservation` before it enters the domain or API projections.
   authentication place an authenticated reverse proxy in front of the
   configured endpoint rather than adding provider secrets to `server.toml`.
 
+## Verified deployment response contract
+
+The mainnet deployment at `https://scan.platon.network/` was checked on
+2026-09-17: its configuration self-identifies as PlatON Mainnet (chain ID
+210425), and the captured detail and five-page ALL ranking responses pass
+HTTP → refresh → SQLite → Public API regression coverage. See
+[mainnet validation](platscan-mainnet-validation.md) and the raw fixtures in
+`crates/platpulse-server/tests/fixtures/platscan-mainnet/` for requests, hashes,
+source-revision reconciliation and limitations. The deployed browser-server
+revision and completeness of its historical indexing are not known. Other
+Networks still require their own explicit compatible deployment binding.
+
+The detail capture reports `genBlocksRate: "100.1493%"`; this source-defined
+percentage is retained even above 100, unlike `rewardPer`, which is bounded
+to 0..=100. Its reward and annualized-yield values are decimal strings. It
+contains no source cutoff: HTTP Date and Validator join/leave times must not
+be substituted for one. The live detail `data` is an object (matching the
+Java controller), despite the investigated API definition describing an
+array. Tests replay the raw responses offline; CI does not contact PlatScan.
+
 ## Request contract
 
 - POST `{base_url}/browser-server/staking/stakingDetails` with

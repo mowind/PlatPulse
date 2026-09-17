@@ -1,0 +1,136 @@
+{
+  "capturePurpose": "Issue #153 actual user-designated mainnet PlatScan response verification",
+  "deployment": "https://scan.platon.network",
+  "deploymentVersion": null,
+  "networkBindingEvidence": {
+    "file": "config.json",
+    "method": "GET",
+    "url": "https://scan.platon.network/browser-server/config.json",
+    "requestBody": null,
+    "startedAt": "2026-09-17T09:07:09.421Z",
+    "completedAt": "2026-09-17T09:07:10.312Z",
+    "status": 200,
+    "responseDate": "Thu, 17 Sep 2026 09:07:10 GMT",
+    "responseHeaders": "HTTP/1.1 200 \r\nServer: nginx\r\nDate: Thu, 17 Sep 2026 09:07:10 GMT\r\nContent-Type: application/json\r\nContent-Length: 3847\r\nConnection: keep-alive\r\nVary: Origin\r\nVary: Access-Control-Request-Method\r\nVary: Access-Control-Request-Headers\r\nLast-Modified: Wed, 02 Apr 2025 02:53:40 GMT\r\nAccept-Ranges: bytes\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: frame-ancestors 'none'\r\nX-Content-Type-Options: nosniff\r\nX-XSS-Protection: 1\r\nStrict-Transport-Security: max-age=31536000; includeSubDomains; preload",
+    "bytes": 3847,
+    "sha256": "8d67f0cdde114e30fb024adeea030634f9043c6d84e769851031084acea9dc5f",
+    "observedHeaderChainName": "PlatON Mainnet",
+    "observedWalletChainId": 210425,
+    "limitation": "Deployment self-identification and user designation; not independent genesis hash or P2P network ID verification."
+  },
+  "investigatedSourceRevision": "6daa5ad2e878474869407314a73a219ac49c8b51",
+  "bodyPreservation": "UTF-8 HTTP entity body as received via curl, no JSON parse/reserialization before writing; transfer framing removed by curl; no appended newline. SHA-256 over fixture UTF-8 bytes.",
+  "limits": {
+    "pageSize": 50,
+    "maxPages": 5,
+    "maxResponseBytes": 65536,
+    "timeoutSecondsPerRequest": 25
+  },
+  "validation": {
+    "declaredTotal": 240,
+    "receivedRows": 240,
+    "uniqueIds": 240,
+    "globalRankSequence": true,
+    "idsValid": true,
+    "selectedNodeId": "0xc6c2f9185236d29b3deb0a463b10bf65c88fed993128b422b1f5e1c8fcf7f32e8c8d0a896b3969303c85b4815cf42715c06dfcd33c5b5dc3e78b4159d7f771e2",
+    "selectedRank": 1
+  },
+  "captures": [
+    {
+      "file": "alive-staking-list-page-1.json",
+      "method": "POST",
+      "url": "https://scan.platon.network/browser-server/staking/aliveStakingList",
+      "requestBody": "{\"pageNo\":1,\"pageSize\":50,\"queryStatus\":\"all\"}",
+      "requestHeaders": {
+        "Content-Type": "application/json"
+      },
+      "startedAt": "2026-09-17T09:05:12.934Z",
+      "completedAt": "2026-09-17T09:05:14.140Z",
+      "status": 200,
+      "responseDate": "Thu, 17 Sep 2026 09:05:13 GMT",
+      "responseHeaders": "HTTP/1.1 200 \r\nServer: nginx\r\nDate: Thu, 17 Sep 2026 09:05:13 GMT\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\ntrace-id: 3fbfb9b67dd04d3c8c67ca1fbc933368",
+      "bytes": 29256,
+      "sha256": "325c307f4ddfde1d761dcf2dff6fe986ff0709d10f39e2d27b7ccbb97819ce17"
+    },
+    {
+      "file": "alive-staking-list-page-2.json",
+      "method": "POST",
+      "url": "https://scan.platon.network/browser-server/staking/aliveStakingList",
+      "requestBody": "{\"pageNo\":2,\"pageSize\":50,\"queryStatus\":\"all\"}",
+      "requestHeaders": {
+        "Content-Type": "application/json"
+      },
+      "startedAt": "2026-09-17T09:05:14.158Z",
+      "completedAt": "2026-09-17T09:05:15.277Z",
+      "status": 200,
+      "responseDate": "Thu, 17 Sep 2026 09:05:14 GMT",
+      "responseHeaders": "HTTP/1.1 200 \r\nServer: nginx\r\nDate: Thu, 17 Sep 2026 09:05:14 GMT\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\ntrace-id: 51c5235795ef48b2842b467e1721b285",
+      "bytes": 29397,
+      "sha256": "33656ae56d492b55f5f924c0bd5d3e5303a4f4cb48da4bbd9e09a6620fea5281"
+    },
+    {
+      "file": "alive-staking-list-page-3.json",
+      "method": "POST",
+      "url": "https://scan.platon.network/browser-server/staking/aliveStakingList",
+      "requestBody": "{\"pageNo\":3,\"pageSize\":50,\"queryStatus\":\"all\"}",
+      "requestHeaders": {
+        "Content-Type": "application/json"
+      },
+      "startedAt": "2026-09-17T09:05:15.296Z",
+      "completedAt": "2026-09-17T09:05:16.474Z",
+      "status": 200,
+      "responseDate": "Thu, 17 Sep 2026 09:05:16 GMT",
+      "responseHeaders": "HTTP/1.1 200 \r\nServer: nginx\r\nDate: Thu, 17 Sep 2026 09:05:16 GMT\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\ntrace-id: 98f0cf6327344565980ac8d552b7f7d3",
+      "bytes": 29140,
+      "sha256": "d8ff9c29bb1194788dc1472129993e2aed9350ab0d4ae11d2ff9ebc6f0007133"
+    },
+    {
+      "file": "alive-staking-list-page-4.json",
+      "method": "POST",
+      "url": "https://scan.platon.network/browser-server/staking/aliveStakingList",
+      "requestBody": "{\"pageNo\":4,\"pageSize\":50,\"queryStatus\":\"all\"}",
+      "requestHeaders": {
+        "Content-Type": "application/json"
+      },
+      "startedAt": "2026-09-17T09:05:16.486Z",
+      "completedAt": "2026-09-17T09:05:17.648Z",
+      "status": 200,
+      "responseDate": "Thu, 17 Sep 2026 09:05:17 GMT",
+      "responseHeaders": "HTTP/1.1 200 \r\nServer: nginx\r\nDate: Thu, 17 Sep 2026 09:05:17 GMT\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\ntrace-id: 82da7a1835324be4892f0791485e5127\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: frame-ancestors 'none'\r\nX-Content-Type-Options: nosniff\r\nX-XSS-Protection: 1\r\nStrict-Transport-Security: max-age=31536000; includeSubDomains; preload",
+      "bytes": 29175,
+      "sha256": "cded61b6c3b6e11ec9dc52a4154f939a1bd25557ea85d1698aeaf62c48a31d88"
+    },
+    {
+      "file": "alive-staking-list-page-5.json",
+      "method": "POST",
+      "url": "https://scan.platon.network/browser-server/staking/aliveStakingList",
+      "requestBody": "{\"pageNo\":5,\"pageSize\":50,\"queryStatus\":\"all\"}",
+      "requestHeaders": {
+        "Content-Type": "application/json"
+      },
+      "startedAt": "2026-09-17T09:05:17.656Z",
+      "completedAt": "2026-09-17T09:05:18.829Z",
+      "status": 200,
+      "responseDate": "Thu, 17 Sep 2026 09:05:18 GMT",
+      "responseHeaders": "HTTP/1.1 200 \r\nServer: nginx\r\nDate: Thu, 17 Sep 2026 09:05:18 GMT\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\ntrace-id: 6111312794b84564ab6b253ae298c27a",
+      "bytes": 22628,
+      "sha256": "07c2e67be181dd5de45530956c8fe6d8724bf19f7d48e018997723fe8fb6e157"
+    },
+    {
+      "file": "staking-details.json",
+      "method": "POST",
+      "url": "https://scan.platon.network/browser-server/staking/stakingDetails",
+      "requestBody": "{\"nodeId\":\"0xc6c2f9185236d29b3deb0a463b10bf65c88fed993128b422b1f5e1c8fcf7f32e8c8d0a896b3969303c85b4815cf42715c06dfcd33c5b5dc3e78b4159d7f771e2\"}",
+      "requestHeaders": {
+        "Content-Type": "application/json"
+      },
+      "startedAt": "2026-09-17T09:05:18.841Z",
+      "completedAt": "2026-09-17T09:05:19.782Z",
+      "status": 200,
+      "responseDate": "Thu, 17 Sep 2026 09:05:19 GMT",
+      "responseHeaders": "HTTP/1.1 200 \r\nServer: nginx\r\nDate: Thu, 17 Sep 2026 09:05:19 GMT\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\ntrace-id: c1e0ec5133b1487f882df96c386b2bf5",
+      "bytes": 1415,
+      "sha256": "cd51bc943352dfdb087f36ae358e853c03fd844a34abefd54e1662ae6958ff43"
+    }
+  ]
+}

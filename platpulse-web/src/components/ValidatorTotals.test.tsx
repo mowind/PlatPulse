@@ -37,7 +37,7 @@ describe('Validator totals (issue #159)', () => {
       displayName: 'Mainnet',
       nodeCount: 7,
       summary: {
-        blocks: { knownSum: 1108, expectedCount: 5, valuedCount: 4, staleCount: 1, state: 'partial' },
+        blocks: { knownSum: '1108', expectedCount: 5, valuedCount: 4, staleCount: 1, state: 'partial' },
         rewards: { knownSum: '11.750000000001', expectedCount: 5, valuedCount: 3, staleCount: 1, state: 'partial' },
         eligibleValidatorCount: 5,
         linkedNodeCount: 6,
@@ -49,7 +49,7 @@ describe('Validator totals (issue #159)', () => {
       displayName: 'Testnet',
       nodeCount: 1,
       summary: {
-        blocks: { knownSum: 7, expectedCount: 1, valuedCount: 1, staleCount: 0, state: 'complete' },
+        blocks: { knownSum: '7', expectedCount: 1, valuedCount: 1, staleCount: 0, state: 'complete' },
         rewards: { knownSum: '2', expectedCount: 1, valuedCount: 1, staleCount: 0, state: 'complete' },
         eligibleValidatorCount: 1,
         linkedNodeCount: 1,
@@ -78,6 +78,28 @@ describe('Validator totals (issue #159)', () => {
     expect(within(testnetArticle).getByText('0 unlinked Nodes')).toBeTruthy()
   })
 
+  it.each([
+    ['9223372036854775808', '9,223,372,036,854,775,808'],
+    ['18446744073709551614', '18,446,744,073,709,551,614'],
+    ['9007199254740993', '9,007,199,254,740,993'],
+  ])('displays the exact block total %s without a JavaScript number conversion', (knownSum, displayed) => {
+    const mainnet = network({
+      networkKey: 'mainnet',
+      displayName: 'Mainnet',
+      summary: {
+        blocks: { knownSum, expectedCount: 2, valuedCount: 2, staleCount: 0, state: 'complete' },
+        rewards: { knownSum: null, expectedCount: 2, valuedCount: 0, staleCount: 0, state: 'unknown' },
+        eligibleValidatorCount: 2,
+        linkedNodeCount: 2,
+        unlinkedNodeCount: 0,
+      },
+    })
+    render(<ValidatorTotalsSection networks={[mainnet]} />)
+    const article = screen.getByRole('article', { name: 'Validator totals for Mainnet' })
+    expect(metricValue(article, 'Cumulative blocks')).toBe(displayed)
+    expect(within(article).getByText('2/2 Validators with values')).toBeTruthy()
+  })
+
   it('shows Unknown when no value exists and a real zero when the source reported zero', () => {
     const unknown = network({
       networkKey: 'unknown-net',
@@ -94,7 +116,7 @@ describe('Validator totals (issue #159)', () => {
       networkKey: 'zero-net',
       displayName: 'Zero Network',
       summary: {
-        blocks: { knownSum: 0, expectedCount: 1, valuedCount: 1, staleCount: 0, state: 'complete' },
+        blocks: { knownSum: '0', expectedCount: 1, valuedCount: 1, staleCount: 0, state: 'complete' },
         rewards: { knownSum: '0.000', expectedCount: 1, valuedCount: 1, staleCount: 0, state: 'complete' },
         eligibleValidatorCount: 1,
         linkedNodeCount: 1,

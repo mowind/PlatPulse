@@ -1706,10 +1706,11 @@ export type PublicValidatorBlockTotal = {
      */
     expectedCount: number;
     /**
-     * Exact known-value sum over the eligible Validators. `None` means no
-     * eligible Validator reported a value; it is never a fabricated zero.
+     * Exact base-10 integer sum over the eligible Validators, serialized as a
+     * string to avoid both i64 overflow and JavaScript number precision loss.
+     * `None` means no eligible Validator reported a value, never a fabricated zero.
      */
-    knownSum?: number | null;
+    knownSum?: string | null;
     /**
      * Contributing Validators whose value is not current (a retained
      * last-good value after a failed or aged collection).
