@@ -59,8 +59,9 @@ to `ValidatorObservation` before it enters the domain or API projections.
   `deleAnnualizedRate`/`rewardRate` → `reward_rate`;
   `delegateQty`/`delegatorCount` → `delegator_count`; `epoch` → `epoch`;
   `blockQty`/`blockCount` → `block_count`; `expectBlockQty`/`expectedBlockQty`
-  → `expected_block_count`; and `genBlocksRate`/`generatedBlocksRate` →
-  `gen_blocks_rate` (#156). Integer fields accept non-negative
+  → `expected_block_count`; `genBlocksRate`/`generatedBlocksRate` →
+  `gen_blocks_rate` (#156); and `rewardPer` → `delegation_reward_percentage`
+  (#157). Integer fields accept non-negative
   JSON integers or base-10 integer strings; fractional syntax and malformed
   non-empty values are invalid. A `genBlocksRate` value may be a bounded
   decimal string with an optional trailing `%` or a non-negative JSON number;
@@ -76,7 +77,8 @@ to `ValidatorObservation` before it enters the domain or API projections.
 - `reward_amount` is the gross cumulative Validator reward over chain history,
   including the operator and delegator allocations. The adapter never subtracts
   `totalDeleReward` and never derives a historical net reward from the current
-  `rewardPer`/`nextRewardPer`; those fields are not read. The investigated
+  `rewardPer`/`nextRewardPer`; `rewardPer` is read only as the delegation
+  distribution percentage and `nextRewardPer` is never read. The investigated
   source serializes LAT values truncated downward to at most 12 decimal places,
   and those exact digits cross the trust boundary as a bounded decimal string
   that is never parsed into binary floating point (#155).
@@ -93,6 +95,16 @@ to `ValidatorObservation` before it enters the domain or API projections.
   upstream error; the Public contract therefore labels it PlatScan口径 rather
   than a strict rolling 86,400-second window, and retains a source `0`
   independently of the locally computed completion rate.
+- `delegation_reward_percentage` is the currently effective delegation reward
+  distribution percentage from the detail `rewardPer` (#157). The upstream
+  detail response has already scaled its internal basis points, so a source
+  `20` is stored and projected as 20 percentage points, never 0.20% or 2000%.
+  The adapter bounds it to `0..=100`: an out-of-range, negative, or malformed
+  value degrades the observation to `Error` rather than being clamped or
+  reinterpreted. It is distinct from the annualized `reward_rate`
+  (`deleAnnualizedRate`) and from the pending `nextRewardPer`, which is never
+  read. A local failure retains the last-good percentage, and a later success
+  that omits the field is Unknown (#157).
 - The 64 KiB response limit is checked after `Response.bytes()` has read the
   response. It is a post-buffer validation bound, not a streaming memory cap.
   JSON is validated at the trust boundary, and diagnostics are redacted and
@@ -145,3 +157,6 @@ guarantees, not claims about an upstream schema.
   `gen_blocks_rate` columns. Historical rows keep NULL, which the Public
   projection reports as `unknown`; no value is backfilled with a fabricated
   rate.
+- Migration 0046 adds the nullable `delegation_reward_percentage` column.
+  Historical rows keep NULL and the Public projection reports `unknown`; no
+  ratio is backfilled.

@@ -77,10 +77,21 @@ function genBlocksRateLabel(validator: PublicValidatorInsight, variant: 'card' |
   return formatRate(validator.genBlocksRate, variant)
 }
 
+/**
+ * The currently effective delegation reward distribution percentage. The
+ * Server already normalized the source to percentage points, so a legitimate
+ * 0 and 100 render as 0.00% and 100.00% and a missing value is Unknown — never
+ * a fabricated 0. It is deliberately kept apart from the annualized
+ * `rewardRate` and never labelled with a yield or commission meaning (#157).
+ */
+function delegationRewardShareLabel(validator: PublicValidatorInsight, variant: 'card' | 'detail'): string {
+  return formatRate(validator.delegationRewardPercentage, variant)
+}
+
 function stateNote(validator: PublicValidatorInsight): string | null {
   switch (validator.state) {
     case 'not_configured': return 'No Validator source is configured for this Network; no value was queried.'
-    case 'error': return 'The Validator source could not be read; the last successful cumulative value is retained.'
+    case 'error': return 'The Validator source could not be read; the last successful values are retained.'
     case 'unsupported': return 'The Validator source does not support this Validator identifier.'
     case 'not_found': return 'The source has no current record for this Validator.'
     case 'empty': return 'The source reported no live Validator for this identifier.'
@@ -91,10 +102,12 @@ function stateNote(validator: PublicValidatorInsight): string | null {
 /**
  * The extensible linked-Validator area shared by the Home Node card and Node
  * detail. It owns the cumulative Validator block count, gross cumulative
- * rewards, the Server-computed cumulative production rate, and PlatScan's own
- * 24-hour rate, plus the explicit unlinked / not-configured / never-observed /
+ * rewards, the Server-computed cumulative production rate, PlatScan's own
+ * 24-hour rate, and the currently effective delegation reward distribution
+ * percentage, plus the explicit unlinked / not-configured / never-observed /
  * stale / not-applicable / retained states; later Validator metrics extend the
- * same metric group rather than adding a second region (#154, #155, #156).
+ * same metric group rather than adding a second region (#154, #155, #156,
+ * #157).
  */
 export function LinkedValidatorSection({ node, variant = 'card' }: { node: PublicNode; variant?: 'card' | 'detail' }) {
   const validator = node.validator
@@ -107,7 +120,7 @@ export function LinkedValidatorSection({ node, variant = 'card' }: { node: Publi
 
   const state = validatorStateLabel(validator.state, validator.freshness)
   const note = stateNote(validator)
-  const retained = validator.state !== 'fresh' && validator.state !== 'stale' && (validator.blockCount != null || validator.rewardAmount != null || validator.blockRate != null || validator.genBlocksRate != null)
+  const retained = validator.state !== 'fresh' && validator.state !== 'stale' && (validator.blockCount != null || validator.rewardAmount != null || validator.blockRate != null || validator.genBlocksRate != null || validator.delegationRewardPercentage != null)
   // Detail exposes every digit the source provided; cards may abbreviate, but
   // both come from the same exact-decimal string and never through a float.
   const cumulativeRewards = variant === 'detail'
@@ -130,16 +143,18 @@ export function LinkedValidatorSection({ node, variant = 'card' }: { node: Publi
       <MetricRow label="Cumulative rewards" value={cumulativeRewards} />
       <MetricRow label="Production rate" value={blockRateLabel(validator, variant)} />
       <MetricRow label="PlatScan 24h rate" value={genBlocksRateLabel(validator, variant)} />
+      <MetricRow label="Delegation reward share" value={delegationRewardShareLabel(validator, variant)} />
     </div>
     <p className="m-0 mt-1 text-[11px] text-muted-foreground">Production rate is cumulative actual ÷ cumulative scheduled blocks from the same observation; whole-round duties count before they elapse, so it is not an exact missed-block rate.</p>
     {validator.blockRateState === 'not_applicable' && <p className="m-0 mt-0.5 text-[11px] text-muted-foreground" role="status">The source reported a zero scheduled-block denominator, so a rate is not applicable — not 0%.</p>}
     <p className="m-0 mt-0.5 text-[11px] text-muted-foreground">PlatScan 24h rate uses PlatScan口径: the preceding seven settlement periods excluding the current one, so it is not a strict rolling 24 hours, and a source 0% can also mean insufficient evidence or an upstream error.</p>
+    <p className="m-0 mt-0.5 text-[11px] text-muted-foreground">Delegation reward share is the currently effective proportion of applicable Validator rewards allocated to delegators; it is not annualized yield, operator commission, or the pending next-period ratio.</p>
     {validator.rewardAmount != null && <>
       <p className="m-0 mt-1 text-[11px] text-muted-foreground">Cumulative rewards are gross: they include the operator and delegator allocations and are not operator net earnings.</p>
       {variant === 'detail' && <p className="m-0 mt-0.5 text-[11px] text-muted-foreground">Amounts use the Network native unit; detail shows all precision the source provides.</p>}
     </>}
     {validator.counterState === 'counter_reset' && <p className="m-0 mt-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive" role="status">Counter reset or correction observed; the prior value was not treated as normal growth.</p>}
-    {retained && <p className="m-0 mt-1 text-[11px] text-muted-foreground">Showing the last successful cumulative value; the current source state is unavailable.</p>}
+    {retained && <p className="m-0 mt-1 text-[11px] text-muted-foreground">Showing the last successful value; the current source state is unavailable.</p>}
     {variant === 'detail' && <Provenance validator={validator} />}
   </>
 

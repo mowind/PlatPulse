@@ -12181,6 +12181,13 @@
           "counterState": {
             "type": "string"
           },
+          "delegationRewardPercentage": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The currently effective delegation reward distribution percentage\n(PlatScan detail `rewardPer`), normalized to percentage points: the\nsource's already-scaled `20` is 20%, never 0.20% or 2000%. It is\n**not** the annualized `reward_rate`, the operator commission, a\npending next-period ratio, or a back-computed net earning. `None`\nmeans unknown; a legitimate `0` and `100` are preserved (#157)."
+          },
           "delegatorCount": {
             "type": [
               "integer",

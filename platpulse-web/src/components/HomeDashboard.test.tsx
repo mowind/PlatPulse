@@ -561,7 +561,7 @@ describe('Public Home dashboard', () => {
       nodeId: 'node-linked', linkRole: 'standby', state: 'fresh', freshness: 'fresh', source: 'platscan',
       providerTimestamp: '2026-08-25T00:00:00Z', receivedAt: '2026-08-25T00:00:05Z',
       blockCount: 123456, expectedBlockCount: 110, blockRate: '90.909091', blockRateState: 'ok',
-      genBlocksRate: '0', counterState: 'normal', activity: 'producing', activityState: 'current',
+      genBlocksRate: '0', delegationRewardPercentage: '20', counterState: 'normal', activity: 'producing', activityState: 'current',
     }
     const linkedNode = { ...network.nodes[0], nodeId: 'node-linked', displayName: 'Calico', validator: linked }
     const unlinkedNode = { ...network.nodes[0], nodeId: 'node-unlinked', displayName: 'Domino', validator: null }
@@ -577,6 +577,9 @@ describe('Public Home dashboard', () => {
     // card abbreviates the computed rate while keeping a source 0% a value.
     expect(within(card).getByText('Production rate').nextElementSibling?.textContent).toBe('90.91%')
     expect(within(card).getByText('PlatScan 24h rate').nextElementSibling?.textContent).toBe('0.00%')
+    // The delegation reward share is visible without hover or expansion and is
+    // kept distinct from the annualized yield and the pending ratio.
+    expect(within(card).getByText('Delegation reward share').nextElementSibling?.textContent).toBe('20.00%')
 
     const unlinkedCard = cardOf(nodeCardLink('Domino'))
     expect(within(unlinkedCard).getByText(/Unlinked/)).toBeTruthy()

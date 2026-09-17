@@ -1760,6 +1760,15 @@ export type PublicValidatorInsight = {
      */
     blockRateState: string;
     counterState: string;
+    /**
+     * The currently effective delegation reward distribution percentage
+     * (PlatScan detail `rewardPer`), normalized to percentage points: the
+     * source's already-scaled `20` is 20%, never 0.20% or 2000%. It is
+     * **not** the annualized `reward_rate`, the operator commission, a
+     * pending next-period ratio, or a back-computed net earning. `None`
+     * means unknown; a legitimate `0` and `100` are preserved (#157).
+     */
+    delegationRewardPercentage?: string | null;
     delegatorCount?: number | null;
     displayName?: string | null;
     epoch?: number | null;

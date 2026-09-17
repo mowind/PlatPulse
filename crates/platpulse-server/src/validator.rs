@@ -74,6 +74,12 @@ pub struct ValidatorObservation {
     pub stake_amount: Option<String>,
     pub reward_amount: Option<String>,
     pub reward_rate: Option<String>,
+    /// Currently effective delegation reward distribution percentage
+    /// (PlatScan detail `rewardPer`) in percentage points: the source's
+    /// already-scaled `20` is 20%, never 0.20% or 2000%. It is distinct from
+    /// the annualized `reward_rate` and from the pending `nextRewardPer`,
+    /// which is never read (#157).
+    pub delegation_reward_percentage: Option<String>,
     pub delegator_count: Option<i64>,
     pub epoch: Option<i64>,
     pub block_count: Option<i64>,
@@ -89,7 +95,9 @@ pub struct ValidatorObservation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidatorProviderResult {
-    Success(ValidatorObservation),
+    /// Boxed so the result enum stays small: a normalized observation is a wide
+    /// value struct that is moved once per Provider fetch.
+    Success(Box<ValidatorObservation>),
     NotFound,
     AuthoritativeEmpty,
     /// No PlatScan deployment is bound to this Network. This is distinct from
@@ -238,7 +246,7 @@ impl ValidatorProvider for PlatScanValidatorProvider {
             }
         };
         match normalize_platscan_response(&value, validator_node_id) {
-            Ok(Some(observation)) => ValidatorProviderResult::Success(observation),
+            Ok(Some(observation)) => ValidatorProviderResult::Success(Box::new(observation)),
             Ok(None) => ValidatorProviderResult::AuthoritativeEmpty,
             Err(error) => ValidatorProviderResult::Error(error),
         }
@@ -453,6 +461,20 @@ fn normalize_platscan_response(
         }
         Err("PlatScan returned an invalid percentage".to_owned())
     };
+    // A delegation reward distribution percentage is bounded to 0..=100
+    // percentage points. An out-of-range value is rejected rather than
+    // clamped or reinterpreted: an unscaled basis-point 2000 must never
+    // masquerade as 2000%, and a negative or malformed value is never a
+    // valid ratio (#157).
+    let read_bounded_percentage = |names: &[&str]| -> Result<Option<String>, String> {
+        let Some(value) = read_percentage(names)? else {
+            return Ok(None);
+        };
+        if decimal_exceeds_max(&value, 100) {
+            return Err("PlatScan returned an out-of-range percentage".to_owned());
+        }
+        Ok(Some(value))
+    };
     let observation = ValidatorObservation {
         provider_timestamp: None,
         activity: Some(activity),
@@ -460,6 +482,7 @@ fn normalize_platscan_response(
         stake_amount: read_string(&["stakingValue", "totalValue", "stake"])?,
         reward_amount: read_string(&["rewardValue", "reward"])?,
         reward_rate: read_string(&["deleAnnualizedRate", "rewardRate"])?,
+        delegation_reward_percentage: read_bounded_percentage(&["rewardPer"])?,
         delegator_count: read_int(&["delegateQty", "delegatorCount"])?,
         epoch: read_int(&["epoch"])?,
         block_count: read_int(&["blockQty", "blockCount"])?,
@@ -470,6 +493,7 @@ fn normalize_platscan_response(
         observation.stake_amount.as_deref(),
         observation.reward_amount.as_deref(),
         observation.reward_rate.as_deref(),
+        observation.delegation_reward_percentage.as_deref(),
         observation.gen_blocks_rate.as_deref(),
     ]
     .into_iter()
@@ -517,6 +541,19 @@ fn validate_nonnegative_decimal(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether a validated nonnegative decimal string is greater than `max`.
+/// The integer part is compared directly, so a percentage never round-trips
+/// through a binary float.
+fn decimal_exceeds_max(value: &str, max: u64) -> bool {
+    let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
+    let whole = if whole.is_empty() {
+        0
+    } else {
+        whole.parse::<u64>().unwrap_or(u64::MAX)
+    };
+    whole > max || (whole == max && fraction.bytes().any(|byte| byte != b'0'))
+}
+
 fn provider_diagnostic(value: String) -> String {
     let value = crate::redaction::redact_sensitive(&value)
         .replace("https://", "[redacted-url]/")
@@ -526,13 +563,14 @@ fn provider_diagnostic(value: String) -> String {
 
 fn observation_key(observation: &ValidatorObservation) -> String {
     let bytes = format!(
-        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
         observation.provider_timestamp,
         observation.activity,
         observation.rank,
         observation.stake_amount,
         observation.reward_amount,
         observation.reward_rate,
+        observation.delegation_reward_percentage,
         observation.delegator_count,
         observation.epoch,
         observation.block_count,
@@ -1238,6 +1276,7 @@ pub struct ValidatorInsightRecord {
     pub stake_amount: Option<String>,
     pub reward_amount: Option<String>,
     pub reward_rate: Option<String>,
+    pub delegation_reward_percentage: Option<String>,
     pub delegator_count: Option<i64>,
     pub epoch: Option<i64>,
     pub block_count: Option<i64>,
@@ -1533,7 +1572,7 @@ pub async fn load_insight(
     validator_id: &str,
 ) -> Result<Option<ValidatorInsightRecord>, ValidatorError> {
     Ok(sqlx::query_as::<_, ValidatorInsightRecord>(
-        "SELECT validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, expected_block_count, gen_blocks_rate, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at FROM current_validator_insights WHERE validator_id = ?",
+        "SELECT validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegation_reward_percentage, delegator_count, epoch, block_count, expected_block_count, gen_blocks_rate, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at FROM current_validator_insights WHERE validator_id = ?",
     )
     .bind(validator_id)
     .fetch_optional(db.pool())
@@ -1545,7 +1584,7 @@ pub async fn list_insights(
     network_key: Option<&str>,
 ) -> Result<Vec<ValidatorInsightRecord>, ValidatorError> {
     let mut sql = String::from(
-        "SELECT i.validator_id, i.source, i.outcome, i.diagnostic, i.provider_timestamp, i.activity, i.last_attempt_received_at, i.last_good_received_at, i.last_good_provider_timestamp, i.rank, i.stake_amount, i.reward_amount, i.reward_rate, i.delegator_count, i.epoch, i.block_count, i.expected_block_count, i.gen_blocks_rate, i.counter_state, i.change_state, i.candidate_previous_rank, i.candidate_rank, i.candidate_observations, i.candidate_observed_at, i.candidate_provider_timestamp, i.candidate_observation_key, i.last_observation_key, i.updated_at FROM current_validator_insights i JOIN validators v ON v.validator_id = i.validator_id",
+        "SELECT i.validator_id, i.source, i.outcome, i.diagnostic, i.provider_timestamp, i.activity, i.last_attempt_received_at, i.last_good_received_at, i.last_good_provider_timestamp, i.rank, i.stake_amount, i.reward_amount, i.reward_rate, i.delegation_reward_percentage, i.delegator_count, i.epoch, i.block_count, i.expected_block_count, i.gen_blocks_rate, i.counter_state, i.change_state, i.candidate_previous_rank, i.candidate_rank, i.candidate_observations, i.candidate_observed_at, i.candidate_provider_timestamp, i.candidate_observation_key, i.last_observation_key, i.updated_at FROM current_validator_insights i JOIN validators v ON v.validator_id = i.validator_id",
     );
     if network_key.is_some() {
         sql.push_str(" WHERE v.network_key = ?");
@@ -1666,7 +1705,7 @@ async fn apply_provider_result(
 ) -> Result<(bool, bool, bool), ValidatorError> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     let existing = sqlx::query_as::<_, ValidatorInsightRecord>(
-        "SELECT validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, expected_block_count, gen_blocks_rate, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at FROM current_validator_insights WHERE validator_id = ?",
+        "SELECT validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegation_reward_percentage, delegator_count, epoch, block_count, expected_block_count, gen_blocks_rate, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at FROM current_validator_insights WHERE validator_id = ?",
     )
     .bind(validator_id)
     .fetch_optional(&mut **tx)
@@ -1843,7 +1882,7 @@ async fn apply_provider_result(
                 "normal"
             };
             let source = bounded_source(source);
-            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, expected_block_count, gen_blocks_rate, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, ?, 'success', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=NULL, provider_timestamp=excluded.provider_timestamp, activity=excluded.activity, last_attempt_received_at=excluded.last_attempt_received_at, last_good_received_at=excluded.last_good_received_at, last_good_provider_timestamp=excluded.last_good_provider_timestamp, rank=excluded.rank, stake_amount=excluded.stake_amount, reward_amount=excluded.reward_amount, reward_rate=excluded.reward_rate, delegator_count=excluded.delegator_count, epoch=excluded.epoch, block_count=excluded.block_count, expected_block_count=excluded.expected_block_count, gen_blocks_rate=excluded.gen_blocks_rate, counter_state=excluded.counter_state, change_state=excluded.change_state, candidate_previous_rank=excluded.candidate_previous_rank, candidate_rank=excluded.candidate_rank, candidate_observations=excluded.candidate_observations, candidate_observed_at=excluded.candidate_observed_at, candidate_provider_timestamp=excluded.candidate_provider_timestamp, candidate_observation_key=excluded.candidate_observation_key, last_observation_key=excluded.last_observation_key, updated_at=excluded.updated_at")
+            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegation_reward_percentage, delegator_count, epoch, block_count, expected_block_count, gen_blocks_rate, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, ?, 'success', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=NULL, provider_timestamp=excluded.provider_timestamp, activity=excluded.activity, last_attempt_received_at=excluded.last_attempt_received_at, last_good_received_at=excluded.last_good_received_at, last_good_provider_timestamp=excluded.last_good_provider_timestamp, rank=excluded.rank, stake_amount=excluded.stake_amount, reward_amount=excluded.reward_amount, reward_rate=excluded.reward_rate, delegation_reward_percentage=excluded.delegation_reward_percentage, delegator_count=excluded.delegator_count, epoch=excluded.epoch, block_count=excluded.block_count, expected_block_count=excluded.expected_block_count, gen_blocks_rate=excluded.gen_blocks_rate, counter_state=excluded.counter_state, change_state=excluded.change_state, candidate_previous_rank=excluded.candidate_previous_rank, candidate_rank=excluded.candidate_rank, candidate_observations=excluded.candidate_observations, candidate_observed_at=excluded.candidate_observed_at, candidate_provider_timestamp=excluded.candidate_provider_timestamp, candidate_observation_key=excluded.candidate_observation_key, last_observation_key=excluded.last_observation_key, updated_at=excluded.updated_at")
                 .bind(validator_id)
                 .bind(&source)
                 .bind(observation.provider_timestamp.as_deref())
@@ -1855,6 +1894,7 @@ async fn apply_provider_result(
                 .bind(observation.stake_amount.as_deref())
                 .bind(observation.reward_amount.as_deref())
                 .bind(observation.reward_rate.as_deref())
+                .bind(observation.delegation_reward_percentage.as_deref())
                 .bind(observation.delegator_count)
                 .bind(observation.epoch)
                 .bind(observation.block_count)
@@ -1911,7 +1951,7 @@ async fn apply_provider_result(
                 .as_ref()
                 .is_none_or(|row| row.outcome != name || row.diagnostic != diagnostic);
             let source = bounded_source(source);
-            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, expected_block_count, gen_blocks_rate, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'normal', 'normal', NULL, NULL, 0, NULL, NULL, NULL, NULL, ?) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=excluded.diagnostic, last_attempt_received_at=excluded.last_attempt_received_at, provider_timestamp=current_validator_insights.provider_timestamp, activity=current_validator_insights.activity, last_good_received_at=current_validator_insights.last_good_received_at, last_good_provider_timestamp=current_validator_insights.last_good_provider_timestamp, rank=current_validator_insights.rank, stake_amount=current_validator_insights.stake_amount, reward_amount=current_validator_insights.reward_amount, reward_rate=current_validator_insights.reward_rate, delegator_count=current_validator_insights.delegator_count, epoch=current_validator_insights.epoch, block_count=current_validator_insights.block_count, expected_block_count=current_validator_insights.expected_block_count, gen_blocks_rate=current_validator_insights.gen_blocks_rate, counter_state=current_validator_insights.counter_state, change_state='normal', candidate_previous_rank=NULL, candidate_rank=NULL, candidate_observations=0, candidate_observed_at=NULL, candidate_provider_timestamp=NULL, candidate_observation_key=NULL, last_observation_key=current_validator_insights.last_observation_key, updated_at=excluded.updated_at")
+            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegation_reward_percentage, delegator_count, epoch, block_count, expected_block_count, gen_blocks_rate, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'normal', 'normal', NULL, NULL, 0, NULL, NULL, NULL, NULL, ?) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=excluded.diagnostic, last_attempt_received_at=excluded.last_attempt_received_at, provider_timestamp=current_validator_insights.provider_timestamp, activity=current_validator_insights.activity, last_good_received_at=current_validator_insights.last_good_received_at, last_good_provider_timestamp=current_validator_insights.last_good_provider_timestamp, rank=current_validator_insights.rank, stake_amount=current_validator_insights.stake_amount, reward_amount=current_validator_insights.reward_amount, reward_rate=current_validator_insights.reward_rate, delegation_reward_percentage=current_validator_insights.delegation_reward_percentage, delegator_count=current_validator_insights.delegator_count, epoch=current_validator_insights.epoch, block_count=current_validator_insights.block_count, expected_block_count=current_validator_insights.expected_block_count, gen_blocks_rate=current_validator_insights.gen_blocks_rate, counter_state=current_validator_insights.counter_state, change_state='normal', candidate_previous_rank=NULL, candidate_rank=NULL, candidate_observations=0, candidate_observed_at=NULL, candidate_provider_timestamp=NULL, candidate_observation_key=NULL, last_observation_key=current_validator_insights.last_observation_key, updated_at=excluded.updated_at")
                 .bind(validator_id)
                 .bind(source)
                 .bind(name)
@@ -1935,6 +1975,7 @@ fn validate_observation(observation: &ValidatorObservation) -> Result<(), Valida
         || observation.stake_amount.is_some()
         || observation.reward_amount.is_some()
         || observation.reward_rate.is_some()
+        || observation.delegation_reward_percentage.is_some()
         || observation.delegator_count.is_some()
         || observation.epoch.is_some()
         || observation.block_count.is_some()
@@ -1961,6 +2002,7 @@ fn validate_observation(observation: &ValidatorObservation) -> Result<(), Valida
         observation.stake_amount.as_deref(),
         observation.reward_amount.as_deref(),
         observation.reward_rate.as_deref(),
+        observation.delegation_reward_percentage.as_deref(),
         observation.gen_blocks_rate.as_deref(),
     ]
     .into_iter()
@@ -1968,6 +2010,15 @@ fn validate_observation(observation: &ValidatorObservation) -> Result<(), Valida
     {
         normalize_bounded_text(value).map_err(ValidatorError::InvalidProviderObservation)?;
         validate_nonnegative_decimal(value).map_err(ValidatorError::InvalidProviderObservation)?;
+    }
+    if observation
+        .delegation_reward_percentage
+        .as_deref()
+        .is_some_and(|value| decimal_exceeds_max(value, 100))
+    {
+        return Err(ValidatorError::InvalidProviderObservation(
+            "out-of-range delegation reward percentage".to_owned(),
+        ));
     }
     if let Some(timestamp) = observation.provider_timestamp.as_deref() {
         canonical_timestamp(timestamp)?;
@@ -2315,6 +2366,13 @@ mod tests {
         );
         // The annualized yield stays a separate field; rewardPer is not it.
         assert_eq!(observation.reward_rate.as_deref(), Some("0.05"));
+        // rewardPer is the current delegation distribution percentage in
+        // percentage points: source 20 is 20%, never 0.20% or 2000%. The
+        // pending nextRewardPer (25) is never the current value.
+        assert_eq!(
+            observation.delegation_reward_percentage.as_deref(),
+            Some("20")
+        );
         // A fractional JSON number is already a binary float when parsed, so
         // it must degrade to Error instead of silently losing digits. The
         // payload is parsed from wire text to prove the real path.
@@ -2335,6 +2393,70 @@ mod tests {
                 .reward_amount
                 .as_deref(),
             Some("100")
+        );
+    }
+
+    #[test]
+    fn platscan_delegation_reward_percentage_is_unit_correct_and_bounded() {
+        let node_id = provider_node_id();
+        let parse = |reward_per: Value| {
+            normalize_platscan_response(
+                &serde_json::json!({
+                    "code": 0,
+                    "data": { "nodeId": node_id, "status": 3, "rewardPer": reward_per }
+                }),
+                &node_id,
+            )
+        };
+        // Percentage points, not a fraction and not an unscaled basis-point
+        // count: detail rewardPer 20 is 20%.
+        for (source, expected) in [
+            (serde_json::json!(20), "20"),
+            (serde_json::json!("20"), "20"),
+            (serde_json::json!("20.5%"), "20.5"),
+            (serde_json::json!(0), "0"),
+            (serde_json::json!("0"), "0"),
+            (serde_json::json!(100), "100"),
+            (serde_json::json!("100.00"), "100.00"),
+        ] {
+            assert_eq!(
+                parse(source)
+                    .unwrap()
+                    .unwrap()
+                    .delegation_reward_percentage
+                    .as_deref(),
+                Some(expected)
+            );
+        }
+        // Out-of-range or malformed values are invalid, never clamped or
+        // reinterpreted as a valid ratio.
+        for invalid in [
+            serde_json::json!(101),
+            serde_json::json!("100.5"),
+            serde_json::json!(-1),
+            serde_json::json!("abc"),
+            serde_json::json!("20%%"),
+            serde_json::json!(2000),
+        ] {
+            assert!(
+                parse(invalid.clone()).is_err(),
+                "invalid rewardPer {invalid} must be rejected"
+            );
+        }
+        // A missing rewardPer is unknown, and a pending nextRewardPer alone
+        // never becomes the current effective ratio.
+        assert_eq!(
+            normalize_platscan_response(
+                &serde_json::json!({
+                    "code": 0,
+                    "data": { "nodeId": node_id, "status": 3, "nextRewardPer": 25 }
+                }),
+                &node_id,
+            )
+            .unwrap()
+            .unwrap()
+            .delegation_reward_percentage,
+            None
         );
     }
 
@@ -2399,10 +2521,10 @@ mod tests {
         for (status, activity) in expected {
             assert_eq!(
                 provider.fetch("platon-mainnet", &node_id).await,
-                ValidatorProviderResult::Success(ValidatorObservation {
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     activity: Some(activity),
                     ..Default::default()
-                }),
+                })),
                 "status {status}"
             );
         }
@@ -2476,17 +2598,17 @@ mod tests {
             PlatScanValidatorProvider::new(deployments, std::time::Duration::from_secs(5)).unwrap();
         assert_eq!(
             provider.fetch("platon-mainnet", &node_id).await,
-            ValidatorProviderResult::Success(ValidatorObservation {
+            ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                 activity: Some(ValidatorActivity::Active),
                 ..Default::default()
-            })
+            }))
         );
         assert_eq!(
             provider.fetch("platon-devnet", &node_id).await,
-            ValidatorProviderResult::Success(ValidatorObservation {
+            ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                 activity: Some(ValidatorActivity::Producing),
                 ..Default::default()
-            })
+            }))
         );
         assert_eq!(first_state.requests.lock().unwrap().len(), 1);
         assert_eq!(second_state.requests.lock().unwrap().len(), 1);
@@ -2724,25 +2846,25 @@ mod tests {
             .unwrap();
         let provider = FakeProvider {
             results: std::sync::Mutex::new(vec![
-                ValidatorProviderResult::Success(ValidatorObservation {
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:00:00Z".to_owned()),
                     rank: Some(1),
                     stake_amount: Some("123456789012345678901234567890".to_owned()),
                     reward_rate: Some("0.125000000000000001".to_owned()),
                     ..ValidatorObservation::default()
-                }),
-                ValidatorProviderResult::Success(ValidatorObservation {
+                })),
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:01:00Z".to_owned()),
                     rank: Some(2),
                     stake_amount: Some("123456789012345678901234567889".to_owned()),
                     ..ValidatorObservation::default()
-                }),
-                ValidatorProviderResult::Success(ValidatorObservation {
+                })),
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:02:00Z".to_owned()),
                     rank: Some(2),
                     stake_amount: Some("123456789012345678901234567888".to_owned()),
                     ..ValidatorObservation::default()
-                }),
+                })),
                 ValidatorProviderResult::Error(
                     "provider timeout at https://secret.example".to_owned(),
                 ),
@@ -2865,33 +2987,33 @@ mod tests {
             .unwrap();
         let provider = FakeProvider {
             results: std::sync::Mutex::new(vec![
-                ValidatorProviderResult::Success(ValidatorObservation {
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:00:00Z".to_owned()),
                     activity: Some(ValidatorActivity::Active),
                     rank: Some(1),
                     ..Default::default()
-                }),
-                ValidatorProviderResult::Success(ValidatorObservation {
+                })),
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:01:00Z".to_owned()),
                     activity: Some(ValidatorActivity::Producing),
                     rank: Some(2),
                     ..Default::default()
-                }),
-                ValidatorProviderResult::Success(ValidatorObservation {
+                })),
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:02:00Z".to_owned()),
                     activity: Some(ValidatorActivity::Producing),
                     rank: Some(2),
                     ..Default::default()
-                }),
+                })),
                 ValidatorProviderResult::Error("provider timeout".to_owned()),
                 ValidatorProviderResult::AuthoritativeEmpty,
                 // A validated snapshot that omits Activity preserves the
                 // last-good canonical value instead of erasing it.
-                ValidatorProviderResult::Success(ValidatorObservation {
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:03:00Z".to_owned()),
                     rank: Some(2),
                     ..Default::default()
-                }),
+                })),
             ]),
             ..FakeProvider::default()
         };
@@ -3000,37 +3122,37 @@ mod tests {
             .unwrap();
         let provider = FakeProvider {
             results: std::sync::Mutex::new(vec![
-                ValidatorProviderResult::Success(ValidatorObservation {
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:00:00Z".to_owned()),
                     rank: Some(1),
                     ..Default::default()
-                }),
-                ValidatorProviderResult::Success(ValidatorObservation {
+                })),
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:01:00Z".to_owned()),
                     rank: Some(2),
                     ..Default::default()
-                }),
-                ValidatorProviderResult::Success(ValidatorObservation {
+                })),
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:01:00Z".to_owned()),
                     rank: Some(2),
                     ..Default::default()
-                }),
+                })),
                 ValidatorProviderResult::Error("temporary failure".to_owned()),
-                ValidatorProviderResult::Success(ValidatorObservation {
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:02:00Z".to_owned()),
                     rank: Some(2),
                     ..Default::default()
-                }),
-                ValidatorProviderResult::Success(ValidatorObservation {
+                })),
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:03:00Z".to_owned()),
                     rank: Some(2),
                     ..Default::default()
-                }),
-                ValidatorProviderResult::Success(ValidatorObservation {
+                })),
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:03:00Z".to_owned()),
                     rank: Some(2),
                     ..Default::default()
-                }),
+                })),
             ]),
             ..FakeProvider::default()
         };
@@ -3115,18 +3237,18 @@ mod tests {
             .unwrap();
         let provider = FakeProvider {
             results: std::sync::Mutex::new(vec![
-                ValidatorProviderResult::Success(ValidatorObservation {
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     stake_amount: Some("100.000000000000000001".to_owned()),
                     ..Default::default()
-                }),
-                ValidatorProviderResult::Success(ValidatorObservation {
+                })),
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     stake_amount: Some("99.999999999999999999".to_owned()),
                     ..Default::default()
-                }),
-                ValidatorProviderResult::Success(ValidatorObservation {
+                })),
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     stake_amount: Some("99.999999999999999999".to_owned()),
                     ..Default::default()
-                }),
+                })),
             ]),
             ..FakeProvider::default()
         };
@@ -3168,14 +3290,14 @@ mod tests {
             .unwrap();
         let provider = FakeProvider {
             results: std::sync::Mutex::new(vec![
-                ValidatorProviderResult::Success(ValidatorObservation {
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     reward_amount: Some("500.000000000012".to_owned()),
                     ..Default::default()
-                }),
-                ValidatorProviderResult::Success(ValidatorObservation {
+                })),
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     reward_amount: Some("499.999999999999".to_owned()),
                     ..Default::default()
-                }),
+                })),
             ]),
             ..FakeProvider::default()
         };
@@ -3350,24 +3472,24 @@ mod tests {
 
         let provider = FakeProvider {
             results: std::sync::Mutex::new(vec![
-                ValidatorProviderResult::Success(ValidatorObservation {
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-31T15:30:00Z".to_owned()),
                     rank: Some(1),
                     stake_amount: Some("10".to_owned()),
                     ..Default::default()
-                }),
-                ValidatorProviderResult::Success(ValidatorObservation {
+                })),
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-02-28T15:30:00Z".to_owned()),
                     rank: Some(2),
                     stake_amount: Some("20".to_owned()),
                     ..Default::default()
-                }),
-                ValidatorProviderResult::Success(ValidatorObservation {
+                })),
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-02-28T15:30:00Z".to_owned()),
                     rank: Some(2),
                     stake_amount: Some("20".to_owned()),
                     ..Default::default()
-                }),
+                })),
             ]),
             ..FakeProvider::default()
         };
@@ -3425,21 +3547,21 @@ mod tests {
             .unwrap();
         let provider = FakeProvider {
             results: std::sync::Mutex::new(vec![
-                ValidatorProviderResult::Success(ValidatorObservation {
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:30:00Z".to_owned()),
                     rank: Some(7),
                     ..Default::default()
-                }),
-                ValidatorProviderResult::Success(ValidatorObservation {
+                })),
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:30:00Z".to_owned()),
                     rank: Some(7),
                     ..Default::default()
-                }),
-                ValidatorProviderResult::Success(ValidatorObservation {
+                })),
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:30:00Z".to_owned()),
                     rank: Some(7),
                     ..Default::default()
-                }),
+                })),
             ]),
             ..FakeProvider::default()
         };
@@ -3504,12 +3626,12 @@ mod tests {
             .unwrap();
         let provider = FakeProvider {
             results: std::sync::Mutex::new(vec![
-                ValidatorProviderResult::Success(ValidatorObservation {
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:00:00Z".to_owned()),
                     rank: Some(3),
                     stake_amount: Some("300".to_owned()),
                     ..Default::default()
-                }),
+                })),
                 ValidatorProviderResult::Error("provider timeout".to_owned()),
             ]),
             ..FakeProvider::default()
@@ -3579,12 +3701,12 @@ mod tests {
             .unwrap();
         let provider = FakeProvider {
             results: std::sync::Mutex::new(vec![
-                ValidatorProviderResult::Success(ValidatorObservation {
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:00:00Z".to_owned()),
                     activity: Some(ValidatorActivity::Producing),
                     block_count: Some(100),
                     ..ValidatorObservation::default()
-                }),
+                })),
                 ValidatorProviderResult::NotConfigured("no bound deployment".to_owned()),
             ]),
             ..FakeProvider::default()
@@ -3653,6 +3775,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn migration_0046_adds_the_delegation_percentage_without_backfilling_legacy_rows() {
+        use sqlx::migrate::Migrator;
+        use sqlx::sqlite::SqlitePoolOptions;
+        use std::borrow::Cow;
+
+        // Build the schema exactly as it existed immediately before migration
+        // 0046, seed one last-good row, then let Server startup apply 0046.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("server.db");
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(&path)
+                    .create_if_missing(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .unwrap();
+        let pre_0046 = Migrator {
+            migrations: Cow::Owned(
+                crate::database::SERVER_MIGRATOR
+                    .iter()
+                    .filter(|migration| migration.version <= 45)
+                    .cloned()
+                    .collect(),
+            ),
+            ignore_missing: false,
+            locking: true,
+            no_tx: false,
+        };
+        pre_0046.run(&pool).await.unwrap();
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('platon-mainnet', 'Mainnet', '0x0', 1, 1, 'lat', '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES ('validator-legacy', 'platon-mainnet', '0xabc', NULL, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, last_attempt_received_at, last_good_received_at, block_count, expected_block_count, gen_blocks_rate, updated_at) VALUES ('validator-legacy', 'platscan', 'success', '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z', 100, 110, '75.5', '2025-01-01T00:00:00Z')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        let db = initialize(ServerDatabaseConfig::new(&path)).await.unwrap();
+        let insight = load_insight(&db, "validator-legacy")
+            .await
+            .unwrap()
+            .unwrap();
+        // The upgrade keeps every existing last-good value...
+        assert_eq!(insight.block_count, Some(100));
+        assert_eq!(insight.expected_block_count, Some(110));
+        assert_eq!(insight.gen_blocks_rate.as_deref(), Some("75.5"));
+        // ... and the new column stays Unknown instead of acquiring a value.
+        assert_eq!(insight.delegation_reward_percentage, None);
+    }
+
+    #[tokio::test]
     async fn block_count_survives_database_reopen_without_fabricating_values() {
         let (dir, db) = test_db().await;
         let owner_id: String =
@@ -3665,15 +3852,15 @@ mod tests {
             .unwrap();
         let provider = FakeProvider {
             results: std::sync::Mutex::new(vec![
-                ValidatorProviderResult::Success(ValidatorObservation {
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     activity: Some(ValidatorActivity::Active),
                     block_count: Some(55),
                     ..ValidatorObservation::default()
-                }),
-                ValidatorProviderResult::Success(ValidatorObservation {
+                })),
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
                     activity: Some(ValidatorActivity::Active),
                     ..ValidatorObservation::default()
-                }),
+                })),
             ]),
             ..FakeProvider::default()
         };
@@ -3824,7 +4011,7 @@ mod tests {
             .unwrap();
         let validator_id = validator.validator_id.clone();
         let provider = FakeProvider {
-            results: std::sync::Mutex::new(vec![ValidatorProviderResult::Success(
+            results: std::sync::Mutex::new(vec![ValidatorProviderResult::Success(Box::new(
                 ValidatorObservation {
                     provider_timestamp: Some("2025-01-01T00:00:00Z".to_owned()),
                     activity: Some(ValidatorActivity::Producing),
@@ -3833,7 +4020,7 @@ mod tests {
                     gen_blocks_rate: Some("90.909091".to_owned()),
                     ..ValidatorObservation::default()
                 },
-            )]),
+            ))]),
             ..FakeProvider::default()
         };
         refresh_all(&db, &provider).await.unwrap();
@@ -3877,13 +4064,13 @@ mod tests {
         // A later success with a fresh numerator but no denominator clears the
         // pair: the new numerator is never divided by the older denominator.
         let partial = FakeProvider {
-            results: std::sync::Mutex::new(vec![ValidatorProviderResult::Success(
+            results: std::sync::Mutex::new(vec![ValidatorProviderResult::Success(Box::new(
                 ValidatorObservation {
                     activity: Some(ValidatorActivity::Producing),
                     block_count: Some(200),
                     ..ValidatorObservation::default()
                 },
-            )]),
+            ))]),
             ..FakeProvider::default()
         };
         refresh_all(&reopened, &partial).await.unwrap();
@@ -3898,5 +4085,76 @@ mod tests {
             cumulative_block_rate(insight.block_count, insight.expected_block_count),
             (None, "unknown")
         );
+    }
+
+    #[tokio::test]
+    async fn delegation_reward_percentage_persists_retains_last_good_and_survives_restart() {
+        let (dir, db) = test_db().await;
+        let owner_id: String =
+            sqlx::query_scalar("SELECT user_id FROM users WHERE username = 'owner'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        let (validator, _) = create_validator(&db, "platon-mainnet", "0xabc", None, &owner_id)
+            .await
+            .unwrap();
+        let validator_id = validator.validator_id.clone();
+        let provider = FakeProvider {
+            results: std::sync::Mutex::new(vec![ValidatorProviderResult::Success(Box::new(
+                ValidatorObservation {
+                    activity: Some(ValidatorActivity::Producing),
+                    delegation_reward_percentage: Some("20".to_owned()),
+                    ..ValidatorObservation::default()
+                },
+            ))]),
+            ..FakeProvider::default()
+        };
+        refresh_all(&db, &provider).await.unwrap();
+        let insight = load_insight(&db, &validator_id).await.unwrap().unwrap();
+        assert_eq!(insight.delegation_reward_percentage.as_deref(), Some("20"));
+
+        // The percentage survives a Server restart (database reopen).
+        drop(db);
+        let reopened = initialize(ServerDatabaseConfig::new(dir.path().join("server.db")))
+            .await
+            .unwrap();
+        let insight = load_insight(&reopened, &validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(insight.delegation_reward_percentage.as_deref(), Some("20"));
+
+        // A non-success outcome retains the last-good percentage.
+        let failure = FakeProvider {
+            results: std::sync::Mutex::new(vec![ValidatorProviderResult::Error(
+                "platscan failed".to_owned(),
+            )]),
+            ..FakeProvider::default()
+        };
+        refresh_all(&reopened, &failure).await.unwrap();
+        let insight = load_insight(&reopened, &validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(insight.outcome, "error");
+        assert_eq!(insight.delegation_reward_percentage.as_deref(), Some("20"));
+
+        // A later success that omits rewardPer is Unknown, never carried from a
+        // different observation and never fabricated as zero.
+        let partial = FakeProvider {
+            results: std::sync::Mutex::new(vec![ValidatorProviderResult::Success(Box::new(
+                ValidatorObservation {
+                    activity: Some(ValidatorActivity::Producing),
+                    ..ValidatorObservation::default()
+                },
+            ))]),
+            ..FakeProvider::default()
+        };
+        refresh_all(&reopened, &partial).await.unwrap();
+        let insight = load_insight(&reopened, &validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(insight.delegation_reward_percentage, None);
     }
 }

@@ -502,7 +502,7 @@ with sqlite3.connect(path) as db:
         (validator_link_id, node_a, validator_id, now, now),
     )
     db.execute(
-        "INSERT OR IGNORE INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, expected_block_count, gen_blocks_rate, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, 'explorer', 'success', NULL, ?, ?, ?, ?, 2, '1000', '10', '0.05', 8, 42, 100, 110, '75.5', 'normal', 'normal', NULL, NULL, 0, NULL, NULL, NULL, 'obs-1', ?)",
+        "INSERT OR IGNORE INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegation_reward_percentage, delegator_count, epoch, block_count, expected_block_count, gen_blocks_rate, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, 'explorer', 'success', NULL, ?, ?, ?, ?, 2, '1000', '10', '0.05', '20', 8, 42, 100, 110, '75.5', 'normal', 'normal', NULL, NULL, 0, NULL, NULL, NULL, 'obs-1', ?)",
         (validator_id, fresh, fresh, fresh, fresh, fresh),
     )
     for day, month, sample_at in [

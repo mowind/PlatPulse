@@ -21,8 +21,12 @@ const LINKED_BLOCK_RATE_CARD = '90.91%'
 const LINKED_BLOCK_RATE_DETAIL = '90.909091%'
 const LINKED_GEN_BLOCKS_RATE_CARD = '75.50%'
 const LINKED_GEN_BLOCKS_RATE_DETAIL = '75.5%'
+// Source rewardPer 20 is 20%; cards default to two decimals and detail
+// preserves the source digits.
+const LINKED_DELEGATION_SHARE_CARD = '20.00%'
+const LINKED_DELEGATION_SHARE_DETAIL = '20%'
 
-test.describe('Linked Validator metrics (#154, #155, #156)', () => {
+test.describe('Linked Validator metrics (#154, #155, #156, #157)', () => {
   test('shows cumulative blocks, rewards, and both rates on the Home card and Node detail', async ({ page }) => {
     await loginAs(page)
 
@@ -49,6 +53,10 @@ test.describe('Linked Validator metrics (#154, #155, #156)', () => {
     ).toHaveText(LINKED_GEN_BLOCKS_RATE_CARD)
     await expect(card.getByText(/not an exact missed-block rate/).first()).toBeVisible()
     await expect(card.getByText(/PlatScan口径/).first()).toBeVisible()
+    await expect(
+      card.getByText('Delegation reward share', { exact: true }).locator('..').locator('[data-slot="metric-row-value"]'),
+    ).toHaveText(LINKED_DELEGATION_SHARE_CARD)
+    await expect(card.getByText(/not annualized yield, operator commission/).first()).toBeVisible()
 
     // Node detail: the same linked Validator area plus the exact-value caveat
     // and provenance.
@@ -62,7 +70,7 @@ test.describe('Linked Validator metrics (#154, #155, #156)', () => {
     ).toHaveText(LINKED_REWARD)
     await expect(detail.getByText(/not operator net earnings/)).toBeVisible()
     await expect(detail.getByText('Primary')).toBeVisible()
-    await expect(detail.getByText('Last success')).toBeVisible()
+    await expect(detail.getByText('Last success', { exact: true })).toBeVisible()
     // Detail preserves the full Server-computed and source precision.
     await expect(
       detail.getByText('Production rate', { exact: true }).locator('..').locator('[data-slot="metric-row-value"]'),
@@ -70,6 +78,9 @@ test.describe('Linked Validator metrics (#154, #155, #156)', () => {
     await expect(
       detail.getByText('PlatScan 24h rate', { exact: true }).locator('..').locator('[data-slot="metric-row-value"]'),
     ).toHaveText(LINKED_GEN_BLOCKS_RATE_DETAIL)
+    await expect(
+      detail.getByText('Delegation reward share', { exact: true }).locator('..').locator('[data-slot="metric-row-value"]'),
+    ).toHaveText(LINKED_DELEGATION_SHARE_DETAIL)
 
     await expectNoHorizontalOverflow(page)
   })

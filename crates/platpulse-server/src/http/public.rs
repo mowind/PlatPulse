@@ -696,6 +696,13 @@ pub struct PublicValidatorInsight {
     /// `None` means unknown, never zero (#155).
     pub reward_amount: Option<String>,
     pub reward_rate: Option<String>,
+    /// The currently effective delegation reward distribution percentage
+    /// (PlatScan detail `rewardPer`), normalized to percentage points: the
+    /// source's already-scaled `20` is 20%, never 0.20% or 2000%. It is
+    /// **not** the annualized `reward_rate`, the operator commission, a
+    /// pending next-period ratio, or a back-computed net earning. `None`
+    /// means unknown; a legitimate `0` and `100` are preserved (#157).
+    pub delegation_reward_percentage: Option<String>,
     pub delegator_count: Option<i64>,
     pub epoch: Option<i64>,
     /// Cumulative Validator produced blocks over chain history (PlatScan
@@ -755,6 +762,7 @@ struct PublicValidatorRow {
     stake_amount: Option<String>,
     reward_amount: Option<String>,
     reward_rate: Option<String>,
+    delegation_reward_percentage: Option<String>,
     delegator_count: Option<i64>,
     epoch: Option<i64>,
     block_count: Option<i64>,
@@ -804,7 +812,7 @@ async fn public_validator_insights(
 ) -> Result<Vec<PublicValidatorInsight>, sqlx::Error> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     let rows = sqlx::query_as::<_, PublicValidatorRow>(
-        "SELECT v.validator_id, v.validator_node_id, v.display_name, (SELECT n2.node_id FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1) AS node_id, (SELECT l2.role FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1) AS link_role, i.source, i.outcome, i.provider_timestamp, i.activity, i.last_good_received_at, i.rank, i.stake_amount, i.reward_amount, i.reward_rate, i.delegator_count, i.epoch, i.block_count, i.expected_block_count, i.gen_blocks_rate, i.counter_state FROM validators v LEFT JOIN current_validator_insights i ON i.validator_id = v.validator_id WHERE v.network_key = ? AND EXISTS (SELECT 1 FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = v.validator_id AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.lifecycle = 'active') ORDER BY v.validator_node_id, v.validator_id",
+        "SELECT v.validator_id, v.validator_node_id, v.display_name, (SELECT n2.node_id FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1) AS node_id, (SELECT l2.role FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1) AS link_role, i.source, i.outcome, i.provider_timestamp, i.activity, i.last_good_received_at, i.rank, i.stake_amount, i.reward_amount, i.reward_rate, i.delegation_reward_percentage, i.delegator_count, i.epoch, i.block_count, i.expected_block_count, i.gen_blocks_rate, i.counter_state FROM validators v LEFT JOIN current_validator_insights i ON i.validator_id = v.validator_id WHERE v.network_key = ? AND EXISTS (SELECT 1 FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = v.validator_id AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.lifecycle = 'active') ORDER BY v.validator_node_id, v.validator_id",
     )
     .bind(&now)
     .bind(&now)
@@ -848,6 +856,7 @@ async fn public_validator_insights(
                 stake_amount: row.stake_amount,
                 reward_amount: row.reward_amount,
                 reward_rate: row.reward_rate,
+                delegation_reward_percentage: row.delegation_reward_percentage,
                 delegator_count: row.delegator_count,
                 epoch: row.epoch,
                 block_count: row.block_count,
@@ -4449,6 +4458,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn public_validator_delegation_reward_percentage_is_percentage_points_and_retained() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        seed_validator_activity(
+            &state,
+            "node-public",
+            "validator-delegation",
+            "success",
+            Some("producing"),
+            Some(&now),
+            "2026-01-01T00:00:00Z",
+            None,
+        )
+        .await;
+
+        // The source value is already a delegation distribution percentage in
+        // percentage points: 20 renders as 20, not 0.2 or 2000.
+        sqlx::query("UPDATE current_validator_insights SET delegation_reward_percentage = '20' WHERE validator_id = 'validator-delegation'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let response = public_networks(State(state.clone())).await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            value[0]["validators"][0]["delegationRewardPercentage"],
+            "20"
+        );
+
+        // Legitimate 0 and 100 boundaries are preserved exactly.
+        for boundary in ["0", "100"] {
+            sqlx::query("UPDATE current_validator_insights SET delegation_reward_percentage = ? WHERE validator_id = 'validator-delegation'")
+                .bind(boundary)
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+            let response = public_networks(State(state.clone())).await;
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(
+                value[0]["validators"][0]["delegationRewardPercentage"],
+                boundary
+            );
+        }
+
+        // A source failure retains the last-good percentage; it is never
+        // rewritten as unknown or zero.
+        sqlx::query("UPDATE current_validator_insights SET outcome = 'error' WHERE validator_id = 'validator-delegation'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let response = public_networks(State(state.clone())).await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let validator = &value[0]["validators"][0];
+        assert_eq!(validator["state"], "error");
+        assert_eq!(validator["delegationRewardPercentage"], "100");
+
+        // A successful response that omits the field is unknown, never a
+        // fabricated zero.
+        sqlx::query("UPDATE current_validator_insights SET outcome = 'success', delegation_reward_percentage = NULL WHERE validator_id = 'validator-delegation'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let response = public_networks(State(state)).await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(value[0]["validators"][0]["delegationRewardPercentage"].is_null());
+    }
+
+    #[tokio::test]
     async fn public_validator_legacy_row_reports_unknown_rates_without_backfill() {
         let (_dir, state) = test_state().await;
         seed_public_data(&state).await;
@@ -4475,6 +4556,7 @@ mod tests {
         assert!(validator["blockRate"].is_null());
         assert_eq!(validator["blockRateState"], "unknown");
         assert!(validator["genBlocksRate"].is_null());
+        assert!(validator["delegationRewardPercentage"].is_null());
     }
 
     #[tokio::test]

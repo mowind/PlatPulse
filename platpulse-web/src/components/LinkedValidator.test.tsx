@@ -77,7 +77,7 @@ describe('LinkedValidatorSection', () => {
     expect(screen.getByText('Not configured')).toBeTruthy()
     expect(screen.getByText(/No Validator source is configured for this Network/)).toBeTruthy()
     expect(screen.getByText('4,321')).toBeTruthy()
-    expect(screen.getByText(/last successful cumulative value/)).toBeTruthy()
+    expect(screen.getByText(/Showing the last successful value/)).toBeTruthy()
   })
 
   it('marks a stale last-good value and a counter reset without splicing history', () => {
@@ -130,7 +130,7 @@ describe('LinkedValidatorSection', () => {
   it('retains a last-good reward after a source failure even without a block count', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, state: 'error', freshness: 'stale', blockCount: null, rewardAmount: '42.5' } }} />)
     expect(screen.getByText('Cumulative rewards').nextElementSibling?.textContent).toBe('42.5')
-    expect(screen.getByText(/Showing the last successful cumulative value/)).toBeTruthy()
+    expect(screen.getByText(/Showing the last successful value/)).toBeTruthy()
   })
 
   it('shows both production rates with their distinct source meanings', () => {
@@ -165,13 +165,43 @@ describe('LinkedValidatorSection', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, state: 'error', freshness: 'stale', genBlocksRate: '0' } }} />)
     expect(screen.getByText('PlatScan 24h rate').nextElementSibling?.textContent).toBe('0.00%')
     expect(screen.getByText('Production rate').nextElementSibling?.textContent).toBe('90.91%')
-    expect(screen.getByText(/Showing the last successful cumulative value/)).toBeTruthy()
+    expect(screen.getByText(/Showing the last successful value/)).toBeTruthy()
   })
 
   it('shows the full available rate precision only in Node detail', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: insight }} variant="detail" />)
     expect(screen.getByText('Production rate').nextElementSibling?.textContent).toBe('90.909091%')
     expect(screen.getByText('PlatScan 24h rate').nextElementSibling?.textContent).toBe('75.5%')
+  })
+
+  it('shows the delegation reward share in percentage points, not a fraction or basis points', () => {
+    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, delegationRewardPercentage: '20' } }} />)
+    expect(screen.getByText('Delegation reward share')).toBeTruthy()
+    expect(screen.getByText('Delegation reward share').nextElementSibling?.textContent).toBe('20.00%')
+    expect(screen.getByText(/not annualized yield, operator commission, or the pending next-period ratio/)).toBeTruthy()
+
+    cleanup()
+    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, delegationRewardPercentage: '20' } }} variant="detail" />)
+    expect(screen.getByText('Delegation reward share').nextElementSibling?.textContent).toBe('20%')
+  })
+
+  it('keeps legitimate 0 and 100 boundaries and a missing delegation share distinct', () => {
+    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, delegationRewardPercentage: '0' } }} />)
+    expect(screen.getByText('Delegation reward share').nextElementSibling?.textContent).toBe('0.00%')
+
+    cleanup()
+    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, delegationRewardPercentage: '100' } }} />)
+    expect(screen.getByText('Delegation reward share').nextElementSibling?.textContent).toBe('100.00%')
+
+    cleanup()
+    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, delegationRewardPercentage: null } }} />)
+    expect(screen.getByText('Delegation reward share').nextElementSibling?.textContent).toBe('Unknown')
+  })
+
+  it('retains a last-good delegation share after a failure without carrying it from another observation', () => {
+    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, state: 'error', freshness: 'stale', delegationRewardPercentage: '20' } }} />)
+    expect(screen.getByText('Delegation reward share').nextElementSibling?.textContent).toBe('20.00%')
+    expect(screen.getByText(/Showing the last successful value/)).toBeTruthy()
   })
 
   it('maps roles and states to fixed, sanitized public labels', () => {
