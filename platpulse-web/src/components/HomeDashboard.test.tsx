@@ -512,10 +512,11 @@ describe('Public Home dashboard', () => {
     expect(within(betaCard).getByText(/No successful Peer snapshot is available/)).toBeTruthy()
     expect(within(betaCard).queryByText('Current observation')).toBeNull()
 
-    // Healthy Node with an active resync: progress is the single line.
+    // Healthy Node with an active resync: a labelled Warning, still one line.
     const gammaCard = cardOf(nodeCardLink('Gamma'))
-    expect(within(gammaCard).getByText('Backfilling 10,000 blocks')).toBeTruthy()
+    expect(within(gammaCard).getByText('Resyncing · Backfilling 10,000 blocks')).toBeTruthy()
     expect(within(gammaCard).queryByText('Current observation')).toBeNull()
+    expect(gammaCard.querySelector('[data-slot="node-diagnostic"]')?.getAttribute('data-tone')).toBe('warning')
     expect(gammaCard.querySelectorAll('[data-slot="node-diagnostic"]')).toHaveLength(1)
   })
 

@@ -289,8 +289,17 @@ function HomeNodeCard({ network, node }: NodeRecord) {
         </>}>
         <p className="truncate text-[11px] text-muted-foreground">{network.displayName}</p>
         {diagnostic && (
-          <p data-slot="node-diagnostic" className="text-[11px] text-destructive">
-            {diagnostic}
+          <p
+            data-slot="node-diagnostic"
+            data-tone={diagnostic.tone}
+            className={cn(
+              'text-[11px]',
+              diagnostic.tone === 'destructive'
+                ? 'text-destructive'
+                : 'text-amber-500 dark:text-amber-400',
+            )}
+          >
+            {diagnostic.text}
           </p>
         )}
         <ResourceRow node={node} />
@@ -421,15 +430,22 @@ function formatConsensusValidator(insight: PublicConsensusInsight | undefined, s
   return insight.validator ? 'Validator' : 'Non-validator'
 }
 
-/** One sanitized diagnostic line for exceptional Nodes only (issue #97). */
-function exceptionalDiagnostic(node: PublicNode): string | null {
+type NodeDiagnostic = { text: string; tone: 'destructive' | 'warning' }
+
+/** One sanitized diagnostic line for exceptional Nodes only (issue #97).
+ *  A resync is a Warning rather than a failure, so it is labelled and kept
+ *  out of the destructive red that marks an unhealthy Node. */
+function exceptionalDiagnostic(node: PublicNode): NodeDiagnostic | null {
   if (node.health !== 'healthy') {
     const reason = node.healthReason?.trim()
-    return reason || `Health ${healthLabel(node.health).toLowerCase()}`
+    return {
+      text: reason || `Health ${healthLabel(node.health).toLowerCase()}`,
+      tone: 'destructive',
+    }
   }
   if ((node.resyncState ?? '').toLowerCase() === 'resyncing') {
     const progress = node.resyncProgress?.trim()
-    return progress || 'Resync in progress'
+    return { text: `Resyncing · ${progress || 'progress unknown'}`, tone: 'warning' }
   }
   return null
 }

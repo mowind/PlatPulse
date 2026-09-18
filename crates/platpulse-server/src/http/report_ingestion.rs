@@ -53,6 +53,13 @@ fn now() -> Rfc3339 {
         .expect("formatted timestamp is valid")
 }
 
+/// A polled Chain Head can trail the subscribed Block History by the blocks
+/// that arrived between polls, so one below-high-water sample is observational
+/// skew rather than a resync. A below-high-water episode must persist for this
+/// long before the resync projection treats it as real; a genuine replay lasts
+/// far longer, while skew clears on the next report.
+const RESYNC_TRANSITION_GRACE_SECONDS: i64 = 30;
+
 fn rejection(code: platpulse_core::RejectionCode, reason: &str) -> platpulse_core::Rejection {
     platpulse_core::Rejection {
         code,
@@ -1108,14 +1115,25 @@ async fn save_current(
             let sync = node.chain.sync.latest;
             let current = sync.map(|v| v.current_block as i64);
             let current_timestamp = report.generated_at.to_string();
-            sqlx::query("INSERT INTO block_history_state (node_id, current_head, resync_state, resync_last_progress_at, updated_at) VALUES (?, ?, 'normal', ?, ?) ON CONFLICT(node_id) DO UPDATE SET current_head=excluded.current_head, resync_last_progress_at=excluded.resync_last_progress_at, updated_at=excluded.updated_at")
+            // Only a head that actually advances is progress. Every report
+            // re-sends the latest sample, so bumping the timestamp
+            // unconditionally would turn the "(last progress ...)" diagnostic
+            // into a clock instead of an answer.
+            sqlx::query("INSERT INTO block_history_state (node_id, current_head, resync_state, resync_last_progress_at, updated_at) VALUES (?, ?, 'normal', ?, ?) ON CONFLICT(node_id) DO UPDATE SET current_head=excluded.current_head, resync_last_progress_at=CASE WHEN excluded.current_head IS NOT NULL AND (block_history_state.current_head IS NULL OR excluded.current_head > block_history_state.current_head) THEN excluded.resync_last_progress_at ELSE block_history_state.resync_last_progress_at END, updated_at=excluded.updated_at")
                 .bind(&node_id)
                 .bind(current)
                 .bind(&current_timestamp)
                 .bind(received_at)
                 .execute(&mut **tx)
                 .await?;
-            sqlx::query("UPDATE block_history_state SET resync_state=CASE WHEN current_head IS NOT NULL AND current_head < historical_high_watermark THEN 'resyncing' ELSE 'normal' END, resync_started_at=CASE WHEN current_head IS NOT NULL AND current_head < historical_high_watermark AND resync_state != 'resyncing' THEN updated_at ELSE resync_started_at END WHERE node_id=?")
+            // The polled Chain Head can trail the subscribed Block History by
+            // the blocks that arrived between polls, so a single
+            // below-high-water sample is observation skew, not a resync. An
+            // episode has to persist for the grace window before it flips the
+            // projection; resync_started_at marks the episode start and is
+            // cleared once the head re-reaches the high-water mark.
+            sqlx::query("UPDATE block_history_state SET resync_state=CASE WHEN current_head IS NULL OR historical_high_watermark IS NULL THEN resync_state WHEN current_head >= historical_high_watermark THEN 'normal' WHEN resync_started_at IS NOT NULL AND julianday(updated_at) - julianday(resync_started_at) >= (? / 86400.0) THEN 'resyncing' ELSE resync_state END, resync_started_at=CASE WHEN current_head IS NULL OR historical_high_watermark IS NULL THEN resync_started_at WHEN current_head >= historical_high_watermark THEN NULL ELSE COALESCE(resync_started_at, updated_at) END WHERE node_id=?")
+                .bind(RESYNC_TRANSITION_GRACE_SECONDS as f64)
                 .bind(&node_id)
                 .execute(&mut **tx)
                 .await?;
@@ -4292,7 +4310,10 @@ mod tests {
             .highest_block = 100;
         first.report_id = "0195f2a1-0013-4013-8013-000000000104".parse().unwrap();
         submit(&state, &agent_id, serde_json::to_vec(&first).unwrap()).await;
-        sqlx::query("UPDATE block_history_state SET historical_high_watermark=100, cumulative_block_count=4 WHERE node_id=?")
+        // A below-high-water episode is already underway: a real resync lasts
+        // far longer than the grace window, so the regression is classified as
+        // resyncing rather than a transient poll/subscription skew.
+        sqlx::query("UPDATE block_history_state SET historical_high_watermark=100, cumulative_block_count=4, resync_started_at='2026-08-12T08:00:00Z' WHERE node_id=?")
             .bind(node_id.to_string()).execute(state.db().pool()).await.unwrap();
         let mut replay = first.clone();
         replay.report_sequence = 2;
@@ -4353,6 +4374,168 @@ mod tests {
         let persisted: (i64, i64, String) = sqlx::query_as("SELECT current_head, historical_high_watermark, resync_state FROM block_history_state WHERE node_id=?").bind(node_id.to_string()).fetch_one(reopened.pool()).await.unwrap();
         assert_eq!(persisted, (4, 100, "resyncing".to_owned()));
     }
+
+    #[tokio::test]
+    async fn transient_below_high_water_sample_does_not_flap_resync() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let mut first: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        let node_id = first.inventory.nodes[0].node_id;
+        first.nodes[0]
+            .chain
+            .sync
+            .latest
+            .as_mut()
+            .unwrap()
+            .current_block = 100;
+        first.nodes[0]
+            .chain
+            .sync
+            .latest
+            .as_mut()
+            .unwrap()
+            .highest_block = 100;
+        first.report_id = "0195f2a1-0013-4013-8013-000000000204".parse().unwrap();
+        submit(&state, &agent_id, serde_json::to_vec(&first).unwrap()).await;
+        sqlx::query("UPDATE block_history_state SET historical_high_watermark=100, cumulative_block_count=4 WHERE node_id=?")
+            .bind(node_id.to_string()).execute(state.db().pool()).await.unwrap();
+
+        // The subscription observed a block that the polled Chain Head had not
+        // returned yet. That is observation skew, not a resync, and a healthy
+        // Node must not flap on it.
+        let mut replay = first.clone();
+        replay.report_sequence = 2;
+        replay.report_id = "0195f2a1-0013-4013-8013-000000000205".parse().unwrap();
+        replay.nodes[0]
+            .chain
+            .sync
+            .latest
+            .as_mut()
+            .unwrap()
+            .current_block = 4;
+        replay.nodes[0]
+            .chain
+            .sync
+            .latest
+            .as_mut()
+            .unwrap()
+            .highest_block = 4;
+        submit(&state, &agent_id, serde_json::to_vec(&replay).unwrap()).await;
+
+        let (state_name, episode_started_at, progress_at): (
+            String,
+            Option<String>,
+            Option<String>,
+        ) = sqlx::query_as(
+            "SELECT resync_state, resync_started_at, resync_last_progress_at FROM block_history_state WHERE node_id=?",
+        )
+        .bind(node_id.to_string())
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(state_name, "normal");
+        assert!(
+            episode_started_at.is_some(),
+            "a below-high-water sample still opens an episode clock"
+        );
+        assert_eq!(
+            progress_at.as_deref(),
+            Some("2026-08-12T09:00:00Z"),
+            "a regressed head must not advance the last-progress time"
+        );
+    }
+
+    #[tokio::test]
+    async fn sustained_below_high_water_marks_resyncing_and_catch_up_clears_it() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let mut base: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        let node_id = base.inventory.nodes[0].node_id;
+        base.nodes[0]
+            .chain
+            .sync
+            .latest
+            .as_mut()
+            .unwrap()
+            .current_block = 100;
+        base.nodes[0]
+            .chain
+            .sync
+            .latest
+            .as_mut()
+            .unwrap()
+            .highest_block = 100;
+        base.report_id = "0195f2a1-0013-4013-8013-000000000304".parse().unwrap();
+        submit(&state, &agent_id, serde_json::to_vec(&base).unwrap()).await;
+        sqlx::query("UPDATE block_history_state SET historical_high_watermark=100, cumulative_block_count=4 WHERE node_id=?")
+            .bind(node_id.to_string()).execute(state.db().pool()).await.unwrap();
+
+        let body = |sequence: u64, report_id: &str, head: u64| {
+            let mut report = base.clone();
+            report.report_sequence = sequence;
+            report.report_id = report_id.parse().unwrap();
+            report.nodes[0]
+                .chain
+                .sync
+                .latest
+                .as_mut()
+                .unwrap()
+                .current_block = head;
+            report.nodes[0]
+                .chain
+                .sync
+                .latest
+                .as_mut()
+                .unwrap()
+                .highest_block = head;
+            serde_json::to_vec(&report).unwrap()
+        };
+
+        // First below-high-water report: the episode opens but stays normal.
+        submit(
+            &state,
+            &agent_id,
+            body(2, "0195f2a1-0013-4013-8013-000000000305", 4),
+        )
+        .await;
+        // Age the episode past the grace window, then report the same head.
+        sqlx::query("UPDATE block_history_state SET resync_started_at='2026-08-12T08:00:00Z' WHERE node_id=?")
+            .bind(node_id.to_string()).execute(state.db().pool()).await.unwrap();
+        submit(
+            &state,
+            &agent_id,
+            body(3, "0195f2a1-0013-4013-8013-000000000306", 4),
+        )
+        .await;
+        let state_name: String =
+            sqlx::query_scalar("SELECT resync_state FROM block_history_state WHERE node_id=?")
+                .bind(node_id.to_string())
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        assert_eq!(state_name, "resyncing");
+
+        // Re-reaching the high-water mark clears the episode.
+        submit(
+            &state,
+            &agent_id,
+            body(4, "0195f2a1-0013-4013-8013-000000000307", 101),
+        )
+        .await;
+        let cleared: (String, Option<String>) = sqlx::query_as(
+            "SELECT resync_state, resync_started_at FROM block_history_state WHERE node_id=?",
+        )
+        .bind(node_id.to_string())
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(cleared, ("normal".to_owned(), None));
+    }
+
     #[tokio::test]
     async fn failed_node_keeps_host_and_other_node_projection() {
         let (_dir, state, agent_id) = state_with_agent().await;
