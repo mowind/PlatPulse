@@ -713,9 +713,11 @@ PY
 # longer, so the healthy/current assertions on Node A would age out
 # mid-run without a refresher. This mirrors the existing seeding pattern
 # (the harness already provisions fixtures directly in SQLite); Node B
-# stays deliberately stale. The refresher is bounded to 20 minutes and
-# self-terminates when the suite's temporary state directory is gone.
-timeout 1200 python3 - "$STATE_DIR/platpulse.db" > /dev/null 2>&1 <<'REFRESH' &
+# stays deliberately stale. The refresher is bounded to 60 minutes so the
+# one-minute chart samples survive the whole fixed-viewport matrix (a cold CI
+# runner can exceed 20 minutes), and self-terminates when the suite's
+# temporary state directory is gone.
+timeout 3600 python3 - "$STATE_DIR/platpulse.db" > /dev/null 2>&1 <<'REFRESH' &
 import sqlite3
 import sys
 import time

@@ -149,7 +149,10 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expect(hTitleLink).toHaveAttribute('href', '/nodes/0195f2a1-0060-4060-8060-000000000060')
     const detailsLink = hCard.getByRole('link', { name: 'View details' })
     await expect(detailsLink).toHaveAttribute('href', '/nodes/0195f2a1-0060-4060-8060-000000000060')
-    await expect(detailsLink).toHaveText(/View details →/)
+    // The trailing affordance is the Emerald arrow icon, not a text glyph, so
+    // the accessible text is only "View details" and the icon is decorative.
+    await expect(detailsLink).toHaveText(/View details/)
+    await expect(detailsLink.locator('svg')).toHaveAttribute('aria-hidden', 'true')
 
     await expect(hCard).toContainText('Head')
     await expect(hCard).toContainText('Peers')
@@ -454,7 +457,7 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     expect(reasonLayout.clientWidth).toBeGreaterThan(0)
     expect(reasonLayout.scrollWidth).toBeLessThanOrEqual(reasonLayout.clientWidth)
     expect(reasonLayout.scrollHeight).toBeLessThanOrEqual(reasonLayout.clientHeight)
-    const breadcrumb = page.getByRole('link', { name: '← All Networks' })
+    const breadcrumb = page.getByRole('link', { name: 'All Networks', exact: true })
     await breadcrumb.focus()
     await expect(breadcrumb).toBeFocused()
     await expectVisibleInteractiveTargets(page)

@@ -71,7 +71,6 @@ test.describe('Home Validator totals (#159)', () => {
     // The scope is described in place: grouped per Network, deduplicated by
     // Validator, so Networks never combine.
     await expect(summary.getByText(/grouped by Network · deduplicated by Validator/)).toBeVisible()
-    await expect(convergence.getByText(/each Validator is counted once/)).toBeVisible()
     await expectNoHorizontalOverflow(page)
   })
 

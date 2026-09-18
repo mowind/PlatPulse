@@ -756,19 +756,18 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     // The logo bar keeps its own row at every width, so the map band comes
     // next, above the statistics and the Node cards, and never runs behind it.
     expect(mapBox.y, 'the map starts below the logo bar').toBeGreaterThanOrEqual(headerBox.y + headerBox.height - 1)
-    // Decision: upstream's narrow-screen composition pulls the statistics up
-    // over the map's lower band (-mt-42 = 10.5rem = 168px), so the two are
-    // meant to meet and this band carries no marker or label. What must hold is
-    // that the overlap is the upstream band and nothing more, and that the map
-    // still starts above the statistics and above the Node cards.
-    // Only the stacked layout has an overlap to measure: at wider breakpoints
-    // the map and the statistics sit side by side in the 12-column band, and
-    // that composition is asserted by the desktop test instead.
+    // The refined narrow-screen composition stacks the 2:1 map above the 2×2
+    // statistics with the shared 8px grid gap, so the two never overlap and the
+    // map always starts above the Node cards. Only the stacked layout has a
+    // vertical gap to measure: at wider breakpoints the map and the statistics
+    // sit side by side in the 12-column band, and that composition is asserted
+    // by the desktop test instead.
     if (stats.y > mapBox.y) {
-      const statsOverlap = mapBox.y + mapBox.height - stats.y
-      expect(statsOverlap, "the statistics overlap the map by upstream's -mt-42 band").toBeGreaterThan(0)
-      expect(statsOverlap, 'the overlap stays inside the upstream band').toBeLessThanOrEqual(169)
-      expect(mapBox.y, 'the map still starts above the statistics').toBeLessThan(stats.y)
+      expect(stats.y, 'the statistics sit below the map').toBeGreaterThanOrEqual(mapBox.y + mapBox.height - 1)
+      expect(
+        stats.y - (mapBox.y + mapBox.height),
+        'the map and statistics stay in one stacked band',
+      ).toBeLessThanOrEqual(24)
     }
     const firstCard = (await page.locator('[data-slot="node-card"]').first().boundingBox())!
     expect(mapBox.y, 'the map sits above the Node cards').toBeLessThan(firstCard.y)
@@ -817,21 +816,23 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     const compact = (await chart.boundingBox())!
     const compactWorld = await worldBox(page)
     expect(Math.round(compact.height), '375px compact canvas').toBeGreaterThanOrEqual(120)
-    // Decision A keeps upstream's fixed h-88 (352px) map box, so the compact
-    // 120-160px band that the retired aspect-ratio map produced no longer applies.
-    expect(Math.round(compact.height), '375px canvas keeps the upstream map box').toBeGreaterThanOrEqual(340)
+    // The refined mobile composition gives the map box upstream's 2:1 aspect
+    // ratio (about 172px at 375px), so the retired fixed h-88 (352px) box and
+    // the -mt-42 overlap no longer apply.
+    expect(Math.round(compact.height), '375px canvas keeps the 2:1 map box').toBeGreaterThanOrEqual(
+      Math.round(compact.width / 2) - 2,
+    )
+    expect(Math.round(compact.height), '375px canvas keeps the 2:1 map box').toBeLessThanOrEqual(
+      Math.round(compact.width / 2) + 2,
+    )
 
     const mapBox = (await map.boundingBox())!
     expect(mapBox.x).toBeGreaterThanOrEqual(0)
     expect(mapBox.x + mapBox.width).toBeLessThanOrEqual(375)
-    // The compact map comes first, so it never covers the statistics below it.
+    // The compact map comes first, and the 8px grid gap keeps the statistics
+    // below it without covering the map.
     const stats = unionBox((await summaryFacts(page)).map((fact) => fact.box))
-    // Decision A keeps upstream's narrow-screen composition: the statistics are
-    // pulled up over the map's lower band (-mt-42, 168px), which carries no
-    // marker or label. The overlap must be that band and nothing more.
-    const statsOverlap = mapBox.y + mapBox.height - stats.y
-    expect(statsOverlap, "the statistics overlap the map by upstream's -mt-42 band").toBeGreaterThan(0)
-    expect(statsOverlap, 'the overlap stays inside the upstream band').toBeLessThanOrEqual(169)
+    expect(stats.y, 'the statistics sit below the map').toBeGreaterThanOrEqual(mapBox.y + mapBox.height - 1)
 
     await capture(page, testInfo, 'home-375-compact')
     // No expand control here either: the band keeps its size at 375px.

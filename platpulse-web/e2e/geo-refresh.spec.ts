@@ -86,9 +86,26 @@ test.describe('Owner global Geo refresh', () => {
 
       // The forced run wrote a real result: the retained success time belongs
       // to the run window, and the Public country list follows the refresh
-      // without a reload.
-      const status = await (await page.request.get('/api/admin/v1/geo')).json()
-      expect(status.refresh.state).toBe('completed')
+      // without a reload. The completion event can reach the UI a beat before
+      // the persisted status is readable over REST, so poll the authoritative
+      // endpoint instead of sampling it once.
+      const readGeoStatus = async () =>
+        (await (await page.request.get('/api/admin/v1/geo')).json()) as {
+          refresh: {
+            state: string
+            resolved_lookups: number
+            peer_records_in_scope: number
+            started_at: string
+          }
+          last_success_at: string
+        }
+      await expect
+        .poll(async () => (await readGeoStatus()).refresh.state, {
+          timeout: 30_000,
+          message: 'the forced refresh reaches the terminal completed state',
+        })
+        .toBe('completed')
+      const status = await readGeoStatus()
       expect(status.refresh.resolved_lookups).toBe(1)
       expect(status.refresh.peer_records_in_scope).toBe(1)
       expect(status.last_success_at >= status.refresh.started_at).toBe(true)

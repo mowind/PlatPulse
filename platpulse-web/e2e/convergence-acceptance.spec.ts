@@ -165,7 +165,7 @@ test.describe('Converged WebUI acceptance (issue #95)', () => {
 
     // Node Detail → Network overview via the breadcrumb (the Home card
     // Network display name is plain text, not a nested link).
-    await page.getByRole('link', { name: new RegExp(`← ${PUBLIC_NETWORK_KEY}`) }).click()
+    await page.getByRole('link', { name: PUBLIC_NETWORK_KEY, exact: true }).click()
     await expect(page).toHaveURL(new RegExp(`/networks/${PUBLIC_NETWORK_KEY}$`))
     await expect(page.getByRole('heading', { level: 1, name: PUBLIC_NETWORK_NAME })).toBeVisible({
       timeout: 15_000,
