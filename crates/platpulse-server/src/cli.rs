@@ -439,7 +439,7 @@ pub async fn run_backup(config: &ServerConfig) -> Result<String, Box<dyn std::er
     .await?;
     let state =
         crate::http::AppState::new(database, None, auth).with_backup_dir(config.backup_dir.clone());
-    Ok(crate::backup::create_scheduled(&state).await?)
+    Ok(crate::backup::create_scheduled(&state).await?.filename)
 }
 
 /// Run the HTTP Server: validate the listen address, load the pepper and
@@ -594,7 +594,20 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         state.metrics().set_listener_ready(true);
     }
 
-    let mut worker_handles = Vec::new();
+    let mut worker_handles = vec![tokio::spawn(crate::http::health::monitor_integrity(
+        state.clone(),
+    ))];
+
+    // Server-owned online backups (design §20.1): the schedule snapshots the
+    // database on the owning connection and verifies every automatic
+    // artifact, so no Owner credential or second SQLite opener is involved.
+    if let Some(schedule) = config.backup_schedule.clone() {
+        let schedule_state = state.clone();
+        worker_handles.push(tokio::spawn(crate::backup_schedule::run(
+            schedule_state,
+            schedule,
+        )));
+    }
 
     // Geo database reload and raw-IP cache cleanup are deliberately
     // best-effort. A malformed replacement keeps the last-good reader and

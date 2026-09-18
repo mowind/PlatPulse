@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use ipnet::IpNet;
 
@@ -81,6 +82,8 @@ pub struct ServerConfigFile {
     pub notifications: Option<NotificationsSectionFile>,
     /// Optional dedicated internal Prometheus metrics listener.
     pub metrics: Option<MetricsSectionFile>,
+    /// Optional Server-owned online backup schedule.
+    pub backup_schedule: Option<BackupScheduleSectionFile>,
 }
 
 /// The optional `[metrics]` section. Presence enables metrics unless
@@ -90,6 +93,24 @@ pub struct ServerConfigFile {
 pub struct MetricsSectionFile {
     pub enabled: Option<bool>,
     pub listen: Option<SocketAddr>,
+}
+
+/// The optional `[backup_schedule]` section: Server-owned online backups.
+///
+/// The Server performs the snapshot itself on its owning SQLite connection
+/// (never a second process opening a live database), so no Owner credential
+/// or machine token is stored anywhere. Presence of the section enables the
+/// schedule unless `enabled = false`; `required_mount` is mandatory so an
+/// absent or unmounted backup disk fails closed instead of silently writing
+/// next to the live database.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct BackupScheduleSectionFile {
+    pub enabled: Option<bool>,
+    /// Server-owned interval in hours; defaults to 24 and must be >= 1.
+    pub interval_hours: Option<u64>,
+    /// Absolute mount point the backup directory must reside on.
+    pub required_mount: Option<PathBuf>,
 }
 
 /// The optional `[geo]` section. Only an operator-provided database path is
@@ -191,12 +212,37 @@ pub struct ServerConfig {
     pub notifications: NotificationChannels,
     /// Dedicated internal metrics listener policy.
     pub metrics: MetricsConfig,
+    /// Server-owned online backup schedule, when configured.
+    pub backup_schedule: Option<BackupScheduleConfig>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MetricsConfig {
     pub enabled: bool,
     pub listen: SocketAddr,
+}
+
+/// Resolved Server-owned backup schedule. Absence means the Server never
+/// creates automatic backups; the Admin backup Operation remains available.
+#[derive(Debug, Clone)]
+pub struct BackupScheduleConfig {
+    pub interval: Duration,
+    pub required_mount: PathBuf,
+}
+
+impl BackupScheduleConfig {
+    /// The default cadence for a configured schedule.
+    pub const DEFAULT_INTERVAL_HOURS: u64 = 24;
+
+    /// Seconds until the next automatic attempt after a failure. Bounded so a
+    /// persistent failure retries within the hour rather than waiting a full
+    /// interval, without hot-looping on the single SQLite connection.
+    pub const RETRY_AFTER: Duration = Duration::from_secs(3_600);
+
+    /// Settle time after startup before the first attempt when no backup has
+    /// ever succeeded. Keeps a restart from racing report ingestion and
+    /// asset/readiness startup with a VACUUM.
+    pub const INITIAL_DELAY: Duration = Duration::from_secs(120);
 }
 
 #[derive(Debug, Clone)]
@@ -287,6 +333,12 @@ pub enum ConfigError {
     InvalidNotificationPolicy { path: PathBuf, reason: String },
     #[error("backup_dir must not point at the Server state directory in {path} (design §20.1)")]
     InvalidBackupDir { path: PathBuf },
+    #[error("backup_schedule requires backup_dir in {path}")]
+    MissingBackupScheduleDir { path: PathBuf },
+    #[error("backup_schedule.required_mount must be an absolute path in {path}")]
+    MissingBackupScheduleMount { path: PathBuf },
+    #[error("invalid backup_schedule in {path}: {reason}")]
+    InvalidBackupSchedule { path: PathBuf, reason: String },
 }
 
 impl ServerConfigFile {
@@ -447,6 +499,7 @@ impl ServerConfig {
                 .and_then(|section| section.listen)
                 .unwrap_or(DEFAULT_METRICS_LISTEN),
         };
+        let backup_schedule = resolve_backup_schedule(file, &backup_dir, config_path.as_deref())?;
 
         Ok(Self {
             config_path,
@@ -465,8 +518,50 @@ impl ServerConfig {
             validator_provider,
             notifications,
             metrics,
+            backup_schedule,
         })
     }
+}
+
+/// Resolve the optional Server-owned backup schedule. A present section with
+/// `enabled = false` is an explicit opt-out; any other present section must
+/// name both an existing backup directory policy and an absolute mount point.
+fn resolve_backup_schedule(
+    file: Option<&ServerConfigFile>,
+    backup_dir: &Option<PathBuf>,
+    config_path: Option<&Path>,
+) -> Result<Option<BackupScheduleConfig>, ConfigError> {
+    let Some(section) = file.and_then(|value| value.backup_schedule.as_ref()) else {
+        return Ok(None);
+    };
+    if !section.enabled.unwrap_or(true) {
+        return Ok(None);
+    }
+    let path = config_path
+        .map(Path::to_owned)
+        .unwrap_or_else(|| PathBuf::from("<cli>"));
+    if backup_dir.is_none() {
+        return Err(ConfigError::MissingBackupScheduleDir { path });
+    }
+    let Some(required_mount) = section.required_mount.clone() else {
+        return Err(ConfigError::MissingBackupScheduleMount { path });
+    };
+    if !required_mount.is_absolute() {
+        return Err(ConfigError::MissingBackupScheduleMount { path });
+    }
+    let hours = section
+        .interval_hours
+        .unwrap_or(BackupScheduleConfig::DEFAULT_INTERVAL_HOURS);
+    if hours == 0 {
+        return Err(ConfigError::InvalidBackupSchedule {
+            path,
+            reason: "interval_hours must be at least 1".to_owned(),
+        });
+    }
+    Ok(Some(BackupScheduleConfig {
+        interval: Duration::from_secs(hours.saturating_mul(3_600)),
+        required_mount,
+    }))
 }
 
 fn resolve_tls(
@@ -1042,6 +1137,75 @@ development = false
                 "{raw}"
             );
         }
+    }
+
+    #[test]
+    fn backup_schedule_is_absent_by_default() {
+        let dir = tempdir().unwrap();
+        let path = write_config(dir.path(), "state_dir = \"/srv/platpulse\"\n");
+        let config = ServerConfig::resolve(Some(&path), &CliOverrides::default()).unwrap();
+        assert!(config.backup_schedule.is_none());
+    }
+
+    #[test]
+    fn backup_schedule_requires_a_backup_dir_and_absolute_mount() {
+        let dir = tempdir().unwrap();
+        let path = write_config(
+            dir.path(),
+            "state_dir = \"/srv/platpulse\"\n[backup_schedule]\nrequired_mount = \"/data\"\n",
+        );
+        assert!(matches!(
+            ServerConfig::resolve(Some(&path), &CliOverrides::default()),
+            Err(ConfigError::MissingBackupScheduleDir { .. })
+        ));
+        let path = write_config(
+            dir.path(),
+            "state_dir = \"/srv/platpulse\"\nbackup_dir = \"/data/backups\"\n[backup_schedule]\n",
+        );
+        assert!(matches!(
+            ServerConfig::resolve(Some(&path), &CliOverrides::default()),
+            Err(ConfigError::MissingBackupScheduleMount { .. })
+        ));
+        let path = write_config(
+            dir.path(),
+            "state_dir = \"/srv/platpulse\"\nbackup_dir = \"/data/backups\"\n[backup_schedule]\nrequired_mount = \"relative/data\"\n",
+        );
+        assert!(matches!(
+            ServerConfig::resolve(Some(&path), &CliOverrides::default()),
+            Err(ConfigError::MissingBackupScheduleMount { .. })
+        ));
+        let path = write_config(
+            dir.path(),
+            "state_dir = \"/srv/platpulse\"\nbackup_dir = \"/data/backups\"\n[backup_schedule]\nrequired_mount = \"/data\"\ninterval_hours = 0\n",
+        );
+        assert!(matches!(
+            ServerConfig::resolve(Some(&path), &CliOverrides::default()),
+            Err(ConfigError::InvalidBackupSchedule { .. })
+        ));
+    }
+
+    #[test]
+    fn backup_schedule_resolves_interval_and_mount() {
+        let dir = tempdir().unwrap();
+        let path = write_config(
+            dir.path(),
+            "state_dir = \"/srv/platpulse\"\nbackup_dir = \"/data/backups\"\n[backup_schedule]\nrequired_mount = \"/data\"\ninterval_hours = 12\n",
+        );
+        let config = ServerConfig::resolve(Some(&path), &CliOverrides::default()).unwrap();
+        let schedule = config.backup_schedule.unwrap();
+        assert_eq!(schedule.interval, Duration::from_secs(12 * 3_600));
+        assert_eq!(schedule.required_mount, Path::new("/data"));
+    }
+
+    #[test]
+    fn backup_schedule_can_be_explicitly_disabled() {
+        let dir = tempdir().unwrap();
+        let path = write_config(
+            dir.path(),
+            "state_dir = \"/srv/platpulse\"\nbackup_dir = \"/data/backups\"\n[backup_schedule]\nenabled = false\n",
+        );
+        let config = ServerConfig::resolve(Some(&path), &CliOverrides::default()).unwrap();
+        assert!(config.backup_schedule.is_none());
     }
 
     #[test]

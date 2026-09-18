@@ -1193,6 +1193,7 @@ mod tests {
                 enabled: false,
                 listen: crate::config::DEFAULT_METRICS_LISTEN,
             },
+            backup_schedule: None,
         }
     }
 

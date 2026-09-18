@@ -166,7 +166,14 @@ pub async fn create(state: &AppState, operation_id: &str) -> Result<(), BackupEr
 /// Create one backup synchronously for the non-root systemd timer. This uses
 /// the same sanitized snapshot path as the Admin Operation surface without
 /// exposing a second raw-SQLite backup implementation.
-pub async fn create_scheduled(state: &AppState) -> Result<String, BackupError> {
+/// Identity of a freshly created scheduled backup artifact.
+#[derive(Debug, Clone)]
+pub struct ScheduledArtifact {
+    pub artifact_id: String,
+    pub filename: String,
+}
+
+pub async fn create_scheduled(state: &AppState) -> Result<ScheduledArtifact, BackupError> {
     let backup_dir = state
         .backup_dir()
         .cloned()
@@ -191,7 +198,10 @@ pub async fn create_scheduled(state: &AppState) -> Result<String, BackupError> {
         let _ = std::fs::remove_file(&temp_path);
     }
     result?;
-    Ok(filename)
+    Ok(ScheduledArtifact {
+        artifact_id,
+        filename,
+    })
 }
 
 struct Snapshot {
@@ -522,21 +532,15 @@ pub async fn verify(state: &AppState, operation_id: &str) -> Result<(), BackupEr
         return Ok(());
     };
 
-    let artifact: Option<(String, String, i64, String, String, String)> = sqlx::query_as(
-        "SELECT filename, sha256, schema_version, server_version, created_at, data_range_min FROM backup_artifacts WHERE artifact_id = ?",
+    // `data_range_min` is nullable (an empty chain has no range); decode only
+    // the columns this path needs so a NULL never masquerades as a decode error.
+    let artifact: Option<(String, String, i64)> = sqlx::query_as(
+        "SELECT filename, sha256, schema_version FROM backup_artifacts WHERE artifact_id = ?",
     )
     .bind(&artifact_id)
     .fetch_optional(pool)
     .await?;
-    let Some((
-        filename,
-        expected_sha256,
-        expected_schema,
-        _server_version,
-        _created_at,
-        _range_min,
-    )) = artifact
-    else {
+    let Some((filename, expected_sha256, expected_schema)) = artifact else {
         crate::operations::add_error(
             state,
             operation_id,
@@ -625,6 +629,70 @@ pub async fn verify(state: &AppState, operation_id: &str) -> Result<(), BackupEr
     )
     .await?;
     Ok(())
+}
+
+/// Verify one scheduled artifact through the same checksum, read-only
+/// integrity, schema, and privacy path used by the Admin backup_verify
+/// Operation, without creating an Operation row. The verification columns of
+/// the artifact record the outcome; a failed verification never deletes the
+/// artifact or any previous one.
+pub async fn verify_scheduled_artifact(
+    state: &AppState,
+    artifact_id: &str,
+) -> Result<bool, BackupError> {
+    let Some(backup_dir) = state.backup_dir().map(|path| path.to_path_buf()) else {
+        return Ok(false);
+    };
+    let artifact: Option<(String, String, i64)> = sqlx::query_as(
+        "SELECT filename, sha256, schema_version FROM backup_artifacts WHERE artifact_id = ?",
+    )
+    .bind(artifact_id)
+    .fetch_optional(state.db().pool())
+    .await?;
+    let Some((filename, expected_sha256, expected_schema)) = artifact else {
+        return Ok(false);
+    };
+    let verified_at = crate::auth::format_rfc3339(crate::auth::now_utc());
+    let outcome = if crate::file_security::validate_private_directory(&backup_dir).is_err()
+        || !crate::file_security::is_safe_basename(&filename)
+    {
+        Err(BackupError::Privacy(
+            "backup artifact path is unsafe".to_owned(),
+        ))
+    } else {
+        verify_artifact(
+            &backup_dir.join(&filename),
+            &expected_sha256,
+            expected_schema,
+        )
+        .await
+    };
+    match outcome {
+        Ok(()) => {
+            sqlx::query(
+                "UPDATE backup_artifacts SET verification = ?, verified_at = ?, verification_error = NULL WHERE artifact_id = ?",
+            )
+            .bind("ok")
+            .bind(&verified_at)
+            .bind(artifact_id)
+            .execute(state.db().pool())
+            .await?;
+            Ok(true)
+        }
+        Err(error) => {
+            let message = crate::redaction::redact_sensitive(&error.to_string());
+            sqlx::query(
+                "UPDATE backup_artifacts SET verification = ?, verified_at = ?, verification_error = ? WHERE artifact_id = ?",
+            )
+            .bind("failed")
+            .bind(&verified_at)
+            .bind(&message)
+            .bind(artifact_id)
+            .execute(state.db().pool())
+            .await?;
+            Ok(false)
+        }
+    }
 }
 
 async fn verify_artifact(

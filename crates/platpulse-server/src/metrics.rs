@@ -702,7 +702,7 @@ async fn update_readiness(state: &AppState) {
     registry.set_readiness("web_assets", state.web_assets_ready());
     registry.set_readiness("shutdown", !state.is_shutting_down());
     registry.set_readiness("critical_workers", state.critical_workers_healthy());
-    registry.set_readiness("corruption", !state.is_corrupt());
+    registry.set_readiness("corruption", state.integrity_healthy());
 }
 
 #[cfg(test)]
