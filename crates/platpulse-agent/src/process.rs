@@ -28,6 +28,14 @@ pub enum ProcessCollectError {
     SystemdUnavailable,
     #[error("systemd unit has no running MainPID")]
     SystemdNotRunning,
+    #[error("supervisor control command is unavailable")]
+    SupervisorUnavailable,
+    #[error("supervisor control command failed")]
+    SupervisorQueryFailed,
+    #[error("supervisor program is not running")]
+    SupervisorNotRunning,
+    #[error("supervisor control command returned an invalid PID")]
+    SupervisorInvalidPid,
     #[error("process identity could not be verified")]
     IdentityUnavailable,
     #[error("process executable could not be verified")]
@@ -48,8 +56,8 @@ pub struct CommandOutput {
 /// Injectable runner that resolves a [`ProcessSelector`] to a PID.
 ///
 /// PID-file selectors call [`ProcessSelectorRunner::read_pid_file`];
-/// command-backed selectors (today `systemd_unit`, later a supervisor
-/// selector) call [`ProcessSelectorRunner::run`].  Production wires
+/// command-backed selectors (`systemd_unit` and `supervisor`) call
+/// [`ProcessSelectorRunner::run`].  Production wires
 /// [`SystemSelectorRunner`]; tests inject fakes so no real systemd or
 /// supervisord is required.
 pub trait ProcessSelectorRunner {
@@ -156,6 +164,21 @@ fn pid_from_selector<R: ProcessSelectorRunner + ?Sized>(
             }
             parse_positive_pid(&String::from_utf8_lossy(&output.stdout))
                 .ok_or(ProcessCollectError::SystemdNotRunning)
+        }
+        ProcessSelector::Supervisor { program } => {
+            let output = runner
+                .run("supervisorctl", &["pid", program.as_str()])
+                .map_err(|_| ProcessCollectError::SupervisorUnavailable)?;
+            if !output.success {
+                return Err(ProcessCollectError::SupervisorQueryFailed);
+            }
+            let parsed = String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .parse::<u32>()
+                .map_err(|_| ProcessCollectError::SupervisorInvalidPid)?;
+            (parsed != 0)
+                .then_some(parsed)
+                .ok_or(ProcessCollectError::SupervisorNotRunning)
         }
     }
 }
@@ -279,6 +302,12 @@ fn error_message(error: &ProcessCollectError) -> &'static str {
         ProcessCollectError::InvalidPid => "PID file contains an invalid PID",
         ProcessCollectError::SystemdUnavailable => "systemd unit could not be queried",
         ProcessCollectError::SystemdNotRunning => "systemd unit is not running",
+        ProcessCollectError::SupervisorUnavailable => "supervisor control command is unavailable",
+        ProcessCollectError::SupervisorQueryFailed => "supervisor control command failed",
+        ProcessCollectError::SupervisorNotRunning => "supervisor program is not running",
+        ProcessCollectError::SupervisorInvalidPid => {
+            "supervisor control command returned an invalid PID"
+        }
         ProcessCollectError::IdentityUnavailable => "process identity could not be verified",
         ProcessCollectError::ExecutableUnavailable => "process executable could not be verified",
         ProcessCollectError::StartTimeUnavailable => "process start time could not be verified",
@@ -296,7 +325,7 @@ mod tests {
     }
 
     /// Scripted runner outcome used to exercise command-backed selectors
-    /// without a real systemd (or, later, supervisord) installation.
+    /// without a real systemd or supervisord installation.
     #[derive(Debug, Clone)]
     enum FakeOutcome {
         PidFile(String),
@@ -319,22 +348,32 @@ mod tests {
 
         fn run(&self, program: &str, args: &[&str]) -> std::io::Result<CommandOutput> {
             // Pin the exact command contract so an argv regression fails here.
-            assert_eq!(program, "systemctl");
-            assert_eq!(
-                args,
-                [
-                    "show",
-                    "--property=MainPID",
-                    "--value",
-                    "--",
-                    "platon-validator-a.service"
-                ]
-                .as_slice()
-            );
+            match program {
+                "systemctl" => assert_eq!(
+                    args,
+                    [
+                        "show",
+                        "--property=MainPID",
+                        "--value",
+                        "--",
+                        "platon-validator-a.service"
+                    ]
+                    .as_slice()
+                ),
+                "supervisorctl" => {
+                    let program = ["pid", "platon-validator-a"];
+                    let grouped = ["pid", "validators:platon-validator-b"];
+                    assert!(
+                        args == program.as_slice() || args == grouped.as_slice(),
+                        "unexpected supervisorctl argv: {args:?}"
+                    );
+                }
+                other => panic!("unexpected selector command {other}"),
+            }
             match &self.outcome {
                 FakeOutcome::Unavailable => Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
-                    "systemctl is unavailable",
+                    "control command is unavailable",
                 )),
                 FakeOutcome::Exited { success, stdout } => Ok(CommandOutput {
                     success: *success,
@@ -366,6 +405,18 @@ mod tests {
         };
         let selector = ProcessSelector::PidFile {
             path: "/run/platon-validator-a.pid".to_owned(),
+        };
+        let mut system = System::new_all();
+        collect(&runner, &mut system, Some(&selector), timestamp())
+    }
+
+    fn collect_supervisor(
+        program: &str,
+        outcome: FakeOutcome,
+    ) -> ComponentObservation<ProcessCurrent> {
+        let runner = FakeRunner { outcome };
+        let selector = ProcessSelector::Supervisor {
+            program: program.to_owned(),
         };
         let mut system = System::new_all();
         collect(&runner, &mut system, Some(&selector), timestamp())
@@ -479,5 +530,79 @@ mod tests {
         assert_eq!(observation.status, ComponentStatus::Ok);
         assert_eq!(observation.latest.unwrap().pid, own_pid as u64);
         assert!(observation.error.is_none());
+    }
+
+    #[test]
+    fn supervisor_command_unavailable_is_a_typed_error() {
+        let observation = collect_supervisor("platon-validator-a", FakeOutcome::Unavailable);
+        assert_selector_error(&observation, "supervisor control command is unavailable");
+    }
+
+    #[test]
+    fn supervisor_nonzero_exit_is_a_typed_error() {
+        let observation = collect_supervisor(
+            "platon-validator-a",
+            FakeOutcome::Exited {
+                success: false,
+                stdout: b"1234\n".to_vec(),
+            },
+        );
+        assert_selector_error(&observation, "supervisor control command failed");
+    }
+
+    #[test]
+    fn supervisor_non_numeric_pid_is_a_typed_error() {
+        let observation = collect_supervisor(
+            "platon-validator-a",
+            FakeOutcome::Exited {
+                success: true,
+                stdout: b"ERROR (no such process)\n".to_vec(),
+            },
+        );
+        assert_selector_error(
+            &observation,
+            "supervisor control command returned an invalid PID",
+        );
+    }
+
+    #[test]
+    fn supervisor_zero_pid_is_not_running() {
+        let observation = collect_supervisor(
+            "platon-validator-a",
+            FakeOutcome::Exited {
+                success: true,
+                stdout: b"0\n".to_vec(),
+            },
+        );
+        assert_selector_error(&observation, "supervisor program is not running");
+    }
+
+    #[test]
+    fn supervisor_valid_pid_is_observed() {
+        let own_pid = std::process::id();
+        let observation = collect_supervisor(
+            "platon-validator-a",
+            FakeOutcome::Exited {
+                success: true,
+                stdout: own_pid.to_string().into_bytes(),
+            },
+        );
+        assert_eq!(observation.status, ComponentStatus::Ok);
+        assert_eq!(observation.latest.unwrap().pid, own_pid as u64);
+        assert!(observation.error.is_none());
+    }
+
+    #[test]
+    fn supervisor_group_process_selector_is_observed() {
+        let own_pid = std::process::id();
+        let observation = collect_supervisor(
+            "validators:platon-validator-b",
+            FakeOutcome::Exited {
+                success: true,
+                stdout: format!("{own_pid}\n").into_bytes(),
+            },
+        );
+        assert_eq!(observation.status, ComponentStatus::Ok);
+        assert_eq!(observation.latest.unwrap().pid, own_pid as u64);
     }
 }

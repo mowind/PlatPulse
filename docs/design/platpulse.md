@@ -159,7 +159,7 @@ wire 层还携带 `attempted_at`、`latest_observed_at`、`received_at`（仅 Se
 
 ### 5.3 Node Process Observation
 
-每个 Node 独立采集：进程是否存在、PID 或 PID 文件、进程身份校验、进程 CPU/Memory、启动时间或运行时长、进程错误；配置 `data_directory` 时，Agent 每五分钟递归统计一次该 PlatON 数据目录内常规文件的逻辑大小，并同时记录其所在文件系统总容量，缓存结果，且不跟随符号链接。WebUI 可据此显示 Node Data 的占用进度；容量未知或无效时只显示目录大小，不伪造百分比。Agent 仍然只观察，不重启、不停止、不升级、不执行命令。
+每个 Node 独立采集：进程是否存在、PID 或 PID 文件、进程身份校验、进程 CPU/Memory、启动时间或运行时长、进程错误；进程来源只来自 Node 显式声明的 selector：`systemd_unit`、`pid_file` 或 `supervisor`，其中 `supervisor` 以 `program` 指定 `supervisorctl` 程序名，`numprocs > 1` 的 program 使用 `group:process` 形式；未声明 selector 时进程组件保持 Disabled，绝不猜测进程身份。配置 `data_directory` 时，Agent 每五分钟递归统计一次该 PlatON 数据目录内常规文件的逻辑大小，并同时记录其所在文件系统总容量，缓存结果，且不跟随符号链接。WebUI 可据此显示 Node Data 的占用进度；容量未知或无效时只显示目录大小，不伪造百分比。Agent 仍然只观察，不重启、不停止、不升级、不执行命令。
 
 ### 5.4 Node RPC Observation
 
@@ -271,8 +271,16 @@ network_key = "platon-mainnet"
 rpc_endpoint = "ipc:///var/lib/platon/data/platon.ipc"
 data_directory = "/var/lib/platon/data"
 
+# Node process selector 三选一；supervisor 形式下 numprocs > 1 使用 group:process：
+#   [nodes.process]
+#   kind = "systemd_unit"
+#   unit = "platon-validator.service"
+#   [nodes.process]
+#   kind = "pid_file"
+#   path = "/var/run/platon.pid"
 [nodes.process]
-pid_file = "/var/run/platon.pid"
+kind = "supervisor"
+program = "platon-validator-a"
 ~~~
 
 Server 不下发或修改 `nodes.rpc_endpoint`。
@@ -588,7 +596,7 @@ Server 仍不会用零值填充缺失区间；Retention 按 data family 分别�
 
 ## 12. 部署
 
-- Agent：Linux x86_64/aarch64，建议 systemd；每 Host 一个 Agent；独立 state directory；credential 与 SQLite 严格权限；只需访问本地 RPC Endpoint 与 Server HTTPS 地址。
+- Agent：Linux x86_64/aarch64，建议 systemd；每 Host 一个 Agent；独立 state directory；credential 与 SQLite 严格权限；只需访问本地 RPC Endpoint 与 Server HTTPS 地址。仅当 Node 声明 `supervisor` selector 时，Agent 运行用户还需要能执行 `supervisorctl` 并访问 supervisor 的 control socket。
 - Server：单进程、单 SQLite、同源托管 WebUI；`/health/live` 只判 event loop 存活，`/health/ready` 同时检查 `sqlite`、`owner`、`web_assets`、`shutdown`、`critical_workers`、`corruption` 六个组件，并以 200/503 表达整体结果；Backup/Restore 是显式运维流程，不是启动流程。非开发模式下 Server 以 SQLite `locking_mode = EXCLUSIVE` 独占数据库文件，外部 SQLite 连接（含 CLI 写入）会在 Server 运行期间被隔离，因此只能在 Server 停止时执行；开发模式保留 SQLite 常规锁，允许本地工具与 e2e fixture 直接读写运行中的数据库。
 - WebUI：React + Vite 构建为静态资源，由 Server 同源托管，生产环境不单独运行 Node.js。
 

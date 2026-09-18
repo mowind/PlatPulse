@@ -54,6 +54,8 @@ pub enum AgentCapability {
     ProcessSystemd,
     /// Process observation through an explicit PID file selector.
     ProcessPidFile,
+    /// Process observation through an explicit supervisord program selector.
+    ProcessSupervisor,
     /// Bounded `debug_consensusStatus` collection.
     ConsensusStatus,
     /// Bounded `admin_peers` Peer Snapshot collection.
@@ -188,6 +190,9 @@ impl AgentReport {
                     crate::inventory::ProcessSelector::PidFile { path } => {
                         check_len("process.path", path, 512)?;
                     }
+                    crate::inventory::ProcessSelector::Supervisor { program } => {
+                        check_len("process.program", program, 512)?;
+                    }
                 }
             }
         }
@@ -204,6 +209,7 @@ impl AgentReport {
                 AgentCapability::HistoryGap => "history_gap",
                 AgentCapability::ProcessSystemd => "process_systemd",
                 AgentCapability::ProcessPidFile => "process_pid_file",
+                AgentCapability::ProcessSupervisor => "process_supervisor",
                 AgentCapability::ConsensusStatus => "consensus_status",
                 AgentCapability::PeerSnapshot => "peer_snapshot",
             };

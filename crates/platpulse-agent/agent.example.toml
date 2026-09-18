@@ -13,3 +13,23 @@ max_time_ms = 5000
 # node_id = "0195f2a1-0014-4014-8014-000000000014"
 # network_key = "platon-mainnet"
 # rpc_endpoint = "wss://node.example.com/ws"
+#
+# Optional explicit Node process selector. Without one the process component
+# stays Disabled while RPC/chain collection continues. Exactly one form:
+#
+# [nodes.process]
+# kind = "systemd_unit"
+# unit = "platon-validator.service"
+#
+# [nodes.process]
+# kind = "pid_file"
+# path = "/run/platon-validator.pid"
+#
+# A supervisord-managed program, resolved with `supervisorctl pid <program>`.
+# Use the group:process form when the program declares numprocs > 1.
+# The Agent runtime user must be allowed to run supervisorctl and reach the
+# supervisor control socket.
+#
+# [nodes.process]
+# kind = "supervisor"
+# program = "platon-validator"

@@ -2899,6 +2899,178 @@ mod tests {
         assert_eq!(stored, 12_884_901_888);
     }
 
+    async fn body_json(response: axum::response::Response) -> serde_json::Value {
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    /// One Node exactly as the Home list route renders it, so the assertion
+    /// proves the Public Projection the Home cards read.
+    async fn public_home_node(state: &AppState, node_id: &str) -> serde_json::Value {
+        let response = crate::http::public::public_networks(State(state.clone())).await;
+        let body = body_json(response).await;
+        body.as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|network| network["nodes"].as_array().unwrap())
+            .find(|node| node["nodeId"] == node_id)
+            .cloned()
+            .expect("the Node is in the Public Home list")
+    }
+
+    async fn admin_agent_json(state: &AppState, agent_id: &str) -> serde_json::Value {
+        let response = crate::http::admin::admin_agent_detail(
+            State(state.clone()),
+            axum::extract::Path(agent_id.to_owned()),
+            Extension(crate::http::AuthenticatedSession(
+                crate::auth::SessionInfo {
+                    session_id: "session".to_owned(),
+                    user_id: "owner".to_owned(),
+                    username: "owner".to_owned(),
+                    role: "owner".to_owned(),
+                    created_at: crate::auth::now_utc(),
+                    last_seen_at: crate::auth::now_utc(),
+                    expires_at: crate::auth::now_utc(),
+                    csrf_token: "csrf".to_owned(),
+                },
+            )),
+            Extension(RequestId(Arc::from("test-request"))),
+        )
+        .await;
+        body_json(response).await
+    }
+
+    fn disabled_process() -> ComponentObservation<platpulse_core::observation::ProcessCurrent> {
+        ComponentObservation {
+            status: ComponentStatus::Disabled,
+            attempted_at: None,
+            latest_observed_at: None,
+            received_at: None,
+            state_revision: 1,
+            value_revision: 0,
+            latest: None,
+            error: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn supervisor_process_selector_projects_real_values_and_keeps_last_good() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let mut report: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        let node_id = report.inventory.nodes[0].node_id.to_string();
+        report.inventory.nodes[0].process = Some(platpulse_core::ProcessSelector::Supervisor {
+            program: "validators:platon-validator-a".into(),
+        });
+        report.agent_capabilities = vec![platpulse_core::AgentCapability::ProcessSupervisor];
+        let observed_at = report.generated_at;
+        report.nodes[0].process = ComponentObservation {
+            status: ComponentStatus::Ok,
+            attempted_at: Some(observed_at),
+            latest_observed_at: Some(observed_at),
+            received_at: None,
+            state_revision: 1,
+            value_revision: 1,
+            latest: Some(platpulse_core::observation::ProcessCurrent {
+                pid: 4242,
+                started_at: observed_at,
+                cpu_percent: 12.5,
+                memory_bytes: 268_435_456,
+                uptime_ms: 86_400_000,
+            }),
+            error: None,
+        };
+        report.validate().unwrap();
+        submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+
+        // Ingestion persisted the supervisor observation before projection.
+        let stored: (i64, f64, i64, i64) = sqlx::query_as(
+            "SELECT pid, cpu_percent, memory_bytes, uptime_ms FROM current_node_process_observations WHERE node_id=?",
+        )
+        .bind(&node_id)
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(stored, (4242, 12.5, 268_435_456, 86_400_000));
+
+        // Public and Admin both render real values instead of Unknown.
+        let public = public_home_node(&state, &node_id).await;
+        assert_eq!(public["processState"], "ok");
+        assert_eq!(public["processCpuPercent"], 12.5);
+        assert_eq!(public["processUptimeMs"], 86_400_000);
+        assert_eq!(public["processStartedAt"], observed_at.to_string());
+        assert!(public["processMemoryPercent"].as_f64().unwrap() > 0.0);
+        let admin = admin_agent_json(&state, &agent_id).await;
+        let process = &admin["nodes"][0]["process"];
+        assert_eq!(process["state"], "ok");
+        assert_eq!(process["pid"], 4242);
+        assert_eq!(process["cpu_percent"], 12.5);
+        assert_eq!(process["uptime_ms"], 86_400_000);
+
+        // A failed collection keeps the last-good value with an explicit error.
+        report.report_sequence += 1;
+        report.report_id = "0195f2a1-0091-4091-8091-000000000091".parse().unwrap();
+        report.nodes[0].process = ComponentObservation {
+            status: ComponentStatus::Error,
+            attempted_at: Some(observed_at),
+            latest_observed_at: None,
+            received_at: None,
+            state_revision: 2,
+            value_revision: 1,
+            latest: None,
+            error: Some(platpulse_core::BoundedError {
+                code: "process_selector_error".into(),
+                message: "supervisor control command failed".into(),
+            }),
+        };
+        report.validate().unwrap();
+        submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+
+        let public = public_home_node(&state, &node_id).await;
+        assert_eq!(public["processState"], "error");
+        assert_eq!(public["processCpuPercent"], 12.5);
+        assert_eq!(public["processUptimeMs"], 86_400_000);
+        let admin = admin_agent_json(&state, &agent_id).await;
+        let process = &admin["nodes"][0]["process"];
+        assert_eq!(process["state"], "error");
+        assert_eq!(process["error_code"], "process_selector_error");
+        assert_eq!(process["cpu_percent"], 12.5);
+
+        // A Node with no selector stays Disabled: unknown is never rendered as 0.
+        let second_id = "0195f2a1-0015-4015-8015-000000000015".parse().unwrap();
+        let mut second = report.inventory.nodes[0].clone();
+        second.node_id = second_id;
+        second.rpc_endpoint = "ws://127.0.0.1:6791".parse().unwrap();
+        second.process = None;
+        report.inventory.nodes.push(second);
+        report.inventory.revision = 2;
+        report.report_sequence += 1;
+        report.report_id = "0195f2a1-0092-4092-8092-000000000092".parse().unwrap();
+        let mut second_obs = report.nodes[0].clone();
+        second_obs.node_id = second_id;
+        second_obs.process = disabled_process();
+        report.nodes.push(second_obs);
+        report.validate().unwrap();
+        submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+
+        let public = public_home_node(&state, &second_id.to_string()).await;
+        assert_eq!(public["processState"], "disabled");
+        assert!(public["processCpuPercent"].is_null());
+        assert!(public["processUptimeMs"].is_null());
+        let admin = admin_agent_json(&state, &agent_id).await;
+        let second_diagnostic = admin["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["node_id"] == second_id.to_string())
+            .unwrap();
+        assert_eq!(second_diagnostic["process"]["state"], "disabled");
+        assert!(second_diagnostic["process"]["pid"].is_null());
+        assert!(second_diagnostic["process"]["cpu_percent"].is_null());
+    }
+
     #[tokio::test]
     async fn boot_sequence_gaps_and_competing_boots_are_recorded_and_rejected() {
         let (_dir, state, agent_id) = state_with_agent().await;

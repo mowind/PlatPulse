@@ -297,6 +297,44 @@ backup fails; the packaged timer does not do that orchestration. Home-based
 user services also need their own paths and permissions rather than blindly
 copying the system units.
 
+### Node process selectors and supervisor authorization
+
+A Node's optional `[nodes.process]` selector is the only source of process
+identity; the Agent never guesses it from a name, command line, or RPC port.
+Without a selector the process component stays Disabled while RPC and chain
+collection continue. Three forms are supported:
+
+```toml
+[nodes.process]
+kind = "systemd_unit"
+unit = "platon-validator.service"
+```
+
+```toml
+[nodes.process]
+kind = "pid_file"
+path = "/run/platon-validator.pid"
+```
+
+```toml
+[nodes.process]
+kind = "supervisor"
+program = "platon-validator"           # "group:process" when numprocs > 1
+```
+
+The `supervisor` form runs `supervisorctl pid <program>` as the Agent user, so
+that account must be able to execute `supervisorctl` and connect to the
+supervisor control socket (typically `/var/run/supervisor.sock` or
+`/run/supervisor/supervisor.sock`). Grant access through supervisor's own
+`[unix_http_server]` `chmod`/`chown` settings instead of broad filesystem
+permissions. If the socket lives in a directory hidden by the unit's sandbox
+(`PrivateTmp=true`), point `[supervisorctl] serverurl` at a visible path and
+add that path to the unit's readable paths.
+
+Missing `supervisorctl`, a non-zero exit, a non-numeric PID, and a `0` PID are
+distinct typed collection errors: the component keeps its last-good value with
+an explicit error and is never rendered as `0` or Healthy.
+
 ### Server-owned online backup schedule
 
 `[backup_schedule]` makes the running Server create and verify its own daily

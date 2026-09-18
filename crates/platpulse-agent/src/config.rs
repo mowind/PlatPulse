@@ -222,6 +222,16 @@ impl AgentConfigFile {
                             && !path.chars().any(char::is_control)
                             && Path::new(path).is_absolute()
                     }
+                    // A supervisord program name; `group:process` is allowed
+                    // for programs with numprocs > 1. A leading dash is
+                    // rejected so the name can never be read as a
+                    // `supervisorctl` option.
+                    ProcessSelector::Supervisor { program } => {
+                        !program.is_empty()
+                            && program.len() <= 512
+                            && !program.chars().any(char::is_control)
+                            && !program.starts_with('-')
+                    }
                 };
                 if !valid {
                     return Err(AgentConfigError::InvalidNode(
@@ -456,6 +466,40 @@ mod tests {
             relative.validate(),
             Err(AgentConfigError::InvalidNode(_))
         ));
+    }
+
+    #[test]
+    fn validates_supervisor_program_selector_bounds() {
+        let id = "0195f2a1-2b3c-4d5e-8f90-123456789abc";
+        let config = |selector: &str| {
+            toml::from_str::<AgentConfigFile>(&format!(
+                "server_url=\"https://example.com\"\ncredential_file=\"/tmp/c\"\nstate_db=\"/tmp/d\"\nnodes=[{{node_id=\"{id}\",network_key=\"platon-mainnet\",rpc_endpoint=\"ws://127.0.0.1:1\",process={selector}}}]
+"
+            ))
+            .unwrap()
+        };
+        for selector in [
+            "{kind=\"supervisor\",program=\"platon-validator-a\"}",
+            "{kind=\"supervisor\",program=\"validators:platon-validator-a\"}",
+        ] {
+            assert!(config(selector).validate().is_ok(), "{selector}");
+        }
+        let too_long = format!("{{kind=\"supervisor\",program=\"{}\"}}", "p".repeat(513));
+        for selector in [
+            "{kind=\"supervisor\",program=\"\"}".to_owned(),
+            too_long,
+            "{kind=\"supervisor\",program=\"platon\\u0000node\"}".to_owned(),
+            "{kind=\"supervisor\",program=\"platon\\tnode\"}".to_owned(),
+            "{kind=\"supervisor\",program=\"-option\"}".to_owned(),
+        ] {
+            assert!(
+                matches!(
+                    config(&selector).validate(),
+                    Err(AgentConfigError::InvalidNode(_))
+                ),
+                "{selector}"
+            );
+        }
     }
 
     #[test]

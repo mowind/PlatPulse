@@ -894,25 +894,15 @@ fn collect_report_with_data_directories<A: RpcAdapter>(
         AgentCapability::RpcCapabilityProbe,
         AgentCapability::PeerSnapshot,
     ];
-    if inventory.nodes.iter().any(|node| {
-        node.process.as_ref().is_some_and(|selector| {
-            matches!(
-                selector,
-                platpulse_core::inventory::ProcessSelector::SystemdUnit { .. }
-            )
-        })
-    }) {
-        capabilities.push(AgentCapability::ProcessSystemd);
-    }
-    if inventory.nodes.iter().any(|node| {
-        node.process.as_ref().is_some_and(|selector| {
-            matches!(
-                selector,
-                platpulse_core::inventory::ProcessSelector::PidFile { .. }
-            )
-        })
-    }) {
-        capabilities.push(AgentCapability::ProcessPidFile);
+    for selector in inventory
+        .nodes
+        .iter()
+        .filter_map(|node| node.process.as_ref())
+    {
+        let capability = selector.capability();
+        if !capabilities.contains(&capability) {
+            capabilities.push(capability);
+        }
     }
     if nodes
         .iter()
@@ -2675,6 +2665,68 @@ mod tests {
                 .namespaces,
             ["platon", "net"]
         );
+    }
+
+    #[test]
+    fn process_supervisor_capability_follows_declared_selectors() {
+        let dir = tempdir().unwrap();
+        let config = AgentConfig {
+            config_path: dir.path().join("agent.toml"),
+            server_url: "https://example.com".into(),
+            credential_file: dir.path().join("credential"),
+            state_db: dir.path().join("agent.db"),
+            collection_interval_seconds: 5,
+            backfill: crate::config::BackfillConfig::default(),
+        };
+        let supervisor_inventory: NodeInventory = serde_json::from_str(
+            r#"{"revision":1,"nodes":[{"node_id":"0195f2a1-0014-4014-8014-000000000014","network_key":"platon-mainnet","rpc_endpoint":"ws://127.0.0.1:6790","process":{"kind":"supervisor","program":"validators:platon-validator-a"}},{"node_id":"0195f2a1-0015-4015-8015-000000000015","network_key":"platon-mainnet","rpc_endpoint":"ws://127.0.0.1:6791"}]}"#
+        )
+        .unwrap();
+        let report = collect_report(
+            &config,
+            "0195f2a1-0011-4011-8011-000000000011".parse().unwrap(),
+            1,
+            "0195f2a1-0012-4012-8012-000000000012".parse().unwrap(),
+            1,
+            supervisor_inventory,
+            &ScriptedRpcAdapter::new(snapshot()),
+        )
+        .unwrap();
+        assert!(
+            report
+                .agent_capabilities
+                .contains(&AgentCapability::ProcessSupervisor)
+        );
+        assert!(
+            !report
+                .agent_capabilities
+                .contains(&AgentCapability::ProcessSystemd)
+        );
+        // The Node without a selector stays Disabled, never 0 or Healthy.
+        assert_eq!(report.nodes[1].process.status, ComponentStatus::Disabled);
+        assert!(report.nodes[1].process.latest.is_none());
+
+        // Without any declared selector the capability is not broadcast.
+        let bare_inventory: NodeInventory = serde_json::from_str(
+            r#"{"revision":1,"nodes":[{"node_id":"0195f2a1-0014-4014-8014-000000000014","network_key":"platon-mainnet","rpc_endpoint":"ws://127.0.0.1:6790"}]}"#
+        )
+        .unwrap();
+        let bare = collect_report(
+            &config,
+            "0195f2a1-0011-4011-8011-000000000011".parse().unwrap(),
+            1,
+            "0195f2a1-0012-4012-8012-000000000012".parse().unwrap(),
+            1,
+            bare_inventory,
+            &ScriptedRpcAdapter::new(snapshot()),
+        )
+        .unwrap();
+        assert!(
+            !bare
+                .agent_capabilities
+                .contains(&AgentCapability::ProcessSupervisor)
+        );
+        assert_eq!(bare.nodes[0].process.status, ComponentStatus::Disabled);
     }
 
     #[test]

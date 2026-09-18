@@ -246,6 +246,73 @@ fn numeric_contract_bounds_are_enforced() {
 }
 
 #[test]
+fn supervisor_selector_and_capability_round_trip_and_are_bounded() {
+    let mut value = fixture_value("report_v1_canonical.json");
+    value["inventory"]["nodes"][1]["process"] = json!({
+        "kind": "supervisor",
+        "program": "validators:platon-validator-b",
+    });
+    value["agent_capabilities"] = json!(["process_supervisor", "consensus_status"]);
+    let report: AgentReport = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(
+        report.inventory.nodes[1].process,
+        Some(platpulse_core::ProcessSelector::Supervisor {
+            program: "validators:platon-validator-b".into(),
+        })
+    );
+    assert_eq!(
+        report.agent_capabilities,
+        vec![
+            AgentCapability::ProcessSupervisor,
+            AgentCapability::ConsensusStatus
+        ]
+    );
+    // Round-trip preserves the exact selector and capability payloads.
+    let serialized = serde_json::to_value(&report).unwrap();
+    assert_eq!(
+        serialized["inventory"]["nodes"][1]["process"],
+        value["inventory"]["nodes"][1]["process"]
+    );
+    assert_eq!(
+        serialized["agent_capabilities"],
+        value["agent_capabilities"]
+    );
+
+    // Unknown payload fields and a missing program are rejected.
+    value["inventory"]["nodes"][1]["process"]["bogus"] = json!(1);
+    assert!(serde_json::from_value::<AgentReport>(value.clone()).is_err());
+    value["inventory"]["nodes"][1]["process"] = json!({ "kind": "supervisor" });
+    assert!(serde_json::from_value::<AgentReport>(value.clone()).is_err());
+
+    // The capability name is closed: an unknown value is rejected.
+    value["inventory"]["nodes"][1]["process"] = json!({
+        "kind": "supervisor",
+        "program": "platon-validator-b",
+    });
+    value["agent_capabilities"] = json!(["process_magic"]);
+    assert!(serde_json::from_value::<AgentReport>(value.clone()).is_err());
+
+    // The program name is bounded at the same 512 chars as the other selectors.
+    value["agent_capabilities"] = json!([]);
+    value["inventory"]["nodes"][1]["process"] = json!({
+        "kind": "supervisor",
+        "program": "p".repeat(512),
+    });
+    let report: AgentReport = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(report.validate(), Ok(()));
+    value["inventory"]["nodes"][1]["process"]["program"] = json!("p".repeat(513));
+    let report: AgentReport = serde_json::from_value(value).unwrap();
+    assert_eq!(
+        report.validate(),
+        Err(platpulse_core::WireError::FieldTooLong {
+            field: "process.program",
+            len: 513,
+            max: 512,
+        })
+    );
+}
+
+#[test]
 fn tagged_enum_payload_fields_are_strict() {
     let mut value = fixture_value("report_v1_canonical.json");
     value["inventory"]["nodes"][0]["process"]["bogus"] = json!(1);

@@ -10,6 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::envelope::AgentCapability;
 use crate::identity::NodeId;
 use crate::network::{NetworkKey, RpcEndpoint};
 
@@ -70,6 +71,24 @@ pub enum ProcessSelector {
         /// Path to the PID file.
         path: String,
     },
+    /// A supervisord program, e.g. `platon-validator-a`. Use the
+    /// `group:process` form when the program declares `numprocs > 1`
+    /// (contract limit: 512 chars).
+    Supervisor {
+        /// The `supervisorctl` program (or `group:process`) name.
+        program: String,
+    },
+}
+
+impl ProcessSelector {
+    /// The Agent capability that declaring this selector advertises.
+    pub fn capability(&self) -> AgentCapability {
+        match self {
+            Self::SystemdUnit { .. } => AgentCapability::ProcessSystemd,
+            Self::PidFile { .. } => AgentCapability::ProcessPidFile,
+            Self::Supervisor { .. } => AgentCapability::ProcessSupervisor,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -97,6 +116,30 @@ mod tests {
         let back: ProcessSelector = serde_json::from_str(&json).unwrap();
         assert_eq!(back, pid);
 
+        // A supervisord program selector, including the group:process form
+        // used when the program declares numprocs > 1.
+        let supervisor = ProcessSelector::Supervisor {
+            program: "platon-validator-a".into(),
+        };
+        let json = serde_json::to_string(&supervisor).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"supervisor","program":"platon-validator-a"}"#
+        );
+        let back: ProcessSelector = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, supervisor);
+
+        let grouped = ProcessSelector::Supervisor {
+            program: "validators:platon-validator-a".into(),
+        };
+        let json = serde_json::to_string(&grouped).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"supervisor","program":"validators:platon-validator-a"}"#
+        );
+        let back: ProcessSelector = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, grouped);
+
         // Unknown payload fields are rejected, not silently dropped.
         assert!(
             serde_json::from_str::<ProcessSelector>(
@@ -105,5 +148,12 @@ mod tests {
             .is_err()
         );
         assert!(serde_json::from_str::<ProcessSelector>(r#"{"kind":"pid_file"}"#).is_err());
+        assert!(serde_json::from_str::<ProcessSelector>(r#"{"kind":"supervisor"}"#).is_err());
+        assert!(
+            serde_json::from_str::<ProcessSelector>(
+                r#"{"kind":"supervisor","program":"x","bogus":1}"#
+            )
+            .is_err()
+        );
     }
 }
