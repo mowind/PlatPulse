@@ -549,7 +549,12 @@ fn collect_node<A: RpcAdapter>(
     adapter: &A,
 ) -> NodeObservation {
     let started = std::time::Instant::now();
-    let process = crate::process::collect(system, node.process.as_ref(), attempted);
+    let process = crate::process::collect(
+        &crate::process::SystemSelectorRunner,
+        system,
+        node.process.as_ref(),
+        attempted,
+    );
     let (rpc, network_identity, static_metadata, sync, consensus, peers) =
         match adapter.collect(&node.rpc_endpoint) {
             Ok(snapshot) => (
