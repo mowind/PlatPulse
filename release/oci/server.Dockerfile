@@ -6,7 +6,7 @@ RUN npm ci
 COPY platpulse-web/ ./
 RUN npm run build
 
-FROM rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS server-build
+FROM rust:1.95-bookworm@sha256:6258907abe69656e41cd992e0b705cdcfabcbbe3db374f92ed2d47121282d4a1 AS server-build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
