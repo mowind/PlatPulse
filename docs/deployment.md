@@ -278,6 +278,34 @@ Keep corruption evidence and known-good rollback copies until recovery and
 backup verification are complete. Do not repair or replace files underneath a
 running Server.
 
+## Agent Store recovery
+
+`platpulse-agent run` drains the previous Boot before it starts new
+collection. A leftover Closing report that no longer belongs to the current
+`agent_state` -- a superseded Boot, an advanced `report_sequence`, or a stale
+Agent Epoch -- is quarantined automatically, so a self-healing Store no longer
+stalls startup in a restart loop. Only a receipt whose full
+`(agent_epoch, boot_id, report_sequence)` compare-and-swap key still matches
+stays fatal.
+
+If the automatic drain cannot proceed, use the offline recovery command rather
+than editing the Agent database by hand:
+
+```bash
+# The command refuses while a running Agent holds the runtime lock.
+sudo systemctl stop platpulse-agent
+platpulse-agent recover --config /var/lib/platpulse-agent/agent.toml
+# Review the stale Closing reports it reports, then quarantine them:
+platpulse-agent recover --config /var/lib/platpulse-agent/agent.toml --drop-stale-closing
+sudo systemctl start platpulse-agent
+```
+
+`recover` always writes a consistent `VACUUM INTO` backup beside the state
+database before it changes anything; a run without `--drop-stale-closing` only
+backs up and diagnoses. Quarantining a `reports` row cascades to
+`report_sample_assignments`, returning those samples to the re-assignable pool
+(issue #163).
+
 ## systemd services and backup timer
 
 Install the binary and WebUI tree using the package manager or release archive.
