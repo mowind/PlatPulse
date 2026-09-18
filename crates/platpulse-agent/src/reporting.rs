@@ -196,17 +196,35 @@ pub async fn claim_oldest_report(
     }
 }
 
+/// Record a bounded delivery failure inside an existing transaction, so a
+/// receipt rejection can share the same diagnostic write as a transport
+/// failure without leaving the caller's transaction.
+pub(crate) async fn record_delivery_failure_in_transaction(
+    tx: &mut Transaction<'_, Sqlite>,
+    message: &str,
+    at: &str,
+) -> Result<(), sqlx::Error> {
+    let message: String = message.chars().take(256).collect();
+    sqlx::query("INSERT INTO delivery_diagnostics (singleton, last_error, last_error_at) VALUES (1, ?, ?) ON CONFLICT(singleton) DO UPDATE SET last_error=excluded.last_error, last_error_at=excluded.last_error_at")
+        .bind(message).bind(at).execute(&mut **tx).await?;
+    Ok(())
+}
+
 /// Record a bounded delivery failure while preserving the immutable report.
 pub async fn record_delivery_failure(
     store: &mut AgentStore,
     message: &str,
     at: &str,
 ) -> Result<(), ReportStoreError> {
-    let message = message.chars().take(256).collect::<String>();
     let _write_permit = store.acquire_write().await;
-    sqlx::query("INSERT INTO delivery_diagnostics (singleton, last_error, last_error_at) VALUES (1, ?, ?) ON CONFLICT(singleton) DO UPDATE SET last_error=excluded.last_error, last_error_at=excluded.last_error_at")
-        .bind(message).bind(at).execute(store.connection()).await?;
-    Ok(())
+    let mut tx = store.connection().begin().await?;
+    match record_delivery_failure_in_transaction(&mut tx, message, at).await {
+        Ok(()) => tx.commit().await.map_err(ReportStoreError::from),
+        Err(error) => match tx.rollback().await {
+            Ok(()) => Err(ReportStoreError::from(error)),
+            Err(rollback_error) => Err(ReportStoreError::from(rollback_error)),
+        },
+    }
 }
 
 /// Remove an orphan report that can never apply to the current Agent state.
