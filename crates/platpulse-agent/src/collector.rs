@@ -40,7 +40,7 @@ use crate::database::{
     AgentDatabaseConfig, AgentStore, AgentStoreWritePermit, applied_receipt_expiry_cutoff,
     delete_expired_receipt_markers,
 };
-use crate::reporting::ReportStoreError;
+use crate::reporting::{ReportStoreError, ReportTransport};
 pub const MAX_SPOOL_BYTES: u64 = 2 * 1024 * 1024;
 pub const MAX_SPOOL_AGE_SECONDS: u64 = 24 * 60 * 60;
 pub const PREFLUSH_SPOOL_BYTES: u64 = 1536 * 1024;
@@ -219,6 +219,17 @@ pub enum CollectionError {
     Serialization(#[from] serde_json::Error),
     #[error("Agent state changed while assembling the report")]
     ConcurrentStateChange,
+}
+
+/// Failure while applying a Server receipt to the Agent Store. Storage failures
+/// and receipt conflicts are separated so the recovery drain can tolerate a
+/// Closing report that no longer belongs to the current Agent state.
+#[derive(Debug, Error)]
+pub enum ApplyReceiptError {
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
+    #[error("Closing report {report_id} does not belong to the current Agent state")]
+    StaleClosing { report_id: String },
 }
 
 type CollectionState = (
@@ -983,6 +994,18 @@ pub(crate) async fn recover_previous_boot_with_permit<A: RpcAdapter>(
     adapter: &A,
     write_permit: AgentStoreWritePermit,
 ) -> Result<(), CollectionError> {
+    let transport = crate::reporting::HttpReportTransport::from_config(config)?;
+    recover_previous_boot_with_transport(config, adapter, write_permit, &transport).await
+}
+
+/// Recovery drain with an injected report transport, so the drain loop can be
+/// exercised without a live Server.
+pub(crate) async fn recover_previous_boot_with_transport<A: RpcAdapter, T: ReportTransport>(
+    config: &AgentConfig,
+    adapter: &A,
+    write_permit: AgentStoreWritePermit,
+    transport: &T,
+) -> Result<(), CollectionError> {
     let mut store = AgentStore::open_with_write_permit(
         AgentDatabaseConfig::new(&config.state_db),
         write_permit,
@@ -1106,11 +1129,23 @@ pub(crate) async fn recover_previous_boot_with_permit<A: RpcAdapter>(
         }
     }
     drop(_write_permit);
-    let transport = crate::reporting::HttpReportTransport::from_config(config)?;
-    while let Some(delivered) = crate::reporting::deliver_one(&mut store, &transport).await? {
-        if delivered_report_closes_boot(&delivered, &boot_text)? {
-            store.close().await?;
-            return Ok(());
+    // Drain oldest-first. A Closing report whose Boot was already superseded
+    // cannot be applied to the current agent_state; the Server has received its
+    // exact bytes, so the local orphan is quarantined and the drain continues
+    // instead of turning a self-healing condition into a fatal startup error.
+    loop {
+        match crate::reporting::deliver_one(&mut store, transport).await {
+            Ok(Some(delivered)) => {
+                if delivered_report_closes_boot(&delivered, &boot_text)? {
+                    store.close().await?;
+                    return Ok(());
+                }
+            }
+            Ok(None) => break,
+            Err(ReportStoreError::StaleClosing { report_id }) => {
+                crate::reporting::quarantine_report(&mut store, &report_id).await?;
+            }
+            Err(error) => return Err(error.into()),
         }
     }
 
@@ -1162,7 +1197,7 @@ pub(crate) async fn recover_previous_boot_with_permit<A: RpcAdapter>(
         "draining",
     )
     .await?;
-    let delivered = crate::reporting::deliver_one(&mut store, &transport)
+    let delivered = crate::reporting::deliver_one(&mut store, transport)
         .await?
         .ok_or(CollectionError::RecoveryRequired)?;
     if !delivered_report_closes_boot(&delivered, &boot_text)? {
@@ -2211,7 +2246,7 @@ pub async fn apply_receipt(
     disposition: &str,
     receipt_body: &[u8],
     applied_at: &str,
-) -> Result<(), sqlx::Error> {
+) -> Result<(), ApplyReceiptError> {
     let receipt = serde_json::from_slice::<ReceiptEnvelope>(receipt_body)
         .map_err(|error| sqlx::Error::Protocol(error.to_string()))?
         .receipt;
@@ -2223,9 +2258,9 @@ pub async fn apply_receipt(
         || receipt.report_body_sha256.to_string() != body_sha256
         || expected_disposition != disposition
     {
-        return Err(sqlx::Error::Protocol(
+        return Err(ApplyReceiptError::Database(sqlx::Error::Protocol(
             "receipt does not match report".to_owned(),
-        ));
+        )));
     }
 
     let expiry_cutoff = applied_receipt_expiry_cutoff(applied_at)?;
@@ -2251,8 +2286,11 @@ pub async fn apply_receipt(
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        return Err(sqlx::Error::Protocol(reason.to_owned()));
+        return Err(ApplyReceiptError::Database(sqlx::Error::Protocol(
+            reason.to_owned(),
+        )));
     }
+    let mut stale_closing = false;
     let transaction_result: Result<(), sqlx::Error> = async {
         let (raw_report, stored_body_sha256, stored_body_bytes): (Vec<u8>, String, i64) =
             sqlx::query_as("SELECT body, body_sha256, body_bytes FROM reports WHERE report_id = ?")
@@ -2443,7 +2481,7 @@ pub async fn apply_receipt(
             BootId::from_str(&Uuid::new_v4().to_string()).expect("UUID is valid");
         let closed_boot_id = parsed_report.boot_id.to_string();
         let result = sqlx::query(
-            "UPDATE agent_state SET boot_id=?, report_sequence=0, boot_state='drained_pending', pending_transition='drained_previous', pending_previous_boot_id=?, previous_boot_id=?, close_report_id=?, close_applied_at=?, shutdown_state='final_stored', shutdown_finished_at=?, shutdown_last_error=NULL, shutdown_updated_at=?, updated_at=? WHERE singleton=1 AND agent_epoch=? AND boot_id=? AND report_sequence=? AND boot_state IN ('active', 'draining', 'final_stored')",
+            "UPDATE agent_state SET boot_id=?, report_sequence=0, boot_state='drained_pending', pending_transition='drained_previous', pending_previous_boot_id=?, previous_boot_id=?, close_report_id=?, close_applied_at=?, shutdown_state='final_stored', shutdown_finished_at=?, shutdown_last_error=NULL, shutdown_updated_at=?, updated_at=? WHERE singleton=1 AND agent_epoch=? AND boot_id=? AND report_sequence=? AND boot_state IN ('active', 'draining')",
         )
         .bind(new_boot_id.to_string())
         .bind(&closed_boot_id)
@@ -2459,6 +2497,26 @@ pub async fn apply_receipt(
         .execute(&mut *tx)
         .await?;
         if result.rows_affected() != 1 {
+            // Distinguish a Closing report whose state was genuinely
+            // superseded from a race with another writer: only a mismatch on
+            // the CAS key (epoch, boot, sequence) is an orphan the recovery
+            // drain may discard.
+            let current: Option<(i64, Option<String>, i64)> = sqlx::query_as(
+                "SELECT agent_epoch, boot_id, report_sequence FROM agent_state WHERE singleton=1",
+            )
+            .fetch_optional(&mut *tx)
+            .await?;
+            let belongs_to_current_state = match current.as_ref() {
+                Some((current_epoch, current_boot, current_sequence)) => {
+                    *current_epoch == parsed_report.agent_epoch as i64
+                        && current_boot.as_deref() == Some(closed_boot_id.as_str())
+                        && *current_sequence == parsed_report.report_sequence as i64
+                }
+                None => true,
+            };
+            if !belongs_to_current_state {
+                stale_closing = true;
+            }
             return Err(sqlx::Error::Protocol(
                 "Agent state changed while applying Closing receipt".to_owned(),
             ));
@@ -2468,10 +2526,18 @@ pub async fn apply_receipt(
     }
     .await;
     match transaction_result {
-        Ok(()) => tx.commit().await,
+        Ok(()) => tx.commit().await.map_err(ApplyReceiptError::from),
         Err(error) => match tx.rollback().await {
-            Ok(()) => Err(error),
-            Err(rollback_error) => Err(rollback_error),
+            Ok(()) => {
+                if stale_closing {
+                    Err(ApplyReceiptError::StaleClosing {
+                        report_id: report_id.to_owned(),
+                    })
+                } else {
+                    Err(ApplyReceiptError::Database(error))
+                }
+            }
+            Err(rollback_error) => Err(ApplyReceiptError::Database(rollback_error)),
         },
     }
 }
@@ -3813,5 +3879,216 @@ mod tests {
             1
         );
         store.close().await.unwrap();
+    }
+
+    struct ClosingRejectedTransport;
+
+    impl ReportTransport for ClosingRejectedTransport {
+        fn send<'a>(
+            &'a self,
+            body: &'a [u8],
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Vec<u8>, ReportStoreError>> + Send + 'a>,
+        > {
+            Box::pin(async move {
+                let report: AgentReport = serde_json::from_slice(body).unwrap();
+                let hash = format!("0x{}", hex::encode(sha2::Sha256::digest(body)));
+                let receipt = format!(
+                    r#"{{"receipt":{{"report_id":"{}","disposition":"rejected","report_body_sha256":"{}","server_version":"test","supported_protocol_majors":[1],"server_time":"2026-01-01T00:00:00Z","inventory":"rejected","rejections":[{{"code":"invalid_envelope","retryable":false,"reason":"test"}}],"nodes":[],"samples":[]}}}}"#,
+                    report.report_id, hash
+                );
+                Ok(receipt.into_bytes())
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn recovery_drain_drops_a_stale_closing_report_instead_of_failing() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("agent.toml");
+        let db_path = dir.path().join("agent.db");
+        std::fs::write(
+            &config_path,
+            format!(
+                "server_url=\"https://example.com\"\ncredential_file=\"{}/credential\"\nstate_db=\"{}\"\ninventory_revision=1\nnodes=[{{node_id=\"0195f2a1-0014-4014-8014-000000000014\",network_key=\"platon-mainnet\",rpc_endpoint=\"ws://127.0.0.1:6790\"}}]\n",
+                dir.path().display(),
+                db_path.display()
+            ),
+        )
+        .unwrap();
+        let config = AgentConfig::resolve(&config_path).unwrap();
+
+        let stale_boot = "0195f2a1-0050-4050-8050-000000000050";
+        let stale_report_id = "0195f2a1-0051-4051-8051-000000000051";
+        let current_boot = "0195f2a1-0060-4060-8060-000000000060";
+        let mut stale: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        stale.agent_epoch = 1;
+        stale.boot_id = stale_boot.parse().unwrap();
+        stale.report_sequence = 3;
+        stale.report_id = stale_report_id.parse().unwrap();
+        stale.boot_transition = BootTransition::Closing;
+        stale.previous_boot_id = None;
+        stale.validate().unwrap();
+        let stale_body = serde_json::to_vec(&stale).unwrap();
+        let stale_hash = format!("0x{}", hex::encode(sha2::Sha256::digest(&stale_body)));
+
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(&db_path))
+            .await
+            .unwrap();
+        // agent_state has already advanced to a newer Boot B.
+        sqlx::query("INSERT INTO agent_state (singleton, agent_id, agent_epoch, boot_id, report_sequence, inventory_revision, boot_state, updated_at) VALUES (1, ?, 1, ?, 5, 1, 'active', ?)")
+            .bind("0195f2a1-0011-4011-8011-000000000011")
+            .bind(current_boot)
+            .bind("2026-08-12T08:00:00Z")
+            .execute(store.connection())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO reports (report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes, created_at) VALUES (?, 1, ?, 3, ?, ?, ?, ?, ?)")
+            .bind(stale_report_id)
+            .bind(stale_boot)
+            .bind(stale.generated_at.to_string())
+            .bind(&stale_body)
+            .bind(&stale_hash)
+            .bind(stale_body.len() as i64)
+            .bind("2026-08-12T07:00:00Z")
+            .execute(store.connection())
+            .await
+            .unwrap();
+        // A durable sample is owned by the stale report; ON DELETE CASCADE must
+        // return it to the re-assignable pool when the orphan is dropped.
+        sqlx::query("INSERT INTO report_sample_assignments (report_id, node_id, sample_kind, from_height, to_height) VALUES (?, ?, 'block', 7, 7)")
+            .bind(stale_report_id)
+            .bind("0195f2a1-0014-4014-8014-000000000014")
+            .execute(store.connection())
+            .await
+            .unwrap();
+        store.close().await.unwrap();
+
+        recover_previous_boot_with_transport(
+            &config,
+            &ScriptedRpcAdapter::new(snapshot()),
+            AgentStoreWritePermit::new(),
+            &ClosingRejectedTransport,
+        )
+        .await
+        .unwrap();
+
+        let mut reopened = AgentStore::open(AgentDatabaseConfig::new(&db_path))
+            .await
+            .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports WHERE report_id=?")
+                .bind(stale_report_id)
+                .fetch_one(reopened.connection())
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM report_sample_assignments WHERE report_id=?"
+            )
+            .bind(stale_report_id)
+            .fetch_one(reopened.connection())
+            .await
+            .unwrap(),
+            0
+        );
+        let (boot_id, boot_state): (String, String) =
+            sqlx::query_as("SELECT boot_id, boot_state FROM agent_state WHERE singleton=1")
+                .fetch_one(reopened.connection())
+                .await
+                .unwrap();
+        assert_ne!(boot_id, current_boot);
+        assert_eq!(boot_state, "drained_pending");
+        reopened.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn recovery_drain_drops_a_superseded_closing_report_for_the_same_boot() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("agent.toml");
+        let db_path = dir.path().join("agent.db");
+        std::fs::write(
+            &config_path,
+            format!(
+                "server_url=\"https://example.com\"\ncredential_file=\"{}/credential\"\nstate_db=\"{}\"\ninventory_revision=1\nnodes=[{{node_id=\"0195f2a1-0014-4014-8014-000000000014\",network_key=\"platon-mainnet\",rpc_endpoint=\"ws://127.0.0.1:6790\"}}]\n",
+                dir.path().display(),
+                db_path.display()
+            ),
+        )
+        .unwrap();
+        let config = AgentConfig::resolve(&config_path).unwrap();
+
+        let current_boot = "0195f2a1-0060-4060-8060-000000000060";
+        let stale_report_id = "0195f2a1-0051-4051-8051-000000000051";
+        let mut stale: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        stale.agent_epoch = 1;
+        stale.boot_id = current_boot.parse().unwrap();
+        stale.report_sequence = 3;
+        stale.report_id = stale_report_id.parse().unwrap();
+        stale.boot_transition = BootTransition::Closing;
+        stale.previous_boot_id = None;
+        stale.validate().unwrap();
+        let stale_body = serde_json::to_vec(&stale).unwrap();
+        let stale_hash = format!("0x{}", hex::encode(sha2::Sha256::digest(&stale_body)));
+
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(&db_path))
+            .await
+            .unwrap();
+        // Same Boot and epoch, but a later report already advanced the sequence.
+        sqlx::query("INSERT INTO agent_state (singleton, agent_id, agent_epoch, boot_id, report_sequence, inventory_revision, boot_state, updated_at) VALUES (1, ?, 1, ?, 6, 1, 'active', ?)")
+            .bind("0195f2a1-0011-4011-8011-000000000011")
+            .bind(current_boot)
+            .bind("2026-08-12T08:00:00Z")
+            .execute(store.connection())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO reports (report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes, created_at) VALUES (?, 1, ?, 3, ?, ?, ?, ?, ?)")
+            .bind(stale_report_id)
+            .bind(current_boot)
+            .bind(stale.generated_at.to_string())
+            .bind(&stale_body)
+            .bind(&stale_hash)
+            .bind(stale_body.len() as i64)
+            .bind("2026-08-12T07:00:00Z")
+            .execute(store.connection())
+            .await
+            .unwrap();
+        store.close().await.unwrap();
+
+        recover_previous_boot_with_transport(
+            &config,
+            &ScriptedRpcAdapter::new(snapshot()),
+            AgentStoreWritePermit::new(),
+            &ClosingRejectedTransport,
+        )
+        .await
+        .unwrap();
+
+        let mut reopened = AgentStore::open(AgentDatabaseConfig::new(&db_path))
+            .await
+            .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports WHERE report_id=?")
+                .bind(stale_report_id)
+                .fetch_one(reopened.connection())
+                .await
+                .unwrap(),
+            0
+        );
+        let boot_state: String =
+            sqlx::query_scalar("SELECT boot_state FROM agent_state WHERE singleton=1")
+                .fetch_one(reopened.connection())
+                .await
+                .unwrap();
+        assert_eq!(boot_state, "drained_pending");
+        reopened.close().await.unwrap();
     }
 }

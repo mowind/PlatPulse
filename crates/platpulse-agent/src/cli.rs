@@ -52,6 +52,10 @@ pub enum Command {
     Shutdown(ShutdownArgs),
     /// Validate and persist one immutable report before delivery.
     PersistReport(PersistReportArgs),
+    /// Take a consistent backup, diagnose, and optionally quarantine stale
+    /// Closing reports. Refuses to run while another Agent runtime owns the
+    /// Store.
+    Recover(RecoverArgs),
 }
 
 #[derive(Debug, Args)]
@@ -97,6 +101,16 @@ pub struct PersistReportArgs {
     pub report: PathBuf,
 }
 
+#[derive(Debug, Args)]
+pub struct RecoverArgs {
+    #[arg(long)]
+    pub config: PathBuf,
+    /// Quarantine Closing reports that no longer belong to the current Agent
+    /// state. Without this flag the command only backs up and diagnoses.
+    #[arg(long, default_value_t = false)]
+    pub drop_stale_closing: bool,
+}
+
 #[derive(Debug, Error)]
 pub enum AgentCliError {
     #[error(transparent)]
@@ -135,6 +149,30 @@ pub fn run_validate_config(args: &ValidateConfigArgs) -> Result<(), Box<AgentCli
         validated.inventory.nodes.len(),
         validated.inventory.revision
     );
+    Ok(())
+}
+
+pub async fn run_recover(args: &RecoverArgs) -> Result<(), AgentCliError> {
+    let config = AgentConfig::resolve(&args.config)?;
+    let outcome = crate::recover::recover_store(&config, args.drop_stale_closing)
+        .await
+        .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    println!(
+        "Consistent backup written to {}",
+        outcome.backup_path.display()
+    );
+    println!("Stale Closing reports: {}", outcome.stale.len());
+    for report in &outcome.stale {
+        println!(
+            "  {} (agent_epoch={}, boot_id={})",
+            report.report_id, report.agent_epoch, report.boot_id
+        );
+    }
+    if args.drop_stale_closing {
+        println!("Quarantined {} stale Closing report(s).", outcome.dropped);
+    } else if !outcome.stale.is_empty() {
+        println!("Re-run with --drop-stale-closing to quarantine these reports.");
+    }
     Ok(())
 }
 

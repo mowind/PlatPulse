@@ -18,6 +18,7 @@ pub mod data_directory;
 pub mod database;
 pub mod enroll;
 pub mod process;
+pub mod recover;
 pub mod redaction;
 pub mod reporting;
 pub mod rpc;

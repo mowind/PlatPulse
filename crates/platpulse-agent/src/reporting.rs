@@ -13,7 +13,7 @@ use platpulse_core::{AgentReport, BootTransition, ReceiptDisposition, ReportRece
 
 use serde::Deserialize;
 
-use crate::collector::{SpoolCleanupSummary, SpoolPolicy, apply_receipt};
+use crate::collector::{ApplyReceiptError, SpoolCleanupSummary, SpoolPolicy, apply_receipt};
 use crate::config::{AgentConfig, AgentConfigError};
 use crate::credential::{CredentialError, load_credential_file};
 use crate::database::{
@@ -71,6 +71,8 @@ pub enum ReportStoreError {
     Credential(#[from] CredentialError),
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
+    #[error("stale Closing report {report_id} does not belong to the current Agent state")]
+    StaleClosing { report_id: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,6 +209,32 @@ pub async fn record_delivery_failure(
     Ok(())
 }
 
+/// Remove an orphan report that can never apply to the current Agent state.
+/// The Server has already acknowledged its exact bytes, so the local row is
+/// dropped; `report_sample_assignments` cascades and its samples become
+/// re-assignable.
+pub(crate) async fn quarantine_report(
+    store: &mut AgentStore,
+    report_id: &str,
+) -> Result<bool, ReportStoreError> {
+    let _write_permit = store.acquire_write().await;
+    let mut tx = store.connection().begin().await?;
+    let result = sqlx::query("DELETE FROM reports WHERE report_id = ?")
+        .bind(report_id)
+        .execute(&mut *tx)
+        .await;
+    match result {
+        Ok(result) => {
+            tx.commit().await?;
+            Ok(result.rows_affected() == 1)
+        }
+        Err(error) => {
+            tx.rollback().await?;
+            Err(ReportStoreError::Database(error))
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WireReportResponse {
@@ -298,7 +326,12 @@ async fn deliver_one_inner<T: ReportTransport>(
         &now_rfc3339(),
     )
     .await
-    .map_err(ReportStoreError::Database)?;
+    .map_err(|error| match error {
+        ApplyReceiptError::Database(error) => ReportStoreError::Database(error),
+        ApplyReceiptError::StaleClosing { report_id } => {
+            ReportStoreError::StaleClosing { report_id }
+        }
+    })?;
     Ok(Some(report))
 }
 
