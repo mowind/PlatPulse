@@ -9,7 +9,20 @@ use platpulse_server::config::ServerConfig;
 use platpulse_server::init::run_init;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> std::process::ExitCode {
+    match run().await {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            // Returning the error from `main` would print its `Debug`, hiding
+            // the typed stopped-Server guidance behind variant names. The
+            // CLI's contract is the human-readable `Display` form.
+            eprintln!("Error: {error}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     if cli.print_openapi {

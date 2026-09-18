@@ -286,16 +286,30 @@ dedicated users, apply a strict filesystem sandbox, and leave service enabling
 to the operator. Copy the example configuration, create same-user-owned secret
 files with mode `0600`, initialize the Server, then enable the selected unit.
 
-**Do not enable the shipped backup timer against a running Server.** Its
-independent CLI must only open the database after the Server is stopped; it is
-not an online-backup scheduler. The CLI ownership-guard audit is tracked in
-[issue #160](https://github.com/mowind/PlatPulse/issues/160), following #137.
-For online backups, use the authenticated Admin backup Operation inside the
-owning Server process, or the Server-owned schedule below. A stopped-Server
-schedule must serialize stop/backup/start and guarantee restart even when
-backup fails; the packaged timer does not do that orchestration. Home-based
-user services also need their own paths and permissions rather than blindly
-copying the system units.
+**The shipped backup timer must not run against a running Server.** Every
+offline Server CLI command that opens the database (`init`, `owner create`,
+`viewer create`, `network create`, `agent create-enrollment-token`,
+`backup`, and `restore`) now takes the same exclusive ownership guard the
+serving process holds, *before* SQLite opens. In a non-development deployment
+the command fails with an explicit stopped-Server requirement instead of
+opening -- or modifying -- a database the Server owns (issue #160, following
+#137). Stopping the Server releases the guard, and a refused or failed command
+releases it as it exits. Development mode is the deliberate exception for these
+offline maintenance commands: local tooling and the browser e2e harness attach
+to a running dev Server, so they do not take the guard there. `serve` always
+holds the guard, and `restore` is always a stopped-Server operation, in every
+mode.
+
+That guard makes the independent CLI safe, not scheduled-safe: it neither stops
+nor restarts the Server. For online backups, use the authenticated Admin backup
+Operation inside the owning Server process, or the Server-owned schedule below.
+A stopped-Server schedule must serialize stop/backup/start and guarantee restart
+even when backup fails; the packaged timer does not do that orchestration.
+Apply the same rule to user-level systemd (`systemctl --user`) units and cron
+jobs: use the same state, backup, and secret paths as the service, run with
+`UMask=0077`, keep the backup directory private, and wrap the command so the
+Server is started again on every failure path. Do not copy the system units'
+users or paths blindly into a user service.
 
 ### Node process selectors and supervisor authorization
 
@@ -379,6 +393,49 @@ it writes restrictive artifacts to the configured `backup_dir` (the example uses
 for `ReadWritePaths`. Restore remains an explicit,
 stopped-Server operation using the documented `platpulse-server restore` flow;
 never restore by copying a live database or its WAL/SHM sidecars.
+
+### Safe daily backups, verification, and restore rehearsal
+
+- **Prefer the online path.** `[backup_schedule]` creates and verifies on the
+  owning SQLite connection while the Server keeps ingesting. It is the only
+  schedule that needs no stop/start orchestration.
+- **If you use the independent CLI timer, orchestrate the stop.** The
+  `platpulse-server backup` command now refuses while a running Server owns the
+  database, so a timer that fires against a live Server fails closed instead of
+  opening the file. A safe wrapper stops the Server, runs the backup, and always
+  starts the Server again, even when the backup fails:
+
+  ```bash
+  #!/bin/sh
+  set -u
+  systemctl stop platpulse-server
+  status=1
+  platpulse-server backup --config /etc/platpulse/server.toml && status=0
+  systemctl start platpulse-server
+  exit "$status"
+  ```
+
+  Use the same pattern with `systemctl --user` and the user service names for a
+  home deployment, and with `cron` only if the wrapper restarts the Server on
+  every failure path. Never schedule the raw `platpulse-server backup` command.
+- **Verification is not creation.** A successful `backup` writes a sanitized,
+  fsync'd, atomically renamed artifact plus a registry manifest; that does not
+  prove the artifact restores. The Server-owned schedule and the Admin backup
+  Operation record checksum, read-only `integrity_check`, schema, and privacy
+  verification. For an artifact created by the independent CLI, verify it in the
+  same maintenance window: compare the artifact's SHA-256 with the
+  `backup_artifacts` manifest, run a read-only integrity check, and confirm the
+  recorded schema is not newer than the running binary.
+- **Rehearse an isolated restore.** At least once per release, and after any
+  hardware or path change, copy the state directory and the artifact to an
+  isolated scratch location, point `backup_dir` in the copied configuration at
+  the copied artifacts, and run `platpulse-server restore --config
+  <scratch>/server.toml --artifact-id <id> --yes` against the copy. Then start a
+  scratch Server on a loopback port and confirm `/health/live`,
+  `/health/ready`, and a data refetch. The copied `backup_artifacts` registry
+  supplies the artifact identity, and the production state is never opened.
+  Retain corruption evidence and known-good rollback copies until recovery and
+  verification are complete.
 
 For local development, use an explicit `development = true` configuration and
 loopback `listen`; do not reuse the development cookie policy in production.

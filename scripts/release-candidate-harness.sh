@@ -258,6 +258,17 @@ printf 'Release-candidate harness: provisioning isolated identities and Network\
 ENROLLMENT_TOKEN="$(tail -n 1 "$RUN_ROOT/enrollment-output")"
 [[ "$ENROLLMENT_TOKEN" == pp_enroll_* ]] || fail 'Enrollment token output was invalid'
 
+# The sanitized backup CLI is a stopped-Server command (issue #160): it takes
+# the database ownership guard before SQLite opens, so it must run before the
+# packaged Server starts. Verify artifact creation and permissions here.
+printf 'Release-candidate harness: creating sanitized scheduled backup\n'
+"$SERVER" backup --config "$CONFIG" >"$RUN_ROOT/backup-output" 2>>"$CLI_LOG" || fail 'packaged Server backup command failed'
+BACKUP_FILE="$(sed -n "s/^Created sanitized backup '\(.*\)'.$/\1/p" "$RUN_ROOT/backup-output")"
+[[ "$BACKUP_FILE" == platpulse-*.db ]] || fail 'backup command did not report a safe artifact name'
+[[ -f "$BACKUP_DIR/$BACKUP_FILE" ]] || fail 'backup command did not create the reported artifact'
+[[ "$(stat -c '%a' "$BACKUP_DIR/$BACKUP_FILE")" == 600 ]] || fail 'backup artifact mode was not 0600'
+! find "$BACKUP_DIR" -type f -name '*.part' -print -quit | grep -q . || fail 'backup left a partial artifact'
+
 UNSAFE_METRICS_CONFIG="$RUN_ROOT/unsafe-metrics.toml"
 cat > "$UNSAFE_METRICS_CONFIG" <<EOF
 state_dir = "$STATE_DIR"
@@ -499,14 +510,6 @@ for _ in $(seq 1 50); do
   sleep 0.1
 done
 if ! grep -q 'event: invalidation' "$SSE_OUTPUT" || ! grep -q '"resource":"node"' "$SSE_OUTPUT"; then fail "authorized Admin SSE did not observe the Node invalidation (request $LAST_REQUEST_ID)"; fi
-
-printf 'Release-candidate harness: creating sanitized scheduled backup\n'
-"$SERVER" backup --config "$CONFIG" >"$RUN_ROOT/backup-output" 2>>"$CLI_LOG" || fail 'packaged Server backup command failed'
-BACKUP_FILE="$(sed -n "s/^Created sanitized backup '\(.*\)'.$/\1/p" "$RUN_ROOT/backup-output")"
-[[ "$BACKUP_FILE" == platpulse-*.db ]] || fail 'backup command did not report a safe artifact name'
-[[ -f "$BACKUP_DIR/$BACKUP_FILE" ]] || fail 'backup command did not create the reported artifact'
-[[ "$(stat -c '%a' "$BACKUP_DIR/$BACKUP_FILE")" == 600 ]] || fail 'backup artifact mode was not 0600'
-! find "$BACKUP_DIR" -type f -name '*.part' -print -quit | grep -q . || fail 'backup left a partial artifact'
 
 curl -sS --connect-timeout 2 --max-time 5 -o "$RUN_ROOT/metrics-final.body" "$METRICS_BASE_URL/metrics" || fail 'final metrics scrape failed'
 ! grep -Fq "$REPORT_ID" "$RUN_ROOT/metrics-final.body" || fail 'metrics exposed a raw report ID'

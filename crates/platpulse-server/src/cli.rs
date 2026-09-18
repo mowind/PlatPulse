@@ -16,7 +16,7 @@ use crate::auth::{
 use crate::config::{CliOverrides, ServerConfig};
 use crate::database::{ServerDatabase, ServerDatabaseConfig, initialize};
 use crate::enrollment::{EnrollmentError, create_enrollment_token};
-use crate::network::{NetworkError, create_network};
+use crate::network::create_network;
 use crate::secrets::load_pepper_file;
 
 #[derive(Debug, Parser)]
@@ -228,6 +228,8 @@ pub enum HumanCreateError {
     #[error(transparent)]
     Database(#[from] crate::database::ServerDatabaseError),
     #[error(transparent)]
+    Ownership(#[from] crate::ownership::OwnershipError),
+    #[error(transparent)]
     Identity(#[from] crate::auth::IdentityError),
 }
 
@@ -258,9 +260,9 @@ pub async fn run_owner_create(
     config: &ServerConfig,
     username: &str,
 ) -> Result<(), HumanCreateError> {
-    let (database, password_hash) = open_database_with_new_password(config, username).await?;
-    let result = create_owner(&database, username, &password_hash).await;
-    database.close().await;
+    let (guarded, password_hash) = open_database_with_new_password(config, username).await?;
+    let result = create_owner(&guarded.database, username, &password_hash).await;
+    guarded.database.close().await;
     result.map_err(HumanCreateError::Identity)?;
     println!("Created owner '{username}'.");
     Ok(())
@@ -275,9 +277,9 @@ pub async fn run_viewer_create(
     config: &ServerConfig,
     username: &str,
 ) -> Result<(), HumanCreateError> {
-    let (database, password_hash) = open_database_with_new_password(config, username).await?;
-    let result = create_viewer(&database, username, &password_hash).await;
-    database.close().await;
+    let (guarded, password_hash) = open_database_with_new_password(config, username).await?;
+    let result = create_viewer(&guarded.database, username, &password_hash).await;
+    guarded.database.close().await;
     result.map_err(HumanCreateError::Identity)?;
     println!("Created viewer '{username}'.");
     Ok(())
@@ -287,22 +289,39 @@ pub async fn run_viewer_create(
 /// umask, username validation, password input from the TTY or stdin,
 /// password validation, Argon2id hashing, and an initialized Server
 /// database. The caller owns the database and must close it.
+/// An initialized Server database together with the ownership guard that must
+/// outlive it. Field order is deliberate: the database is dropped before the
+/// guard is released.
+struct GuardedDatabase {
+    database: ServerDatabase,
+    _ownership: Option<crate::ownership::OwnershipGuard>,
+}
+
 async fn open_database_with_new_password(
     config: &ServerConfig,
     username: &str,
-) -> Result<(ServerDatabase, String), HumanCreateError> {
+) -> Result<(GuardedDatabase, String), HumanCreateError> {
     crate::init::restrict_umask();
     validate_username(username).map_err(HumanCreateError::InvalidUsername)?;
     let password = read_password()?;
     validate_password(&password).map_err(HumanCreateError::InvalidPassword)?;
 
     let password_hash = hash_password(password.as_bytes()).map_err(HumanCreateError::Hash)?;
+    // Ownership before SQLite, handed back with the database so it is retained
+    // through close.
+    let ownership = crate::ownership::acquire_for_deployment(&config.db_path, config.development)?;
     let database = initialize(ServerDatabaseConfig::for_deployment(
         &config.db_path,
         config.development,
     ))
     .await?;
-    Ok((database, password_hash))
+    Ok((
+        GuardedDatabase {
+            database,
+            _ownership: ownership,
+        },
+        password_hash,
+    ))
 }
 
 /// Register a Network from the local CLI (design §7.1): the command
@@ -312,8 +331,10 @@ async fn open_database_with_new_password(
 pub async fn run_network_create(
     config: &ServerConfig,
     args: &NetworkCreateArgs,
-) -> Result<(), NetworkError> {
+) -> Result<(), Box<dyn std::error::Error>> {
     crate::init::restrict_umask();
+    // The guard lives until this command returns, after the database closes.
+    let _ownership = crate::ownership::acquire_for_deployment(&config.db_path, config.development)?;
     let database = initialize(ServerDatabaseConfig::for_deployment(
         &config.db_path,
         config.development,
@@ -344,13 +365,17 @@ pub async fn run_network_create(
 pub async fn run_create_enrollment_token(
     config: &ServerConfig,
     args: &EnrollmentTokenCreateArgs,
-) -> Result<(), EnrollmentError> {
+) -> Result<(), Box<dyn std::error::Error>> {
     crate::init::restrict_umask();
+    // A running Server is refused before SQLite opens, and the guard is
+    // released on both success and failure.
+    let _ownership = crate::ownership::acquire_for_deployment(&config.db_path, config.development)?;
     let lifetime_hours = args.expires_in.unwrap_or(24);
     if !(1..=168).contains(&lifetime_hours) {
         return Err(EnrollmentError::InvalidLifetime(
             "enrollment token lifetime must be 1..=168 hours",
-        ));
+        )
+        .into());
     }
     let lifetime = std::time::Duration::from_secs(lifetime_hours * 3600);
 
@@ -426,6 +451,8 @@ pub async fn run_restore(
 /// backup Operation. The configured backup_dir remains the only destination.
 pub async fn run_backup(config: &ServerConfig) -> Result<String, Box<dyn std::error::Error>> {
     crate::init::restrict_umask();
+    // Never open a database the running Server owns (issue #160).
+    let _ownership = crate::ownership::acquire_for_deployment(&config.db_path, config.development)?;
     let pepper = load_pepper_file(&config.pepper_file)?;
     let auth = if config.development {
         AuthConfig::development(pepper, config.public_base_url.clone())
@@ -465,11 +492,11 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         config.trusted_proxy_scheme.as_deref(),
     )?;
 
-    // Exclusive stopped-Server detection (design §19, issue #51): the
-    // serving process holds the database lock for its lifetime, so
-    // `platpulse-server restore` can refuse while a Server is running, and
-    // a second Server refuses to start over the same database.
-    let _restore_lock = crate::restore::acquire_exclusive_lock(&config.db_path)?;
+    // Exclusive stopped-Server detection (design §19, issues #51/#160): the
+    // serving process holds the database ownership guard for its lifetime, so
+    // every offline CLI command refuses while a Server is running, and a
+    // second Server refuses to start over the same database.
+    let _ownership = crate::ownership::acquire(&config.db_path)?;
 
     let pepper = load_pepper_file(&config.pepper_file)?;
     let auth = if config.development {

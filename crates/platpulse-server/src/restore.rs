@@ -27,7 +27,6 @@ use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use nix::fcntl::{Flock, FlockArg};
 use serde_json::Value;
 use sha2::Digest;
 use sqlx::SqlitePool;
@@ -250,64 +249,16 @@ pub(crate) fn validated_artifact_path(dir: &Path, filename: &str) -> Result<Path
     Ok(dir.join(filename))
 }
 
-/// Lock file living next to the database (`<db_path>.lock`). `serve` holds
-/// it for the process lifetime; the offline restore refuses to start while
-/// it is held (design §19: exclusive commands detect a running Server).
-fn lock_path_for(db_path: &Path) -> PathBuf {
-    let mut name = db_path.as_os_str().to_owned();
-    name.push(".lock");
-    PathBuf::from(name)
-}
-
-/// An exclusive, non-blocking lock on the database. Holds the file
-/// description for the caller's lifetime.
-#[derive(Debug)]
-pub struct ExclusiveGuard {
-    _lock: Flock<std::fs::File>,
-}
-
-/// Acquire the exclusive lock; `Err(ERROR_SERVER_RUNNING)` when a Server
-/// (or another restore) is running.
-pub fn acquire_exclusive_lock(db_path: &Path) -> Result<ExclusiveGuard, RestoreError> {
-    let parent = db_path
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    crate::file_security::validate_private_directory(parent)
-        .map_err(|message| RestoreError::domain(ERROR_IO, message))?;
-    let lock_path = lock_path_for(db_path);
-    crate::file_security::validate_no_symlinked_ancestors(&lock_path)
-        .map_err(|message| RestoreError::domain(ERROR_IO, message))?;
-    if std::fs::symlink_metadata(&lock_path).is_ok() {
-        crate::file_security::validate_file(&lock_path)
-            .map_err(|message| RestoreError::domain(ERROR_IO, message))?;
+/// Map an ownership-guard failure onto the restore contract. A held guard
+/// keeps the typed `ERROR_SERVER_RUNNING` refusal; every other guard failure
+/// is an I/O-stage failure that also preserves the current database.
+fn ownership_failure(error: crate::ownership::OwnershipError) -> RestoreError {
+    match error {
+        crate::ownership::OwnershipError::ServerRunning => {
+            RestoreError::domain(ERROR_SERVER_RUNNING, SERVER_RUNNING_MESSAGE)
+        }
+        other => RestoreError::domain(ERROR_IO, other.to_string()),
     }
-    #[cfg(unix)]
-    let file = {
-        use std::os::unix::fs::OpenOptionsExt;
-        OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
-            .mode(0o600)
-            .open(&lock_path)?
-    };
-    #[cfg(not(unix))]
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&lock_path)?;
-    crate::file_security::validate_file(&lock_path)
-        .map_err(|message| RestoreError::domain(ERROR_IO, message))?;
-    let lock = Flock::lock(file, FlockArg::LockExclusiveNonblock).map_err(|(_, _)| {
-        RestoreError::domain(
-            ERROR_SERVER_RUNNING,
-            "a running Server holds the database; restore requires an exclusive stopped-Server condition",
-        )
-    })?;
-    Ok(ExclusiveGuard { _lock: lock })
 }
 
 // ---------------------------------------------------------------------------
@@ -504,9 +455,9 @@ pub async fn apply(
     artifact_id: &str,
     confirmation: Confirmation,
 ) -> Result<ApplyOutcome, RestoreError> {
-    // Exclusive stopped-Server gate (design §19): refuse while a Server is
-    // running.
-    let _guard = acquire_exclusive_lock(&config.db_path)?;
+    // Exclusive stopped-Server gate (design §19): take ownership before
+    // SQLite opens and refuse while a Server is running.
+    let _guard = crate::ownership::acquire(&config.db_path).map_err(ownership_failure)?;
 
     let current = crate::database::ServerDatabase::open_existing(
         crate::database::ServerDatabaseConfig::new(&config.db_path),
@@ -1263,20 +1214,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exclusive_lock_refuses_when_a_server_is_running() {
-        let dir = tempdir().unwrap();
-        let db_path = dir.path().join("server.db");
-        let _guard = acquire_exclusive_lock(&db_path).unwrap();
-        let error = acquire_exclusive_lock(&db_path).unwrap_err();
-        match error {
-            RestoreError::Domain { code, .. } => assert_eq!(code, ERROR_SERVER_RUNNING),
-            other => panic!("unexpected error: {other}"),
-        }
-        drop(_guard);
-        assert!(acquire_exclusive_lock(&db_path).is_ok());
-    }
-
-    #[tokio::test]
     async fn check_artifact_rejects_checksum_integrity_and_newer_schema() {
         let dir = tempdir().unwrap();
         let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
@@ -1492,8 +1429,8 @@ mod tests {
             RestoreError::Domain { code, .. } => assert_eq!(code, ERROR_CONFIRMATION),
             other => panic!("unexpected error: {other}"),
         }
-        // A running Server (holding the exclusive lock) refuses the apply.
-        let _guard = acquire_exclusive_lock(&config.db_path).unwrap();
+        // A running Server (holding the ownership guard) refuses the apply.
+        let _guard = crate::ownership::acquire(&config.db_path).unwrap();
         let error = apply(&config, &artifact_id, Confirmation::Explicit)
             .await
             .unwrap_err();

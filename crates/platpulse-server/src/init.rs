@@ -34,6 +34,8 @@ pub enum InitError {
     #[error("server database initialization failed: {0}")]
     Database(#[from] crate::database::ServerDatabaseError),
     #[error(transparent)]
+    Ownership(#[from] crate::ownership::OwnershipError),
+    #[error(transparent)]
     Pepper(#[from] PepperError),
 }
 
@@ -53,6 +55,10 @@ pub async fn run_init(config: &ServerConfig) -> Result<InitReport, InitError> {
     // Open (creating if missing) and migrate the database; validate an
     // existing database file before SQLite touches it.
     validate_database_path(&config.db_path)?;
+    // A running Server is refused before SQLite opens and without touching the
+    // database (issue #160). The guard is released when this function returns,
+    // after the database is closed.
+    let _ownership = crate::ownership::acquire_for_deployment(&config.db_path, config.development)?;
     let database = initialize(ServerDatabaseConfig::for_deployment(
         &config.db_path,
         config.development,
