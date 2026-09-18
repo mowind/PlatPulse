@@ -80,7 +80,6 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
     await expect(
       card.getByText('Network rank', { exact: true }).locator('..').locator('[data-slot="metric-row-value"]'),
     ).toHaveText(LINKED_RANK)
-    await expect(card.getByText(/complete live-staking ALL cohort/).first()).toBeVisible()
     // The two rates stay distinguishable by label and source, and the
     // cumulative rate is abbreviated to two decimals on the card.
     await expect(
@@ -89,12 +88,9 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
     await expect(
       card.getByText('PlatScan 24h rate', { exact: true }).locator('..').locator('[data-slot="metric-row-value"]'),
     ).toHaveText(LINKED_GEN_BLOCKS_RATE_CARD)
-    await expect(card.getByText(/not an exact missed-block rate/).first()).toBeVisible()
-    await expect(card.getByText(/PlatScan口径/).first()).toBeVisible()
     await expect(
       card.getByText('Delegation reward share', { exact: true }).locator('..').locator('[data-slot="metric-row-value"]'),
     ).toHaveText(LINKED_DELEGATION_SHARE_CARD)
-    await expect(card.getByText(/not annualized yield, operator commission/).first()).toBeVisible()
     await expectTwoColumnMetrics(card)
     await expectNoHorizontalOverflow(page)
 
@@ -108,7 +104,6 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
     await expect(
       detail.getByText('Cumulative rewards', { exact: true }).locator('..').locator('[data-slot="metric-row-value"]'),
     ).toHaveText(LINKED_REWARD)
-    await expect(detail.getByText(/not operator net earnings/)).toBeVisible()
     await expect(detail.getByText('Primary')).toBeVisible()
     await expect(detail.getByText('Last success', { exact: true })).toBeVisible()
     await expect(

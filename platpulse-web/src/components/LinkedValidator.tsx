@@ -135,19 +135,17 @@ function stateNote(validator: PublicValidatorInsight): string | null {
  * detail. It owns the cumulative Validator block count, gross cumulative
  * rewards, the Network-scoped PlatScan rank, the Server-computed cumulative
  * production rate, PlatScan's own 24-hour rate, and the currently effective
- * delegation reward distribution percentage, plus the explicit unlinked /
+ * delegation reward distribution percentage, plus the explicit
  * not-configured / never-observed / stale / unranked / not-applicable /
- * retained states; later Validator metrics extend the same metric group rather
- * than adding a second region (#154, #155, #156, #157, #158).
+ * retained states. A Node with no effective Link renders nothing at all; later
+ * Validator metrics extend the same metric group rather than adding a second
+ * region (#154, #155, #156, #157, #158).
  */
 export function LinkedValidatorSection({ node, variant = 'card' }: { node: PublicNode; variant?: 'card' | 'detail' }) {
   const validator = node.validator
-  if (!validator) {
-    return <section data-slot="linked-validator" className="min-w-0 border-t border-border pt-3" aria-label="Linked Validator">
-      <h3 className="m-0 text-xs font-medium tracking-wider text-muted-foreground">Linked Validator</h3>
-      <p className="m-0 mt-1 text-[11px] text-muted-foreground" role="status">Unlinked — no effective Validator Link is configured for this Node.</p>
-    </section>
-  }
+  // A Node with no effective Validator Link renders nothing at all: the
+  // absence of a Link is not a state that earns a card of its own.
+  if (!validator) return null
 
   const state = validatorStateLabel(validator.state, validator.freshness)
   const note = stateNote(validator)
@@ -182,15 +180,8 @@ export function LinkedValidatorSection({ node, variant = 'card' }: { node: Publi
       <MetricRow label="Delegation reward share" value={delegationRewardShareLabel(validator, variant)} />
     </div>
     {rankState && <p className="m-0 mt-1 text-[11px] text-muted-foreground" role="status">{rankState}</p>}
-    <p className="m-0 mt-1 text-[11px] text-muted-foreground">Rank is PlatScan's position within this Network's complete live-staking ALL cohort, including candidates; it is adopted from the source and is never recomputed from the monitored Nodes or Home filters.</p>
-    <p className="m-0 mt-1 text-[11px] text-muted-foreground">Production rate is cumulative actual ÷ cumulative scheduled blocks from the same observation; whole-round duties count before they elapse, so it is not an exact missed-block rate.</p>
     {validator.blockRateState === 'not_applicable' && <p className="m-0 mt-0.5 text-[11px] text-muted-foreground" role="status">The source reported a zero scheduled-block denominator, so a rate is not applicable — not 0%.</p>}
-    <p className="m-0 mt-0.5 text-[11px] text-muted-foreground">PlatScan 24h rate uses PlatScan口径: the preceding seven settlement periods excluding the current one, so it is not a strict rolling 24 hours, and a source 0% can also mean insufficient evidence or an upstream error.</p>
-    <p className="m-0 mt-0.5 text-[11px] text-muted-foreground">Delegation reward share is the currently effective proportion of applicable Validator rewards allocated to delegators; it is not annualized yield, operator commission, or the pending next-period ratio.</p>
-    {validator.rewardAmount != null && <>
-      <p className="m-0 mt-1 text-[11px] text-muted-foreground">Cumulative rewards are gross: they include the operator and delegator allocations and are not operator net earnings.</p>
-      {variant === 'detail' && <p className="m-0 mt-0.5 text-[11px] text-muted-foreground">Amounts use the Network native unit; detail shows all precision the source provides.</p>}
-    </>}
+    {variant === 'detail' && validator.rewardAmount != null && <p className="m-0 mt-0.5 text-[11px] text-muted-foreground">Amounts use the Network native unit; detail shows all precision the source provides.</p>}
     {validator.counterState === 'counter_reset' && <p className="m-0 mt-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive" role="status">Counter reset or correction observed; the prior value was not treated as normal growth.</p>}
     {retained && <p className="m-0 mt-1 text-[11px] text-muted-foreground">Showing the last successful value; the current source state is unavailable.</p>}
     {variant === 'detail' && <Provenance validator={validator} />}

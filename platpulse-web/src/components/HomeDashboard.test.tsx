@@ -591,7 +591,7 @@ describe('Public Home dashboard', () => {
     expect(within(card).getByText('Delegation reward share').nextElementSibling?.textContent).toBe('20.00%')
 
     const unlinkedCard = cardOf(nodeCardLink('Domino'))
-    expect(within(unlinkedCard).getByText(/Unlinked/)).toBeTruthy()
+    expect(within(unlinkedCard).queryByText('Linked Validator')).toBeNull()
     expect(within(unlinkedCard).queryByText('Cumulative blocks')).toBeNull()
   })
 })

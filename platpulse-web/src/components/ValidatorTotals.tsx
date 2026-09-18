@@ -83,11 +83,6 @@ function NetworkTotals({ network }: { network: PublicNetwork }) {
       <p className="m-0 mt-1 text-[11px] text-muted-foreground" data-slot="validator-summary-unlinked">
         {unlinkedLabel(summary.unlinkedNodeCount)}
       </p>
-      <p className="m-0 mt-1 text-[11px] text-muted-foreground">
-        Cumulative blocks and gross cumulative rewards of the distinct Validators linked to this Network's Active
-        Nodes; each Validator is counted once and rewards include the delegator allocation. These are not an ownership
-        ledger and can fall when the selection or an effective Link changes.
-      </p>
     </article>
   )
 }

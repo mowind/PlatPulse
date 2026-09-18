@@ -50,12 +50,11 @@ const insight: PublicValidatorInsight = {
 afterEach(cleanup)
 
 describe('LinkedValidatorSection', () => {
-  it('shows the unlinked state instead of a fabricated zero', () => {
-    render(<LinkedValidatorSection node={node} />)
-    expect(screen.getByText('Linked Validator')).toBeTruthy()
-    expect(screen.getByText(/Unlinked/)).toBeTruthy()
+  it('renders nothing for a Node with no effective Validator Link', () => {
+    const { container } = render(<LinkedValidatorSection node={node} />)
+    expect(container.querySelector('[data-slot="linked-validator"]')).toBeNull()
+    expect(screen.queryByText('Linked Validator')).toBeNull()
     expect(screen.queryByText('Cumulative blocks')).toBeNull()
-    expect(screen.queryByText('0')).toBeNull()
   })
 
   it('shows identity, link role, and the cumulative Validator block count', () => {
@@ -113,8 +112,6 @@ describe('LinkedValidatorSection', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, rewardAmount: '1234567.89' } }} />)
     expect(screen.getByText('Cumulative rewards')).toBeTruthy()
     expect(screen.getByText('Cumulative rewards').nextElementSibling?.textContent).toBe('1.23M')
-    expect(screen.getByText(/not operator net earnings/)).toBeTruthy()
-    expect(screen.getByText(/delegator allocations/)).toBeTruthy()
   })
 
   it('shows the source full precision and native unit in Node detail', () => {
@@ -142,9 +139,6 @@ describe('LinkedValidatorSection', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: insight }} />)
     expect(screen.getByText('Production rate').nextElementSibling?.textContent).toBe('90.91%')
     expect(screen.getByText('PlatScan 24h rate').nextElementSibling?.textContent).toBe('75.50%')
-    expect(screen.getByText(/not an exact missed-block rate/)).toBeTruthy()
-    expect(screen.getByText(/PlatScan口径/)).toBeTruthy()
-    expect(screen.getByText(/seven settlement periods excluding the current one/)).toBeTruthy()
   })
 
   it('distinguishes a zero scheduled denominator from an incomplete pair', () => {
@@ -183,7 +177,6 @@ describe('LinkedValidatorSection', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, delegationRewardPercentage: '20' } }} />)
     expect(screen.getByText('Delegation reward share')).toBeTruthy()
     expect(screen.getByText('Delegation reward share').nextElementSibling?.textContent).toBe('20.00%')
-    expect(screen.getByText(/not annualized yield, operator commission, or the pending next-period ratio/)).toBeTruthy()
 
     cleanup()
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, delegationRewardPercentage: '20' } }} variant="detail" />)
@@ -213,7 +206,6 @@ describe('LinkedValidatorSection', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: insight }} />)
     expect(screen.getByText('Network rank')).toBeTruthy()
     expect(screen.getByText('Network rank').nextElementSibling?.textContent).toBe('#7')
-    expect(screen.getAllByText(/complete live-staking ALL cohort/).length).toBeGreaterThan(0)
 
     cleanup()
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, rank: null, rankState: 'unranked' } }} />)
