@@ -17,7 +17,11 @@ use sqlx::SqlitePool;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-use platpulse_core::AgentReport;
+use platpulse_core::block::{BlockProductionAttribution, BlockSource, BlockSummary};
+use platpulse_core::{
+    AgentReport, InventoryDisposition, NodeCurrentDisposition, ReceiptDisposition, RejectionCode,
+    ReportReceipt, SampleDispositionKind,
+};
 use platpulse_server::{AppState, auth, database, http, network, secrets};
 
 const NETWORK_KEY: &str = "platon-mainnet";
@@ -25,11 +29,13 @@ const NETWORK_GENESIS: &str = "0x00000000000000000000000000000000000000000000000
 const DEVELOPMENT_ORIGIN: &str = "http://127.0.0.1:8080";
 const OWNER_LOGIN_BODY: &str = r#"{"username":"admin","password":"correct horse battery"}"#;
 const VIEWER_LOGIN_BODY: &str = r#"{"username":"viewer","password":"viewer password"}"#;
+/// A second Node ID the report can declare next to the fixture's Node.
+const SECOND_NODE_ID: &str = "0195f2a1-0015-4015-8015-000000000015";
 
 /// A fresh Server (real temp SQLite + pepper), the full router, and the pieces
 /// needed to authenticate as the Owner.
 struct Harness {
-    _dir: TempDir,
+    dir: TempDir,
     state: AppState,
     app: Router,
 }
@@ -37,28 +43,23 @@ struct Harness {
 impl Harness {
     async fn boot() -> Self {
         let dir = TempDir::new().unwrap();
-        let database = database::initialize(database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
-        let pepper_path = dir.path().join("server-pepper");
-        secrets::create_pepper_file(&pepper_path).unwrap();
-        let auth = auth::AuthConfig::development(
-            secrets::load_pepper_file(&pepper_path).unwrap(),
-            DEVELOPMENT_ORIGIN.to_owned(),
-        );
-        let state = AppState::new(database, None, auth);
+        Self::seed(dir).await
+    }
+
+    /// A first boot: create the Owner/Viewer accounts and the registered
+    /// Network, then build the router.
+    async fn seed(dir: TempDir) -> Self {
+        let harness = Self::open(dir).await;
         let owner_hash = auth::hash_password(b"correct horse battery").unwrap();
-        auth::create_owner(state.db(), "admin", &owner_hash)
+        auth::create_owner(harness.state.db(), "admin", &owner_hash)
             .await
             .unwrap();
         let viewer_hash = auth::hash_password(b"viewer password").unwrap();
-        auth::create_viewer(state.db(), "viewer", &viewer_hash)
+        auth::create_viewer(harness.state.db(), "viewer", &viewer_hash)
             .await
             .unwrap();
         network::create_network(
-            state.db(),
+            harness.state.db(),
             NETWORK_KEY,
             "PlatON Mainnet",
             NETWORK_GENESIS,
@@ -68,12 +69,37 @@ impl Harness {
         )
         .await
         .unwrap();
-        let app = http::build_app(state.clone());
-        Self {
-            _dir: dir,
-            state,
-            app,
+        harness
+    }
+
+    /// Open (or re-open) the Server database in `dir` without seeding. The
+    /// restart case drops the previous pool first so the exclusive SQLite lock
+    /// is released before this second opener arrives.
+    async fn open(dir: TempDir) -> Self {
+        let database = database::initialize(database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let pepper_path = dir.path().join("server-pepper");
+        if !pepper_path.exists() {
+            secrets::create_pepper_file(&pepper_path).unwrap();
         }
+        let auth = auth::AuthConfig::development(
+            secrets::load_pepper_file(&pepper_path).unwrap(),
+            DEVELOPMENT_ORIGIN.to_owned(),
+        );
+        let state = AppState::new(database, None, auth);
+        let app = http::build_app(state.clone());
+        Self { dir, state, app }
+    }
+
+    /// Simulate a Server restart over the same durable database directory.
+    async fn restart(self) -> Self {
+        let Harness { dir, state, app } = self;
+        drop(app);
+        drop(state);
+        Self::open(dir).await
     }
 
     fn pool(&self) -> &SqlitePool {
@@ -188,6 +214,107 @@ async fn count_for_node(harness: &Harness, table: &str, node_id: &str) -> i64 {
         .fetch_one(harness.pool())
         .await
         .unwrap()
+}
+
+async fn node_row_count(harness: &Harness, node_id: &str) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE node_id = ?")
+        .bind(node_id)
+        .fetch_one(harness.pool())
+        .await
+        .unwrap()
+}
+
+async fn post_report(
+    harness: &Harness,
+    credential: &str,
+    report: &AgentReport,
+) -> (StatusCode, Value) {
+    let response = harness
+        .send(bearer_post(
+            "/api/agent/v1/reports",
+            credential,
+            serde_json::to_vec(report).unwrap(),
+        ))
+        .await;
+    let status = response.status();
+    (status, body_json(response).await)
+}
+
+fn receipt_of(value: &Value) -> ReportReceipt {
+    serde_json::from_value(value["receipt"].clone()).unwrap()
+}
+
+async fn purge_node(harness: &Harness, session: &Session, node_id: &str) {
+    let response = harness
+        .send(admin_post(
+            &format!("/api/admin/v1/nodes/{node_id}/purge"),
+            session,
+            &format!("{{\"confirmNodeId\":\"{node_id}\"}}"),
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+/// The fixture's single Node plus a second declared Node, with the declared
+/// Network Identity aligned to the registered Network and one Block Summary
+/// per Node. One legal report therefore exercises a purged entry next to a
+/// still-valid sibling, including per-sample dispositions.
+fn two_node_report(
+    agent_id: &str,
+    agent_epoch: u64,
+    report_sequence: u64,
+    report_id: &str,
+    inventory_revision: u64,
+    first_height: u64,
+) -> AgentReport {
+    let mut report = fixture_report(agent_id, agent_epoch);
+    report.report_sequence = report_sequence;
+    report.report_id = report_id.parse().unwrap();
+    report.inventory.revision = inventory_revision;
+    // The fixture ships a deliberately mismatching Network Identity; align it
+    // so the sibling's Block Summary is genuinely admissible.
+    for node in &mut report.nodes {
+        let identity = node.chain.network_identity.latest.as_mut().unwrap();
+        identity.genesis_hash = NETWORK_GENESIS.parse().unwrap();
+        identity.address_hrp = Some("lat".to_owned());
+    }
+    let mut inventory_node = report.inventory.nodes[0].clone();
+    inventory_node.node_id = SECOND_NODE_ID.parse().unwrap();
+    report.inventory.nodes.push(inventory_node);
+    let mut observation = report.nodes[0].clone();
+    observation.node_id = SECOND_NODE_ID.parse().unwrap();
+    report.nodes.push(observation);
+
+    // One Block Summary per Node, paired by the shared Inventory/Observation
+    // order instead of a positional index.
+    let block_summaries: Vec<BlockSummary> = report
+        .inventory
+        .nodes
+        .iter()
+        .zip(report.nodes.iter())
+        .enumerate()
+        .map(|(index, (node, observation))| BlockSummary {
+            node_id: node.node_id,
+            network_identity: observation.chain.network_identity.latest.clone().unwrap(),
+            block_number: first_height + index as u64,
+            block_hash: format!("0x{:064x}", 0xaa + index).parse().unwrap(),
+            parent_hash: format!("0x{:064x}", 0xbb + index).parse().unwrap(),
+            block_timestamp_ms: 1_000,
+            observed_at: report.generated_at,
+            transaction_count: 3,
+            block_interval_ms: None,
+            source: BlockSource::Subscription,
+            attribution: BlockProductionAttribution::unknown_attribution(
+                "0x1111111111111111111111111111111111111111"
+                    .parse()
+                    .unwrap(),
+                "test",
+            ),
+        })
+        .collect();
+    report.block_summaries.extend(block_summaries);
+    report.validate().unwrap();
+    report
 }
 
 /// Every Node-owned table a Purge is responsible for, with the direct inserts
@@ -613,4 +740,345 @@ async fn active_and_retired_nodes_are_both_purgeable() {
         .await
         .unwrap();
     assert_eq!(remaining, 0);
+}
+
+/// A purged Node ID is refused per entry while a valid sibling in the same
+/// legal report is admitted; the Receipt carries that per-Node and per-sample
+/// outcome instead of reporting a whole success.
+#[tokio::test]
+async fn purged_node_is_rejected_per_entry_while_its_sibling_is_admitted() {
+    let harness = Harness::boot().await;
+    let owner = login(&harness, OWNER_LOGIN_BODY).await;
+    let (agent_id, credential) = enroll_agent(&harness, &owner).await;
+
+    let first = two_node_report(
+        &agent_id,
+        1,
+        1,
+        "0195f2a1-0020-4020-8020-000000000020",
+        1,
+        10,
+    );
+    let purged = first.inventory.nodes[0].node_id.to_string();
+    let sibling = first.inventory.nodes[1].node_id.to_string();
+    let (status, value) = post_report(&harness, &credential, &first).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    assert_eq!(receipt_of(&value).disposition, ReceiptDisposition::Accepted);
+
+    purge_node(&harness, &owner, &purged).await;
+    assert_eq!(node_row_count(&harness, &purged).await, 0);
+
+    // A new Inventory revision still declares both IDs. New heights keep the
+    // sibling's fresh sample genuinely admissible.
+    let second = two_node_report(
+        &agent_id,
+        1,
+        2,
+        "0195f2a1-0021-4021-8021-000000000021",
+        2,
+        20,
+    );
+    let (status, value) = post_report(&harness, &credential, &second).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let receipt = receipt_of(&value);
+    assert_eq!(
+        receipt.disposition,
+        ReceiptDisposition::PartiallyAccepted,
+        "a partial admission must never be reported as a whole success: {value}"
+    );
+    let purged_entry = receipt
+        .nodes
+        .iter()
+        .find(|node| node.node_id.to_string() == purged)
+        .unwrap();
+    assert_eq!(purged_entry.current, NodeCurrentDisposition::Rejected);
+    assert_eq!(purged_entry.rejections.len(), 1);
+    assert_eq!(purged_entry.rejections[0].code, RejectionCode::NodePurged);
+    assert!(!purged_entry.rejections[0].retryable);
+    assert!(purged_entry.accepted_component_revisions.is_empty());
+    let sibling_entry = receipt
+        .nodes
+        .iter()
+        .find(|node| node.node_id.to_string() == sibling)
+        .unwrap();
+    assert_eq!(sibling_entry.current, NodeCurrentDisposition::Accepted);
+    assert!(sibling_entry.rejections.is_empty());
+
+    // The purged Node's sample is terminal, never accepted; the sibling's is
+    // accepted.
+    let purged_sample = receipt
+        .samples
+        .iter()
+        .find(|sample| sample.node_id.to_string() == purged)
+        .expect("the purged Node's Block Summary still appears in the Receipt");
+    assert_eq!(
+        purged_sample.disposition,
+        SampleDispositionKind::TerminalRejected
+    );
+    assert_eq!(
+        purged_sample.rejection.as_ref().unwrap().code,
+        RejectionCode::NodePurged
+    );
+    let sibling_sample = receipt
+        .samples
+        .iter()
+        .find(|sample| sample.node_id.to_string() == sibling)
+        .unwrap();
+    assert_eq!(sibling_sample.disposition, SampleDispositionKind::Accepted);
+
+    // The purged ID was not rebuilt; the sibling is live.
+    assert_eq!(node_row_count(&harness, &purged).await, 0);
+    for table in [
+        "component_status",
+        "block_summaries",
+        "block_history_state",
+        "block_identity_window",
+        "observed_network_heads",
+        "node_transfers",
+    ] {
+        assert_eq!(
+            count_for_node(&harness, table, &purged).await,
+            0,
+            "{table} rebuilt the purged Node"
+        );
+    }
+    assert_eq!(node_row_count(&harness, &sibling).await, 1);
+    assert!(count_for_node(&harness, "component_status", &sibling).await > 0);
+    assert!(count_for_node(&harness, "block_summaries", &sibling).await > 0);
+}
+
+/// An authenticated replay returns the stored immutable Receipt and never
+/// re-applies the removed projection; a same-revision declaration and a new
+/// Inventory revision are both refused at the same boundary.
+#[tokio::test]
+async fn replay_same_revision_and_new_revision_cannot_rebuild_a_purged_node() {
+    let harness = Harness::boot().await;
+    let owner = login(&harness, OWNER_LOGIN_BODY).await;
+    let (agent_id, credential) = enroll_agent(&harness, &owner).await;
+
+    let first = fixture_report(&agent_id, 1);
+    let node_id = first.inventory.nodes[0].node_id.to_string();
+    let (status, value) = post_report(&harness, &credential, &first).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let original = value["receipt"].clone();
+    let dedup_before: (String, String) = sqlx::query_as(
+        "SELECT report_body_sha256, disposition FROM agent_report_receipts WHERE report_id = ?",
+    )
+    .bind(first.report_id.to_string())
+    .fetch_one(harness.pool())
+    .await
+    .unwrap();
+
+    purge_node(&harness, &owner, &node_id).await;
+
+    // Exact replay returns the stored, immutable Receipt unchanged.
+    let (status, replayed) = post_report(&harness, &credential, &first).await;
+    assert_eq!(status, StatusCode::OK, "{replayed}");
+    assert_eq!(replayed["receipt"], original);
+    assert_eq!(node_row_count(&harness, &node_id).await, 0);
+    assert_eq!(
+        count_for_node(&harness, "component_status", &node_id).await,
+        0
+    );
+    // The deletion does not rewrite the old Receipt or the dedup boundary.
+    let dedup_after: (String, String) = sqlx::query_as(
+        "SELECT report_body_sha256, disposition FROM agent_report_receipts WHERE report_id = ?",
+    )
+    .bind(first.report_id.to_string())
+    .fetch_one(harness.pool())
+    .await
+    .unwrap();
+    assert_eq!(dedup_after, dedup_before);
+
+    // A new report id at the same Inventory revision is not a replay: the
+    // purged ID is still rejected and never inserted.
+    let mut same_revision = first.clone();
+    same_revision.report_sequence = 2;
+    same_revision.report_id = "0195f2a1-0030-4030-8030-000000000030".parse().unwrap();
+    let (status, value) = post_report(&harness, &credential, &same_revision).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let receipt = receipt_of(&value);
+    assert_eq!(receipt.inventory, Some(InventoryDisposition::Unchanged));
+    assert_eq!(receipt.disposition, ReceiptDisposition::PartiallyAccepted);
+    assert_eq!(
+        receipt.nodes[0].rejections[0].code,
+        RejectionCode::NodePurged
+    );
+    assert_eq!(node_row_count(&harness, &node_id).await, 0);
+
+    // A new Inventory revision cannot rebuild it either.
+    let mut new_revision = first.clone();
+    new_revision.report_sequence = 3;
+    new_revision.report_id = "0195f2a1-0031-4031-8031-000000000031".parse().unwrap();
+    new_revision.inventory.revision = 2;
+    let (status, value) = post_report(&harness, &credential, &new_revision).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let receipt = receipt_of(&value);
+    assert_eq!(receipt.disposition, ReceiptDisposition::PartiallyAccepted);
+    assert_eq!(
+        receipt.nodes[0].rejections[0].code,
+        RejectionCode::NodePurged
+    );
+    assert_eq!(node_row_count(&harness, &node_id).await, 0);
+    assert_eq!(
+        count_for_node(&harness, "component_status", &node_id).await,
+        0
+    );
+    assert_eq!(
+        count_for_node(&harness, "block_history_state", &node_id).await,
+        0
+    );
+}
+
+/// The deletion identity is durable: a freshly opened Server over the same
+/// database still returns the stored Receipt and still refuses late reports.
+#[tokio::test]
+async fn a_purged_node_stays_unreconstructable_after_a_server_restart() {
+    let harness = Harness::boot().await;
+    let owner = login(&harness, OWNER_LOGIN_BODY).await;
+    let (agent_id, credential) = enroll_agent(&harness, &owner).await;
+    let first = fixture_report(&agent_id, 1);
+    let node_id = first.inventory.nodes[0].node_id.to_string();
+    let (status, value) = post_report(&harness, &credential, &first).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let original = value["receipt"].clone();
+    purge_node(&harness, &owner, &node_id).await;
+
+    let harness = harness.restart().await;
+    let _owner = login(&harness, OWNER_LOGIN_BODY).await;
+
+    // The stored Receipt still wins for a replay.
+    let (status, value) = post_report(&harness, &credential, &first).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    assert_eq!(value["receipt"], original);
+    assert_eq!(node_row_count(&harness, &node_id).await, 0);
+
+    // A late report after the restart is rejected at the same boundary.
+    let mut late = first.clone();
+    late.report_sequence = 2;
+    late.report_id = "0195f2a1-0040-4040-8040-000000000040".parse().unwrap();
+    let (status, value) = post_report(&harness, &credential, &late).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let receipt = receipt_of(&value);
+    assert_eq!(receipt.disposition, ReceiptDisposition::PartiallyAccepted);
+    assert_eq!(
+        receipt.nodes[0].rejections[0].code,
+        RejectionCode::NodePurged
+    );
+    assert_eq!(node_row_count(&harness, &node_id).await, 0);
+
+    let deleted: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM deleted_nodes WHERE node_id = ?")
+        .bind(&node_id)
+        .fetch_one(harness.pool())
+        .await
+        .unwrap();
+    assert_eq!(deleted, 1, "the purge identity must survive a restart");
+}
+
+/// A periodic background pass over the subjects that still exist cannot
+/// reconstruct a purged Node.
+#[tokio::test]
+async fn background_evaluation_and_retention_do_not_rebuild_a_purged_node() {
+    let harness = Harness::boot().await;
+    let owner = login(&harness, OWNER_LOGIN_BODY).await;
+    let (agent_id, credential) = enroll_agent(&harness, &owner).await;
+    let report = fixture_report(&agent_id, 1);
+    let node_id = report.inventory.nodes[0].node_id.to_string();
+    let (status, value) = post_report(&harness, &credential, &report).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    purge_node(&harness, &owner, &node_id).await;
+
+    // The Alert evaluation sweep and the raw block retention pass run after
+    // the deletion; neither recreates a Node row or Node-owned history.
+    platpulse_server::alerts::sweep(&harness.state)
+        .await
+        .unwrap();
+    platpulse_server::retention::cleanup_raw_block_summaries(
+        harness.pool(),
+        platpulse_server::auth::now_utc(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(node_row_count(&harness, &node_id).await, 0);
+    for table in [
+        "component_status",
+        "block_summaries",
+        "block_history_state",
+        "block_identity_window",
+    ] {
+        assert_eq!(
+            count_for_node(&harness, table, &node_id).await,
+            0,
+            "{table} was rebuilt after the purge"
+        );
+    }
+}
+
+/// A purged entry's Network key is not registry-validated (it must not block a
+/// valid sibling), and that unvalidated key must not leak into shared
+/// Network-scoped state.
+#[tokio::test]
+async fn a_purged_entrys_unknown_network_key_neither_blocks_siblings_nor_leaks() {
+    let harness = Harness::boot().await;
+    let owner = login(&harness, OWNER_LOGIN_BODY).await;
+    let (agent_id, credential) = enroll_agent(&harness, &owner).await;
+
+    let first = two_node_report(
+        &agent_id,
+        1,
+        1,
+        "0195f2a1-0050-4050-8050-000000000050",
+        1,
+        10,
+    );
+    let purged = first.inventory.nodes[0].node_id.to_string();
+    let sibling = first.inventory.nodes[1].node_id.to_string();
+    let (status, value) = post_report(&harness, &credential, &first).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    purge_node(&harness, &owner, &purged).await;
+
+    // The same legal report now declares the purged ID under an unregistered
+    // Network key next to a valid sibling. The report is still admitted per
+    // Node rather than whole-rejected as NetworkKeyUnknown.
+    let mut declared = two_node_report(
+        &agent_id,
+        1,
+        2,
+        "0195f2a1-0051-4051-8051-000000000051",
+        2,
+        20,
+    );
+    declared.inventory.nodes[0].network_key = "platon-testnet".parse().unwrap();
+    declared.validate().unwrap();
+    let (status, value) = post_report(&harness, &credential, &declared).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let receipt = receipt_of(&value);
+    assert_eq!(receipt.disposition, ReceiptDisposition::PartiallyAccepted);
+    let purged_entry = receipt
+        .nodes
+        .iter()
+        .find(|node| node.node_id.to_string() == purged)
+        .unwrap();
+    assert_eq!(purged_entry.rejections[0].code, RejectionCode::NodePurged);
+    let sibling_entry = receipt
+        .nodes
+        .iter()
+        .find(|node| node.node_id.to_string() == sibling)
+        .unwrap();
+    assert_eq!(sibling_entry.current, NodeCurrentDisposition::Accepted);
+    assert_eq!(node_row_count(&harness, &purged).await, 0);
+
+    // The purged entry's Network key never reaches the shared Network
+    // projection.
+    let leaked: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM network_reference_heads WHERE network_key = 'platon-testnet'",
+    )
+    .fetch_one(harness.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        leaked, 0,
+        "a purged entry's unvalidated Network key must not create shared Network state"
+    );
 }

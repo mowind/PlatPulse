@@ -68,6 +68,23 @@ fn rejection(code: platpulse_core::RejectionCode, reason: &str) -> platpulse_cor
     }
 }
 
+/// Stable rejection for a Node ID that carries the durable purge boundary
+/// (issue #170). Terminal: the Agent must not expect a retry to succeed.
+fn purged_rejection() -> platpulse_core::Rejection {
+    rejection(
+        platpulse_core::RejectionCode::NodePurged,
+        "Node was permanently purged by the Owner",
+    )
+}
+
+/// Stable rejection for a Node entry the reporting Agent does not own.
+fn ownership_mismatch_rejection() -> platpulse_core::Rejection {
+    rejection(
+        platpulse_core::RejectionCode::NodeOwnershipMismatch,
+        "Node belongs to another Agent",
+    )
+}
+
 fn disposition_name(disposition: ReceiptDisposition) -> &'static str {
     match disposition {
         ReceiptDisposition::Accepted => "accepted",
@@ -511,9 +528,15 @@ async fn update_network_references(
 async fn block_network_identity_mismatches(
     tx: &mut Transaction<'_, Sqlite>,
     report: &AgentReport,
+    purged_nodes: &std::collections::HashSet<platpulse_core::identity::NodeId>,
 ) -> Result<std::collections::HashSet<platpulse_core::identity::NodeId>, sqlx::Error> {
     let mut mismatches = std::collections::HashSet::new();
     for sample in &report.block_summaries {
+        // A purged Node has no Network projection left to compare against and
+        // must never raise an identity contradiction.
+        if purged_nodes.contains(&sample.node_id) {
+            continue;
+        }
         let Some(node) = report
             .inventory
             .nodes
@@ -1777,8 +1800,31 @@ async fn handler(
     let capabilities =
         serde_json::to_string(&parsed.agent_capabilities).expect("capabilities serialize");
     let mut ownership_mismatches = std::collections::HashSet::new();
+    let mut purged_nodes = std::collections::HashSet::new();
     let mut ownership_contradiction = false;
     for node in &parsed.inventory.nodes {
+        // A purged Node ID is a permanent admission boundary (design §15.3,
+        // ADR 0004, issue #170): the Owner already erased this Node's
+        // projection, monitoring history, and Validator Links, and no later
+        // Inventory revision, retry, restart, or background write may
+        // reconstruct them. Reject the entry per Node so a valid sibling in
+        // the same legal report still reports, and do not let a stale or
+        // unknown Network key on the removed ID block the rest of the report.
+        let purged = match crate::node_purge::is_purged(&mut tx, &node.node_id.to_string()).await {
+            Ok(value) => value,
+            Err(_) => {
+                return error(
+                    &request_id.0,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "Server database is unavailable",
+                );
+            }
+        };
+        if purged {
+            purged_nodes.insert(node.node_id);
+            continue;
+        }
         let known = match sqlx::query_scalar::<_, String>(
             "SELECT network_key FROM networks WHERE network_key = ?",
         )
@@ -1869,11 +1915,17 @@ async fn handler(
     // Inventory is accepted as a complete set only after structural/network
     // validation. Ownership-invalid Nodes reject only their own current and
     // samples; they are not allowed to retire valid siblings.
+    // A Node is inadmissible when it belongs to another Agent or its ID was
+    // explicitly purged. Both are per-Node outcomes; the ordinary ownership
+    // rejection still records its security event below, while a purge is a
+    // stable, non-security disposition.
+    let mut rejected_nodes = ownership_mismatches.clone();
+    rejected_nodes.extend(purged_nodes.iter().copied());
     let accepted_inventory_ids = parsed
         .inventory
         .nodes
         .iter()
-        .filter(|node| !ownership_mismatches.contains(&node.node_id))
+        .filter(|node| !rejected_nodes.contains(&node.node_id))
         .map(|node| node.node_id.to_string())
         .collect::<Vec<_>>();
 
@@ -1927,7 +1979,7 @@ async fn handler(
         }
     }
     for node in &parsed.inventory.nodes {
-        if ownership_mismatches.contains(&node.node_id) {
+        if rejected_nodes.contains(&node.node_id) {
             continue;
         }
         let result = sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', 'private', ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET network_key=excluded.network_key, display_name=COALESCE(nodes.display_name, excluded.display_name), rpc_endpoint=excluded.rpc_endpoint, lifecycle='active', inventory_revision=excluded.inventory_revision, updated_at=excluded.updated_at")
@@ -1941,7 +1993,8 @@ async fn handler(
             );
         }
     }
-    let mismatches = match block_network_identity_mismatches(&mut tx, &parsed).await {
+    let mismatches = match block_network_identity_mismatches(&mut tx, &parsed, &purged_nodes).await
+    {
         Ok(value) => value,
         Err(_) => {
             return error(
@@ -1984,7 +2037,7 @@ async fn handler(
         // reporting Agent does not own must never touch the identity
         // window, even when its declared identity happens to match the
         // Registry (issue #46: mismatch can never merge new history).
-        if ownership_mismatches.contains(&sample.node_id) {
+        if rejected_nodes.contains(&sample.node_id) {
             continue;
         }
         let node_id = sample.node_id.to_string();
@@ -2075,10 +2128,10 @@ async fn handler(
     let mut projection_report = parsed.clone();
     projection_report
         .nodes
-        .retain(|node| !ownership_mismatches.contains(&node.node_id));
+        .retain(|node| !rejected_nodes.contains(&node.node_id));
     projection_report
         .block_summaries
-        .retain(|sample| !ownership_mismatches.contains(&sample.node_id));
+        .retain(|sample| !rejected_nodes.contains(&sample.node_id));
     let geo_provider = state.geo_config().provider;
     if let Err(save_error) =
         save_current(&mut tx, &projection_report, &now_text, geo_provider).await
@@ -2094,10 +2147,13 @@ async fn handler(
             "Server database is unavailable",
         );
     }
+    // Only admitted Nodes feed the Network-scoped reference head; a purged
+    // Node's unvalidated Network key must not reach shared Network state.
     let network_keys = projection_report
         .inventory
         .nodes
         .iter()
+        .filter(|node| !rejected_nodes.contains(&node.node_id))
         .map(|node| node.network_key.to_string())
         .collect::<Vec<_>>();
     if update_network_references(&mut tx, &network_keys, &now_text)
@@ -2131,7 +2187,7 @@ async fn handler(
         }
     }
     for gap in &parsed.history_gaps {
-        if ownership_mismatches.contains(&gap.node_id) {
+        if rejected_nodes.contains(&gap.node_id) {
             continue;
         }
         let kind = match gap.kind {
@@ -2180,7 +2236,7 @@ async fn handler(
         .nodes
         .iter()
         .map(|node| {
-            let rejected = ownership_mismatches.contains(&node.node_id);
+            let rejected = rejected_nodes.contains(&node.node_id);
             NodeReceipt {
                 node_id: node.node_id,
                 current: if rejected {
@@ -2252,11 +2308,10 @@ async fn handler(
                 } else {
                     vec![]
                 },
-                rejections: if rejected {
-                    vec![rejection(
-                        platpulse_core::RejectionCode::NodeOwnershipMismatch,
-                        "Node belongs to another Agent",
-                    )]
+                rejections: if purged_nodes.contains(&node.node_id) {
+                    vec![purged_rejection()]
+                } else if rejected {
+                    vec![ownership_mismatch_rejection()]
                 } else {
                     vec![]
                 },
@@ -2267,7 +2322,7 @@ async fn handler(
         .block_summaries
         .iter()
         .map(|sample| {
-            let rejected = ownership_mismatches.contains(&sample.node_id)
+            let rejected = rejected_nodes.contains(&sample.node_id)
                 || mismatches.contains(&sample.node_id)
                 || outside_open_gap.contains(&(sample.node_id, sample.block_number))
                 || divergence_samples.contains(&(sample.node_id, sample.block_number))
@@ -2283,34 +2338,39 @@ async fn handler(
                     SampleDispositionKind::Accepted
                 },
                 rejection: rejected.then(|| {
-                    let code = if ownership_mismatches.contains(&sample.node_id) {
-                        platpulse_core::RejectionCode::NodeOwnershipMismatch
-                    } else if outside_open_gap.contains(&(sample.node_id, sample.block_number)) {
-                        platpulse_core::RejectionCode::GapBackfillOutsideOpenGap
-                    } else if divergence_samples.contains(&(sample.node_id, sample.block_number)) {
-                        platpulse_core::RejectionCode::ChainDivergence
-                    } else if replay_samples.contains(&(sample.node_id, sample.block_number)) {
-                        platpulse_core::RejectionCode::ResyncReplay
-                    } else {
-                        platpulse_core::RejectionCode::NetworkIdentityMismatch
-                    };
-                    let reason = if outside_open_gap
-                        .contains(&(sample.node_id, sample.block_number))
-                    {
-                        "GapBackfill sample is outside an explicit open recoverable gap"
-                    } else if divergence_samples.contains(&(sample.node_id, sample.block_number)) {
-                        "Block hash diverges from retained Node identity evidence"
-                    } else if replay_samples.contains(&(sample.node_id, sample.block_number)) {
-                        "Normal resync replay at or below the historical high-water mark"
-                    } else {
-                        "Block network identity does not match the registered Network"
-                    };
-                    rejection(code, reason)
+                    if purged_nodes.contains(&sample.node_id) {
+                        return purged_rejection();
+                    }
+                    if ownership_mismatches.contains(&sample.node_id) {
+                        return ownership_mismatch_rejection();
+                    }
+                    if outside_open_gap.contains(&(sample.node_id, sample.block_number)) {
+                        return rejection(
+                            platpulse_core::RejectionCode::GapBackfillOutsideOpenGap,
+                            "GapBackfill sample is outside an explicit open recoverable gap",
+                        );
+                    }
+                    if divergence_samples.contains(&(sample.node_id, sample.block_number)) {
+                        return rejection(
+                            platpulse_core::RejectionCode::ChainDivergence,
+                            "Block hash diverges from retained Node identity evidence",
+                        );
+                    }
+                    if replay_samples.contains(&(sample.node_id, sample.block_number)) {
+                        return rejection(
+                            platpulse_core::RejectionCode::ResyncReplay,
+                            "Normal resync replay at or below the historical high-water mark",
+                        );
+                    }
+                    rejection(
+                        platpulse_core::RejectionCode::NetworkIdentityMismatch,
+                        "Block network identity does not match the registered Network",
+                    )
                 }),
             }
         })
         .chain(parsed.history_gaps.iter().map(|gap| {
-            let rejected = ownership_mismatches.contains(&gap.node_id);
+            let rejected = rejected_nodes.contains(&gap.node_id);
             SampleDisposition {
                 node_id: gap.node_id,
                 sample: SampleRef::Gap {
@@ -2323,10 +2383,11 @@ async fn handler(
                     SampleDispositionKind::Accepted
                 },
                 rejection: rejected.then(|| {
-                    rejection(
-                        platpulse_core::RejectionCode::NodeOwnershipMismatch,
-                        "Node belongs to another Agent",
-                    )
+                    if purged_nodes.contains(&gap.node_id) {
+                        purged_rejection()
+                    } else {
+                        ownership_mismatch_rejection()
+                    }
                 }),
             }
         }))

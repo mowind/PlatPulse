@@ -229,8 +229,9 @@ async fn delete(
 /// here. The caller supplies the surrounding transaction.
 ///
 /// Node Transfer rows are Node-owned management history and are removed with
-/// the Node (their count is disclosed in the impact and Audit Event); a
-/// pending Transfer's concurrent disposition is settled by issue #170.
+/// the Node (their count is disclosed in the impact and Audit Event). A
+/// pending Transfer is therefore gone with the Node, and the serialized report
+/// ingestion transaction never re-admits the removed ID (issue #170).
 /// Network-level projections such as network_reference_heads are keyed by
 /// Network and are deliberately left untouched.
 pub async fn remove(connection: &mut SqliteConnection, node_id: &str) -> Result<(), sqlx::Error> {
@@ -275,8 +276,9 @@ pub async fn remove(connection: &mut SqliteConnection, node_id: &str) -> Result<
 }
 
 /// Persist the minimal deletion identity. This is the durable record that the
-/// Node ID was explicitly purged; issue #170 builds the admission boundary on
-/// it. The caller supplies the Server-owned deletion instant.
+/// Node ID was explicitly purged; report ingestion reads it as the permanent
+/// admission boundary (issue #170) that refuses every later declaration. The
+/// caller supplies the Server-owned deletion instant.
 pub async fn record_deletion_identity(
     connection: &mut SqliteConnection,
     target: &NodePurgeTarget,
@@ -295,6 +297,24 @@ pub async fn record_deletion_identity(
     .execute(connection)
     .await?;
     Ok(())
+}
+
+/// Whether the Node ID carries the durable purge admission boundary.
+///
+/// Report ingestion reads this inside its receipt transaction and rejects the
+/// Node per entry instead of reconstructing its projection (issue #170). The
+/// table's shape and the boundary live here so ingestion never has to know it.
+pub async fn is_purged(
+    connection: &mut SqliteConnection,
+    node_id: &str,
+) -> Result<bool, sqlx::Error> {
+    Ok(
+        sqlx::query_scalar::<_, String>("SELECT node_id FROM deleted_nodes WHERE node_id = ?")
+            .bind(node_id)
+            .fetch_optional(connection)
+            .await?
+            .is_some(),
+    )
 }
 
 /// Load the impact scope without any mutation. The preview and the mutation

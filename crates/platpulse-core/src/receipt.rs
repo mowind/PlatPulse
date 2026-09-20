@@ -239,6 +239,11 @@ pub enum RejectionCode {
     /// The Node belongs to another Agent (ownership mismatch). Terminal;
     /// generates a security event.
     NodeOwnershipMismatch,
+    /// The Node was explicitly and permanently purged by the Owner. The
+    /// Server never reconstructs its projections, links, or history, and a
+    /// report that still declares the removed ID is rejected per Node so a
+    /// valid sibling in the same report keeps reporting. Terminal.
+    NodePurged,
     /// The Node current observation violates a field/revision invariant.
     /// Terminal.
     NodeCurrentInvalid,
