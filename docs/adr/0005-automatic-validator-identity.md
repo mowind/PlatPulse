@@ -1,0 +1,17 @@
+# ADR 0005: Automatically identify Validator correspondence without manual roles
+
+**Status:** Accepted; implementation and one-time migration pending.
+
+The prior optional, explicit, time-bounded Node Validator Link could express primary/standby/observer roles rather than the Node's own chain identity. We choose automatic correspondence by validated Network and observed full P2P public key, using the Network's PlatScan Provider, instead of manual binding or retaining a manual fallback. This removes operator-maintained role relationships and avoids presenting an unrelated Validator's totals as the Node's identity; it does not establish ownership or make current consensus membership the identity authority.
+
+## Consequences and migration trade-off
+
+- Validator remains an independent Network-scoped identity. Multiple Nodes can correspond to it, and selected-Node totals remain deduplicated by Validator within Network. A changed chain key ends the old Link interval and starts a newly verified correspondence without merging different Validators' lifetime totals or clearing Node monitoring history.
+- Current valid staking identity is distinct from consensus eligibility and Node Health. Candidates qualify; locked/exiting identities qualify only when validity is confirmed. Completed exit or authoritative absence is negative; verifying, missing/conflicting evidence, and provider failures cannot be treated as negative. Last-good values stay explicitly stale. The exact PlatScan evidence mapping still requires primary-source verification; this ADR does not claim a live verification or that every provider status proves validity.
+- At model cutover, delete the old manual Links and old Validator snapshots/history/daily/monthly aggregates, rather than retaining them as current fallback or claiming continuity across different relationship semantics. Reset or invalidate incompatible current projections and derived baselines as part of the same controlled boundary so old writers, classifiers, or aggregate rebuilds cannot restore the removed generation or fabricate a counter-reset incident.
+- This is an explicit one-time destructive conversion, not ordinary retention. Preserve Node block/Peer/metric monitoring history, existing Incident evidence, and necessary audit. Fresh PlatScan lifetime totals can immediately be nonzero; local time series and coverage restart and cannot be advertised as a full historical month.
+- Normal Node Purge removes that Node's Links, not independent Validator history, even if no monitored Node remains. Do not turn the one-time migration into a recurring deletion rule.
+
+The rejected alternative—keeping old manual Links until automatic lookup succeeds—would avoid temporary Unknown values but continue the very ambiguity this change removes. The accepted cost is temporary Unknown/lower selection totals and loss of old Validator-local time series; future readers must not restore manual roles or silently synthesize the discarded history.
+
+This supersedes the manual-Link/role **target design** in earlier domain and Validator documents, not their records of historical implementations or live captures. See [main design §15](../design/platpulse.md#accepted-management-target), [Validator Provider](../design/validator-provider.md), [Validator metrics](../design/validator-metrics.md), and the distinct [Owner removal boundary](0004-owner-removal-and-node-purge.md). No migration or data deletion is authorized to run merely by updating these documents.

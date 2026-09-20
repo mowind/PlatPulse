@@ -61,8 +61,12 @@ A Network-scoped PlatON validator identity keyed by the registered Network and i
 _Avoid_: PlatPulse Node, Agent validator
 
 **Node Validator Link**:
-An explicit time-bounded relationship between a monitored Node and a Validator, including whether the Node is primary, standby, or observer. Consensus membership alone does not create this link.
-_Avoid_: Positional mapping, Inferred validator ownership
+An automatically identified relationship between a monitored Node and a Validator with the same Network and observed chain node identifier. It expresses identity correspondence, not a manually assigned primary, standby, or observer role or proof of ownership.
+_Avoid_: Manual validator binding, Positional mapping, Inferred validator ownership
+
+**Current Validator Status**:
+Whether a Node's chain identity has a currently valid staking identity in its Network, including candidates not selected for the current consensus round and locked or exiting identities whose staking identity is confirmed to remain valid. Completed exit or authoritative absence means Not Validator; historical records alone, verification in progress, or unavailable or inconclusive evidence do not establish current status and remain Unknown when validity cannot be confirmed.
+_Avoid_: Current consensus membership, Historical validator presence, Default false
 
 **Validator Provider**:
 A Server-side Network adapter that supplies Validator current data and snapshots, such as the PlatScan browser-server adapter. Provider failure does not change Node health or erase the last successful Validator value.
@@ -93,7 +97,7 @@ The currently effective proportion of applicable Validator rewards allocated to 
 _Avoid_: Delegation APY, Operator commission, Pending reward ratio
 
 **Current-Selection Validator Summary**:
-The Server-owned totals of the distinct Validators linked to the Active Nodes in the current Home selection, grouped by Network and deduplicated by Validator regardless of primary, standby, or observer role. Blocks and rewards are reported separately, each with its known-value total, eligible-Validator count, valued count, and stale count. It describes the current selection rather than an ownership ledger, and it can decrease when filters, effective Links, or Active membership change.
+The Server-owned totals of the distinct Validators linked to the Active Nodes in the current Home selection, grouped by Network and deduplicated by Validator through automatically identified Node Validator Links. Blocks and rewards are reported separately, each with its known-value total, eligible-Validator count, valued count, and stale count. It describes the current selection rather than an ownership ledger, and it can decrease when filters, effective Links, or Active membership change.
 _Avoid_: Portfolio total, Node-summed total, Cross-network total
 
 **Agent Enrollment**:
@@ -116,12 +120,16 @@ _Avoid_: Boot count, Report sequence
 The Owner-authorized process that restores an existing Agent identity after credential or state loss without creating a duplicate Agent or silently replacing accepted state.
 _Avoid_: New enrollment, Automatic reset
 
+**Agent Removal**:
+An explicit Owner action that ends an Agent's enrollment, revokes all of its reporting credentials, and purges its owned Nodes while retaining the minimum deletion identity, existing Alert Incident evidence, and necessary audit evidence. It removes the Agent from current monitoring without stopping or uninstalling its remote process and is not an Agent Recovery.
+_Avoid_: Agent shutdown, Credential revocation alone, Automatic recovery
+
 **Node Inventory**:
 The complete set of PlatON Nodes that an Agent declares from its local configuration. It identifies which Nodes currently belong to that Agent without transferring connection configuration ownership to the Server.
 _Avoid_: Server node config, Agent chain sources
 
 **Active Node**:
-A PlatON Node present in its Agent's latest valid Node Inventory and eligible for current observation and alert evaluation.
+A PlatON Node present in its Agent's latest valid Node Inventory, not purged by an Owner, and eligible for current observation and alert evaluation.
 _Avoid_: Online node
 
 **Retired Node**:
@@ -129,8 +137,8 @@ A previously Active Node absent from its Agent's latest valid Node Inventory. It
 _Avoid_: Deleted node, Offline node
 
 **Node Purge**:
-An explicit Owner action that permanently removes retained Node data. It is distinct from retiring a Node through local configuration removal.
-_Avoid_: Config removal, Automatic cleanup
+An explicit Owner action that permanently removes a Node from monitoring and erases its retained observations, monitoring history, and Node Validator Links, independently of whether the Agent still declares it, without erasing independent Validator history or Alert Incident evidence. Its Node ID remains barred from re-enrollment, with minimum deletion identity and audit evidence retained; monitoring the deployment again requires a new Node ID.
+_Avoid_: Retirement, Config removal, Automatic cleanup, Recoverable deletion
 
 **Component Observation**:
 The status and latest successful value for one independently collected component. A current collection error does not erase the component's last successful value.
@@ -289,8 +297,12 @@ The authenticated WebUI surface for managing PlatPulse and viewing operational d
 _Avoid_: Home settings, Control terminal
 
 **Attention Item**:
-A current Server-derived prompt shown in the Admin Dashboard when an Agent, PlatON Node, Network, or setting needs Owner review. It is reconstructed from authoritative current state, is not a durable Alert Incident, and never replaces the underlying diagnostic dimensions.
+A current Server-derived prompt shown in the Admin Dashboard when an Agent, PlatON Node, Network, or setting needs Owner review. It is derived from authoritative state and applicable Attention Acknowledgments, is not a durable Alert Incident, and never replaces the underlying diagnostic dimensions.
 _Avoid_: Alert Incident, Notification, Browser-computed warning
+
+**Attention Acknowledgment**:
+An Owner's durable, shared confirmation that an Agent Attention Item has been reviewed, removing that occurrence from attention presentation for all Owners without erasing diagnostic evidence or changing health, Alert Incidents, or notification policy. New evidence or a later recurrence requires fresh attention; ordinary refreshes and restarts do not undo the acknowledgment.
+_Avoid_: Alert recovery, Silence, Evidence deletion, Permanent warning disable
 
 **Audit Event**:
 An immutable record of an administrative mutation or security-sensitive identity action, including who acted, what changed, and when.
@@ -301,7 +313,7 @@ A Server-owned typed condition with explicit subject scope, thresholds, duration
 _Avoid_: User script, Agent alert
 
 **Alert Incident**:
-A durable occurrence opened after an Alert Rule remains firing and resolved only after known recovery conditions hold. Unknown input cannot silently resolve it.
+A durable occurrence opened after an Alert Rule remains firing and resolved only after known recovery conditions hold. Unknown input, Attention Acknowledgment, and removal of the monitored subject do not establish recovery or erase the Incident's evidence.
 _Avoid_: Notification message, Current health color
 
 **Notification Event**:

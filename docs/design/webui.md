@@ -1,6 +1,6 @@
 # PlatPulse WebUI Design and Current Routed Surface
 
-**Status:** Current routed WebUI contract, reconciled with `platpulse-web/src/App.tsx` and the Server DTOs.
+**Status:** Current routed WebUI contract, reconciled with [App.tsx](../../platpulse-web/src/App.tsx) and the Server DTOs, plus an explicitly **accepted, not implemented** evolution in [§15](#accepted-management-ui-target). Existing route tables describe today's SPA, not delivery of the new controls.
 
 **Scope:** The production React SPA surface currently registered in `platpulse-web`, plus the read-only Public projections it consumes. Server/API extensions that have no SPA route are documented as available-but-unrouted, not silently treated as pages.
 
@@ -28,6 +28,8 @@ PlatPulse WebUI presents operational truth from the Server and gives the Owner s
 - deterministic Playwright-oriented acceptance scenarios.
 
 ### 1.2 Out of scope
+
+These are current-surface exclusions. §15 specifically accepts future Agent enrollment guidance, editable Agent metadata, Agent Removal, Node Purge, and Agent Attention Acknowledgment; it does not add remote control or the other deferred management pages.
 
 - Agent, Server, SQLite, or evaluation implementation;
 - a duplicated full Node Detail inside Admin;
@@ -332,6 +334,8 @@ Every `PAGE-*` entry must specify the following before production coding:
 
 ### 8.2 Admin Node Detail (`PAGE-ADMIN-NODE-DETAIL`)
 
+The accepted future permanent-delete interaction is in §15.2; it is not implemented by the current metadata/lifecycle controls described here.
+
 - consumes the full administrative `AdminNodeDetail` DTO, which includes display name, redacted RPC Endpoint diagnostics, Node Inventory/lifecycle (Active/Retired), health/freshness, process/data/RPC/Sync/Consensus/Peer diagnostics, identity/high-watermark/resync, and transfer context;
 - the current page renders the approved administrative/diagnostic subset and must not reproduce Home's full observation cards/chart deck; it links to the shared `/admin/access/audit` page separately rather than treating Audit links as DTO fields;
 - every mutation is audited; transfer fields are visible as data where supplied but no transfer management page is currently routed.
@@ -402,6 +406,8 @@ Networks:     total; with Network Identity Mismatch
 `Active Nodes = healthy + unhealthy + unknown` and `total Nodes = active + retired`. Retired Nodes are excluded from live health buckets and Attention Items. `AdminOverviewSummary` has no `published` metric. Node list/detail DTOs and the Nodes page retain `visibility` as a legacy compatibility/diagnostic field and filter; current Public SQL does not use it to hide Home Nodes, so Site Access Mode remains the effective site-wide anonymous-access authority.
 
 #### 8.4.2 Attention queue
+
+**Baseline versus target:** the current kind + subject IDs and unacknowledged queue below are implemented behavior. §15.3 adds durable Agent Attention Acknowledgment and occurrence/evidence boundaries; the current IDs alone cannot permanently dismiss a type without also swallowing future occurrences.
 
 An Attention Item is a current Server-derived prompt, not an Alert Incident, Notification, Audit Event, or browser-computed warning. The REST DTO keeps each problem independent with a stable `kind + subject` identity. The typed kinds are:
 
@@ -577,6 +583,8 @@ Retain §2.1 vocabulary, including `Current`, with a visible, accurate dimension
 
 #### 8.5.3 Agents summary and existing detail
 
+The no-new-fields/no-new-actions constraints below describe this earlier presentation-only delivery. §15 accepts a future Server-backed name/notes editor, enrollment guidance and explicit Agent Removal; none should be fabricated from the existing diagnostic DTO or treated as routed today.
+
 The Owner scans Agent reporting, inventory, credentials, and diagnostic evidence, then opens the existing `/admin/agents/:agentId` route for investigation. Keep `/admin/agents` as the list route and preserve existing access checks, query/realtime behavior, safe return, and authoritative error handling. Use existing `AgentDiagnostic` data; this is a presentation-only change.
 
 Desktop uses six summary columns:
@@ -595,6 +603,8 @@ Do not add a separate View-only action column. The identity link provides detail
 The existing detail separates Identity, Liveness, Boot/report state, Inventory, Credentials, Diagnostics, and Audit. Preserve independent states and evidence reachability. Credential revocation stays there with its explicit warning, Confirm/Cancel flow, busy guard, conflict reload, and authoritative refetch; no destructive quick action is added to the list. No new gap timeline, resolve/reset operation, or recovery workflow is promised.
 
 #### 8.5.4 Diagnostic evidence semantics
+
+§15.3 refines prominence after explicit Owner acknowledgment: acknowledged Agent evidence leaves the prominent warning area, but actual liveness/health and expandable evidence remain available. Being online alone still never dismisses recorded evidence or implies recovery.
 
 - `sequence_gap_count` counts recorded sequence-gap intervals, not missing reports, currently unresolved gaps, or active failures. Label the historical interval count explicitly.
 - `security_event_count` is an accumulated recorded-event count without per-event resolution/timestamps in this summary. It does not prove an ongoing incident or credential failure.
@@ -922,6 +932,7 @@ A page is ready for production implementation only when:
 
 | Decision | Source |
 |---|---|
+| Accepted, not implemented: Agent enrollment/metadata/removal, permanent Node Purge, automatic Validator correspondence with one-time history reset, shared per-occurrence Agent Attention Acknowledgment | Confirmed management/Validator/acknowledgment `grill-with-docs` Q1–Q22 and final documentation approval; [main design §15](platpulse.md#accepted-management-target), [ADR 0004](../adr/0004-owner-removal-and-node-purge.md), [ADR 0005](../adr/0005-automatic-validator-identity.md), and this document §15. |
 | Historical: Compact Admin workbench first delivery and six-column Agents summary; the later §8.6 information-architecture pass superseded the Settings/Audit deferral | Confirmed `grill-with-docs` Q1–Q12 and final documentation approval; retained as historical decision, not current route authority. |
 | Admin visual shell and responsive baseline | Issue #35, accepted prototype branch `prototype/ui-shell-variants` |
 | Home/Admin route and scope boundaries | Issue #34 |
@@ -950,3 +961,73 @@ A page is ready for production implementation only when:
 | Public Node Detail container realignment to the accepted Emerald **A · continuous reading** calibration (uncarded identity block, four summary tiles, three parallel observation panels) and the faithful Emerald `Background.vue` port of the shared top atmosphere with a full-bleed width deviation | Issue #151, correcting the visual drift in #146–#150; supersedes the single-hero-card, four-box-ban, metric-cell-grouping, and residual tab clauses while #149/#150 keep their semantic deliverables |
 
 Changes to a settled contract require a new decision record and must update the affected `PAGE-*`, `PATTERN-*`, and `SCN-*` references together. OpenAPI or Server policy changes do not silently change WebUI semantics; they require an explicit design review when the user-visible contract changes.
+
+<a id="accepted-management-ui-target"></a>
+
+## 15. Accepted Agent/Node management and Attention Acknowledgment (not implemented)
+
+**Status:** Accepted through the management/Validator/acknowledgment design interview and final Owner approval; no implementation, route registration, generated API, data purge, or migration is delivered by this document update. The current routes and DTO limitations in §§4 and 8 remain factual baseline. This section supersedes their no-new-actions scope only for the accepted future controls below; it does not declare the deferred pages live.
+
+Server ownership, lifecycle, data boundaries, and acceptance are in [main design §15](platpulse.md#accepted-management-target). [ADR 0004](../adr/0004-owner-removal-and-node-purge.md) explains irreversible removal; [ADR 0005](../adr/0005-automatic-validator-identity.md) explains automatic identity and the one-time Validator history reset. Preserve the Emerald shell, mobile behavior, and public/admin separation; this is not another visual migration.
+
+### 15.1 Agent enrollment and metadata
+
+Applies to `PAGE-ADMIN-AGENTS` and `PAGE-ADMIN-AGENT-DETAIL`:
+
+- Provide an Add Agent entry that creates a short-lived, single-use Enrollment Token and presents local enrollment instructions. Generating a token does not create an offline placeholder Agent; the list gains the Agent only after successful enrollment.
+- Present the secret only in the authorized enrollment interaction; do not place it in URLs, logs, persistent browser storage, generic query caches, Audit payloads, or Public state. No remote installation/start/stop command is executed by the UI.
+- Support Server-backed display name and notes editing. Keep the stable Agent ID visible/copyable; do not make the ID, actual Host identity, receipt-derived liveness, or local collection configuration editable. A name is not inferred from a Node or diagnostic field.
+- Keep credential revocation separate from Delete Agent. This scope does not restore dedicated Recovery/Rotation or other deferred pages. Exact added API shapes and form placement remain implementation work, not fabricated extensions of today's DTO.
+
+### 15.2 Permanent removal and clear consequences
+
+Applies to Agent Detail and the Nodes inventory/Node Detail management surfaces (`PAGE-ADMIN-AGENT-DETAIL`, `PAGE-ADMIN-NODES`, `PAGE-ADMIN-NODE-DETAIL`):
+
+- Agent deletion confirms the specific Agent and Server-authoritative list of owned Nodes, revocation of all credentials, and permanent removal of those Nodes' monitoring history. Pending Transfer blocks removal until handled. A changed ownership/impact set requires refetch and confirmation, not deletion of unseen newly assigned Nodes.
+- Node deletion is explicit Owner judgment, available for invalid Active as well as Retired Nodes; do not invent an automatic offline threshold or label failure itself as a lifecycle. Retain existing rename; add no Admin create-Node or Endpoint editor.
+- Use explicit destructive copy such as `Permanently delete Node`. Explain that the Node leaves Home/current monitoring, its observations/history/Links are deleted, the same Node ID cannot return, and re-monitoring requires a new locally configured Node ID. Minimal deletion identity, necessary Audit and existing Incident evidence remain; independent Validator history is not erased.
+- Explain what will not happen: the remote Agent/Node process is not stopped, local configuration is not changed, shared Node/Host/Network/Validator data is not cleared, and no recovery is asserted. Agent removal includes the stated credential revocation and owned-Node purge; it is not merely hiding a row.
+- Confirm/Cancel, busy guards, field/page errors, conflict recovery and authoritative completion are required. Do not optimistically remove records or call a queued/incomplete purge a completed deletion. On completion, invalidate/refetch affected Admin lists, overview and summaries; an open Public view must stop displaying the removed Node and use the existing non-leaking unavailable outcome for its detail URL.
+- Preserve context for unaffected rows and filters. Failure leaves an actionable error and authoritative state, not an empty success screen. Server permission checks and Audit are mandatory; a typed phrase, if used for friction, is not the authorization boundary.
+
+### 15.3 Shared confirmation of Agent Attention Items
+
+Applies to `PAGE-ADMIN-OVERVIEW` and `PAGE-ADMIN-AGENT-DETAIL`:
+
+- The product action is `Acknowledge` (确认提示), not `Resolve alert`, `Clear history`, or `Silence`. Production copy remains consistently English; the Chinese wording here identifies the confirmed intent, not a localization feature.
+- Overview provides per-item acknowledgment for Agent subjects. Agent Detail provides individual acknowledgment and `Acknowledge current Agent items`. No Node acknowledgment or permanent type-disable action is added.
+- A bulk action covers only the Agent items/evidence boundaries explicitly shown for that action, not all hidden diagnostics, child Node items, or new evidence arriving after the displayed snapshot. Server confirmation is shared across Owners, both surfaces, sessions and restarts; browser local storage is not the authority.
+- On authoritative success, that occurrence leaves the prominent attention/warning area. Evidence remains available through deliberate diagnostic disclosure; actual liveness, health, freshness and component failures remain truthful. Even a continuing fault may be acknowledged without making an offline Agent look online or changing Incident/notification policy.
+- Ordinary refreshes, unchanged reports, re-login and restarts never resurrect an acknowledged occurrence. New evidence or a genuinely recovered-then-recurring fault requires fresh attention. Unknown/stale data is not recovery. The Server must distinguish occurrences/evidence; the current `kind + subject` ID and presentation timestamp alone are insufficient.
+- A failed acknowledgment keeps the item actionable. A stale request must not swallow newer unseen evidence. Successful concurrent acknowledgments must converge after authoritative refetch; don't replay stale responses into the queue or transfer business DTOs between tabs.
+- Existing Agent Detail warning predicates include historical and current evidence outside the Overview queue. These surfaces must converge on Server-owned acknowledgment eligibility/evidence boundaries rather than independently recreating acknowledged warnings from cumulative counters. Raw safe diagnostics remain available but are not re-promoted as unacknowledged prompts.
+- Audit exposes who acknowledged which Agent evidence and when, not secret-bearing raw diagnostics. The acknowledgment operation does not disable Alert Rules, change Incident state, delete evidence, pause notifications or create a recovery event.
+
+### 15.4 Validator presentation and deleted-subject history
+
+- Remove manual Validator selection, role editing and manual-link fallback from the target design. Validator detail and statistics remain independently meaningful; Public rendering consumes Server-projected automatic correspondence rather than guessing in React.
+- Show Current Validator Status separately from Node Health and consensus participation. Preserve locked/exiting qualifiers when validity is confirmed, explicit non-current status after completed exit/authoritative absence, and Unknown/Stale when evidence cannot establish a fresh conclusion. Do not reintroduce manual role badges. Activity placement follows existing page composition; this does not authorize an unrelated Home redesign.
+- The one-time model migration clears old Validator Link/history/snapshot/daily/monthly data, not Node monitoring history. A temporarily Unknown or lower selection total is legitimate; no client fallback to old manual results, fabricated full-month coverage, or forced zero lifetime totals. See [Provider](validator-provider.md) and [metrics](validator-metrics.md) for the target evidence contract and pending primary-source verification.
+- Daily Node deletion does not clear independent Validator history, even after its last monitored Node is removed. Existing Incident evidence is retained and marked with deleted-subject context, excluded from current actionable problems, not relabeled as known recovery. Cancel unsent subject notifications; delivered messages cannot be recalled.
+- Current problems disappear from Attention when their predicates genuinely clear; historical prompts can remain until acknowledgment. Sustained known recovery resolves a durable Incident without deleting it. The current SPA has no full Incident history page and this scope adds none; do not imply history is displayed on a route that remains a fallback.
+
+### 15.5 State, accessibility and target acceptance
+
+All added controls use Owner authorization, the existing CSRF/Origin boundary, Audit, generated-client contracts once implemented, separate Public/Admin query namespaces, and post-commit SSE invalidation plus authoritative REST. Loading, Empty, Unknown, Stale/LastGood, error, conflict, forbidden and busy states remain independent. New operations and occurrence DTOs require actual Server/OpenAPI implementation before controls are enabled; unavailable operations cannot report fake success.
+
+Preserve 44×44 CSS pixel targets, keyboard-accessible confirmation/disclosure, focus trapping/restoration where appropriate, non-color status text, live feedback without excessive announcements, and no primary horizontal page overflow. A disappearing confirmed item restores focus to a safe adjacent item or panel heading. Use all five fixed Playwright projects (360, 390, 768, 1280, 1440 widths), Light/Dark, long labels/IDs, 200% zoom and reduced motion; no new server or theme is required.
+
+The following extend the future acceptance matrix; they are not claims of implemented tests or a successful browser run:
+
+| Scenario | Pages | Expected outcome |
+|---|---|---|
+| `SCN-AGENT-ENROLL-GUIDANCE` | Agents | Token and safe instructions; no placeholder or remote execution; successful enrollment subsequently appears |
+| `SCN-AGENT-METADATA` | Agents / Agent Detail | Server-backed name/notes round trip; ID and observed Host/liveness unchanged; conflict/error/authorization handled |
+| `SCN-AGENT-REMOVE` | Agent Detail | Confirm exact owned Nodes; Transfer blocks; credentials revoked and child purge completes; no remote stop claim |
+| `SCN-NODE-PURGE` | Nodes / Node Detail / Home | Active or Retired purge is irreversible; no create/Endpoint control; removed Node unavailable publicly; shared data survives |
+| `SCN-PURGE-NO-REAPPEARANCE` | Nodes / Overview | Test fixture submits subsequent valid Inventory; deleted ID stays absent and other Nodes continue reporting |
+| `SCN-AGENT-ATTENTION-ACK` | Overview / Agent Detail | Same occurrence disappears on both surfaces and for a second Owner; diagnostics/health remain truthful after refresh and Server restart |
+| `SCN-AGENT-ATTENTION-RECURRENCE` | Overview / Agent Detail | Unchanged reports don't resurface; new evidence or known recovery then recurrence does; Unknown alone does not rearm |
+| `SCN-AGENT-ATTENTION-BULK-RACE` | Agent Detail | Only displayed Agent evidence acknowledged; newly arriving evidence, unseen items and Node prompts survive; failure/conflict is visible |
+| `SCN-AUTO-VALIDATOR-PRESENTATION` | Home / Node diagnostics | Automatic correspondence, special states and stale/unknown remain explicit; no role/manual fallback or guessed lifetime zeros |
+| `SCN-MANAGEMENT-ACCESS-RESPONSIVE` | All affected pages | Owner-only controls, safe Public state, fixed viewports/themes, keyboard/touch/focus, error recovery and no primary overflow |

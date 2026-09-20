@@ -1,10 +1,10 @@
-# PlatPulse 产品与技术设计（当前实现基线）
+# PlatPulse 产品与技术设计（当前实现基线与已确认演进）
 
 ## 1. 文档状态
 
-- 状态：当前实现与边界基线；实现、迁移、运行时路由和本文件应相互校验。
+- 状态：§1–§14 保留当前实现与边界基线；[§15](#accepted-management-target)记录已确认、待实现的演进，不能据此宣称新 API、页面或迁移已交付。实现、迁移、运行时路由和本文件应相互校验。
 - 适用范围：`platpulse-core`、`platpulse-agent`、`platpulse-server`、`platpulse-web`。
-- 领域术语：以仓库根目录 `CONTEXT.md` 为准；本文件只说明这些术语在当前链路中的关系，不重复定义。
+- 领域术语：以仓库根目录 [CONTEXT.md](../../CONTEXT.md) 为准；词汇表已纳入本次确认的目标语义。§1–§14 中旧的 Inventory 生命周期、手工 Validator Link 和未确认提示描述是实现基线；涉及本次变化时以 §15 的目标契约为准，不把两种状态混写。
 - 规范性用词：
   - 必须：实现和验收不可省略；
   - 不允许：违反即破坏边界或领域不变量；
@@ -122,6 +122,8 @@ Agent 不拥有 Network Registry、Site Access Mode 或用户权限。
 - Network Identity Mismatch：Node 观测 identity 与注册 Network 不一致时，当前诊断继续，但 block 历史绝不并入注册 Network 的历史。
 
 ### 4.6 Node Inventory 与生命周期
+
+以下为当前实现；已确认的 Agent Removal / Node Purge 及删除后的接收边界见 §15.2–§15.3。Retired 与 Purged 不可混用。
 
 - Node Inventory 是 Agent 本地配置声明的完整 Node 集合，整体校验通过才生效，不允许提交半份 Node Inventory。
 - 仍在新 Node Inventory 中的 Node 是 Active；从最新有效 Node Inventory 消失的是 Retired；Agent 停止上报（失联）不等于 Retired。
@@ -465,6 +467,8 @@ GET  /api/public/v1/nodes/{node_id}/peer-history
 
 ### 8.5 Admin Overview 契约
 
+以下为未提供 Attention Acknowledgment 的当前实现。目标增加 Server 持久化的确认语义与按发生次数区分的提示，见 §15.6；不是浏览器隐藏规则或 Alert Incident 恢复。
+
 `GET /api/admin/v1/overview` 是 Owner 的当前分诊响应，包含 `generated_at`、`summary` 与当前 `attention[]` 队列；不包含完整 Node Detail、完整 Agent Detail、历史图表或远程操作命令。Attention 与 summary 在同一响应中返回，但当前实现通过独立数据库读取组合，不承诺跨资源的同一时刻原子快照。
 
 `summary` 由 Server 派生，逻辑分组为：
@@ -532,7 +536,7 @@ Admin 的 Node 页面聚焦配置与诊断（显示名、RPC Endpoint 诊断、N
 
 - Agent Credential 由 Server 的 Enrollment/Recovery/Rotation seams 发行和管理；Agent 通过一次性 Enrollment Token 获取并保存凭据，凭据只能访问 Agent API；
 - Server 不保存 Credential 明文；凭据文件 Agent 用户可读、其他用户不可读；
-- Enrollment、Recovery、Rotation 和 Revoke 都已提供相应 credential seam：Recovery 额外推进 Agent Epoch 并拒绝旧 Epoch 报告，Rotation 只更新凭据集合（可保留短暂 overlap），Revoke 只立即使指定凭据失效；当前 SPA 不提供 credential 管理页面，但 Server/Admin API 已提供 token、recover、rotate、revoke seam；
+- Enrollment、Recovery、Rotation 和 Revoke 都已提供相应 credential seam：Recovery 额外推进 Agent Epoch 并拒绝旧 Epoch 报告，Rotation 只更新凭据集合（可保留短暂 overlap），Revoke 只立即使指定凭据失效；当前 SPA 没有 Enrollment/Recovery/Rotation 专用管理路由，但 Agent Detail 已提供单个凭证撤销。§15.2 的新增接入入口和 Agent Removal 是待实现能力；
 - 不静默创建相同身份的第二个 Agent；
 - Human Session 不能访问 Agent API。
 
@@ -655,3 +659,108 @@ PlatPulse 当前实现是：
 4. 是否可以作为独立扩展，而不是提前进入核心协议与数据库？
 
 未来扩展必须满足：不改变核心边界、不向核心协议塞字段、不创建没有真实场景支撑的抽象，并有独立的设计、测试与回滚边界。
+
+<a id="accepted-management-target"></a>
+
+## 15. Agent/Node 管理、Validator 自动识别与提示确认（已确认，待实现）
+
+### 15.1 状态、范围与依据
+
+本节来自已完成的 `/grill-with-docs` 访谈（Q1–Q22）及 Owner 的最终共识确认，是目标设计，不是代码完成声明。只同步文档；本次未执行数据库迁移、清理数据、修改运行时路由或生成 OpenAPI。后续实现规格按仓库约定进入 GitHub Issues，本节不代替具体接口设计或实现工单。
+
+- Agent：Owner 接入引导、显示名称/备注修改、Agent Removal。
+- Node：保留已有重命名，只扩展 Owner 显式 Node Purge；不提供 Admin 新建 Node 或远端采集配置编辑。
+- Validator：自动身份对应替代手工 Link/角色；独立 Validator 数据和统计继续存在。
+- 提示：Agent Attention Acknowledgment，而非 Agent 进程发起业务告警清除。
+- 不变：无远程控制、Network Registry 信任边界、每 Node 观测隔离、last-good、不可变 Agent Report 与事务性 Receipt、Owner-only mutation、Public/Admin 分离和移动端可用性。
+
+长期取舍见 [ADR 0004](../adr/0004-owner-removal-and-node-purge.md) 与 [ADR 0005](../adr/0005-automatic-validator-identity.md)。交互见 [WebUI §15](webui.md#accepted-management-ui-target)；Validator 适配与指标分别见 [Provider 设计](validator-provider.md)、[指标设计](validator-metrics.md)。
+
+### 15.2 Agent 接入、元数据与移除
+
+1. Admin 新增入口生成一次性 Enrollment Token 和接入指引。仅生成 Token 不创建离线 Agent 占位记录；Agent 成功 Enrollment 后才出现在列表。Token 仍是短期单次接入凭据，不是永久 Agent Credential。
+2. Owner 可以编辑 Agent 显示名称和备注。Agent ID、实际 Host 信息、Server 推导的 liveness、Epoch、采集配置不是可编辑资料；没有名称时仍可用稳定 ID 标识。当前实现尚无这些可编辑元数据字段。
+3. Agent Removal 的确认必须明确列出所属 Node 及不可逆后果。执行前重新校验所属关系；存在进行中的 Node Transfer 时先完成、取消或处理该 Transfer，不能静默夺走 Node。
+4. 确认后撤销该 Agent 的全部凭证，将其从当前监控/正常列表移除，并对所属 Node 执行 §15.3 的永久清理。Agent 登记身份仅保留必要删除标记；既有 Alert Incident 证据和必要审计按 §15.7 保留。不能用 Recovery/Rotation 或迟到报告绕过移除重新启用同一身份。
+5. 移除不会停止、卸载远端进程。UI 告知 Owner 仍须在 Host 上处理本地配置/进程；凭证撤销与 Agent Removal 不是同一个动作。
+
+### 15.3 Node Purge 与接收边界
+
+- “无效”是 Owner 的显式处置决定，不是新的健康状态。允许选择 Active、Retired、离线、长期失败或仍在本地 Inventory 中的 Node；不根据离线时间自动删除。
+- Node Purge 永久删除该 Node 的当前观测、监控历史及 Node Validator Links，并从 Home、当前列表/统计、Attention 和实时告警评估中移除。它不是 Retired、隐藏开关或可恢复软删除。
+- 清理范围包括该 Node 的 Block Summary、计数/高水位/coverage/gap 等监控状态，以及 Peer、metric 和其他 Node 观测历史；必要审计、删除身份及既有 Alert Incident 证据保留。不能误删共享 Agent/Host、Network 或其他 Node 的数据。
+- 普通 Node Purge 不删除独立 Validator 历史，哪怕它是最后一个关联 Node；一次性旧 Validator 数据清理是 §15.5 的独立迁移，不是日常级联规则。
+- 持久化最小删除标记，永久禁止同一 Node ID 自动重建。后续合法报告即使继续声明它，也不能重新写入该 Node 的投影、关联或历史；要重新监控部署，须在 Agent 本地生成新 Node ID，本次不提供恢复入口。
+- 删除标记是 Server 接收权限边界，不是远端修改 Inventory。整体 Inventory 结构/归属校验依旧成立；对已清理 Node 的接收处置不得阻断同一份合法报告中其他有效 Node。实现需明确对应 Inventory、per-Node/per-sample Receipt dispositions，不能改写不可变报告或把部分接收偷换成整份成功。
+- 删除与 ingestion、Transfer、Provider/聚合后台任务的并发需要统一校验：最终清理完成后，迟到写入不可重建数据。仍通过鉴权的重复报告按既有幂等 Receipt 返回，不重复应用已删除数据；不能为删除操作修改旧 Receipt 内容或删除去重边界。Agent 移除后的无效凭证仍直接拒绝。
+- mutation 必须由 Server 做权限与影响范围校验、记录审计；不能在实际清理完成前报告最终成功，也不能依靠客户端从列表移除来宣称清理完成。
+
+### 15.4 自动 Validator 身份与当前状态
+
+- Server 从有效 Node 观测中提取并校验完整 P2P 公钥，与已校验 Network 对应的 PlatScan 匹配。PlatPulse Node UUID、短 fingerprint、显示名、IP、当前共识成员标志都不是替代查找键；不根据 Agent 声称的任意 URL 访问 Provider。
+- 自动 Link 表达同一链上身份，不表达 Owner 所有权或 primary/standby/observer 角色。取消手工绑定及角色入口/写入路径，不保留手工兜底。
+- Node 的链上密钥变化时结束旧 Link 区间，重新识别新身份。Node 监控历史保留；不同 Validator 的累计奖励和出块不能拼接。相同 Validator 可关联多个 Node，当前选择汇总按 Network 内 Validator 去重。
+- 当前有效质押身份与当前共识参与能力、Node Health 分开。状态判定原则如下：
+
+| 证据 | Current Validator Status | 其他展示 |
+|---|---|---|
+| 当前有效的候选、活跃或正在出块身份 | 是 | 保留独立活动/共识状态 |
+| 锁定或退出中，且能确认质押身份仍有效 | 是 | 明示锁定/退出中，不能显示为正常运行 |
+| 已完成退出，或可信地确认无当前质押身份 | 否 | 旧记录可属于历史身份，不代表当前有效 |
+| 验证中、信息不足/冲突，不能确认身份有效 | 未知 | 不推断为否 |
+| Provider 失败或信息过期 | 不产生新的肯定/否定结论 | 保留 last-good 并标 Stale；从未成功则 Unknown |
+
+缺少可信公钥、Network Identity 不匹配或 Network 未配置可用 Provider 时，不能猜测关联，也不能拿其他 Network 或旧手工关联代替。本次业务原则已确定；具体 PlatScan 字段/状态如何证明“当前有效”，尤其 locked/exiting/verifying 和权威否定的条件，仍需主源证据验证，见 Provider 设计。普通 HTTP 失败不是无质押的证据。
+
+### 15.5 一次性 Validator 模型迁移
+
+- 迁移切换时立即停止以旧手工 Link 作为当前关联或回退，删除旧手工关联及旧 Validator 快照、ranking/counter history、daily snapshots、monthly aggregates；切换后通过自动识别重新采集和积累。
+- 不清空 Node 的区块、Peer、metric 等监控历史，也不因 Validator 本地历史清理删除既有 Incident 和必要审计。
+- 同步重建或失效化依赖旧模型的 current insight、分类/变化基线和汇总，不能只删历史表而让旧 change/counter 分类继续生效。迁移边界不能被当作一次真实的奖励下降、counter reset、告警恢复或新异常。
+- 迁移与 Provider 写入、daily/monthly 重建协调，阻止旧一代任务回填已经清理的旧数据。验证依赖与清理范围后再执行；失败不能以半新半旧状态继续正常服务。这里规定迁移安全结果，不新增具体 migration 编号或执行脚本。
+- 本地历史从切换后重新积累，先前已删历史不承诺恢复。PlatScan 再次返回的 lifetime blocks/rewards 仍是链上累计值，不是归零计数；当前选择总计可能暂时下降/未知，不能伪造连续覆盖或完整月份。
+- 这是显式一次性模型转换，不改变常规 Retention 对 Validator 日/月数据的保护，也不授予普通 Node 删除操作清除共享 Validator 历史的能力。
+
+### 15.6 Agent Attention Acknowledgment
+
+**目的：确认已读后移出醒目的提示区，不伪造恢复，不抹掉证据。**
+
+- 由 Owner 对 Agent Attention Item 发起确认；Server 持久化共享结果，Overview 与 Agent Detail 的醒目提示同步移除，所有 Owner、登录会话与 Server 重启后均生效。
+- 允许确认历史证据提示，也允许确认仍在持续的离线/存储故障提示。当前真实 liveness、health、各诊断维度和历史证据仍可查看；确认不改变 Alert Rule/Incident 或通知策略。
+- 同一次提示确认后不再展示。普通刷新、无新增问题的报告、换浏览器或重启不重新提示；新增证据或恢复后再次发生的故障要重新提示。未知/过期输入不能假装恢复并制造“新的一次”。
+- 当前 DTO 的 kind + subject 只标识问题类型/主体，不足以标识发生次数。目标需要 Server-owned 的发生/证据边界；历史 count/range 的确认不能用永远隐藏该稳定 ID 代替，也不能只用会随普通 Host 更新漂移的时间戳。计数回落、Epoch/Boot 变化与状态恢复不能使新证据被旧确认误吞。
+- Overview 提供 Agent 提示逐条确认；Agent Detail 提供逐条及“确认当前全部提示”。批量只覆盖 Owner 本次明确看到的 Agent 提示及其证据边界，不包括随后新增内容，不连带确认所属 Node。
+- 原始证据留在可主动展开的诊断区域，确认记录包含谁在何时确认什么范围。失败不隐藏提示；并发确认可以安全重试，但不能确认客户端未看到的新证据。返回成功后重取权威投影，不用浏览器永久隐藏列表。
+- 本次不增加 Node 提示确认、永久关闭某类提示、Silence/Maintenance 页面或完整 Incident 历史页面。
+
+### 15.7 恢复、确认、主体删除与通知
+
+| 动作/事实 | 提示与 Incident | 数据/通知 |
+|---|---|---|
+| 当前故障恢复 | 当前提示条件消失；Incident 仅在已知恢复持续满足规则后 resolved | 恢复不自动删除 Incident；历史型提示可能仍需确认 |
+| Owner 确认提示 | 同次提示退出醒目区域，持续故障的真实状态不变 | 证据与 Incident 保留；不暂停通知、不发虚假恢复 |
+| Agent/Node 删除 | 主体退出当前待处理问题和后续告警评估；保留 Incident 原有事实并标注主体已删除 | 保留既有 Incident/必要审计；取消尚未发送通知，不因删除发恢复通知 |
+
+Incident 保留证据不等于继续把它当作当前待处理故障；删除主体不把 open Incident 改成声称已知恢复的 resolved。当前 SPA 没有 Incident 管理页面，本节不承诺新增。常规 Retention 保护 Incident 历史；Notification Event 有独立保留策略，不能把二者混淆。
+
+取消通知按主体覆盖所有未发送项，不能只通过 incident_id 找关联：当前恢复 Notification Event 可以没有 incident_id。实现需协调 worker claim/发送前检查；已发送或已交给外部通道且无法撤回的发送不能宣称已撤回。保留已有交付事实，不影响其他 Agent/Node 或共享 Validator 主体的通知策略。
+
+### 15.8 待实现验收与技术核实
+
+以下是目标验收，不代表测试已存在或本次已执行：
+
+| 场景 | 必须验证的结果 |
+|---|---|
+| Agent Enrollment 与资料 | Token 本身不建 Agent；实际接入后可编辑名称/备注，ID/Host/liveness 不可伪改 |
+| Agent Removal | 列明子 Node、阻止未处理 Transfer、全凭证失效、子 Node 数据清理、历史审计保留；不远程停进程 |
+| Node Purge 与重报 | Active/Retired 均可显式删除；后续同 revision 的合法 Inventory、更新 revision、重试、重启和迟到任务都不能重建已删 ID；其他 Node 正常接收 |
+| 数据所有权 | Node 专属监控历史/Links 清理；共享 Agent/Network/Validator 历史及 Incident 证据不误删 |
+| 自动身份 | 正确 Network+完整公钥识别、缺少键/错误 Network 不猜测；换键关闭旧区间且不拼接累计值 |
+| Validator 当前状态 | 候选/特殊状态/退出/未知按证据区分；失败保留 stale last-good，不能 false 或 Healthy |
+| Validator 一次迁移 | 清掉旧 Link/历史/衍生基线，不清 Node 历史；旧后台写入不回填、不伪造连续历史或 counter reset |
+| 确认与复发 | 同次确认后持久消失；新证据/真实恢复后再发重新提示；当前健康和 Incident 不变 |
+| 批量/多 Owner | 仅确认看到的 Agent 证据，新增并发项与 Node 提示不被吞；Overview/详情/其他 Owner 一致 |
+| 删除与通知 | 已删主体停止当前评估，不伪造恢复；无 incident_id 的待发送通知同样取消；已发送事实保留 |
+| 权限、故障与响应式 | Owner-only、CSRF/Origin、Audit、失败/冲突重取、不可逆确认；Public 无管理数据泄漏；固定移动/桌面项目可用 |
+
+具体 DTO、端点、schema、迁移顺序、Receipt disposition 编码和 PlatScan 状态证据尚需在实现工单中落实；本次未生成 API、未开展新的实时 PlatScan 验证，也未运行 Rust/WebUI 测试或执行清理。不得据本节把旧的导出但未注册页面当作新能力已上线。

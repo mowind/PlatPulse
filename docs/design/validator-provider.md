@@ -4,7 +4,109 @@ PlatPulse treats PlatScan as an optional, Server-side Validator data source.
 The browser and Agent never contact it, and PlatScan-specific JSON is reduced
 to `ValidatorObservation` before it enters the domain or API projections.
 
-## Network coverage
+## Status and authority
+
+The transport, normalization, persistence and deployment-capture sections below
+record the **implemented baseline**. That baseline uses an Owner-populated
+Validator Registry and optional, explicit Node Validator Links; it does not
+automatically discover Validators from observed Nodes. Historical API and live
+capture observations remain evidence of that baseline, not proof of the new
+identity contract.
+
+The following automatic-identity design is **accepted, NOT IMPLEMENTED**. Its
+cross-feature authority is [the main design, section 15](platpulse.md#accepted-management-target)
+and [ADR 0005: automatic Validator identity](../adr/0005-automatic-validator-identity.md).
+This documentation update neither implements nor executes a migration.
+
+## Accepted target: automatic Validator identity (not implemented)
+
+### Discovery and identity correspondence
+
+- A Node does not require manual Validator registration, binding or a
+  primary/standby/observer role. The Server automatically identifies a Node
+  Validator Link from the Node's observed full P2P public key and validated
+  Network. The independent Validator Registry remains a data identity, not a
+  user-maintained prerequisite for discovery.
+- The lookup identifier is the full 64-byte P2P public key represented as
+  0x plus 128 hexadecimal characters. The Server revalidates the observed
+  identity, including a full key carried in an observed enode, before using it.
+  A PlatPulse Node UUID, shortened key fingerprint, display name, IP address or
+  old manual binding is not a substitute. The Agent reports facts; neither the
+  Agent nor WebUI queries PlatScan.
+- Each lookup uses that Node's Network-specific deployment binding. Missing or
+  mismatched Network evidence, a missing/invalid full key, or an unconfigured
+  provider cannot establish a negative Validator identity. Expose the relevant
+  unavailable/unconfigured reason; never search another Network or infer a
+  match from the Node name. Provider availability and Current Validator Status
+  are separate dimensions.
+- Automatic correspondence does not prove ownership, current consensus
+  membership or historical block production. A key change ends the old
+  association interval and requires identification of the new Validator;
+  preserve the Node's monitoring history without joining the old and new
+  Validators' cumulative counters, rewards or time series.
+- No old manual link is a fallback while automatic identification is pending or
+  failed. Metrics with no established association remain unavailable, not zero.
+  A failed refresh for an already established identity retains its last-good
+  values with explicit staleness rather than claiming fresh identity evidence.
+
+### Current Validator Status versus consensus eligibility
+
+The target asks whether the Node's chain identity has **currently valid staking
+identity**, not whether it is selected for the current consensus round or has
+any historical PlatScan entry:
+
+| Evidence | Target Current Validator Status |
+| --- | --- |
+| Confirmed candidate, active or producing identity with valid stake | Validator |
+| Locked or exiting identity whose staking validity is independently confirmed to remain effective | Validator, with locked/exiting state shown explicitly; not a claim of normal participation |
+| Confirmed completed exit or authoritative absence of current staking identity | Not Validator |
+| Verifying, insufficient or conflicting evidence that cannot establish validity | Unknown |
+| Lookup failure or incomplete evidence | Last-good status marked stale when available; otherwise Unknown, never a default negative |
+
+**Technical verification pending:** the baseline integer-to-Activity mapping
+below is not by itself a verified mapping to current staking validity. Primary
+source/deployment evidence must establish the required validity predicates,
+including locked/exiting/verifying states and authoritative absence, before the
+new classification is implemented. A bare transport failure, ranking absence
+or the legacy HTTP 404 normalization must not silently become new proof of staking
+absence. Preserve the independently evidenced ranking contract; unranked is not
+synonymous with Not Validator. This synchronization performed no new live
+PlatScan verification and does not extend the scope of the recorded mainnet
+capture.
+
+### One-time migration and ordinary Node Purge
+
+The accepted migration removes old manual links and old Validator snapshots,
+ranking/counter history, and daily/monthly aggregates. It **does not remove Node
+monitoring history** (including Block Summaries, Peer history and Node counters)
+or existing Alert Incident/Audit evidence.
+
+- Reset incompatible cached baselines and change/reset classifications together
+  with the deleted Validator history. Old classification inputs, pending refresh
+  results or analytics rebuilds must not recreate pre-migration rows or make an
+  empty history look like a new counter reset, ranking change or recovered
+  Incident. New observations establish new baselines; missing data is not zero.
+- Accumulate local Validator history again after cutover, without reconstructing
+  removed periods or using old manual links during the transition. Fresh
+  PlatScan lifetime totals can still be nonzero: clearing local time series does
+  not reset chain-history rewards or blocks. Existing Incident and Audit
+  evidence remains retained, even when its old source history is removed.
+- Daily/monthly analytics must restart from eligible post-cutover observations,
+  not stale cached pre-cutover inputs. A partial new reporting period is not
+  fabricated complete historical coverage. Runtime writers and historical
+  readers must agree on the cutover before a future migration can be executed.
+- Ordinary Node Purge is deliberately narrower: it deletes that Node's links
+  and monitoring data, **not independent Validator history**, even when the
+  purged Node was the final associated Node. Other Nodes using the same
+  Validator keep their data; a selection summary simply excludes the purged
+  Node and continues to deduplicate remaining associations.
+
+The old Registry/explicit-Link refresh and existing migration descriptions
+below remain baseline facts until this target is implemented. They do not
+claim that automatic discovery, historical cleanup or new alert-suppression
+behavior already exists.
+
+## Network coverage (implemented baseline)
 
 - When configured, the `[validator_provider]` section of `server.toml` binds
   each registered Network key to its own PlatScan deployment base URL in a
@@ -19,9 +121,12 @@ to `ValidatorObservation` before it enters the domain or API projections.
   several Networks cannot prove which chain one deployment serves. Each Network
   is therefore bound to a distinct deployment; a registered Network without a
   binding is `not_configured`: the adapter makes no outbound request and the
-  Public projection shows an explicit unconfigured state, never Unknown
-  Activity or Observing. Identical Validator identifiers on different Networks
-  are routed to their own deployments and never share stored data (#154).
+  Public projection's top-level `state` explicitly remains `not_configured`,
+  rather than collapsing the reason into an ordinary unknown/observing result.
+  Its separate legacy `activity` and `activity_state` fields are `unknown`; this
+  distinction is not a current-staking-validity classification. Identical
+  Validator identifiers on different Networks are routed to their own
+  deployments and never share stored data (#154).
 - Each base URL must be an absolute HTTP(S) URL without credentials, query
   strings, fragments, or an invalid/missing host. Deployments requiring
   authentication place an authenticated reverse proxy in front of the
