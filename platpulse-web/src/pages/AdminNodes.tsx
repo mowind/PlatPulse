@@ -1,10 +1,20 @@
 import { ArrowUp, ArrowUpDown, ChevronUp, ChevronRight } from 'lucide-react'
-import { useMemo, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react'
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent,
+  type ReactNode,
+} from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 import {
   AdminApiError,
+  purgeNode,
   updateNodeMetadata,
   useAdminNodeDetail,
+  useAdminNodePurgeImpact,
   useAdminNodes,
 } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
@@ -31,6 +41,7 @@ import { SURFACE_CARD, SURFACE_TOOLBAR } from '../lib/surface'
 import type {
   AdminNodeDetail as AdminNodeDetailDto,
   AdminNodeListItem,
+  NodePurgeResponse,
 } from '../api/generated'
 
 /**
@@ -512,7 +523,38 @@ export function AdminNodeDetail() {
   const { generation, status } = useAuth()
   const query = useAdminNodeDetail(generation, nodeId)
   const csrfToken = status.state === 'authenticated' ? status.csrfToken : ''
+  const [purged, setPurged] = useState<NodePurgeResponse | null>(null)
   const notFound = query.isError && query.error instanceof AdminApiError && query.error.code === 'not_found'
+
+  if (purged) {
+    return (
+      <section className="w-full min-w-0 space-y-4">
+        <div className="space-y-1">
+          <h1 className="text-lg font-semibold">Node permanently deleted</h1>
+          <p className="text-sm text-muted-foreground">
+            {purged.node_id} was permanently deleted at {formatObservedAt(purged.deleted_at)}.{' '}
+            {purged.removed.total_owned_rows} Node-owned rows were removed. The same Node ID
+            will not return; re-monitoring this deployment requires a new locally configured
+            Node ID.
+          </p>
+          <p className="text-sm text-muted-foreground">
+            The remote process was not stopped and local configuration was not changed.
+            Shared Agent/Host/Network data, independent Validator history, and existing
+            Incident evidence remain.
+          </p>
+          <p className="text-sm">
+            <Link
+              autoFocus
+              className="inline-flex min-h-11 min-w-11 items-center font-medium underline-offset-4 hover:underline"
+              to="/admin/nodes"
+            >
+              Back to All Nodes
+            </Link>
+          </p>
+        </div>
+      </section>
+    )
+  }
 
   if (notFound) {
     return (
@@ -584,6 +626,7 @@ export function AdminNodeDetail() {
           <HealthPanel node={query.data} />
           <IdentityPanel node={query.data} />
           <RpcDiagnosticsPanel node={query.data} />
+          <PurgePanel node={query.data} csrfToken={csrfToken} onPurged={setPurged} />
         </>
       )}
     </section>
@@ -891,6 +934,156 @@ function IdentityPanel({ node }: { node: AdminNodeDetailDto }) {
           </DetailItem>
         </DetailList>
       </div>
+    </CardX>
+  )
+
+
+/** Owner-only permanent Node Purge (design §15.3, webui.md §15.2): explicit,
+ * irreversible deletion with a Server-computed impact preview. Nothing is
+ * optimistically removed; the success view is driven by the authoritative
+ * Server response, and a failed mutation leaves the Node actionable. */
+function PurgePanel({
+  node,
+  csrfToken,
+  onPurged,
+}: {
+  node: AdminNodeDetailDto
+  csrfToken: string
+  onPurged: (result: NodePurgeResponse) => void
+}) {
+  const { generation } = useAuth()
+  const [confirming, setConfirming] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [restoreFocus, setRestoreFocus] = useState(false)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const impact = useAdminNodePurgeImpact(generation, node.node_id, confirming)
+
+  // Cancelling the confirmation restores focus to the safe trigger, so a
+  // keyboard user is never dropped onto the document body.
+  useEffect(() => {
+    if (!confirming && restoreFocus) {
+      triggerRef.current?.focus()
+      setRestoreFocus(false)
+    }
+  }, [confirming, restoreFocus])
+
+  async function confirm() {
+    setBusy(true)
+    setError(null)
+    try {
+      onPurged(await purgeNode(node.node_id, node.node_id, csrfToken))
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Unable to delete the Node')
+      setBusy(false)
+    }
+  }
+
+  return (
+    <CardX
+      size="medium"
+      className={CARD_SURFACE}
+      header={<h2 className="text-lg font-semibold">Permanent deletion</h2>}
+    >
+      <p className="text-sm text-muted-foreground">
+        Permanently delete this Node to remove it from Home and current monitoring and to
+        delete its observations, monitoring history, and Node Validator Links. This cannot be
+        undone, and the same Node ID will not return; re-monitoring this deployment requires a
+        new locally configured Node ID.
+      </p>
+      <p className="mt-2 text-sm text-muted-foreground">
+        The remote Agent/Node process is not stopped or uninstalled, and local configuration is
+        not changed, so you must still handle the Host locally. Shared Agent/Host/Network data,
+        independent Validator history, and existing Incident evidence are preserved. This is
+        not retirement or a visibility change.
+      </p>
+      {!confirming && (
+        <div className="mt-3">
+          <Button
+            ref={triggerRef}
+            variant="destructive"
+            onClick={() => setConfirming(true)}
+          >
+            Permanently delete Node
+          </Button>
+        </div>
+      )}
+      {confirming && (
+        <div
+          className="mt-3 space-y-3 rounded-md border border-destructive/40 bg-destructive/5 p-3"
+          role="alertdialog"
+          aria-label="Confirm permanent Node deletion"
+        >
+          <p className="text-sm font-medium">
+            Confirm permanent deletion of {node.display_name ?? node.node_id}?
+          </p>
+          {!impact.data && impact.isPending && (
+            <p role="status" className="text-sm text-muted-foreground">
+              Measuring the deletion scope…
+            </p>
+          )}
+          {impact.isError && (
+            <div className="text-sm" role="alert">
+              <span className="text-destructive">
+                {impact.error instanceof Error
+                  ? impact.error.message
+                  : 'Unable to measure the deletion scope'}
+              </span>{' '}
+              <Button variant="link" size="sm" onClick={() => void impact.refetch()}>
+                Try again
+              </Button>
+            </div>
+          )}
+          {impact.data && (
+            <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
+              <li>{impact.data.counts.total_owned_rows} Node-owned rows will be deleted.</li>
+              <li>
+                {impact.data.counts.block_summaries} Block Summaries,{' '}
+                {impact.data.counts.peer_presence_intervals} Peer presence intervals, and{' '}
+                {impact.data.counts.peer_aggregate_5m +
+                  impact.data.counts.peer_aggregate_5m_countries +
+                  impact.data.counts.peer_aggregate_1h +
+                  impact.data.counts.peer_aggregate_1h_countries}{' '}
+                Peer aggregates will be deleted.
+              </li>
+              <li>
+                {impact.data.counts.validator_links} Node Validator Link(s) and{' '}
+                {impact.data.counts.transfers} Transfer record(s) will be deleted.
+              </li>
+              <li>
+                Independent Validator history, shared Agent/Host/Network data, and Alert
+                Incident evidence are not deleted.
+              </li>
+            </ul>
+          )}
+          {error && (
+            <p className="text-sm text-destructive" role="alert">
+              {error}
+            </p>
+          )}
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="destructive"
+              disabled={busy || !impact.data}
+              onClick={() => void confirm()}
+            >
+              {busy ? 'Deleting…' : 'Confirm permanent deletion'}
+            </Button>
+            <Button
+              variant="outline"
+              autoFocus
+              disabled={busy}
+              onClick={() => {
+                setConfirming(false)
+                setError(null)
+                setRestoreFocus(true)
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
     </CardX>
   )
 }

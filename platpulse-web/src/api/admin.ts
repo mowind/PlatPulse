@@ -32,6 +32,7 @@ import {
   adminNodeDetail,
   adminNodePeerChurn,
   adminNodePeerHistory,
+  adminNodePurgePreview,
   adminNodeTransfers,
   adminNodes,
   adminRecoveryToken,
@@ -62,6 +63,7 @@ import {
   deleteRuleOverride as deleteRuleOverrideApi,
   endValidatorLink,
   previewAlertRule as previewAlertRuleApi,
+  purgeNode as purgeNodeApi,
   updateAlertRule as updateAlertRuleApi,
   upsertRuleOverride as upsertRuleOverrideApi,
   createNodeTransfer as createNodeTransferApi,
@@ -150,6 +152,7 @@ import {
   type PeerChurnDiagnostic,
   type AdminPeerHistory,
   type AdminNodeListItem,
+  type AdminNodePurgeImpact,
   type AdminOverview,
   type AgentAuditResponse,
   type AgentDiagnostic,
@@ -172,6 +175,7 @@ import {
   type NetworkUpdateRequest,
   type NodeMetadataRequest,
   type NodeMetadataResponse,
+  type NodePurgeResponse,
   type NodeTransfer,
   type NodeTransferCreateRequest,
   type NodeTransferMutationResponse,
@@ -212,6 +216,7 @@ const adminKeys = {
   agentAudit: (agentId: string) => ['admin', 'agents', agentId, 'audit'] as const,
   nodes: ['admin', 'nodes'] as const,
   nodeDetail: (nodeId: string) => ['admin', 'nodes', nodeId] as const,
+  nodePurge: (nodeId: string) => ['admin', 'nodes', nodeId, 'purge'] as const,
   nodePeerChurn: (nodeId: string) => ['admin', 'nodes', nodeId, 'peer-churn'] as const,
   nodePeerHistory: (nodeId: string) => ['admin', 'nodes', nodeId, 'peer-history'] as const,
   nodeTransfers: (nodeId: string) => ['admin', 'nodes', nodeId, 'transfers'] as const,
@@ -783,6 +788,56 @@ export async function updateNodeMetadata(
         headers: { 'X-CSRF-Token': csrfToken },
       }),
     'Unable to update the Node display name',
+  )
+  void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+  return response
+}
+
+/** Owner-only Node Purge impact preview. Fetched only while a confirmation is
+ * being prepared, so an idle Node Detail page never measures a destructive
+ * scope. The query always refetches: a preview describes one exact
+ * confirmation, never a reusable scope. */
+export async function fetchAdminNodePurgeImpact(
+  nodeId: string,
+  signal?: AbortSignal,
+): Promise<AdminNodePurgeImpact> {
+  return requestAdmin(
+    () => adminNodePurgePreview({ path: { node_id: nodeId }, signal }),
+    'Unable to load the Node deletion impact',
+  )
+}
+
+export function useAdminNodePurgeImpact(
+  generation: number,
+  nodeId: string,
+  enabled: boolean,
+) {
+  return useQuery({
+    queryKey: [...adminKeys.nodePurge(nodeId), generation],
+    queryFn: ({ signal }) => fetchAdminNodePurgeImpact(nodeId, signal),
+    enabled: enabled && nodeId.length > 0,
+    staleTime: 0,
+    gcTime: 0,
+  })
+}
+
+/** Owner-confirmed permanent Node Purge. The Server has already committed the
+ * deletion when this resolves; the Admin cache is invalidated so every list,
+ * overview, and summary refetches the authoritative state instead of the
+ * browser optimistically dropping a row. */
+export async function purgeNode(
+  nodeId: string,
+  confirmNodeId: string,
+  csrfToken: string,
+): Promise<NodePurgeResponse> {
+  const response = await requestAdmin(
+    () =>
+      purgeNodeApi({
+        path: { node_id: nodeId },
+        body: { confirmNodeId },
+        headers: { 'X-CSRF-Token': csrfToken },
+      }),
+    'Unable to delete the Node',
   )
   void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
   return response

@@ -219,15 +219,17 @@ function jsonResponse(body: unknown, status: number): Response {
 
 const TEST_ORIGIN = 'http://platpulse.test'
 
-function mockFetch(routes: Record<string, () => Response | Promise<Response>>) {
+function mockFetch(
+  routes: Record<string, (request: Request) => Response | Promise<Response>>,
+) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = input instanceof Request ? input : new Request(String(input), init)
     const url = request.url.replace(TEST_ORIGIN, '')
     for (const [pattern, handler] of Object.entries(routes)) {
       if (pattern.endsWith('*')) {
-        if (url.startsWith(pattern.slice(0, -1))) return handler()
+        if (url.startsWith(pattern.slice(0, -1))) return handler(request)
       } else if (url === pattern) {
-        return handler()
+        return handler(request)
       }
     }
     return jsonResponse({ error: { code: 'not_found' } }, 404)
@@ -453,5 +455,124 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
 
     expect(await screen.findByText('Node unavailable')).toBeTruthy()
     expect(screen.getByText('This Node is no longer available.')).toBeTruthy()
+  })
+
+  it('offers an explicit, irreversible permanent deletion with the Server-computed scope', async () => {
+    const purgeCalls: Array<{ method: string; body: string }> = []
+    const impact = {
+      target: {
+        node_id: NODE_A.node_id,
+        agent_id: NODE_A.agent_id,
+        network_key: NODE_A.network_key,
+        network_display_name: NODE_A.network_display_name,
+        display_name: NODE_A.display_name,
+        lifecycle: 'active',
+        lifecycle_guidance: NODE_A.lifecycle_guidance,
+        visibility: 'public',
+        inventory_revision: 1,
+        rpc_endpoint: NODE_A.rpc_endpoint,
+        first_seen_at: NODE_A.first_seen_at,
+        updated_at: NODE_A.updated_at,
+      },
+      counts: {
+        component_statuses: 3,
+        process_observations: 1,
+        data_directory_observations: 1,
+        chain_observations: 1,
+        rpc_namespaces: 2,
+        rpc_methods: 1,
+        current_peers: 4,
+        current_peer_capabilities: 4,
+        peer_presence_intervals: 2,
+        peer_aggregate_5m: 2,
+        peer_aggregate_5m_countries: 2,
+        peer_aggregate_1h: 1,
+        peer_aggregate_1h_countries: 1,
+        block_summaries: 7,
+        block_history_states: 1,
+        block_coverage_intervals: 1,
+        block_identity_window: 1,
+        block_history_gaps: 0,
+        chain_divergence_observations: 0,
+        observed_network_heads: 1,
+        metric_samples: 5,
+        validator_links: 1,
+        transfers: 1,
+        total_owned_rows: 39,
+      },
+    }
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
+        jsonResponse(NODE_A_DETAIL, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014/purge': async (request) => {
+        purgeCalls.push({ method: request.method, body: await request.text() })
+        if (request.method === 'POST') {
+          return jsonResponse(
+            {
+              node_id: NODE_A.node_id,
+              deleted_at: '2026-08-12T09:00:00Z',
+              removed: impact.counts,
+            },
+            200,
+          )
+        }
+        return jsonResponse(impact, 200)
+      },
+    })
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+
+    await screen.findByRole('heading', { level: 1, name: /Node A/ })
+    fireEvent.click(screen.getByRole('button', { name: 'Permanently delete Node' }))
+
+    // The confirmation explains the irreversible consequences before the
+    // mutation is available.
+    expect(
+      await screen.findByText(/Confirm permanent deletion of Node A?/),
+    ).toBeTruthy()
+    expect(screen.getByText(/This cannot be undone/)).toBeTruthy()
+    expect(screen.getByText(/requires a new locally configured Node ID/)).toBeTruthy()
+    expect(screen.getByText(/process is not stopped or uninstalled/)).toBeTruthy()
+    expect(screen.getByText(/local configuration is not changed/)).toBeTruthy()
+    expect(await screen.findByText(/39 Node-owned rows will be deleted/)).toBeTruthy()
+    expect(screen.getByText(/7 Block Summaries/)).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm permanent deletion' }))
+    expect(await screen.findByText('Node permanently deleted')).toBeTruthy()
+    expect(screen.getByText(/will not return/)).toBeTruthy()
+    expect(screen.getByRole('link', { name: 'Back to All Nodes' })).toBeTruthy()
+    const mutation = purgeCalls.find((call) => call.method === 'POST')
+    expect(mutation?.body).toContain(NODE_A.node_id)
+  })
+
+  it('keeps a failed permanent deletion actionable without a fake success', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
+        jsonResponse(NODE_A_DETAIL, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014/purge': (request) =>
+        request.method === 'POST'
+          ? jsonResponse(
+              { error: { code: 'unavailable', message: 'server database is unavailable' } },
+              503,
+            )
+          : jsonResponse({ target: {}, counts: { total_owned_rows: 0 } }, 200),
+    })
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+
+    await screen.findByRole('heading', { level: 1, name: /Node A/ })
+    fireEvent.click(screen.getByRole('button', { name: 'Permanently delete Node' }))
+    // Wait for the Server-computed scope before the destructive action is
+    // enabled.
+    await screen.findByText(/Node-owned rows will be deleted/)
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm permanent deletion' }))
+
+    expect(await screen.findByText('server database is unavailable')).toBeTruthy()
+    expect(screen.queryByText('Node permanently deleted')).toBeNull()
+    // The confirmation stays actionable so the Owner can retry or cancel.
+    expect(
+      screen.getByRole('button', { name: 'Confirm permanent deletion' }),
+    ).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeTruthy()
   })
 })

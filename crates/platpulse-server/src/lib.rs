@@ -29,6 +29,7 @@ pub mod http;
 pub mod init;
 pub mod metrics;
 pub mod network;
+pub mod node_purge;
 pub mod notifications;
 pub mod openapi;
 pub mod operations;

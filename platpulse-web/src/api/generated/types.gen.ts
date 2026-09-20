@@ -185,6 +185,70 @@ export type AdminNodeListItem = {
     visibility: string;
 };
 
+/**
+ * Server-computed scope of a Node Purge. These are counts of Node-owned rows
+ * only; shared Agent/Host/Network/Validator data is never included.
+ */
+export type AdminNodePurgeCounts = {
+    block_coverage_intervals: number;
+    block_history_gaps: number;
+    block_history_states: number;
+    block_identity_window: number;
+    block_summaries: number;
+    chain_divergence_observations: number;
+    chain_observations: number;
+    component_statuses: number;
+    current_peer_capabilities: number;
+    current_peers: number;
+    data_directory_observations: number;
+    metric_samples: number;
+    observed_network_heads: number;
+    peer_aggregate_1h: number;
+    peer_aggregate_1h_countries: number;
+    peer_aggregate_5m: number;
+    peer_aggregate_5m_countries: number;
+    peer_presence_intervals: number;
+    process_observations: number;
+    rpc_methods: number;
+    rpc_namespaces: number;
+    total_owned_rows: number;
+    transfers: number;
+    validator_links: number;
+};
+
+/**
+ * Owner-only impact preview returned before a Purge. It reuses the same
+ * Server-side measurement the mutation performs, so a confirmation cannot
+ * describe a different scope than the one deleted.
+ */
+export type AdminNodePurgeImpact = {
+    counts: AdminNodePurgeCounts;
+    target: AdminNodePurgeTarget;
+};
+
+/**
+ * The exact Node an Owner is about to delete, with Server-owned metadata and
+ * the latest Inventory lifecycle. It is deliberately separate from the
+ * purge counts so the confirmation shows identity and impact distinctly.
+ */
+export type AdminNodePurgeTarget = {
+    agent_id: string;
+    display_name?: string | null;
+    first_seen_at: string;
+    inventory_revision: number;
+    lifecycle: string;
+    lifecycle_guidance: string;
+    network_display_name: string;
+    network_key: string;
+    node_id: string;
+    /**
+     * Redacted Agent-declared endpoint.
+     */
+    rpc_endpoint: string;
+    updated_at: string;
+    visibility: string;
+};
+
 export type AdminOverview = {
     /**
      * Server-owned attention queue. The WebUI presents these items and
@@ -1093,6 +1157,26 @@ export type NodeMetadataRequest = {
 export type NodeMetadataResponse = {
     displayName: string;
     nodeId: string;
+};
+
+/**
+ * Owner-confirmed Node Purge request. The echoed Node ID is friction and a
+ * scope re-check, never the authorization boundary; the Server still
+ * re-measures the impact inside the mutation transaction.
+ */
+export type NodePurgeRequest = {
+    confirmNodeId: string;
+};
+
+/**
+ * Authoritative completion of a Node Purge. The response is only produced
+ * after the transaction that removed the rows, recorded the deletion
+ * identity, and appended the Audit Event has committed.
+ */
+export type NodePurgeResponse = {
+    deleted_at: string;
+    node_id: string;
+    removed: AdminNodePurgeCounts;
 };
 
 export type NodeSummary = {
@@ -3509,6 +3593,56 @@ export type AdminNodePeerHistoryResponses = {
 };
 
 export type AdminNodePeerHistoryResponse = AdminNodePeerHistoryResponses[keyof AdminNodePeerHistoryResponses];
+
+export type AdminNodePurgePreviewData = {
+    body?: never;
+    path: {
+        /**
+         * Node ID
+         */
+        node_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/nodes/{node_id}/purge';
+};
+
+export type AdminNodePurgePreviewErrors = {
+    404: ApiErrorBody;
+};
+
+export type AdminNodePurgePreviewError = AdminNodePurgePreviewErrors[keyof AdminNodePurgePreviewErrors];
+
+export type AdminNodePurgePreviewResponses = {
+    200: AdminNodePurgeImpact;
+};
+
+export type AdminNodePurgePreviewResponse = AdminNodePurgePreviewResponses[keyof AdminNodePurgePreviewResponses];
+
+export type PurgeNodeData = {
+    body: NodePurgeRequest;
+    path: {
+        /**
+         * Node ID
+         */
+        node_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/nodes/{node_id}/purge';
+};
+
+export type PurgeNodeErrors = {
+    400: ApiErrorBody;
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+};
+
+export type PurgeNodeError = PurgeNodeErrors[keyof PurgeNodeErrors];
+
+export type PurgeNodeResponses = {
+    200: NodePurgeResponse;
+};
+
+export type PurgeNodeResponse = PurgeNodeResponses[keyof PurgeNodeResponses];
 
 export type AdminNodeTransfersData = {
     body?: never;

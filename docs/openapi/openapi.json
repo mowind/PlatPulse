@@ -2645,6 +2645,118 @@
         }
       }
     },
+    "/api/admin/v1/nodes/{node_id}/purge": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Owner-only impact preview for an explicit, permanent Node Purge. Read-only:\nit never mutates, and a missing Node returns the same non-leaking 404 as\nevery other Admin Node read.",
+        "operationId": "admin_node_purge_preview",
+        "parameters": [
+          {
+            "name": "node_id",
+            "in": "path",
+            "description": "Node ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminNodePurgeImpact"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Owner-only permanent Node Purge. Re-validates the browser trust boundary,\nre-measures the impact inside the mutation transaction, removes the Node\nand its owned data, persists the minimal deletion identity, appends the\nAudit Event, and only then reports completion. The remote Agent process is\nnever contacted.",
+        "operationId": "purge_node",
+        "parameters": [
+          {
+            "name": "node_id",
+            "in": "path",
+            "description": "Node ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NodePurgeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NodePurgeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/v1/nodes/{node_id}/transfers": {
       "get": {
         "tags": [
@@ -6665,6 +6777,210 @@
           }
         }
       },
+      "AdminNodePurgeCounts": {
+        "type": "object",
+        "description": "Server-computed scope of a Node Purge. These are counts of Node-owned rows\nonly; shared Agent/Host/Network/Validator data is never included.",
+        "required": [
+          "component_statuses",
+          "process_observations",
+          "data_directory_observations",
+          "chain_observations",
+          "rpc_namespaces",
+          "rpc_methods",
+          "current_peers",
+          "current_peer_capabilities",
+          "peer_presence_intervals",
+          "peer_aggregate_5m",
+          "peer_aggregate_5m_countries",
+          "peer_aggregate_1h",
+          "peer_aggregate_1h_countries",
+          "block_summaries",
+          "block_history_states",
+          "block_coverage_intervals",
+          "block_identity_window",
+          "block_history_gaps",
+          "chain_divergence_observations",
+          "observed_network_heads",
+          "metric_samples",
+          "validator_links",
+          "transfers",
+          "total_owned_rows"
+        ],
+        "properties": {
+          "block_coverage_intervals": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "block_history_gaps": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "block_history_states": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "block_identity_window": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "block_summaries": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "chain_divergence_observations": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "chain_observations": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "component_statuses": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "current_peer_capabilities": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "current_peers": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "data_directory_observations": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "metric_samples": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "observed_network_heads": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "peer_aggregate_1h": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "peer_aggregate_1h_countries": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "peer_aggregate_5m": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "peer_aggregate_5m_countries": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "peer_presence_intervals": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "process_observations": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "rpc_methods": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "rpc_namespaces": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total_owned_rows": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "transfers": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "validator_links": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "AdminNodePurgeImpact": {
+        "type": "object",
+        "description": "Owner-only impact preview returned before a Purge. It reuses the same\nServer-side measurement the mutation performs, so a confirmation cannot\ndescribe a different scope than the one deleted.",
+        "required": [
+          "target",
+          "counts"
+        ],
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/AdminNodePurgeCounts"
+          },
+          "target": {
+            "$ref": "#/components/schemas/AdminNodePurgeTarget"
+          }
+        }
+      },
+      "AdminNodePurgeTarget": {
+        "type": "object",
+        "description": "The exact Node an Owner is about to delete, with Server-owned metadata and\nthe latest Inventory lifecycle. It is deliberately separate from the\npurge counts so the confirmation shows identity and impact distinctly.",
+        "required": [
+          "node_id",
+          "agent_id",
+          "network_key",
+          "network_display_name",
+          "lifecycle",
+          "lifecycle_guidance",
+          "visibility",
+          "inventory_revision",
+          "rpc_endpoint",
+          "first_seen_at",
+          "updated_at"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "first_seen_at": {
+            "type": "string"
+          },
+          "inventory_revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "lifecycle": {
+            "type": "string"
+          },
+          "lifecycle_guidance": {
+            "type": "string"
+          },
+          "network_display_name": {
+            "type": "string"
+          },
+          "network_key": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "rpc_endpoint": {
+            "type": "string",
+            "description": "Redacted Agent-declared endpoint."
+          },
+          "updated_at": {
+            "type": "string"
+          },
+          "visibility": {
+            "type": "string"
+          }
+        }
+      },
       "AdminOverview": {
         "type": "object",
         "required": [
@@ -9921,6 +10237,38 @@
           },
           "nodeId": {
             "type": "string"
+          }
+        }
+      },
+      "NodePurgeRequest": {
+        "type": "object",
+        "description": "Owner-confirmed Node Purge request. The echoed Node ID is friction and a\nscope re-check, never the authorization boundary; the Server still\nre-measures the impact inside the mutation transaction.",
+        "required": [
+          "confirmNodeId"
+        ],
+        "properties": {
+          "confirmNodeId": {
+            "type": "string"
+          }
+        }
+      },
+      "NodePurgeResponse": {
+        "type": "object",
+        "description": "Authoritative completion of a Node Purge. The response is only produced\nafter the transaction that removed the rows, recorded the deletion\nidentity, and appended the Audit Event has committed.",
+        "required": [
+          "node_id",
+          "deleted_at",
+          "removed"
+        ],
+        "properties": {
+          "deleted_at": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "removed": {
+            "$ref": "#/components/schemas/AdminNodePurgeCounts"
           }
         }
       },
