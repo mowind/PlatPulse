@@ -109,6 +109,18 @@ node_f = "0195f2a1-0019-4019-8019-000000000019"
 node_g = "0195f2a1-0020-4020-8020-000000000020"
 target_agent = "0195f2a1-0021-4021-8021-000000000021"
 
+# Automatic Validator identity (#173): a linked Node observes the full 64-byte
+# P2P public key in its enode, and the Server derives the Node Validator Link
+# from that validated chain identity instead of a manual binding. The keys
+# below are production-shaped 0x + 128 hex identifiers, so identity discovery
+# identifies exactly the Validator the metric fixtures describe.
+validator_a_key = "0x" + "a" * 128
+
+
+def enode_for(key):
+    return "enode://" + key[2:] + "@127.0.0.1:30303"
+
+
 with sqlite3.connect(path) as db:
     # Geo starts Disabled even though an MMDB is configured, so the disabled
     # surface stays covered and the Settings e2e is the only thing that turns
@@ -164,8 +176,8 @@ with sqlite3.connect(path) as db:
     # Node A: healthy and current (RPC, sync, and consensus all ok and fresh).
     # The observed Network identity matches the Registry tuple exactly.
     db.execute(
-        "INSERT INTO current_node_chain_observations (node_id, rpc_client_version, syncing, current_block, highest_block, consensus_epoch, consensus_view_number, consensus_validator, consensus_highest_qc_block, consensus_highest_lock_block, consensus_highest_commit_block, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, updated_at) VALUES (?, 'platon/1.5.1', 0, 12842019, 12842019, 42, 7, 1, 12842019, 12842018, 12842019, ?, 210425, 210425, 'lat', ?)",
-        (node_a, network_genesis, fresh),
+        "INSERT INTO current_node_chain_observations (node_id, rpc_client_version, syncing, current_block, highest_block, consensus_epoch, consensus_view_number, consensus_validator, consensus_highest_qc_block, consensus_highest_lock_block, consensus_highest_commit_block, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, enode, updated_at) VALUES (?, 'platon/1.5.1', 0, 12842019, 12842019, 42, 7, 1, 12842019, 12842018, 12842019, ?, 210425, 210425, 'lat', ?, ?)",
+        (node_a, network_genesis, enode_for(validator_a_key), fresh),
     )
     for component in ("rpc", "sync", "consensus", "network_identity", "process", "datadirectorysizebytes", "datadirectorycapacitybytes"):
         db.execute(
@@ -488,21 +500,23 @@ with sqlite3.connect(path) as db:
     )
 
     # Validator analytics fixture (issue #64): one public Validator linked to
-    # Node A with a current success insight and two calendar snapshots plus
-    # monthly aggregates. This lets the Playwright suite exercise the Home and
-    # Admin analytics views without touching the live Explorer provider.
+    # Node A by automatic identity (#173) — Node A observes the matching P2P
+    # public key in its enode, so the Link is an automatic model row with no
+    # manual role. A current success insight and two calendar snapshots plus
+    # monthly aggregates let the Playwright suite exercise the Home and Admin
+    # analytics views without touching the live Explorer provider.
     validator_id = "0195f2a1-0030-4030-8030-000000000030"
     validator_link_id = "0195f2a1-0031-4031-8031-000000000031"
     db.execute(
-        "INSERT OR IGNORE INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES (?, ?, '0xvalidator', 'E2E Validator', ?, ?)",
-        (validator_id, network_key, now, now),
+        "INSERT OR IGNORE INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES (?, ?, ?, 'E2E Validator', ?, ?)",
+        (validator_id, network_key, validator_a_key, now, now),
     )
     db.execute(
-        "INSERT OR IGNORE INTO node_validator_links (link_id, node_id, validator_id, role, valid_from, valid_until, created_at, updated_at) VALUES (?, ?, ?, 'primary', '2026-01-01T00:00:00Z', NULL, ?, ?)",
+        "INSERT OR IGNORE INTO node_validator_links (link_id, node_id, validator_id, role, origin, valid_from, valid_until, created_at, updated_at) VALUES (?, ?, ?, NULL, 'automatic', '2026-01-01T00:00:00Z', NULL, ?, ?)",
         (validator_link_id, node_a, validator_id, now, now),
     )
     db.execute(
-        "INSERT OR IGNORE INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegation_reward_percentage, delegator_count, epoch, block_count, expected_block_count, gen_blocks_rate, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, 'explorer', 'success', NULL, ?, ?, ?, ?, 2, '1000', '10', '0.05', '20', 8, 42, 100, 110, '75.5', 'normal', 'normal', NULL, NULL, 0, NULL, NULL, NULL, 'obs-1', ?)",
+        "INSERT OR IGNORE INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegation_reward_percentage, delegator_count, epoch, block_count, expected_block_count, gen_blocks_rate, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, 'explorer', 'success', NULL, ?, 'producing', ?, ?, ?, 2, '1000', '10', '0.05', '20', 8, 42, 100, 110, '75.5', 'normal', 'normal', NULL, NULL, 0, NULL, NULL, NULL, 'obs-1', ?)",
         (validator_id, fresh, fresh, fresh, fresh, fresh),
     )
     for day, month, sample_at in [
@@ -560,10 +574,10 @@ with sqlite3.connect(path) as db:
             (node_id, convergence_agent_id, convergence_network_key, name, f"ws://127.0.0.1:{port}", now, now),
         )
 
-    def seed_chain(node_id, head, validator, qc, lock, commit, observed_at):
+    def seed_chain(node_id, head, validator, qc, lock, commit, observed_at, enode=None):
         db.execute(
-            "INSERT OR IGNORE INTO current_node_chain_observations (node_id, rpc_client_version, syncing, current_block, highest_block, consensus_epoch, consensus_view_number, consensus_validator, consensus_highest_qc_block, consensus_highest_lock_block, consensus_highest_commit_block, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, updated_at) VALUES (?, 'platon/1.5.1', 0, ?, ?, 43, 7, ?, ?, ?, ?, ?, 210425, 210425, 'lat', ?)",
-            (node_id, head, head, 1 if validator else 0, qc, lock, commit, convergence_genesis, observed_at),
+            "INSERT OR IGNORE INTO current_node_chain_observations (node_id, rpc_client_version, syncing, current_block, highest_block, consensus_epoch, consensus_view_number, consensus_validator, consensus_highest_qc_block, consensus_highest_lock_block, consensus_highest_commit_block, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, enode, updated_at) VALUES (?, 'platon/1.5.1', 0, ?, ?, 43, 7, ?, ?, ?, ?, ?, 210425, 210425, 'lat', ?, ?)",
+            (node_id, head, head, 1 if validator else 0, qc, lock, commit, convergence_genesis, enode, observed_at),
         )
 
     def seed_components(node_id, received_at, value_received_at, sync_received_at=None, consensus_received_at=None):
@@ -594,7 +608,7 @@ with sqlite3.connect(path) as db:
     node_h_rpc_receipt = (datetime.now(timezone.utc) - timedelta(seconds=80)).strftime("%Y-%m-%dT%H:%M:%SZ")
     node_h_sync_receipt = (datetime.now(timezone.utc) - timedelta(seconds=40)).strftime("%Y-%m-%dT%H:%M:%SZ")
     node_h_consensus_receipt = (datetime.now(timezone.utc) - timedelta(seconds=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    seed_chain(node_h, 12842025, True, 12842025, 12842024, 12842025, fresh)
+    seed_chain(node_h, 12842025, True, 12842025, 12842024, 12842025, fresh, enode_for("0x" + "b" * 128))
     seed_components(node_h, node_h_rpc_receipt, fresh, node_h_sync_receipt, node_h_consensus_receipt)
     seed_summary(node_h, 12842025, 21, convergence_genesis, fresh)
     for peer_id, direction in (("home-h-1", "inbound"), ("home-h-2", "outbound"), ("home-h-3", "outbound")):
@@ -619,7 +633,7 @@ with sqlite3.connect(path) as db:
     )
 
     # Node M: effective Link with an authoritative no-live-validator result.
-    seed_chain(node_m, 12842022, True, 12842022, 12842021, 12842022, fresh)
+    seed_chain(node_m, 12842022, True, 12842022, 12842021, 12842022, fresh, enode_for("0x" + "c" * 128))
     seed_components(node_m, fresh, fresh)
     seed_summary(node_m, 12842022, 9, convergence_genesis, fresh)
     for peer_id, direction in (("home-m-1", "inbound"), ("home-m-2", "outbound")):
@@ -630,7 +644,7 @@ with sqlite3.connect(path) as db:
 
     # Node N: Provider error retains the last-good Activity and must never
     # affect the independent Node Health marker.
-    seed_chain(node_n, 12842021, True, 12842021, 12842020, 12842021, fresh)
+    seed_chain(node_n, 12842021, True, 12842021, 12842020, 12842021, fresh, enode_for("0x" + "d" * 128))
     seed_components(node_n, fresh, fresh)
     db.execute(
         "INSERT OR IGNORE INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, client_name, updated_at) VALUES (?, 'home-n-1', '203.0.113.14', 'inbound', 1, 0, 0, 'platond', ?)",
@@ -653,7 +667,9 @@ with sqlite3.connect(path) as db:
         )
 
     # Validator Activity fixtures (issue #102): one Validator per effective
-    # Link; the identifier is a production-like 128-hex PlatScan node id.
+    # automatic Link (#173) — Nodes H, M, and N each observe the matching
+    # production-like 128-hex PlatScan node id in their enode — covering the
+    # producing, authoritative-empty, and retained-error card states.
     validator_h_id = "0195f2a1-0070-4070-8070-000000000070"
     validator_m_id = "0195f2a1-0071-4071-8071-000000000071"
     validator_n_id = "0195f2a1-0072-4072-8072-000000000072"
@@ -675,7 +691,7 @@ with sqlite3.connect(path) as db:
         (link_n, node_n, validator_n_id),
     ):
         db.execute(
-            "INSERT OR IGNORE INTO node_validator_links (link_id, node_id, validator_id, role, valid_from, valid_until, created_at, updated_at) VALUES (?, ?, ?, 'primary', '2026-01-01T00:00:00Z', NULL, ?, ?)",
+            "INSERT OR IGNORE INTO node_validator_links (link_id, node_id, validator_id, role, origin, valid_from, valid_until, created_at, updated_at) VALUES (?, ?, ?, NULL, 'automatic', '2026-01-01T00:00:00Z', NULL, ?, ?)",
             (link_id, node_id, validator_id, now, now),
         )
     db.execute(

@@ -842,6 +842,12 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
             .as_ref()
             .map(|provider| provider.timezone.clone())
             .unwrap_or_else(|| "UTC".to_owned());
+        // Whether a Provider is configured at all. Discovery still runs for an
+        // unconfigured deployment so an observed chain key establishes its
+        // automatic correspondence. Without a deployment there is no source to
+        // query, so the refresh pass is skipped instead of replacing every
+        // established observation with a blanket NotConfigured result.
+        let provider_configured = config.validator_provider.is_some();
         let provider_state = state.clone();
         worker_handles.push(tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(refresh_seconds));
@@ -867,6 +873,9 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                         "Validator identity discovery deferred: {}",
                         crate::redaction::redact_sensitive(&error.to_string())
                     );
+                }
+                if !provider_configured {
+                    continue;
                 }
                 match crate::validator::refresh_all_with_channels_in_timezone(
                     provider_state.db(),

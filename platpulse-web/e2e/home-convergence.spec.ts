@@ -56,7 +56,10 @@ test.describe('Converged Public Home (issue #102)', () => {
     ).toHaveCount(1)
 
     // Business rows carry full labels; membership is a neutral header role.
-    for (const label of ['Head', 'Txs', 'Peers', 'QC', 'Locked', 'Committed', 'Validator']) {
+    // 'Validator' is that header role badge (asserted below), not a business
+    // row, and the linked-Validator section now also carries an exact
+    // 'Validator' Current Validator Status badge, so it stays out of this loop.
+    for (const label of ['Head', 'Txs', 'Peers', 'QC', 'Locked', 'Committed']) {
       await expect(hCard.getByText(label, { exact: true })).toBeVisible()
     }
     // Every metric is one data-item / value line with the value flush right,

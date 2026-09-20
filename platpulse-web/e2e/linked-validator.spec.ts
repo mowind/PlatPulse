@@ -7,7 +7,7 @@ import { expectNoHorizontalOverflow, loginAs } from './helpers'
  * block count, gross cumulative rewards, Network-scoped PlatScan rank,
  * Server-computed production rate, PlatScan's own 24-hour rate, and effective
  * delegation reward share are visible on both Node views — the Home Node card
- * and Node detail — with identity, link role, and freshness, and they never
+ * and Node detail — with identity, Current Validator Status, and freshness, and they never
  * overflow the fixed viewports. The rewards value is the source's gross
  * cumulative reward, not the operator's net earnings; the two rates are
  * distinguishable by source, and the cumulative rate is displayed to two
@@ -64,7 +64,7 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
   test('shows cumulative blocks, rewards, and both rates on the Home card and Node detail', async ({ page }) => {
     await loginAs(page)
 
-    // Home Node card: identity, role, and both cumulative Validator values.
+    // Home Node card: identity, Current Validator Status, and both cumulative Validator values.
     const card = page.getByRole('link', { name: new RegExp(PUBLIC_NODE_NAME) }).first()
     await expect(card).toBeVisible()
     await expect(card.getByText('Linked Validator')).toBeVisible()
@@ -76,7 +76,11 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
     await expect(
       card.getByText('Cumulative rewards', { exact: true }).locator('..').locator('[data-slot="metric-row-value"]'),
     ).toHaveText(LINKED_REWARD)
-    await expect(card.getByText('Primary')).toBeVisible()
+    // The card header carries the consensus role badge too, so scope the
+    // Current Validator Status assertion to the linked-Validator section.
+    await expect(
+      card.locator('[data-slot="linked-validator"]').getByText('Validator', { exact: true }),
+    ).toBeVisible()
     await expect(
       card.getByText('Network rank', { exact: true }).locator('..').locator('[data-slot="metric-row-value"]'),
     ).toHaveText(LINKED_RANK)
@@ -104,7 +108,9 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
     await expect(
       detail.getByText('Cumulative rewards', { exact: true }).locator('..').locator('[data-slot="metric-row-value"]'),
     ).toHaveText(LINKED_REWARD)
-    await expect(detail.getByText('Primary')).toBeVisible()
+    // The detail region is already scoped to the linked Validator, so the
+    // status badge is the only exact Validator text inside it.
+    await expect(detail.getByText('Validator', { exact: true })).toBeVisible()
     await expect(detail.getByText('Last success', { exact: true })).toBeVisible()
     await expect(
       detail.getByText('Network rank', { exact: true }).locator('..').locator('[data-slot="metric-row-value"]'),
