@@ -63,16 +63,23 @@ any historical PlatScan entry:
 | Verifying, insufficient or conflicting evidence that cannot establish validity | Unknown |
 | Lookup failure or incomplete evidence | Last-good status marked stale when available; otherwise Unknown, never a default negative |
 
-**Technical verification pending:** the baseline integer-to-Activity mapping
-below is not by itself a verified mapping to current staking validity. Primary
-source/deployment evidence must establish the required validity predicates,
-including locked/exiting/verifying states and authoritative absence, before the
-new classification is implemented. A bare transport failure, ranking absence
-or the legacy HTTP 404 normalization must not silently become new proof of staking
-absence. Preserve the independently evidenced ranking contract; unranked is not
-synonymous with Not Validator. This synchronization performed no new live
-PlatScan verification and does not extend the scope of the recorded mainnet
-capture.
+**Primary-source verification recorded ([#168][status-evidence]):** the baseline
+integer-to-Activity mapping below is not by itself a verified mapping to current
+staking validity. The required validity predicates — locked/exiting validity,
+completed exit, authoritative absence, and the exclusions for HTTP 404,
+transport failure and ranking absence — are now established from browser-server
+and PlatON-Go source evidence plus a captured mainnet deployment. The source
+shows the `verifying` code is a candidate in a consensus round; because
+[CONTEXT.md](../../CONTEXT.md), the table above and ADR 0005 define verification
+in progress as Unknown, that code stays **Unknown** here, and the
+source-vs-target disagreement is flagged in the evidence note rather than
+silently reclassified. A bare transport failure, ranking absence or the legacy
+HTTP 404 normalization must not silently become new proof of staking absence.
+Preserve the independently evidenced ranking contract; unranked is not
+synonymous with Not Validator. This documentation update did not run a live
+capture beyond the recorded fixtures.
+
+[status-evidence]: ../research/platscan-current-validator-status-evidence.md
 
 ### One-time migration and ordinary Node Purge
 

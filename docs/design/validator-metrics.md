@@ -30,11 +30,14 @@ live query or test rerun is claimed by this documentation synchronization.
   their special state remains visible. Completed exit or authoritative absence
   is Not Validator; verifying or inconclusive evidence is Unknown. Lookup
   failures retain established last-good values as stale, not fresh negatives.
-- **Technical verification pending:** precise PlatScan validity predicates need
-  primary evidence, especially for locked/exiting/verifying and absence. The
-  historical Activity normalization and mainnet capture below do not prove
-  those predicates; the target must not guess validity from status labels,
-  ranking absence or a transport error.
+- **Technical verification recorded ([#168](../research/platscan-current-validator-status-evidence.md)):**
+  the precise PlatScan validity predicates — including locked/exiting validity,
+  authoritative absence, and the exclusions for HTTP 404, transport failure and
+  ranking absence — are established from browser-server and PlatON-Go source
+  evidence plus a captured mainnet deployment. The historical Activity
+  normalization and mainnet capture below still do not prove those predicates;
+  the target must not guess validity from status labels, ranking absence or a
+  transport error.
 - An observed key change closes the old association interval and identifies the
   new Validator. Node monitoring history stays intact; never merge the two
   Validators' cumulative metrics or histories. Old manual links are not a
