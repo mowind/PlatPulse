@@ -4,8 +4,8 @@ import { E2E_PASSWORD, expectFocusedElementHasVisibleFocus, expectNoHorizontalOv
 /**
  * SCN-THEME-LIFECYCLE (webui.md §11.1 "Theme behavior"): the production
  * Auto → Light → Dark lifecycle, persistence, pre-mount first paint, and
- * readability of Login, Home, Admin, Network Overview, and the public Node
- * Detail in both themes, plus the public card feedback (issue #147). The seam
+ * readability of Login, Home, Admin, and the public Node Detail in both
+ * themes, plus the public card feedback (issue #147). The seam
  * is the real routed application served by e2e/start-server.sh.
  */
 
@@ -313,7 +313,7 @@ test('respects reduced motion while switching themes', async ({ page }) => {
   await expectNoHorizontalOverflow(page)
 })
 
-test('keeps the public Network and Node Detail readable in both themes', async ({ page }) => {
+test('keeps Home and the public Node Detail readable in both themes', async ({ page }) => {
   await loginAs(page)
 
   // Public Node Detail in Light: the hero metrics and the six chart cards
@@ -335,11 +335,14 @@ test('keeps the public Network and Node Detail readable in both themes', async (
   await expect(page.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeVisible()
   await expectNoHorizontalOverflow(page)
 
-  // Network Overview keeps its Peer/Geo modules and readable copy in Dark.
-  await page.getByRole('link', { name: /platon-e2e/ }).click()
-  await expect(page.getByRole('heading', { level: 1 })).toBeVisible({ timeout: 15_000 })
-  await expect(page.getByRole('region', { name: 'Peer insight' })).toBeVisible()
-  await expectReadable(page, page.getByRole('heading', { level: 1 }).first())
+  // The Node Detail breadcrumb is now "All Networks" and returns Home; the
+  // deleted Network overview route cannot render, and Home stays readable in
+  // Dark.
+  const allNetworks = page.getByRole('link', { name: 'All Networks', exact: true })
+  await expect(allNetworks).toHaveAttribute('href', '/')
+  await allNetworks.click()
+  await expect(page.getByRole('region', { name: 'Home' })).toBeVisible({ timeout: 15_000 })
+  await expectReadable(page, page.getByRole('region', { name: 'Home' }))
   await expectNoHorizontalOverflow(page)
 })
 

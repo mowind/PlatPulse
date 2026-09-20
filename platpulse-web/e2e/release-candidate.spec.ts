@@ -39,19 +39,19 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expect(page.getByText('Node D (retired)', { exact: true })).toHaveCount(0)
   })
 
-  test('Public Network header separates live transport from observation status', async ({ page }, testInfo) => {
+  test('a deleted Network deep link redirects Home while the Admin action stays icon-only', async ({ page }, testInfo) => {
     await loginAs(page)
+    // The Network overview route is gone: a deep link replaces itself with
+    // Home, so the deleted page can never render.
     await page.goto('/networks/home-convergence')
+    await expect(page).toHaveURL(/\/$/)
+    await expect(page.getByRole('region', { name: 'Home' })).toBeVisible({ timeout: 15_000 })
 
-    await expect(page.getByRole('heading', { level: 1, name: 'Home Convergence Network With An Extremely Long Display Name' })).toBeVisible()
-    const metadata = page.getByLabel('Network identity and live updates')
-    await expect(metadata).toContainText('Network key')
-    await expect(metadata).toContainText('home-convergence')
     // An open stream is deliberately silent: the container stays mounted for the
     // transport state, but no positive transport notice is rendered. The empty
     // container has no box, so this is an existence check, not a visibility one.
-    await expect(metadata.locator('[data-realtime-status="connected"]')).toHaveCount(1)
-    await expect(metadata.getByText('Live updates connected')).toHaveCount(0)
+    await expect(page.locator('[data-realtime-status="connected"]')).toHaveCount(1)
+    await expect(page.getByText('Live updates connected')).toHaveCount(0)
 
     const adminLink = page.getByRole('link', { name: 'Admin', exact: true })
     // Icon-only like the Emerald reference: no visible label, still named for
@@ -64,6 +64,7 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     expect(adminBox?.height).toBeGreaterThanOrEqual(44)
     await adminLink.focus()
     await expect(adminLink).toBeFocused()
+    await expectFocusedElementHasVisibleFocus(page)
     await expectNoHorizontalOverflow(page)
 
     if (testInfo.project.use.hasTouch) {
@@ -74,211 +75,12 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expect(page).toHaveURL(/\/admin$/)
   })
 
-  test('Public Network Node cards keep compact facts, UTC receipt time, and touch-safe links', async ({ page }, testInfo) => {
+  test('Public Node Detail Peer insight exposes bounded summaries without peer identities', async ({ page }) => {
     await loginAs(page)
-    const longNodeName = 'Node H — Producing Card With A Very Long Display Name That Must Not Overflow'
-    const longHealthReason = 'ServerOwnedHealthReasonThatMustWrapWithoutTruncationAtNarrowWidths0123456789abcdefghijklmnopqrstuvwxyz'
-    const hNodeId = '0195f2a1-0060-4060-8060-000000000060'
-    // The fixture refresher rewrites Node H's receipts directly in SQLite, and
-    // those writes raise no SSE invalidation. A live API read can therefore be
-    // newer than the response this page rendered, so remember what the page
-    // actually received and assert the card against that.
-    let renderedFreshness: string | null = null
-    await page.route('**/api/public/v1/networks/home-convergence', async (route) => {
-      const response = await route.fetch()
-      const payload = (await response.json()) as {
-        nodes: Array<{ nodeId: string; freshness?: string | null; healthReason?: string | null }>
-      }
-      renderedFreshness = payload.nodes.find((node) => node.nodeId === hNodeId)?.freshness ?? null
-      await route.fulfill({
-        response,
-        body: JSON.stringify({
-          ...payload,
-          nodes: payload.nodes.map((node) =>
-            node.nodeId === '0195f2a1-0062-4062-8062-000000000062'
-              ? { ...node, healthReason: longHealthReason }
-              : node,
-          ),
-        }),
-      })
-    })
-    await page.route('**/api/public/v1/nodes/0195f2a1-0060-4060-8060-000000000060', async (route) => {
-      const response = await route.fetch()
-      const payload = (await response.json()) as Record<string, unknown>
-      await route.fulfill({
-        response,
-        body: JSON.stringify({
-          ...payload,
-          displayName: longNodeName,
-          health: 'unhealthy',
-          healthReason: longHealthReason,
-        }),
-      })
-    })
-    await page.goto('/networks/home-convergence')
-
-    await expect(page.getByRole('heading', { level: 1, name: 'Home Convergence Network With An Extremely Long Display Name' })).toBeVisible()
-    const hCard = page.getByRole('article', { name: /Node H/ })
-    await expect(hCard).toBeVisible({ timeout: 15_000 })
-    await expectMetricRowsAligned(hCard)
-    const identityGroup = hCard.getByRole('group', { name: 'Node identity and health' })
-    const summaryGroup = hCard.getByRole('group', { name: 'Node summary facts' })
-    const componentGroup = hCard.getByRole('group', { name: 'Node component status' })
-    await expect(identityGroup).toContainText(longNodeName)
-    // The removed Node Health text badge is now a two-state marker whose
-    // accessible name carries the Server-owned health word (issue #141).
-    await expect(identityGroup.getByRole('img', { name: 'Healthy' })).toBeVisible()
-    await expect(summaryGroup).toHaveText(/Head[\s\S]*Peers[\s\S]*Oldest component update/)
-    await expect(componentGroup).toHaveText(/RPC[\s\S]*Sync[\s\S]*Consensus/)
-    const [identityBox, summaryBox, componentBox, detailsBox] = await Promise.all([
-      identityGroup.boundingBox(),
-      summaryGroup.boundingBox(),
-      componentGroup.boundingBox(),
-      hCard.getByRole('link', { name: 'View details' }).boundingBox(),
-    ])
-    expect(identityBox).not.toBeNull()
-    expect(summaryBox).not.toBeNull()
-    expect(componentBox).not.toBeNull()
-    expect(detailsBox).not.toBeNull()
-    expect(summaryBox!.y).toBeGreaterThanOrEqual(identityBox!.y)
-    expect(componentBox!.y).toBeGreaterThanOrEqual(summaryBox!.y)
-    expect(detailsBox!.y).toBeGreaterThanOrEqual(componentBox!.y)
-
-    const hTitleLink = hCard.getByRole('link', { name: /Node H/ })
-    await expect(hTitleLink).toHaveText(longNodeName)
-    await expect(hTitleLink).toHaveAttribute('href', '/nodes/0195f2a1-0060-4060-8060-000000000060')
-    const detailsLink = hCard.getByRole('link', { name: 'View details' })
-    await expect(detailsLink).toHaveAttribute('href', '/nodes/0195f2a1-0060-4060-8060-000000000060')
-    // The trailing affordance is the Emerald arrow icon, not a text glyph, so
-    // the accessible text is only "View details" and the icon is decorative.
-    await expect(detailsLink).toHaveText(/View details/)
-    await expect(detailsLink.locator('svg')).toHaveAttribute('aria-hidden', 'true')
-
-    await expect(hCard).toContainText('Head')
-    await expect(hCard).toContainText('Peers')
-    await expect(hCard).toContainText(/inbound/i)
-    await expect(hCard).toContainText(/outbound/i)
-    await expect(hCard).toContainText('Oldest component update')
-    await expect(hCard).toContainText('Earliest Server receipt across RPC, Sync, and Consensus')
-    const timeGroup = hCard.getByText('Earliest Server receipt across RPC, Sync, and Consensus', { exact: true }).locator('..')
-    await expect(timeGroup).not.toContainText('Current')
-    await expect(hCard.getByLabel('Node component status')).toContainText('RPC')
-    await expect(hCard.getByLabel('Node component status')).toContainText('Sync')
-    await expect(hCard.getByLabel('Node component status')).toContainText('Consensus')
-    await expect(hCard.getByText('Current observation')).toHaveCount(0)
-    await expect(hCard.getByText('Last observed')).toHaveCount(0)
-    await expect(hCard.locator('time')).toHaveCount(2)
-    await expect(hCard.locator('time').first()).toHaveAttribute('dateTime', /T\d{2}:\d{2}:\d{2}Z$/)
-    await expect(hCard.locator('time').first()).toHaveAttribute('aria-label', /UTC/)
-    await expect(hCard.locator('time').nth(1)).toContainText(/\d{1,2} \w+ \d{4}.*UTC/)
-
-    // The API fixture deliberately gives RPC the oldest receipt while the
-    // Agent report is newer; the public aggregate must retain that ordering.
-    const networkResponse = await page.request.get('/api/public/v1/networks/home-convergence')
-    expect(networkResponse.ok()).toBe(true)
-    const networkPayload = (await networkResponse.json()) as {
-      nodes: Array<{ nodeId: string; freshness?: string | null; lastReportAt?: string | null }>
-    }
-    const hNode = networkPayload.nodes.find((node) => node.nodeId === '0195f2a1-0060-4060-8060-000000000060')
-    if (!hNode?.freshness || !hNode.lastReportAt) throw new Error('Node H receipt timestamps are missing')
-    const reportLeadMs = Date.parse(hNode.lastReportAt) - Date.parse(hNode.freshness)
-    expect(reportLeadMs).toBeGreaterThan(40_000)
-    expect(renderedFreshness, 'the page received Node H freshness').not.toBeNull()
-    await expect(hCard.locator('time').first()).toHaveAttribute('dateTime', renderedFreshness!)
-
-    // The long public Node name remains visible inside its card without
-    // creating page overflow at any fixed viewport.
-    const hCardBox = (await hCard.boundingBox())!
-    const hTitleBox = (await hTitleLink.boundingBox())!
-    expect(hTitleBox.x).toBeGreaterThanOrEqual(hCardBox.x)
-    expect(hTitleBox.x + hTitleBox.width).toBeLessThanOrEqual(hCardBox.x + hCardBox.width)
-
-    const lCard = page.getByRole('article', { name: /Node L/ })
-    await expect(lCard).toBeVisible()
-    const lReason = lCard.getByText(longHealthReason, { exact: true })
-    await expect(lReason).toBeVisible()
-    const lReasonLayout = await lReason.evaluate((element) => ({
-      clientWidth: element.clientWidth,
-      scrollWidth: element.scrollWidth,
-      clientHeight: element.clientHeight,
-      scrollHeight: element.scrollHeight,
-    }))
-    expect(lReasonLayout.clientWidth).toBeGreaterThan(0)
-    expect(lReasonLayout.scrollWidth).toBeLessThanOrEqual(lReasonLayout.clientWidth)
-    expect(lReasonLayout.scrollHeight).toBeLessThanOrEqual(lReasonLayout.clientHeight)
-    await expect(lCard.getByText('Oldest component update', { exact: true })).toBeVisible()
-    await expect(lCard.locator('time')).toHaveCount(2)
-
-    const pCard = page.getByRole('article', { name: /Node P/ })
-    await expect(pCard).toBeVisible()
-    await expect(pCard.getByText('Oldest component update', { exact: true })).toBeVisible()
-    await expect(pCard.getByText('RPC, Sync, and Consensus receipt time is unavailable.', { exact: true })).toBeVisible()
-    await expect(pCard).toContainText('Unknown')
-    await expect(pCard.locator('time')).toHaveCount(0)
-
-    await expectVisibleInteractiveTargets(page)
-    await expectNoHorizontalOverflow(page)
-
-    const activate = async (link: ReturnType<typeof hCard.getByRole>) => {
-      await link.focus()
-      await expectFocusedElementHasVisibleFocus(page)
-      if (testInfo.project.use.hasTouch) {
-        await link.tap()
-      } else {
-        await page.keyboard.press('Enter')
-      }
-    }
-
-    await activate(hTitleLink)
-    await expect(page).toHaveURL(/\/nodes\/0195f2a1-0060-4060-8060-000000000060$/)
-    await expect(page.getByRole('heading', { level: 1, name: /Node H/ })).toHaveText(longNodeName)
-    const detailReason = page.getByText(longHealthReason, { exact: true })
-    await expect(detailReason).toBeVisible()
-    const detailReasonLayout = await detailReason.evaluate((element) => ({
-      clientWidth: element.clientWidth,
-      scrollWidth: element.scrollWidth,
-      clientHeight: element.clientHeight,
-      scrollHeight: element.scrollHeight,
-    }))
-    expect(detailReasonLayout.clientWidth).toBeGreaterThan(0)
-    expect(detailReasonLayout.scrollWidth).toBeLessThanOrEqual(detailReasonLayout.clientWidth)
-    expect(detailReasonLayout.scrollHeight).toBeLessThanOrEqual(detailReasonLayout.clientHeight)
-    const lastReport = page.getByText('Last report', { exact: true }).locator('..')
-    await expect(lastReport).toContainText('UTC')
-    await expectNoHorizontalOverflow(page)
-
-    await page.goto('/networks/home-convergence')
-    const reloadedCard = page.getByRole('article', { name: /Node H/ })
-    await expect(reloadedCard).toBeVisible()
-    await activate(reloadedCard.getByRole('link', { name: 'View details' }))
-    await expect(page).toHaveURL(/\/nodes\/0195f2a1-0060-4060-8060-000000000060$/)
-    await expect(page.getByRole('heading', { level: 1, name: /Node H/ })).toHaveText(longNodeName)
-    await expectNoHorizontalOverflow(page)
-  })
-
-  test('Public Peer insight exposes bounded summaries without peer identities', async ({ page }) => {
-    await loginAs(page)
-    // Home's Network display name is plain text (issue #97), so reach the
-    // Network overview through the Node Detail breadcrumb.
-    await page.goto('/networks/platon-e2e')
-    await expect(page.getByRole('heading', { level: 1, name: 'PlatON E2E Network' })).toBeVisible()
-    const networkPeer = page.getByRole('region', { name: 'Peer insight' }).first()
-    await expect(networkPeer).toContainText('Peer insight')
-    await expect(networkPeer.getByRole('group', { name: 'Primary peer counts' })).toContainText('Peers')
-    await expect(networkPeer.getByRole('group', { name: 'Primary peer counts' })).toContainText('Inbound')
-    await expect(networkPeer.getByRole('group', { name: 'Primary peer counts' })).toContainText('Outbound')
-    await expect(networkPeer.getByRole('group', { name: 'Secondary peer counts' })).toContainText('Trusted')
-    await expect(networkPeer.getByRole('group', { name: 'Secondary peer counts' })).toContainText('Static')
-    await expect(networkPeer.getByRole('group', { name: 'Secondary peer counts' })).toContainText('Consensus')
-    // Network aggregation is Unknown when any Active Node has never produced
-    // a successful Peer Snapshot; Node A's known value is not a complete total.
-    await expect(networkPeer).toContainText('Unknown')
-    await expect(networkPeer).toContainText('No successful Peer snapshot is available')
-    await expect(networkPeer.getByText('3', { exact: true })).toHaveCount(0)
-    await expect(page.getByText('203.0.113.9')).toHaveCount(0)
-    await expect(page.getByText('peer-a-inbound')).toHaveCount(0)
-
-    const nodeLink = page.getByRole('link', { name: 'Node A' })
+    // Home keeps the Network display name as plain text (issue #97), so the
+    // whole-card Node link is the only public route into Node Detail.
+    const nodeLink = page.getByRole('link', { name: /Node A/ }).first()
+    await expect(nodeLink).toBeVisible({ timeout: 15_000 })
     await nodeLink.focus()
     await expect(nodeLink).toBeFocused()
     await page.keyboard.press('Enter')
@@ -288,11 +90,14 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expect(detailPeer).toContainText('Peer data current')
     await expect(detailPeer).toContainText('Consensus')
     await expect(detailPeer).toContainText('3')
+    // Raw peer identities never cross the Public boundary.
+    await expect(page.getByText('203.0.113.9')).toHaveCount(0)
+    await expect(page.getByText('peer-a-inbound')).toHaveCount(0)
     await setPageZoom(page, 2)
     await expectNoHorizontalOverflow(page)
   })
 
-  test('Public Geo surface compresses disabled state; the Owner Overview carries no Geo panel', async ({ page }) => {
+  test('the Owner Overview carries no Geo panel and Admin Node diagnostics stay redacted', async ({ page }) => {
     await loginAs(page)
     // The Geo provider is shared Server state and other specs enable it. The
     // harness seeds it Disabled, so establish that precondition here instead of
@@ -308,45 +113,10 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
       await geoCard.getByRole('button', { name: 'Save Geo provider' }).click()
       await expect(geoCard.getByText(/Geo provider is now Disabled/)).toBeVisible()
     }
-    await page.goto('/networks/platon-e2e')
-    await expect(page.getByRole('heading', { level: 1, name: 'PlatON E2E Network' })).toBeVisible()
-    const networkPeer = page.getByRole('region', { name: 'Peer insight' }).first()
-    const publicGeo = page.getByText('Peer countries · Disabled by server', { exact: true })
-    await expect(publicGeo).toBeVisible()
-    await expect(page.getByRole('region', { name: 'Peer countries' })).toHaveCount(0)
-    await expect(page.getByRole('heading', { name: 'Peer countries' })).toHaveCount(0)
-    await expect(page.getByText(/Country insight is Disabled/i)).toHaveCount(0)
-    const composition = networkPeer.locator('..')
-    const [compositionBox, peerBox, noticeBox] = await Promise.all([
-      composition.boundingBox(),
-      networkPeer.boundingBox(),
-      publicGeo.boundingBox(),
-    ])
-    expect(compositionBox).not.toBeNull()
-    expect(peerBox).not.toBeNull()
-    expect(noticeBox).not.toBeNull()
-    expect(peerBox!.width).toBeGreaterThanOrEqual(compositionBox!.width - 2)
-    const noticeLayout = await publicGeo.evaluate((element) => {
-      const range = document.createRange()
-      range.selectNodeContents(element)
-      return {
-        clientWidth: element.clientWidth,
-        scrollWidth: element.scrollWidth,
-        clientHeight: element.clientHeight,
-        scrollHeight: element.scrollHeight,
-        lineRectCount: range.getClientRects().length,
-      }
-    })
-    expect(noticeLayout.clientWidth).toBeGreaterThan(0)
-    expect(noticeLayout.lineRectCount).toBe(1)
-    expect(noticeLayout.scrollWidth).toBeLessThanOrEqual(noticeLayout.clientWidth)
-    expect(noticeLayout.scrollHeight).toBeLessThanOrEqual(noticeLayout.clientHeight)
-    await expect(page.getByText(/GeoLite|MaxMind/i)).toHaveCount(0)
-    await expectNoHorizontalOverflow(page)
 
     // Geo database status is absent from the Owner Overview (issue #93);
     // the Audit/Site Access surface remains the only Admin Geo context.
-    await page.getByRole('link', { name: 'Admin', exact: true }).click()
+    await page.goto('/admin')
     await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
     await expect(page.getByRole('heading', { level: 2, name: 'Geo database' })).toHaveCount(0)
     await expect(page.getByText('Cached countries')).toHaveCount(0)
@@ -363,103 +133,6 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expect(page.getByText('platon/1.5.1')).toBeVisible()
     await expect(page.getByText('203.0.113.9')).toHaveCount(0)
     await expect(page.getByText('peer-a-inbound')).toHaveCount(0)
-    await expectVisibleInteractiveTargets(page)
-    await expectNoHorizontalOverflow(page)
-  })
-
-  test('Public Geo enabled state reports real Known/Unknown counts, retained Stale countries, attribution, and responsive composition', async ({ page }) => {
-    await loginAs(page)
-    await page.route('**/api/public/v1/networks/platon-e2e', async (route) => {
-      const response = await route.fetch()
-      const payload = (await response.json()) as Record<string, unknown>
-      await route.fulfill({
-        response,
-        body: JSON.stringify({
-          ...payload,
-          geo: {
-            state: 'stale',
-            scope: 'partial',
-            knownCountryCount: 4,
-            unknownCountryCount: 2,
-            availablePeerCount: 6,
-            unknownWithoutRemoteIpCount: 1,
-            unknownWithPublicIpCount: 1,
-            countries: [
-              { countryCode: 'US', count: 3, staleCount: 1, centroidLat: 37, centroidLon: -95 },
-              { countryCode: 'XK', count: 1, staleCount: 0, centroidLat: null, centroidLon: null },
-            ],
-            attribution: 'This product includes GeoLite Data created by MaxMind, available from https://www.maxmind.com.',
-            errorReason: 'GeoDatabaseReasonThatMustWrapWithoutExposingPeerAddressOrPreciseLocation0123456789abcdefghijklmnopqrstuvwxyz',
-            lastGoodAt: '2026-08-16T03:00:00Z',
-            databaseAgeSeconds: 2678400,
-            staleSince: '2026-08-17T03:00:00Z',
-          },
-        }),
-      })
-    })
-    await page.goto('/networks/platon-e2e')
-
-    await expect(page.getByRole('heading', { level: 1, name: 'PlatON E2E Network' })).toBeVisible()
-    const networkPeer = page.getByRole('region', { name: 'Peer insight' }).first()
-    const publicGeo = page.getByRole('region', { name: 'Peer countries' })
-    await expect(networkPeer).toBeVisible()
-    await expect(publicGeo).toBeVisible()
-    await expect(publicGeo).toContainText('Stale')
-    await expect(publicGeo).toContainText('US')
-    await expect(publicGeo).toContainText('3')
-    // Known and Unknown are Server-computed buckets on the same Peer-record
-    // basis; the browser never subtracts an independent Peer total.
-    await expect(publicGeo).toContainText('Known 4 · Unknown 2')
-    await expect(publicGeo).toContainText('6 Peer records in scope; counted per Node, not deduplicated by IP.')
-    await expect(publicGeo).toContainText('1 without a usable public remote IP')
-    await expect(publicGeo).toContainText('1 without a retained country result')
-    // A retained last-good country stays in its country bucket as Stale and
-    // is never re-counted as Unknown.
-    await expect(publicGeo).toContainText('1 retained as last-good Stale')
-    // A country without a representative point keeps its accessible count.
-    await expect(publicGeo).toContainText('XK')
-    await expect(publicGeo).toContainText('No representative point; count remains available.')
-    // Scope is explicit rather than presented as a complete distribution.
-    await expect(publicGeo).toContainText('Partial scope: Active Nodes without a successful Peer Snapshot are not included in these counts.')
-    await expect(publicGeo).toContainText('Showing the last-good country projection')
-    await expect(publicGeo).toContainText('Database age: 31 days')
-    await expect(publicGeo).toContainText('Stale since: 2026-08-17T03:00:00Z')
-    await expect(publicGeo).toContainText('This product includes GeoLite Data created by MaxMind')
-    await expect(page.getByText('203.0.113.9')).toHaveCount(0)
-    await expect(page.getByText('peer-a-inbound')).toHaveCount(0)
-    await expect(page.getByText(/static centroid|37, -95/)).toHaveCount(0)
-    await expect(page.getByText(/GeoDatabaseReasonThatMustWrap/)).toBeVisible()
-
-    const composition = networkPeer.locator('..')
-    const [compositionBox, peerBox, geoBox] = await Promise.all([
-      composition.boundingBox(),
-      networkPeer.boundingBox(),
-      publicGeo.boundingBox(),
-    ])
-    expect(compositionBox).not.toBeNull()
-    expect(peerBox).not.toBeNull()
-    expect(geoBox).not.toBeNull()
-    expect(peerBox!.width).toBeGreaterThan(0)
-    expect(geoBox!.width).toBeGreaterThan(0)
-    if ((page.viewportSize()?.width ?? 0) > 768) {
-      expect(geoBox!.x).toBeGreaterThan(peerBox!.x)
-      expect(peerBox!.width).toBeGreaterThan(compositionBox!.width * 0.35)
-    } else {
-      expect(geoBox!.y).toBeGreaterThanOrEqual(peerBox!.y + peerBox!.height - 1)
-    }
-
-    const reasonLayout = await page.getByText(/GeoDatabaseReasonThatMustWrap/).evaluate((element) => ({
-      clientWidth: element.clientWidth,
-      scrollWidth: element.scrollWidth,
-      clientHeight: element.clientHeight,
-      scrollHeight: element.scrollHeight,
-    }))
-    expect(reasonLayout.clientWidth).toBeGreaterThan(0)
-    expect(reasonLayout.scrollWidth).toBeLessThanOrEqual(reasonLayout.clientWidth)
-    expect(reasonLayout.scrollHeight).toBeLessThanOrEqual(reasonLayout.clientHeight)
-    const breadcrumb = page.getByRole('link', { name: 'All Networks', exact: true })
-    await breadcrumb.focus()
-    await expect(breadcrumb).toBeFocused()
     await expectVisibleInteractiveTargets(page)
     await expectNoHorizontalOverflow(page)
   })

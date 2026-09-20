@@ -5,7 +5,7 @@ import { RouterProvider } from 'react-router/dom'
 import AdminLayout from './layouts/AdminLayout'
 import HomeLayout from './layouts/HomeLayout'
 import LoginPage from './pages/LoginPage'
-import { NetworkPage, NodePage } from './pages/HomePages'
+import { NodePage } from './pages/HomePages'
 import AdminHome from './pages/AdminHome'
 import AdminAgentsList, { AdminAgentDetail } from './pages/AdminAgents'
 import AdminNodesList, { AdminNodeDetail } from './pages/AdminNodes'
@@ -135,7 +135,7 @@ const router = createBrowserRouter([
     ),
     children: [
       { index: true, element: <HomeIndex /> },
-      { path: 'networks/:networkKey', element: <NetworkPage /> },
+      { path: 'networks/:networkKey', element: <Navigate to="/" replace /> },
       { path: 'nodes/:nodeId', element: <NodePage /> },
     ],
   },

@@ -1568,11 +1568,6 @@ pub struct PublicBlockHistoryQuery {
     pub to: Option<i64>,
 }
 
-#[derive(Debug, Deserialize)]
-pub(crate) struct ValidatorHistoryQuery {
-    limit: Option<i64>,
-}
-
 pub(super) fn history_bounds(
     params: &PublicBlockHistoryQuery,
     request_id: &str,
@@ -2235,367 +2230,6 @@ fn public_node_query(filter: &str, order: &str) -> String {
     format!("{PUBLIC_NODE_QUERY_BASE} WHERE {filter} ORDER BY {order}")
 }
 
-/// Public Home projection. The query boundary only selects public, active
-/// Nodes and never returns endpoint, Agent, host identity, capacity, or raw
-/// errors from the Admin projection.
-#[derive(Debug, Serialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct PublicValidatorHistoryEntry {
-    pub kind: String,
-    pub observed_at: String,
-    pub provider_timestamp: Option<String>,
-    pub previous_rank: Option<i64>,
-    pub current_rank: Option<i64>,
-    pub counter_name: Option<String>,
-    pub previous_value: Option<String>,
-    pub current_value: Option<String>,
-    pub link_roles: Vec<String>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct PublicValidatorHistoryResponse {
-    pub validator_id: String,
-    pub entries: Vec<PublicValidatorHistoryEntry>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct PublicValidatorDailySnapshot {
-    pub local_date: String,
-    pub month_key: String,
-    pub timezone: String,
-    pub sample_at: String,
-    pub rank: Option<i64>,
-    pub stake_amount: Option<String>,
-    pub reward_amount: Option<String>,
-    pub reward_rate: Option<String>,
-    pub delegator_count: Option<i64>,
-    pub epoch: Option<i64>,
-    pub block_count: Option<i64>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct PublicValidatorMonthlyAggregate {
-    pub month_key: String,
-    pub timezone: String,
-    pub snapshot_count: i64,
-    pub first_sample_at: String,
-    pub last_sample_at: String,
-    pub rank_min: Option<i64>,
-    pub rank_max: Option<i64>,
-    pub rank_last: Option<i64>,
-    pub stake_last: Option<String>,
-    pub reward_last: Option<String>,
-    pub reward_rate_last: Option<String>,
-    pub delegator_count_last: Option<i64>,
-    pub epoch_last: Option<i64>,
-    pub block_count_last: Option<i64>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct PublicValidatorAnalyticsResponse {
-    pub validator_id: String,
-    pub state: String,
-    pub freshness: String,
-    pub daily: Vec<PublicValidatorDailySnapshot>,
-    pub monthly: Vec<PublicValidatorMonthlyAggregate>,
-}
-#[utoipa::path(
-    get,
-    path = "/api/public/v1/validators/{validator_id}/analytics",
-    tag = "public",
-    params(("validator_id" = String, Path, description = "Validator ID"), ("limit" = Option<i64>, Query, minimum = 1, maximum = 366)),
-    responses((status = 200, body = PublicValidatorAnalyticsResponse), (status = 404, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
-)]
-pub(crate) async fn public_validator_analytics(
-    State(state): State<AppState>,
-    Path(validator_id): Path<String>,
-    Query(query): Query<ValidatorHistoryQuery>,
-    Extension(request_id): Extension<RequestId>,
-) -> Response {
-    let Some(_validator) = (match validator::get_validator(state.db(), &validator_id).await {
-        Ok(value) => value,
-        Err(_) => {
-            return error_response(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
-    }) else {
-        return error_response(
-            &request_id.0,
-            StatusCode::NOT_FOUND,
-            "not_found",
-            "resource not found",
-        );
-    };
-    let now = format_rfc3339(crate::auth::now_utc());
-    let visible = sqlx::query_scalar::<_, i64>(
-        "SELECT 1 FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = ? AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.lifecycle = 'active' LIMIT 1",
-    )
-    .bind(&validator_id)
-    .bind(&now)
-    .bind(&now)
-    .fetch_optional(state.db().pool())
-    .await;
-    if !matches!(visible, Ok(Some(_))) {
-        return error_response(
-            &request_id.0,
-            StatusCode::NOT_FOUND,
-            "not_found",
-            "resource not found",
-        );
-    }
-    let insight = match validator::load_insight(state.db(), &validator_id).await {
-        Ok(value) => value,
-        Err(_) => {
-            return error_response(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
-    };
-    let limit = query.limit.unwrap_or(31).clamp(1, 366);
-    let daily = match validator::list_daily_snapshots(state.db(), &validator_id, limit).await {
-        Ok(rows) => rows
-            .into_iter()
-            .map(|row| PublicValidatorDailySnapshot {
-                local_date: row.local_date,
-                month_key: row.month_key,
-                timezone: row.timezone,
-                sample_at: row.sample_at,
-                rank: row.rank,
-                stake_amount: row.stake_amount,
-                reward_amount: row.reward_amount,
-                reward_rate: row.reward_rate,
-                delegator_count: row.delegator_count,
-                epoch: row.epoch,
-                block_count: row.block_count,
-            })
-            .collect(),
-        Err(_) => {
-            return error_response(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
-    };
-    let monthly = match validator::list_monthly_aggregates(state.db(), &validator_id, limit).await {
-        Ok(rows) => rows
-            .into_iter()
-            .map(|row| PublicValidatorMonthlyAggregate {
-                month_key: row.month_key,
-                timezone: row.timezone,
-                snapshot_count: row.snapshot_count,
-                first_sample_at: row.first_sample_at,
-                last_sample_at: row.last_sample_at,
-                rank_min: row.rank_min,
-                rank_max: row.rank_max,
-                rank_last: row.rank_last,
-                stake_last: row.stake_last,
-                reward_last: row.reward_last,
-                reward_rate_last: row.reward_rate_last,
-                delegator_count_last: row.delegator_count_last,
-                epoch_last: row.epoch_last,
-                block_count_last: row.block_count_last,
-            })
-            .collect(),
-        Err(_) => {
-            return error_response(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
-    };
-    let freshness = insight
-        .as_ref()
-        .map(|row| {
-            validator::freshness(
-                row.last_good_received_at.as_deref(),
-                crate::auth::now_utc(),
-                state.validator_freshness_seconds(),
-            )
-        })
-        .unwrap_or("unknown");
-    let state_value = insight
-        .as_ref()
-        .map(|row| {
-            if row.outcome == "success" {
-                freshness
-            } else {
-                row.outcome.as_str()
-            }
-        })
-        .unwrap_or("unknown");
-    Json(PublicValidatorAnalyticsResponse {
-        validator_id,
-        state: state_value.to_owned(),
-        freshness: freshness.to_owned(),
-        daily,
-        monthly,
-    })
-    .into_response()
-}
-
-#[utoipa::path(
-    get,
-    path = "/api/public/v1/validators/{validator_id}/history",
-    tag = "public",
-    params(("validator_id" = String, Path, description = "Validator ID"), ("limit" = Option<i64>, Query, minimum = 1, maximum = 200)),
-    responses((status = 200, body = PublicValidatorHistoryResponse), (status = 404, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
-)]
-pub(crate) async fn public_validator_history(
-    State(state): State<AppState>,
-    Path(validator_id): Path<String>,
-    Query(query): Query<ValidatorHistoryQuery>,
-    Extension(request_id): Extension<RequestId>,
-) -> Response {
-    let Some(validator) = (match validator::get_validator(state.db(), &validator_id).await {
-        Ok(value) => value,
-        Err(_) => {
-            return error_response(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
-    }) else {
-        return error_response(
-            &request_id.0,
-            StatusCode::NOT_FOUND,
-            "not_found",
-            "resource not found",
-        );
-    };
-    let now = format_rfc3339(crate::auth::now_utc());
-    let visible = sqlx::query_scalar::<_, i64>(
-        "SELECT 1 FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = ? AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.lifecycle = 'active' LIMIT 1",
-    )
-    .bind(&validator_id)
-    .bind(&now)
-    .bind(&now)
-    .fetch_optional(state.db().pool())
-    .await;
-    if !matches!(visible, Ok(Some(_))) {
-        return error_response(
-            &request_id.0,
-            StatusCode::NOT_FOUND,
-            "not_found",
-            "resource not found",
-        );
-    }
-
-    let limit = query.limit.unwrap_or(50).clamp(1, 200);
-    let rankings = match validator::list_ranking_history(state.db(), &validator_id, limit).await {
-        Ok(value) => value,
-        Err(_) => {
-            return error_response(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
-    };
-    let counters = match validator::list_counter_history(state.db(), &validator_id, limit).await {
-        Ok(value) => value,
-        Err(_) => {
-            return error_response(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
-    };
-    let mut entries = Vec::with_capacity(rankings.len() + counters.len());
-    for record in rankings {
-        let links = match validator::list_link_context_at(
-            state.db(),
-            &validator_id,
-            &record.observed_at,
-            true,
-        )
-        .await
-        {
-            Ok(value) => value,
-            Err(_) => {
-                return error_response(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "server database is unavailable",
-                );
-            }
-        };
-        if !links.is_empty() {
-            entries.push(PublicValidatorHistoryEntry {
-                kind: "ranking_changed".to_owned(),
-                observed_at: record.observed_at,
-                provider_timestamp: record.provider_timestamp,
-                previous_rank: record.previous_rank,
-                current_rank: Some(record.current_rank),
-                counter_name: None,
-                previous_value: None,
-                current_value: None,
-                link_roles: links.into_iter().map(|link| link.role).collect(),
-            });
-        }
-    }
-    for record in counters {
-        let links = match validator::list_link_context_at(
-            state.db(),
-            &validator_id,
-            &record.observed_at,
-            true,
-        )
-        .await
-        {
-            Ok(value) => value,
-            Err(_) => {
-                return error_response(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "server database is unavailable",
-                );
-            }
-        };
-        if !links.is_empty() {
-            entries.push(PublicValidatorHistoryEntry {
-                kind: "counter_reset_or_correction".to_owned(),
-                observed_at: record.observed_at,
-                provider_timestamp: record.provider_timestamp,
-                previous_rank: None,
-                current_rank: None,
-                counter_name: Some(record.counter_name),
-                previous_value: Some(record.previous_value),
-                current_value: Some(record.current_value),
-                link_roles: links.into_iter().map(|link| link.role).collect(),
-            });
-        }
-    }
-    entries.sort_by(|left, right| right.observed_at.cmp(&left.observed_at));
-    entries.truncate(limit as usize);
-    Json(PublicValidatorHistoryResponse {
-        validator_id: validator.validator_id,
-        entries,
-    })
-    .into_response()
-}
-
 #[utoipa::path(
     get,
     path = "/api/public/v1/networks",
@@ -2677,87 +2311,6 @@ pub(crate) async fn public_networks(State(state): State<AppState>) -> Response {
         }
     }
     Json(networks).into_response()
-}
-
-#[utoipa::path(
-    get,
-    path = "/api/public/v1/networks/{network_key}",
-    tag = "public",
-    params(("network_key" = String, Path, description = "Registered Network key")),
-    responses((status = 200, description = "Published Network projection", body = PublicNetwork), (status = 404, body = crate::http::ApiErrorBody))
-)]
-pub(crate) async fn public_network(
-    State(state): State<AppState>,
-    Path(network_key): Path<String>,
-    Extension(request_id): Extension<RequestId>,
-) -> Response {
-    let rows = sqlx::query_as::<_, PublicNodeRow>(&public_node_query(
-        "n.network_key = ? AND n.lifecycle = 'active'",
-        "n.node_id",
-    ))
-    .bind(&network_key)
-    .fetch_all(state.db().pool())
-    .await;
-    let rows = match rows {
-        Ok(rows) if !rows.is_empty() => rows,
-        Ok(_) => {
-            return error_response(
-                &request_id.0,
-                StatusCode::NOT_FOUND,
-                "not_found",
-                "resource not found",
-            );
-        }
-        Err(_) => {
-            return error_response(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
-    };
-    let display_name = rows[0].network_display_name.clone();
-    let mut nodes = rows
-        .into_iter()
-        .map(|row| public_node(row).1)
-        .collect::<Vec<_>>();
-    let peers = aggregate_peer_insight(&nodes);
-    let geo = public_country_distribution(&state, &network_key, &state.geo_status()).await;
-    let validators = match public_validator_insights(&state, &network_key).await {
-        Ok(validators) => validators,
-        Err(_) => {
-            return error_response(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
-    };
-    let links = match effective_public_links(&state, None, Some(&network_key)).await {
-        Ok(links) => links,
-        Err(_) => {
-            return error_response(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
-    };
-    associate_node_validators(&validators, &links, &mut nodes);
-    let validator_summary = public_validator_summary(&validators, &nodes);
-    Json(PublicNetwork {
-        network_key,
-        display_name,
-        peers,
-        geo,
-        validators,
-        nodes,
-        validator_summary,
-    })
-    .into_response()
 }
 
 #[utoipa::path(
@@ -2870,16 +2423,7 @@ pub fn router() -> Router<AppState> {
         .route("/logout", post(logout_handler))
         .route("/session", get(session_handler))
         .route("/access", get(public_access_settings))
-        .route(
-            "/validators/{validator_id}/analytics",
-            get(public_validator_analytics),
-        )
-        .route(
-            "/validators/{validator_id}/history",
-            get(public_validator_history),
-        )
         .route("/networks", get(public_networks))
-        .route("/networks/{network_key}", get(public_network))
         .route("/nodes/{node_id}", get(public_node_detail))
         .route("/nodes/{node_id}/history", get(public_node_history))
         .route("/nodes/{node_id}/metrics", get(public_node_metrics))
@@ -3147,14 +2691,7 @@ mod tests {
         insert_geo_cache(&state, "8.8.8.8", "US", 60, 3600).await;
         insert_geo_cache(&state, "9.9.9.9", "DE", 60, 3600).await;
 
-        let response = public_network(
-            State(state.clone()),
-            Path("mainnet".to_owned()),
-            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
-        )
-        .await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = public_network_list(&state).await;
 
         let countries = value["geo"]["countries"].as_array().unwrap();
         assert_eq!(countries.len(), 2);
@@ -3187,7 +2724,7 @@ mod tests {
             value["geo"]["availablePeerCount"].as_i64().unwrap()
         );
 
-        let text = String::from_utf8_lossy(&body);
+        let text = value.to_string();
         for raw in ["8.8.8.8", "9.9.9.9", "geo-a-1"] {
             assert!(!text.contains(raw), "Public projection leaked {raw}");
         }
@@ -3295,14 +2832,7 @@ mod tests {
             .await
             .unwrap();
 
-        let response = public_network(
-            State(state.clone()),
-            Path("mainnet".to_owned()),
-            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
-        )
-        .await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = public_network_list(&state).await;
         assert_eq!(value["peers"]["state"], "error");
         assert_eq!(value["peers"]["freshness"], "stale");
         assert_eq!(value["peers"]["peerCount"], 1);
@@ -4139,20 +3669,9 @@ mod tests {
         .await;
         assert_eq!(legacy_private.status(), StatusCode::OK);
 
-        let network = public_network(
-            State(state.clone()),
-            Path("mainnet".to_owned()),
-            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
-        )
-        .await;
-        let body = to_bytes(network.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(value["nodes"].as_array().unwrap().len(), 2);
-        assert!(
-            String::from_utf8_lossy(&body)
-                .find("private-peer")
-                .is_none()
-        );
+        let network = public_network_list(&state).await;
+        assert_eq!(network["nodes"].as_array().unwrap().len(), 2);
+        assert!(network.to_string().find("private-peer").is_none());
 
         for node_id in ["node-private", "node-retired", "node-unknown"] {
             let expected = if node_id == "node-private" {
@@ -5303,24 +4822,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn public_network_detail_includes_every_active_node_and_excludes_retired_nodes() {
-        let (_dir, state) = test_state().await;
-        seed_public_data(&state).await;
-        let response = public_network(
-            State(state),
-            Path("mainnet".to_owned()),
-            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
-        )
-        .await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let nodes = value["nodes"].as_array().unwrap();
-        assert_eq!(nodes.len(), 2);
-        assert_eq!(nodes[0]["nodeId"], "node-private");
-        assert_eq!(nodes[1]["nodeId"], "node-public");
-    }
-
     /// Seed one eligible Validator with its explicit Link and (optionally) a
     /// current detail insight. A `None` received time leaves the Validator
     /// registered and linked with no insight row, which is exactly the
@@ -5579,18 +5080,6 @@ mod tests {
         assert_eq!(quiet["validatorSummary"]["blocks"]["state"], "unknown");
         assert_eq!(quiet["validatorSummary"]["rewards"]["valuedCount"], 0);
         assert_eq!(quiet["validatorSummary"]["eligibleValidatorCount"], 1);
-
-        // The single-Network detail endpoint exposes the identical summary, so
-        // Home's filter selection and the API cannot drift.
-        let detail = public_network(
-            State(state),
-            Path("mainnet".to_owned()),
-            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
-        )
-        .await;
-        let detail_body = to_bytes(detail.into_body(), usize::MAX).await.unwrap();
-        let detail_value: serde_json::Value = serde_json::from_slice(&detail_body).unwrap();
-        assert_eq!(detail_value["validatorSummary"], *summary);
     }
 
     #[tokio::test]
@@ -5639,16 +5128,6 @@ mod tests {
             assert_eq!(validator["blockCount"].as_i64(), Some(left));
             assert_eq!(summary["rewards"]["knownSum"], serde_json::Value::Null);
             assert_eq!(summary["rewards"]["state"], "unknown");
-
-            let detail = public_network(
-                State(state),
-                Path("mainnet".to_owned()),
-                Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
-            )
-            .await;
-            let body = to_bytes(detail.into_body(), usize::MAX).await.unwrap();
-            let detail: serde_json::Value = serde_json::from_slice(&body).unwrap();
-            assert_eq!(detail["validatorSummary"], *summary);
         }
     }
 
@@ -5705,124 +5184,5 @@ mod tests {
         assert_eq!(after["validatorSummary"]["blocks"]["knownSum"], "5");
         assert_eq!(after["validatorSummary"]["blocks"]["state"], "complete");
         assert_eq!(after["validatorSummary"]["rewards"]["knownSum"], "2");
-    }
-
-    async fn seed_public_analytics_row(state: &AppState, validator_id: &str, node_id: &str) {
-        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
-        sqlx::query("INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES (?, 'mainnet', ?, ?, ?, ?)")
-            .bind(validator_id)
-            .bind(format!("node-{validator_id}"))
-            .bind(validator_id)
-            .bind(&now)
-            .bind(&now)
-            .execute(state.db().pool())
-            .await
-            .unwrap();
-        sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, valid_from, valid_until, created_at, updated_at) VALUES (?, ?, ?, 'primary', '2026-01-01T00:00:00Z', NULL, ?, ?)")
-            .bind(format!("link-{validator_id}"))
-            .bind(node_id)
-            .bind(validator_id)
-            .bind(&now)
-            .bind(&now)
-            .execute(state.db().pool())
-            .await
-            .unwrap();
-        sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, 'explorer', 'success', NULL, ?, ?, ?, ?, 5, '1000', '10', '0.05', 8, 42, 100, 'normal', 'normal', NULL, NULL, 0, NULL, NULL, NULL, ?, ?)")
-            .bind(validator_id)
-            .bind(&now)
-            .bind(&now)
-            .bind(&now)
-            .bind(&now)
-            .bind(&now)
-            .bind(&now)
-            .execute(state.db().pool())
-            .await
-            .unwrap();
-        sqlx::query("INSERT INTO validator_ranking_history (history_id, validator_id, previous_rank, current_rank, observed_at, provider_timestamp, observation_key) VALUES (?, ?, 6, 5, ?, ?, ?)")
-            .bind(format!("rank-{validator_id}"))
-            .bind(validator_id)
-            .bind(&now)
-            .bind(&now)
-            .bind(format!("rank-observation-{validator_id}"))
-            .execute(state.db().pool())
-            .await
-            .unwrap();
-        sqlx::query("INSERT INTO validator_daily_snapshots (snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, provider_timestamp, source, observation_key, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count) VALUES (?, ?, 'UTC', '2026-01-01', '2026-01', ?, ?, ?, 'explorer', 'obs-1', 5, '1000', '10', '0.05', 8, 42, 100)")
-            .bind(format!("snap-{validator_id}"))
-            .bind(validator_id)
-            .bind(&now)
-            .bind(&now)
-            .bind(&now)
-            .execute(state.db().pool())
-            .await
-            .unwrap();
-        sqlx::query("INSERT INTO validator_monthly_aggregates (aggregate_id, validator_id, timezone, month_key, snapshot_count, first_sample_at, last_sample_at, rank_min, rank_max, rank_last, stake_last, reward_last, reward_rate_last, delegator_count_last, epoch_last, block_count_last, updated_at) VALUES (?, ?, 'UTC', '2026-01', 1, ?, ?, 5, 5, 5, '1000', '10', '0.05', 8, 42, 100, ?)")
-            .bind(format!("agg-{validator_id}"))
-            .bind(validator_id)
-            .bind(&now)
-            .bind(&now)
-            .bind(&now)
-            .execute(state.db().pool())
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn public_validator_analytics_is_sanitized_and_active_node_scoped() {
-        let (_dir, state) = test_state().await;
-        seed_public_data(&state).await;
-        seed_public_analytics_row(&state, "validator-public", "node-public").await;
-        seed_public_analytics_row(&state, "validator-private", "node-private").await;
-
-        let response = public_validator_analytics(
-            State(state.clone()),
-            Path("validator-public".to_owned()),
-            Query(ValidatorHistoryQuery { limit: None }),
-            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(value["validatorId"], "validator-public");
-        assert_eq!(value["daily"][0]["localDate"], "2026-01-01");
-        assert_eq!(value["daily"][0]["rank"], 5);
-        assert_eq!(value["monthly"][0]["monthKey"], "2026-01");
-        assert_eq!(value["monthly"][0]["snapshotCount"], 1);
-        // Public DTOs never carry Admin-only receipt/source fields.
-        assert!(value["daily"][0].get("receivedAt").is_none());
-        assert!(value["daily"][0].get("source").is_none());
-        assert!(value["monthly"][0].get("updatedAt").is_none());
-
-        for (validator_id, expected) in [
-            ("validator-private", StatusCode::OK),
-            ("validator-unknown", StatusCode::NOT_FOUND),
-        ] {
-            let response = public_validator_analytics(
-                State(state.clone()),
-                Path(validator_id.to_owned()),
-                Query(ValidatorHistoryQuery { limit: None }),
-                Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
-            )
-            .await;
-            assert_eq!(
-                response.status(),
-                expected,
-                "unexpected analytics visibility for {validator_id}"
-            );
-        }
-
-        let history = public_validator_history(
-            State(state),
-            Path("validator-private".to_owned()),
-            Query(ValidatorHistoryQuery { limit: None }),
-            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
-        )
-        .await;
-        assert_eq!(history.status(), StatusCode::OK);
-        let body = to_bytes(history.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(value["entries"][0]["kind"], "ranking_changed");
-        assert_eq!(value["entries"][0]["linkRoles"][0], "primary");
     }
 }

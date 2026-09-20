@@ -149,7 +149,7 @@ The failure taxonomy above is the honest state: the migration's own web checks a
 
 ### Screenshot evidence
 
-`screenshots/<project>/<page>.png` — 25 captures (login, Home, Network detail, Node detail, Admin overview) across the five projects, 3.4 MB. Captured with `EMERALD_EVIDENCE=1 npx playwright test e2e/visual-evidence.spec.ts`. There is no `toHaveScreenshot` assertion anywhere in the repository, so these are evidence and never a gate. **They have not yet been reviewed against upstream's rendering**, so no fidelity claim is made.
+`screenshots/<project>/<page>.png` — 25 captures (login, Home, Node detail, Admin overview, Settings) across the five projects. Captured with `EMERALD_EVIDENCE=1 npx playwright test e2e/visual-evidence.spec.ts`. There is no `toHaveScreenshot` assertion anywhere in the repository, so these are evidence and never a gate. **They have not yet been reviewed against upstream's rendering**, so no fidelity claim is made.
 
 
 ## 7. Run history (three consecutive full runs, ~30 min each)
@@ -714,8 +714,8 @@ and radio keyboard behavior on the real Settings route: 16px indicator, 44px
 input, activation from the input corner, arrow navigation, visible focus ring,
 and forced-colors fallback. Both themes and all five fixed viewports pass.
 
-The explicit evidence run passed all 20 tests and refreshed six pages per
-viewport (30 PNGs): Login, Home, Network detail, Node detail, Admin overview and
+The explicit evidence run passed all 20 tests and refreshed five pages per
+viewport (25 PNGs): Login, Home, Node detail, Admin overview and
 Settings. These remain review evidence, not screenshot assertion baselines.
 Final full-suite validation and the visual-review findings are recorded below.
 

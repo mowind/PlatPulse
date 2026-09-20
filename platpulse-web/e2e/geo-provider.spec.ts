@@ -63,15 +63,18 @@ test.describe('Geo provider selection and background country resolution', () => 
 
     const publicPage = await page.context().newPage()
     try {
+      // The Network overview route is deleted; a deep link now replaces itself
+      // with Home, where the same Server-owned Geo Insight drives the map.
       await publicPage.goto('/networks/platon-e2e')
-      await expect(
-        publicPage.getByRole('heading', { level: 1, name: 'PlatON E2E Network' }),
-      ).toBeVisible()
-      // Disabled renders the neutral notice and no country panel at all.
+      await expect(publicPage).toHaveURL(/\/$/)
+      await expect(publicPage.getByRole('region', { name: 'Home' })).toBeVisible({ timeout: 15_000 })
+      // Keep the map scoped to the Network the deleted page used to show.
+      await publicPage.getByRole('tab', { name: 'PlatON E2E Network' }).click()
+      // Disabled renders the neutral notice and no Peer-record counter at all.
       await expect(
         publicPage.getByText('Peer countries · Disabled by server', { exact: true }),
       ).toBeVisible()
-      await expect(publicPage.getByRole('region', { name: 'Peer countries' })).toHaveCount(0)
+      await expect(publicPage.locator('[data-slot="geo-counters"]')).toHaveCount(0)
 
       await local.check()
       await save.click()
@@ -84,26 +87,27 @@ test.describe('Geo provider selection and background country resolution', () => 
       await expect(page.getByText(/GeoLite2-Country-Test/)).toHaveCount(0)
 
       // The Server resolves the retained Peer addresses in the background and
-      // publishes an invalidation; the already-open Public page follows it
-      // without a reload. Peer records are counted per Node, never
-      // deduplicated by address: two records have no usable public remote IP
-      // and stay Unknown, one is resolved to SE.
+      // publishes an invalidation; the already-open Home map follows it without
+      // a reload. Peer records are counted per Node, never deduplicated by
+      // address: two records have no usable public remote IP and stay Unknown,
+      // one is resolved to SE.
       const countries = publicPage.getByRole('region', { name: 'Peer countries' })
       await expect(countries).toBeVisible({ timeout: 30_000 })
-      await expect(countries).toContainText('Known 1 · Unknown 2', { timeout: 30_000 })
+      // The resolved Swedish country proves the background lookup landed; the
+      // remaining dimensions describe the projection it wrote.
       await expect(
-        countries.getByRole('list', { name: 'Peer countries by count' }),
-      ).toContainText('SE')
-      await expect(countries).toContainText(
-        '3 Peer records in scope; counted per Node, not deduplicated by IP.',
-      )
-      await expect(countries).toContainText('Partial scope')
-      await expect(countries).toContainText(/GeoLite Data created by MaxMind/)
-      await expect(countries).toContainText('2 without a usable public remote IP')
+        countries.locator('[data-slot="geo-country-list"]'),
+      ).toContainText('Sweden', { timeout: 30_000 })
+      await expect(countries).toHaveAttribute('data-scope', 'partial')
       // The bundled fixture's build epoch is older than the 30-day database
       // boundary, so the Server reports the database as Stale while still
       // serving the retained country result as last-good.
-      await expect(countries).toContainText('Geo database is Stale')
+      await expect(countries).toHaveAttribute('data-state', 'stale')
+      await expect(countries.getByRole('status')).toContainText('Data stale')
+      await expect(countries.getByRole('status')).toContainText('2 unknown locations')
+      await expect(
+        countries.locator('[data-slot="geo-counter"]'),
+      ).toHaveText('Peers: 3')
       // No raw Peer address, database path, or internal error crosses the
       // Public or Admin boundary.
       await expect(publicPage.getByText('89.160.20.112')).toHaveCount(0)
@@ -120,7 +124,7 @@ test.describe('Geo provider selection and background country resolution', () => 
       await expect(
         publicPage.getByText('Peer countries · Disabled by server', { exact: true }),
       ).toBeVisible({ timeout: 30_000 })
-      await expect(publicPage.getByRole('region', { name: 'Peer countries' })).toHaveCount(0)
+      await expect(publicPage.locator('[data-slot="geo-counters"]')).toHaveCount(0)
       await publicPage.close()
     }
   })

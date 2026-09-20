@@ -62,15 +62,14 @@ describe('Public adapter and query namespace', () => {
     ])
   })
 
-  it('invalidates only the addressed Network query', () => {
+  it('invalidates the Network list for an addressed Network resource', () => {
     const invalidate = vi.spyOn(publicQueryClient, 'invalidateQueries')
 
     invalidatePublicResource('network', 'network-a', 11)
 
-    expect(invalidate).toHaveBeenCalledTimes(2)
+    expect(invalidate).toHaveBeenCalledTimes(1)
     expect(invalidate.mock.calls.map(([options]) => options)).toEqual([
       { queryKey: [...publicKeys.networks, 0], exact: true, refetchType: 'active' },
-      { queryKey: [...publicKeys.network('network-a'), 0], exact: true, refetchType: 'active' },
     ])
   })
 
@@ -82,8 +81,8 @@ describe('Public adapter and query namespace', () => {
 
     invalidatePublicResource('network', 'network-a', 12)
 
-    expect(invalidate.mock.calls[1]?.[0]).toMatchObject({
-      queryKey: [...publicKeys.network('network-a'), 42],
+    expect(invalidate.mock.calls[0]?.[0]).toMatchObject({
+      queryKey: [...publicKeys.networks, 42],
       exact: true,
     })
   })

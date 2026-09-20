@@ -1124,10 +1124,7 @@ pub(crate) async fn public_session_guard(
 fn guest_readable_path(path: &str) -> bool {
     // The guard runs on the nested Public router, where the matched prefix
     // has already been stripped, so paths are relative to the group.
-    path == "/networks"
-        || path.starts_with("/networks/")
-        || path.starts_with("/nodes/")
-        || path == "/events"
+    path == "/networks" || path.starts_with("/nodes/") || path == "/events"
 }
 
 async fn session_guard(

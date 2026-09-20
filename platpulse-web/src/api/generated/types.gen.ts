@@ -1684,14 +1684,6 @@ export type PublicPeerLagSummary = {
     sampleCount: number;
 };
 
-export type PublicValidatorAnalyticsResponse = {
-    daily: Array<PublicValidatorDailySnapshot>;
-    freshness: string;
-    monthly: Array<PublicValidatorMonthlyAggregate>;
-    state: string;
-    validatorId: string;
-};
-
 /**
  * Per-Network cumulative total for one metric, deduplicated by Validator.
  *
@@ -1726,42 +1718,6 @@ export type PublicValidatorBlockTotal = {
      * stale last-good values.
      */
     valuedCount: number;
-};
-
-export type PublicValidatorDailySnapshot = {
-    blockCount?: number | null;
-    delegatorCount?: number | null;
-    epoch?: number | null;
-    localDate: string;
-    monthKey: string;
-    rank?: number | null;
-    rewardAmount?: string | null;
-    rewardRate?: string | null;
-    sampleAt: string;
-    stakeAmount?: string | null;
-    timezone: string;
-};
-
-/**
- * Public Home projection. The query boundary only selects public, active
- * Nodes and never returns endpoint, Agent, host identity, capacity, or raw
- * errors from the Admin projection.
- */
-export type PublicValidatorHistoryEntry = {
-    counterName?: string | null;
-    currentRank?: number | null;
-    currentValue?: string | null;
-    kind: string;
-    linkRoles: Array<string>;
-    observedAt: string;
-    previousRank?: number | null;
-    previousValue?: string | null;
-    providerTimestamp?: string | null;
-};
-
-export type PublicValidatorHistoryResponse = {
-    entries: Array<PublicValidatorHistoryEntry>;
-    validatorId: string;
 };
 
 export type PublicValidatorInsight = {
@@ -1879,23 +1835,6 @@ export type PublicValidatorInsight = {
     state: string;
     validatorId: string;
     validatorNodeId: string;
-};
-
-export type PublicValidatorMonthlyAggregate = {
-    blockCountLast?: number | null;
-    delegatorCountLast?: number | null;
-    epochLast?: number | null;
-    firstSampleAt: string;
-    lastSampleAt: string;
-    monthKey: string;
-    rankLast?: number | null;
-    rankMax?: number | null;
-    rankMin?: number | null;
-    rewardLast?: string | null;
-    rewardRateLast?: string | null;
-    snapshotCount: number;
-    stakeLast?: string | null;
-    timezone: string;
 };
 
 /**
@@ -4713,33 +4652,6 @@ export type PublicNetworksResponses = {
 
 export type PublicNetworksResponse = PublicNetworksResponses[keyof PublicNetworksResponses];
 
-export type PublicNetworkData = {
-    body?: never;
-    path: {
-        /**
-         * Registered Network key
-         */
-        network_key: string;
-    };
-    query?: never;
-    url: '/api/public/v1/networks/{network_key}';
-};
-
-export type PublicNetworkErrors = {
-    404: ApiErrorBody;
-};
-
-export type PublicNetworkError = PublicNetworkErrors[keyof PublicNetworkErrors];
-
-export type PublicNetworkResponses = {
-    /**
-     * Published Network projection
-     */
-    200: PublicNetwork;
-};
-
-export type PublicNetworkResponse = PublicNetworkResponses[keyof PublicNetworkResponses];
-
 export type PublicNodeDetailData = {
     body?: never;
     path: {
@@ -4906,60 +4818,6 @@ export type SessionHandlerResponses = {
 };
 
 export type SessionHandlerResponse = SessionHandlerResponses[keyof SessionHandlerResponses];
-
-export type PublicValidatorAnalyticsData = {
-    body?: never;
-    path: {
-        /**
-         * Validator ID
-         */
-        validator_id: string;
-    };
-    query?: {
-        limit?: number;
-    };
-    url: '/api/public/v1/validators/{validator_id}/analytics';
-};
-
-export type PublicValidatorAnalyticsErrors = {
-    404: ApiErrorBody;
-    503: ApiErrorBody;
-};
-
-export type PublicValidatorAnalyticsError = PublicValidatorAnalyticsErrors[keyof PublicValidatorAnalyticsErrors];
-
-export type PublicValidatorAnalyticsResponses = {
-    200: PublicValidatorAnalyticsResponse;
-};
-
-export type PublicValidatorAnalyticsResponse2 = PublicValidatorAnalyticsResponses[keyof PublicValidatorAnalyticsResponses];
-
-export type PublicValidatorHistoryData = {
-    body?: never;
-    path: {
-        /**
-         * Validator ID
-         */
-        validator_id: string;
-    };
-    query?: {
-        limit?: number;
-    };
-    url: '/api/public/v1/validators/{validator_id}/history';
-};
-
-export type PublicValidatorHistoryErrors = {
-    404: ApiErrorBody;
-    503: ApiErrorBody;
-};
-
-export type PublicValidatorHistoryError = PublicValidatorHistoryErrors[keyof PublicValidatorHistoryErrors];
-
-export type PublicValidatorHistoryResponses = {
-    200: PublicValidatorHistoryResponse;
-};
-
-export type PublicValidatorHistoryResponse2 = PublicValidatorHistoryResponses[keyof PublicValidatorHistoryResponses];
 
 export type LiveData = {
     body?: never;

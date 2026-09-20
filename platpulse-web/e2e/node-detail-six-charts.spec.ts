@@ -269,9 +269,13 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
   test('the breadcrumb keeps public Node Detail navigation intact', async ({ page }) => {
     await loginAs(page)
     await openNodeDetail(page)
-    await page.locator('[data-slot="node-detail-breadcrumb"] a').click()
-    await expect(page).toHaveURL(/\/networks\//)
-    await expect(page.getByRole('heading', { level: 1 })).toBeVisible({ timeout: 15_000 })
+    // The deleted Network overview route is not linked any more: the breadcrumb
+    // is named "All Networks" and returns Home.
+    const breadcrumb = page.locator('[data-slot="node-detail-breadcrumb"] a')
+    await expect(breadcrumb).toHaveText(/All Networks/)
+    await breadcrumb.click()
+    await expect(page).toHaveURL(/\/$/)
+    await expect(page.getByRole('region', { name: 'Home' })).toBeVisible({ timeout: 15_000 })
     await page.goBack()
     await expect(page.getByRole('heading', { level: 1, name: PUBLIC_NODE_NAME })).toBeVisible({ timeout: 15_000 })
     await expect(page.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeVisible()

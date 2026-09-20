@@ -1,24 +1,18 @@
-import { ArrowLeft, ArrowRight, ChevronRight } from 'lucide-react'
+import { ArrowLeft, ChevronRight } from 'lucide-react'
 import { useId } from 'react'
 import type { ReactNode } from 'react'
 import { Link, useParams } from 'react-router'
 import {
-  usePublicNetwork,
   usePublicNode,
   usePublicNodeHistory,
   usePublicNodeMetrics,
   usePublicNodePeerHistory,
-  usePublicValidatorAnalytics,
-  usePublicValidatorHistory,
 } from '../api/public'
-import type { PublicMetricPoint, PublicNode, PublicNodeMetricHistory, PublicValidatorInsight } from '../api/generated'
+import type { PublicMetricPoint, PublicNode, PublicNodeMetricHistory } from '../api/generated'
 import { useHomeRealtimeContext } from '../layouts/HomeLayout'
 import { PeerInsight, peerInsightCollectionStatus, peerInsightFreshnessStatus, peerInsightValueStatus } from '../components/PeerInsight'
 import { PeerHistoryInsight, normalizePublicPeerHistory } from '../components/PeerHistoryInsight'
-import { GeoInsight } from '../components/GeoInsight'
-import { ValidatorInsight } from '../components/ValidatorInsight'
-import { ValidatorAnalytics } from '../components/ValidatorAnalytics'
-import { formatRelativeTime, formatUtcDateTime, NodeHealthMarker, StatusBadge } from '../components/StatusBadge'
+import { formatUtcDateTime, NodeHealthMarker } from '../components/StatusBadge'
 import { LinkedValidatorSection } from '../components/LinkedValidator'
 import { RealtimeNotice } from '../components/RealtimeNotice'
 import { formatNodeDataBytes } from '../formatBytes'
@@ -27,71 +21,12 @@ import { nodeDataProgress } from '../nodeData'
 import { MetricRow } from '../components/MetricRow'
 import { CardX } from '../components/ui/card-x'
 import { Alert, AlertDescription } from '../components/ui/alert'
-import { Empty } from '../components/ui/empty'
 import { Spinner } from '../components/ui/spinner'
 import { SURFACE_CARD } from '../lib/surface'
 import { cn } from '../lib/utils'
 
 const PAGE = 'min-w-0 p-4'
 const CARD = cn('min-w-0 rounded-md border-none', SURFACE_CARD)
-const NODE_CARD_GRID = 'grid grid-cols-1 gap-3 sm:grid-cols-[repeat(auto-fill,minmax(300px,1fr))]'
-
-export function NetworkPage() {
-  const { networkKey = '' } = useParams()
-  const { generation, resetting, realtime } = useHomeRealtimeContext()
-  const query = usePublicNetwork(networkKey, generation)
-
-  if (resetting) return <section className={PAGE}><RealtimeNotice realtime={realtime} /><p role="status" className="mt-3 text-sm text-muted-foreground">Revalidating Home access…</p></section>
-  if (query.isPending) return <section className={cn(PAGE, 'relative min-h-32')}><RealtimeNotice realtime={realtime} /><Spinner label="Loading public Network data"><span className="text-sm text-muted-foreground">Network is Starting; loading public data…</span></Spinner></section>
-  if (query.error && !query.data) return <section className={PAGE}><RealtimeNotice realtime={realtime} /><Alert variant="destructive" className="mt-3 rounded-md border-none bg-red-400/10"><AlertDescription>Network is Error; {query.error instanceof Error ? query.error.message : 'public Network data is unavailable.'}</AlertDescription></Alert><Link className="mt-3 inline-flex min-h-11 min-w-11 items-center text-sm font-medium text-emerald-600 hover:underline dark:text-emerald-400" to="/">Back to Home</Link></section>
-  if (!query.data) return <section className={PAGE}><RealtimeNotice realtime={realtime} /><p role="status" className="mt-3 text-sm text-muted-foreground">Network is Unknown; public data is unavailable.</p><Link className="mt-3 inline-flex min-h-11 min-w-11 items-center text-sm font-medium text-emerald-600 hover:underline dark:text-emerald-400" to="/">Back to Home</Link></section>
-
-  const network = query.data
-  return <section className={PAGE} aria-labelledby="network-page-title">
-    <nav className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-medium" aria-label="Breadcrumb">
-      <Link className="inline-flex min-h-11 min-w-11 items-center text-muted-foreground hover:text-foreground" to="/"><ArrowLeft size={16} aria-hidden="true" /> All Networks</Link>
-      <span aria-hidden="true" className="text-muted-foreground">/</span>
-      <span className="text-muted-foreground">Network overview</span>
-    </nav>
-    <header className="mt-1 flex flex-col gap-2">
-      <div className="min-w-0">
-        <h1 id="network-page-title" className="m-0 break-words text-lg font-semibold md:text-2xl">{network.displayName}</h1>
-        <p className="m-0 mt-1 text-sm text-muted-foreground">Active PlatON Nodes and network-level public observations.</p>
-        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2" aria-label="Network identity and live updates">
-          <span className="min-w-0 break-all text-xs text-muted-foreground">Network key <code className="font-mono font-semibold text-foreground">{network.networkKey}</code></span>
-          <RealtimeNotice realtime={realtime} />
-        </div>
-      </div>
-    </header>
-    {query.isRefetchError && <p role="status" className="mt-3 text-sm text-destructive">Network refresh failed; showing the last successful Network data.</p>}
-    <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
-      <PeerInsight insight={network.peers} />
-      <GeoInsight insight={network.geo} peerState={network.peers.state} />
-    </div>
-    {network.validators.length > 0 && <>
-      <h2 className="mb-2 mt-4 text-lg font-semibold">Validators</h2>
-      <div className={NODE_CARD_GRID}>{network.validators.map((validator) => <ValidatorCard key={validator.validatorId} validator={validator} generation={generation} />)}</div>
-    </>}
-    <CardX bordered={false} data-slot="network-nodes-panel" className={cn('mt-4', CARD)}>
-      <section className="min-w-0" aria-labelledby="network-nodes-title">
-        <h2 id="network-nodes-title" className="m-0 mb-2 text-lg font-semibold">PlatON Nodes</h2>
-        {network.nodes.length === 0
-          ? <Empty description={<span role="status">Empty: this Network has no Active Nodes.</span>} />
-          : <div className={NODE_CARD_GRID}>{network.nodes.map((node) => <NodeCard node={node} key={node.nodeId} />)}</div>}
-      </section>
-    </CardX>
-  </section>
-}
-
-function ValidatorCard({ validator, generation }: { validator: PublicValidatorInsight; generation: number }) {
-  const history = usePublicValidatorHistory(validator.validatorId, 20, generation)
-  const analytics = usePublicValidatorAnalytics(validator.validatorId, 31, generation)
-  return <CardX bordered={false} data-slot="validator-card" className={CARD} contentClassName="flex min-w-0 flex-col gap-2">
-    <ValidatorInsight insight={validator} history={history.data?.entries} />
-    {analytics.data && <ValidatorAnalytics analytics={analytics.data} compact />}
-    {history.error && <p role="status" className="m-0 text-xs text-muted-foreground">Validator history unavailable.</p>}
-  </CardX>
-}
 
 export function NodePage() {
   const { nodeId = '' } = useParams()
@@ -123,7 +58,7 @@ export function NodePage() {
   return <section className={PAGE}>
     <div data-slot="node-detail-breadcrumb" className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-medium text-muted-foreground">
-        <Link className="inline-flex min-h-11 min-w-11 items-center hover:text-foreground" to={'/networks/' + node.networkKey}><ArrowLeft size={16} aria-hidden="true" />{node.networkKey}</Link>
+        <Link className="inline-flex min-h-11 min-w-11 items-center hover:text-foreground" to="/"><ArrowLeft size={16} aria-hidden="true" />All Networks</Link>
         <span aria-hidden="true">/</span>
         <span>Node detail</span>
       </div>
@@ -670,26 +605,6 @@ function formatReferenceDetail(node: PublicNode): string {
   return 'Server Observed Network Head · ' + (node.networkReferenceConfidence || 'unknown') + ' confidence'
 }
 
-function nodeOverviewTone(state: string): 'ok' | 'warning' | 'error' | 'neutral' {
-  switch (state) {
-    case 'Current': return 'ok'
-    case 'Starting': return 'warning'
-    case 'Error': return 'error'
-    case 'Unsupported': return 'warning'
-    default: return 'neutral'
-  }
-}
-
-function NodeOverviewStatus({ label, value }: { label: string; value: string }) {
-  const state = nodeComponentStateLabel(value)
-  return (
-    <div className="flex min-w-0 flex-col gap-1">
-      <span className="text-xs font-medium tracking-wider text-muted-foreground">{label}</span>
-      <StatusBadge status={state} tone={nodeOverviewTone(state)} />
-    </div>
-  )
-}
-
 function nodeComponentStateLabel(value: string | null | undefined): string {
   const state = typeof value === 'string' ? value.trim().toLowerCase() : undefined
   switch (state) {
@@ -719,64 +634,6 @@ function nodeHealthPresentation(value: string | null | undefined): NodeHealthPre
 function nodeDisplayName(node: Pick<PublicNode, 'displayName' | 'nodeId'>): string {
   const displayName = typeof node.displayName === 'string' ? node.displayName.trim() : ''
   return displayName || node.nodeId
-}
-
-type ComponentUpdateTime = { timestamp: string; date: Date }
-
-const COMPONENT_TIMESTAMP_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/
-
-/** PublicNode.freshness is the Server-computed earliest receipt timestamp. */
-function parseComponentUpdateTime(value: string | null | undefined): ComponentUpdateTime | null {
-  const timestamp = typeof value === 'string' ? value.trim() : undefined
-  if (!timestamp) return null
-
-  const match = COMPONENT_TIMESTAMP_PATTERN.exec(timestamp)
-  if (!match) return null
-
-  const year = Number(match[1])
-  const month = Number(match[2])
-  const day = Number(match[3])
-  const hour = Number(match[4])
-  const minute = Number(match[5])
-  const second = Number(match[6])
-  const timezone = match[7]
-  const offsetHour = timezone === 'Z' ? 0 : Number(timezone.slice(1, 3))
-  const offsetMinute = timezone === 'Z' ? 0 : Number(timezone.slice(4, 6))
-  const daysInMonth = month === 2
-    ? year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28
-    : [4, 6, 9, 11].includes(month) ? 30 : 31
-
-  if (
-    month < 1 || month > 12 || day < 1 || day > daysInMonth
-    || hour > 23 || minute > 59 || second > 59
-    || offsetHour > 23 || offsetMinute > 59
-  ) return null
-
-  const date = new Date(timestamp)
-  return Number.isNaN(date.getTime()) ? null : { timestamp, date }
-}
-
-function NodeUpdateTime({ value }: { value: PublicNode['freshness'] }) {
-  const update = parseComponentUpdateTime(value)
-  if (!update) {
-    return (
-      <MetricRow
-        label="Oldest component update"
-        value="Unknown"
-        detail="RPC, Sync, and Consensus receipt time is unavailable."
-      />
-    )
-  }
-
-  const relative = formatRelativeTime(update.date)
-  const absolute = formatUtcDateTime(update.date)
-  return (
-    <MetricRow
-      label="Oldest component update"
-      value={<time dateTime={update.timestamp} title={absolute} aria-label={relative + '; ' + absolute}>{relative}</time>}
-      detail={<><time dateTime={update.timestamp}>{absolute}</time><span className="block">Earliest Server receipt across RPC, Sync, and Consensus</span></>}
-    />
-  )
 }
 
 function formatNumber(value: number | null | undefined): string {
@@ -820,35 +677,4 @@ function peerBreakdown(insight: PublicNode['peers']): string {
 
   if (value === 'Empty') return 'Empty; authoritative successful zero; ' + directionSummary
   return directionSummary
-}
-
-function NodeCard({ node }: { node: PublicNode }) {
-  const health = nodeHealthPresentation(node.health)
-  const showHealthReason = health.tone !== 'ok'
-  const displayName = nodeDisplayName(node)
-  const titleId = 'network-node-card-title-' + node.nodeId
-  return (
-    <CardX bordered={false} data-slot="node-card" data-tone={health.tone} className={cn('group/node-card min-w-0 transition-all duration-200', CARD, 'hover:-translate-y-0.5 hover:shadow-[0_0_20px,0_0_0_1px] hover:shadow-emerald-600/10')} contentClassName="flex h-full min-w-0 flex-col gap-3">
-      <article className="flex min-w-0 flex-col gap-3" aria-labelledby={titleId}>
-        <header className="flex min-w-0 items-start gap-2" role="group" aria-label="Node identity and health">
-          <NodeHealthMarker health={node.health} />
-          <h2 id={titleId} className="m-0 min-w-0 text-base font-semibold leading-snug">
-            <Link className="inline-flex min-h-11 min-w-11 items-center break-words hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring" to={'/nodes/' + node.nodeId}>{displayName}</Link>
-          </h2>
-        </header>
-        {showHealthReason && <p className="m-0 break-words text-[11px] text-warning-foreground dark:text-warning">{node.healthReason || 'Server health reason unavailable.'}</p>}
-        <div className="grid grid-cols-1 gap-2 border-t border-dashed border-border/60 pt-2" role="group" aria-label="Node summary facts">
-          <MetricRow label="Head" value={formatNumber(node.currentHead)} />
-          <MetricRow label="Peers" value={peerCount(node.peers)} detail={peerBreakdown(node.peers)} />
-          <NodeUpdateTime value={node.freshness} />
-        </div>
-        <div className="grid grid-cols-1 gap-2 min-[42rem]:grid-cols-3" role="group" aria-label="Node component status">
-          <NodeOverviewStatus label="RPC" value={node.rpcState} />
-          <NodeOverviewStatus label="Sync" value={node.syncState} />
-          <NodeOverviewStatus label="Consensus" value={node.consensusState} />
-        </div>
-        <Link className="mt-auto inline-flex min-h-11 min-w-11 items-center justify-end gap-1 text-sm font-semibold text-emerald-600 hover:underline dark:text-emerald-400" to={'/nodes/' + node.nodeId}>View details <ArrowRight size={16} aria-hidden="true" /></Link>
-      </article>
-    </CardX>
-  )
 }

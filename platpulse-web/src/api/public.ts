@@ -2,17 +2,12 @@ import { QueryClient, useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import {
   publicAccessSettings,
-  publicNetwork,
   publicNetworks,
   publicNodeDetail,
   publicNodeHistory,
   publicNodeMetrics,
   publicNodePeerHistory,
-  publicValidatorAnalytics,
-  publicValidatorHistory,
   type PublicBlockHistoryItem,
-  type PublicValidatorAnalyticsResponse,
-  type PublicValidatorHistoryResponse,
   type PublicNetwork,
   type PublicNode,
   type PublicNodeMetricHistory,
@@ -53,17 +48,12 @@ export const publicQueryClient = new QueryClient({
 export const publicKeys = {
   all: ['public'] as const,
   networks: ['public', 'networks'] as const,
-  network: (networkKey: string) => ['public', 'network', networkKey] as const,
   nodes: ['public', 'node'] as const,
   node: (nodeId: string) => ['public', 'node', nodeId] as const,
   history: (nodeId: string) => ['public', 'node', nodeId, 'history'] as const,
   metrics: (nodeId: string) => ['public', 'node', nodeId, 'metrics'] as const,
   peerHistory: (nodeId: string) => ['public', 'node', nodeId, 'peer-history'] as const,
   validators: ['public', 'validator'] as const,
-  validatorHistory: (validatorId: string, limit: number) =>
-    ['public', 'validator', validatorId, 'history', limit] as const,
-  validatorAnalytics: (validatorId: string, limit: number) =>
-    ['public', 'validator', validatorId, 'analytics', limit] as const,
 } as const
 
 function contextOf(
@@ -88,15 +78,6 @@ export async function fetchNetworks(signal?: AbortSignal, generation?: number): 
     () => publicNetworks({ signal: context.signal, headers: headersOf(context) }),
     'Unable to load Active Nodes',
   )
-}
-
-export async function fetchNetwork(networkKey: string, signal?: AbortSignal, generation?: number): Promise<PublicNetwork> {
-  const context = contextOf(signal, generation)
-  const network = await requestGenerated(
-    () => publicNetwork({ path: { network_key: networkKey }, signal: context.signal, headers: headersOf(context) }),
-    'Unable to load Network',
-  )
-  return network
 }
 
 export async function fetchNode(nodeId: string, signal?: AbortSignal, generation?: number): Promise<PublicNode> {
@@ -187,22 +168,6 @@ export async function fetchNodePeerHistory(nodeId: string, signal?: AbortSignal,
   )
 }
 
-export async function fetchValidatorHistory(validatorId: string, limit = 50, signal?: AbortSignal, generation?: number): Promise<PublicValidatorHistoryResponse> {
-  const context = contextOf(signal, generation)
-  return requestGenerated(
-    () => publicValidatorHistory({ path: { validator_id: validatorId }, query: { limit }, signal: context.signal, headers: headersOf(context) }),
-    'Unable to load Validator history',
-  )
-}
-
-export async function fetchValidatorAnalytics(validatorId: string, limit = 31, signal?: AbortSignal, generation?: number): Promise<PublicValidatorAnalyticsResponse> {
-  const context = contextOf(signal, generation)
-  return requestGenerated(
-    () => publicValidatorAnalytics({ path: { validator_id: validatorId }, query: { limit }, signal: context.signal, headers: headersOf(context) }),
-    'Unable to load Validator analytics',
-  )
-}
-
 export async function fetchNodeMetrics(nodeId: string, signal?: AbortSignal, generation?: number): Promise<PublicNodeMetricHistory> {
   const context = contextOf(signal, generation)
   return requestGenerated(
@@ -221,15 +186,6 @@ export async function fetchNodeHistory(nodeId: string, signal?: AbortSignal, gen
 
 export function usePublicNetworks(generation: number, enabled = true) {
   return useQuery({ queryKey: [...publicKeys.networks, generation], queryFn: ({ signal }) => fetchNetworks(signal, generation), enabled })
-}
-
-export function usePublicNetwork(networkKey: string, generation: number) {
-  const queryKey = [...publicKeys.network(networkKey), generation] as const
-  return useQuery({
-    queryKey,
-    queryFn: ({ signal }) => fetchNetwork(networkKey, signal, generation),
-    enabled: networkKey.length > 0,
-  })
 }
 
 export function usePublicNode(nodeId: string, generation: number) {
@@ -261,22 +217,6 @@ export function usePublicNodePeerHistory(nodeId: string, generation: number) {
     queryKey: [...publicKeys.peerHistory(nodeId), generation],
     queryFn: ({ signal }) => fetchNodePeerHistory(nodeId, signal, generation),
     enabled: nodeId.length > 0,
-  })
-}
-
-export function usePublicValidatorHistory(validatorId: string, limit: number, generation: number) {
-  return useQuery({
-    queryKey: [...publicKeys.validatorHistory(validatorId, limit), generation],
-    queryFn: ({ signal }) => fetchValidatorHistory(validatorId, limit, signal, generation),
-    enabled: validatorId.length > 0,
-  })
-}
-
-export function usePublicValidatorAnalytics(validatorId: string, limit: number, generation: number) {
-  return useQuery({
-    queryKey: [...publicKeys.validatorAnalytics(validatorId, limit), generation],
-    queryFn: ({ signal }) => fetchValidatorAnalytics(validatorId, limit, signal, generation),
-    enabled: validatorId.length > 0,
   })
 }
 
@@ -330,9 +270,8 @@ export function invalidatePublicResource(resource: string, resourceId?: string, 
   const generation = activePublicGeneration()
   if (resource === 'geo') {
     // A completed background resolution or a provider change updates the
-    // country counts inside the Network list and every Network projection.
+    // country counts inside the Network list.
     invalidatePublicNamespace(publicKeys.networks, generation)
-    invalidatePublicNamespace(['public', 'network'], generation)
     return
   }
   const keys: Array<readonly unknown[]> = (() => {
@@ -342,11 +281,9 @@ export function invalidatePublicResource(resource: string, resourceId?: string, 
           ? [publicKeys.node(resourceId), publicKeys.history(resourceId), publicKeys.metrics(resourceId), publicKeys.peerHistory(resourceId)]
           : [publicKeys.nodes, publicKeys.networks]
       case 'network':
-        return [publicKeys.networks, ...(resourceId ? [publicKeys.network(resourceId)] : [])]
+        return [publicKeys.networks]
       case 'validator':
-        return resourceId
-          ? [publicKeys.validatorHistory(resourceId, 20), publicKeys.validatorAnalytics(resourceId, 31)]
-          : [publicKeys.validators, publicKeys.networks]
+        return [publicKeys.validators, publicKeys.networks]
       case 'collection':
         return [publicKeys.all]
       default:
@@ -354,7 +291,7 @@ export function invalidatePublicResource(resource: string, resourceId?: string, 
     }
   })()
   for (const queryKey of keys) {
-    if (resourceId !== undefined || queryKey === publicKeys.networks || queryKey === publicKeys.network(resourceId ?? '')) {
+    if (resourceId !== undefined || queryKey === publicKeys.networks) {
       invalidatePublicExact(queryKey, generation)
     } else {
       invalidatePublicNamespace(queryKey, generation)

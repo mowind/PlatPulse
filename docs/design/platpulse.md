@@ -18,7 +18,7 @@
 
 产品分离参照 Komari（<https://github.com/komari-monitor/komari>），但监控对象是 PlatON Node 而不是服务器：
 
-- Home：只读、以 Node 为中心的监控面。根路由 `/` 展示 Active Node 卡片，Network → Node → Node Detail 展开公共投影；Network Overview 还展示聚合 Peer Insight、country-only Geo Insight、Validator cards/history/analytics。Node Detail 由最近两个连续 Block Summary 推导出块间隔，但不展示 Bounded Block History 列表。Site Access Mode 为 Public 时匿名 Guest 可读选定 Public GET/SSE 路径；为 Private 时 Owner 或 Viewer 登录后可读。
+- Home：只读、以 Node 为中心的监控面。根路由 `/` 以 All Networks 展示 Active Node 卡片，并进入 Node Detail 展开公共投影。Node Detail 由最近两个连续 Block Summary 推导出块间隔，但不展示 Bounded Block History 列表。Site Access Mode 为 Public 时匿名 Guest 可读选定 Public GET/SSE 路径；为 Private 时 Owner 或 Viewer 登录后可读。
 - Admin：认证后的 Owner-only 系统概览与配置面。当前 SPA 路由覆盖 Overview、Agents、Nodes、Networks、Settings、Sessions 与 Audit；Settings 现在包含 Geo provider 选择（Disabled / Local MMDB / IPinfo / GeoJS）。Server/Admin API 另外提供 Validator、Alert、Notification、Operation、Retention、Backup/Restore、Doctor、Transfer、People、Enrollment/Recovery/Rotation 等能力，但尚未全部注册为页面。
 - 同一个 WebUI 承载 `/` 与 `/admin` 两组路由，使用不同的 DTO、查询缓存、权限和导航。
 - 站点级 Site Access Mode（Public/Private）由 Owner 配置，变更记 Audit；当前默认 Private。Node DTO 和 Admin 页面仍保留 `visibility` 字段与 Owner mutation 作为兼容/诊断字段，但 Public 查询实际按 `lifecycle = active` 过滤，不按该字段隐藏 Home；站点模式才是有效的匿名访问开关。
@@ -47,7 +47,7 @@
                         ▼
 ┌──────────────────────────────────────────────┐
 │ platpulse-web                                │
-│ - Home：Network → Node → Node Detail          │
+│ - Home：All Networks → Node → Node Detail     │
 │ - Admin：概览与配置（不复制 Home Node Detail） │
 └──────────────────────────────────────────────┘
 ~~~
@@ -425,17 +425,14 @@ POST /api/public/v1/login
 POST /api/public/v1/logout
 GET  /api/public/v1/session
 GET  /api/public/v1/networks
-GET  /api/public/v1/networks/{network_key}
 GET  /api/public/v1/nodes/{node_id}
 GET  /api/public/v1/nodes/{node_id}/history
 GET  /api/public/v1/nodes/{node_id}/history/export
 GET  /api/public/v1/nodes/{node_id}/metrics
 GET  /api/public/v1/nodes/{node_id}/peer-history
-GET  /api/public/v1/validators/{validator_id}/history
-GET  /api/public/v1/validators/{validator_id}/analytics
 ~~~
 
-`peer-history` 是选定 Node 的聚合历史，不存在 Network-wide 的替代 endpoint。Public `networks` 列表只由有 Active Node 的 Network 产生；Network detail 在没有 Active Node 时返回 `404 not_found`，不是 `200 {nodes: []}`。
+`peer-history` 是选定 Node 的聚合历史，不存在 Network-wide 的替代 endpoint。Public `networks` 列表只由有 Active Node 的 Network 产生。
 
 **Admin group（Human Session + Owner role）：**
 
@@ -494,10 +491,9 @@ Public 与 Admin Projection 都由 Server 计算 Health，浏览器不得自行�
 
 ### 9.1 Home
 
-只读 Public Projection，Network → Node → Node Detail：
+只读 Public Projection，All Networks → Node → Node Detail：
 
-- Network 列表；
-- Network 概览（Active Node 列表/卡片）；
+- All Networks（Network 筛选与 Active Node 列表/卡片）；
 - Node Detail：一个 Komari 风格的紧凑主卡片展示 Node 名称、Node Health Summary、Node status、独立 Validator role、进程运行时间、PlatON 进程 CPU、进程内存占比、Node Data 大小/容量、`HEAD / QC / LOCKED / COMMITTED / VALIDATOR`、进程启动时间和 Agent 最后上报时间；主卡片使用中性细边框，不显示彩色顶部/边缘色条。CPU、Memory 与 Node Data 在主卡片内沿用 Home Node 卡片的紧凑当前值和进度条层级。Details 仅展示四张等高、缩小内边距与图表高度的一分钟图表卡片：Host 网络上下行、Peer 连接数、最近连续区块间隔与最新 Block Summary 交易数；Network 与 Connections 使用折线图，Block time 与 Transactions 使用柱状图；不伪造中间点，不以 0 替代未知值。进程内存占比使用该进程 RSS 除以所属 Host 总内存；不展示 Bounded Block History 列表或历史导出。
 
 Home 顶部为紧凑概览：左侧 2×2 全局统计（Active Nodes / Healthy Nodes、Attention / Networks，始终为全局口径），右侧透明 Peer 国家地图；统计与地图共用浅绿渐变与淡网格，筛选与排序仅改变下方 Node 列表和地图范围。地图只使用 Server 提供的国家计数与国家代表点：国家按 Peer 记录逐 Node 计数（不按 IP 去重），未知国家不绘制，无法绘制或缺少代表点的国家保留可访问文字统计，不使用 `[0, 0]` 或随机点回退，也不表示受监控 Node 的部署位置。底图为固定版本、本地托管的世界国家几何（Natural Earth 1:110m Admin 0 Countries，公有领域），由 `platpulse-web/scripts/build-world-geometry.mjs` 离线生成并随 WebUI 静态资源同源托管；运行时不访问地图 CDN 或在线瓦片。Geo 停用、底图加载失败或地图渲染失败只在概览局部降级，不影响统计、筛选、排序与 Node 卡片。

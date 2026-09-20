@@ -20,7 +20,6 @@ import {
  */
 
 const PUBLIC_NETWORK_NAME = 'PlatON E2E Network'
-const PUBLIC_NETWORK_KEY = 'platon-e2e'
 const PUBLIC_NODE_NAME = 'Node A'
 const PUBLIC_NODE_ID = '0195f2a1-0014-4014-8014-000000000014'
 
@@ -146,7 +145,7 @@ async function openAdminNavLink(page: Page, linkName: string) {
 }
 
 test.describe('Converged WebUI acceptance (issue #95)', () => {
-  test('Public Home → Node Detail → Network works at every fixed viewport', async ({ page }) => {
+  test('Public Home → Node Detail → Home works at every fixed viewport', async ({ page }) => {
     await loginAs(page)
     await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()
 
@@ -163,17 +162,17 @@ test.describe('Converged WebUI acceptance (issue #95)', () => {
     await openPeerDisclosure(page)
     await expect(page.getByRole('heading', { name: 'Peer history' })).toBeVisible()
 
-    // Node Detail → Network overview via the breadcrumb (the Home card
-    // Network display name is plain text, not a nested link).
-    await page.getByRole('link', { name: PUBLIC_NETWORK_KEY, exact: true }).click()
-    await expect(page).toHaveURL(new RegExp(`/networks/${PUBLIC_NETWORK_KEY}$`))
-    await expect(page.getByRole('heading', { level: 1, name: PUBLIC_NETWORK_NAME })).toBeVisible({
+    // Node Detail → Home via the breadcrumb: the Network overview route is
+    // gone, so the "All Networks" link returns to the Home dashboard.
+    await page.getByRole('link', { name: 'All Networks', exact: true }).click()
+    await expect(page).toHaveURL(/\/$/)
+    await expect(page.getByRole('region', { name: 'Home' })).toBeVisible({
       timeout: 15_000,
     })
     await expectNoHorizontalOverflow(page)
 
-    // Network → Node Detail.
-    await page.getByRole('link', { name: PUBLIC_NODE_NAME }).click()
+    // Home → Node Detail again through the whole-card Node link.
+    await page.getByRole('link', { name: PUBLIC_NODE_NAME }).first().click()
     await expect(page).toHaveURL(new RegExp(`/nodes/${PUBLIC_NODE_ID}$`))
     await expect(page.getByRole('heading', { level: 1, name: PUBLIC_NODE_NAME })).toBeVisible({
       timeout: 15_000,

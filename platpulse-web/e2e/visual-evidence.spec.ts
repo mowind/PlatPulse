@@ -111,12 +111,7 @@ test('capture Emerald migration evidence', async ({ page }, testInfo) => {
   await waitForChartsSettled(page)
   await page.screenshot({ path: dir + '/public.node-detail.png', fullPage: true })
 
-  const networkLink = page.locator('a[href^="/networks/"]').first()
-  await expect(networkLink).toBeVisible()
-  await networkLink.click()
-  await expect(page.locator('#network-page-title')).toBeVisible({ timeout: 15_000 })
-  await expect(page.locator('[data-slot="network-nodes-panel"]')).toBeVisible()
-  await page.screenshot({ path: dir + '/public.network-detail.png', fullPage: true })
+  // The Network overview page is deleted; its evidence capture is gone with it.
 
   for (const [name, path] of PAGES) {
     await page.goto(path)

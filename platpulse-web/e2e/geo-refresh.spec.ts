@@ -57,10 +57,13 @@ test.describe('Owner global Geo refresh', () => {
 
     const publicPage = await page.context().newPage()
     try {
+      // The Network overview route is deleted; a deep link now replaces itself
+      // with Home, where the same Server-owned Geo Insight drives the map.
       await publicPage.goto('/networks/platon-e2e')
-      await expect(
-        publicPage.getByRole('heading', { level: 1, name: 'PlatON E2E Network' }),
-      ).toBeVisible()
+      await expect(publicPage).toHaveURL(/\/$/)
+      await expect(publicPage.getByRole('region', { name: 'Home' })).toBeVisible({ timeout: 15_000 })
+      // Keep the map scoped to the Network the deleted page used to show.
+      await publicPage.getByRole('tab', { name: 'PlatON E2E Network' }).click()
 
       await local.check()
       await save.click()
@@ -111,8 +114,10 @@ test.describe('Owner global Geo refresh', () => {
       expect(status.last_success_at >= status.refresh.started_at).toBe(true)
 
       const countries = publicPage.getByRole('region', { name: 'Peer countries' })
-      await expect(countries).toContainText('SE', { timeout: 30_000 })
-      await expect(countries).toContainText('Known 1 · Unknown 2')
+      await expect(
+        countries.locator('[data-slot="geo-country-list"]'),
+      ).toContainText('Sweden', { timeout: 30_000 })
+      await expect(countries.locator('[data-slot="geo-counter"]')).toHaveText('Peers: 3')
 
       // Neither surface leaks the raw Peer address or the database path.
       await expect(page.getByText('89.160.20.112')).toHaveCount(0)
