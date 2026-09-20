@@ -59,11 +59,8 @@ import {
   cancelSilence as cancelSilenceApi,
   createMaintenanceWindow as createMaintenanceWindowApi,
   createNetwork,
-  createNodeValidatorLink,
-  createValidator,
   createSilence as createSilenceApi,
   deleteRuleOverride as deleteRuleOverrideApi,
-  endValidatorLink,
   previewAlertRule as previewAlertRuleApi,
   setAgentMetadata,
   purgeNode as purgeNodeApi,
@@ -90,7 +87,6 @@ import {
   triggerGeoRefresh as triggerGeoRefreshApi,
   updateNetwork,
   updateHistoryWindow,
-  updateValidatorLink,
   type AccessSettingsResponse,
   type GeoProviderMutationResponse,
   type GeoRefreshMutationResponse,
@@ -171,15 +167,9 @@ import {
   type NetworkCreateRequest,
   type NodeValidatorLink,
   type Validator,
-  type ValidatorCreateRequest,
   type ValidatorDetail,
   type AdminValidatorAnalyticsResponse,
   type AdminValidatorHistoryResponse,
-  type ValidatorLinkCreateRequest,
-  type ValidatorLinkEndRequest,
-  type ValidatorLinkMutationResponse,
-  type ValidatorLinkUpdateRequest,
-  type ValidatorMutationResponse,
   type NetworkResponse,
   type NetworkUpdateRequest,
   type NodeMetadataRequest,
@@ -687,78 +677,6 @@ export function useAdminValidatorLinks(
     queryKey: [...adminKeys.validatorLinks, filters, generation],
     queryFn: ({ signal }) => fetchAdminValidatorLinks(filters, signal),
   })
-}
-
-export async function registerValidator(
-  networkKey: string,
-  request: ValidatorCreateRequest,
-  csrfToken: string,
-): Promise<ValidatorMutationResponse> {
-  const response = await requestAdmin(
-    () =>
-      createValidator({
-        path: { network_key: networkKey },
-        body: request,
-        headers: { 'X-CSRF-Token': csrfToken },
-      }),
-    'Unable to register the Validator',
-  )
-  void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
-  return response
-}
-
-export async function createValidatorLink(
-  nodeId: string,
-  request: ValidatorLinkCreateRequest,
-  csrfToken: string,
-): Promise<ValidatorLinkMutationResponse> {
-  const response = await requestAdmin(
-    () =>
-      createNodeValidatorLink({
-        path: { node_id: nodeId },
-        body: request,
-        headers: { 'X-CSRF-Token': csrfToken },
-      }),
-    'Unable to create the Node Validator Link',
-  )
-  void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
-  return response
-}
-
-export async function editValidatorLink(
-  linkId: string,
-  request: ValidatorLinkUpdateRequest,
-  csrfToken: string,
-): Promise<ValidatorLinkMutationResponse> {
-  const response = await requestAdmin(
-    () =>
-      updateValidatorLink({
-        path: { link_id: linkId },
-        body: request,
-        headers: { 'X-CSRF-Token': csrfToken },
-      }),
-    'Unable to update the Node Validator Link',
-  )
-  void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
-  return response
-}
-
-export async function endValidator(
-  linkId: string,
-  request: ValidatorLinkEndRequest,
-  csrfToken: string,
-): Promise<ValidatorLinkMutationResponse> {
-  const response = await requestAdmin(
-    () =>
-      endValidatorLink({
-        path: { link_id: linkId },
-        body: request,
-        headers: { 'X-CSRF-Token': csrfToken },
-      }),
-    'Unable to end the Node Validator Link',
-  )
-  void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
-  return response
 }
 
 /**
