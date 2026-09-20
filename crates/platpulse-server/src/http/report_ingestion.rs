@@ -1573,8 +1573,12 @@ async fn handler(
         };
         return receipt_response(receipt);
     }
+    // A removed Agent carries the durable removal boundary (design §15.2,
+    // #171). Reading the row inside the receipt transaction with the live
+    // predicate makes a late report fail exactly like an invalid credential,
+    // so no later Inventory, retry, or restart can reconstruct its Nodes.
     let agent = match sqlx::query_as::<_, AgentRow>(
-        "SELECT agent_epoch, active_boot_id, active_boot_status, previous_boot_id, close_report_id, last_report_sequence, last_inventory_revision FROM agents WHERE agent_id = ?",
+        "SELECT agent_epoch, active_boot_id, active_boot_status, previous_boot_id, close_report_id, last_report_sequence, last_inventory_revision FROM agents WHERE agent_id = ? AND deleted_at IS NULL",
     )
     .bind(&auth.agent_id)
     .fetch_optional(&mut *tx)

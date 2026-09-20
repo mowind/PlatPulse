@@ -14,6 +14,64 @@ export type AccessSettingsResponse = {
     mode: string;
 };
 
+/**
+ * Owner-only impact preview returned before an Agent Removal. It reuses the
+ * same Server-side measurement the mutation performs, so a confirmation
+ * cannot describe a different scope than the one erased.
+ */
+export type AdminAgentRemovalImpact = {
+    active_credential_count: number;
+    /**
+     * False while an unhandled Transfer blocks the removal.
+     */
+    can_remove: boolean;
+    counts: AdminNodePurgeCounts;
+    credential_count: number;
+    owned_nodes: Array<AdminAgentRemovalNode>;
+    pending_transfers: Array<AdminAgentRemovalTransfer>;
+    target: AdminAgentRemovalTarget;
+};
+
+/**
+ * One Node an Agent authoritatively owns, listed in the removal confirmation
+ * so the Owner sees exactly which Nodes will be permanently purged.
+ */
+export type AdminAgentRemovalNode = {
+    display_name?: string | null;
+    inventory_revision: number;
+    lifecycle: string;
+    network_display_name: string;
+    network_key: string;
+    node_id: string;
+    visibility: string;
+};
+
+/**
+ * The exact Agent an Owner is about to remove.
+ */
+export type AdminAgentRemovalTarget = {
+    agent_epoch: number;
+    agent_id: string;
+    created_at: string;
+    display_name?: string | null;
+    last_received_at?: string | null;
+    notes?: string | null;
+    updated_at: string;
+};
+
+/**
+ * A still-pending Transfer involving the Agent that blocks its removal until
+ * it is completed, cancelled, or expired.
+ */
+export type AdminAgentRemovalTransfer = {
+    direction: string;
+    expires_at: string;
+    node_id: string;
+    source_agent_id: string;
+    target_agent_id: string;
+    transfer_id: string;
+};
+
 export type AdminBlockHistoryItem = {
     attributionReason?: string | null;
     blockTimeMs?: number | null;
@@ -502,6 +560,38 @@ export type AgentMetadataResponse = {
     agent_id: string;
     display_name?: string | null;
     notes?: string | null;
+};
+
+/**
+ * One Node permanently purged by the Agent Removal.
+ */
+export type AgentRemovalPurgedNode = {
+    node_id: string;
+    removed: AdminNodePurgeCounts;
+};
+
+/**
+ * Owner-confirmed Agent Removal request. The echoed Agent ID and the Node ID
+ * list are a scope re-check, never the authorization boundary: the Server
+ * still re-measures ownership inside the mutation transaction and refuses to
+ * delete a Node the Owner did not confirm.
+ */
+export type AgentRemovalRequest = {
+    confirmAgentId: string;
+    confirmedNodeIds?: Array<string>;
+};
+
+/**
+ * Authoritative completion of an Agent Removal. The response is only produced
+ * after the transaction that revoked the credentials, purged the owned Nodes,
+ * marked the Agent removed, and appended the Audit Event has committed.
+ */
+export type AgentRemovalResponse = {
+    agent_id: string;
+    deleted_at: string;
+    purged_nodes: Array<AgentRemovalPurgedNode>;
+    removed: AdminNodePurgeCounts;
+    revoked_credential_count: number;
 };
 
 export type AgentSummary = {
@@ -2686,6 +2776,57 @@ export type AdminRecoveryTokenResponses = {
 };
 
 export type AdminRecoveryTokenResponse = AdminRecoveryTokenResponses[keyof AdminRecoveryTokenResponses];
+
+export type AdminAgentRemovalPreviewData = {
+    body?: never;
+    path: {
+        /**
+         * Agent ID
+         */
+        agent_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/agents/{agent_id}/removal';
+};
+
+export type AdminAgentRemovalPreviewErrors = {
+    404: ApiErrorBody;
+};
+
+export type AdminAgentRemovalPreviewError = AdminAgentRemovalPreviewErrors[keyof AdminAgentRemovalPreviewErrors];
+
+export type AdminAgentRemovalPreviewResponses = {
+    200: AdminAgentRemovalImpact;
+};
+
+export type AdminAgentRemovalPreviewResponse = AdminAgentRemovalPreviewResponses[keyof AdminAgentRemovalPreviewResponses];
+
+export type RemoveAgentData = {
+    body: AgentRemovalRequest;
+    path: {
+        /**
+         * Agent ID
+         */
+        agent_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/agents/{agent_id}/removal';
+};
+
+export type RemoveAgentErrors = {
+    400: ApiErrorBody;
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+    409: ApiErrorBody;
+};
+
+export type RemoveAgentError = RemoveAgentErrors[keyof RemoveAgentErrors];
+
+export type RemoveAgentResponses = {
+    200: AgentRemovalResponse;
+};
+
+export type RemoveAgentResponse = RemoveAgentResponses[keyof RemoveAgentResponses];
 
 export type AlertIncidentsData = {
     body?: never;

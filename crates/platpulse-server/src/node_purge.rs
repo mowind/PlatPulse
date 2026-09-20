@@ -65,6 +65,34 @@ pub struct NodePurgeCounts {
 }
 
 impl NodePurgeCounts {
+    /// Accumulate another measured Node's counts into this one. Agent
+    /// Removal aggregates the scope of every Node it purges.
+    pub fn add(&mut self, other: &Self) {
+        self.component_statuses += other.component_statuses;
+        self.process_observations += other.process_observations;
+        self.data_directory_observations += other.data_directory_observations;
+        self.chain_observations += other.chain_observations;
+        self.rpc_namespaces += other.rpc_namespaces;
+        self.rpc_methods += other.rpc_methods;
+        self.current_peers += other.current_peers;
+        self.current_peer_capabilities += other.current_peer_capabilities;
+        self.peer_presence_intervals += other.peer_presence_intervals;
+        self.peer_aggregate_5m += other.peer_aggregate_5m;
+        self.peer_aggregate_5m_countries += other.peer_aggregate_5m_countries;
+        self.peer_aggregate_1h += other.peer_aggregate_1h;
+        self.peer_aggregate_1h_countries += other.peer_aggregate_1h_countries;
+        self.block_summaries += other.block_summaries;
+        self.block_history_states += other.block_history_states;
+        self.block_coverage_intervals += other.block_coverage_intervals;
+        self.block_identity_window += other.block_identity_window;
+        self.block_history_gaps += other.block_history_gaps;
+        self.chain_divergence_observations += other.chain_divergence_observations;
+        self.observed_network_heads += other.observed_network_heads;
+        self.metric_samples += other.metric_samples;
+        self.validator_links += other.validator_links;
+        self.transfers += other.transfers;
+    }
+
     /// Total Node-owned rows removed, excluding the nodes row itself.
     pub fn total_owned_rows(&self) -> i64 {
         self.component_statuses

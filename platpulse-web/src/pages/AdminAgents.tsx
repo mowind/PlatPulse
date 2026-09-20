@@ -1,15 +1,17 @@
 import { ChevronUp } from 'lucide-react'
-import { useEffect, useId, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router'
 import {
   AdminApiError,
   createEnrollmentToken,
   createRecoveryToken,
+  removeAgent,
   revokeAgentCredential,
   rotateAgentCredential,
   updateAgentMetadata,
   useAdminAgentAudit,
   useAdminAgentDetail,
+  useAdminAgentRemovalImpact,
   useAdminDiagnostics,
 } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
@@ -27,9 +29,11 @@ import { Empty } from '../components/ui/empty'
 import { cn } from '../lib/utils'
 import { SURFACE_CARD } from '../lib/surface'
 import type {
+  AdminAgentRemovalImpact,
   AgentAuditItem,
   AgentCredentialSummary,
   AgentDiagnostic,
+  AgentRemovalResponse,
   HostDiagnostic,
   NodeDiagnostic,
 } from '../api/generated'
@@ -555,11 +559,49 @@ function AgentListRow({ agent }: { agent: AgentDiagnostic }) {
  * diagnostics, and the redacted Audit trail for one Agent. */
 export function AdminAgentDetail() {
   const { agentId = '' } = useParams()
-  const { generation } = useAuth()
+  const { generation, status } = useAuth()
+  const csrfToken = status.state === 'authenticated' ? status.csrfToken : ''
   const agent = useAdminAgentDetail(generation, agentId)
   const audit = useAdminAgentAudit(generation, agentId)
+  const [removed, setRemoved] = useState<AgentRemovalResponse | null>(null)
   const notFound =
     agent.isError && agent.error instanceof AdminApiError && agent.error.code === 'agent_not_found'
+
+  if (removed) {
+    return (
+      <section className="w-full min-w-0 space-y-4">
+        <div className="space-y-1">
+          <h1 className="text-lg font-semibold break-words">Agent removed</h1>
+          <p className="text-sm text-muted-foreground">
+            Agent {shortId(agentId)} was permanently removed at{' '}
+            {formatObservedAt(removed.deleted_at)}.
+          </p>
+        </div>
+        <CardX
+          size="medium"
+          className={CARD_SURFACE}
+          header={<h3 className="text-sm font-medium">Removal result</h3>}
+        >
+          <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
+            <li>{removed.revoked_credential_count} credential(s) were revoked.</li>
+            <li>
+              {removed.purged_nodes.length} Node(s) were permanently purged (
+              {removed.removed.total_owned_rows} Node-owned rows).
+            </li>
+            <li>
+              The remote process was not stopped and local configuration was not changed;
+              handle the Host locally.
+            </li>
+          </ul>
+          <div className="mt-3">
+            <Link className={cn(buttonVariants(), 'w-fit')} to="/admin/agents">
+              All Agents
+            </Link>
+          </div>
+        </CardX>
+      </section>
+    )
+  }
 
   if (notFound) {
     return (
@@ -677,6 +719,22 @@ export function AdminAgentDetail() {
               <p className="text-sm text-muted-foreground">Immutable, redacted lifecycle events for this Agent.</p>
             </div>
             <AuditTrailPanel audit={audit} agentId={agentId} />
+          </section>
+          <section className="space-y-3" aria-labelledby="agent-removal-heading">
+            <div className="space-y-1">
+              <span className="text-[11px] font-medium text-muted-foreground">07</span>
+              <h2 id="agent-removal-heading" className="text-lg font-semibold">Danger zone</h2>
+              <p className="text-sm text-muted-foreground">
+                Irreversible Owner disposition. Credential revocation and Agent removal are
+                separate actions.
+              </p>
+            </div>
+            <AgentRemovalPanel
+              agentId={agent.data.agent_id}
+              displayName={agent.data.display_name ?? 'Agent ' + shortId(agent.data.agent_id)}
+              csrfToken={csrfToken}
+              onRemoved={setRemoved}
+            />
           </section>
         </>
       )}
@@ -1169,6 +1227,197 @@ function CredentialsPanel({
             )
           })}
         </ul>
+      )}
+    </CardX>
+  )
+}
+
+/** Owner-only Agent Removal (design §15.2, webui.md §15.2, issue #171).
+ * Distinct from Credential Revocation: it revokes every credential, purges
+ * every owned Node through the Node Purge path, and marks the Agent removed.
+ * The confirmation lists the Server-authoritative owned Nodes, blocks on an
+ * unhandled Transfer, and reports the authoritative completion. The remote
+ * process is never stopped and local configuration is never changed. */
+function AgentRemovalPanel({
+  agentId,
+  displayName,
+  csrfToken,
+  onRemoved,
+}: {
+  agentId: string
+  displayName: string
+  csrfToken: string
+  onRemoved: (result: AgentRemovalResponse) => void
+}) {
+  const { generation } = useAuth()
+  const [confirming, setConfirming] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [restoreFocus, setRestoreFocus] = useState(false)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const impact = useAdminAgentRemovalImpact(generation, agentId, confirming)
+
+  // Cancelling the confirmation restores focus to the safe trigger, so a
+  // keyboard user is never dropped onto the document body.
+  useEffect(() => {
+    if (!confirming && restoreFocus) {
+      triggerRef.current?.focus()
+      setRestoreFocus(false)
+    }
+  }, [confirming, restoreFocus])
+
+  async function confirm(current: AdminAgentRemovalImpact) {
+    if (busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      onRemoved(
+        await removeAgent(
+          agentId,
+          agentId,
+          current.owned_nodes.map((node) => node.node_id),
+          csrfToken,
+        ),
+      )
+    } catch (caught) {
+      // Typed conflicts refetch the authoritative scope: a concurrent
+      // ownership change or a new Transfer must be seen before reconfirming.
+      if (
+        caught instanceof AdminApiError &&
+        (caught.code === 'ownership_changed' ||
+          caught.code === 'pending_transfer' ||
+          caught.code === 'agent_not_found')
+      ) {
+        void impact.refetch()
+      }
+      setError(caught instanceof Error ? caught.message : 'Unable to remove the Agent')
+      setBusy(false)
+    }
+  }
+
+  return (
+    <CardX
+      size="medium"
+      className={CARD_SURFACE}
+      id="removal"
+      header={<h3 className="text-sm font-medium">Permanent Agent removal</h3>}
+    >
+      <p className="text-sm text-muted-foreground">
+        Permanently delete this Agent to revoke every credential, remove it from current
+        monitoring, and permanently purge every Node it owns (their observations, monitoring
+        history, and Node Validator Links). This cannot be undone, and Recovery, Rotation, a
+        late report, or a recovery token cannot revive the same identity.
+      </p>
+      <p className="mt-2 text-sm text-muted-foreground">
+        The remote Agent/Node process is not stopped or uninstalled, and local configuration is
+        not changed, so you must still handle the Host locally. Shared Agent/Host data,
+        independent Validator history, existing Incident evidence, and Audit are preserved.
+        This is not the same as revoking a credential, and it is not merely hiding a row.
+      </p>
+      {!confirming && (
+        <div className="mt-3">
+          <Button
+            ref={triggerRef}
+            variant="destructive"
+            onClick={() => setConfirming(true)}
+          >
+            Permanently delete Agent
+          </Button>
+        </div>
+      )}
+      {confirming && (
+        <div
+          className="mt-3 space-y-3 rounded-md border border-destructive/40 bg-destructive/5 p-3"
+          role="alertdialog"
+          aria-label="Confirm permanent Agent removal"
+        >
+          <p className="text-sm font-medium">Confirm permanent removal of {displayName}?</p>
+          {!impact.data && impact.isPending && (
+            <p role="status" className="text-sm text-muted-foreground">
+              Measuring the removal scope…
+            </p>
+          )}
+          {impact.isError && (
+            <div className="text-sm" role="alert">
+              <span className="text-destructive">
+                {impact.error instanceof Error
+                  ? impact.error.message
+                  : 'Unable to measure the removal scope'}
+              </span>{' '}
+              <Button variant="link" size="sm" onClick={() => void impact.refetch()}>
+                Try again
+              </Button>
+            </div>
+          )}
+          {impact.data && (
+            <>
+              {impact.data.pending_transfers.length > 0 && (
+                <p className="text-sm text-destructive" role="alert">
+                  Removal is blocked by {impact.data.pending_transfers.length} unhandled
+                  Transfer(s):{' '}
+                  {impact.data.pending_transfers.map((transfer) => transfer.node_id).join(', ')}.
+                  Complete, cancel, or let them expire first.
+                </p>
+              )}
+              <p className="text-sm font-medium">
+                This Agent owns {impact.data.owned_nodes.length} Node(s):
+              </p>
+              {impact.data.owned_nodes.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No Nodes are owned by this Agent.
+                </p>
+              ) : (
+                <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
+                  {impact.data.owned_nodes.map((node) => (
+                    <li key={node.node_id} className="break-all">
+                      {node.display_name ?? node.node_id}{' '}
+                      <span className="text-[11px]">
+                        ({node.network_display_name} · {node.lifecycle})
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
+                <li>
+                  {impact.data.active_credential_count} active credential(s) of{' '}
+                  {impact.data.credential_count} will be revoked.
+                </li>
+                <li>
+                  {impact.data.counts.total_owned_rows} Node-owned row(s) will be permanently
+                  deleted across those Nodes.
+                </li>
+                <li>The remote process is not stopped; local configuration is not changed.</li>
+              </ul>
+            </>
+          )}
+          {error && (
+            <p className="text-sm text-destructive" role="alert">
+              {error}
+            </p>
+          )}
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="destructive"
+              disabled={busy || !impact.data || !impact.data.can_remove}
+              onClick={() => impact.data && void confirm(impact.data)}
+            >
+              {busy ? 'Removing…' : 'Confirm permanent removal'}
+            </Button>
+            <Button
+              variant="outline"
+              autoFocus
+              disabled={busy}
+              onClick={() => {
+                setConfirming(false)
+                setError(null)
+                setRestoreFocus(true)
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
       )}
     </CardX>
   )

@@ -584,7 +584,7 @@ Retain §2.1 vocabulary, including `Current`, with a visible, accurate dimension
 
 #### 8.5.3 Agents summary and existing detail
 
-The no-new-fields/no-new-actions constraints below describe this earlier presentation-only delivery. §15.1's Add Agent enrollment guidance and Server-backed name/notes editor are now routed (`PAGE-ADMIN-ENROLL`, `PAGE-ADMIN-AGENT-DETAIL`, issue #169); explicit Agent Removal remains accepted and unimplemented. Do not fabricate fields or actions the Server DTO does not provide.
+The no-new-fields/no-new-actions constraints below describe this earlier presentation-only delivery. §15.1's Add Agent enrollment guidance and Server-backed name/notes editor are now routed (`PAGE-ADMIN-ENROLL`, `PAGE-ADMIN-AGENT-DETAIL`, issue #169), and explicit Agent Removal is routed on the Agent Detail danger zone (`PAGE-ADMIN-AGENT-DETAIL`, issue #171). Do not fabricate fields or actions the Server DTO does not provide.
 
 The Owner scans Agent reporting, inventory, credentials, and diagnostic evidence, then opens the existing `/admin/agents/:agentId` route for investigation. Keep `/admin/agents` as the list route and preserve existing access checks, query/realtime behavior, safe return, and authoritative error handling. Use existing `AgentDiagnostic` data; this is a presentation-only change.
 
@@ -934,6 +934,7 @@ A page is ready for production implementation only when:
 | Decision | Source |
 |---|---|
 | Implemented slice: `PAGE-ADMIN-ENROLL` Add Agent guidance and Server-backed Agent display name/notes (`AgentDiagnostic.display_name`/`notes`) | Issue #169, child of the accepted §15 target |
+| Implemented slice: explicit Agent Removal with Server-authoritative owned-Node preview, pending-Transfer block, credential revocation, and owned-Node cascade | Issue #171, child of the accepted §15 target |
 | Accepted, not implemented: Agent enrollment/metadata/removal, permanent Node Purge, automatic Validator correspondence with one-time history reset, shared per-occurrence Agent Attention Acknowledgment | Confirmed management/Validator/acknowledgment `grill-with-docs` Q1–Q22 and final documentation approval; [main design §15](platpulse.md#accepted-management-target), [ADR 0004](../adr/0004-owner-removal-and-node-purge.md), [ADR 0005](../adr/0005-automatic-validator-identity.md), and this document §15. |
 | Historical: Compact Admin workbench first delivery and six-column Agents summary; the later §8.6 information-architecture pass superseded the Settings/Audit deferral | Confirmed `grill-with-docs` Q1–Q12 and final documentation approval; retained as historical decision, not current route authority. |
 | Admin visual shell and responsive baseline | Issue #35, accepted prototype branch `prototype/ui-shell-variants` |
@@ -968,7 +969,7 @@ Changes to a settled contract require a new decision record and must update the 
 
 ## 15. Accepted Agent/Node management and Attention Acknowledgment (partially implemented)
 
-**Status:** Accepted through the management/Validator/acknowledgment design interview and final Owner approval; no implementation, route registration, generated API, data purge, or migration is delivered by this document update. The current routes and DTO limitations in §§4 and 8 remain factual baseline. This section supersedes their no-new-actions scope only for the accepted future controls below; it does not declare the deferred pages live. Implemented so far: the §15.1 Add Agent enrollment guidance and Server-backed display name/notes (`PAGE-ADMIN-ENROLL`, `PAGE-ADMIN-AGENT-DETAIL`, issue #169); the §15.2 explicit permanent Node Purge is delivered separately. Agent Removal, Attention Acknowledgment, automatic Validator identity, and the one-time Validator migration remain unimplemented.
+**Status:** Accepted through the management/Validator/acknowledgment design interview and final Owner approval; no implementation, route registration, generated API, data purge, or migration is delivered by this document update. The current routes and DTO limitations in §§4 and 8 remain factual baseline. This section supersedes their no-new-actions scope only for the accepted future controls below; it does not declare the deferred pages live. Implemented so far: the §15.1 Add Agent enrollment guidance and Server-backed display name/notes (`PAGE-ADMIN-ENROLL`, `PAGE-ADMIN-AGENT-DETAIL`, issue #169); the §15.2 explicit permanent Node Purge is delivered separately; and the §15.2 explicit Agent Removal with owned-Node cascade is delivered (`PAGE-ADMIN-AGENT-DETAIL`, issue #171). Attention Acknowledgment, automatic Validator identity, and the one-time Validator migration remain unimplemented.
 
 Server ownership, lifecycle, data boundaries, and acceptance are in [main design §15](platpulse.md#accepted-management-target). [ADR 0004](../adr/0004-owner-removal-and-node-purge.md) explains irreversible removal; [ADR 0005](../adr/0005-automatic-validator-identity.md) explains automatic identity and the one-time Validator history reset. Preserve the Emerald shell, mobile behavior, and public/admin separation; this is not another visual migration.
 

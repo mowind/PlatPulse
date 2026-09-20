@@ -24,6 +24,7 @@ import {
 import {
   adminAgentAudit,
   adminAgentDetail,
+  adminAgentRemovalPreview,
   adminEnrollmentToken,
   adminGeoStatus,
   updateGeoProvider as updateGeoProviderApi,
@@ -65,6 +66,7 @@ import {
   previewAlertRule as previewAlertRuleApi,
   setAgentMetadata,
   purgeNode as purgeNodeApi,
+  removeAgent as removeAgentApi,
   updateAlertRule as updateAlertRuleApi,
   upsertRuleOverride as upsertRuleOverrideApi,
   createNodeTransfer as createNodeTransferApi,
@@ -153,8 +155,10 @@ import {
   type PeerChurnDiagnostic,
   type AdminPeerHistory,
   type AdminNodeListItem,
+  type AdminAgentRemovalImpact,
   type AdminNodePurgeImpact,
   type AdminOverview,
+  type AgentRemovalResponse,
   type AgentAuditResponse,
   type AgentDiagnostic,
   type AgentMetadataResponse,
@@ -216,6 +220,7 @@ const adminKeys = {
   agents: ['admin', 'agents'] as const,
   agentDetail: (agentId: string) => ['admin', 'agents', agentId] as const,
   agentAudit: (agentId: string) => ['admin', 'agents', agentId, 'audit'] as const,
+  agentRemoval: (agentId: string) => ['admin', 'agents', agentId, 'removal'] as const,
   nodes: ['admin', 'nodes'] as const,
   nodeDetail: (nodeId: string) => ['admin', 'nodes', nodeId] as const,
   nodePurge: (nodeId: string) => ['admin', 'nodes', nodeId, 'purge'] as const,
@@ -840,6 +845,57 @@ export async function purgeNode(
         headers: { 'X-CSRF-Token': csrfToken },
       }),
     'Unable to delete the Node',
+  )
+  void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+  return response
+}
+
+/** Owner-only Agent Removal impact preview (design §15.2, #171). Fetched only
+ * while a confirmation is being prepared. The query always refetches: a
+ * preview describes one exact confirmation, never a reusable scope. */
+export async function fetchAdminAgentRemovalImpact(
+  agentId: string,
+  signal?: AbortSignal,
+): Promise<AdminAgentRemovalImpact> {
+  return requestAdmin(
+    () => adminAgentRemovalPreview({ path: { agent_id: agentId }, signal }),
+    'Unable to load the Agent removal impact',
+  )
+}
+
+export function useAdminAgentRemovalImpact(
+  generation: number,
+  agentId: string,
+  enabled: boolean,
+) {
+  return useQuery({
+    queryKey: [...adminKeys.agentRemoval(agentId), generation],
+    queryFn: ({ signal }) => fetchAdminAgentRemovalImpact(agentId, signal),
+    enabled: enabled && agentId.length > 0,
+    staleTime: 0,
+    gcTime: 0,
+  })
+}
+
+/** Owner-confirmed Agent Removal. The Server has already revoked every
+ * credential, purged every owned Node, and marked the Agent removed when this
+ * resolves; the Admin cache is invalidated so every list, overview, and
+ * summary refetches the authoritative state instead of the browser removing a
+ * row optimistically. */
+export async function removeAgent(
+  agentId: string,
+  confirmAgentId: string,
+  confirmedNodeIds: string[],
+  csrfToken: string,
+): Promise<AgentRemovalResponse> {
+  const response = await requestAdmin(
+    () =>
+      removeAgentApi({
+        path: { agent_id: agentId },
+        body: { confirmAgentId, confirmedNodeIds },
+        headers: { 'X-CSRF-Token': csrfToken },
+      }),
+    'Unable to remove the Agent',
   )
   void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
   return response

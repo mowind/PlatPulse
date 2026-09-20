@@ -302,13 +302,17 @@ pub async fn create_recovery_token(
     );
 
     let mut transaction = db.pool().begin().await?;
-    let agent_exists =
-        sqlx::query_scalar::<_, String>("SELECT agent_id FROM agents WHERE agent_id = ?")
-            .bind(agent_id)
-            .fetch_optional(&mut *transaction)
-            .await?
-            .is_some();
-    if !agent_exists {
+    // A removed Agent is not recoverable: the durable removal boundary hides
+    // the identity and refuses a fresh credential, so an outstanding or newly
+    // requested Recovery Token must not resurrect it (design §15.2, #171).
+    let agent_live = sqlx::query_scalar::<_, String>(
+        "SELECT agent_id FROM agents WHERE agent_id = ? AND deleted_at IS NULL",
+    )
+    .bind(agent_id)
+    .fetch_optional(&mut *transaction)
+    .await?
+    .is_some();
+    if !agent_live {
         return Err(RecoveryError::AgentNotFound);
     }
     sqlx::query(
@@ -392,11 +396,12 @@ pub async fn recover(
         return Err(RecoveryError::Invalid);
     }
 
-    let epoch: Option<i64> =
-        sqlx::query_scalar("SELECT agent_epoch FROM agents WHERE agent_id = ?")
-            .bind(&row.agent_id)
-            .fetch_optional(&mut *transaction)
-            .await?;
+    let epoch: Option<i64> = sqlx::query_scalar(
+        "SELECT agent_epoch FROM agents WHERE agent_id = ? AND deleted_at IS NULL",
+    )
+    .bind(&row.agent_id)
+    .fetch_optional(&mut *transaction)
+    .await?;
     let Some(epoch) = epoch else {
         return Err(RecoveryError::AgentNotFound);
     };
@@ -611,7 +616,7 @@ pub async fn authenticate_agent_credential(
     let Some(row) = sqlx::query_as::<_, CredentialRow>(
         "SELECT c.credential_digest, c.revoked_at, c.revoke_after, a.agent_id
          FROM agent_credentials c JOIN agents a ON a.agent_id = c.agent_id
-         WHERE c.credential_id = ?",
+         WHERE c.credential_id = ? AND a.deleted_at IS NULL",
     )
     .bind(credential_id)
     .fetch_optional(db.pool())
@@ -698,13 +703,16 @@ pub async fn rotate_agent_credential(
     let now = now_utc();
     let now_text = format_rfc3339(now);
     let mut transaction = db.pool().begin().await?;
-    let agent_exists =
-        sqlx::query_scalar::<_, String>("SELECT agent_id FROM agents WHERE agent_id = ?")
-            .bind(agent_id)
-            .fetch_optional(&mut *transaction)
-            .await?
-            .is_some();
-    if !agent_exists {
+    // A removed Agent is not rotatable: rotation must not mint a fresh
+    // credential on an identity the Owner permanently deleted (#171).
+    let agent_live = sqlx::query_scalar::<_, String>(
+        "SELECT agent_id FROM agents WHERE agent_id = ? AND deleted_at IS NULL",
+    )
+    .bind(agent_id)
+    .fetch_optional(&mut *transaction)
+    .await?
+    .is_some();
+    if !agent_live {
         return Err(RotationError::AgentNotFound);
     }
 
@@ -832,6 +840,16 @@ pub async fn revoke_agent_credential(
 ) -> Result<RevokedCredential, RevokeError> {
     let now_text = format_rfc3339(now_utc());
     let mut transaction = db.pool().begin().await?;
+    // A removed Agent is not addressable; revocation is refused as not-found
+    // so the missing identity is indistinguishable from any other unknown one.
+    let agent_live: Option<String> =
+        sqlx::query_scalar("SELECT agent_id FROM agents WHERE agent_id = ? AND deleted_at IS NULL")
+            .bind(agent_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+    if agent_live.is_none() {
+        return Err(RevokeError::NotFound);
+    }
     let updated = sqlx::query(
         "UPDATE agent_credentials SET revoked_at = ? WHERE credential_id = ? AND agent_id = ? AND revoked_at IS NULL",
     )
@@ -994,7 +1012,7 @@ pub async fn update_agent_metadata(
 
     let mut transaction = db.pool().begin().await?;
     let existing = sqlx::query_as::<_, (Option<String>, Option<String>)>(
-        "SELECT display_name, notes FROM agents WHERE agent_id = ?",
+        "SELECT display_name, notes FROM agents WHERE agent_id = ? AND deleted_at IS NULL",
     )
     .bind(agent_id)
     .fetch_optional(&mut *transaction)

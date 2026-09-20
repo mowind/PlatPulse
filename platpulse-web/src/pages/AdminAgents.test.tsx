@@ -746,4 +746,158 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
     await screen.findByRole('heading', { level: 1, name: 'Agent unavailable' })
     expect(screen.getByText('This Agent is no longer available.')).toBeTruthy()
   })
+
+  it('permanently removes the Agent after confirming the exact owned Nodes', async () => {
+    let removed = false
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}`]: () =>
+        removed ? errorBody('agent_not_found', 404) : jsonResponse(AGENT_DIAGNOSTIC, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/audit`]: () =>
+        jsonResponse({ agent_id: AGENT_ID, items: [] }, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/removal`]: ({ request }) => {
+        if (request.method === 'POST') {
+          removed = true
+          return jsonResponse(
+            {
+              agent_id: AGENT_ID,
+              deleted_at: '2026-08-12T09:00:00Z',
+              revoked_credential_count: 1,
+              purged_nodes: [
+                { node_id: 'node-1', removed: { total_owned_rows: 9 } },
+                { node_id: 'node-2', removed: { total_owned_rows: 3 } },
+              ],
+              removed: { total_owned_rows: 12 },
+            },
+            200,
+          )
+        }
+        return jsonResponse(
+          {
+            target: {
+              agent_id: AGENT_ID,
+              display_name: null,
+              notes: null,
+              agent_epoch: 1,
+              last_received_at: null,
+              created_at: '2026-08-01T00:00:00Z',
+              updated_at: '2026-08-12T00:00:00Z',
+            },
+            owned_nodes: [
+              {
+                node_id: 'node-1',
+                network_key: 'platon-e2e',
+                network_display_name: 'PlatON E2E',
+                display_name: 'Node A',
+                lifecycle: 'active',
+                visibility: 'public',
+                inventory_revision: 1,
+              },
+              {
+                node_id: 'node-2',
+                network_key: 'platon-e2e',
+                network_display_name: 'PlatON E2E',
+                display_name: 'Retired Node',
+                lifecycle: 'retired',
+                visibility: 'private',
+                inventory_revision: 1,
+              },
+            ],
+            pending_transfers: [],
+            counts: { total_owned_rows: 12 },
+            credential_count: 2,
+            active_credential_count: 1,
+            can_remove: true,
+          },
+          200,
+        )
+      },
+    })
+    renderAt(`/admin/agents/${AGENT_ID}`)
+
+    await screen.findByRole('heading', { level: 1, name: /Agent 0195f2a1/ })
+    await screen.findByRole('heading', { level: 2, name: 'Danger zone' })
+    fireEvent.click(screen.getByRole('button', { name: 'Permanently delete Agent' }))
+
+    const dialog = await screen.findByRole('alertdialog', {
+      name: 'Confirm permanent Agent removal',
+    })
+    await within(dialog).findByText(/This Agent owns 2 Node\(s\)/)
+    expect(within(dialog).getByText('Node A')).toBeTruthy()
+    expect(within(dialog).getByText('Retired Node')).toBeTruthy()
+    expect(within(dialog).getByText(/1 active credential\(s\) of 2 will be revoked/)).toBeTruthy()
+    expect(
+      within(dialog).getByText(/remote process is not stopped; local configuration is not changed/),
+    ).toBeTruthy()
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm permanent removal' }))
+
+    await screen.findByRole('heading', { level: 1, name: 'Agent removed' })
+    expect(screen.getByText(/1 credential\(s\) were revoked/)).toBeTruthy()
+    expect(screen.getByText(/2 Node\(s\) were permanently purged/)).toBeTruthy()
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+  })
+
+  it('blocks removal while an unhandled Transfer is pending', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}`]: () => jsonResponse(AGENT_DIAGNOSTIC, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/audit`]: () =>
+        jsonResponse({ agent_id: AGENT_ID, items: [] }, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/removal`]: () =>
+        jsonResponse(
+          {
+            target: {
+              agent_id: AGENT_ID,
+              display_name: null,
+              notes: null,
+              agent_epoch: 1,
+              last_received_at: null,
+              created_at: '2026-08-01T00:00:00Z',
+              updated_at: '2026-08-12T00:00:00Z',
+            },
+            owned_nodes: [
+              {
+                node_id: 'node-1',
+                network_key: 'platon-e2e',
+                network_display_name: 'PlatON E2E',
+                display_name: 'Node A',
+                lifecycle: 'active',
+                visibility: 'public',
+                inventory_revision: 1,
+              },
+            ],
+            pending_transfers: [
+              {
+                transfer_id: 'transfer-1',
+                node_id: 'node-1',
+                source_agent_id: AGENT_ID,
+                target_agent_id: 'agent-b',
+                direction: 'source',
+                expires_at: '2026-08-13T00:00:00Z',
+              },
+            ],
+            counts: { total_owned_rows: 9 },
+            credential_count: 1,
+            active_credential_count: 1,
+            can_remove: false,
+          },
+          200,
+        ),
+    })
+    renderAt(`/admin/agents/${AGENT_ID}`)
+
+    await screen.findByRole('heading', { level: 1, name: /Agent 0195f2a1/ })
+    await screen.findByRole('heading', { level: 2, name: 'Danger zone' })
+    fireEvent.click(screen.getByRole('button', { name: 'Permanently delete Agent' }))
+
+    const dialog = await screen.findByRole('alertdialog', {
+      name: 'Confirm permanent Agent removal',
+    })
+    await within(dialog).findByText(/blocked by 1 unhandled Transfer\(s\)/)
+    const confirm = within(dialog).getByRole('button', {
+      name: 'Confirm permanent removal',
+    }) as HTMLButtonElement
+    expect(confirm.disabled).toBe(true)
+  })
 })
