@@ -369,7 +369,7 @@ async fn run_report_collection_loop(
                 )
                 .await;
                 if let Err(error) = collection {
-                    if crate::collector::is_transient_database_lock(&error) {
+                    if crate::collector::is_deferrable_collection(&error) {
                         eprintln!(
                             "Agent report collection deferred: {}",
                             crate::redaction::redact_sensitive(&error.to_string())

@@ -263,6 +263,17 @@ pub(crate) fn is_transient_database_lock(error: &CollectionError) -> bool {
     }
 }
 
+/// A collection that lost a race with another Agent Store writer is safe to
+/// retry: the failed transaction rolled back, and the next attempt reloads the
+/// authoritative state and rebuilds the report. In particular, accepting the
+/// first drained_previous report flips boot_state from drained_pending to
+/// active; when the collection interval is shorter than the delivery round
+/// trip, the next assembly observes that benign transition and must retry
+/// instead of turning a normal Boot settlement into a fatal startup loop.
+pub(crate) fn is_deferrable_collection(error: &CollectionError) -> bool {
+    is_transient_database_lock(error) || matches!(error, CollectionError::ConcurrentStateChange)
+}
+
 pub(crate) fn timestamp() -> Rfc3339 {
     let value = OffsetDateTime::now_utc()
         .replace_nanosecond(0)
