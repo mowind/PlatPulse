@@ -5,17 +5,18 @@ Historical metric-delivery baseline: the earlier metrics interview decisions wer
 ## Status of the new identity design
 
 Automatic Validator identification and Current Validator Status are
-**implemented by #173**; the associated one-time history cutover is
-**accepted, NOT IMPLEMENTED** (#174). The target is defined by
+**implemented by #173**, and the associated one-time history cutover is
+**implemented by #174**. The target is defined by
 [the main design, section 15](platpulse.md#accepted-management-target),
 [ADR 0005: automatic Validator identity](../adr/0005-automatic-validator-identity.md)
-and the [accepted Provider identity contract](validator-provider.md#accepted-target-automatic-validator-identity-not-implemented).
+and the [accepted Provider identity contract](validator-provider.md#accepted-target-automatic-validator-identity-implemented-by-173-and-174).
 This document retains the historically implemented #154–#159 metric behavior
-and deployment-validation results; those results do not establish that the new
-identity, classification or migration paths exist. No implementation, migration,
-live query or test rerun is claimed by this documentation synchronization.
+and deployment-validation results as the historical baseline. The new identity,
+classification and one-time migration paths now exist; the older results are
+records of the prior manual-link baseline and are not a claim of live
+re-verification.
 
-## Accepted identity and history scope (not implemented)
+## Accepted identity and history scope (implemented)
 
 - Automatically identify the Validator using the Node's validated Network and
   observed full 64-byte P2P public key, not its PlatPulse UUID, shortened

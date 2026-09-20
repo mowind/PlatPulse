@@ -206,9 +206,28 @@ def check_fixture(path, checkpoint):
             if value(path, f"SELECT COUNT(*) FROM {table}") < 1:
                 raise RehearsalError(f"{label} was not preserved")
     if checkpoint >= 30:
-        for table, label in (("validators", "Validators"), ("current_validator_insights", "Validator insights"), ("validator_ranking_history", "Validator ranking history")):
-            if value(path, f"SELECT COUNT(*) FROM {table}") < 1:
-                raise RehearsalError(f"{label} was not preserved")
+        if checkpoint >= 53:
+            # This fixture was already at the schema of the one-time Validator
+            # model cutover (#174) before it was seeded, so the current snapshot
+            # and ranking history written after it survive startup unchanged.
+            if value(path, "SELECT COUNT(*) FROM validators") < 1:
+                raise RehearsalError("Validators were not preserved")
+            for table, label in (("current_validator_insights", "Validator insights"), ("validator_ranking_history", "Validator ranking history")):
+                if value(path, f"SELECT COUNT(*) FROM {table}") < 1:
+                    raise RehearsalError(f"{label} were not preserved")
+        else:
+            # Migration 0053 is an explicit one-time destructive cutover. The
+            # seeded Validator is a manual generation with no automatic Link,
+            # so its identity and its snapshot/history/daily/monthly rows are
+            # removed and the durable marker records the completed cleanup.
+            # Node monitoring history and the Alert/Audit evidence stay.
+            if value(path, "SELECT COUNT(*) FROM validators") != 0:
+                raise RehearsalError("the legacy Validator identity survived the one-time cutover")
+            for table, label in (("current_validator_insights", "Validator insights"), ("validator_ranking_history", "Validator ranking history"), ("validator_counter_history", "Validator counter history"), ("validator_daily_snapshots", "Validator daily snapshots"), ("validator_monthly_aggregates", "Validator monthly aggregates")):
+                if value(path, f"SELECT COUNT(*) FROM {table}") != 0:
+                    raise RehearsalError(f"{label} survived the one-time Validator cutover")
+            if value(path, "SELECT COUNT(*) FROM validator_model_migration") != 1:
+                raise RehearsalError("the one-time Validator cutover marker was not recorded")
     if checkpoint >= 37:
         if value(path, "SELECT setting_value FROM server_settings WHERE setting_key='site_access_mode'") not in ("public", "private"):
             raise RehearsalError("Site Access Mode was not preserved")

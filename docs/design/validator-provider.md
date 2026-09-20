@@ -18,14 +18,13 @@ The following automatic-identity design is **accepted and implemented by
 the Public projection. Its cross-feature authority is
 [the main design, section 15](platpulse.md#accepted-management-target) and
 [ADR 0005: automatic Validator identity](../adr/0005-automatic-validator-identity.md).
-The one-time history migration and deletion of the legacy manual generation
-(#174) are still **not implemented**: the manual registration, binding and role
-write endpoints now answer an explicit retirement status, while legacy
-node_validator_links rows with origin = manual remain stored. Those rows are
-never a Public association or a fallback while automatic identification is
-pending or failed.
+The one-time history migration and deletion of the legacy manual generation are
+**implemented by #174**: since the cutover migration commits, `origin = manual`
+Links no longer exist and are never a Public association or a fallback. The
+manual registration, binding and role write endpoints still answer an explicit
+retirement status.
 
-## Accepted target: automatic Validator identity (implemented by #173; one-time migration pending)
+## Accepted target: automatic Validator identity (implemented by #173 and #174)
 
 ### Discovery and identity correspondence
 
@@ -90,7 +89,8 @@ capture beyond the recorded fixtures.
 
 ### One-time migration and ordinary Node Purge
 
-The accepted migration removes old manual links and old Validator snapshots,
+The accepted migration removes old manual links, the legacy Validator
+identities that no automatic Link references, and those identities' snapshots,
 ranking/counter history, and daily/monthly aggregates. It **does not remove Node
 monitoring history** (including Block Summaries, Peer history and Node counters)
 or existing Alert Incident/Audit evidence.
@@ -115,10 +115,24 @@ or existing Alert Incident/Audit evidence.
   Validator keep their data; a selection summary simply excludes the purged
   Node and continues to deduplicate remaining associations.
 
-The old Registry/explicit-Link refresh and existing migration descriptions
-below remain baseline facts until this target is implemented. They do not
-claim that automatic discovery, historical cleanup or new alert-suppression
-behavior already exists.
+The cutover ships as the startup migration `0053_validator_model_migration.sql`:
+it runs inside the single migration transaction, captures the legacy Validator
+identities that no automatic Link references, deletes their `origin = manual`
+Links and every row of `current_validator_insights`,
+`validator_ranking_history`, `validator_counter_history`,
+`validator_daily_snapshots` and `validator_monthly_aggregates`, removes the
+legacy identity rows themselves, and writes the durable
+`validator_model_migration` marker last. Automatic identities and their history
+stay, because they already belong to the #173 model. A failure rolls the whole
+migration back and stops Server startup, so a half-migrated database is never
+served. Identity discovery and the Provider refresh worker start only after the
+migration commits, and a removed identity has no foreign-key home left, so no
+later pass can re-open the generation.
+
+The old Registry/explicit-Link refresh and existing migration descriptions below
+record the historical baseline. They are superseded by the implemented automatic
+identity (#173) and the one-time cleanup (#174); the retired endpoints and the
+removed manual Links are not part of the current contract.
 
 ## Network coverage (implemented baseline)
 

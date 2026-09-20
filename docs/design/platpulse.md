@@ -666,7 +666,7 @@ PlatPulse 当前实现是：
 
 ### 15.1 状态、范围与依据
 
-本节来自已完成的 `/grill-with-docs` 访谈（Q1–Q22）及 Owner 的最终共识确认，是目标设计。后续实现规格按仓库约定进入 GitHub Issues，本节不代替具体接口设计或实现工单。实现状态：§15.2 第 1、2 项（Agent 接入引导、显示名称/备注）已由 issue #169 交付；§15.3 Node Purge 已单独交付；§15.2 第 3–5 项 Agent Removal 已由 issue #171 交付（含所属 Node 权威列表、未处理 Transfer 阻止、全凭证撤销、子 Node 级联清理与删除身份边界）；§15.6 Agent Attention Acknowledgment 已由 issue #172 交付（Server-owned occurrence/evidence 边界、共享持久确认、Overview 与 Agent Detail 的逐条与批量操作、失败可重试与审计）；§15.4 自动 Validator 身份与 Current Validator Status 已由 issue #173 交付（Server 从已校验 Network 与观测到的完整 P2P 公钥自动建立 Node Validator Link、换键关闭旧区间、Public/Node 视图消费 Server 投影，不再展示手工 role）。手工注册/绑定/角色写入端点已退役并返回明确的 GONE 状态。一次性 Validator 模型迁移（§15.5）仍未实现（#174）：origin 为 manual 的旧手工 Link 行仍保留在库中，但已不是 Public 关联或回退来源。
+本节来自已完成的 `/grill-with-docs` 访谈（Q1–Q22）及 Owner 的最终共识确认，是目标设计。后续实现规格按仓库约定进入 GitHub Issues，本节不代替具体接口设计或实现工单。实现状态：§15.2 第 1、2 项（Agent 接入引导、显示名称/备注）已由 issue #169 交付；§15.3 Node Purge 已单独交付；§15.2 第 3–5 项 Agent Removal 已由 issue #171 交付（含所属 Node 权威列表、未处理 Transfer 阻止、全凭证撤销、子 Node 级联清理与删除身份边界）；§15.6 Agent Attention Acknowledgment 已由 issue #172 交付（Server-owned occurrence/evidence 边界、共享持久确认、Overview 与 Agent Detail 的逐条与批量操作、失败可重试与审计）；§15.4 自动 Validator 身份与 Current Validator Status 已由 issue #173 交付（Server 从已校验 Network 与观测到的完整 P2P 公钥自动建立 Node Validator Link、换键关闭旧区间、Public/Node 视图消费 Server 投影，不再展示手工 role）。手工注册/绑定/角色写入端点已退役并返回明确的 GONE 状态。一次性 Validator 模型迁移（§15.5）已由 issue #174 交付：Server 启动迁移在同一 SQLite 事务内识别无 automatic Link 的旧手工一代，删除其 Link、current insight、ranking/counter history、daily/monthly 聚合与 Validator 身份本身，并写入 validator_model_migration 一次性标记；automatic 一代身份与数据保留，旧分类/变化基线同步失效，Node 监控历史、既有 Incident 与必要审计保留。
 
 - Agent：Owner 接入引导、显示名称/备注修改、Agent Removal。
 - Node：保留已有重命名，只扩展 Owner 显式 Node Purge；不提供 Admin 新建 Node 或远端采集配置编辑。
@@ -720,6 +720,8 @@ PlatPulse 当前实现是：
 - 迁移与 Provider 写入、daily/monthly 重建协调，阻止旧一代任务回填已经清理的旧数据。验证依赖与清理范围后再执行；失败不能以半新半旧状态继续正常服务。这里规定迁移安全结果，不新增具体 migration 编号或执行脚本。
 - 本地历史从切换后重新积累，先前已删历史不承诺恢复。PlatScan 再次返回的 lifetime blocks/rewards 仍是链上累计值，不是归零计数；当前选择总计可能暂时下降/未知，不能伪造连续覆盖或完整月份。
 - 这是显式一次性模型转换，不改变常规 Retention 对 Validator 日/月数据的保护，也不授予普通 Node 删除操作清除共享 Validator 历史的能力。
+
+实现状态：§15.5 已由 issue #174 交付。Server 启动迁移（`0053_validator_model_migration.sql`）在同一 SQLite 事务内识别并删除旧手工一代（无 automatic Link 的 Validator 身份）的 Link、current insight、ranking/counter history、daily/monthly 聚合及其身份本身，保留 automatic 一代的身份与数据，并写入 `validator_model_migration` 一次性标记。失败即整体回滚并停止启动；运行时身份发现与 Provider 刷新 worker 只在迁移提交后才启动，被删身份也不再拥有可写入的外键归属，因此旧一代任务无法回填。
 
 ### 15.6 Agent Attention Acknowledgment
 
