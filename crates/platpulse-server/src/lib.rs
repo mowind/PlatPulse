@@ -41,6 +41,7 @@ pub mod redaction;
 pub mod restore;
 pub mod retention;
 pub mod secrets;
+pub mod subject_deletion;
 pub mod transport;
 pub mod validator;
 

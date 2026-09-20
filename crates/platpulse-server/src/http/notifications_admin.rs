@@ -332,7 +332,7 @@ pub(crate) async fn notification_event_detail(
     path = "/api/admin/v1/notifications/deliveries",
     tag = "admin",
     params(
-        ("state" = Option<String>, Query, description = "Delivery state filter (pending, retry_scheduled, succeeded, failed, dead_letter, suppressed, in_flight)"),
+        ("state" = Option<String>, Query, description = "Delivery state filter (pending, retry_scheduled, succeeded, failed, dead_letter, suppressed, cancelled, in_flight)"),
         ("channel" = Option<String>, Query, description = "Channel filter (telegram)"),
         ("before" = Option<String>, Query, description = "Opaque keyset cursor from a previous page"),
         ("limit" = Option<i64>, Query, description = "Page size (1-100, default 50)"),

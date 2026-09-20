@@ -270,6 +270,10 @@ pub struct IncidentListItem {
     pub sequence: i64,
     pub opened_at: String,
     pub resolved_at: Option<String>,
+    /// Set once the subject (Agent/Node) was permanently deleted. The
+    /// Incident keeps its original facts and open/resolved state; the
+    /// annotation only records that the subject is gone (design §15.7).
+    pub subject_deleted_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -314,6 +318,9 @@ pub struct IncidentDetail {
     pub sequence: i64,
     pub opened_at: String,
     pub resolved_at: Option<String>,
+    /// Set once the subject (Agent/Node) was permanently deleted (design
+    /// §15.7, issue #175).
+    pub subject_deleted_at: Option<String>,
     pub opened_evidence: serde_json::Value,
     pub resolved_evidence: Option<serde_json::Value>,
     pub evaluation: Option<RuleStateDto>,
@@ -408,8 +415,11 @@ async fn open_incident_counts<'e, E>(executor: E) -> Result<Vec<(String, String,
 where
     E: Executor<'e, Database = Sqlite>,
 {
+    // A deleted subject's Incidents are retained evidence, not current
+    // problems: they never count toward "open" rule/state views (design
+    // §15.7, issue #175).
     sqlx::query_as::<_, (String, String, i64)>(
-        "SELECT rule_key, subject_key, COUNT(*) FROM alert_incidents WHERE state = 'open' GROUP BY rule_key, subject_key",
+        "SELECT rule_key, subject_key, COUNT(*) FROM alert_incidents WHERE state = 'open' AND subject_deleted_at IS NULL GROUP BY rule_key, subject_key",
     )
     .fetch_all(executor)
     .await
@@ -1681,7 +1691,7 @@ pub(crate) async fn alert_incidents(
         format!(" WHERE {}", conditions.join(" AND "))
     };
     let sql = format!(
-        "SELECT incident_id, rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, resolved_at FROM alert_incidents{where_clause} ORDER BY opened_at DESC, incident_id LIMIT ?"
+        "SELECT incident_id, rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, resolved_at, subject_deleted_at FROM alert_incidents{where_clause} ORDER BY opened_at DESC, incident_id LIMIT ?"
     );
     let count_sql = format!("SELECT COUNT(*) FROM alert_incidents{where_clause}");
     let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql);
@@ -1711,6 +1721,7 @@ pub(crate) async fn alert_incidents(
             String,
             i64,
             String,
+            Option<String>,
             Option<String>,
         ),
     >(&sql);
@@ -1743,6 +1754,7 @@ pub(crate) async fn alert_incidents(
                     sequence,
                     opened_at,
                     resolved_at,
+                    subject_deleted_at,
                 )| IncidentListItem {
                     incident_id,
                     rule_key,
@@ -1754,6 +1766,7 @@ pub(crate) async fn alert_incidents(
                     sequence,
                     opened_at,
                     resolved_at,
+                    subject_deleted_at,
                 },
             )
             .collect(),
@@ -1777,8 +1790,8 @@ pub(crate) async fn alert_incident_detail(
     Path(incident_id): Path<String>,
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
-    let row = match sqlx::query_as::<_, (String, i64, String, String, String, String, i64, String, Option<String>, String, Option<String>)>(
-        "SELECT rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, resolved_at, opened_evidence_json, resolved_evidence_json FROM alert_incidents WHERE incident_id = ?",
+    let row = match sqlx::query_as::<_, (String, i64, String, String, String, String, i64, String, Option<String>, String, Option<String>, Option<String>)>(
+        "SELECT rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, resolved_at, opened_evidence_json, resolved_evidence_json, subject_deleted_at FROM alert_incidents WHERE incident_id = ?",
     )
     .bind(&incident_id)
     .fetch_optional(state.db().pool())
@@ -1806,6 +1819,7 @@ pub(crate) async fn alert_incident_detail(
         resolved_at,
         opened_evidence_json,
         resolved_evidence_json,
+        subject_deleted_at,
     )) = row
     else {
         return mutation_error(
@@ -1872,6 +1886,7 @@ pub(crate) async fn alert_incident_detail(
         sequence,
         opened_at,
         resolved_at,
+        subject_deleted_at,
         opened_evidence,
         resolved_evidence,
         evaluation,

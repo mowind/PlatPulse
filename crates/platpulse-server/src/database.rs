@@ -21,7 +21,7 @@ use thiserror::Error;
 pub static SERVER_MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 /// The latest migration version compiled into the Server binary.
-pub const SERVER_SCHEMA_VERSION: i64 = 53;
+pub const SERVER_SCHEMA_VERSION: i64 = 54;
 
 /// The Server currently serializes all SQLite operations through one pool
 /// connection. Read scaling can be added with a concrete query need; it is
@@ -1015,5 +1015,79 @@ mod tests {
                     .is_some();
             assert!(!exists, "future table {table:?} was pre-created");
         }
+    }
+
+    /// Issue #175: the deletion/notification migration rebuilds the Delivery
+    /// table to widen its state CHECK. Every stored Delivery and attempt fact
+    /// must survive verbatim, the new `cancelled` state must be accepted, and
+    /// the Incident deletion annotation column must exist.
+    #[tokio::test]
+    async fn subject_deletion_migration_preserves_delivery_and_attempt_facts() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("server.db");
+        let pool = SqlitePoolOptions::new()
+            .max_connections(SERVER_WRITE_CONNECTIONS)
+            .connect_with(sqlite_options(&config(&path), true))
+            .await
+            .unwrap();
+        migrations_through(53).run(&pool).await.unwrap();
+        sqlx::query("INSERT INTO notification_events (event_id, event_kind, incident_id, rule_key, subject_kind, subject_key, severity, summary, created_at) VALUES ('ev-1', 'incident', NULL, 'node.rpc_unreachable', 'node', 'node-a', 'warning', 'Incident opened', '2026-01-01T00:00:00Z')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO notification_deliveries (delivery_id, event_id, channel_kind, destination, state, attempt_count, next_attempt_at, last_attempt_at, last_result, last_error_kind, retry_after_seconds, created_at, updated_at) VALUES ('dl-1', 'ev-1', 'telegram', '****6789', 'dead_letter', 2, NULL, '2026-01-01T00:00:01Z', 'telegram_api_error 429', 'telegram_api', NULL, '2026-01-01T00:00:00Z', '2026-01-01T00:00:01Z')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO delivery_attempts (attempt_id, delivery_id, attempt_number, attempted_at, outcome, provider_result, error_kind, duration_ms, retry_after_seconds) VALUES ('at-1', 'dl-1', 1, '2026-01-01T00:00:01Z', 'failed', 'telegram_api_error 429', 'telegram_api', NULL, NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+
+        let database = ServerDatabase::open(config(&path)).await.unwrap();
+        assert_eq!(
+            database.schema_version().await.unwrap(),
+            SERVER_SCHEMA_VERSION
+        );
+        let delivery: (String, i64, Option<String>) = sqlx::query_as(
+            "SELECT state, attempt_count, last_result FROM notification_deliveries WHERE delivery_id = 'dl-1'",
+        )
+        .fetch_one(database.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            delivery,
+            (
+                "dead_letter".to_owned(),
+                2,
+                Some("telegram_api_error 429".to_owned())
+            )
+        );
+        let attempts: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM delivery_attempts WHERE delivery_id = 'dl-1'")
+                .fetch_one(database.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            attempts, 1,
+            "attempt history must survive the Delivery table rebuild"
+        );
+        // The widened CHECK accepts the new terminal state.
+        sqlx::query(
+            "UPDATE notification_deliveries SET state = 'cancelled' WHERE delivery_id = 'dl-1'",
+        )
+        .execute(database.pool())
+        .await
+        .unwrap();
+        // The Incident deletion annotation column exists and starts unset.
+        let annotation: Option<String> =
+            sqlx::query_scalar("SELECT subject_deleted_at FROM alert_incidents LIMIT 1")
+                .fetch_optional(database.pool())
+                .await
+                .unwrap()
+                .flatten();
+        assert_eq!(annotation, None);
+        database.close().await;
     }
 }

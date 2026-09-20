@@ -44,6 +44,7 @@ pub const DELIVERY_STATES: &[&str] = &[
     "failed",
     "dead_letter",
     "suppressed",
+    "cancelled",
 ];
 
 /// One Notification Delivery row (redacted by construction: `destination`
@@ -509,6 +510,38 @@ pub async fn attempts_for_delivery(
     Ok(rows)
 }
 
+/// Cancel every not-yet-sent Delivery of one deleted subject inside the
+/// caller's deletion transaction (design §15.7, issue #175). Matching is by
+/// the Event's subject, so resolution Events that carry no incident_id are
+/// covered. `pending` and `retry_scheduled` rows are unsent by definition; an
+/// `in_flight` row may already have been handed to the provider and is
+/// deliberately left untouched, as is every already-delivered or other-subject
+/// fact.
+pub async fn cancel_unsent_for_subject(
+    executor: &mut SqliteConnection,
+    subject_kind: SubjectKind,
+    subject_key: &str,
+    cancelled_at: &str,
+) -> Result<i64, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE notification_deliveries
+            SET state = 'cancelled', next_attempt_at = NULL,
+                last_result = 'cancelled_subject_deleted', last_error_kind = NULL,
+                updated_at = ?
+          WHERE state IN ('pending', 'retry_scheduled')
+            AND event_id IN (
+                SELECT event_id FROM notification_events
+                 WHERE subject_kind = ? AND subject_key = ?
+            )",
+    )
+    .bind(cancelled_at)
+    .bind(subject_kind.as_str())
+    .bind(subject_key)
+    .execute(&mut *executor)
+    .await?;
+    Ok(result.rows_affected() as i64)
+}
+
 // ---------------------------------------------------------------------------
 // Worker
 // ---------------------------------------------------------------------------
@@ -586,6 +619,41 @@ pub async fn process_due_deliveries(
             let mut conn = state.db().pool().acquire().await?;
             load_event(&mut conn, &delivery.event_id).await?
         };
+        // Pre-send deletion check (design §15.7): the deletion transaction
+        // cancels queued Deliveries, but a Delivery can still become due after
+        // the deletion (crash requeue, or a send that failed mid-deletion).
+        // Never hand a deleted subject's message to a provider.
+        if let Some(event) = event.as_ref() {
+            let subject = event
+                .subject_kind
+                .as_deref()
+                .and_then(crate::alerts::SubjectKind::parse_str)
+                .zip(event.subject_key.as_deref());
+            if let Some((subject_kind, subject_key)) = subject {
+                let deleted = {
+                    let mut conn = state.db().pool().acquire().await?;
+                    crate::subject_deletion::subject_is_deleted(
+                        &mut conn,
+                        subject_kind,
+                        subject_key,
+                    )
+                    .await?
+                };
+                if deleted {
+                    let mut tx = state.db().pool().begin().await?;
+                    sqlx::query(
+                        "UPDATE notification_deliveries SET state = 'cancelled', next_attempt_at = NULL, last_result = 'cancelled_subject_deleted', last_error_kind = NULL, updated_at = ? WHERE delivery_id = ?",
+                    )
+                    .bind(format_rfc3339(now_utc()))
+                    .bind(&delivery.delivery_id)
+                    .execute(&mut *tx)
+                    .await?;
+                    tx.commit().await?;
+                    processed += 1;
+                    continue;
+                }
+            }
+        }
         let channel = state.channels().telegram();
         let send_result = match (event.as_ref(), channel) {
             (Some(event), Some(channel)) if channel.enabled => {

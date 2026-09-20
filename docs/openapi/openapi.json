@@ -3512,7 +3512,7 @@
           {
             "name": "state",
             "in": "query",
-            "description": "Delivery state filter (pending, retry_scheduled, succeeded, failed, dead_letter, suppressed, in_flight)",
+            "description": "Delivery state filter (pending, retry_scheduled, succeeded, failed, dead_letter, suppressed, cancelled, in_flight)",
             "required": false,
             "schema": {
               "type": "string"
@@ -10292,6 +10292,13 @@
           "state": {
             "type": "string"
           },
+          "subjectDeletedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set once the subject (Agent/Node) was permanently deleted (design\n§15.7, issue #175)."
+          },
           "subjectKey": {
             "type": "string"
           },
@@ -10348,6 +10355,13 @@
           },
           "state": {
             "type": "string"
+          },
+          "subjectDeletedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set once the subject (Agent/Node) was permanently deleted. The\nIncident keeps its original facts and open/resolved state; the\nannotation only records that the subject is gone (design §15.7)."
           },
           "subjectKey": {
             "type": "string"

@@ -333,6 +333,29 @@ pub async fn record_deletion_identity(
     Ok(())
 }
 
+/// Record the durable deletion identity and retire the Node as an alert and
+/// notification subject in the same transaction (design §15.7, issue #175).
+///
+/// Every purge path goes through here, so a Node cannot be deleted without
+/// leaving current evaluation, annotating its retained Incident evidence as
+/// subject-deleted, and cancelling its not-yet-sent notifications. The caller
+/// supplies the Server-owned deletion instant.
+pub async fn record_deletion(
+    connection: &mut SqliteConnection,
+    target: &NodePurgeTarget,
+    deleted_by_user_id: &str,
+    deleted_at: &str,
+) -> Result<crate::subject_deletion::SubjectRetirement, sqlx::Error> {
+    record_deletion_identity(connection, target, deleted_by_user_id, deleted_at).await?;
+    crate::subject_deletion::retire_subject(
+        connection,
+        crate::alerts::SubjectKind::Node,
+        &target.node_id,
+        deleted_at,
+    )
+    .await
+}
+
 /// Whether the Node ID carries the durable purge admission boundary.
 ///
 /// Report ingestion reads this inside its receipt transaction and rejects the
@@ -377,7 +400,8 @@ pub async fn execute(
     };
     remove(&mut transaction, node_id).await?;
     let deleted_at = crate::auth::format_rfc3339(crate::auth::now_utc());
-    record_deletion_identity(&mut transaction, &impact.target, actor_user_id, &deleted_at).await?;
+    let retirement =
+        record_deletion(&mut transaction, &impact.target, actor_user_id, &deleted_at).await?;
 
     let before = serde_json::json!({
         "agent_id": impact.target.agent_id,
@@ -389,6 +413,9 @@ pub async fn execute(
     let after = serde_json::json!({
         "deleted_at": deleted_at,
         "removed": impact.counts,
+        "incidents_annotated": retirement.incidents_annotated,
+        "evaluation_states_retired": retirement.evaluation_states_retired,
+        "deliveries_cancelled": retirement.deliveries_cancelled,
     });
     crate::auth::insert_audit_change(
         &mut *transaction,

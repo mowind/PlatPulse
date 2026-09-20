@@ -1176,6 +1176,11 @@ export type IncidentDetail = {
     sequence: number;
     severity: string;
     state: string;
+    /**
+     * Set once the subject (Agent/Node) was permanently deleted (design
+     * §15.7, issue #175).
+     */
+    subjectDeletedAt?: string | null;
     subjectKey: string;
     subjectKind: string;
     suppressions: Array<SuppressionMatch>;
@@ -1190,6 +1195,12 @@ export type IncidentListItem = {
     sequence: number;
     severity: string;
     state: string;
+    /**
+     * Set once the subject (Agent/Node) was permanently deleted. The
+     * Incident keeps its original facts and open/resolved state; the
+     * annotation only records that the subject is gone (design §15.7).
+     */
+    subjectDeletedAt?: string | null;
     subjectKey: string;
     subjectKind: string;
 };
@@ -4126,7 +4137,7 @@ export type NotificationDeliveriesData = {
     path?: never;
     query?: {
         /**
-         * Delivery state filter (pending, retry_scheduled, succeeded, failed, dead_letter, suppressed, in_flight)
+         * Delivery state filter (pending, retry_scheduled, succeeded, failed, dead_letter, suppressed, cancelled, in_flight)
          */
         state?: string;
         /**

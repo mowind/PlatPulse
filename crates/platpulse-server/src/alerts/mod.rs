@@ -1856,9 +1856,13 @@ pub async fn sweep(state: &crate::http::AppState) -> Result<usize, AlertError> {
     let mut tx = state.db().pool().begin().await?;
     let mut changes = 0usize;
 
-    let agents: Vec<String> = sqlx::query_scalar("SELECT agent_id FROM agents")
-        .fetch_all(&mut *tx)
-        .await?;
+    // A removed Agent (deleted_at) is no longer a subject: the deletion
+    // mutation already retired its Host/Agent evaluation state, and a later
+    // sweep must never rebuild it (design §15.7, issue #175).
+    let agents: Vec<String> =
+        sqlx::query_scalar("SELECT agent_id FROM agents WHERE deleted_at IS NULL")
+            .fetch_all(&mut *tx)
+            .await?;
     let nodes: Vec<String> =
         sqlx::query_scalar("SELECT node_id FROM nodes WHERE lifecycle = 'active'")
             .fetch_all(&mut *tx)

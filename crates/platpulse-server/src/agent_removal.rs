@@ -326,18 +326,20 @@ pub async fn execute(
 
     let mut purged_nodes = Vec::with_capacity(impact.owned_nodes.len());
     let mut counts = NodePurgeCounts::default();
+    let mut retirement = crate::subject_deletion::SubjectRetirement::default();
     for node in &impact.owned_nodes {
         let Some(node_impact) = node_purge::measure(&mut transaction, &node.node_id).await? else {
             continue;
         };
         node_purge::remove(&mut transaction, &node.node_id).await?;
-        node_purge::record_deletion_identity(
+        let node_retirement = node_purge::record_deletion(
             &mut transaction,
             &node_impact.target,
             actor_user_id,
             &deleted_at,
         )
         .await?;
+        retirement.add(&node_retirement);
         counts.add(&node_impact.counts);
         purged_nodes.push(PurgedNode {
             node_id: node.node_id.clone(),
@@ -362,6 +364,23 @@ pub async fn execute(
         return Ok(AgentRemovalOutcome::NotFound);
     }
 
+    // The Agent and its Host subject leave current evaluation and notification
+    // policy in the same commit as the removal marker; every purged Node was
+    // already retired by the Node Purge path above (design §15.7, issue #175).
+    for subject_kind in [
+        crate::alerts::SubjectKind::Agent,
+        crate::alerts::SubjectKind::Host,
+    ] {
+        let subject_retirement = crate::subject_deletion::retire_subject(
+            &mut transaction,
+            subject_kind,
+            agent_id,
+            &deleted_at,
+        )
+        .await?;
+        retirement.add(&subject_retirement);
+    }
+
     let before = serde_json::json!({
         "display_name": impact.target.display_name,
         "agent_epoch": impact.target.agent_epoch,
@@ -372,6 +391,9 @@ pub async fn execute(
         "revoked_credential_count": revoked.rows_affected(),
         "purged_node_count": purged_nodes.len(),
         "removed": counts,
+        "incidents_annotated": retirement.incidents_annotated,
+        "evaluation_states_retired": retirement.evaluation_states_retired,
+        "deliveries_cancelled": retirement.deliveries_cancelled,
     });
     crate::auth::insert_audit_change(
         &mut *transaction,
