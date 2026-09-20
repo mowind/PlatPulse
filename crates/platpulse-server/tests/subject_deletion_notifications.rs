@@ -701,6 +701,18 @@ async fn agent_removal_retires_agent_host_and_owned_nodes_only() {
     .await
     .unwrap();
     assert_eq!(surviving_states, 1);
+
+    // The Owner-only removal is audited together with what it retired.
+    let after_json: String = sqlx::query_scalar(
+        "SELECT after_json FROM audit_events WHERE event_kind = 'agent_removed' AND target_id = ?",
+    )
+    .bind(&agent_a)
+    .fetch_one(harness.pool())
+    .await
+    .unwrap();
+    let after: Value = serde_json::from_str(&after_json).unwrap();
+    assert_eq!(after["deliveries_cancelled"], 3);
+    assert!(after["incidents_annotated"].as_i64().unwrap() >= 3);
 }
 
 /// A Delivery that only becomes due after its subject was deleted is never

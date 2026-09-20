@@ -47,6 +47,10 @@ pub const DELIVERY_STATES: &[&str] = &[
     "cancelled",
 ];
 
+/// Redacted, fixed-vocabulary Delivery result recorded when a subject's
+/// deletion cancels a not-yet-sent Delivery (design §15.7, issue #175).
+pub const CANCELLED_SUBJECT_DELETED: &str = "cancelled_subject_deleted";
+
 /// One Notification Delivery row (redacted by construction: `destination`
 /// is a masked summary and `last_result` is a fixed provider vocabulary,
 /// never raw provider output).
@@ -516,7 +520,9 @@ pub async fn attempts_for_delivery(
 /// covered. `pending` and `retry_scheduled` rows are unsent by definition; an
 /// `in_flight` row may already have been handed to the provider and is
 /// deliberately left untouched, as is every already-delivered or other-subject
-/// fact.
+/// fact. The worker's own pre-send check cancels the row it just claimed
+/// before handing it off, which is a different situation from a row already in
+/// flight when the deletion commits.
 pub async fn cancel_unsent_for_subject(
     executor: &mut SqliteConnection,
     subject_kind: SubjectKind,
@@ -526,7 +532,7 @@ pub async fn cancel_unsent_for_subject(
     let result = sqlx::query(
         "UPDATE notification_deliveries
             SET state = 'cancelled', next_attempt_at = NULL,
-                last_result = 'cancelled_subject_deleted', last_error_kind = NULL,
+                last_result = ?, last_error_kind = NULL,
                 updated_at = ?
           WHERE state IN ('pending', 'retry_scheduled')
             AND event_id IN (
@@ -534,6 +540,7 @@ pub async fn cancel_unsent_for_subject(
                  WHERE subject_kind = ? AND subject_key = ?
             )",
     )
+    .bind(CANCELLED_SUBJECT_DELETED)
     .bind(cancelled_at)
     .bind(subject_kind.as_str())
     .bind(subject_key)
@@ -622,7 +629,9 @@ pub async fn process_due_deliveries(
         // Pre-send deletion check (design §15.7): the deletion transaction
         // cancels queued Deliveries, but a Delivery can still become due after
         // the deletion (crash requeue, or a send that failed mid-deletion).
-        // Never hand a deleted subject's message to a provider.
+        // Never hand a deleted subject's message to a provider. The row was
+        // claimed (in_flight) by this pass but not yet sent, so cancelling it
+        // records an unsent fact rather than recalling a delivered one.
         if let Some(event) = event.as_ref() {
             let subject = event
                 .subject_kind
@@ -642,8 +651,9 @@ pub async fn process_due_deliveries(
                 if deleted {
                     let mut tx = state.db().pool().begin().await?;
                     sqlx::query(
-                        "UPDATE notification_deliveries SET state = 'cancelled', next_attempt_at = NULL, last_result = 'cancelled_subject_deleted', last_error_kind = NULL, updated_at = ? WHERE delivery_id = ?",
+                        "UPDATE notification_deliveries SET state = 'cancelled', next_attempt_at = NULL, last_result = ?, last_error_kind = NULL, updated_at = ? WHERE delivery_id = ? AND state = 'in_flight'",
                     )
+                    .bind(CANCELLED_SUBJECT_DELETED)
                     .bind(format_rfc3339(now_utc()))
                     .bind(&delivery.delivery_id)
                     .execute(&mut *tx)

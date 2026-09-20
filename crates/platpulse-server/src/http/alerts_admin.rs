@@ -1132,8 +1132,10 @@ pub(crate) async fn preview_alert_rule(
         // The draft is the new global base; existing Network/Node overrides
         // still apply on top (override fields win), mirroring evaluation.
         let subjects: Vec<(SubjectKind, String)> = match definition.subject_kind {
+            // A removed Agent (deleted_at) is no longer a subject, so the
+            // preview must not project it as a current problem (issue #175).
             SubjectKind::Agent | SubjectKind::Host => sqlx::query_scalar::<_, String>(
-                "SELECT agent_id FROM agents ORDER BY agent_id",
+                "SELECT agent_id FROM agents WHERE deleted_at IS NULL ORDER BY agent_id",
             )
             .fetch_all(&mut *tx)
             .await?

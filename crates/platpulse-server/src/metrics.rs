@@ -37,7 +37,7 @@ const OPERATION_STATUSES: [&str; 6] = [
     "failed",
     "cancelled",
 ];
-const DELIVERY_STATES: [&str; 7] = [
+const DELIVERY_STATES: [&str; 8] = [
     "pending",
     "in_flight",
     "retry_scheduled",
@@ -45,6 +45,7 @@ const DELIVERY_STATES: [&str; 7] = [
     "failed",
     "dead_letter",
     "suppressed",
+    "cancelled",
 ];
 
 struct MetricsInner {
@@ -755,5 +756,17 @@ mod tests {
         assert!(text.contains("platpulse_agent_reports_total{outcome=\"unknown\"} 1"));
         assert!(!text.contains("user_id"));
         assert!(!text.contains("unexpected-error-text"));
+    }
+
+    /// The metrics label vocabulary must stay identical to the Delivery state
+    /// vocabulary the Server actually writes; otherwise a state is silently
+    /// dropped from the gauge (issue #175 widened both to include
+    /// `cancelled`).
+    #[test]
+    fn delivery_state_labels_mirror_the_notification_vocabulary() {
+        assert_eq!(
+            DELIVERY_STATES.as_slice(),
+            crate::notifications::DELIVERY_STATES,
+        );
     }
 }
