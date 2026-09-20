@@ -7,7 +7,7 @@ import HomeLayout from './layouts/HomeLayout'
 import LoginPage from './pages/LoginPage'
 import { NodePage } from './pages/HomePages'
 import AdminHome from './pages/AdminHome'
-import AdminAgentsList, { AdminAgentDetail } from './pages/AdminAgents'
+import AdminAgentsList, { AdminAgentDetail, AdminAgentEnroll } from './pages/AdminAgents'
 import AdminNodesList, { AdminNodeDetail } from './pages/AdminNodes'
 import AdminNetworksList, {
   AdminNetworkDetailPage,
@@ -149,6 +149,9 @@ const router = createBrowserRouter([
     children: [
       { index: true, element: <AdminHome /> },
       { path: 'agents', element: <AdminAgentsList /> },
+      // Static segment ranks above `agents/:agentId`, so this is the
+      // enrollment workflow and never an Agent Detail lookup.
+      { path: 'agents/enroll', element: <AdminAgentEnroll /> },
       { path: 'agents/:agentId', element: <AdminAgentDetail /> },
       { path: 'nodes', element: <AdminNodesList /> },
       { path: 'nodes/:nodeId', element: <AdminNodeDetail /> },

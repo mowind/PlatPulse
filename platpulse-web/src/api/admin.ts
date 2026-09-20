@@ -63,6 +63,7 @@ import {
   deleteRuleOverride as deleteRuleOverrideApi,
   endValidatorLink,
   previewAlertRule as previewAlertRuleApi,
+  setAgentMetadata,
   purgeNode as purgeNodeApi,
   updateAlertRule as updateAlertRuleApi,
   upsertRuleOverride as upsertRuleOverrideApi,
@@ -156,6 +157,7 @@ import {
   type AdminOverview,
   type AgentAuditResponse,
   type AgentDiagnostic,
+  type AgentMetadataResponse,
   type AuditResponse,
   type CreatePersonRequest,
   type EnrollmentTokenResponse,
@@ -953,6 +955,30 @@ export async function revokeAgentCredential(
         headers: { 'X-CSRF-Token': csrfToken },
       }),
     'Unable to revoke the credential',
+  )
+  void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+  return response
+}
+/** Update the Server-owned display name and notes of one Agent (issue #169,
+ * webui.md §15.1). Full replacement: `null` or an empty value clears a
+ * field. The stable Agent ID, observed Host identity, Server-derived
+ * liveness, Agent Epoch, and local collection configuration are never
+ * editable. Success refetches the authoritative projection; the mutation is
+ * never optimistic. */
+export async function updateAgentMetadata(
+  agentId: string,
+  displayName: string | null,
+  notes: string | null,
+  csrfToken: string,
+): Promise<AgentMetadataResponse> {
+  const response = await requestAdmin(
+    () =>
+      setAgentMetadata({
+        path: { agent_id: agentId },
+        body: { displayName, notes },
+        headers: { 'X-CSRF-Token': csrfToken },
+      }),
+    'Unable to save the Agent name and notes',
   )
   void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
   return response

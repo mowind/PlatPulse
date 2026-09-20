@@ -2759,6 +2759,7 @@ mod tests {
             "/api/admin/v1/geo/refresh",
             "/api/admin/v1/agents/enroll-token",
             "/api/admin/v1/agents/any/recover",
+            "/api/admin/v1/agents/any/metadata",
             "/api/admin/v1/agents/any/credentials/rotate",
             "/api/admin/v1/agents/any/credentials/any/revoke",
         ] {
@@ -2933,6 +2934,280 @@ mod tests {
             1,
             "the pre-recovery credential is listed as revoked"
         );
+    }
+
+    #[tokio::test]
+    async fn agent_metadata_is_owner_only_audited_and_never_public() {
+        let (_db_dir, _web_dir, state) = test_state().await;
+        let app = build_app(state.clone());
+        seed_owner(&state).await;
+
+        // Owner login through the real HTTP flow: the session response
+        // carries the CSRF token used by every browser mutation.
+        let login = app.clone().oneshot(login_request()).await.unwrap();
+        assert_eq!(login.status(), StatusCode::OK);
+        let cookie = login.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let (_, login_body) = json(login).await;
+        let csrf = login_body["csrfToken"].as_str().unwrap().to_owned();
+
+        let admin_post = |uri: &str, body: &'static str| {
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ORIGIN, "http://127.0.0.1:8080")
+                .header("x-csrf-token", csrf.clone())
+                .header(header::COOKIE, cookie.clone())
+                .body(Body::from(body))
+                .unwrap()
+        };
+        let admin_put = |uri: &str, body: &'static str| {
+            Request::builder()
+                .method("PUT")
+                .uri(uri)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ORIGIN, "http://127.0.0.1:8080")
+                .header("x-csrf-token", csrf.clone())
+                .header(header::COOKIE, cookie.clone())
+                .body(Body::from(body))
+                .unwrap()
+        };
+        let admin_get = |uri: String| {
+            Request::builder()
+                .uri(uri)
+                .header(header::COOKIE, cookie.clone())
+                .body(Body::empty())
+                .unwrap()
+        };
+
+        // Real enrollment mints the Agent identity against the same router.
+        let response = app
+            .clone()
+            .oneshot(admin_post(
+                "/api/admin/v1/agents/enroll-token",
+                r#"{"expiresInHours": 24}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let (_, body) = json(response).await;
+        let enroll_token = body["token"].as_str().unwrap().to_owned();
+        let (_, body) = json(
+            app.clone()
+                .oneshot(bearer_request("/api/agent/v1/enroll", &enroll_token))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let agent_id = body["agent_id"].as_str().unwrap().to_owned();
+
+        // A fresh Agent has no Server-owned name or notes: the stable Agent
+        // ID is the identifier, and nothing is inferred from diagnostics.
+        let (_, detail) = json(
+            app.clone()
+                .oneshot(admin_get(format!("/api/admin/v1/agents/{agent_id}")))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(detail["display_name"].is_null());
+        assert!(detail["notes"].is_null());
+
+        // Owner saves a name and notes; the response is authoritative.
+        let display = "Host A Agent";
+        let notes = "Primary Host covering Node A";
+        let metadata_uri = format!("/api/admin/v1/agents/{agent_id}/metadata");
+        let response = app
+            .clone()
+            .oneshot(admin_put(
+                &metadata_uri,
+                r#"{"displayName":"Host A Agent","notes":"Primary Host covering Node A"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let (_, body) = json(response).await;
+        assert_eq!(body["agent_id"], agent_id);
+        assert_eq!(body["display_name"], display);
+        assert_eq!(body["notes"], notes);
+
+        // Read back through both the detail and the list projections: the
+        // round trip is observable by any later reader (refresh, restart,
+        // another Owner) and never touches the Agent Epoch.
+        let (_, detail) = json(
+            app.clone()
+                .oneshot(admin_get(format!("/api/admin/v1/agents/{agent_id}")))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(detail["display_name"], display);
+        assert_eq!(detail["notes"], notes);
+        assert_eq!(detail["agent_epoch"], 1, "metadata never touches the Epoch");
+        let (_, list) = json(
+            app.clone()
+                .oneshot(admin_get("/api/admin/v1/agents".to_owned()))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let row = list
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["agent_id"] == agent_id)
+            .unwrap();
+        assert_eq!(row["display_name"], display);
+        assert_eq!(row["notes"], notes);
+
+        // A second Owner sees the same persisted metadata through the real
+        // router: the values are Server-owned, not session-local.
+        crate::auth::create_owner(
+            state.db(),
+            "admin2",
+            &hash_password(b"correct horse battery").unwrap(),
+        )
+        .await
+        .unwrap();
+        let second_login = Request::builder()
+            .method("POST")
+            .uri("/api/public/v1/login")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ORIGIN, "http://127.0.0.1:8080")
+            .body(Body::from(
+                r#"{"username":"admin2","password":"correct horse battery"}"#,
+            ))
+            .unwrap();
+        let second_login = app.clone().oneshot(second_login).await.unwrap();
+        assert_eq!(second_login.status(), StatusCode::OK);
+        let second_cookie = second_login.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let second_get = Request::builder()
+            .uri(format!("/api/admin/v1/agents/{agent_id}"))
+            .header(header::COOKIE, second_cookie)
+            .body(Body::empty())
+            .unwrap();
+        let (_, second_detail) = json(app.clone().oneshot(second_get).await.unwrap()).await;
+        assert_eq!(second_detail["display_name"], display);
+        assert_eq!(second_detail["notes"], notes);
+
+        // The public projection never carries Agent metadata.
+        let (status, public_body) = json(
+            app.clone()
+                .oneshot(admin_get("/api/public/v1/networks".to_owned()))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let public_text = serde_json::to_string(&public_body).unwrap();
+        assert!(!public_text.contains(display));
+        assert!(!public_text.contains(notes));
+
+        // Clearing is explicit; the stable ID becomes the identifier again.
+        let response = app
+            .clone()
+            .oneshot(admin_put(
+                &metadata_uri,
+                r#"{"displayName":null,"notes":null}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let (_, body) = json(response).await;
+        assert!(body["display_name"].is_null());
+        assert!(body["notes"].is_null());
+
+        // Validation and unknown Agents are typed and never partially write.
+        // A real control character (escaped in the JSON body) is refused.
+        let invalid_body = serde_json::json!({
+            "displayName": "bad\nname",
+            "notes": null,
+        })
+        .to_string();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(&metadata_uri)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "http://127.0.0.1:8080")
+                    .header("x-csrf-token", csrf.clone())
+                    .header(header::COOKIE, cookie.clone())
+                    .body(Body::from(invalid_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let (_, body) = json(response).await;
+        assert_eq!(body["error"]["code"], "invalid_display_name");
+
+        let long_name = "x".repeat(crate::enrollment::MAX_AGENT_DISPLAY_NAME_LEN + 1);
+        let long_body = format!(r#"{{"displayName":"{long_name}","notes":null}}"#);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(&metadata_uri)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "http://127.0.0.1:8080")
+                    .header("x-csrf-token", csrf.clone())
+                    .header(header::COOKIE, cookie.clone())
+                    .body(Body::from(long_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let response = app
+            .clone()
+            .oneshot(admin_put(
+                "/api/admin/v1/agents/no-such-agent/metadata",
+                r#"{"displayName":"x","notes":null}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let (_, body) = json(response).await;
+        assert_eq!(body["error"]["code"], "agent_not_found");
+
+        // CSRF/origin boundary: a JSON body without the session CSRF header
+        // is refused before any body parsing.
+        let no_csrf = Request::builder()
+            .method("PUT")
+            .uri(&metadata_uri)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ORIGIN, "http://127.0.0.1:8080")
+            .header(header::COOKIE, cookie.clone())
+            .body(Body::from(r#"{"displayName":"x","notes":null}"#))
+            .unwrap();
+        let response = app.clone().oneshot(no_csrf).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        // The mutation is recorded in the redacted Audit trail.
+        let (_, audit) = json(
+            app.clone()
+                .oneshot(admin_get(format!("/api/admin/v1/agents/{agent_id}/audit")))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let kinds: Vec<&str> = audit["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["event_kind"].as_str().unwrap())
+            .collect();
+        assert!(kinds.contains(&"agent_metadata_changed"));
     }
 
     #[tokio::test]

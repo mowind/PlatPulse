@@ -936,7 +936,7 @@ function IdentityPanel({ node }: { node: AdminNodeDetailDto }) {
       </div>
     </CardX>
   )
-
+}
 
 /** Owner-only permanent Node Purge (design §15.3, webui.md §15.2): explicit,
  * irreversible deletion with a Server-computed impact preview. Nothing is

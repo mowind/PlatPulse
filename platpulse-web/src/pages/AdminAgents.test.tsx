@@ -359,7 +359,7 @@ describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
     }
   })
 
-  it('shows the Empty state without an unavailable enrollment action', async () => {
+  it('offers the Add Agent enrollment entry from the empty state', async () => {
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       '/api/admin/v1/agents': () => jsonResponse([], 200),
@@ -368,7 +368,11 @@ describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
 
     await screen.findByRole('heading', { level: 1, name: 'Agents' })
     expect(await screen.findByText(/No Agents enrolled yet\./)).toBeTruthy()
-    expect(screen.queryByRole('link', { name: 'Enroll the first Agent' })).toBeNull()
+    // Generating a token does not create a placeholder; the entry is always
+    // available and never an unavailable action.
+    const entries = await screen.findAllByRole('link', { name: 'Add Agent' })
+    expect(entries.length).toBeGreaterThan(0)
+    expect(entries[0].getAttribute('href')).toBe('/admin/agents/enroll')
   })
 
 
@@ -684,6 +688,52 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
     await waitFor(() => expect(detailCalls).toBeGreaterThan(1))
     expect(await screen.findByText('Revoked', { exact: true })).toBeTruthy()
     expect(screen.getByRole('alert').textContent).toContain('credential_already_revoked')
+  })
+
+  it('saves and reads back the Server-owned display name and notes', async () => {
+    let savedBody: unknown = null
+    let detailCalls = 0
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}`]: () => {
+        detailCalls += 1
+        return jsonResponse(
+          detailCalls === 1
+            ? AGENT_DIAGNOSTIC
+            : { ...AGENT_DIAGNOSTIC, display_name: 'Host A Agent', notes: 'Primary Host' },
+          200,
+        )
+      },
+      [`/api/admin/v1/agents/${AGENT_ID}/audit`]: () => jsonResponse({ agent_id: AGENT_ID, items: [] }, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/metadata`]: ({ body }) => {
+        savedBody = JSON.parse(body ?? '{}')
+        return jsonResponse(
+          { agent_id: AGENT_ID, display_name: 'Host A Agent', notes: 'Primary Host' },
+          200,
+        )
+      },
+    })
+    renderAt(`/admin/agents/${AGENT_ID}`)
+
+    await screen.findByRole('heading', { level: 1, name: /Agent 0195f2a1/ })
+    // A fresh Agent has no name: the stable ID is the visible identifier.
+    expect(screen.queryByText('Host A Agent')).toBeNull()
+
+    const displayInput = await screen.findByLabelText('Display name')
+    const notesInput = screen.getByLabelText('Notes')
+    fireEvent.change(displayInput, { target: { value: 'Host A Agent' } })
+    fireEvent.change(notesInput, { target: { value: 'Primary Host' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save name and notes' }))
+
+    expect(await screen.findByText(/Saved\. The name and notes are Server-owned/)).toBeTruthy()
+    expect(savedBody).toEqual({ displayName: 'Host A Agent', notes: 'Primary Host' })
+    // The authoritative refetch renders the Server-owned name; the stable
+    // Agent ID stays visible and copyable.
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { level: 1, name: /Host A Agent/ })).toBeTruthy(),
+    )
+    expect(screen.getAllByText(AGENT_ID, { exact: true }).length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: 'Copy Agent ID' })).toBeTruthy()
   })
 
   it('shows the non-leaking unavailable state for an unknown Agent', async () => {

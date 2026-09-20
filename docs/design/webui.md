@@ -168,14 +168,15 @@ Each page has a stable ID. IDs are semantic and do not prescribe React filenames
 |---|---|---|---|
 | `PAGE-ADMIN-OVERVIEW` | `/admin` | Owner attention queue and operational overview | Owner |
 | `PAGE-ADMIN-AGENTS` | `/admin/agents` | Agent inventory, liveness, spool diagnostics | Owner |
-| `PAGE-ADMIN-AGENT-DETAIL` | `/admin/agents/:agentId` | Identity, credential status, liveness, inventory, diagnostics | Owner |
+| `PAGE-ADMIN-AGENT-DETAIL` | `/admin/agents/:agentId` | Identity, credential status, liveness, inventory, diagnostics, Server-owned display name and notes | Owner |
+| `PAGE-ADMIN-ENROLL` | `/admin/agents/enroll` | Add Agent: one-time Enrollment Token and local onboarding guidance; no placeholder Agent | Owner |
 | `PAGE-ADMIN-NODES` | `/admin/nodes` | Node list, health summary, freshness, and legacy visibility filter | Owner |
 | `PAGE-ADMIN-NODE-DETAIL` | `/admin/nodes/:nodeId` | Administrative view over the full AdminNodeDetail DTO; UI renders the approved diagnostic subset | Owner |
 | `PAGE-ADMIN-NETWORKS` | `/admin/networks` | Network Registry metadata and Nodes | Owner |
 | `PAGE-ADMIN-NETWORK-DETAIL` | `/admin/networks/:networkKey` | Expected identity, metadata, mismatch diagnostics | Owner |
 | `PAGE-ADMIN-SETTINGS` | `/admin/settings` | Global Block History window and Site Access Mode configuration | Owner |
 
-The table above is the complete set of concrete SPA page routes; unknown paths under `/admin` use the registered Admin wildcard fallback rather than a legacy page. The Server/Admin APIs additionally expose People, Validator management/links/analytics, Alerts, Notifications, Operations, Retention, Backups/Restore, Doctor, Node Transfer, and Agent enrollment/recovery/credential operations; these are available DTO/operation surfaces, not current SPA pages. Geo provider status and selection are consumed by the Settings page.
+The table above is the complete set of concrete SPA page routes; unknown paths under `/admin` use the registered Admin wildcard fallback rather than a legacy page. The Server/Admin APIs additionally expose People, Validator management/links/analytics, Alerts, Notifications, Operations, Retention, Backups/Restore, Doctor, Node Transfer, and Agent recovery/credential operations; these are available DTO/operation surfaces, not current SPA pages. Geo provider status and selection are consumed by the Settings page.
 
 The current SPA has no generic `returnTo`/`return_to` mutation contract. When a protected Home route sends a Guest to `/login`, it carries the internal router pathname as `location.state.from`; a successful login navigates back to that pathname, or `/` when absent. Admin mutations stay on their current route and invalidate/refetch authoritative data.
 
@@ -583,7 +584,7 @@ Retain §2.1 vocabulary, including `Current`, with a visible, accurate dimension
 
 #### 8.5.3 Agents summary and existing detail
 
-The no-new-fields/no-new-actions constraints below describe this earlier presentation-only delivery. §15 accepts a future Server-backed name/notes editor, enrollment guidance and explicit Agent Removal; none should be fabricated from the existing diagnostic DTO or treated as routed today.
+The no-new-fields/no-new-actions constraints below describe this earlier presentation-only delivery. §15.1's Add Agent enrollment guidance and Server-backed name/notes editor are now routed (`PAGE-ADMIN-ENROLL`, `PAGE-ADMIN-AGENT-DETAIL`, issue #169); explicit Agent Removal remains accepted and unimplemented. Do not fabricate fields or actions the Server DTO does not provide.
 
 The Owner scans Agent reporting, inventory, credentials, and diagnostic evidence, then opens the existing `/admin/agents/:agentId` route for investigation. Keep `/admin/agents` as the list route and preserve existing access checks, query/realtime behavior, safe return, and authoritative error handling. Use existing `AgentDiagnostic` data; this is a presentation-only change.
 
@@ -591,7 +592,7 @@ Desktop uses six summary columns:
 
 | Column | Default content and limits |
 |---|---|
-| Agent | Shortened Agent ID linked to the existing detail route. The current DTO has no Agent display name or hostname; do not manufacture one from Node names. |
+| Agent | Server-owned display name when set, otherwise the shortened Agent ID, linked to the detail route. Never manufacture a name from Node or diagnostic fields; the stable Agent ID stays reachable and copyable. |
 | Reporting status | Existing Server liveness with its dimension explicit; not Node health, browser connectivity, clock reliability, or credential status. |
 | Last received | Server `last_received_at`, explicitly labelled as receipt time, with never-received/unknown preserved; not the report sequence. |
 | Node Inventory | Total retained Nodes assigned to the Agent. `nodes.length` includes Active and Retired Nodes; do not label this Active, online, or healthy Nodes. |
@@ -932,6 +933,7 @@ A page is ready for production implementation only when:
 
 | Decision | Source |
 |---|---|
+| Implemented slice: `PAGE-ADMIN-ENROLL` Add Agent guidance and Server-backed Agent display name/notes (`AgentDiagnostic.display_name`/`notes`) | Issue #169, child of the accepted §15 target |
 | Accepted, not implemented: Agent enrollment/metadata/removal, permanent Node Purge, automatic Validator correspondence with one-time history reset, shared per-occurrence Agent Attention Acknowledgment | Confirmed management/Validator/acknowledgment `grill-with-docs` Q1–Q22 and final documentation approval; [main design §15](platpulse.md#accepted-management-target), [ADR 0004](../adr/0004-owner-removal-and-node-purge.md), [ADR 0005](../adr/0005-automatic-validator-identity.md), and this document §15. |
 | Historical: Compact Admin workbench first delivery and six-column Agents summary; the later §8.6 information-architecture pass superseded the Settings/Audit deferral | Confirmed `grill-with-docs` Q1–Q12 and final documentation approval; retained as historical decision, not current route authority. |
 | Admin visual shell and responsive baseline | Issue #35, accepted prototype branch `prototype/ui-shell-variants` |
@@ -964,9 +966,9 @@ Changes to a settled contract require a new decision record and must update the 
 
 <a id="accepted-management-ui-target"></a>
 
-## 15. Accepted Agent/Node management and Attention Acknowledgment (not implemented)
+## 15. Accepted Agent/Node management and Attention Acknowledgment (partially implemented)
 
-**Status:** Accepted through the management/Validator/acknowledgment design interview and final Owner approval; no implementation, route registration, generated API, data purge, or migration is delivered by this document update. The current routes and DTO limitations in §§4 and 8 remain factual baseline. This section supersedes their no-new-actions scope only for the accepted future controls below; it does not declare the deferred pages live.
+**Status:** Accepted through the management/Validator/acknowledgment design interview and final Owner approval; no implementation, route registration, generated API, data purge, or migration is delivered by this document update. The current routes and DTO limitations in §§4 and 8 remain factual baseline. This section supersedes their no-new-actions scope only for the accepted future controls below; it does not declare the deferred pages live. Implemented so far: the §15.1 Add Agent enrollment guidance and Server-backed display name/notes (`PAGE-ADMIN-ENROLL`, `PAGE-ADMIN-AGENT-DETAIL`, issue #169); the §15.2 explicit permanent Node Purge is delivered separately. Agent Removal, Attention Acknowledgment, automatic Validator identity, and the one-time Validator migration remain unimplemented.
 
 Server ownership, lifecycle, data boundaries, and acceptance are in [main design §15](platpulse.md#accepted-management-target). [ADR 0004](../adr/0004-owner-removal-and-node-purge.md) explains irreversible removal; [ADR 0005](../adr/0005-automatic-validator-identity.md) explains automatic identity and the one-time Validator history reset. Preserve the Emerald shell, mobile behavior, and public/admin separation; this is not another visual migration.
 

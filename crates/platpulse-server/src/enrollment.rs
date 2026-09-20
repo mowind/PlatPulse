@@ -877,6 +877,167 @@ pub async fn revoke_agent_credential(
     })
 }
 
+/// Maximum length of an Agent display name (design §15.2, webui.md §15.1).
+/// Matches the Node/Network display-name bound so the UI enforces one rule.
+pub const MAX_AGENT_DISPLAY_NAME_LEN: usize = 128;
+
+/// Maximum length of Owner-authored Agent notes.
+pub const MAX_AGENT_NOTES_LEN: usize = 2000;
+
+/// Owner-editable Server-owned Agent metadata. Both values are optional: an
+/// Agent without a display name is still identified by its stable Agent ID.
+/// This is distinct from Agent ID, Host identity, liveness, the Agent Epoch,
+/// and local collection configuration, none of which are editable here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentMetadata {
+    pub display_name: Option<String>,
+    pub notes: Option<String>,
+}
+
+/// Why an Agent metadata mutation failed.
+#[derive(Debug, Error)]
+pub enum AgentMetadataError {
+    #[error("{0}")]
+    InvalidDisplayName(&'static str),
+    #[error("{0}")]
+    InvalidNotes(&'static str),
+    #[error("agent not found")]
+    AgentNotFound,
+    #[error("database error: {0}")]
+    Database(#[from] sqlx::Error),
+}
+
+impl PartialEq for AgentMetadataError {
+    /// Compares the validation and not-found variants (used by tests);
+    /// error-bearing variants always compare unequal.
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::InvalidDisplayName(a), Self::InvalidDisplayName(b))
+            | (Self::InvalidNotes(a), Self::InvalidNotes(b)) => a == b,
+            (Self::AgentNotFound, Self::AgentNotFound) => true,
+            _ => false,
+        }
+    }
+}
+
+/// Normalize and validate a submitted Agent display name. Surrounding
+/// whitespace is trimmed; an empty value clears the name (`None`) so the UI
+/// can fall back to the stable Agent ID. Control characters are rejected so
+/// the value stays a single visible line.
+pub fn normalize_agent_display_name(
+    value: Option<&str>,
+) -> Result<Option<String>, AgentMetadataError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.chars().count() > MAX_AGENT_DISPLAY_NAME_LEN {
+        return Err(AgentMetadataError::InvalidDisplayName(
+            "display name must be at most 128 characters",
+        ));
+    }
+    if trimmed.chars().any(|c| c.is_control()) {
+        return Err(AgentMetadataError::InvalidDisplayName(
+            "display name must not contain control characters",
+        ));
+    }
+    Ok(Some(trimmed.to_owned()))
+}
+
+/// Normalize and validate submitted Agent notes. Surrounding whitespace is
+/// trimmed; an empty value clears the notes (`None`). Newlines and tabs are
+/// allowed because notes are multi-line; other control characters are not.
+pub fn normalize_agent_notes(value: Option<&str>) -> Result<Option<String>, AgentMetadataError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.chars().count() > MAX_AGENT_NOTES_LEN {
+        return Err(AgentMetadataError::InvalidNotes(
+            "notes must be at most 2000 characters",
+        ));
+    }
+    if trimmed
+        .chars()
+        .any(|c| c.is_control() && c != '\n' && c != '\r' && c != '\t')
+    {
+        return Err(AgentMetadataError::InvalidNotes(
+            "notes must not contain control characters",
+        ));
+    }
+    Ok(Some(trimmed.to_owned()))
+}
+
+/// Replace the Server-owned display name and notes of one Agent. Both
+/// fields are full-replacement values; `None` or an empty value clears a
+/// field. An unchanged submission performs no write and writes no Audit
+/// row. The Audit row records the before/after metadata only; it never
+/// touches the Agent ID, Epoch, Host identity, liveness, or collection
+/// configuration.
+pub async fn update_agent_metadata(
+    db: &ServerDatabase,
+    actor: Option<&str>,
+    agent_id: &str,
+    display_name: Option<&str>,
+    notes: Option<&str>,
+) -> Result<AgentMetadata, AgentMetadataError> {
+    let next = AgentMetadata {
+        display_name: normalize_agent_display_name(display_name)?,
+        notes: normalize_agent_notes(notes)?,
+    };
+
+    let mut transaction = db.pool().begin().await?;
+    let existing = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+        "SELECT display_name, notes FROM agents WHERE agent_id = ?",
+    )
+    .bind(agent_id)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let Some((previous_display_name, previous_notes)) = existing else {
+        return Err(AgentMetadataError::AgentNotFound);
+    };
+    if previous_display_name == next.display_name && previous_notes == next.notes {
+        // No-op: never write or audit a submission that changes nothing.
+        return Ok(next);
+    }
+
+    let changed_at = format_rfc3339(now_utc());
+    sqlx::query("UPDATE agents SET display_name = ?, notes = ?, updated_at = ? WHERE agent_id = ?")
+        .bind(next.display_name.as_deref())
+        .bind(next.notes.as_deref())
+        .bind(&changed_at)
+        .bind(agent_id)
+        .execute(&mut *transaction)
+        .await?;
+
+    let before = serde_json::json!({
+        "display_name": previous_display_name,
+        "notes": previous_notes,
+    });
+    let after = serde_json::json!({
+        "display_name": next.display_name,
+        "notes": next.notes,
+    });
+    insert_audit_change(
+        &mut *transaction,
+        actor,
+        "agent_metadata_changed",
+        "agent",
+        agent_id,
+        Some(&before),
+        Some(&after),
+    )
+    .await?;
+    transaction.commit().await?;
+    Ok(next)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -1532,5 +1693,179 @@ mod tests {
             !body.contains(AGENT_CREDENTIAL_PREFIX),
             "revoke audit must be redacted"
         );
+    }
+
+    #[test]
+    fn agent_display_name_and_notes_are_normalized_and_bounded() {
+        assert_eq!(normalize_agent_display_name(None).unwrap(), None);
+        assert_eq!(normalize_agent_display_name(Some("   ")).unwrap(), None);
+        assert_eq!(
+            normalize_agent_display_name(Some("  Host A  ")).unwrap(),
+            Some("Host A".to_owned())
+        );
+        let too_long = "x".repeat(MAX_AGENT_DISPLAY_NAME_LEN + 1);
+        assert_eq!(
+            normalize_agent_display_name(Some(&too_long)).unwrap_err(),
+            AgentMetadataError::InvalidDisplayName("display name must be at most 128 characters")
+        );
+        assert_eq!(
+            normalize_agent_display_name(Some("bad\nname")).unwrap_err(),
+            AgentMetadataError::InvalidDisplayName(
+                "display name must not contain control characters"
+            )
+        );
+        // Exactly at the bound is accepted.
+        let at_bound = "x".repeat(MAX_AGENT_DISPLAY_NAME_LEN);
+        assert!(
+            normalize_agent_display_name(Some(&at_bound))
+                .unwrap()
+                .is_some()
+        );
+
+        assert_eq!(normalize_agent_notes(None).unwrap(), None);
+        assert_eq!(normalize_agent_notes(Some("  ")).unwrap(), None);
+        assert_eq!(
+            normalize_agent_notes(Some("  line one\nline two\tend  ")).unwrap(),
+            Some("line one\nline two\tend".to_owned())
+        );
+        let too_long_notes = "x".repeat(MAX_AGENT_NOTES_LEN + 1);
+        assert_eq!(
+            normalize_agent_notes(Some(&too_long_notes)).unwrap_err(),
+            AgentMetadataError::InvalidNotes("notes must be at most 2000 characters")
+        );
+        assert_eq!(
+            normalize_agent_notes(Some("bad\u{0}note")).unwrap_err(),
+            AgentMetadataError::InvalidNotes("notes must not contain control characters")
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_profile_round_trips_and_persists_for_other_readers() {
+        let dir = tempdir().unwrap();
+        let db = test_db(dir.path()).await;
+        let pepper = test_pepper(dir.path());
+        insert_owner_row(&db).await;
+
+        let record = create_enrollment_token(&db, &pepper, None, ENROLLMENT_TOKEN_DEFAULT_LIFETIME)
+            .await
+            .unwrap();
+        let enrolled = enroll(&db, &pepper, &record.token).await.unwrap();
+
+        // A fresh Agent has no Server-owned name or notes: the stable Agent
+        // ID is the identifier, and no name is inferred from Node or
+        // diagnostic fields.
+        let initial: (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT display_name, notes FROM agents WHERE agent_id = ?")
+                .bind(&enrolled.agent_id)
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(initial, (None, None));
+
+        let profile = update_agent_metadata(
+            &db,
+            Some("owner"),
+            &enrolled.agent_id,
+            Some("  Host A Agent "),
+            Some("Primary Host\ncovers Node A"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(profile.display_name.as_deref(), Some("Host A Agent"));
+        assert_eq!(
+            profile.notes.as_deref(),
+            Some("Primary Host\ncovers Node A")
+        );
+
+        // The persistence is observable by any later reader (refresh,
+        // restart, another Owner) and leaves the Agent ID and Epoch alone.
+        let stored: (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT display_name, notes FROM agents WHERE agent_id = ?")
+                .bind(&enrolled.agent_id)
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(stored.0.as_deref(), Some("Host A Agent"));
+        assert_eq!(stored.1.as_deref(), Some("Primary Host\ncovers Node A"));
+        let epoch: i64 = sqlx::query_scalar("SELECT agent_epoch FROM agents WHERE agent_id = ?")
+            .bind(&enrolled.agent_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(epoch, 1);
+
+        // Clearing is explicit and returns to the stable-ID fallback.
+        let cleared =
+            update_agent_metadata(&db, Some("owner"), &enrolled.agent_id, None, Some("   "))
+                .await
+                .unwrap();
+        assert_eq!(
+            cleared,
+            AgentMetadata {
+                display_name: None,
+                notes: None,
+            }
+        );
+
+        // Unknown Agent is typed and never inserts an Agent.
+        assert_eq!(
+            update_agent_metadata(&db, Some("owner"), "no-such-agent", Some("x"), None)
+                .await
+                .unwrap_err(),
+            AgentMetadataError::AgentNotFound
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_profile_audit_records_before_and_after_once() {
+        let dir = tempdir().unwrap();
+        let db = test_db(dir.path()).await;
+        let pepper = test_pepper(dir.path());
+        insert_owner_row(&db).await;
+
+        let record = create_enrollment_token(&db, &pepper, None, ENROLLMENT_TOKEN_DEFAULT_LIFETIME)
+            .await
+            .unwrap();
+        let enrolled = enroll(&db, &pepper, &record.token).await.unwrap();
+
+        update_agent_metadata(
+            &db,
+            Some("owner"),
+            &enrolled.agent_id,
+            Some("Named"),
+            Some("notes"),
+        )
+        .await
+        .unwrap();
+        let audit: Vec<(Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT before_json, after_json FROM audit_events WHERE event_kind = 'agent_metadata_changed'",
+        )
+        .fetch_all(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(audit.len(), 1);
+        let before = audit[0].0.clone().unwrap_or_default();
+        let after = audit[0].1.clone().unwrap_or_default();
+        assert!(before.contains("\"display_name\":null"));
+        assert!(after.contains("\"display_name\":\"Named\""));
+        assert!(after.contains("\"notes\":\"notes\""));
+
+        // A no-op submission performs no write and adds no Audit row.
+        update_agent_metadata(
+            &db,
+            Some("owner"),
+            &enrolled.agent_id,
+            Some("Named"),
+            Some("notes"),
+        )
+        .await
+        .unwrap();
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM audit_events WHERE event_kind = 'agent_metadata_changed'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
     }
 }

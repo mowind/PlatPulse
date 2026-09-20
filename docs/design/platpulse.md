@@ -2,7 +2,7 @@
 
 ## 1. 文档状态
 
-- 状态：§1–§14 保留当前实现与边界基线；[§15](#accepted-management-target)记录已确认、待实现的演进，不能据此宣称新 API、页面或迁移已交付。实现、迁移、运行时路由和本文件应相互校验。
+- 状态：§1–§14 保留当前实现与边界基线；[§15](#accepted-management-target)记录已确认、部分实现的演进——已实现部分以对应 GitHub Issue 为准，未实现部分不能据此宣称新 API、页面或迁移已交付。实现、迁移、运行时路由和本文件应相互校验。
 - 适用范围：`platpulse-core`、`platpulse-agent`、`platpulse-server`、`platpulse-web`。
 - 领域术语：以仓库根目录 [CONTEXT.md](../../CONTEXT.md) 为准；词汇表已纳入本次确认的目标语义。§1–§14 中旧的 Inventory 生命周期、手工 Validator Link 和未确认提示描述是实现基线；涉及本次变化时以 §15 的目标契约为准，不把两种状态混写。
 - 规范性用词：
@@ -662,11 +662,11 @@ PlatPulse 当前实现是：
 
 <a id="accepted-management-target"></a>
 
-## 15. Agent/Node 管理、Validator 自动识别与提示确认（已确认，待实现）
+## 15. Agent/Node 管理、Validator 自动识别与提示确认（已确认，部分实现）
 
 ### 15.1 状态、范围与依据
 
-本节来自已完成的 `/grill-with-docs` 访谈（Q1–Q22）及 Owner 的最终共识确认，是目标设计，不是代码完成声明。只同步文档；本次未执行数据库迁移、清理数据、修改运行时路由或生成 OpenAPI。后续实现规格按仓库约定进入 GitHub Issues，本节不代替具体接口设计或实现工单。
+本节来自已完成的 `/grill-with-docs` 访谈（Q1–Q22）及 Owner 的最终共识确认，是目标设计。后续实现规格按仓库约定进入 GitHub Issues，本节不代替具体接口设计或实现工单。实现状态：§15.2 第 1、2 项（Agent 接入引导、显示名称/备注）已由 issue #169 交付；§15.3 Node Purge 已单独交付；Agent Removal、提示确认、自动 Validator 身份与一次性 Validator 迁移仍未实现。
 
 - Agent：Owner 接入引导、显示名称/备注修改、Agent Removal。
 - Node：保留已有重命名，只扩展 Owner 显式 Node Purge；不提供 Admin 新建 Node 或远端采集配置编辑。
@@ -679,7 +679,7 @@ PlatPulse 当前实现是：
 ### 15.2 Agent 接入、元数据与移除
 
 1. Admin 新增入口生成一次性 Enrollment Token 和接入指引。仅生成 Token 不创建离线 Agent 占位记录；Agent 成功 Enrollment 后才出现在列表。Token 仍是短期单次接入凭据，不是永久 Agent Credential。
-2. Owner 可以编辑 Agent 显示名称和备注。Agent ID、实际 Host 信息、Server 推导的 liveness、Epoch、采集配置不是可编辑资料；没有名称时仍可用稳定 ID 标识。当前实现尚无这些可编辑元数据字段。
+2. Owner 可以编辑 Agent 显示名称和备注。Agent ID、实际 Host 信息、Server 推导的 liveness、Epoch、采集配置不是可编辑资料；没有名称时仍可用稳定 ID 标识。显示名称与备注由 Server 持久化至 `agents` 表并写入 Audit（issue #169）。
 3. Agent Removal 的确认必须明确列出所属 Node 及不可逆后果。执行前重新校验所属关系；存在进行中的 Node Transfer 时先完成、取消或处理该 Transfer，不能静默夺走 Node。
 4. 确认后撤销该 Agent 的全部凭证，将其从当前监控/正常列表移除，并对所属 Node 执行 §15.3 的永久清理。Agent 登记身份仅保留必要删除标记；既有 Alert Incident 证据和必要审计按 §15.7 保留。不能用 Recovery/Rotation 或迟到报告绕过移除重新启用同一身份。
 5. 移除不会停止、卸载远端进程。UI 告知 Owner 仍须在 Host 上处理本地配置/进程；凭证撤销与 Agent Removal 不是同一个动作。

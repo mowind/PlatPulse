@@ -1201,12 +1201,10 @@ describe('Admin MVP route inventory (issue #92)', () => {
       expect(screen.queryByRole('heading', { level: 1, name: legacyHeading })).toBeNull()
     }
 
-    // `/admin/agents/enroll` is not registered: it falls through to the
-    // generic Agent Detail route for an unknown id, never the enrollment
-    // workflow.
+    // `/admin/agents/enroll` is the Add Agent workflow, not an Agent Detail
+    // lookup for the literal id `enroll`.
     await renderAt('/admin/agents/enroll')
-    await screen.findByRole('heading', { level: 1, name: /Agent enrol/ })
-    expect(screen.queryByRole('heading', { level: 1, name: /Enroll a new Agent/ })).toBeNull()
+    await screen.findByRole('heading', { level: 1, name: 'Enroll a new Agent' })
   })
 
   it('exposes only the MVP page groups through Admin navigation', async () => {

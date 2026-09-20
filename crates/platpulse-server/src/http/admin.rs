@@ -685,6 +685,11 @@ pub struct AgentCredentialSummary {
 #[serde(rename_all = "snake_case")]
 pub struct AgentDiagnostic {
     pub agent_id: String,
+    /// Owner-editable Server-owned display name (design §15.2). `None` means
+    /// the WebUI identifies the Agent by its stable ID.
+    pub display_name: Option<String>,
+    /// Owner-editable Server-owned notes.
+    pub notes: Option<String>,
     pub agent_epoch: i64,
     pub last_report_sequence: Option<i64>,
     pub active_boot_id: Option<String>,
@@ -2195,6 +2200,8 @@ pub(crate) async fn admin_node_peer_history(
 #[derive(Debug, sqlx::FromRow)]
 struct AgentAdminRow {
     agent_id: String,
+    display_name: Option<String>,
+    notes: Option<String>,
     agent_epoch: i64,
     active_boot_id: Option<String>,
     active_boot_status: String,
@@ -2231,7 +2238,7 @@ async fn diagnostics(
 ) -> impl IntoResponse {
     let agents = sqlx::query_as::<_, AgentAdminRow>(
 
-        "SELECT agent_id, agent_epoch, active_boot_id, active_boot_status, previous_boot_id, close_report_id, shutdown_state, shutdown_started_at, shutdown_deadline_at, shutdown_finished_at, shutdown_unresolved_from, shutdown_unresolved_to, shutdown_last_error, shutdown_forced, shutdown_report_id, shutdown_report_sequence, shutdown_updated_at, last_report_sequence, agent_capabilities_json, clock_skew_ms, clock_status, last_received_at, security_event_count FROM agents ORDER BY agent_id",
+        "SELECT agent_id, display_name, notes, agent_epoch, active_boot_id, active_boot_status, previous_boot_id, close_report_id, shutdown_state, shutdown_started_at, shutdown_deadline_at, shutdown_finished_at, shutdown_unresolved_from, shutdown_unresolved_to, shutdown_last_error, shutdown_forced, shutdown_report_id, shutdown_report_sequence, shutdown_updated_at, last_report_sequence, agent_capabilities_json, clock_skew_ms, clock_status, last_received_at, security_event_count FROM agents ORDER BY agent_id",
     )
     .fetch_all(state.db().pool())
     .await
@@ -2249,6 +2256,8 @@ async fn diagnostics(
 async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> AgentDiagnostic {
     let AgentAdminRow {
         agent_id,
+        display_name,
+        notes,
         agent_epoch,
         active_boot_id,
         active_boot_status: boot_status,
@@ -2343,6 +2352,8 @@ async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> AgentDiagnost
     }
     AgentDiagnostic {
         agent_id,
+        display_name,
+        notes,
         agent_epoch,
         last_report_sequence,
         clock_status: clock_status.unwrap_or_else(|| "unknown".to_owned()),
@@ -2924,7 +2935,7 @@ pub(crate) async fn admin_agent_detail(
     Extension(request_id): Extension<super::RequestId>,
 ) -> Response {
     let Some(row) = sqlx::query_as::<_, AgentAdminRow>(
-        "SELECT agent_id, agent_epoch, active_boot_id, active_boot_status, previous_boot_id, close_report_id, shutdown_state, shutdown_started_at, shutdown_deadline_at, shutdown_finished_at, shutdown_unresolved_from, shutdown_unresolved_to, shutdown_last_error, shutdown_forced, shutdown_report_id, shutdown_report_sequence, shutdown_updated_at, last_report_sequence, agent_capabilities_json, clock_skew_ms, clock_status, last_received_at, security_event_count FROM agents WHERE agent_id = ?",
+        "SELECT agent_id, display_name, notes, agent_epoch, active_boot_id, active_boot_status, previous_boot_id, close_report_id, shutdown_state, shutdown_started_at, shutdown_deadline_at, shutdown_finished_at, shutdown_unresolved_from, shutdown_unresolved_to, shutdown_last_error, shutdown_forced, shutdown_report_id, shutdown_report_sequence, shutdown_updated_at, last_report_sequence, agent_capabilities_json, clock_skew_ms, clock_status, last_received_at, security_event_count FROM agents WHERE agent_id = ?",
     )
     .bind(&agent_id)
     .fetch_optional(state.db().pool())
@@ -2940,6 +2951,118 @@ pub(crate) async fn admin_agent_detail(
         );
     };
     Json(agent_diagnostic(&state, row).await).into_response()
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentMetadataRequest {
+    /// Server-owned display name. Absent, `null`, or an empty value clears
+    /// the name; the stable Agent ID remains the identifier (design §15.2).
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// Free-form Owner notes. Absent, `null`, or an empty value clears them.
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct AgentMetadataResponse {
+    pub agent_id: String,
+    pub display_name: Option<String>,
+    pub notes: Option<String>,
+}
+
+/// Owner-only Server-owned Agent metadata mutation (display name and notes,
+/// design §15.2). It never touches the Agent ID, Epoch, Host identity,
+/// receipt-derived liveness, or local collection configuration.
+#[utoipa::path(
+    put,
+    path = "/api/admin/v1/agents/{agent_id}/metadata",
+    tag = "admin",
+    params(("agent_id" = String, Path, description = "Agent ID")),
+    request_body = AgentMetadataRequest,
+    responses((status = 200, body = AgentMetadataResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody))
+)]
+pub(crate) async fn set_agent_metadata(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    headers: HeaderMap,
+    Extension(principal): Extension<super::AuthenticatedSession>,
+    Extension(request_id): Extension<super::RequestId>,
+    body: axum::body::Bytes,
+) -> Response {
+    if !mutation_guard_ok(&headers, &state, &principal) {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::FORBIDDEN,
+            "csrf_validation_failed",
+            "mutation validation failed",
+        );
+    }
+    let body: AgentMetadataRequest = match serde_json::from_slice(&body) {
+        Ok(body) => body,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::BAD_REQUEST,
+                "invalid_json",
+                "request body is invalid",
+            );
+        }
+    };
+    match crate::enrollment::update_agent_metadata(
+        state.db(),
+        Some(&principal.0.user_id),
+        &agent_id,
+        body.display_name.as_deref(),
+        body.notes.as_deref(),
+    )
+    .await
+    {
+        Ok(profile) => {
+            // Post-commit Admin invalidation: another Owner's open view
+            // refetches the authoritative projection; never optimistic.
+            let revision = crate::auth::format_rfc3339(crate::auth::now_utc())
+                .bytes()
+                .fold(0_u64, |acc, byte| {
+                    acc.wrapping_mul(31).wrapping_add(byte as u64)
+                });
+            state
+                .admin_realtime()
+                .publish("agent", Some(agent_id.clone()), revision);
+            Json(AgentMetadataResponse {
+                agent_id,
+                display_name: profile.display_name,
+                notes: profile.notes,
+            })
+            .into_response()
+        }
+        Err(crate::enrollment::AgentMetadataError::AgentNotFound) => mutation_error(
+            &request_id.0,
+            StatusCode::NOT_FOUND,
+            "agent_not_found",
+            "agent not found",
+        ),
+        Err(crate::enrollment::AgentMetadataError::InvalidDisplayName(message)) => mutation_error(
+            &request_id.0,
+            StatusCode::BAD_REQUEST,
+            "invalid_display_name",
+            message,
+        ),
+        Err(crate::enrollment::AgentMetadataError::InvalidNotes(message)) => mutation_error(
+            &request_id.0,
+            StatusCode::BAD_REQUEST,
+            "invalid_notes",
+            message,
+        ),
+        Err(crate::enrollment::AgentMetadataError::Database(_)) => mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        ),
+    }
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -5678,6 +5801,7 @@ pub fn router() -> Router<AppState> {
         .route("/networks/{network_key}", put(update_network))
         .route("/agents", get(diagnostics))
         .route("/agents/{agent_id}", get(admin_agent_detail))
+        .route("/agents/{agent_id}/metadata", put(set_agent_metadata))
         .route("/agents/{agent_id}/audit", get(admin_agent_audit))
         .route("/agents/enroll-token", post(admin_enrollment_token))
         .route("/agents/{agent_id}/recover", post(admin_recovery_token))

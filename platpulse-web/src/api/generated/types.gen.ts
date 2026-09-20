@@ -454,11 +454,20 @@ export type AgentDiagnostic = {
      * liveness, boot/report, inventory, credentials, diagnostics).
      */
     credentials: Array<AgentCredentialSummary>;
+    /**
+     * Owner-editable Server-owned display name (design §15.2). `None` means
+     * the WebUI identifies the Agent by its stable ID.
+     */
+    display_name?: string | null;
     host?: null | HostDiagnostic;
     last_received_at?: string | null;
     last_report_sequence?: number | null;
     liveness: string;
     nodes: Array<NodeDiagnostic>;
+    /**
+     * Owner-editable Server-owned notes.
+     */
+    notes?: string | null;
     previous_boot_id?: string | null;
     security_event_count: number;
     sequence_gap_count: number;
@@ -475,6 +484,24 @@ export type AgentDiagnostic = {
         number
     ] | null;
     shutdown_updated_at?: string | null;
+};
+
+export type AgentMetadataRequest = {
+    /**
+     * Server-owned display name. Absent, `null`, or an empty value clears
+     * the name; the stable Agent ID remains the identifier (design §15.2).
+     */
+    displayName?: string | null;
+    /**
+     * Free-form Owner notes. Absent, `null`, or an empty value clears them.
+     */
+    notes?: string | null;
+};
+
+export type AgentMetadataResponse = {
+    agent_id: string;
+    display_name?: string | null;
+    notes?: string | null;
 };
 
 export type AgentSummary = {
@@ -2607,6 +2634,32 @@ export type AdminRevokeCredentialResponses = {
 };
 
 export type AdminRevokeCredentialResponse = AdminRevokeCredentialResponses[keyof AdminRevokeCredentialResponses];
+
+export type SetAgentMetadataData = {
+    body: AgentMetadataRequest;
+    path: {
+        /**
+         * Agent ID
+         */
+        agent_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/agents/{agent_id}/metadata';
+};
+
+export type SetAgentMetadataErrors = {
+    400: ApiErrorBody;
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+};
+
+export type SetAgentMetadataError = SetAgentMetadataErrors[keyof SetAgentMetadataErrors];
+
+export type SetAgentMetadataResponses = {
+    200: AgentMetadataResponse;
+};
+
+export type SetAgentMetadataResponse = SetAgentMetadataResponses[keyof SetAgentMetadataResponses];
 
 export type AdminRecoveryTokenData = {
     body: TokenLifetimeRequest;

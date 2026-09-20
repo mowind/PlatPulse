@@ -1,5 +1,5 @@
 import { ChevronUp } from 'lucide-react'
-import { useId, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useId, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router'
 import {
   AdminApiError,
@@ -7,6 +7,7 @@ import {
   createRecoveryToken,
   revokeAgentCredential,
   rotateAgentCredential,
+  updateAgentMetadata,
   useAdminAgentAudit,
   useAdminAgentDetail,
   useAdminDiagnostics,
@@ -21,7 +22,7 @@ import {
 } from '../components/StatusBadge'
 import { Button, buttonVariants } from '../components/ui/button'
 import { CardX } from '../components/ui/card-x'
-import { Checkbox, Select } from '../components/ui/input'
+import { Checkbox, Input, Select, Textarea } from '../components/ui/input'
 import { Empty } from '../components/ui/empty'
 import { cn } from '../lib/utils'
 import { SURFACE_CARD } from '../lib/surface'
@@ -128,7 +129,13 @@ function AgentIdCopyControl({ agentId }: { agentId: string }) {
   )
 }
 
-function AgentIdentityAccess({ agentId }: { agentId: string }) {
+function AgentIdentityAccess({
+  agentId,
+  displayName,
+}: {
+  agentId: string
+  displayName?: string | null
+}) {
   const [revealed, setRevealed] = useState(false)
   const fullIdPanelId = useId()
   return (
@@ -137,8 +144,16 @@ function AgentIdentityAccess({ agentId }: { agentId: string }) {
         className="flex min-h-11 w-full min-w-0 items-center break-all font-medium underline-offset-4 hover:underline"
         to={'/admin/agents/' + encodeURIComponent(agentId)}
       >
-        {shortId(agentId)}
+        {displayName ?? shortId(agentId)}
       </Link>
+      {displayName && (
+        <small
+          className="min-w-0 break-all text-[11px] text-muted-foreground"
+          title={'Full Agent ID: ' + agentId}
+        >
+          {shortId(agentId)}
+        </small>
+      )}
       <Button
         variant="link"
         size="sm"
@@ -315,13 +330,18 @@ export default function AdminAgentsList() {
 
   return (
     <section className="w-full min-w-0 space-y-4">
-      <div className="space-y-1">
-        <h1 className="text-2xl font-semibold break-words">Agents</h1>
-        <p className="text-sm text-muted-foreground">
-          Server reporting status, receipt time, retained Node inventory, credential validity,
-          and diagnostics stay separate dimensions. Detailed boot/report state remains on each
-          Agent detail page; Agent Offline is not Node Retired.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-1">
+          <h1 className="text-2xl font-semibold break-words">Agents</h1>
+          <p className="text-sm text-muted-foreground">
+            Server reporting status, receipt time, retained Node inventory, credential validity,
+            and diagnostics stay separate dimensions. Detailed boot/report state remains on each
+            Agent detail page; Agent Offline is not Node Retired.
+          </p>
+        </div>
+        <Link className={cn(buttonVariants(), 'shrink-0')} to="/admin/agents/enroll">
+          Add Agent
+        </Link>
       </div>
       {!query.data && query.isPending && (
         <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground" role="status">
@@ -353,7 +373,11 @@ export default function AdminAgentsList() {
       )}
       {query.data && agents.length === 0 && (
         <CardX size="medium" className={CARD_SURFACE}>
-          <Empty description="No Agents enrolled yet. Enrollment is not available in this Admin surface." />
+          <Empty description="No Agents enrolled yet. Add Agent generates a short-lived, single-use Enrollment Token with local instructions; an Agent appears here only after it enrolls successfully.">
+            <Link className={cn(buttonVariants())} to="/admin/agents/enroll">
+              Add Agent
+            </Link>
+          </Empty>
         </CardX>
       )}
       {query.data && agents.length > 0 && (
@@ -442,7 +466,7 @@ function AgentListRow({ agent }: { agent: AgentDiagnostic }) {
     <>
       <tr className="border-b border-border/60 align-top">
         <th scope="row" data-label="Agent" className="min-w-0 px-3 py-3 text-left">
-          <AgentIdentityAccess agentId={agent.agent_id} />
+          <AgentIdentityAccess agentId={agent.agent_id} displayName={agent.display_name} />
         </th>
         <td data-label="Reporting status" className="min-w-0 px-3 py-3">
           <div className="flex flex-col gap-1">
@@ -551,7 +575,7 @@ export function AdminAgentDetail() {
     <section className="w-full min-w-0 space-y-4">
       <div className="space-y-1">
         <h1 className="text-lg font-semibold break-words">
-          Agent {shortId(agentId)}
+          {agent.data?.display_name ?? 'Agent ' + shortId(agentId)}
           <span className="mt-0.5 block text-xs font-medium text-muted-foreground break-all">{agentId}</span>
         </h1>
         <p className="text-sm text-muted-foreground">
@@ -600,9 +624,17 @@ export function AdminAgentDetail() {
             </div>
           )}
           <AgentDetailSummary agent={agent.data} />
-          <section className="space-y-3" aria-labelledby="agent-overview-heading">
+          <section className="space-y-3" aria-labelledby="agent-profile-heading">
             <div className="space-y-1">
               <span className="text-[11px] font-medium text-muted-foreground">01</span>
+              <h2 id="agent-metadata-heading" className="text-lg font-semibold">Server-owned metadata</h2>
+              <p className="text-sm text-muted-foreground">Server-owned display name and notes. The Agent ID, Host identity, liveness, Epoch, and collection configuration stay read-only.</p>
+            </div>
+            <MetadataPanel agent={agent.data} onSaved={() => void agent.refetch()} />
+          </section>
+          <section className="space-y-3" aria-labelledby="agent-overview-heading">
+            <div className="space-y-1">
+              <span className="text-[11px] font-medium text-muted-foreground">02</span>
               <h2 id="agent-overview-heading" className="text-lg font-semibold">Overview</h2>
               <p className="text-sm text-muted-foreground">Identity and the Agent-declared Node Inventory.</p>
             </div>
@@ -613,7 +645,7 @@ export function AdminAgentDetail() {
           </section>
           <section className="space-y-3" aria-labelledby="agent-runtime-heading">
             <div className="space-y-1">
-              <span className="text-[11px] font-medium text-muted-foreground">02</span>
+              <span className="text-[11px] font-medium text-muted-foreground">03</span>
               <h2 id="agent-runtime-heading" className="text-lg font-semibold">Runtime and reporting</h2>
               <p className="text-sm text-muted-foreground">Server liveness remains separate from boot and report lifecycle.</p>
             </div>
@@ -624,7 +656,7 @@ export function AdminAgentDetail() {
           </section>
           <section className="space-y-3" aria-labelledby="agent-credentials-heading">
             <div className="space-y-1">
-              <span className="text-[11px] font-medium text-muted-foreground">03</span>
+              <span className="text-[11px] font-medium text-muted-foreground">04</span>
               <h2 id="agent-credentials-heading" className="text-lg font-semibold">Credentials</h2>
               <p className="text-sm text-muted-foreground">Server-owned credential validity and explicit revocation.</p>
             </div>
@@ -632,7 +664,7 @@ export function AdminAgentDetail() {
           </section>
           <section className="space-y-3" aria-labelledby="agent-diagnostics-heading">
             <div className="space-y-1">
-              <span className="text-[11px] font-medium text-muted-foreground">04</span>
+              <span className="text-[11px] font-medium text-muted-foreground">05</span>
               <h2 id="agent-diagnostics-heading" className="text-lg font-semibold">Diagnostics</h2>
               <p className="text-sm text-muted-foreground">Recorded evidence is shown without inferring current recovery or failure.</p>
             </div>
@@ -640,7 +672,7 @@ export function AdminAgentDetail() {
           </section>
           <section className="space-y-3" aria-labelledby="agent-audit-heading">
             <div className="space-y-1">
-              <span className="text-[11px] font-medium text-muted-foreground">05</span>
+              <span className="text-[11px] font-medium text-muted-foreground">06</span>
               <h2 id="agent-audit-heading" className="text-lg font-semibold">Audit</h2>
               <p className="text-sm text-muted-foreground">Immutable, redacted lifecycle events for this Agent.</p>
             </div>
@@ -795,6 +827,138 @@ function IdentityPanel({ agent }: { agent: AgentDiagnostic }) {
           {agent.capabilities.length > 0 ? agent.capabilities.join(', ') : 'Unsupported'}
         </DetailItem>
       </DetailList>
+    </CardX>
+  )
+}
+
+/** PAGE-ADMIN-AGENT-DETAIL, SCN-AGENT-METADATA: Owner-editable Server-owned
+ * display name and notes. The stable Agent ID, observed Host identity,
+ * Server-derived liveness, Agent Epoch, and local collection configuration
+ * are never editable, and no name is inferred from a Node or diagnostic
+ * field. Server-backed and authoritative: success refetches; a failed save
+ * keeps the form and reports an actionable error. */
+function MetadataPanel({ agent, onSaved }: { agent: AgentDiagnostic; onSaved: () => void }) {
+  const { status } = useAuth()
+  const csrfToken = status.state === 'authenticated' ? status.csrfToken : ''
+  const [displayName, setDisplayName] = useState(agent.display_name ?? '')
+  const [notes, setNotes] = useState(agent.notes ?? '')
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  // Re-sync with each authoritative projection (refetch, another Owner's
+  // update, or a Server restart). A failed local edit is preserved only
+  // until the next authoritative value arrives.
+  useEffect(() => {
+    setDisplayName(agent.display_name ?? '')
+    setNotes(agent.notes ?? '')
+  }, [agent.display_name, agent.notes])
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (busy) return
+    setBusy(true)
+    setError(null)
+    setMessage(null)
+    try {
+      await updateAgentMetadata(
+        agent.agent_id,
+        displayName.trim() === '' ? null : displayName,
+        notes.trim() === '' ? null : notes,
+        csrfToken,
+      )
+      setMessage('Saved. The name and notes are Server-owned and visible to every Owner.')
+      onSaved()
+    } catch (caught) {
+      setError(
+        caught instanceof AdminApiError && caught.code === 'agent_not_found'
+          ? 'This Agent is no longer available.'
+          : caught instanceof Error
+            ? caught.message
+            : 'Unable to save the Agent name and notes',
+      )
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <CardX
+      size="medium"
+      className={CARD_SURFACE}
+      header={<h3 className="text-sm font-medium">Display name and notes</h3>}
+    >
+      <form className="grid max-w-xl gap-3" onSubmit={save}>
+        <div className="flex flex-col gap-1">
+          <label
+            className="text-xs font-medium tracking-wider text-muted-foreground"
+            htmlFor="agent-display-name"
+          >
+            Display name
+          </label>
+          <Input
+            id="agent-display-name"
+            value={displayName}
+            maxLength={128}
+            placeholder="Unnamed Agent (identified by the stable ID)"
+            onChange={(event) => setDisplayName(event.target.value)}
+          />
+          <p className="text-[11px] text-muted-foreground">
+            Optional, at most 128 characters. Clear it to identify the Agent by its stable ID.
+          </p>
+        </div>
+        <div className="flex flex-col gap-1">
+          <label
+            className="text-xs font-medium tracking-wider text-muted-foreground"
+            htmlFor="agent-notes"
+          >
+            Notes
+          </label>
+          <Textarea
+            id="agent-notes"
+            value={notes}
+            maxLength={2000}
+            rows={4}
+            placeholder="Optional operational context"
+            onChange={(event) => setNotes(event.target.value)}
+          />
+          <p className="text-[11px] text-muted-foreground">Optional, at most 2000 characters.</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <Button type="submit" disabled={busy}>
+            {busy ? 'Saving…' : 'Save name and notes'}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={busy}
+            onClick={() => {
+              setDisplayName(agent.display_name ?? '')
+              setNotes(agent.notes ?? '')
+              setError(null)
+              setMessage(null)
+            }}
+          >
+            Reset
+          </Button>
+        </div>
+        {message && (
+          <p className="text-sm text-success" role="status">
+            {message}
+          </p>
+        )}
+        {error && (
+          <p className="text-sm text-destructive" role="alert">
+            {error}
+          </p>
+        )}
+        <p className="text-[11px] text-muted-foreground">
+          Saved through the Owner-only, CSRF-guarded Admin route and recorded in the Audit
+          trail as <code>agent_metadata_changed</code>. The Agent ID,
+          Host identity, Server liveness, Agent Epoch, and collection configuration are
+          read-only and never editable here.
+        </p>
+      </form>
     </CardX>
   )
 }
@@ -1275,6 +1439,46 @@ function LifetimeField({
   )
 }
 
+/** SCN-AGENT-ENROLL-GUIDANCE: local, safe upstream instructions. The UI
+ * installs nothing and runs no remote command; the secret is consumed from
+ * the terminal on the Host, never from process arguments or a URL. */
+function EnrollmentGuidance() {
+  return (
+    <CardX
+      size="medium"
+      className={CARD_SURFACE}
+      header={<h2 className="text-lg font-semibold">Local enrollment instructions</h2>}
+    >
+      <ol className="list-decimal space-y-2 pl-5 text-sm">
+        <li>
+          Install the <code>platpulse-agent</code> package on the Host. This UI never installs,
+          starts, stops, or upgrades anything remotely.
+        </li>
+        <li>
+          Configure <code>server_url</code>, the credential file, the state database, and the
+          Host's Nodes in <code>/var/lib/platpulse-agent/agent.toml</code>.
+        </li>
+        <li>
+          On the Host, run
+          <code className="mx-1 break-all">platpulse-agent enroll --config /var/lib/platpulse-agent/agent.toml</code>
+          and paste the token at the prompt. The token is read from the terminal, never from
+          process arguments.
+        </li>
+        <li>
+          Start the Agent service. Successful enrollment immediately adds the Agent to this
+          list with its stable Agent ID; a display name and notes can then be saved on the
+          Agent detail page.
+        </li>
+      </ol>
+      <p className="mt-3 text-[11px] text-muted-foreground">
+        Generating a token does not create an Agent and leaves no offline placeholder. Only a
+        successful enrollment adds the Agent to the list. The token is short-lived, single-use,
+        and shown exactly once.
+      </p>
+    </CardX>
+  )
+}
+
 /** PAGE-ADMIN-ENROLL: create a one-time Enrollment Token for a new Agent. */
 export function AdminAgentEnroll() {
   const { status } = useAuth()
@@ -1351,6 +1555,7 @@ export function AdminAgentEnroll() {
           </form>
         </CardX>
       )}
+      <EnrollmentGuidance />
     </section>
   )
 }

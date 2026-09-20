@@ -11,9 +11,10 @@ import {
 
 /**
  * Agent inventory and detail (PAGE-ADMIN-AGENTS, PAGE-ADMIN-AGENT-DETAIL).
- * Enrollment, recovery, and rotation are outside this summary slice; this
- * suite covers the retained identity, liveness, credential, inventory, and
- * diagnostic evidence surface without adding alternate actions.
+ * The suite covers the Add Agent enrollment entry, the Server-owned
+ * display name and notes, and the retained identity, liveness, credential,
+ * inventory, and diagnostic evidence surface. Recovery and rotation remain
+ * outside this slice.
  *
  * Read-only flows run on every fixed viewport project. Mutations create
  * Server state, so each mutation runs once on desktop-1280 only (same
@@ -202,8 +203,9 @@ test.describe('Agent inventory and detail (PAGE-ADMIN-AGENTS)', () => {
     await expect(row).toContainText('Copied to clipboard.')
     await expectVisibleInteractiveTargets(page)
 
-    // Enrollment is deferred; no unavailable action is exposed in the summary.
-    await expect(page.getByRole('link', { name: 'Enroll a new Agent' })).toHaveCount(0)
+    // SCN-AGENT-ENROLL-GUIDANCE: the Add Agent entry is available and
+    // opens the enrollment workflow; it is never an unavailable action.
+    await expect(page.getByRole('link', { name: 'Add Agent' }).first()).toBeVisible()
     await expectNoHorizontalOverflow(page)
   })
 
@@ -314,5 +316,36 @@ test.describe.serial('Agent lifecycle mutations (one run on desktop-1280)', () =
     await expect(item.getByText('Revoked', { exact: true })).toBeVisible({ timeout: 15_000 })
     await expect(item.getByRole('button', { name: 'Revoke' })).toHaveCount(0)
     await expectNoHorizontalOverflow(page)
+  })
+
+  test('metadata mutation saves the Server-owned name and notes', async ({ page }) => {
+    await page.locator('a[href="/admin/agents/' + AGENT_ID + '"]').click()
+    await expect(
+      page.getByRole('heading', { level: 1, name: /Agent 0195f2a1/ }),
+    ).toBeVisible()
+
+    try {
+      await page.getByLabel('Display name').fill('E2E Host A Agent')
+      await page.getByLabel('Notes').fill('E2E notes for the primary Host')
+      await page.getByRole('button', { name: 'Save name and notes' }).click()
+      await expect(page.getByText(/Saved\. The name and notes are Server-owned/)).toBeVisible({
+        timeout: 15_000,
+      })
+      // The refetched detail renders the Server-owned name while the stable
+      // Agent ID stays visible and copyable.
+      await expect(page.getByRole('heading', { level: 1, name: /E2E Host A Agent/ })).toBeVisible({
+        timeout: 15_000,
+      })
+      await expect(page.getByText(AGENT_ID, { exact: true }).first()).toBeVisible()
+      await expect(page.getByRole('button', { name: 'Copy Agent ID' })).toBeVisible()
+    } finally {
+      // Restore the enrolled baseline: no Server-owned name or notes.
+      await page.getByLabel('Display name').fill('')
+      await page.getByLabel('Notes').fill('')
+      await page.getByRole('button', { name: 'Save name and notes' }).click()
+      await expect(
+        page.getByRole('heading', { level: 1, name: /Agent 0195f2a1/ }),
+      ).toBeVisible({ timeout: 15_000 })
+    }
   })
 })
