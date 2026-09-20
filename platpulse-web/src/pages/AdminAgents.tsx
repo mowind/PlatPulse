@@ -3,6 +3,7 @@ import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent,
 import { Link, useParams } from 'react-router'
 import {
   AdminApiError,
+  acknowledgeAgentAttention,
   createEnrollmentToken,
   createRecoveryToken,
   removeAgent,
@@ -16,7 +17,7 @@ import {
 } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
 import { formatBytesUnknown, formatBytesPerSecond, formatIdentifier, formatPercent } from '../formatBytes'
-import { hasSpoolRisk, livenessTone, receiptTimeText } from '../agentDiagnostics'
+import { livenessTone, receiptTimeText } from '../agentDiagnostics'
 import {
   StatusBadge,
   formatObservedAt,
@@ -665,7 +666,11 @@ export function AdminAgentDetail() {
               successful Agent values.
             </div>
           )}
-          <AgentDetailSummary agent={agent.data} />
+          <AgentDetailSummary
+            agent={agent.data}
+            csrfToken={csrfToken}
+            onAcknowledged={() => void agent.refetch()}
+          />
           <section className="space-y-3" aria-labelledby="agent-profile-heading">
             <div className="space-y-1">
               <span className="text-[11px] font-medium text-muted-foreground">01</span>
@@ -747,11 +752,53 @@ type AgentSummaryWarning = {
   message: string
 }
 
-function AgentDetailSummary({ agent }: { agent: AgentDiagnostic }) {
+/** Server-owned Agent Attention Items and their acknowledgment controls
+ * (issue #172). The displayed boundaries come from the Server, so an
+ * acknowledged occurrence stays suppressed while raw evidence remains in
+ * Diagnostics; a stale boundary is reported as a conflict and the
+ * authoritative list is refetched instead of hiding a newer occurrence. */
+function AgentDetailSummary({
+  agent,
+  csrfToken,
+  onAcknowledged,
+}: {
+  agent: AgentDiagnostic
+  csrfToken: string
+  onAcknowledged: () => void
+}) {
   const liveness = livenessLabel(agent.liveness)
   const warnings = agentSummaryWarnings(agent)
   const activeCredentials = agent.credentials.filter((credential) => credential.active).length
   const bootStatus = agent.boot_status && agent.boot_status !== 'unknown' ? agent.boot_status : 'Unknown'
+  const [pending, setPending] = useState<string | null>(null)
+  const [feedback, setFeedback] = useState<{ tone: 'error' | 'conflict'; message: string } | null>(null)
+  const acknowledge = async (items: AgentDiagnostic['attention']) => {
+    if (items.length === 0) return
+    setPending(items.length === 1 ? items[0].id : '__bulk__')
+    setFeedback(null)
+    try {
+      const result = await acknowledgeAgentAttention(
+        agent.agent_id,
+        items.map((item) => ({ kind: item.kind, evidence_key: item.evidence_key })),
+        csrfToken,
+      )
+      if (result.skipped.length > 0) {
+        setFeedback({
+          tone: 'conflict',
+          message:
+            'Some items changed while you were reviewing them. The authoritative attention list was refreshed; review the current evidence before acknowledging again.',
+        })
+      }
+      onAcknowledged()
+    } catch (error) {
+      setFeedback({
+        tone: 'error',
+        message: error instanceof Error ? error.message : 'Unable to acknowledge the attention items',
+      })
+    } finally {
+      setPending(null)
+    }
+  }
   return (
     <section
       className={cn('space-y-3 rounded-md border-none p-4', SURFACE_CARD)}
@@ -802,6 +849,60 @@ function AgentDetailSummary({ agent }: { agent: AgentDiagnostic }) {
           <dd className="text-sm font-bold leading-none tracking-tight">{agent.nodes.length}</dd>
         </div>
       </dl>
+      {agent.attention.length > 0 && (
+        <div className="space-y-2" role="note" aria-label="Agent attention items">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-sm font-medium">Attention</h3>
+            <Button
+              variant="outline"
+              size="sm"
+              className="min-h-11"
+              disabled={pending !== null}
+              onClick={() => void acknowledge(agent.attention)}
+            >
+              {pending === '__bulk__' ? 'Acknowledging…' : 'Acknowledge current Agent items'}
+            </Button>
+          </div>
+          <ul className="space-y-1">
+            {agent.attention.map((item) => (
+              <li
+                key={item.id}
+                data-kind={item.kind}
+                className="flex flex-wrap items-center gap-2 text-sm"
+              >
+                <StatusBadge
+                  status={item.severity === 'critical' ? 'Critical' : 'Warning'}
+                  tone={item.severity === 'critical' ? 'error' : 'warning'}
+                />
+                <span className="min-w-0 break-words">{item.message}</span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="min-h-11 shrink-0"
+                  disabled={pending !== null}
+                  aria-label={`Acknowledge ${item.kind}`}
+                  onClick={() => void acknowledge([item])}
+                >
+                  {pending === item.id ? 'Acknowledging…' : 'Acknowledge'}
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {feedback && (
+        <div
+          role={feedback.tone === 'error' ? 'alert' : 'status'}
+          className={cn(
+            'rounded-md border p-3 text-sm',
+            feedback.tone === 'error'
+              ? 'border-destructive/40 bg-destructive/5'
+              : 'border-warning/40 bg-warning/5',
+          )}
+        >
+          {feedback.message}
+        </div>
+      )}
       {warnings.length > 0 && (
         <div className="space-y-2" role="note" aria-label="Important Agent warnings">
           <h3 className="text-sm font-medium">Important warnings</h3>
@@ -834,11 +935,15 @@ function AgentDetailSummary({ agent }: { agent: AgentDiagnostic }) {
   )
 }
 
+/** Non-attention structural warnings only. Predicates the Server owns as
+ * acknowledgeable Attention Items (offline, report gaps, security events,
+ * incomplete shutdown, spool fatal/overflow) are never rebuilt here from
+ * cumulative counters, and recorded spool/component evidence stays in
+ * Diagnostics, so an acknowledged occurrence cannot be re-promoted as a
+ * fresh prompt (issue #172, webui.md §15.3). */
 function agentSummaryWarnings(agent: AgentDiagnostic): AgentSummaryWarning[] {
   const warnings: AgentSummaryWarning[] = []
-  if (agent.liveness === 'offline') {
-    warnings.push({ kind: 'current', message: 'Server liveness is Error; the Agent is not reporting now.' })
-  } else if (agent.liveness !== 'online') {
+  if (agent.liveness !== 'online' && agent.liveness !== 'offline') {
     warnings.push({ kind: 'unknown', message: 'Server liveness is Unknown; no current reporting state is known.' })
   }
   if (!agent.boot_status || agent.boot_status === 'unknown') {
@@ -850,25 +955,8 @@ function agentSummaryWarnings(agent: AgentDiagnostic): AgentSummaryWarning[] {
   if (agent.shutdown_last_error) {
     warnings.push({ kind: 'recorded', message: 'Shutdown error: ' + agent.shutdown_last_error })
   }
-  if (agent.sequence_gap_count > 0) {
-    warnings.push({ kind: 'recorded', message: agent.sequence_gap_count + ' report gap' + (agent.sequence_gap_count === 1 ? '' : 's') + ' recorded.' })
-  }
-  if (agent.security_event_count > 0) {
-    warnings.push({ kind: 'recorded', message: agent.security_event_count + ' security event' + (agent.security_event_count === 1 ? '' : 's') + ' recorded.' })
-  }
   if (!agent.host) {
     warnings.push({ kind: 'unknown', message: 'Host observation is not available yet; absent diagnostic values remain Unknown.' })
-  } else {
-    if (hasSpoolRisk(agent.host)) {
-      warnings.push({ kind: 'recorded', message: 'Recorded spool evidence includes dropped, oversized, or fatal-storage state; it does not by itself replace Server liveness.' })
-    }
-    if (agent.host.spool_last_delivery_error || agent.host.spool_store_error || (agent.host.spool_pending_history_gaps ?? 0) > 0) {
-      warnings.push({ kind: 'recorded', message: 'Recorded spool delivery or storage errors remain available in Diagnostics.' })
-    }
-    const componentIssues = agent.host.components.filter((component) => component.state !== 'ok' || component.error_code || component.error_message)
-    if (componentIssues.length > 0) {
-      warnings.push({ kind: 'recorded', message: componentIssues.length + ' Host component issue' + (componentIssues.length === 1 ? '' : 's') + ' recorded.' })
-    }
   }
   return warnings
 }

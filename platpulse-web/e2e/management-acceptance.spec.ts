@@ -66,6 +66,54 @@ test.describe('Disposable Server management acceptance', () => {
       await server.dispose()
     }
   })
+
+  test('acknowledges an Agent Attention occurrence and keeps it confirmed across a restart', async ({
+    page,
+  }, testInfo) => {
+    test.skip(
+      testInfo.project.name !== 'desktop-1280',
+      'the disposable Server flow runs once',
+    )
+    const server = await startDisposableServer()
+    try {
+      const { agentId, credential } = await server.enrollAgent()
+      // Inject a fatal spool state so the Server derives an Agent Attention
+      // occurrence from authoritative reported evidence.
+      const receipt = await server.submitReport(agentId, credential, (report) => {
+        const host = report.host as { spool: { latest: Record<string, unknown> } }
+        host.spool.latest.store_fatal = true
+        host.spool.latest.store_error = 'spool store unavailable'
+      })
+      expect(receipt.receipt.disposition).toBe('accepted')
+
+      const before = (await server.expectAdminGet('/api/admin/v1/overview', 200)) as {
+        attention: { kind: string; evidence_key: string; subject_id: string }[]
+      }
+      const occurrence = before.attention.find((item) => item.kind === 'agent_spool_fatal')
+      expect(occurrence?.subject_id).toBe(agentId)
+      expect(occurrence?.evidence_key).toBeTruthy()
+
+      await loginToDisposableServer(page, server.baseUrl)
+      await page.goto(`${server.baseUrl}/admin`)
+      const acknowledge = page.getByRole('button', {
+        name: 'Acknowledge agent_spool_fatal for this Agent',
+      })
+      await expect(acknowledge).toBeVisible()
+      await acknowledge.click()
+      // The authoritative refetch removes the acknowledged occurrence.
+      await expect(acknowledge).toHaveCount(0)
+
+      // The shared confirmation survives a Server restart.
+      await server.restart()
+      await loginToDisposableServer(page, server.baseUrl)
+      await page.goto(`${server.baseUrl}/admin`)
+      await expect(
+        page.getByRole('button', { name: 'Acknowledge agent_spool_fatal for this Agent' }),
+      ).toHaveCount(0)
+    } finally {
+      await server.dispose()
+    }
+  })
 })
 
 async function loginToDisposableServer(page: Page, baseUrl: string) {

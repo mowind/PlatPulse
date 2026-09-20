@@ -56,6 +56,7 @@ const OVERVIEW = {
       subject_label: 'Node A',
       message: 'RPC collection failed',
       observed_at: '2026-08-12T08:00:00Z',
+      evidence_key: '',
     },
   ],
 }
@@ -107,6 +108,7 @@ const AGENT = {
   shutdown_state: 'running',
   shutdown_forced: false,
   previous_boot_id: null,
+  attention: [],
 }
 
 function jsonResponse(body: unknown, status: number): Response {
@@ -209,6 +211,63 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     await act(async () => within(identity).getByRole('button', { name: 'Copy Agent ID' }).click())
     expect(writeText).toHaveBeenCalledWith(id)
     expect(within(identity).getByRole('status').textContent).toBe('Copied')
+  })
+
+  it('acknowledges one Agent occurrence by its evidence boundary and refetches', async () => {
+    const id = '0195f2a1-0011-4011-8011-000000000011'
+    let overviewCalls = 0
+    const item = {
+      ...OVERVIEW.attention[0],
+      id: 'agent_offline:agent:' + id,
+      kind: 'agent_offline',
+      severity: 'warning',
+      subject_kind: 'agent',
+      subject_id: id,
+      subject_label: id,
+      message: 'the Agent has not reported within the liveness window',
+      evidence_key: 'offline-1',
+    }
+    const fetchMock = mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/overview': () => {
+        overviewCalls += 1
+        return jsonResponse({ ...OVERVIEW, attention: overviewCalls === 1 ? [item] : [] }, 200)
+      },
+      '/api/admin/v1/nodes': () => jsonResponse([NODE], 200),
+      '/api/admin/v1/agents': () => jsonResponse([AGENT], 200),
+      [`/api/admin/v1/agents/${id}/attention/acknowledgments`]: () =>
+        jsonResponse(
+          {
+            agent_id: id,
+            attention: [],
+            acknowledged: [{ kind: 'agent_offline', evidence_key: 'offline-1' }],
+            skipped: [],
+          },
+          200,
+        ),
+    })
+    await renderAt('/admin')
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Acknowledge agent_offline for this Agent' }),
+    )
+    await waitFor(() => expect(overviewCalls).toBeGreaterThanOrEqual(2))
+    const ackCall = fetchMock.mock.calls.find(([input]) =>
+      (input instanceof Request ? input.url : String(input)).includes('/attention/acknowledgments'),
+    )
+    expect(ackCall).toBeTruthy()
+    const ackInit = (ackCall as unknown as [RequestInfo | URL, RequestInit | undefined])[1]
+    const ackInput = ackCall![0]
+    const ackRequest =
+      ackInput instanceof Request ? ackInput : new Request(String(ackInput), ackInit)
+    expect(ackRequest.method).toBe('POST')
+    expect(JSON.parse(await ackRequest.clone().text())).toEqual({
+      items: [{ kind: 'agent_offline', evidence_key: 'offline-1' }],
+    })
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('button', { name: 'Acknowledge agent_offline for this Agent' }),
+      ).toBeNull(),
+    )
   })
 
   it('prioritizes attention, Node health and Agent inventory; legacy Geo and Operations content is absent', async () => {

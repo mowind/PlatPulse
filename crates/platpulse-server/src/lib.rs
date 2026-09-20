@@ -11,6 +11,7 @@
 
 pub mod agent_removal;
 pub mod alerts;
+pub mod attention;
 pub mod auth;
 pub mod backup;
 pub mod backup_schedule;

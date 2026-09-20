@@ -461,6 +461,32 @@ export type AdminValidatorMonthlyAggregate = {
 };
 
 /**
+ * One Owner acknowledgment request: the exact Agent Attention Items and
+ * evidence boundaries the Owner saw, never a bare kind or a "hide forever"
+ * switch (design §15.6, webui.md §15.3).
+ */
+export type AgentAttentionAcknowledgmentRequest = {
+    items: Array<AttentionAcknowledgment>;
+};
+
+export type AgentAttentionAcknowledgmentResponse = {
+    /**
+     * Boundaries applied to the current occurrence.
+     */
+    acknowledged: Array<AttentionAcknowledgment>;
+    agent_id: string;
+    /**
+     * Authoritative unacknowledged Agent Attention Items *after* the
+     * mutation; the WebUI refetches rather than hiding the row locally.
+     */
+    attention: Array<AttentionItem>;
+    /**
+     * Boundaries skipped because newer evidence superseded them.
+     */
+    skipped: Array<AttentionAcknowledgment>;
+};
+
+/**
  * One redacted Audit row for an Agent lifecycle event. The stored
  * `after_json` bodies are redacted by construction: they carry ids,
  * instants, and counts, never token or credential plaintext.
@@ -502,6 +528,14 @@ export type AgentDiagnostic = {
     active_boot_id?: string | null;
     agent_epoch: number;
     agent_id: string;
+    /**
+     * Server-owned, currently unacknowledged Agent Attention Items with
+     * their occurrence/evidence boundaries (issue #172). The Agent Detail
+     * page renders these instead of rebuilding warning predicates from
+     * cumulative counters, so an acknowledged occurrence stays suppressed
+     * while raw evidence remains in Diagnostics.
+     */
+    attention: Array<AttentionItem>;
     boot_status: string;
     capabilities: Array<string>;
     clock_skew_ms?: number | null;
@@ -674,7 +708,26 @@ export type AttemptRow = {
     retryAfterSeconds?: number | null;
 };
 
+/**
+ * One Item reference the Owner echoed back. The boundary is opaque to the
+ * browser; the Server only needs to match it against the current evidence.
+ */
+export type AttentionAcknowledgment = {
+    evidence_key: string;
+    kind: AttentionKind;
+};
+
+/**
+ * One Server-owned Attention Item (design §8.4.2, §15.6).
+ */
 export type AttentionItem = {
+    /**
+     * Server-owned occurrence/evidence boundary. An Owner acknowledgment
+     * echoes this value back and applies only while it is still current, so
+     * new evidence is never swallowed by a stale confirmation. The WebUI
+     * treats it as opaque.
+     */
+    evidence_key: string;
     /**
      * Stable item key (kind + subject) for list rendering and tests.
      */
@@ -682,7 +735,7 @@ export type AttentionItem = {
     kind: AttentionKind;
     message: string;
     /**
-     * Last authoritative observation time for this item. `None` means the
+     * Last authoritative observation time for this item. None means the
      * Server has no observation timestamp for the evidence; it is never
      * replaced with the snapshot generation time, which is not an event or
      * observation time.
@@ -694,6 +747,10 @@ export type AttentionItem = {
     subject_label: string;
 };
 
+/**
+ * The Server-owned Agent Attention kinds (design §8.4.2). Node, Network, and
+ * Settings kinds are never acknowledgeable.
+ */
 export type AttentionKind = 'agent_offline' | 'agent_spool_fatal' | 'agent_spool_overflow' | 'agent_report_gap' | 'agent_security_event' | 'agent_shutdown_incomplete' | 'node_unhealthy' | 'node_health_unknown' | 'node_resync' | 'node_identity_mismatch';
 
 export type AttentionSeverity = 'critical' | 'warning';
@@ -2643,6 +2700,32 @@ export type AdminAgentDetailResponses = {
 };
 
 export type AdminAgentDetailResponse = AdminAgentDetailResponses[keyof AdminAgentDetailResponses];
+
+export type AcknowledgeAgentAttentionData = {
+    body: AgentAttentionAcknowledgmentRequest;
+    path: {
+        /**
+         * Agent ID
+         */
+        agent_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/agents/{agent_id}/attention/acknowledgments';
+};
+
+export type AcknowledgeAgentAttentionErrors = {
+    400: ApiErrorBody;
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+};
+
+export type AcknowledgeAgentAttentionError = AcknowledgeAgentAttentionErrors[keyof AcknowledgeAgentAttentionErrors];
+
+export type AcknowledgeAgentAttentionResponses = {
+    200: AgentAttentionAcknowledgmentResponse;
+};
+
+export type AcknowledgeAgentAttentionResponse = AcknowledgeAgentAttentionResponses[keyof AcknowledgeAgentAttentionResponses];
 
 export type AdminAgentAuditData = {
     body?: never;

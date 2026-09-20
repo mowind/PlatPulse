@@ -124,6 +124,7 @@ const AGENT_DIAGNOSTIC = {
       process: null,
     },
   ],
+  attention: [],
 }
 
 function jsonResponse(body: unknown, status: number): Response {
@@ -899,5 +900,76 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
       name: 'Confirm permanent removal',
     }) as HTMLButtonElement
     expect(confirm.disabled).toBe(true)
+  })
+
+  it('acknowledges one or all current Agent items and refetches the authoritative list', async () => {
+    const offline = {
+      id: 'agent_offline:agent:' + AGENT_ID,
+      kind: 'agent_offline',
+      severity: 'warning',
+      subject_kind: 'agent',
+      subject_id: AGENT_ID,
+      subject_label: AGENT_ID,
+      message: 'the Agent has not reported within the liveness window',
+      observed_at: '2026-08-12T08:00:00Z',
+      evidence_key: 'offline-1',
+    }
+    const security = {
+      ...offline,
+      id: 'agent_security_event:agent:' + AGENT_ID,
+      kind: 'agent_security_event',
+      severity: 'critical',
+      message: '2 security events were recorded',
+      observed_at: null,
+      evidence_key: 'security-2',
+    }
+    let attention = [offline, security]
+    const ackBodies: string[] = []
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}`]: () =>
+        jsonResponse({ ...AGENT_DIAGNOSTIC, attention }, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/audit`]: () =>
+        jsonResponse({ agent_id: AGENT_ID, items: [] }, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/attention/acknowledgments`]: (ctx) => {
+        const body = JSON.parse(ctx.body ?? '{}') as {
+          items: { kind: string; evidence_key: string }[]
+        }
+        ackBodies.push(ctx.body ?? '')
+        const acknowledgedKinds = new Set(body.items.map((entry) => entry.kind))
+        attention = attention.filter((entry) => !acknowledgedKinds.has(entry.kind))
+        return jsonResponse(
+          {
+            agent_id: AGENT_ID,
+            attention,
+            acknowledged: body.items,
+            skipped: [],
+          },
+          200,
+        )
+      },
+    })
+    renderAt(`/admin/agents/${AGENT_ID}`)
+    await screen.findByRole('heading', { level: 1, name: /Agent 0195f2a1/ })
+
+    // Individual acknowledgment sends exactly the displayed evidence boundary.
+    fireEvent.click(await screen.findByRole('button', { name: 'Acknowledge agent_offline' }))
+    await waitFor(() => expect(ackBodies).toHaveLength(1))
+    expect(JSON.parse(ackBodies[0])).toEqual({
+      items: [{ kind: 'agent_offline', evidence_key: 'offline-1' }],
+    })
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Acknowledge agent_offline' })).toBeNull(),
+    )
+
+    // Bulk confirmation covers only the remaining displayed Agent item.
+    fireEvent.click(screen.getByRole('button', { name: 'Acknowledge current Agent items' }))
+    await waitFor(() => expect(ackBodies).toHaveLength(2))
+    expect(JSON.parse(ackBodies[1])).toEqual({
+      items: [{ kind: 'agent_security_event', evidence_key: 'security-2' }],
+    })
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Acknowledge current Agent items' })).toBeNull(),
+    )
   })
 })

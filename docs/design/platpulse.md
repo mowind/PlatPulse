@@ -467,7 +467,7 @@ GET  /api/public/v1/nodes/{node_id}/peer-history
 
 ### 8.5 Admin Overview 契约
 
-以下为未提供 Attention Acknowledgment 的当前实现。目标增加 Server 持久化的确认语义与按发生次数区分的提示，见 §15.6；不是浏览器隐藏规则或 Alert Incident 恢复。
+以下为 §8.5 的当前实现。§15.6 的 Attention Acknowledgment 已由 issue #172 交付：`GET /api/admin/v1/overview` 的 Agent Item 现在带 Server-owned 的 occurrence/evidence 边界（`evidence_key`），已确认的同一次发生不再出现；它不是浏览器隐藏规则或 Alert Incident 恢复。
 
 `GET /api/admin/v1/overview` 是 Owner 的当前分诊响应，包含 `generated_at`、`summary` 与当前 `attention[]` 队列；不包含完整 Node Detail、完整 Agent Detail、历史图表或远程操作命令。Attention 与 summary 在同一响应中返回，但当前实现通过独立数据库读取组合，不承诺跨资源的同一时刻原子快照。
 
@@ -666,7 +666,7 @@ PlatPulse 当前实现是：
 
 ### 15.1 状态、范围与依据
 
-本节来自已完成的 `/grill-with-docs` 访谈（Q1–Q22）及 Owner 的最终共识确认，是目标设计。后续实现规格按仓库约定进入 GitHub Issues，本节不代替具体接口设计或实现工单。实现状态：§15.2 第 1、2 项（Agent 接入引导、显示名称/备注）已由 issue #169 交付；§15.3 Node Purge 已单独交付；§15.2 第 3–5 项 Agent Removal 已由 issue #171 交付（含所属 Node 权威列表、未处理 Transfer 阻止、全凭证撤销、子 Node 级联清理与删除身份边界）；提示确认、自动 Validator 身份与一次性 Validator 迁移仍未实现。
+本节来自已完成的 `/grill-with-docs` 访谈（Q1–Q22）及 Owner 的最终共识确认，是目标设计。后续实现规格按仓库约定进入 GitHub Issues，本节不代替具体接口设计或实现工单。实现状态：§15.2 第 1、2 项（Agent 接入引导、显示名称/备注）已由 issue #169 交付；§15.3 Node Purge 已单独交付；§15.2 第 3–5 项 Agent Removal 已由 issue #171 交付（含所属 Node 权威列表、未处理 Transfer 阻止、全凭证撤销、子 Node 级联清理与删除身份边界）；§15.6 Agent Attention Acknowledgment 已由 issue #172 交付（Server-owned occurrence/evidence 边界、共享持久确认、Overview 与 Agent Detail 的逐条与批量操作、失败可重试与审计）；自动 Validator 身份与一次性 Validator 迁移仍未实现。
 
 - Agent：Owner 接入引导、显示名称/备注修改、Agent Removal。
 - Node：保留已有重命名，只扩展 Owner 显式 Node Purge；不提供 Admin 新建 Node 或远端采集配置编辑。

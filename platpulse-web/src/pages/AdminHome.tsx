@@ -2,6 +2,7 @@ import { ArrowUpRight, ChevronRight, LoaderCircle } from 'lucide-react'
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { Link } from 'react-router'
 import {
+  acknowledgeAgentAttention,
   useAdminDiagnostics,
   useAdminNodes,
   useAdminOverview,
@@ -256,8 +257,12 @@ function SummaryCards({ summary }: { summary: AdminOverview['summary'] }) {
 
 function AttentionPanel({ query }: { query: OverviewQuery }) {
   const data = query.data
+  const { status } = useAuth()
+  const csrfToken = status.state === 'authenticated' ? status.csrfToken : ''
   const [announcement, setAnnouncement] = useState('')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [pending, setPending] = useState<string | null>(null)
+  const [feedback, setFeedback] = useState<{ tone: 'error' | 'conflict'; message: string } | null>(null)
   const previousCount = useRef<number | null>(null)
   const attentionLength = data?.attention.length
   useEffect(() => {
@@ -270,6 +275,36 @@ function AttentionPanel({ query }: { query: OverviewQuery }) {
   const visibleGroups = showAll ? groups : groups.slice(0, 6)
   const hiddenCount = Math.max(0, groups.length - 6)
   const criticalCount = (data?.attention ?? []).filter((item) => item.severity === "critical").length
+  /** Owner-only per-item acknowledgment (design §15.6, webui.md §15.3). The
+   * Server applies only the evidence boundary shown; a changed boundary comes
+   * back under skipped and the authoritative queue is refetched. */
+  const acknowledge = async (item: AttentionItem) => {
+    setPending(item.id)
+    setFeedback(null)
+    try {
+      const result = await acknowledgeAgentAttention(
+        item.subject_id,
+        [{ kind: item.kind, evidence_key: item.evidence_key }],
+        csrfToken,
+      )
+      if (result.skipped.length > 0) {
+        setFeedback({
+          tone: 'conflict',
+          message: 'This item changed while you were reviewing it. The authoritative queue was refreshed; review the current evidence before acknowledging again.',
+        })
+      } else {
+        setAnnouncement('Attention item acknowledged. The authoritative queue was refreshed.')
+      }
+      await query.refetch()
+    } catch (error) {
+      setFeedback({
+        tone: 'error',
+        message: error instanceof Error ? error.message : 'Unable to acknowledge the item',
+      })
+    } finally {
+      setPending(null)
+    }
+  }
   return (
     <article data-slot="overview-panel" className={PANEL}>
       <div className={PANEL_HEADING}>
@@ -302,6 +337,14 @@ function AttentionPanel({ query }: { query: OverviewQuery }) {
           </AlertDescription>
         </Alert>
       )}
+      {feedback && (
+        <Alert variant={feedback.tone === 'error' ? 'destructive' : 'default'} className="mt-3">
+          <AlertDescription role="status" className="flex flex-wrap items-center gap-2">
+            <StatusBadge status={feedback.tone === 'error' ? 'Error' : 'Conflict'} tone={feedback.tone === 'error' ? 'error' : 'warning'} />
+            {feedback.message}
+          </AlertDescription>
+        </Alert>
+      )}
       {data && data.attention.length === 0 && (
         <p className="mt-3 text-sm text-muted-foreground">No attention items. Nothing needs an Owner right now.</p>
       )}
@@ -316,6 +359,8 @@ function AttentionPanel({ query }: { query: OverviewQuery }) {
                 key={group.key}
                 group={group}
                 expanded={expanded.has(group.key)}
+                pendingId={pending}
+                onAcknowledge={acknowledge}
                 onToggle={() => setExpanded((current) => {
                   const next = new Set(current)
                   if (next.has(group.key)) {
@@ -396,7 +441,22 @@ function CopyAgentId({ id }: { id: string }) {
   </>
 }
 
-function AttentionGroup({ group, expanded, onToggle }: { group: AttentionGroupData; expanded: boolean; onToggle: () => void }) {
+function AcknowledgeButton({ item, pending, onAcknowledge }: { item: AttentionItem; pending: boolean; onAcknowledge: (item: AttentionItem) => void }) {
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      className="min-h-11 shrink-0"
+      disabled={pending}
+      aria-label={`Acknowledge ${item.kind} for this Agent`}
+      onClick={() => onAcknowledge(item)}
+    >
+      {pending ? 'Acknowledging…' : 'Acknowledge'}
+    </Button>
+  )
+}
+
+function AttentionGroup({ group, expanded, pendingId, onAcknowledge, onToggle }: { group: AttentionGroupData; expanded: boolean; pendingId: string | null; onAcknowledge: (item: AttentionItem) => void; onToggle: () => void }) {
   const primary = group.items.reduce((best, item) => {
     const rank = item.severity === 'critical' ? 0 : item.severity === 'warning' ? 1 : 2
     const bestRank = best.severity === 'critical' ? 0 : best.severity === 'warning' ? 1 : 2
@@ -421,6 +481,9 @@ function AttentionGroup({ group, expanded, onToggle }: { group: AttentionGroupDa
         <p className="min-w-0 flex-1 basis-48 text-sm font-medium [overflow-wrap:anywhere]">{primary.message}</p>
         {route ? <Link className={TEXT_LINK} to={route}>View {group.subjectKind}<ArrowUpRight size={16} aria-hidden="true" /></Link>
           : <span className="text-xs text-muted-foreground">No detail route available</span>}
+        {group.subjectKind === 'agent' && (
+          <AcknowledgeButton item={primary} pending={pendingId === primary.id} onAcknowledge={onAcknowledge} />
+        )}
       </div>
       <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
         <span title={group.subjectId} className="min-w-0 [overflow-wrap:anywhere]">
@@ -451,9 +514,14 @@ function AttentionGroup({ group, expanded, onToggle }: { group: AttentionGroupDa
         <ul id={`attention-details-${group.key}`} hidden={!expanded}
           className="mt-2 list-disc space-y-1 pl-4 text-xs [overflow-wrap:anywhere] text-muted-foreground">
           {additional.map((item) => (
-            <li key={item.id}>
-              {item.severity === 'critical' ? 'Critical' : item.severity === 'warning' ? 'Warning' : 'Unknown'} ·{' '}
-              {item.message} · {item.kind} · {attentionObservedText(item.observed_at)}
+            <li key={item.id} className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span>
+                {item.severity === 'critical' ? 'Critical' : item.severity === 'warning' ? 'Warning' : 'Unknown'} ·{' '}
+                {item.message} · {item.kind} · {attentionObservedText(item.observed_at)}
+              </span>
+              {group.subjectKind === 'agent' && (
+                <AcknowledgeButton item={item} pending={pendingId === item.id} onAcknowledge={onAcknowledge} />
+              )}
             </li>
           ))}
         </ul>

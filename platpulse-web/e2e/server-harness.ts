@@ -53,8 +53,15 @@ export interface DisposableServer {
   readonly baseUrl: string
   /** Mint an Enrollment Token and exchange it for a real Agent credential. */
   enrollAgent(): Promise<EnrolledAgent>
-  /** Submit the wire fixture with the Agent credential. */
-  submitReport(agentId: string, credential: string): Promise<ReportEnvelope>
+  /**
+   * Submit the wire fixture with the Agent credential. An optional mutator
+   * can inject evidence (for example a fatal spool state) before submission.
+   */
+  submitReport(
+    agentId: string,
+    credential: string,
+    mutate?: (report: Record<string, unknown>) => void,
+  ): Promise<ReportEnvelope>
   /** Assert an authenticated Admin GET status, returning the parsed body. */
   expectAdminGet(path: string, status: number): Promise<unknown>
   /** Kill and respawn the Server on the same state directory. */
@@ -310,9 +317,14 @@ export async function startDisposableServer(): Promise<DisposableServer> {
       return { agentId: body.agent_id, credential: body.credential }
     }
 
-    const submitReport = async (agentId: string, credential: string): Promise<ReportEnvelope> => {
+    const submitReport = async (
+      agentId: string,
+      credential: string,
+      mutate?: (report: Record<string, unknown>) => void,
+    ): Promise<ReportEnvelope> => {
       const report = JSON.parse(readFileSync(REPORT_FIXTURE, 'utf8')) as Record<string, unknown>
       report.agent_id = agentId
+      mutate?.(report)
       const response = await fetch(`${baseUrl}/api/agent/v1/reports`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${credential}` },

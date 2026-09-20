@@ -13,6 +13,11 @@ use subtle::ConstantTimeEq;
 use tokio_stream::Stream;
 use utoipa::ToSchema;
 
+// Server-owned Agent Attention DTOs and the occurrence/evidence boundary live
+// in the dedicated module (issue #172); they are re-exported here because the
+// Admin OpenAPI document registers them under this path.
+pub use crate::attention::{AttentionItem, AttentionKind, AttentionSeverity, AttentionSubjectKind};
+
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct VisibilityRequest {
@@ -1018,6 +1023,12 @@ pub struct AgentDiagnostic {
     pub credentials: Vec<AgentCredentialSummary>,
     pub host: Option<HostDiagnostic>,
     pub nodes: Vec<NodeDiagnostic>,
+    /// Server-owned, currently unacknowledged Agent Attention Items with
+    /// their occurrence/evidence boundaries (issue #172). The Agent Detail
+    /// page renders these instead of rebuilding warning predicates from
+    /// cumulative counters, so an acknowledged occurrence stays suppressed
+    /// while raw evidence remains in Diagnostics.
+    pub attention: Vec<AttentionItem>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -2587,12 +2598,13 @@ async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> AgentDiagnost
         .map(|capability| crate::redaction::redact_sensitive(&capability))
         .collect();
     let liveness = agent_liveness(last_received_at.as_deref()).to_owned();
-    let sequence_gap_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM report_sequence_gaps WHERE agent_id=?")
-            .bind(&agent_id)
-            .fetch_one(state.db().pool())
-            .await
-            .unwrap_or(0);
+    let (sequence_gap_count, latest_gap_at) = sqlx::query_as::<_, (i64, Option<String>)>(
+        "SELECT COUNT(*), MAX(created_at) FROM report_sequence_gaps WHERE agent_id=?",
+    )
+    .bind(&agent_id)
+    .fetch_one(state.db().pool())
+    .await
+    .unwrap_or((0, None));
     let credentials = credential_summaries(state, &agent_id).await;
     let host_components = sqlx::query_as::<_, (String, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, i64, i64)>(
         "SELECT component_key, state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision FROM component_status WHERE agent_id = ? AND scope = 'host' ORDER BY component_key",
@@ -2650,6 +2662,30 @@ async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> AgentDiagnost
             .await,
         );
     }
+    // Server-owned Attention Items for this Agent, with the occurrence
+    // boundary and any acknowledged occurrence already applied (issue #172).
+    let attention = {
+        let evidence = crate::attention::AgentAttentionRow {
+            agent_id: agent_id.clone(),
+            last_received_at: last_received_at.clone(),
+            shutdown_state: shutdown_state.clone(),
+            shutdown_updated_at: shutdown_updated_at.clone(),
+            security_event_count,
+            sequence_gap_count,
+            latest_gap_at,
+            spool_store_fatal: host
+                .as_ref()
+                .and_then(|host| host.spool_store_fatal)
+                .map(|value| if value { 1 } else { 0 }),
+            spool_dropped_sequence_to: host
+                .as_ref()
+                .and_then(|host| host.spool_dropped_sequence_to),
+            host_updated_at: host.as_ref().map(|host| host.updated_at.clone()),
+        };
+        crate::attention::evaluate_agent(state.db().pool(), &evidence)
+            .await
+            .unwrap_or_default()
+    };
     AgentDiagnostic {
         agent_id,
         display_name,
@@ -2680,6 +2716,7 @@ async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> AgentDiagnost
         credentials,
         host,
         nodes,
+        attention,
     }
 }
 
@@ -2709,21 +2746,10 @@ async fn credential_summaries(state: &AppState, agent_id: &str) -> Vec<AgentCred
     .collect()
 }
 
-/// Liveness rule shared by the diagnostics list and the overview: an Agent
-/// is `online` only when a report arrived within the offline window.
+/// Liveness rule shared by the diagnostics list, the overview, and the
+/// Server-owned Attention boundary (defined once in `crate::attention`).
 fn agent_liveness(last_received_at: Option<&str>) -> &'static str {
-    last_received_at
-        .and_then(crate::auth::parse_rfc3339)
-        .map(|received| {
-            if (crate::auth::now_utc() - received).whole_seconds()
-                <= crate::http::agent::AGENT_OFFLINE_AFTER_SECONDS
-            {
-                "online"
-            } else {
-                "offline"
-            }
-        })
-        .unwrap_or("unknown")
+    crate::attention::agent_liveness(last_received_at)
 }
 
 /// Browser mutation trust boundary shared by every Admin security
@@ -3255,6 +3281,124 @@ pub(crate) async fn admin_agent_detail(
     Json(agent_diagnostic(&state, row).await).into_response()
 }
 
+/// One Owner acknowledgment request: the exact Agent Attention Items and
+/// evidence boundaries the Owner saw, never a bare kind or a "hide forever"
+/// switch (design §15.6, webui.md §15.3).
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentAttentionAcknowledgmentRequest {
+    pub items: Vec<crate::attention::AttentionAcknowledgment>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct AgentAttentionAcknowledgmentResponse {
+    pub agent_id: String,
+    /// Authoritative unacknowledged Agent Attention Items *after* the
+    /// mutation; the WebUI refetches rather than hiding the row locally.
+    pub attention: Vec<AttentionItem>,
+    /// Boundaries applied to the current occurrence.
+    pub acknowledged: Vec<crate::attention::AttentionAcknowledgment>,
+    /// Boundaries skipped because newer evidence superseded them.
+    pub skipped: Vec<crate::attention::AttentionAcknowledgment>,
+}
+
+/// Owner-only shared Agent Attention Acknowledgment (design §15.6). Applies
+/// the Owner's confirmation to exactly the evidence boundaries they saw,
+/// writes an Audit Event, and returns the authoritative unacknowledged queue.
+/// A boundary that changed since the Owner's snapshot is skipped, so a stale
+/// request can never swallow newer unseen evidence, and the underlying
+/// liveness, health, Alert Incidents, and notifications are untouched.
+#[utoipa::path(
+    post,
+    path = "/api/admin/v1/agents/{agent_id}/attention/acknowledgments",
+    tag = "admin",
+    params(("agent_id" = String, Path, description = "Agent ID")),
+    request_body = AgentAttentionAcknowledgmentRequest,
+    responses((status = 200, body = AgentAttentionAcknowledgmentResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody))
+)]
+pub(crate) async fn acknowledge_agent_attention(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    headers: HeaderMap,
+    Extension(principal): Extension<super::AuthenticatedSession>,
+    Extension(request_id): Extension<super::RequestId>,
+    body: axum::body::Bytes,
+) -> Response {
+    if !mutation_guard_ok(&headers, &state, &principal) {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::FORBIDDEN,
+            "csrf_validation_failed",
+            "mutation validation failed",
+        );
+    }
+    let body: AgentAttentionAcknowledgmentRequest = match serde_json::from_slice(&body) {
+        Ok(body) => body,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::BAD_REQUEST,
+                "invalid_json",
+                "request body is invalid",
+            );
+        }
+    };
+    match crate::attention::acknowledge(
+        state.db().pool(),
+        &agent_id,
+        &body.items,
+        Some(&principal.0.user_id),
+    )
+    .await
+    {
+        Ok(crate::attention::AcknowledgeOutcome::Applied {
+            acknowledged,
+            skipped,
+        }) => {
+            let attention = sqlx::query_as::<_, crate::attention::AgentAttentionRow>(&format!(
+                "{} AND a.agent_id = ?",
+                crate::attention::AGENT_ATTENTION_SELECT
+            ))
+            .bind(&agent_id)
+            .fetch_optional(state.db().pool())
+            .await
+            .ok()
+            .flatten();
+            let attention = match attention {
+                Some(row) => crate::attention::evaluate_agent(state.db().pool(), &row)
+                    .await
+                    .unwrap_or_default(),
+                None => Vec::new(),
+            };
+            // Presentation changed for every Owner and surface: invalidate the
+            // Agent so open Admin sessions refetch the authoritative queue.
+            state
+                .admin_realtime()
+                .publish("agent", Some(agent_id.clone()), 0);
+            Json(AgentAttentionAcknowledgmentResponse {
+                agent_id,
+                attention,
+                acknowledged,
+                skipped,
+            })
+            .into_response()
+        }
+        Ok(crate::attention::AcknowledgeOutcome::AgentNotFound) => mutation_error(
+            &request_id.0,
+            StatusCode::NOT_FOUND,
+            "agent_not_found",
+            "agent not found",
+        ),
+        Err(_) => mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        ),
+    }
+}
+
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentMetadataRequest {
@@ -3448,71 +3592,6 @@ async fn overview_network_summary(pool: &sqlx::SqlitePool) -> Result<NetworkSumm
     })
 }
 
-#[derive(Debug, Clone, Copy, Serialize, utoipa::ToSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum AttentionKind {
-    AgentOffline,
-    AgentSpoolFatal,
-    AgentSpoolOverflow,
-    AgentReportGap,
-    AgentSecurityEvent,
-    AgentShutdownIncomplete,
-    NodeUnhealthy,
-    NodeHealthUnknown,
-    NodeResync,
-    NodeIdentityMismatch,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, utoipa::ToSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum AttentionSeverity {
-    Critical,
-    Warning,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, Serialize, utoipa::ToSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum AttentionSubjectKind {
-    Agent,
-    Node,
-    Network,
-    Settings,
-}
-
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub struct AttentionItem {
-    /// Stable item key (kind + subject) for list rendering and tests.
-    pub id: String,
-    pub kind: AttentionKind,
-    pub severity: AttentionSeverity,
-    pub subject_kind: AttentionSubjectKind,
-    pub subject_id: String,
-    pub subject_label: String,
-    pub message: String,
-    /// Last authoritative observation time for this item. `None` means the
-    /// Server has no observation timestamp for the evidence; it is never
-    /// replaced with the snapshot generation time, which is not an event or
-    /// observation time.
-    #[schema(required = true)]
-    pub observed_at: Option<String>,
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct OverviewAgentRow {
-    agent_id: String,
-    last_received_at: Option<String>,
-    shutdown_updated_at: Option<String>,
-    host_updated_at: Option<String>,
-    shutdown_state: String,
-    security_event_count: i64,
-    sequence_gap_count: i64,
-    latest_gap_at: Option<String>,
-    spool_store_fatal: Option<i64>,
-    spool_dropped_sequence_to: Option<i64>,
-}
-
 fn severity_rank(severity: AttentionSeverity) -> u8 {
     match severity {
         AttentionSeverity::Critical => 0,
@@ -3534,9 +3613,10 @@ pub(crate) async fn overview(
     let generated_at = crate::auth::format_rfc3339(crate::auth::now_utc());
     // A database failure is a Server failure: it must surface as an error
     // envelope, never as an authoritative empty queue (webui.md §5.3).
-    let agents = match sqlx::query_as::<_, OverviewAgentRow>(
-        "SELECT a.agent_id, a.last_received_at, a.shutdown_updated_at, h.updated_at AS host_updated_at, a.shutdown_state, a.security_event_count, (SELECT COUNT(*) FROM report_sequence_gaps g WHERE g.agent_id = a.agent_id) AS sequence_gap_count, (SELECT MAX(g.created_at) FROM report_sequence_gaps g WHERE g.agent_id = a.agent_id) AS latest_gap_at, h.spool_store_fatal, h.spool_dropped_sequence_to FROM agents a LEFT JOIN current_host_observations h ON h.agent_id = a.agent_id WHERE a.deleted_at IS NULL ORDER BY a.agent_id",
-    )
+    let agents = match sqlx::query_as::<_, crate::attention::AgentAttentionRow>(&format!(
+        "{} ORDER BY a.agent_id",
+        crate::attention::AGENT_ATTENTION_SELECT
+    ))
     .fetch_all(state.db().pool())
     .await
     {
@@ -3558,105 +3638,23 @@ pub(crate) async fn overview(
     };
     let mut attention: Vec<AttentionItem> = Vec::new();
     for agent in &agents {
-        let liveness = agent_liveness(agent.last_received_at.as_deref());
-        match liveness {
+        match agent_liveness(agent.last_received_at.as_deref()) {
             "online" => agent_summary.online += 1,
             "offline" => agent_summary.offline += 1,
             _ => agent_summary.unknown += 1,
         }
-        if liveness == "offline" {
-            attention.push(AttentionItem {
-                id: format!("agent_offline:agent:{}", agent.agent_id),
-                kind: AttentionKind::AgentOffline,
-                severity: AttentionSeverity::Warning,
-                subject_kind: AttentionSubjectKind::Agent,
-                subject_id: agent.agent_id.clone(),
-                subject_label: agent.agent_id.clone(),
-                message: "the Agent has not reported within the liveness window".to_owned(),
-                observed_at: agent.last_received_at.clone(),
-            });
-        }
-        if agent.spool_store_fatal.is_some_and(|value| value != 0) {
-            attention.push(AttentionItem {
-                id: format!("agent_spool_fatal:agent:{}", agent.agent_id),
-                kind: AttentionKind::AgentSpoolFatal,
-                severity: AttentionSeverity::Critical,
-                subject_kind: AttentionSubjectKind::Agent,
-                subject_id: agent.agent_id.clone(),
-                subject_label: agent.agent_id.clone(),
-                message: "the Agent spool store is in a fatal state; durable reports are at risk"
-                    .to_owned(),
-                observed_at: agent.host_updated_at.clone(),
-            });
-        }
-        if agent.spool_dropped_sequence_to.is_some() {
-            attention.push(AttentionItem {
-                id: format!("agent_spool_overflow:agent:{}", agent.agent_id),
-                kind: AttentionKind::AgentSpoolOverflow,
-                severity: AttentionSeverity::Critical,
-                subject_kind: AttentionSubjectKind::Agent,
-                subject_id: agent.agent_id.clone(),
-                subject_label: agent.agent_id.clone(),
-                message: "the Agent spool overflowed and discarded queued reports".to_owned(),
-                observed_at: agent.host_updated_at.clone(),
-            });
-        }
-        if agent.sequence_gap_count > 0 {
-            attention.push(AttentionItem {
-                id: format!("agent_report_gap:agent:{}", agent.agent_id),
-                kind: AttentionKind::AgentReportGap,
-                severity: AttentionSeverity::Warning,
-                subject_kind: AttentionSubjectKind::Agent,
-                subject_id: agent.agent_id.clone(),
-                subject_label: agent.agent_id.clone(),
-                message: format!(
-                    "{} report sequence gap{} recorded",
-                    agent.sequence_gap_count,
-                    if agent.sequence_gap_count == 1 {
-                        " was"
-                    } else {
-                        "s were"
-                    }
-                ),
-                observed_at: agent.latest_gap_at.clone(),
-            });
-        }
-        if agent.security_event_count > 0 {
-            attention.push(AttentionItem {
-                id: format!("agent_security_event:agent:{}", agent.agent_id),
-                kind: AttentionKind::AgentSecurityEvent,
-                severity: AttentionSeverity::Critical,
-                subject_kind: AttentionSubjectKind::Agent,
-                subject_id: agent.agent_id.clone(),
-                subject_label: agent.agent_id.clone(),
-                message: format!(
-                    "{} security event{} recorded",
-                    agent.security_event_count,
-                    if agent.security_event_count == 1 {
-                        " was"
-                    } else {
-                        "s were"
-                    }
-                ),
-                // The accumulated counter has no per-event timestamp; an
-                // unrelated later report must not make it look recent.
-                observed_at: None,
-            });
-        }
-        if matches!(
-            agent.shutdown_state.as_str(),
-            "stopping" | "draining" | "send_failed" | "forced_kill_recovery"
-        ) {
-            attention.push(AttentionItem {
-                id: format!("agent_shutdown_incomplete:agent:{}", agent.agent_id),
-                kind: AttentionKind::AgentShutdownIncomplete,
-                severity: AttentionSeverity::Warning,
-                subject_kind: AttentionSubjectKind::Agent,
-                subject_id: agent.agent_id.clone(),
-                subject_label: agent.agent_id.clone(),
-                message: format!("the Agent shutdown is {}", agent.shutdown_state),
-                observed_at: agent.shutdown_updated_at.clone(),
-            });
+        // The Agent Attention Items come from the Server-owned occurrence
+        // boundary, which drops acknowledged occurrences (issue #172).
+        match crate::attention::evaluate_agent(state.db().pool(), agent).await {
+            Ok(items) => attention.extend(items),
+            Err(_) => {
+                return mutation_error(
+                    &request_id.0,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "server database is unavailable",
+                );
+            }
         }
     }
     let network_summary = match overview_network_summary(state.db().pool()).await {
@@ -3743,6 +3741,9 @@ pub(crate) async fn overview(
                 subject_label: display_name.clone().unwrap_or_else(|| node_id.clone()),
                 message: "the Node identity mismatches the registered Network".to_owned(),
                 observed_at,
+                // Node prompts are never acknowledgeable; the Server-owned
+                // evidence boundary is Agent-only (issue #172).
+                evidence_key: String::new(),
             });
         }
         let observed_at = diagnostic
@@ -3778,6 +3779,7 @@ pub(crate) async fn overview(
                     subject_label: display_name.unwrap_or_else(|| node_id.clone()),
                     message: diagnostic.health_reason.clone(),
                     observed_at: observed_at.clone(),
+                    evidence_key: String::new(),
                 });
             }
             "starting" => {
@@ -3794,6 +3796,7 @@ pub(crate) async fn overview(
                     subject_label: display_name.unwrap_or_else(|| node_id.clone()),
                     message: diagnostic.health_reason.clone(),
                     observed_at: observed_at.clone(),
+                    evidence_key: String::new(),
                 });
             }
         }
@@ -3816,6 +3819,7 @@ pub(crate) async fn overview(
                 subject_label: node_id.clone(),
                 message: format!("the Node resync state is {}", diagnostic.resync_state),
                 observed_at: resync_observed_at,
+                evidence_key: String::new(),
             });
         }
     }
@@ -6107,6 +6111,10 @@ pub fn router() -> Router<AppState> {
         .route("/agents", get(diagnostics))
         .route("/agents/{agent_id}", get(admin_agent_detail))
         .route("/agents/{agent_id}/metadata", put(set_agent_metadata))
+        .route(
+            "/agents/{agent_id}/attention/acknowledgments",
+            post(acknowledge_agent_attention),
+        )
         .route("/agents/{agent_id}/audit", get(admin_agent_audit))
         .route("/agents/enroll-token", post(admin_enrollment_token))
         .route("/agents/{agent_id}/recover", post(admin_recovery_token))

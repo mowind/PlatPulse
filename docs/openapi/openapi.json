@@ -236,6 +236,78 @@
         }
       }
     },
+    "/api/admin/v1/agents/{agent_id}/attention/acknowledgments": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Owner-only shared Agent Attention Acknowledgment (design §15.6). Applies\nthe Owner's confirmation to exactly the evidence boundaries they saw,\nwrites an Audit Event, and returns the authoritative unacknowledged queue.\nA boundary that changed since the Owner's snapshot is skipped, so a stale\nrequest can never swallow newer unseen evidence, and the underlying\nliveness, health, Alert Incidents, and notifications are untouched.",
+        "operationId": "acknowledge_agent_attention",
+        "parameters": [
+          {
+            "name": "agent_id",
+            "in": "path",
+            "description": "Agent ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentAttentionAcknowledgmentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentAttentionAcknowledgmentResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/v1/agents/{agent_id}/audit": {
       "get": {
         "tags": [
@@ -7997,6 +8069,56 @@
           }
         }
       },
+      "AgentAttentionAcknowledgmentRequest": {
+        "type": "object",
+        "description": "One Owner acknowledgment request: the exact Agent Attention Items and\nevidence boundaries the Owner saw, never a bare kind or a \"hide forever\"\nswitch (design §15.6, webui.md §15.3).",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttentionAcknowledgment"
+            }
+          }
+        }
+      },
+      "AgentAttentionAcknowledgmentResponse": {
+        "type": "object",
+        "required": [
+          "agent_id",
+          "attention",
+          "acknowledged",
+          "skipped"
+        ],
+        "properties": {
+          "acknowledged": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttentionAcknowledgment"
+            },
+            "description": "Boundaries applied to the current occurrence."
+          },
+          "agent_id": {
+            "type": "string"
+          },
+          "attention": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttentionItem"
+            },
+            "description": "Authoritative unacknowledged Agent Attention Items *after* the\nmutation; the WebUI refetches rather than hiding the row locally."
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttentionAcknowledgment"
+            },
+            "description": "Boundaries skipped because newer evidence superseded them."
+          }
+        }
+      },
       "AgentAuditItem": {
         "type": "object",
         "description": "One redacted Audit row for an Agent lifecycle event. The stored\n`after_json` bodies are redacted by construction: they carry ids,\ninstants, and counts, never token or credential plaintext.",
@@ -8091,7 +8213,8 @@
           "liveness",
           "capabilities",
           "credentials",
-          "nodes"
+          "nodes",
+          "attention"
         ],
         "properties": {
           "active_boot_id": {
@@ -8106,6 +8229,13 @@
           },
           "agent_id": {
             "type": "string"
+          },
+          "attention": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttentionItem"
+            },
+            "description": "Server-owned, currently unacknowledged Agent Attention Items with\ntheir occurrence/evidence boundaries (issue #172). The Agent Detail\npage renders these instead of rebuilding warning predicates from\ncumulative counters, so an acknowledged occurrence stays suppressed\nwhile raw evidence remains in Diagnostics."
           },
           "boot_status": {
             "type": "string"
@@ -8666,8 +8796,25 @@
           }
         }
       },
+      "AttentionAcknowledgment": {
+        "type": "object",
+        "description": "One Item reference the Owner echoed back. The boundary is opaque to the\nbrowser; the Server only needs to match it against the current evidence.",
+        "required": [
+          "kind",
+          "evidence_key"
+        ],
+        "properties": {
+          "evidence_key": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AttentionKind"
+          }
+        }
+      },
       "AttentionItem": {
         "type": "object",
+        "description": "One Server-owned Attention Item (design §8.4.2, §15.6).",
         "required": [
           "id",
           "kind",
@@ -8676,9 +8823,14 @@
           "subject_id",
           "subject_label",
           "message",
-          "observed_at"
+          "observed_at",
+          "evidence_key"
         ],
         "properties": {
+          "evidence_key": {
+            "type": "string",
+            "description": "Server-owned occurrence/evidence boundary. An Owner acknowledgment\nechoes this value back and applies only while it is still current, so\nnew evidence is never swallowed by a stale confirmation. The WebUI\ntreats it as opaque."
+          },
           "id": {
             "type": "string",
             "description": "Stable item key (kind + subject) for list rendering and tests."
@@ -8694,7 +8846,7 @@
               "string",
               "null"
             ],
-            "description": "Last authoritative observation time for this item. `None` means the\nServer has no observation timestamp for the evidence; it is never\nreplaced with the snapshot generation time, which is not an event or\nobservation time."
+            "description": "Last authoritative observation time for this item. None means the\nServer has no observation timestamp for the evidence; it is never\nreplaced with the snapshot generation time, which is not an event or\nobservation time."
           },
           "severity": {
             "$ref": "#/components/schemas/AttentionSeverity"
@@ -8712,6 +8864,7 @@
       },
       "AttentionKind": {
         "type": "string",
+        "description": "The Server-owned Agent Attention kinds (design §8.4.2). Node, Network, and\nSettings kinds are never acknowledgeable.",
         "enum": [
           "agent_offline",
           "agent_spool_fatal",

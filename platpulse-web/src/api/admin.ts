@@ -22,6 +22,7 @@ import {
   type SiteAccessSettings,
 } from './public'
 import {
+  acknowledgeAgentAttention as acknowledgeAgentAttentionApi,
   adminAgentAudit,
   adminAgentDetail,
   adminAgentRemovalPreview,
@@ -152,6 +153,8 @@ import {
   type SilenceMutationResponse,
   type AdminNetworkDetail,
   type AdminNodeDetail,
+  type AgentAttentionAcknowledgmentResponse,
+  type AttentionAcknowledgment,
   type PeerChurnDiagnostic,
   type AdminPeerHistory,
   type AdminNodeListItem,
@@ -896,6 +899,30 @@ export async function removeAgent(
         headers: { 'X-CSRF-Token': csrfToken },
       }),
     'Unable to remove the Agent',
+  )
+  void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+  return response
+}
+
+/** Owner-only shared Agent Attention Acknowledgment (design §15.6, #172).
+ * Sends exactly the Server-owned evidence boundaries the Owner saw. The
+ * Server applies only boundaries that are still current; a stale boundary
+ * comes back under `skipped` instead of swallowing newer evidence. Success
+ * invalidates the Admin namespace so Overview and Agent Detail refetch the
+ * authoritative queues rather than hiding rows optimistically. */
+export async function acknowledgeAgentAttention(
+  agentId: string,
+  items: AttentionAcknowledgment[],
+  csrfToken: string,
+): Promise<AgentAttentionAcknowledgmentResponse> {
+  const response = await requestAdmin(
+    () =>
+      acknowledgeAgentAttentionApi({
+        path: { agent_id: agentId },
+        body: { items },
+        headers: { 'X-CSRF-Token': csrfToken },
+      }),
+    'Unable to acknowledge the Agent attention items',
   )
   void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
   return response
