@@ -271,6 +271,7 @@ export type AdminNodePurgeCounts = {
     rpc_namespaces: number;
     total_owned_rows: number;
     transfers: number;
+    validator_identity_status: number;
     validator_links: number;
 };
 
@@ -409,7 +410,10 @@ export type AdminValidatorHistoryEntry = {
 export type AdminValidatorHistoryLink = {
     linkId: string;
     nodeId: string;
-    role: string;
+    /**
+     * Legacy manual role; automatic Links carry none (#173).
+     */
+    role?: string | null;
     validFrom: string;
     validUntil?: string | null;
 };
@@ -1417,7 +1421,10 @@ export type NodeValidatorLink = {
     networkKey: string;
     nodeDisplayName?: string | null;
     nodeId: string;
-    role: string;
+    /**
+     * Legacy manual role; automatic Links carry none (#173).
+     */
+    role?: string | null;
     updatedAt: string;
     validFrom: string;
     validUntil?: string | null;
@@ -1853,6 +1860,20 @@ export type PublicNode = {
     rpcState: string;
     syncState: string;
     validator?: null | PublicValidatorInsight;
+    /**
+     * Sanitized explanation when this Node has no established automatic
+     * correspondence. It never contains a raw diagnostic or a public key.
+     */
+    validatorIdentityReason?: string | null;
+    /**
+     * Server-owned automatic-identity state for this Node (#173):
+     * `identified`, `missing_public_key`, `invalid_public_key`,
+     * `network_identity_missing`, or `network_identity_mismatch`. `None`
+     * means no automatic discovery pass has run yet. It is separate from
+     * Current Validator Status: identity correspondence can be established
+     * while the Provider still cannot confirm current staking validity.
+     */
+    validatorIdentityState?: string | null;
 };
 
 export type PublicNodeMetricHistory = {
@@ -2017,6 +2038,26 @@ export type PublicValidatorInsight = {
     blockRateState: string;
     counterState: string;
     /**
+     * Server-owned Current Validator Status of the automatically identified
+     * chain identity (#173): `validator`, `not_validator`, or `unknown`.
+     * This is currently valid staking identity, not current consensus
+     * selection or Node Health. `not_validator` requires authoritative
+     * evidence (completed exit or a 200 empty identifier); HTTP 404,
+     * transport failures and unsupported coverage stay `unknown`.
+     */
+    currentValidatorStatus: string;
+    /**
+     * `locked` or `exiting` while a confirmed-valid identity is not normally
+     * participating; null for an ordinary candidate/active/producing identity
+     * or for any unknown/negative status.
+     */
+    currentValidatorStatusQualifier?: string | null;
+    /**
+     * `current`, `stale`, or `unknown` currency of the Current Validator
+     * Status. A retained last-good verdict after a failed refresh is `stale`.
+     */
+    currentValidatorStatusState: string;
+    /**
      * The currently effective delegation reward distribution percentage
      * (PlatScan detail `rewardPer`), normalized to percentage points: the
      * source's already-scaled `20` is 20%, never 0.20% or 2000%. It is
@@ -2045,7 +2086,6 @@ export type PublicValidatorInsight = {
      * upstream error. `None` means unknown, never a synthesized zero (#156).
      */
     genBlocksRate?: string | null;
-    linkRole?: string | null;
     nodeId?: string | null;
     providerTimestamp?: string | null;
     /**
@@ -2549,42 +2589,8 @@ export type Validator = {
     validatorNodeId: string;
 };
 
-export type ValidatorCreateRequest = {
-    displayName?: string | null;
-    validatorNodeId: string;
-};
-
 export type ValidatorDetail = Validator & {
     links: Array<NodeValidatorLink>;
-};
-
-export type ValidatorLinkCreateRequest = {
-    role: string;
-    validFrom: string;
-    validUntil?: string | null;
-    validatorId: string;
-};
-
-export type ValidatorLinkEndRequest = {
-    validUntil?: string | null;
-};
-
-export type ValidatorLinkMutationResponse = {
-    auditEventId: number;
-    link: NodeValidatorLink;
-    requestId: string;
-};
-
-export type ValidatorLinkUpdateRequest = {
-    role: string;
-    validFrom: string;
-    validUntil?: string | null;
-};
-
-export type ValidatorMutationResponse = {
-    auditEventId: number;
-    requestId: string;
-    validator: Validator;
 };
 
 export type VisibilityRequest = {
@@ -3680,7 +3686,7 @@ export type UpdateNetworkResponses = {
 export type UpdateNetworkResponse = UpdateNetworkResponses[keyof UpdateNetworkResponses];
 
 export type CreateValidatorData = {
-    body: ValidatorCreateRequest;
+    body?: never;
     path: {
         /**
          * Registered Network key
@@ -3696,16 +3702,11 @@ export type CreateValidatorErrors = {
     401: ApiErrorBody;
     403: ApiErrorBody;
     409: ApiErrorBody;
+    410: ApiErrorBody;
     503: ApiErrorBody;
 };
 
 export type CreateValidatorError = CreateValidatorErrors[keyof CreateValidatorErrors];
-
-export type CreateValidatorResponses = {
-    200: ValidatorMutationResponse;
-};
-
-export type CreateValidatorResponse = CreateValidatorResponses[keyof CreateValidatorResponses];
 
 export type AdminNodesData = {
     body?: never;
@@ -4002,7 +4003,7 @@ export type AdminNodeValidatorLinksResponses = {
 export type AdminNodeValidatorLinksResponse = AdminNodeValidatorLinksResponses[keyof AdminNodeValidatorLinksResponses];
 
 export type CreateNodeValidatorLinkData = {
-    body: ValidatorLinkCreateRequest;
+    body?: never;
     path: {
         /**
          * Node ID
@@ -4018,16 +4019,11 @@ export type CreateNodeValidatorLinkErrors = {
     401: ApiErrorBody;
     403: ApiErrorBody;
     409: ApiErrorBody;
+    410: ApiErrorBody;
     503: ApiErrorBody;
 };
 
 export type CreateNodeValidatorLinkError = CreateNodeValidatorLinkErrors[keyof CreateNodeValidatorLinkErrors];
-
-export type CreateNodeValidatorLinkResponses = {
-    200: ValidatorLinkMutationResponse;
-};
-
-export type CreateNodeValidatorLinkResponse = CreateNodeValidatorLinkResponses[keyof CreateNodeValidatorLinkResponses];
 
 export type SetVisibilityData = {
     body: VisibilityRequest;
@@ -4786,7 +4782,7 @@ export type AdminValidatorLinkDetailResponses = {
 export type AdminValidatorLinkDetailResponse = AdminValidatorLinkDetailResponses[keyof AdminValidatorLinkDetailResponses];
 
 export type UpdateValidatorLinkData = {
-    body: ValidatorLinkUpdateRequest;
+    body?: never;
     path: {
         /**
          * Node Validator Link ID
@@ -4803,19 +4799,14 @@ export type UpdateValidatorLinkErrors = {
     403: ApiErrorBody;
     404: ApiErrorBody;
     409: ApiErrorBody;
+    410: ApiErrorBody;
     503: ApiErrorBody;
 };
 
 export type UpdateValidatorLinkError = UpdateValidatorLinkErrors[keyof UpdateValidatorLinkErrors];
 
-export type UpdateValidatorLinkResponses = {
-    200: ValidatorLinkMutationResponse;
-};
-
-export type UpdateValidatorLinkResponse = UpdateValidatorLinkResponses[keyof UpdateValidatorLinkResponses];
-
 export type EndValidatorLinkData = {
-    body: ValidatorLinkEndRequest;
+    body?: never;
     path: {
         /**
          * Node Validator Link ID
@@ -4832,16 +4823,11 @@ export type EndValidatorLinkErrors = {
     403: ApiErrorBody;
     404: ApiErrorBody;
     409: ApiErrorBody;
+    410: ApiErrorBody;
     503: ApiErrorBody;
 };
 
 export type EndValidatorLinkError = EndValidatorLinkErrors[keyof EndValidatorLinkErrors];
-
-export type EndValidatorLinkResponses = {
-    200: ValidatorLinkMutationResponse;
-};
-
-export type EndValidatorLinkResponse = EndValidatorLinkResponses[keyof EndValidatorLinkResponses];
 
 export type AdminValidatorsData = {
     body?: never;

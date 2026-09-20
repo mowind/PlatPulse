@@ -1,7 +1,7 @@
 import { cleanup, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { PublicNode, PublicValidatorInsight } from '../api/generated'
-import { LinkedValidatorSection, validatorRoleLabel, validatorStateLabel } from './LinkedValidator'
+import { LinkedValidatorSection, currentValidatorStatusLabel, validatorStateLabel } from './LinkedValidator'
 
 const node: PublicNode = {
   nodeId: 'node-1',
@@ -25,7 +25,6 @@ const insight: PublicValidatorInsight = {
   validatorNodeId: '0xvalidator',
   displayName: 'Validator One',
   nodeId: 'node-1',
-  linkRole: 'standby',
   state: 'fresh',
   freshness: 'fresh',
   source: 'platscan',
@@ -45,6 +44,9 @@ const insight: PublicValidatorInsight = {
   counterState: 'normal',
   activity: 'producing',
   activityState: 'current',
+  currentValidatorStatus: 'validator',
+  currentValidatorStatusState: 'current',
+  currentValidatorStatusQualifier: null,
 }
 
 afterEach(cleanup)
@@ -57,14 +59,37 @@ describe('LinkedValidatorSection', () => {
     expect(screen.queryByText('Cumulative blocks')).toBeNull()
   })
 
-  it('shows identity, link role, and the cumulative Validator block count', () => {
+  it('shows identity, Current Validator Status, and the cumulative block count', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: insight }} />)
     const section = screen.getByLabelText('Linked Validator')
     expect(within(section).getByText('Validator One')).toBeTruthy()
-    expect(within(section).getByText('Standby')).toBeTruthy()
+    expect(within(section).getByText('Validator')).toBeTruthy()
     expect(within(section).getByText('Cumulative blocks')).toBeTruthy()
     expect(within(section).getByText('4,321')).toBeTruthy()
     expect(within(section).getByText('Current')).toBeTruthy()
+  })
+
+  it('shows the explicit locked qualifier and an unknown status without a manual role', () => {
+    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, currentValidatorStatus: 'validator', currentValidatorStatusState: 'current', currentValidatorStatusQualifier: 'locked' } }} />)
+    expect(screen.getByText('Locked')).toBeTruthy()
+    expect(screen.getByText(/confirmed-valid staking identity but is locked/)).toBeTruthy()
+
+    cleanup()
+    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, currentValidatorStatus: 'unknown', currentValidatorStatusState: 'unknown', currentValidatorStatusQualifier: null } }} />)
+    expect(screen.getByText('Validator status unknown')).toBeTruthy()
+    expect(screen.getByText(/not a negative conclusion/)).toBeTruthy()
+  })
+
+  it('explains an unestablished automatic correspondence instead of guessing', () => {
+    const { container } = render(
+      <LinkedValidatorSection
+        node={{ ...node, validatorIdentityState: 'network_identity_mismatch', validatorIdentityReason: 'The observed Network Identity does not match.' }}
+      />,
+    )
+    expect(container.querySelector('[data-slot="linked-validator"]')).not.toBeNull()
+    expect(screen.getByText('Validator identity')).toBeTruthy()
+    expect(screen.getByText('The observed Network Identity does not match.')).toBeTruthy()
+    expect(screen.queryByText(/manual/i)).toBeNull()
   })
 
   it('keeps a source-reported zero distinct from an unknown value', () => {
@@ -249,9 +274,10 @@ describe('LinkedValidatorSection', () => {
     expect(screen.getByText('123')).toBeTruthy()
   })
 
-  it('maps roles and states to fixed, sanitized public labels', () => {
-    expect(validatorRoleLabel('primary')).toBe('Primary')
-    expect(validatorRoleLabel(null)).toBe('Role unknown')
+  it('maps Current Validator Status and Provider states to fixed labels', () => {
+    expect(currentValidatorStatusLabel('validator')).toBe('Validator')
+    expect(currentValidatorStatusLabel('not_validator')).toBe('Not a Validator')
+    expect(currentValidatorStatusLabel('unknown')).toBe('Validator status unknown')
     expect(validatorStateLabel('fresh', 'fresh')).toBe('Current')
     expect(validatorStateLabel('stale', 'stale')).toBe('Stale')
     expect(validatorStateLabel('not_configured', 'unknown')).toBe('Not configured')

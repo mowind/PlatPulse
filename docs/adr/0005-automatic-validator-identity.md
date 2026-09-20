@@ -1,6 +1,6 @@
 # ADR 0005: Automatically identify Validator correspondence without manual roles
 
-**Status:** Accepted; implementation and one-time migration pending.
+**Status:** Accepted; automatic identity and Current Validator Status implemented by issue #173 (Server-derived correspondence from a validated Network and the observed full P2P public key, with explicit Unknown/Stale and no manual fallback). The one-time destructive migration of legacy manual Links and Validator history is still pending (#174).
 
 The prior optional, explicit, time-bounded Node Validator Link could express primary/standby/observer roles rather than the Node's own chain identity. We choose automatic correspondence by validated Network and observed full P2P public key, using the Network's PlatScan Provider, instead of manual binding or retaining a manual fallback. This removes operator-maintained role relationships and avoids presenting an unrelated Validator's totals as the Node's identity; it does not establish ownership or make current consensus membership the identity authority.
 

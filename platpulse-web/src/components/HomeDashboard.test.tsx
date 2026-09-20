@@ -361,9 +361,10 @@ describe('Public Home dashboard', () => {
   it('keeps the two-state health marker as the header status cue with no activity badge', () => {
     const linked = (activity: string, activityState: string) => ({
       validatorId: 'validator-a', validatorNodeId: '0xvalidator', displayName: 'Validator A',
-      nodeId: 'node-a', linkRole: 'primary', state: activityState === 'stale' ? 'error' : 'fresh',
+      nodeId: 'node-a', state: activityState === 'stale' ? 'error' : 'fresh',
       freshness: activityState === 'stale' ? 'fresh' : 'fresh', source: 'fake',
       receivedAt: '2026-08-25T00:00:00Z', rankState: 'unknown', rankFreshness: 'unknown', blockRateState: 'unknown', counterState: 'normal', activity, activityState,
+      currentValidatorStatus: 'validator', currentValidatorStatusState: 'current', currentValidatorStatusQualifier: null,
     })
     const active = {
       ...network.nodes[0], nodeId: 'node-active', displayName: 'Active Node',
@@ -563,14 +564,15 @@ describe('Public Home dashboard', () => {
     expect(summaryValueOf('Active Nodes').textContent).toBe('0')
   })
 
-  it('shows the linked Validator cumulative block count, rates, and role on the Home card', () => {
+  it('shows the linked Validator cumulative block count, rates, and status on the Home card', () => {
     const linked = {
       validatorId: 'validator-linked', validatorNodeId: '0xlinked', displayName: 'Validator A',
-      nodeId: 'node-linked', linkRole: 'standby', state: 'fresh', freshness: 'fresh', source: 'platscan',
+      nodeId: 'node-linked', state: 'fresh', freshness: 'fresh', source: 'platscan',
       providerTimestamp: '2026-08-25T00:00:00Z', receivedAt: '2026-08-25T00:00:05Z',
       blockCount: 123456, expectedBlockCount: 110, blockRate: '90.909091', blockRateState: 'ok',
       rank: 5, rankState: 'ranked', rankFreshness: 'fresh', rankCohortSize: 300,
       genBlocksRate: '0', delegationRewardPercentage: '20', counterState: 'normal', activity: 'producing', activityState: 'current',
+      currentValidatorStatus: 'validator', currentValidatorStatusState: 'current', currentValidatorStatusQualifier: null,
     }
     const linkedNode = { ...network.nodes[0], nodeId: 'node-linked', displayName: 'Calico', validator: linked }
     const unlinkedNode = { ...network.nodes[0], nodeId: 'node-unlinked', displayName: 'Domino', validator: null }
@@ -579,7 +581,11 @@ describe('Public Home dashboard', () => {
     const card = cardOf(nodeCardLink('Calico'))
     expect(within(card).getByText('Linked Validator')).toBeTruthy()
     expect(within(card).getByText('Validator A')).toBeTruthy()
-    expect(within(card).getByText('Standby')).toBeTruthy()
+    // The linked-Validator section carries the Server-owned Current Validator
+    // Status; the separate consensus membership cue is not a manual link role.
+    const linkedSection = card.querySelector('[data-slot="linked-validator"]') as HTMLElement
+    expect(within(linkedSection).getByText('Validator')).toBeTruthy()
+    expect(within(linkedSection).queryByText('Standby')).toBeNull()
     expect(within(card).getByText('Cumulative blocks')).toBeTruthy()
     expect(within(card).getByText('123,456')).toBeTruthy()
     // Both rates are visible on the card without hover or expansion, and the

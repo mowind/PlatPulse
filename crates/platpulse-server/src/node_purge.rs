@@ -61,6 +61,7 @@ pub struct NodePurgeCounts {
     pub observed_network_heads: i64,
     pub metric_samples: i64,
     pub validator_links: i64,
+    pub validator_identity_status: i64,
     pub transfers: i64,
 }
 
@@ -90,6 +91,7 @@ impl NodePurgeCounts {
         self.observed_network_heads += other.observed_network_heads;
         self.metric_samples += other.metric_samples;
         self.validator_links += other.validator_links;
+        self.validator_identity_status += other.validator_identity_status;
         self.transfers += other.transfers;
     }
 
@@ -117,6 +119,7 @@ impl NodePurgeCounts {
             + self.observed_network_heads
             + self.metric_samples
             + self.validator_links
+            + self.validator_identity_status
             + self.transfers
     }
 }
@@ -203,6 +206,8 @@ pub async fn measure(
         observed_network_heads: count(connection, "observed_network_heads", &node_id).await?,
         metric_samples: count(connection, "node_metric_samples", &node_id).await?,
         validator_links: count(connection, "node_validator_links", &node_id).await?,
+        validator_identity_status: count(connection, "node_validator_identity_status", &node_id)
+            .await?,
         transfers: count(connection, "node_transfers", &node_id).await?,
     };
 
@@ -290,7 +295,8 @@ pub async fn remove(connection: &mut SqliteConnection, node_id: &str) -> Result<
         "observed_network_heads",
         // Metric samples.
         "node_metric_samples",
-        // Node Validator Links and management history.
+        // Node Validator Links, automatic-identity status, and management history.
+        "node_validator_identity_status",
         "node_validator_links",
         "node_transfers",
     ] {

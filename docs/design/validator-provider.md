@@ -13,12 +13,19 @@ automatically discover Validators from observed Nodes. Historical API and live
 capture observations remain evidence of that baseline, not proof of the new
 identity contract.
 
-The following automatic-identity design is **accepted, NOT IMPLEMENTED**. Its
-cross-feature authority is [the main design, section 15](platpulse.md#accepted-management-target)
-and [ADR 0005: automatic Validator identity](../adr/0005-automatic-validator-identity.md).
-This documentation update neither implements nor executes a migration.
+The following automatic-identity design is **accepted and implemented by
+#173** for discovery, automatic correspondence, Current Validator Status and
+the Public projection. Its cross-feature authority is
+[the main design, section 15](platpulse.md#accepted-management-target) and
+[ADR 0005: automatic Validator identity](../adr/0005-automatic-validator-identity.md).
+The one-time history migration and deletion of the legacy manual generation
+(#174) are still **not implemented**: the manual registration, binding and role
+write endpoints now answer an explicit retirement status, while legacy
+node_validator_links rows with origin = manual remain stored. Those rows are
+never a Public association or a fallback while automatic identification is
+pending or failed.
 
-## Accepted target: automatic Validator identity (not implemented)
+## Accepted target: automatic Validator identity (implemented by #173; one-time migration pending)
 
 ### Discovery and identity correspondence
 
@@ -208,10 +215,13 @@ array. Tests replay the raw responses offline; CI does not contact PlatScan.
   to `producing`, 4 Exiting maps to `exiting`, 5 Exited maps to `exited`,
   6 Verifying maps to `verifying`, and 7 Locked maps to `locked`.
 - The strictly validated empty form (empty `data.nodeId` and status `0`) is
-  `AuthoritativeEmpty`; HTTP `404` is `NotFound`. Both are authoritative
-  no-live-Validator outcomes for an effective Node Validator Link.
-- `405`/`501` are `Unsupported`; all other 4xx/5xx responses are classified
-  as `NotFound` or degraded `Error` before the response body is buffered. For an
+  `AuthoritativeEmpty`, an authoritative no-live-Validator outcome. HTTP
+  `404` is **not** an absence: the deployment answers an absent identifier with
+  the 200 empty form, so a 404 can only be a routing, gateway, or deployment
+  anomaly and is a degraded `Error` that leaves Current Validator Status
+  Unknown (#168, #173).
+- `405`/`501` are `Unsupported`; all other 4xx/5xx responses are degraded
+  `Error` before the response body is buffered. For an
   accepted response, malformed envelopes, mismatched identifiers, invalid types,
   unrecognized statuses, or a body over 64 KiB are degraded `Error` outcomes.
 - Optional metrics are normalized into the Server-owned observation when present:

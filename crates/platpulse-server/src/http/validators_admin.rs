@@ -60,7 +60,8 @@ pub struct AdminValidatorInsight {
 pub struct AdminValidatorHistoryLink {
     pub link_id: String,
     pub node_id: String,
-    pub role: String,
+    /// Legacy manual role; automatic Links carry none (#173).
+    pub role: Option<String>,
     pub valid_from: String,
     pub valid_until: Option<String>,
 }
@@ -238,7 +239,8 @@ pub struct NodeValidatorLink {
     pub network_key: String,
     pub validator_node_id: String,
     pub node_display_name: Option<String>,
-    pub role: String,
+    /// Legacy manual role; automatic Links carry none (#173).
+    pub role: Option<String>,
     pub valid_from: String,
     pub valid_until: Option<String>,
     pub created_at: String,
@@ -251,36 +253,6 @@ pub struct ValidatorDetail {
     #[serde(flatten)]
     pub validator: Validator,
     pub links: Vec<NodeValidatorLink>,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ValidatorCreateRequest {
-    pub validator_node_id: String,
-    pub display_name: Option<String>,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ValidatorLinkCreateRequest {
-    pub validator_id: String,
-    pub role: String,
-    pub valid_from: String,
-    pub valid_until: Option<String>,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ValidatorLinkUpdateRequest {
-    pub role: String,
-    pub valid_from: String,
-    pub valid_until: Option<String>,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ValidatorLinkEndRequest {
-    pub valid_until: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -353,12 +325,6 @@ fn error_response(request_id: &str, error: ValidatorError) -> Response {
         )),
     )
         .into_response()
-}
-
-fn revision(value: &str) -> u64 {
-    value.bytes().fold(0_u64, |accumulator, byte| {
-        accumulator.wrapping_mul(31).wrapping_add(byte as u64)
-    })
 }
 
 async fn validator_dto(
@@ -558,21 +524,35 @@ pub(crate) async fn admin_validator_link_detail(
     }
 }
 
+/// Manual Validator registration, explicit binding and role management were
+/// retired by #173: the Server now identifies a Node Validator Link from the
+/// validated Network and the observed full P2P public key. The stored legacy
+/// rows are deleted by the one-time migration (#174); until then they are
+/// never a Public association or a fallback. The endpoints remain registered
+/// only to answer with an explicit retirement status instead of a silent
+/// success that no longer has an effect.
+fn manual_validator_management_retired(request_id: &str) -> Response {
+    mutation_error(
+        request_id,
+        StatusCode::GONE,
+        "manual_validator_management_retired",
+        "manual Validator management was retired; Validators are identified automatically",
+    )
+}
+
 #[utoipa::path(
     post,
     path = "/api/admin/v1/networks/{network_key}/validators",
     tag = "admin",
     params(("network_key" = String, Path, description = "Registered Network key")),
-    request_body = ValidatorCreateRequest,
-    responses((status = 200, body = ValidatorMutationResponse), (status = 401, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 400, body = crate::http::ApiErrorBody), (status = 409, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
+    responses((status = 410, body = crate::http::ApiErrorBody), (status = 401, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 400, body = crate::http::ApiErrorBody), (status = 409, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
 )]
 pub(crate) async fn create_validator(
     State(state): State<AppState>,
-    Path(network_key): Path<String>,
+    Path(_network_key): Path<String>,
     headers: HeaderMap,
     Extension(principal): Extension<AuthenticatedSession>,
     Extension(request_id): Extension<RequestId>,
-    body: axum::body::Bytes,
 ) -> Response {
     if !mutation_guard_ok(&headers, &state, &principal) {
         return mutation_error(
@@ -582,50 +562,7 @@ pub(crate) async fn create_validator(
             "mutation validation failed",
         );
     }
-    let body: ValidatorCreateRequest = match serde_json::from_slice(&body) {
-        Ok(value) => value,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::BAD_REQUEST,
-                "invalid_json",
-                "request body is invalid",
-            );
-        }
-    };
-    match validator::create_validator(
-        &state.database(),
-        &network_key,
-        &body.validator_node_id,
-        body.display_name.as_deref(),
-        &principal.0.user_id,
-    )
-    .await
-    {
-        Ok((record, audit_event_id)) => {
-            let value = match validator_dto(&state, record).await {
-                Ok(value) => value,
-                Err(error) => return error_response(&request_id.0, error),
-            };
-            state.admin_realtime().publish(
-                "validator",
-                Some(value.validator_id.clone()),
-                revision(&value.updated_at),
-            );
-            state.public_realtime().publish(
-                "network",
-                Some(value.network_key.clone()),
-                revision(&value.updated_at),
-            );
-            Json(ValidatorMutationResponse {
-                validator: value,
-                request_id: request_id.0.to_string(),
-                audit_event_id,
-            })
-            .into_response()
-        }
-        Err(error) => error_response(&request_id.0, error),
-    }
+    manual_validator_management_retired(&request_id.0)
 }
 
 #[utoipa::path(
@@ -705,16 +642,14 @@ pub(crate) async fn admin_node_validator_links(
     path = "/api/admin/v1/nodes/{node_id}/validator-links",
     tag = "admin",
     params(("node_id" = String, Path, description = "Node ID")),
-    request_body = ValidatorLinkCreateRequest,
-    responses((status = 200, body = ValidatorLinkMutationResponse), (status = 401, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 400, body = crate::http::ApiErrorBody), (status = 409, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
+    responses((status = 410, body = crate::http::ApiErrorBody), (status = 401, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 400, body = crate::http::ApiErrorBody), (status = 409, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
 )]
 pub(crate) async fn create_node_validator_link(
     State(state): State<AppState>,
-    Path(node_id): Path<String>,
+    Path(_node_id): Path<String>,
     headers: HeaderMap,
     Extension(principal): Extension<AuthenticatedSession>,
     Extension(request_id): Extension<RequestId>,
-    body: axum::body::Bytes,
 ) -> Response {
     if !mutation_guard_ok(&headers, &state, &principal) {
         return mutation_error(
@@ -724,62 +659,7 @@ pub(crate) async fn create_node_validator_link(
             "mutation validation failed",
         );
     }
-    let body: ValidatorLinkCreateRequest = match serde_json::from_slice(&body) {
-        Ok(value) => value,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::BAD_REQUEST,
-                "invalid_json",
-                "request body is invalid",
-            );
-        }
-    };
-    match validator::create_link(
-        &state.database(),
-        &node_id,
-        &body.validator_id,
-        &body.role,
-        &body.valid_from,
-        body.valid_until.as_deref(),
-        &principal.0.user_id,
-    )
-    .await
-    {
-        Ok((record, audit_event_id)) => {
-            let value = match link_dto(&state, record).await {
-                Ok(value) => value,
-                Err(error) => return error_response(&request_id.0, error),
-            };
-            state.admin_realtime().publish(
-                "validator",
-                Some(value.validator_id.clone()),
-                revision(&value.updated_at),
-            );
-            state.admin_realtime().publish(
-                "node",
-                Some(value.node_id.clone()),
-                revision(&value.updated_at),
-            );
-            state.public_realtime().publish(
-                "node",
-                Some(value.node_id.clone()),
-                revision(&value.updated_at),
-            );
-            state.public_realtime().publish(
-                "network",
-                Some(value.network_key.clone()),
-                revision(&value.updated_at),
-            );
-            Json(ValidatorLinkMutationResponse {
-                link: value,
-                request_id: request_id.0.to_string(),
-                audit_event_id,
-            })
-            .into_response()
-        }
-        Err(error) => error_response(&request_id.0, error),
-    }
+    manual_validator_management_retired(&request_id.0)
 }
 
 #[utoipa::path(
@@ -787,16 +667,14 @@ pub(crate) async fn create_node_validator_link(
     path = "/api/admin/v1/validator-links/{link_id}",
     tag = "admin",
     params(("link_id" = String, Path, description = "Node Validator Link ID")),
-    request_body = ValidatorLinkUpdateRequest,
-    responses((status = 200, body = ValidatorLinkMutationResponse), (status = 401, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 400, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody), (status = 409, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
+    responses((status = 410, body = crate::http::ApiErrorBody), (status = 401, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 400, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody), (status = 409, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
 )]
 pub(crate) async fn update_validator_link(
     State(state): State<AppState>,
-    Path(link_id): Path<String>,
+    Path(_link_id): Path<String>,
     headers: HeaderMap,
     Extension(principal): Extension<AuthenticatedSession>,
     Extension(request_id): Extension<RequestId>,
-    body: axum::body::Bytes,
 ) -> Response {
     if !mutation_guard_ok(&headers, &state, &principal) {
         return mutation_error(
@@ -806,61 +684,7 @@ pub(crate) async fn update_validator_link(
             "mutation validation failed",
         );
     }
-    let body: ValidatorLinkUpdateRequest = match serde_json::from_slice(&body) {
-        Ok(value) => value,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::BAD_REQUEST,
-                "invalid_json",
-                "request body is invalid",
-            );
-        }
-    };
-    match validator::update_link(
-        &state.database(),
-        &link_id,
-        &body.role,
-        &body.valid_from,
-        body.valid_until.as_deref(),
-        &principal.0.user_id,
-    )
-    .await
-    {
-        Ok((record, audit_event_id)) => {
-            let value = match link_dto(&state, record).await {
-                Ok(value) => value,
-                Err(error) => return error_response(&request_id.0, error),
-            };
-            state.admin_realtime().publish(
-                "validator",
-                Some(value.validator_id.clone()),
-                revision(&value.updated_at),
-            );
-            state.admin_realtime().publish(
-                "node",
-                Some(value.node_id.clone()),
-                revision(&value.updated_at),
-            );
-            state.public_realtime().publish(
-                "node",
-                Some(value.node_id.clone()),
-                revision(&value.updated_at),
-            );
-            state.public_realtime().publish(
-                "network",
-                Some(value.network_key.clone()),
-                revision(&value.updated_at),
-            );
-            Json(ValidatorLinkMutationResponse {
-                link: value,
-                request_id: request_id.0.to_string(),
-                audit_event_id,
-            })
-            .into_response()
-        }
-        Err(error) => error_response(&request_id.0, error),
-    }
+    manual_validator_management_retired(&request_id.0)
 }
 
 #[utoipa::path(
@@ -868,16 +692,14 @@ pub(crate) async fn update_validator_link(
     path = "/api/admin/v1/validator-links/{link_id}/end",
     tag = "admin",
     params(("link_id" = String, Path, description = "Node Validator Link ID")),
-    request_body = ValidatorLinkEndRequest,
-    responses((status = 200, body = ValidatorLinkMutationResponse), (status = 401, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 400, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody), (status = 409, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
+    responses((status = 410, body = crate::http::ApiErrorBody), (status = 401, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 400, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody), (status = 409, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
 )]
 pub(crate) async fn end_validator_link(
     State(state): State<AppState>,
-    Path(link_id): Path<String>,
+    Path(_link_id): Path<String>,
     headers: HeaderMap,
     Extension(principal): Extension<AuthenticatedSession>,
     Extension(request_id): Extension<RequestId>,
-    body: axum::body::Bytes,
 ) -> Response {
     if !mutation_guard_ok(&headers, &state, &principal) {
         return mutation_error(
@@ -887,59 +709,7 @@ pub(crate) async fn end_validator_link(
             "mutation validation failed",
         );
     }
-    let body: ValidatorLinkEndRequest = match serde_json::from_slice(&body) {
-        Ok(value) => value,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::BAD_REQUEST,
-                "invalid_json",
-                "request body is invalid",
-            );
-        }
-    };
-    match validator::end_link(
-        &state.database(),
-        &link_id,
-        body.valid_until.as_deref(),
-        &principal.0.user_id,
-    )
-    .await
-    {
-        Ok((record, audit_event_id)) => {
-            let value = match link_dto(&state, record).await {
-                Ok(value) => value,
-                Err(error) => return error_response(&request_id.0, error),
-            };
-            state.admin_realtime().publish(
-                "validator",
-                Some(value.validator_id.clone()),
-                revision(&value.updated_at),
-            );
-            state.admin_realtime().publish(
-                "node",
-                Some(value.node_id.clone()),
-                revision(&value.updated_at),
-            );
-            state.public_realtime().publish(
-                "node",
-                Some(value.node_id.clone()),
-                revision(&value.updated_at),
-            );
-            state.public_realtime().publish(
-                "network",
-                Some(value.network_key.clone()),
-                revision(&value.updated_at),
-            );
-            Json(ValidatorLinkMutationResponse {
-                link: value,
-                request_id: request_id.0.to_string(),
-                audit_event_id,
-            })
-            .into_response()
-        }
-        Err(error) => error_response(&request_id.0, error),
-    }
+    manual_validator_management_retired(&request_id.0)
 }
 
 #[utoipa::path(

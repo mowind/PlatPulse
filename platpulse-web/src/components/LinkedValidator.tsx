@@ -7,15 +7,26 @@ import { formatUtcDateTime } from './StatusBadge'
 import { SURFACE_CARD } from '../lib/surface'
 import { cn } from '../lib/utils'
 
-/** Human label for the effective Node Validator Link role. The role never
- *  changes which Validator identity the metrics describe; it only describes
- *  how this Node participates in the shared Validator (#154). */
-export function validatorRoleLabel(role: string | null | undefined): string {
-  switch ((role ?? '').toLowerCase()) {
-    case 'primary': return 'Primary'
-    case 'standby': return 'Standby'
-    case 'observer': return 'Observer'
-    default: return 'Role unknown'
+/**
+ * Server-owned Current Validator Status label (#173). It describes whether the
+ * automatically identified chain identity has a currently valid staking
+ * identity; it is not consensus membership or Node Health. A locked/exiting
+ * qualifier is rendered separately by the caller.
+ */
+export function currentValidatorStatusLabel(status: string | null | undefined): string {
+  switch ((status ?? '').toLowerCase()) {
+    case 'validator': return 'Validator'
+    case 'not_validator': return 'Not a Validator'
+    default: return 'Validator status unknown'
+  }
+}
+
+/** The explicit special state of a confirmed-valid identity. */
+export function currentValidatorStatusQualifierLabel(qualifier: string | null | undefined): string | null {
+  switch ((qualifier ?? '').toLowerCase()) {
+    case 'locked': return 'Locked'
+    case 'exiting': return 'Exiting'
+    default: return null
   }
 }
 
@@ -143,12 +154,31 @@ function stateNote(validator: PublicValidatorInsight): string | null {
  */
 export function LinkedValidatorSection({ node, variant = 'card' }: { node: PublicNode; variant?: 'card' | 'detail' }) {
   const validator = node.validator
-  // A Node with no effective Validator Link renders nothing at all: the
-  // absence of a Link is not a state that earns a card of its own.
-  if (!validator) return null
+  // A Node without an established automatic correspondence explains itself
+  // once instead of offering a manual binding; a Node that is identified but
+  // has no Provider coverage already has a Link and takes the normal path.
+  if (!validator) {
+    // The Server already sanitizes the reason and omits it for an identified
+    // Node, so React renders exactly what it was given (#173).
+    const reason = node.validatorIdentityReason
+    if (!reason) return null
+    return (
+      <section
+        data-slot="linked-validator"
+        className="min-w-0 border-t border-border pt-3"
+        aria-label="Linked Validator identity"
+      >
+        <h3 className="m-0 text-xs font-medium tracking-wider text-muted-foreground">Validator identity</h3>
+        <p className="m-0 mt-1 text-[11px] text-muted-foreground" role="status">{reason}</p>
+      </section>
+    )
+  }
 
   const state = validatorStateLabel(validator.state, validator.freshness)
   const note = stateNote(validator)
+  const statusLabel = currentValidatorStatusLabel(validator.currentValidatorStatus)
+  const qualifierLabel = currentValidatorStatusQualifierLabel(validator.currentValidatorStatusQualifier)
+  const statusRetained = validator.currentValidatorStatusState === 'stale'
   const rankState = rankNote(validator)
   const retained = validator.state !== 'fresh' && validator.state !== 'stale' && (validator.blockCount != null || validator.rewardAmount != null || validator.rank != null || validator.blockRate != null || validator.genBlocksRate != null || validator.delegationRewardPercentage != null)
   // Detail exposes every digit the source provided; cards may abbreviate, but
@@ -159,7 +189,12 @@ export function LinkedValidatorSection({ node, variant = 'card' }: { node: Publi
   const body = <>
     <header className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
       <h3 className="m-0 text-xs font-medium tracking-wider text-muted-foreground">Linked Validator</h3>
-      <span className="shrink-0 rounded-full border border-border px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">{validatorRoleLabel(validator.linkRole)}</span>
+      <span className="flex shrink-0 items-center gap-1">
+        <span className="rounded-full border border-border px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">{statusLabel}</span>
+        {qualifierLabel && (
+          <span className="rounded-full border border-amber-500/50 px-2 py-0.5 text-[10px] font-semibold text-amber-600">{qualifierLabel}</span>
+        )}
+      </span>
     </header>
     <p className="m-0 mt-1 min-w-0 text-sm font-semibold [overflow-wrap:anywhere]">{validator.displayName || validator.validatorNodeId}</p>
     <p className="m-0 mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground" role="status">
@@ -168,6 +203,11 @@ export function LinkedValidatorSection({ node, variant = 'card' }: { node: Publi
       {validator.state === 'stale' && validator.freshness === 'stale' && <span>· last successful value retained</span>}
     </p>
     {note && <p className="m-0 mt-1 text-[11px] text-muted-foreground">{note}</p>}
+    {node.validatorIdentityReason && (
+      <p className="m-0 mt-1 text-[11px] text-muted-foreground" role="status">
+        {node.validatorIdentityReason} The last established association is retained until identification succeeds.
+      </p>
+    )}
     {/* Two shrinkable columns also fit the 296px detail content at 360px.
         Bound both parts of each metric row so labels and exact amounts wrap
         inside their cell without squeezing the neighbouring metric. */}
@@ -179,6 +219,10 @@ export function LinkedValidatorSection({ node, variant = 'card' }: { node: Publi
       <MetricRow label="PlatScan 24h rate" value={genBlocksRateLabel(validator, variant)} />
       <MetricRow label="Delegation reward share" value={delegationRewardShareLabel(validator, variant)} />
     </div>
+    {qualifierLabel && <p className="m-0 mt-1 text-[11px] text-muted-foreground" role="status">This identity has a confirmed-valid staking identity but is {qualifierLabel.toLowerCase()}, not normally producing.</p>}
+    {validator.currentValidatorStatus === 'not_validator' && <p className="m-0 mt-1 text-[11px] text-muted-foreground" role="status">Authoritative evidence reports no current staking identity for this chain key.</p>}
+    {validator.currentValidatorStatus === 'unknown' && <p className="m-0 mt-1 text-[11px] text-muted-foreground" role="status">Current staking validity is not established; this is not a negative conclusion.</p>}
+    {statusRetained && <p className="m-0 mt-1 text-[11px] text-muted-foreground" role="status">The last confirmed Validator status is retained; the source has not refreshed it recently.</p>}
     {rankState && <p className="m-0 mt-1 text-[11px] text-muted-foreground" role="status">{rankState}</p>}
     {validator.blockRateState === 'not_applicable' && <p className="m-0 mt-0.5 text-[11px] text-muted-foreground" role="status">The source reported a zero scheduled-block denominator, so a rate is not applicable — not 0%.</p>}
     {variant === 'detail' && validator.rewardAmount != null && <p className="m-0 mt-0.5 text-[11px] text-muted-foreground">Amounts use the Network native unit; detail shows all precision the source provides.</p>}

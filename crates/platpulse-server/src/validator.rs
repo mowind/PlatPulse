@@ -260,7 +260,14 @@ impl ValidatorProvider for PlatScanValidatorProvider {
             Err(_) => return ValidatorProviderResult::Error("PlatScan request failed".to_owned()),
         };
         match response.status() {
-            StatusCode::NOT_FOUND => return ValidatorProviderResult::NotFound,
+            // An absent staking identity is a 200 empty form, so a 404 can only
+            // be a routing, gateway, or deployment anomaly. It is a degraded
+            // non-negative outcome, never proof of absence (#168).
+            StatusCode::NOT_FOUND => {
+                return ValidatorProviderResult::Error(
+                    "PlatScan stakingDetails endpoint was not found".to_owned(),
+                );
+            }
             StatusCode::NOT_IMPLEMENTED | StatusCode::METHOD_NOT_ALLOWED => {
                 return ValidatorProviderResult::Unsupported(
                     "PlatScan stakingDetails endpoint is unsupported".to_owned(),
@@ -485,6 +492,151 @@ pub fn is_platscan_node_id(value: &str) -> bool {
     value.len() == 130
         && value.starts_with("0x")
         && value[2..].bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Extract the full 64-byte P2P public key from an observed enode URI as the
+/// canonical `0x` + 128 lowercase hex lookup identifier (#173).
+///
+/// The P2P public key is the chain identity, not a PlatPulse Node UUID, a
+/// shortened fingerprint, a display name, or an IP address. A malformed or
+/// shortened key is never truncated into a lookup candidate: it stays an
+/// explicit unidentified reason.
+pub fn observed_p2p_public_key(enode: &str) -> Result<String, String> {
+    let rest = enode
+        .strip_prefix("enode://")
+        .ok_or_else(|| "observed enode must start with enode://".to_owned())?;
+    let key = rest.split('@').next().unwrap_or_default();
+    let digits = key.strip_prefix("0x").unwrap_or(key);
+    if digits.len() != 128 || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("observed enode public key must be 64 bytes of hexadecimal".to_owned());
+    }
+    Ok(format!("0x{}", digits.to_ascii_lowercase()))
+}
+
+/// Current Validator Status of an automatically identified Node identity: the
+/// currently valid staking identity, not current consensus selection or Node
+/// Health (#173, main design §15.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CurrentValidatorStatus {
+    Validator,
+    NotValidator,
+    Unknown,
+}
+
+impl CurrentValidatorStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CurrentValidatorStatus::Validator => "validator",
+            CurrentValidatorStatus::NotValidator => "not_validator",
+            CurrentValidatorStatus::Unknown => "unknown",
+        }
+    }
+}
+
+/// The special state shown while a staking identity is confirmed valid but is
+/// not normally participating: a low-production lock, or a withdrawal that has
+/// not completed. Neither is a negative verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CurrentValidatorQualifier {
+    Locked,
+    Exiting,
+}
+
+impl CurrentValidatorQualifier {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CurrentValidatorQualifier::Locked => "locked",
+            CurrentValidatorQualifier::Exiting => "exiting",
+        }
+    }
+}
+
+/// Server-owned Current Validator Status plus its currency. `state` is
+/// `current`, `stale`, or `unknown`; a retained last-good value after a
+/// failed refresh is never presented as fresh.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CurrentValidatorStatusView {
+    pub status: CurrentValidatorStatus,
+    pub state: &'static str,
+    pub qualifier: Option<CurrentValidatorQualifier>,
+}
+
+fn classify_activity(
+    activity: Option<&str>,
+) -> (CurrentValidatorStatus, Option<CurrentValidatorQualifier>) {
+    match activity {
+        Some("active") | Some("producing") => (CurrentValidatorStatus::Validator, None),
+        Some("exiting") => (
+            CurrentValidatorStatus::Validator,
+            Some(CurrentValidatorQualifier::Exiting),
+        ),
+        Some("locked") => (
+            CurrentValidatorStatus::Validator,
+            Some(CurrentValidatorQualifier::Locked),
+        ),
+        Some("exited") => (CurrentValidatorStatus::NotValidator, None),
+        // The investigated source maps 6 to "candidate in a consensus round",
+        // but CONTEXT.md, the metrics design and ADR 0005 define verification
+        // in progress as Unknown; the implementation follows the domain
+        // definition (#168).
+        Some("verifying") => (CurrentValidatorStatus::Unknown, None),
+        _ => (CurrentValidatorStatus::Unknown, None),
+    }
+}
+
+/// Map the canonical last-good outcome and Activity to Current Validator
+/// Status using only the evidence predicates established in #168. HTTP 404 is
+/// not a negative: the deployment answers absence with a 200 empty form, so a
+/// 404 can only be a routing or deployment anomaly and stays Unknown.
+pub fn current_validator_status(
+    outcome: Option<&str>,
+    activity: Option<&str>,
+    freshness: &str,
+) -> CurrentValidatorStatusView {
+    let unknown = || CurrentValidatorStatusView {
+        status: CurrentValidatorStatus::Unknown,
+        state: "unknown",
+        qualifier: None,
+    };
+    match outcome.unwrap_or("") {
+        "success" => {
+            let (status, qualifier) = classify_activity(activity);
+            if status == CurrentValidatorStatus::Unknown {
+                return unknown();
+            }
+            let state = match freshness {
+                "fresh" => "current",
+                "stale" => "stale",
+                _ => "unknown",
+            };
+            CurrentValidatorStatusView {
+                status,
+                state,
+                qualifier,
+            }
+        }
+        // Strictly validated 200/code 0/empty nodeId/status 0: authoritative
+        // absence of current staking identity.
+        "empty" => CurrentValidatorStatusView {
+            status: CurrentValidatorStatus::NotValidator,
+            state: "current",
+            qualifier: None,
+        },
+        // A failed refresh with a retained last-good Activity is stale; the
+        // verdict is retained but never presented as fresh.
+        "error" => {
+            let (status, qualifier) = classify_activity(activity);
+            if status == CurrentValidatorStatus::Unknown {
+                return unknown();
+            }
+            CurrentValidatorStatusView {
+                status,
+                state: "stale",
+                qualifier,
+            }
+        }
+        _ => unknown(),
+    }
 }
 
 fn platscan_status_activity(status: i64) -> Option<ValidatorActivity> {
@@ -1084,7 +1236,8 @@ pub struct NodeValidatorLinkRecord {
     pub link_id: String,
     pub node_id: String,
     pub validator_id: String,
-    pub role: String,
+    /// Legacy manual role. Automatic Links never carry a role (#173).
+    pub role: Option<String>,
     pub valid_from: String,
     pub valid_until: Option<String>,
     pub created_at: String,
@@ -1424,7 +1577,7 @@ pub async fn create_link(
             link_id,
             node_id: node_id.to_owned(),
             validator_id: validator_id.to_owned(),
-            role: role.to_owned(),
+            role: Some(role.to_owned()),
             valid_from: valid_from.to_owned(),
             valid_until,
 
@@ -1704,7 +1857,7 @@ pub struct ValidatorCounterHistoryRecord {
 pub struct ValidatorLinkContextRecord {
     pub link_id: String,
     pub node_id: String,
-    pub role: String,
+    pub role: Option<String>,
     pub valid_from: String,
     pub valid_until: Option<String>,
 }
@@ -2117,6 +2270,222 @@ struct RankingCandidate {
     observed_at: Option<String>,
     provider_timestamp: Option<String>,
     observation_key: Option<String>,
+}
+
+/// One Active Node's automatic-identity inputs: the observed Network Identity
+/// and enode plus the registered Network Identity they must match. The full P2P
+/// public key is only ever derived from the observed enode (#173).
+#[derive(Debug, FromRow)]
+struct IdentityCandidateRow {
+    node_id: String,
+    network_key: String,
+    network_genesis_hash: Option<String>,
+    network_chain_id: Option<i64>,
+    network_p2p_network_id: Option<i64>,
+    network_address_hrp: Option<String>,
+    enode: Option<String>,
+    registered_genesis_hash: String,
+    registered_chain_id: i64,
+    registered_p2p_network_id: i64,
+    registered_address_hrp: String,
+}
+
+/// Result of one automatic-identity discovery pass.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct IdentityDiscoverySummary {
+    /// Active Nodes examined.
+    pub considered: usize,
+    /// Nodes with a matching registered Network Identity and a full key.
+    pub identified: usize,
+    /// Automatic Link intervals opened by this pass.
+    pub newly_linked: usize,
+    /// Open automatic Link intervals closed because the chain key changed.
+    pub closed_intervals: usize,
+    /// Nodes left unidentified, each with a persisted reason.
+    pub unidentified: usize,
+}
+
+/// Identify Node Validator Links automatically from each Active Node's
+/// validated Network and observed full P2P public key (#173, main design
+/// §15.4, ADR 0005).
+///
+/// The Server is the only writer of the automatic model. A Node whose observed
+/// Network Identity is missing or does not match its registered Network, or
+/// whose enode is absent or malformed, is recorded with an explicit reason and
+/// is never guessed into a correspondence. A changed chain key closes the
+/// previous interval before the new one opens; the two Validators' cumulative
+/// values are never spliced. Legacy manual Links are never used as a fallback:
+/// their rows are left for the one-time migration (#174).
+pub async fn discover_automatic_links(
+    db: &ServerDatabase,
+) -> Result<IdentityDiscoverySummary, ValidatorError> {
+    let now = format_rfc3339(now_utc());
+    let mut tx = db.pool().begin().await?;
+    let rows = sqlx::query_as::<_, IdentityCandidateRow>(
+        "SELECT n.node_id, n.network_key, c.network_genesis_hash, c.network_chain_id, c.network_p2p_network_id, c.network_address_hrp, c.enode, r.genesis_hash AS registered_genesis_hash, r.chain_id AS registered_chain_id, r.p2p_network_id AS registered_p2p_network_id, r.address_hrp AS registered_address_hrp FROM nodes n JOIN networks r ON r.network_key = n.network_key LEFT JOIN current_node_chain_observations c ON c.node_id = n.node_id WHERE n.lifecycle = 'active' ORDER BY n.node_id",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+
+    let mut summary = IdentityDiscoverySummary {
+        considered: rows.len(),
+        ..IdentityDiscoverySummary::default()
+    };
+    for row in rows {
+        let identity_observed = row.network_genesis_hash.is_some()
+            && row.network_chain_id.is_some()
+            && row.network_p2p_network_id.is_some();
+        let identity_matches = row.network_genesis_hash.as_deref()
+            == Some(row.registered_genesis_hash.as_str())
+            && row.network_chain_id == Some(row.registered_chain_id)
+            && row.network_p2p_network_id == Some(row.registered_p2p_network_id)
+            // The address HRP is optional Network Identity evidence: an absent
+            // value is not a mismatch, but a present value that disagrees is.
+            && row
+                .network_address_hrp
+                .as_deref()
+                .is_none_or(|hrp| hrp == row.registered_address_hrp.as_str());
+        let (state, observed_key) = if !identity_observed {
+            ("network_identity_missing", None)
+        } else if !identity_matches {
+            ("network_identity_mismatch", None)
+        } else {
+            match row.enode.as_deref() {
+                None => ("missing_public_key", None),
+                Some(enode) => match observed_p2p_public_key(enode) {
+                    Ok(key) => ("identified", Some(key)),
+                    Err(_) => ("invalid_public_key", None),
+                },
+            }
+        };
+
+        if state == "identified" {
+            let key = observed_key
+                .as_deref()
+                .expect("an identified Node always has an observed key");
+            sqlx::query("INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES (?, ?, ?, NULL, ?, ?) ON CONFLICT (network_key, validator_node_id) DO NOTHING")
+                .bind(uuid::Uuid::new_v4().to_string())
+                .bind(&row.network_key)
+                .bind(key)
+                .bind(&now)
+                .bind(&now)
+                .execute(&mut *tx)
+                .await?;
+            let validator_id: String = sqlx::query_scalar(
+                "SELECT validator_id FROM validators WHERE network_key = ? AND validator_node_id = ?",
+            )
+            .bind(&row.network_key)
+            .bind(key)
+            .fetch_one(&mut *tx)
+            .await?;
+
+            let open: Option<(String, String, String)> = sqlx::query_as(
+                "SELECT link_id, validator_id, valid_from FROM node_validator_links WHERE node_id = ? AND origin = 'automatic' AND (valid_until IS NULL OR valid_until > ?) ORDER BY valid_from DESC, link_id DESC LIMIT 1",
+            )
+            .bind(&row.node_id)
+            .bind(&now)
+            .fetch_optional(&mut *tx)
+            .await?;
+
+            match open {
+                Some((_, current, _)) if current == validator_id => {}
+                Some((link_id, _, valid_from)) => {
+                    // Close the old interval strictly before opening the new
+                    // one, so the overlap trigger and the CHECK hold even when
+                    // both happen inside the same second.
+                    let close_at = close_interval_boundary(&now, &valid_from)?;
+                    sqlx::query(
+                        "UPDATE node_validator_links SET valid_until = ?, updated_at = ? WHERE link_id = ?",
+                    )
+                    .bind(&close_at)
+                    .bind(&now)
+                    .bind(&link_id)
+                    .execute(&mut *tx)
+                    .await?;
+                    summary.closed_intervals += 1;
+                    insert_automatic_link(&mut tx, &row.node_id, &validator_id, &close_at, &now)
+                        .await?;
+                    summary.newly_linked += 1;
+                }
+                None => {
+                    insert_automatic_link(&mut tx, &row.node_id, &validator_id, &now, &now).await?;
+                    summary.newly_linked += 1;
+                }
+            }
+            summary.identified += 1;
+        } else {
+            // Contradictory evidence ends the previous association interval so
+            // Public never keeps projecting a Validator the Node's observed
+            // identity no longer supports. Absence of evidence (a missing
+            // observation or key) is not contradiction: the last established
+            // association is retained and marked stale by Provider freshness.
+            if matches!(state, "network_identity_mismatch" | "invalid_public_key") {
+                let open: Option<(String, String)> = sqlx::query_as(
+                    "SELECT link_id, valid_from FROM node_validator_links WHERE node_id = ? AND origin = 'automatic' AND (valid_until IS NULL OR valid_until > ?) ORDER BY valid_from DESC, link_id DESC LIMIT 1",
+                )
+                .bind(&row.node_id)
+                .bind(&now)
+                .fetch_optional(&mut *tx)
+                .await?;
+                if let Some((link_id, valid_from)) = open {
+                    let close_at = close_interval_boundary(&now, &valid_from)?;
+                    sqlx::query(
+                        "UPDATE node_validator_links SET valid_until = ?, updated_at = ? WHERE link_id = ?",
+                    )
+                    .bind(&close_at)
+                    .bind(&now)
+                    .bind(&link_id)
+                    .execute(&mut *tx)
+                    .await?;
+                    summary.closed_intervals += 1;
+                }
+            }
+            summary.unidentified += 1;
+        }
+
+        sqlx::query("INSERT INTO node_validator_identity_status (node_id, state, observed_node_key, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET state = excluded.state, observed_node_key = excluded.observed_node_key, updated_at = excluded.updated_at")
+            .bind(&row.node_id)
+            .bind(state)
+            .bind(observed_key.as_deref())
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(summary)
+}
+
+/// The boundary at which an old interval closes. It must be strictly after the
+/// old interval's valid_from; a same-second key change advances by one second
+/// instead of writing an impossible interval.
+fn close_interval_boundary(now: &str, valid_from: &str) -> Result<String, ValidatorError> {
+    let now = parse_timestamp(now)?;
+    let from = parse_timestamp(valid_from)?;
+    let boundary = if now > from {
+        now
+    } else {
+        from + time::Duration::seconds(1)
+    };
+    Ok(format_rfc3339(boundary))
+}
+
+async fn insert_automatic_link(
+    tx: &mut Transaction<'_, Sqlite>,
+    node_id: &str,
+    validator_id: &str,
+    valid_from: &str,
+    updated_at: &str,
+) -> Result<(), ValidatorError> {
+    sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, origin, valid_from, valid_until, created_at, updated_at) VALUES (?, ?, ?, NULL, 'automatic', ?, NULL, ?, ?)")
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(node_id)
+        .bind(validator_id)
+        .bind(valid_from)
+        .bind(updated_at)
+        .bind(updated_at)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
 }
 
 fn ranking_lookup(result: &RankingProviderResult, validator_node_id: &str) -> NetworkRankingLookup {
@@ -2587,7 +2956,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(second.0.role, "observer");
+        assert_eq!(second.0.role.as_deref(), Some("observer"));
     }
 
     #[tokio::test]
@@ -2624,7 +2993,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(updated.role, "primary");
+        assert_eq!(updated.role.as_deref(), Some("primary"));
         assert_eq!(updated.valid_from, "2025-01-01T12:00:00Z");
         assert_eq!(
             list_links(&db, Some("node-1"), None, None)
@@ -2838,7 +3207,7 @@ mod tests {
         let (validator, _) = create_validator(&db, "platon-mainnet", NODE_ID, None, &owner_id)
             .await
             .unwrap();
-        create_link(
+        let (link, _) = create_link(
             &db,
             "node-1",
             &validator.validator_id,
@@ -2849,6 +3218,13 @@ mod tests {
         )
         .await
         .unwrap();
+        // The metrics acceptance path now runs on the automatic model: the
+        // legacy manual Link would never be a Public fallback (#173).
+        sqlx::query("UPDATE node_validator_links SET origin = 'automatic' WHERE link_id = ?")
+            .bind(&link.link_id)
+            .execute(db.pool())
+            .await
+            .unwrap();
         let pepper_path = dir.path().join("pepper");
         crate::secrets::create_pepper_file(&pepper_path).unwrap();
         let auth = crate::auth::AuthConfig::development(
@@ -2886,7 +3262,8 @@ mod tests {
         let network = public_network(&app_state).await;
         let insight = &network["nodes"][0]["validator"];
         assert_eq!(insight["validatorNodeId"], NODE_ID);
-        assert_eq!(insight["linkRole"], "observer");
+        assert_eq!(insight["currentValidatorStatus"], "validator");
+        assert_eq!(insight["currentValidatorStatusState"], "current");
         assert_eq!(insight["source"], "platscan");
         assert_eq!(insight["blockCount"], 1_016_869);
         assert_eq!(insight["expectedBlockCount"], 1_018_630);
@@ -3378,7 +3755,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn platscan_authoritative_empty_and_not_found_remain_distinct() {
+    async fn platscan_authoritative_empty_and_http_404_stays_non_negative() {
         let node_id = provider_node_id();
         let responses = vec![
             (
@@ -3400,10 +3777,12 @@ mod tests {
             provider.fetch("platon-mainnet", &node_id).await,
             ValidatorProviderResult::AuthoritativeEmpty
         );
-        assert_eq!(
+        // A 404 is a routing/deployment anomaly, not an absence: it degrades
+        // to an Error so Current Validator Status stays Unknown (#168).
+        assert!(matches!(
             provider.fetch("platon-mainnet", &node_id).await,
-            ValidatorProviderResult::NotFound
-        );
+            ValidatorProviderResult::Error(_)
+        ));
         handle.abort();
     }
 
@@ -4068,7 +4447,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(replacement.role, "standby");
+        assert_eq!(replacement.role.as_deref(), Some("standby"));
         assert_eq!(
             list_links(&db, Some("node-1"), None, None)
                 .await
@@ -5431,5 +5810,420 @@ mod tests {
         assert_eq!(insight.rank, None);
         assert_eq!(insight.rank_outcome, None);
         assert_eq!(insight.block_count, Some(100));
+    }
+
+    fn full_node_key(byte: u8) -> String {
+        format!("0x{}", format!("{byte:02x}").repeat(64))
+    }
+
+    fn enode_uri(key: &str) -> String {
+        format!("enode://{}@10.0.0.1:30303", &key[2..])
+    }
+
+    const REGISTERED_GENESIS: &str =
+        "0x0000000000000000000000000000000000000000000000000000000000000001";
+
+    async fn set_chain_observation(
+        db: &ServerDatabase,
+        node_id: &str,
+        genesis: &str,
+        chain_id: i64,
+        p2p: i64,
+        hrp: &str,
+        enode: Option<&str>,
+    ) {
+        sqlx::query("INSERT INTO current_node_chain_observations (node_id, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, enode, updated_at) VALUES (?, ?, ?, ?, ?, ?, '2026-01-01T00:00:00Z') ON CONFLICT(node_id) DO UPDATE SET network_genesis_hash=excluded.network_genesis_hash, network_chain_id=excluded.network_chain_id, network_p2p_network_id=excluded.network_p2p_network_id, network_address_hrp=excluded.network_address_hrp, enode=excluded.enode, updated_at=excluded.updated_at")
+            .bind(node_id)
+            .bind(genesis)
+            .bind(chain_id)
+            .bind(p2p)
+            .bind(hrp)
+            .bind(enode)
+            .execute(db.pool())
+            .await
+            .unwrap();
+    }
+
+    async fn identity_state(db: &ServerDatabase, node_id: &str) -> String {
+        sqlx::query_scalar("SELECT state FROM node_validator_identity_status WHERE node_id = ?")
+            .bind(node_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap()
+    }
+
+    #[test]
+    fn observed_p2p_public_key_requires_the_full_key() {
+        let key = full_node_key(0xab);
+        assert_eq!(observed_p2p_public_key(&enode_uri(&key)).unwrap(), key);
+        // A key carried without a host is still the full observed key.
+        assert_eq!(
+            observed_p2p_public_key(&format!("enode://{}", &key[2..])).unwrap(),
+            key
+        );
+        // Uppercase hex normalizes to the canonical lowercase form.
+        assert_eq!(
+            observed_p2p_public_key(&format!("enode://{}@h", "AB".repeat(64))).unwrap(),
+            key
+        );
+        // A shortened key, a wrong scheme, or a missing key is never truncated
+        // into a lookup candidate.
+        assert!(observed_p2p_public_key("enode://abcd@h").is_err());
+        assert!(observed_p2p_public_key(&format!("http://{}@h", &key[2..])).is_err());
+        assert!(observed_p2p_public_key("enode://@h").is_err());
+    }
+
+    #[test]
+    fn current_validator_status_follows_the_evidence_predicates() {
+        let view = |outcome: Option<&str>, activity: Option<&str>| {
+            current_validator_status(outcome, activity, "fresh")
+        };
+        assert_eq!(
+            view(Some("success"), Some("active")).status,
+            CurrentValidatorStatus::Validator
+        );
+        assert_eq!(view(Some("success"), Some("producing")).state, "current");
+        assert_eq!(
+            view(Some("success"), Some("exiting")).qualifier,
+            Some(CurrentValidatorQualifier::Exiting)
+        );
+        assert_eq!(
+            view(Some("success"), Some("locked")).qualifier,
+            Some(CurrentValidatorQualifier::Locked)
+        );
+        assert_eq!(
+            view(Some("success"), Some("exited")).status,
+            CurrentValidatorStatus::NotValidator
+        );
+        // Verifying stays Unknown per CONTEXT.md / ADR 0005 (#168).
+        assert_eq!(
+            view(Some("success"), Some("verifying")).status,
+            CurrentValidatorStatus::Unknown
+        );
+        // A success without an Activity, an unrecognized status, or a status 0
+        // with a non-empty identifier cannot be fabricated into a negative.
+        assert_eq!(
+            view(Some("success"), None).status,
+            CurrentValidatorStatus::Unknown
+        );
+        // Authoritative absence is negative; HTTP 404 is not.
+        assert_eq!(
+            view(Some("empty"), None).status,
+            CurrentValidatorStatus::NotValidator
+        );
+        assert_eq!(
+            view(Some("not_found"), None).status,
+            CurrentValidatorStatus::Unknown
+        );
+        // A failed refresh retains the last-good verdict but marks it stale.
+        let stale = current_validator_status(Some("error"), Some("active"), "stale");
+        assert_eq!(stale.status, CurrentValidatorStatus::Validator);
+        assert_eq!(stale.state, "stale");
+        assert_eq!(
+            current_validator_status(Some("error"), None, "unknown").status,
+            CurrentValidatorStatus::Unknown
+        );
+        // Unconfigured or unsupported coverage never establishes a verdict,
+        // even with a retained last-good Activity.
+        assert_eq!(
+            current_validator_status(Some("not_configured"), None, "unknown").status,
+            CurrentValidatorStatus::Unknown
+        );
+        assert_eq!(
+            current_validator_status(Some("unsupported"), Some("active"), "unknown").status,
+            CurrentValidatorStatus::Unknown
+        );
+    }
+
+    #[tokio::test]
+    async fn discovery_identifies_the_full_key_and_is_idempotent() {
+        let (_dir, db) = test_db().await;
+        let key = full_node_key(0x11);
+        set_chain_observation(
+            &db,
+            "node-1",
+            REGISTERED_GENESIS,
+            1,
+            1,
+            "lat",
+            Some(&enode_uri(&key)),
+        )
+        .await;
+        let summary = discover_automatic_links(&db).await.unwrap();
+        assert_eq!(summary.identified, 1);
+        assert_eq!(summary.newly_linked, 1);
+        assert_eq!(summary.unidentified, 0);
+        assert_eq!(identity_state(&db, "node-1").await, "identified");
+        let validator_node_id: String = sqlx::query_scalar(
+            "SELECT validator_node_id FROM validators WHERE network_key = 'platon-mainnet'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(validator_node_id, key);
+        let (origin, valid_until): (String, Option<String>) = sqlx::query_as(
+            "SELECT origin, valid_until FROM node_validator_links WHERE node_id = 'node-1'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(origin, "automatic");
+        assert_eq!(valid_until, None);
+
+        // A second pass over the same key must not open a duplicate interval.
+        let summary = discover_automatic_links(&db).await.unwrap();
+        assert_eq!(summary.newly_linked, 0);
+        let links: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM node_validator_links WHERE node_id = 'node-1'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(links, 1);
+    }
+
+    #[tokio::test]
+    async fn discovery_records_a_reason_instead_of_guessing() {
+        let (_dir, db) = test_db().await;
+        let key = full_node_key(0x31);
+
+        // No observation at all.
+        discover_automatic_links(&db).await.unwrap();
+        assert_eq!(
+            identity_state(&db, "node-1").await,
+            "network_identity_missing"
+        );
+
+        // Matching identity but no observed enode.
+        set_chain_observation(&db, "node-1", REGISTERED_GENESIS, 1, 1, "lat", None).await;
+        discover_automatic_links(&db).await.unwrap();
+        assert_eq!(identity_state(&db, "node-1").await, "missing_public_key");
+
+        // A malformed enode is not truncated into a lookup candidate.
+        set_chain_observation(
+            &db,
+            "node-1",
+            REGISTERED_GENESIS,
+            1,
+            1,
+            "lat",
+            Some("enode://abcd@host"),
+        )
+        .await;
+        discover_automatic_links(&db).await.unwrap();
+        assert_eq!(identity_state(&db, "node-1").await, "invalid_public_key");
+
+        // An observed Network Identity that does not match the registered
+        // Network is never searched against another Network.
+        set_chain_observation(
+            &db,
+            "node-1",
+            REGISTERED_GENESIS,
+            999,
+            1,
+            "lat",
+            Some(&enode_uri(&key)),
+        )
+        .await;
+        let summary = discover_automatic_links(&db).await.unwrap();
+        assert_eq!(summary.unidentified, 1);
+        assert_eq!(
+            identity_state(&db, "node-1").await,
+            "network_identity_mismatch"
+        );
+        let validators: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM validators")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(validators, 0);
+        let links: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM node_validator_links")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(links, 0);
+
+        // A legacy manual Link is never a fallback for a missing observation.
+        sqlx::query("INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES ('legacy', 'platon-mainnet', '0xlegacy', NULL, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+            .execute(db.pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, origin, valid_from, created_at, updated_at) VALUES ('legacy-link', 'node-1', 'legacy', 'primary', 'manual', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+            .execute(db.pool())
+            .await
+            .unwrap();
+        discover_automatic_links(&db).await.unwrap();
+        let automatic: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM node_validator_links WHERE node_id = 'node-1' AND origin = 'automatic'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            automatic, 0,
+            "a manual link is never the automatic fallback"
+        );
+    }
+
+    #[tokio::test]
+    async fn discovery_closes_the_old_interval_on_a_chain_key_change() {
+        let (_dir, db) = test_db().await;
+        let key_a = full_node_key(0x21);
+        let key_b = full_node_key(0x22);
+        set_chain_observation(
+            &db,
+            "node-1",
+            REGISTERED_GENESIS,
+            1,
+            1,
+            "lat",
+            Some(&enode_uri(&key_a)),
+        )
+        .await;
+        discover_automatic_links(&db).await.unwrap();
+
+        // The chain key changes: the old association interval ends and the new
+        // identity is identified without merging the two Validators.
+        set_chain_observation(
+            &db,
+            "node-1",
+            REGISTERED_GENESIS,
+            1,
+            1,
+            "lat",
+            Some(&enode_uri(&key_b)),
+        )
+        .await;
+        let summary = discover_automatic_links(&db).await.unwrap();
+        assert_eq!(summary.closed_intervals, 1);
+        assert_eq!(summary.newly_linked, 1);
+
+        let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT v.validator_node_id, l.valid_until FROM node_validator_links l JOIN validators v ON v.validator_id = l.validator_id WHERE l.node_id = 'node-1' AND l.origin = 'automatic' ORDER BY l.valid_from, l.link_id",
+        )
+        .fetch_all(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, key_a);
+        assert!(rows[0].1.is_some(), "the old interval must be closed");
+        assert_eq!(rows[1].0, key_b);
+        assert_eq!(rows[1].1, None);
+        let validators: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM validators WHERE network_key = 'platon-mainnet'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(validators, 2, "the two chain identities stay independent");
+    }
+
+    #[tokio::test]
+    async fn automatic_and_manual_overlap_triggers_are_partitioned_by_origin() {
+        let (_dir, db) = test_db().await;
+        let owner_id: String =
+            sqlx::query_scalar("SELECT user_id FROM users WHERE username = 'owner'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        let (validator, _) = create_validator(&db, "platon-mainnet", "0xmanual", None, &owner_id)
+            .await
+            .unwrap();
+        create_link(
+            &db,
+            "node-1",
+            &validator.validator_id,
+            "primary",
+            "2026-01-01T00:00:00Z",
+            None,
+            &owner_id,
+        )
+        .await
+        .unwrap();
+        // A legacy manual interval must not block automatic discovery, and the
+        // automatic interval must not collide with it.
+        let key = full_node_key(0x41);
+        set_chain_observation(
+            &db,
+            "node-1",
+            REGISTERED_GENESIS,
+            1,
+            1,
+            "lat",
+            Some(&enode_uri(&key)),
+        )
+        .await;
+        let summary = discover_automatic_links(&db).await.unwrap();
+        assert_eq!(summary.newly_linked, 1);
+        let origins: Vec<String> = sqlx::query_scalar(
+            "SELECT origin FROM node_validator_links WHERE node_id = 'node-1' ORDER BY origin",
+        )
+        .fetch_all(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(origins, vec!["automatic".to_owned(), "manual".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn discovery_ends_the_interval_on_contradiction_but_keeps_last_good_on_absence() {
+        let (_dir, db) = test_db().await;
+        let key = full_node_key(0x51);
+        set_chain_observation(
+            &db,
+            "node-1",
+            REGISTERED_GENESIS,
+            1,
+            1,
+            "lat",
+            Some(&enode_uri(&key)),
+        )
+        .await;
+        discover_automatic_links(&db).await.unwrap();
+        let open = || {
+            let pool = db.pool().clone();
+            async move {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM node_validator_links WHERE node_id = 'node-1' AND origin = 'automatic' AND valid_until IS NULL",
+                )
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+            }
+        };
+        assert_eq!(open().await, 1);
+
+        // A transient loss of key evidence retains the last established
+        // association; absence is not contradiction.
+        set_chain_observation(&db, "node-1", REGISTERED_GENESIS, 1, 1, "lat", None).await;
+        discover_automatic_links(&db).await.unwrap();
+        assert_eq!(
+            open().await,
+            1,
+            "missing evidence must not drop a last-good association"
+        );
+        assert_eq!(identity_state(&db, "node-1").await, "missing_public_key");
+
+        // An observed Network Identity that contradicts the registered Network
+        // ends the old interval instead of projecting it as a fallback.
+        set_chain_observation(
+            &db,
+            "node-1",
+            REGISTERED_GENESIS,
+            999,
+            1,
+            "lat",
+            Some(&enode_uri(&key)),
+        )
+        .await;
+        let summary = discover_automatic_links(&db).await.unwrap();
+        assert_eq!(summary.closed_intervals, 1);
+        assert_eq!(
+            open().await,
+            0,
+            "contradictory evidence must end the old association"
+        );
+        assert_eq!(
+            identity_state(&db, "node-1").await,
+            "network_identity_mismatch"
+        );
     }
 }

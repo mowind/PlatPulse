@@ -684,7 +684,6 @@ pub struct PublicValidatorInsight {
     pub validator_node_id: String,
     pub display_name: Option<String>,
     pub node_id: Option<String>,
-    pub link_role: Option<String>,
     pub state: String,
     pub freshness: String,
     pub source: Option<String>,
@@ -766,6 +765,20 @@ pub struct PublicValidatorInsight {
     /// Provider failure with a last-good Activity is always `stale`, even
     /// when the last-good timestamp is still within the freshness window.
     pub activity_state: String,
+    /// Server-owned Current Validator Status of the automatically identified
+    /// chain identity (#173): `validator`, `not_validator`, or `unknown`.
+    /// This is currently valid staking identity, not current consensus
+    /// selection or Node Health. `not_validator` requires authoritative
+    /// evidence (completed exit or a 200 empty identifier); HTTP 404,
+    /// transport failures and unsupported coverage stay `unknown`.
+    pub current_validator_status: String,
+    /// `current`, `stale`, or `unknown` currency of the Current Validator
+    /// Status. A retained last-good verdict after a failed refresh is `stale`.
+    pub current_validator_status_state: String,
+    /// `locked` or `exiting` while a confirmed-valid identity is not normally
+    /// participating; null for an ordinary candidate/active/producing identity
+    /// or for any unknown/negative status.
+    pub current_validator_status_qualifier: Option<String>,
 }
 
 /// Per-Network cumulative total for one metric, deduplicated by Validator.
@@ -835,7 +848,6 @@ struct PublicValidatorRow {
     validator_node_id: String,
     display_name: Option<String>,
     node_id: Option<String>,
-    link_role: Option<String>,
     source: Option<String>,
     outcome: Option<String>,
     provider_timestamp: Option<String>,
@@ -870,7 +882,11 @@ fn public_validator_activity(
     freshness: &str,
 ) -> (String, String) {
     match outcome {
-        "empty" | "not_found" => ("observing".to_owned(), "current".to_owned()),
+        "empty" => ("observing".to_owned(), "current".to_owned()),
+        // The deployment answers an absent staking identity with a 200 empty
+        // object; a 404 can only come from routing or a deployment anomaly, so
+        // it is never presented as an observing Validator (#168).
+        "not_found" => ("unknown".to_owned(), "unknown".to_owned()),
         "success" => match activity {
             Some(value) => (
                 value.to_owned(),
@@ -890,6 +906,24 @@ fn public_validator_activity(
         "unsupported" | "not_configured" => ("unknown".to_owned(), "unknown".to_owned()),
         _ => ("unknown".to_owned(), "unknown".to_owned()),
     }
+}
+
+/// Project the Server-owned Current Validator Status for an automatically
+/// identified identity (#173). The verdict and its currency come from the
+/// classification predicates established in #168; the Public API never
+/// re-derives validity from a display name, rank, consensus membership, or a
+/// transport error.
+fn public_current_validator_status(
+    outcome: &str,
+    activity: Option<&str>,
+    freshness: &str,
+) -> (String, String, Option<String>) {
+    let view = validator::current_validator_status(Some(outcome), activity, freshness);
+    (
+        view.status.as_str().to_owned(),
+        view.state.to_owned(),
+        view.qualifier.map(|value| value.as_str().to_owned()),
+    )
 }
 
 /// Map the linked Validator's independent Network ranking state. Only a
@@ -923,10 +957,8 @@ async fn public_validator_insights(
 ) -> Result<Vec<PublicValidatorInsight>, sqlx::Error> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     let rows = sqlx::query_as::<_, PublicValidatorRow>(
-        "SELECT v.validator_id, v.validator_node_id, v.display_name, (SELECT n2.node_id FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1) AS node_id, (SELECT l2.role FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1) AS link_role, i.source, i.outcome, i.provider_timestamp, i.activity, i.last_good_received_at, i.rank, i.rank_outcome, i.rank_last_good_received_at, i.rank_cohort_size, i.stake_amount, i.reward_amount, i.reward_rate, i.delegation_reward_percentage, i.delegator_count, i.epoch, i.block_count, i.expected_block_count, i.gen_blocks_rate, i.counter_state FROM validators v LEFT JOIN current_validator_insights i ON i.validator_id = v.validator_id WHERE v.network_key = ? AND EXISTS (SELECT 1 FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = v.validator_id AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.lifecycle = 'active') ORDER BY v.validator_node_id, v.validator_id",
+        "SELECT v.validator_id, v.validator_node_id, v.display_name, (SELECT n2.node_id FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.origin = 'automatic' AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1) AS node_id, i.source, i.outcome, i.provider_timestamp, i.activity, i.last_good_received_at, i.rank, i.rank_outcome, i.rank_last_good_received_at, i.rank_cohort_size, i.stake_amount, i.reward_amount, i.reward_rate, i.delegation_reward_percentage, i.delegator_count, i.epoch, i.block_count, i.expected_block_count, i.gen_blocks_rate, i.counter_state FROM validators v LEFT JOIN current_validator_insights i ON i.validator_id = v.validator_id WHERE v.network_key = ? AND EXISTS (SELECT 1 FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = v.validator_id AND l.origin = 'automatic' AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.lifecycle = 'active') ORDER BY v.validator_node_id, v.validator_id",
     )
-    .bind(&now)
-    .bind(&now)
     .bind(&now)
     .bind(&now)
     .bind(network_key)
@@ -960,12 +992,16 @@ async fn public_validator_insights(
             );
             let (block_rate, block_rate_state) =
                 validator::cumulative_block_rate(row.block_count, row.expected_block_count);
+            let (
+                current_validator_status,
+                current_validator_status_state,
+                current_validator_status_qualifier,
+            ) = public_current_validator_status(&outcome, row.activity.as_deref(), freshness);
             PublicValidatorInsight {
                 validator_id: row.validator_id,
                 validator_node_id: row.validator_node_id,
                 display_name: row.display_name,
                 node_id: row.node_id,
-                link_role: row.link_role,
                 state: state.to_owned(),
                 freshness: freshness.to_owned(),
                 source: row.source.or_else(|| Some("disabled".to_owned())),
@@ -990,6 +1026,9 @@ async fn public_validator_insights(
                 counter_state: row.counter_state.unwrap_or_else(|| "normal".to_owned()),
                 activity,
                 activity_state,
+                current_validator_status,
+                current_validator_status_state,
+                current_validator_status_qualifier,
             }
         })
         .collect())
@@ -1002,7 +1041,6 @@ async fn public_validator_insights(
 struct EffectiveLinkRow {
     node_id: String,
     validator_id: String,
-    role: String,
 }
 
 async fn effective_public_links(
@@ -1012,7 +1050,7 @@ async fn effective_public_links(
 ) -> Result<Vec<EffectiveLinkRow>, sqlx::Error> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     let mut sql = String::from(
-        "SELECT l.node_id, l.validator_id, l.role FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.lifecycle = 'active'",
+        "SELECT l.node_id, l.validator_id FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.origin = 'automatic' AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.lifecycle = 'active'",
     );
     if node_id.is_some() {
         sql.push_str(" AND l.node_id = ?");
@@ -1033,9 +1071,11 @@ async fn effective_public_links(
     query.fetch_all(state.db().pool()).await
 }
 
-/// Attach each Node's linked Validator insight with the Node-specific role
-/// and effective Link identity. A Node without an effective Link keeps a
-/// `None` Validator and renders Unknown Activity (#100).
+/// Attach each Node's automatically identified Validator insight. Only an
+/// effective automatic Link is used; a legacy manual Link is never a fallback.
+/// A Node without an effective automatic Link keeps a `None` Validator and
+/// renders the explicit identity reason instead of a guessed association
+/// (#173).
 fn associate_node_validators(
     validators: &[PublicValidatorInsight],
     links: &[EffectiveLinkRow],
@@ -1053,7 +1093,6 @@ fn associate_node_validators(
         };
         let mut associated = validator.clone();
         associated.node_id = Some(link.node_id.clone());
-        associated.link_role = Some(link.role.clone());
         node.validator = Some(associated);
     }
 }
@@ -1626,6 +1665,16 @@ pub struct PublicNode {
     pub network_reference_confidence: String,
     pub resync_progress: Option<String>,
     pub validator: Option<PublicValidatorInsight>,
+    /// Server-owned automatic-identity state for this Node (#173):
+    /// `identified`, `missing_public_key`, `invalid_public_key`,
+    /// `network_identity_missing`, or `network_identity_mismatch`. `None`
+    /// means no automatic discovery pass has run yet. It is separate from
+    /// Current Validator Status: identity correspondence can be established
+    /// while the Provider still cannot confirm current staking validity.
+    pub validator_identity_state: Option<String>,
+    /// Sanitized explanation when this Node has no established automatic
+    /// correspondence. It never contains a raw diagnostic or a public key.
+    pub validator_identity_reason: Option<String>,
 }
 
 #[derive(Debug, Default, sqlx::FromRow)]
@@ -1665,6 +1714,7 @@ struct PublicNodeRow {
     peer_trusted_count: Option<i64>,
     peer_static_count: Option<i64>,
     peer_consensus_count: Option<i64>,
+    auto_validator_identity_state: Option<String>,
     consensus_observed_at: Option<String>,
     consensus_value_received_at: Option<String>,
     consensus_value_revision: Option<i64>,
@@ -2146,8 +2196,38 @@ fn public_node(row: PublicNodeRow) -> (String, PublicNode) {
             },
         ),
         validator: None,
+        validator_identity_reason: validator_identity_reason(
+            row.auto_validator_identity_state.as_deref(),
+        ),
+        validator_identity_state: row.auto_validator_identity_state,
     };
     (row.network_display_name, node)
+}
+
+/// Sanitized, non-sensitive explanation for a Node without an established
+/// automatic correspondence. An `identified` or not-yet-discovered Node has no
+/// reason.
+fn validator_identity_reason(state: Option<&str>) -> Option<String> {
+    match state {
+        Some("identified") | None => None,
+        Some("missing_public_key") => Some(
+            "No full P2P public key has been observed for this Node, so no Validator can be identified."
+                .to_owned(),
+        ),
+        Some("invalid_public_key") => Some(
+            "The observed P2P public key could not be validated, so no Validator was searched."
+                .to_owned(),
+        ),
+        Some("network_identity_missing") => Some(
+            "No Network Identity has been observed for this Node, so no Validator can be identified."
+                .to_owned(),
+        ),
+        Some("network_identity_mismatch") => Some(
+            "The observed Network Identity does not match this Node's registered Network; no cross-Network Validator was searched."
+                .to_owned(),
+        ),
+        Some(_) => Some("No Validator identity has been established for this Node.".to_owned()),
+    }
 }
 
 const PUBLIC_NODE_QUERY_BASE: &str = r#"SELECT n.node_id, n.display_name, n.network_key, r.display_name AS network_display_name,
@@ -2169,6 +2249,7 @@ const PUBLIC_NODE_QUERY_BASE: &str = r#"SELECT n.node_id, n.display_name, n.netw
        ps.state AS peer_state, ps.observed_at AS peer_observed_at,
        ps.value_received_at AS peer_value_received_at,
        ps.value_revision AS peer_value_revision,
+       vis.state AS auto_validator_identity_state,
        CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN COALESCE(pc.peer_count, 0) ELSE NULL END AS peer_count,
        CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN COALESCE(pc.inbound_count, 0) ELSE NULL END AS peer_inbound_count,
        CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN COALESCE(pc.outbound_count, 0) ELSE NULL END AS peer_outbound_count,
@@ -2199,6 +2280,7 @@ const PUBLIC_NODE_QUERY_BASE: &str = r#"SELECT n.node_id, n.display_name, n.netw
   LEFT JOIN component_status ds ON ds.node_id = n.node_id AND ds.component_key = 'datadirectorysizebytes'
   LEFT JOIN component_status dc ON dc.node_id = n.node_id AND dc.component_key = 'datadirectorycapacitybytes'
   LEFT JOIN component_status i ON i.node_id = n.node_id AND i.component_key = 'network_identity'
+  LEFT JOIN node_validator_identity_status vis ON vis.node_id = n.node_id
   LEFT JOIN component_status ps ON ps.node_id = n.node_id AND ps.component_key = 'peers'
   LEFT JOIN (
        SELECT node_id,
@@ -2345,7 +2427,6 @@ pub(crate) async fn public_node_detail(
                         {
                             let mut associated = validator;
                             associated.node_id = Some(link.node_id.clone());
-                            associated.link_role = Some(link.role.clone());
                             node.validator = Some(associated);
                         }
                     }
@@ -3895,7 +3976,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, valid_from, created_at, updated_at) VALUES ('link-public-test', 'node-public', 'validator-public-test', 'primary', '2026-01-01T00:00:00Z', ?, ?)")
+        sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, origin, valid_from, created_at, updated_at) VALUES ('link-public-test', 'node-public', 'validator-public-test', 'primary', 'automatic', '2026-01-01T00:00:00Z', ?, ?)")
             .bind(&now)
             .bind(&now)
             .execute(state.db().pool())
@@ -3917,10 +3998,12 @@ mod tests {
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let validator = &value[0]["validators"][0];
         assert_eq!(validator["nodeId"], "node-public");
-        assert_eq!(validator["linkRole"], "primary");
-        // A pre-activity success row is never fabricated into a canonical label.
+        // A pre-activity success row is never fabricated into a canonical label
+        // nor into a Current Validator Status verdict.
         assert_eq!(validator["activity"], "unknown");
         assert_eq!(validator["activityState"], "unknown");
+        assert_eq!(validator["currentValidatorStatus"], "unknown");
+        assert_eq!(validator["currentValidatorStatusState"], "unknown");
         // Cumulative Validator block count and its counter state reach the
         // Public projection unchanged, with a real last-success time.
         assert_eq!(validator["blockCount"], 5);
@@ -4141,7 +4224,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, valid_from, created_at, updated_at) VALUES ('link-validator-b', 'node-public', 'validator-b', 'primary', '2026-02-01T00:00:00Z', ?, ?)")
+        sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, origin, valid_from, created_at, updated_at) VALUES ('link-validator-b', 'node-public', 'validator-b', 'primary', 'automatic', '2026-02-01T00:00:00Z', ?, ?)")
             .bind(&now)
             .bind(&now)
             .execute(state.db().pool())
@@ -4479,7 +4562,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, valid_from, valid_until, created_at, updated_at) VALUES (?, ?, ?, 'primary', ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, origin, valid_from, valid_until, created_at, updated_at) VALUES (?, ?, ?, 'primary', 'automatic', ?, ?, ?, ?)")
             .bind(format!("link-{validator_id}"))
             .bind(node_id)
             .bind(validator_id)
@@ -4653,7 +4736,7 @@ mod tests {
         // The same Validator is explicitly linked to a second public Node:
         // Activity must be associated with every effective Link (#100).
         let now_link = crate::auth::format_rfc3339(crate::auth::now_utc());
-        sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, valid_from, valid_until, created_at, updated_at) VALUES ('link-validator-shared-b', 'node-shared-b', 'validator-shared', 'standby', '2026-01-01T00:00:00Z', NULL, ?, ?)")
+        sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, origin, valid_from, valid_until, created_at, updated_at) VALUES ('link-validator-shared-b', 'node-shared-b', 'validator-shared', 'standby', 'automatic', '2026-01-01T00:00:00Z', NULL, ?, ?)")
             .bind(&now_link)
             .bind(&now_link)
             .execute(state.db().pool())
@@ -4695,23 +4778,37 @@ mod tests {
             );
         }
 
-        // A current successful snapshot shows the canonical label as Current.
+        // A current successful snapshot shows the canonical label as Current
+        // and establishes a currently valid staking identity.
         let current = find_node("node-current");
         assert_eq!(current["validator"]["activity"], "producing");
         assert_eq!(current["validator"]["activityState"], "current");
+        assert_eq!(current["validator"]["currentValidatorStatus"], "validator");
+        assert_eq!(
+            current["validator"]["currentValidatorStatusState"],
+            "current"
+        );
+        assert!(current["validator"]["currentValidatorStatusQualifier"].is_null());
 
         // A successful snapshot outside the freshness window is Stale.
         let stale = find_node("node-stale");
         assert_eq!(stale["validator"]["activity"], "active");
         assert_eq!(stale["validator"]["activityState"], "stale");
 
-        // Authoritative empty/not-found outcomes are Observing, regardless
-        // of any retained last-good Activity.
+        // The strictly validated empty form is authoritative absence: Activity
+        // stays Observing and Current Validator Status is Not Validator.
         let observing = find_node("node-observing");
         assert_eq!(observing["validator"]["activity"], "observing");
         assert_eq!(observing["validator"]["activityState"], "current");
+        assert_eq!(
+            observing["validator"]["currentValidatorStatus"],
+            "not_validator"
+        );
+        // HTTP 404 is a routing/deployment anomaly, not proof of absence
+        // (#168): it never becomes a negative verdict.
         let not_found = find_node("node-not-found");
-        assert_eq!(not_found["validator"]["activity"], "observing");
+        assert_eq!(not_found["validator"]["activity"], "unknown");
+        assert_eq!(not_found["validator"]["currentValidatorStatus"], "unknown");
 
         // Provider Error with a last-good Activity keeps the label as Stale,
         // even when the last-good timestamp is still in the freshness window,
@@ -4719,6 +4816,15 @@ mod tests {
         let errored = find_node("node-error-good");
         assert_eq!(errored["validator"]["activity"], "locked");
         assert_eq!(errored["validator"]["activityState"], "stale");
+        // A retained locked last-good verdict stays a valid identity with the
+        // explicit locked qualifier, marked stale, and never changes Node
+        // health or Server readiness.
+        assert_eq!(errored["validator"]["currentValidatorStatus"], "validator");
+        assert_eq!(errored["validator"]["currentValidatorStatusState"], "stale");
+        assert_eq!(
+            errored["validator"]["currentValidatorStatusQualifier"],
+            "locked"
+        );
         assert_eq!(errored["health"], "healthy");
 
         // Provider Error without a last-good Activity is Unknown.
@@ -4736,9 +4842,9 @@ mod tests {
         assert_eq!(unsupported_none["validator"]["activity"], "unknown");
         assert_eq!(unsupported_none["validator"]["activityState"], "unknown");
 
-        // One Validator linked to two Nodes exposes Activity on both,
-        // each with its own effective Link role.
-        for (node_id, role) in [("node-shared-a", "primary"), ("node-shared-b", "standby")] {
+        // One Validator automatically linked to two Nodes exposes the same
+        // identity on both; no manual role is projected (#173).
+        for node_id in ["node-shared-a", "node-shared-b"] {
             let shared = find_node(node_id);
             assert_eq!(
                 shared["validator"]["validatorId"], "validator-shared",
@@ -4746,7 +4852,11 @@ mod tests {
             );
             assert_eq!(shared["validator"]["activity"], "producing", "{node_id}");
             assert_eq!(shared["validator"]["activityState"], "current", "{node_id}");
-            assert_eq!(shared["validator"]["linkRole"], role, "{node_id}");
+            assert_eq!(
+                shared["validator"]["currentValidatorStatus"], "validator",
+                "{node_id}"
+            );
+            assert!(shared["validator"].get("linkRole").is_none(), "{node_id}");
         }
 
         // Provider Activity never appears in Server readiness: readiness
@@ -4848,7 +4958,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, valid_from, valid_until, created_at, updated_at) VALUES (?, ?, ?, ?, '2026-01-01T00:00:00Z', NULL, ?, ?)")
+        sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, origin, valid_from, valid_until, created_at, updated_at) VALUES (?, ?, ?, ?, 'automatic', '2026-01-01T00:00:00Z', NULL, ?, ?)")
             .bind(format!("link-{validator_id}"))
             .bind(node_id)
             .bind(validator_id)
@@ -4927,7 +5037,7 @@ mod tests {
             Some(&now),
         )
         .await;
-        sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, valid_from, valid_until, created_at, updated_at) VALUES ('link-validator-shared-standby', 'node-standby', 'validator-shared', 'standby', '2026-01-01T00:00:00Z', NULL, ?, ?)")
+        sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, origin, valid_from, valid_until, created_at, updated_at) VALUES ('link-validator-shared-standby', 'node-standby', 'validator-shared', 'standby', 'automatic', '2026-01-01T00:00:00Z', NULL, ?, ?)")
             .bind(&now)
             .bind(&now)
             .execute(state.db().pool())
@@ -5165,7 +5275,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, valid_from, valid_until, created_at, updated_at) VALUES ('link-validator-b', 'node-public', 'validator-b', 'primary', '2026-02-01T00:00:00Z', NULL, ?, ?)")
+        sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, origin, valid_from, valid_until, created_at, updated_at) VALUES ('link-validator-b', 'node-public', 'validator-b', 'primary', 'automatic', '2026-02-01T00:00:00Z', NULL, ?, ?)")
             .bind(&now)
             .bind(&now)
             .execute(state.db().pool())
@@ -5184,5 +5294,72 @@ mod tests {
         assert_eq!(after["validatorSummary"]["blocks"]["knownSum"], "5");
         assert_eq!(after["validatorSummary"]["blocks"]["state"], "complete");
         assert_eq!(after["validatorSummary"]["rewards"]["knownSum"], "2");
+    }
+
+    #[tokio::test]
+    async fn public_node_exposes_automatic_identity_reason_and_never_uses_a_manual_link() {
+        let (_dir, state) = test_state().await;
+        seed_geo_network(&state, "mainnet", &["node-identified", "node-reason"]).await;
+        let now = seconds_ago(0);
+
+        // No automatic discovery has run and no Link exists: the identity
+        // fields are absent rather than guessed.
+        let before = public_network_list(&state).await;
+        let node = before["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["nodeId"] == "node-reason")
+            .unwrap();
+        assert!(node["validatorIdentityState"].is_null());
+        assert!(node["validatorIdentityReason"].is_null());
+        assert!(node["validator"].is_null());
+
+        // A persisted automatic-identity reason is projected verbatim; the
+        // Server owns and sanitizes it.
+        sqlx::query("INSERT INTO node_validator_identity_status (node_id, state, observed_node_key, updated_at) VALUES ('node-reason', 'network_identity_mismatch', NULL, ?)")
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let after = public_network_list(&state).await;
+        let node = after["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["nodeId"] == "node-reason")
+            .unwrap();
+        assert_eq!(node["validatorIdentityState"], "network_identity_mismatch");
+        assert!(
+            node["validatorIdentityReason"]
+                .as_str()
+                .unwrap()
+                .contains("registered Network")
+        );
+
+        // A legacy manual Link is never projected as the automatic
+        // correspondence, even when it is the only link on the Node (#173).
+        sqlx::query("INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES ('manual-validator', 'mainnet', '0xmanual', NULL, ?, ?)")
+            .bind(&now)
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, origin, valid_from, created_at, updated_at) VALUES ('manual-link', 'node-reason', 'manual-validator', 'primary', 'manual', ?, ?, ?)")
+            .bind(&now)
+            .bind(&now)
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let manual = public_network_list(&state).await;
+        let node = manual["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["nodeId"] == "node-reason")
+            .unwrap();
+        assert!(node["validator"].is_null());
+        assert!(manual["validators"].as_array().unwrap().is_empty());
     }
 }

@@ -824,15 +824,27 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         }));
     }
 
-    // Validator Provider refresh is Server-owned and deduplicated by the
-    // registered Validator table, never by Node links. Provider failures are
-    // persisted as diagnostics but do not enter Node health or readiness.
-    if let Some(provider_config) = config.validator_provider.clone() {
+    // Automatic Validator identity discovery and Provider refresh are
+    // Server-owned. Discovery runs even when no Provider is configured, so a
+    // Node with a validated Network and a full P2P public key still gets an
+    // automatic correspondence whose Current Validator Status is an explicit
+    // Unknown/not-configured. Provider refresh is deduplicated by the
+    // registered Validator table, never by Node links, and its failures are
+    // persisted as diagnostics without entering Node health or readiness.
+    {
+        let refresh_seconds = config
+            .validator_provider
+            .as_ref()
+            .map(|provider| provider.refresh_seconds)
+            .unwrap_or(60);
+        let timezone = config
+            .validator_provider
+            .as_ref()
+            .map(|provider| provider.timezone.clone())
+            .unwrap_or_else(|| "UTC".to_owned());
         let provider_state = state.clone();
         worker_handles.push(tokio::spawn(async move {
-            let mut tick = tokio::time::interval(std::time::Duration::from_secs(
-                provider_config.refresh_seconds,
-            ));
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(refresh_seconds));
             loop {
                 if provider_state.is_shutting_down() {
                     break;
@@ -844,11 +856,23 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                 if provider_state.is_shutting_down() {
                     break;
                 }
+                // Automatic identity discovery runs first so a newly observed
+                // chain key is registered and fetched in the same cycle
+                // (#173). It only writes Validator identity state and never
+                // enters Node health or Server readiness.
+                if let Err(error) =
+                    crate::validator::discover_automatic_links(provider_state.db()).await
+                {
+                    eprintln!(
+                        "Validator identity discovery deferred: {}",
+                        crate::redaction::redact_sensitive(&error.to_string())
+                    );
+                }
                 match crate::validator::refresh_all_with_channels_in_timezone(
                     provider_state.db(),
                     &*provider_state.validator_provider(),
                     provider_state.channels(),
-                    &provider_config.timezone,
+                    &timezone,
                 )
                 .await
                 {

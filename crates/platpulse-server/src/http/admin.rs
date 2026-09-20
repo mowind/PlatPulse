@@ -452,6 +452,7 @@ pub struct AdminNodePurgeCounts {
     pub observed_network_heads: i64,
     pub metric_samples: i64,
     pub validator_links: i64,
+    pub validator_identity_status: i64,
     pub transfers: i64,
     pub total_owned_rows: i64,
 }
@@ -522,6 +523,7 @@ fn node_purge_counts(counts: crate::node_purge::NodePurgeCounts) -> AdminNodePur
         observed_network_heads: counts.observed_network_heads,
         metric_samples: counts.metric_samples,
         validator_links: counts.validator_links,
+        validator_identity_status: counts.validator_identity_status,
         transfers: counts.transfers,
         total_owned_rows: counts.total_owned_rows(),
     }

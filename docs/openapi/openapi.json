@@ -2504,27 +2504,7 @@
             }
           }
         ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ValidatorCreateRequest"
-              }
-            }
-          },
-          "required": true
-        },
         "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ValidatorMutationResponse"
-                }
-              }
-            }
-          },
           "400": {
             "description": "",
             "content": {
@@ -2556,6 +2536,16 @@
             }
           },
           "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "410": {
             "description": "",
             "content": {
               "application/json": {
@@ -3227,27 +3217,7 @@
             }
           }
         ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ValidatorLinkCreateRequest"
-              }
-            }
-          },
-          "required": true
-        },
         "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ValidatorLinkMutationResponse"
-                }
-              }
-            }
-          },
           "400": {
             "description": "",
             "content": {
@@ -3279,6 +3249,16 @@
             }
           },
           "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "410": {
             "description": "",
             "content": {
               "application/json": {
@@ -5181,27 +5161,7 @@
             }
           }
         ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ValidatorLinkUpdateRequest"
-              }
-            }
-          },
-          "required": true
-        },
         "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ValidatorLinkMutationResponse"
-                }
-              }
-            }
-          },
           "400": {
             "description": "",
             "content": {
@@ -5243,6 +5203,16 @@
             }
           },
           "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "410": {
             "description": "",
             "content": {
               "application/json": {
@@ -5282,27 +5252,7 @@
             }
           }
         ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ValidatorLinkEndRequest"
-              }
-            }
-          },
-          "required": true
-        },
         "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ValidatorLinkMutationResponse"
-                }
-              }
-            }
-          },
           "400": {
             "description": "",
             "content": {
@@ -5344,6 +5294,16 @@
             }
           },
           "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "410": {
             "description": "",
             "content": {
               "application/json": {
@@ -7228,6 +7188,7 @@
           "observed_network_heads",
           "metric_samples",
           "validator_links",
+          "validator_identity_status",
           "transfers",
           "total_owned_rows"
         ],
@@ -7321,6 +7282,10 @@
             "format": "int64"
           },
           "transfers": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "validator_identity_status": {
             "type": "integer",
             "format": "int64"
           },
@@ -7816,7 +7781,6 @@
         "required": [
           "linkId",
           "nodeId",
-          "role",
           "validFrom"
         ],
         "properties": {
@@ -7827,7 +7791,11 @@
             "type": "string"
           },
           "role": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Legacy manual role; automatic Links carry none (#173)."
           },
           "validFrom": {
             "type": "string"
@@ -11069,7 +11037,6 @@
           "validatorId",
           "networkKey",
           "validatorNodeId",
-          "role",
           "validFrom",
           "createdAt",
           "updatedAt"
@@ -11094,7 +11061,11 @@
             "type": "string"
           },
           "role": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Legacy manual role; automatic Links carry none (#173)."
           },
           "updatedAt": {
             "type": "string"
@@ -12455,6 +12426,20 @@
                 "$ref": "#/components/schemas/PublicValidatorInsight"
               }
             ]
+          },
+          "validatorIdentityReason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Sanitized explanation when this Node has no established automatic\ncorrespondence. It never contains a raw diagnostic or a public key."
+          },
+          "validatorIdentityState": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Server-owned automatic-identity state for this Node (#173):\n`identified`, `missing_public_key`, `invalid_public_key`,\n`network_identity_missing`, or `network_identity_mismatch`. `None`\nmeans no automatic discovery pass has run yet. It is separate from\nCurrent Validator Status: identity correspondence can be established\nwhile the Provider still cannot confirm current staking validity."
           }
         }
       },
@@ -12823,7 +12808,9 @@
           "blockRateState",
           "counterState",
           "activity",
-          "activityState"
+          "activityState",
+          "currentValidatorStatus",
+          "currentValidatorStatusState"
         ],
         "properties": {
           "activity": {
@@ -12855,6 +12842,21 @@
           },
           "counterState": {
             "type": "string"
+          },
+          "currentValidatorStatus": {
+            "type": "string",
+            "description": "Server-owned Current Validator Status of the automatically identified\nchain identity (#173): `validator`, `not_validator`, or `unknown`.\nThis is currently valid staking identity, not current consensus\nselection or Node Health. `not_validator` requires authoritative\nevidence (completed exit or a 200 empty identifier); HTTP 404,\ntransport failures and unsupported coverage stay `unknown`."
+          },
+          "currentValidatorStatusQualifier": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`locked` or `exiting` while a confirmed-valid identity is not normally\nparticipating; null for an ordinary candidate/active/producing identity\nor for any unknown/negative status."
+          },
+          "currentValidatorStatusState": {
+            "type": "string",
+            "description": "`current`, `stale`, or `unknown` currency of the Current Validator\nStatus. A retained last-good verdict after a failed refresh is `stale`."
           },
           "delegationRewardPercentage": {
             "type": [
@@ -12900,12 +12902,6 @@
               "null"
             ],
             "description": "PlatScan's own 24-hour production rate, normalized to a percentage\nstring without the `%` sign and taken directly from `genBlocksRate`.\nThe investigated source sums the preceding seven settlement periods\nexcluding the current one, so it is not a strict rolling 86,400-second\nwindow, and a source-reported `0` can also mean absent evidence or an\nupstream error. `None` means unknown, never a synthesized zero (#156)."
-          },
-          "linkRole": {
-            "type": [
-              "string",
-              "null"
-            ]
           },
           "nodeId": {
             "type": [
@@ -14443,23 +14439,6 @@
           }
         }
       },
-      "ValidatorCreateRequest": {
-        "type": "object",
-        "required": [
-          "validatorNodeId"
-        ],
-        "properties": {
-          "displayName": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "validatorNodeId": {
-            "type": "string"
-          }
-        }
-      },
       "ValidatorDetail": {
         "allOf": [
           {
@@ -14481,42 +14460,6 @@
           }
         ]
       },
-      "ValidatorLinkCreateRequest": {
-        "type": "object",
-        "required": [
-          "validatorId",
-          "role",
-          "validFrom"
-        ],
-        "properties": {
-          "role": {
-            "type": "string"
-          },
-          "validFrom": {
-            "type": "string"
-          },
-          "validUntil": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "validatorId": {
-            "type": "string"
-          }
-        }
-      },
-      "ValidatorLinkEndRequest": {
-        "type": "object",
-        "properties": {
-          "validUntil": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        }
-      },
       "ValidatorLinkMutationResponse": {
         "type": "object",
         "required": [
@@ -14534,27 +14477,6 @@
           },
           "requestId": {
             "type": "string"
-          }
-        }
-      },
-      "ValidatorLinkUpdateRequest": {
-        "type": "object",
-        "required": [
-          "role",
-          "validFrom"
-        ],
-        "properties": {
-          "role": {
-            "type": "string"
-          },
-          "validFrom": {
-            "type": "string"
-          },
-          "validUntil": {
-            "type": [
-              "string",
-              "null"
-            ]
           }
         }
       },
