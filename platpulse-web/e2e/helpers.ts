@@ -78,10 +78,12 @@ export async function expectNoHorizontalOverflow(page: Page) {
   ).toBeLessThanOrEqual(0)
 }
 
-/** Every metric row inside a surface is one `data item / value` line at the
- *  current viewport: the label and value share a line, the value's right edge
- *  meets the row's right edge, and a progress track spans the full row
- *  (issue #140). Returns the offending rows as the failure payload. */
+/** Every metric row inside a surface declares its presentation at the current
+ *  viewport. An inline row (the default) keeps the label and value on one line,
+ *  with the value's right edge meeting the row's right edge; an explicitly
+ *  `data-layout="stacked"` row puts the label above its value, left-aligned,
+ *  rather than squeezing both into a narrow cell. A progress track always spans
+ *  the full row (issue #140). Returns the offending rows as the failure payload. */
 export async function expectMetricRowsAligned(scope: Locator) {
   const offenders = await scope.locator('[data-slot="metric-row"]').evaluateAll((rows) =>
     rows.flatMap((row) => {
@@ -91,17 +93,25 @@ export async function expectMetricRowsAligned(scope: Locator) {
       const labelBox = label.getBoundingClientRect()
       const valueBox = value.getBoundingClientRect()
       const rowBox = row.getBoundingClientRect()
+      const progress = row.querySelector('[data-slot="progress-thin"]')
+      const progressFullWidth = progress === null || Math.abs(progress.getBoundingClientRect().width - rowBox.width) <= 1.5
+      if (row.getAttribute('data-layout') === 'stacked') {
+        const stacked = valueBox.top >= labelBox.bottom - 1
+          && valueBox.left >= rowBox.left - 1
+          && valueBox.right <= rowBox.right + 1.5
+        return stacked && progressFullWidth
+          ? []
+          : [`"${(row.textContent ?? '').replace(/\s+/g, ' ').trim()}" stacked=${stacked} fullTrack=${progressFullWidth}`]
+      }
       const sameLine = Math.abs(labelBox.top - valueBox.top) <= 8
       const valueRightAligned = Math.abs(valueBox.right - rowBox.right) <= 1.5
       const valueRightOfLabel = valueBox.left >= labelBox.right - 1
-      const progress = row.querySelector('[data-slot="progress-thin"]')
-      const progressFullWidth = progress === null || Math.abs(progress.getBoundingClientRect().width - rowBox.width) <= 1.5
       return sameLine && valueRightAligned && valueRightOfLabel && progressFullWidth
         ? []
         : [`"${(row.textContent ?? '').replace(/\s+/g, ' ').trim()}" sameLine=${sameLine} rightAligned=${valueRightAligned} rightOfLabel=${valueRightOfLabel} fullTrack=${progressFullWidth}`]
     }),
   )
-  expect(offenders, 'every metric row is one data-item / value line with the value flush right').toEqual([])
+  expect(offenders, 'every metric row keeps its declared label/value presentation without overflow').toEqual([])
 }
 
 /** Open the Node Detail Peer diagnostics disclosure by pointer or keyboard
@@ -152,8 +162,11 @@ export async function expectVisibleInteractiveTargets(page: Page) {
         const x = (left + right) / 2
         if (html.contains(document.elementFromPoint(x, top + 1)) && html.contains(document.elementFromPoint(x, bottom - 1))) hitHeight = bottom - top
       }
-      return rect.width < 44 || hitHeight < 44
-        ? [`${html.tagName.toLowerCase()} ${html.textContent?.trim() || html.getAttribute('aria-label') || ''}`]
+      // Chromium reports getBoundingClientRect() through float32, so an exact
+      // 44px box can read as 43.999996. Round to whole pixels before comparing:
+      // a genuinely undersized target loses whole pixels, not fractions of one.
+      return Math.round(rect.width) < 44 || Math.round(hitHeight) < 44
+        ? [`${html.tagName.toLowerCase()} ${html.textContent?.trim() || html.getAttribute('aria-label') || ''} (${rect.width.toFixed(1)}x${rect.height.toFixed(1)}, hit ${hitHeight.toFixed(1)})`]
         : []
     }),
   )

@@ -263,15 +263,14 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
       {failed ? (
         <div className="h-full" aria-hidden="true" />
       ) : (
-        // Like Emerald, the desktop canvas is taller than the summary band and
-        // shifted upward. Tie height to width so wide screens cannot shrink the
-        // world back into a shallow strip. Mobile uses its actual 2:1 plot.
+        // Preserve the world’s 2:1 aspect inside the resized map track. The
+        // six-card overview no longer needs overflow or an upward offset.
         <div
           ref={container}
           role="img"
           aria-label={PEER_COUNTRIES_HEADING + ' map. ' + mapDescription}
           data-slot="geo-chart"
-          className="h-full w-full md:aspect-[2/1] md:h-auto md:-translate-y-1/6"
+          className="h-full w-full"
         />
       )}
       {/* The canvas has no per-country element, so the same figures stay

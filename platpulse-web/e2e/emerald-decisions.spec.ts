@@ -61,24 +61,31 @@ test('selection controls keep compact indicators and native touch and keyboard b
   // Local selection only: deliberately never save a provider change.
 })
 
-test('Home retains the compact band with the approved statistics to map split', async ({ page }) => {
+test('Home retains six overview cards beside a proportional map', async ({ page }) => {
   await loginAs(page)
   const summary = page.locator('[aria-label="Home summary"]')
   await expect(summary).toBeVisible()
+  await expect(summary.locator('[data-slot="summary-card"]')).toHaveCount(6)
   const geometry = await summary.evaluate((element) => {
     const band = element.parentElement!
-    const map = band.firstElementChild!
+    const map = band.querySelector('[data-slot="home-map"]')!
     return {
       summary: element.getBoundingClientRect().width,
       map: map.getBoundingClientRect().width,
-      bandHeight: band.getBoundingClientRect().height,
+      summaryTop: element.getBoundingClientRect().top,
+      summaryBottom: element.getBoundingClientRect().bottom,
+      mapTop: map.getBoundingClientRect().top,
     }
   })
-  if (page.viewportSize()!.width >= 768) {
-    expect(geometry.summary / geometry.map).toBeCloseTo(37 / 61, 2)
-    expect(geometry.bandHeight).toBe(232)
+  const width = page.viewportSize()!.width
+  if (width >= 1024) {
+    // Desktop keeps the map beside the statistics. The 4:3 split holds each of
+    // the six tiles at the width the original four-card grid gave them.
+    expect(geometry.summary / geometry.map).toBeCloseTo(4 / 3, 1)
+    expect(geometry.mapTop).toBeLessThan(geometry.summaryBottom)
   } else {
-    expect(geometry.summary).toBeCloseTo(geometry.map, 0)
+    // Narrow layouts stack the complete map below the statistics.
+    expect(geometry.mapTop).toBeGreaterThanOrEqual(geometry.summaryBottom - 1)
   }
   await expectNoHorizontalOverflow(page)
 })

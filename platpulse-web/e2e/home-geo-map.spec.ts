@@ -567,7 +567,7 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     expect(statsBox.y, 'the summary starts below the logo bar').toBeGreaterThanOrEqual(headerBox.height - 1)
     expect(mapBox.x, 'the map keeps the right column, clear of the statistics').toBeGreaterThan(statsBox.x + statsBox.width)
     const columns = new Set(facts.map((fact) => Math.round(fact.box.x))).size
-    expect(columns, 'the four statistics form a 2x2 grid').toBe(2)
+    expect(columns, 'the four status counters keep two of the three columns').toBe(2)
 
     // The canvas paints a real world projection rather than a letterboxed band.
     const world = await worldBox(page)
@@ -685,20 +685,21 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
         mapHoldsItsOwnColumn,
       }
     })
-    expect(settled.cards, 'all four statistics are laid out').toBe(4)
-    expect(settled.rows, 'statistics keep their 2x2 shape').toBe(2)
-    expect(settled.columns, 'statistics keep their two columns').toBe(2)
+    expect(settled.cards, 'all six statistics are laid out').toBe(6)
+    expect(settled.rows, 'statistics keep their two-row shape').toBe(2)
+    expect(settled.columns, 'statistics keep their three columns').toBe(3)
     expect(settled.mapSpan, 'the band keeps its width: there is no expansion').toBe(Math.round(mapBox.width))
     expect(settled.mapHoldsItsOwnColumn, 'the map holds its own column beside the statistics').toBe(true)
 
     await page.setViewportSize({ width: 1440, height: 900 })
     await expectNoHorizontalOverflow(page)
-    const wideFacts = await summaryFacts(page)
-    const wideStats = unionBox(wideFacts.map((fact) => fact.box))
+    // Measure the whole six-card statistics track, not just the four status
+    // counters, which occupy two of its three columns.
+    const wideStats = (await page.locator('[aria-label="Home summary"]').boundingBox())!
     const wideMap = (await map.boundingBox())!
-    // Emerald's 12-column band is a 6/6 split (decision A), so the statistics
-    // share the band rather than taking the strictly smaller half.
-    expect(wideStats.width, 'the statistics never take the larger share').toBeLessThanOrEqual(wideMap.width)
+    // The approved overview gives the six statistics the larger share of the
+    // band so three equal columns fit, with the complete map beside them.
+    expect(wideStats.width, 'the statistics take the larger share for three columns').toBeGreaterThan(wideMap.width)
     expect(wideStats.width, 'the statistics stay readable').toBeGreaterThanOrEqual(20 * 16)
     expect(wideMap.x, 'the map keeps the right column clear of the statistics')
       .toBeGreaterThanOrEqual(wideStats.x + wideStats.width)
@@ -725,14 +726,12 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     await expect(chart.locator('canvas').first()).toBeVisible({ timeout: 30_000 })
     await expect(map.getByRole('status')).toHaveCount(0)
     const routineBand = (await chart.boundingBox())!
-    expect(routineBand.height, 'the band is a real top band').toBeGreaterThanOrEqual(190)
+    expect(routineBand.height, 'the map keeps a readable height').toBeGreaterThanOrEqual(190)
     expect((await worldBox(page)).height, 'actual world grows beyond the old 136px map').toBeGreaterThan(136)
     const compactOverview = await overviewBox(page)
-    // 6b78964 deliberately restored the overflowing 2:1 Emerald canvas while
-    // retaining the approved 200px content band (232px including padding).
-    // Do not shrink geography back into that band to satisfy the retired guard.
-    expect(compactOverview.height, 'the approved overview content height stays fixed').toBe(200)
-    expect(routineBand.height, 'the overflowing canvas keeps the approved 2:1 aspect').toBeCloseTo(routineBand.width / 2, 0)
+    // The map now fills its own contained 2:1 track beside the six statistics
+    // instead of overflowing a fixed 200px/232px summary band.
+    expect(routineBand.height, 'the contained canvas keeps the approved 2:1 aspect').toBeCloseTo(routineBand.width / 2, 0)
     const toolbarTop = (await page.getByRole('tablist', { name: 'Network filter' }).boundingBox())!.y
     expect(compactOverview.y + compactOverview.height, 'the overview content band ends before the toolbar').toBeLessThanOrEqual(toolbarTop + 1)
     await page.getByRole('combobox', { name: 'Sort', exact: true }).click({ trial: true })
@@ -753,21 +752,14 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     const mapBox = (await map.boundingBox())!
     const headerBox = (await page.locator('[data-slot="app-header"]').boundingBox())!
 
-    // The logo bar keeps its own row at every width, so the map band comes
-    // next, above the statistics and the Node cards, and never runs behind it.
-    expect(mapBox.y, 'the map starts below the logo bar').toBeGreaterThanOrEqual(headerBox.y + headerBox.height - 1)
-    // The refined narrow-screen composition stacks the 2:1 map above the 2×2
-    // statistics with the shared 8px grid gap, so the two never overlap and the
-    // map always starts above the Node cards. Only the stacked layout has a
-    // vertical gap to measure: at wider breakpoints the map and the statistics
-    // sit side by side in the 12-column band, and that composition is asserted
-    // by the desktop test instead.
-    if (stats.y > mapBox.y) {
-      expect(stats.y, 'the statistics sit below the map').toBeGreaterThanOrEqual(mapBox.y + mapBox.height - 1)
-      expect(
-        stats.y - (mapBox.y + mapBox.height),
-        'the map and statistics stay in one stacked band',
-      ).toBeLessThanOrEqual(24)
+    // The logo bar keeps its own row at every width. Wide layouts place the map
+    // beside the statistics; narrow layouts stack the six statistics first and
+    // then the complete 2:1 map, always above the Node cards.
+    expect(stats.y, 'the statistics start below the logo bar').toBeGreaterThanOrEqual(headerBox.y + headerBox.height - 1)
+    if (page.viewportSize()!.width >= 1024) {
+      expect(mapBox.x, 'the map keeps its own column beside the statistics').toBeGreaterThanOrEqual(stats.x + stats.width - 1)
+    } else {
+      expect(mapBox.y, 'the map stacks below the statistics').toBeGreaterThanOrEqual(stats.y + stats.height - 1)
     }
     const firstCard = (await page.locator('[data-slot="node-card"]').first().boundingBox())!
     expect(mapBox.y, 'the map sits above the Node cards').toBeLessThan(firstCard.y)
@@ -829,10 +821,11 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     const mapBox = (await map.boundingBox())!
     expect(mapBox.x).toBeGreaterThanOrEqual(0)
     expect(mapBox.x + mapBox.width).toBeLessThanOrEqual(375)
-    // The compact map comes first, and the 8px grid gap keeps the statistics
-    // below it without covering the map.
+    // The six statistics come first and the complete map follows below them,
+    // separated by the shared grid gap, so neither covers the other.
     const stats = unionBox((await summaryFacts(page)).map((fact) => fact.box))
-    expect(stats.y, 'the statistics sit below the map').toBeGreaterThanOrEqual(mapBox.y + mapBox.height - 1)
+    expect(stats.y, 'the statistics start above the map').toBeLessThanOrEqual(mapBox.y)
+    expect(mapBox.y, 'the map follows the statistics without overlapping').toBeGreaterThanOrEqual(stats.y + stats.height - 1)
 
     await capture(page, testInfo, 'home-375-compact')
     // No expand control here either: the band keeps its size at 375px.

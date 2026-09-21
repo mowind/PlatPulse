@@ -1,9 +1,11 @@
 import type { ReactNode } from 'react'
+import { cn } from '../lib/utils'
 
 import { ProgressThin, type ProgressStatus } from './ui/progress-thin'
 
 export type MetricRowProps = {
   label: string
+  layout?: 'inline' | 'stacked'
   shortLabel?: string
   value: ReactNode
   detail?: ReactNode
@@ -20,14 +22,15 @@ export type MetricRowProps = {
  * sibling; the progress bar and caption span both grid columns. A row without
  * a known progress value reserves unpainted space, never a zero-like track.
  */
-export function MetricRow({ label, shortLabel, value, detail, progress, progressStatus }: MetricRowProps) {
+export function MetricRow({ label, shortLabel, value, detail, progress, progressStatus, layout = 'inline' }: MetricRowProps) {
   return (
     <div
       data-slot="metric-row"
       data-kind={progress !== undefined ? "resource" : "information"}
-      className="grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-2 gap-y-1 text-xs"
+      data-layout={layout}
+      className={cn("grid min-w-0 items-baseline gap-x-2 gap-y-1 text-xs", layout === 'stacked' ? "grid-cols-1" : "grid-cols-[auto_minmax(0,1fr)]", layout === 'stacked' && typeof value === 'string' && value.length > 15 && "col-span-2")}
     >
-      <span data-slot="metric-row-label" className="metric-label flex items-baseline whitespace-nowrap text-muted-foreground">
+      <span data-slot="metric-row-label" className={cn("metric-label flex items-baseline text-muted-foreground", layout === 'stacked' ? "whitespace-normal" : "whitespace-nowrap")}>
         {shortLabel ? (
           <>
             <span data-full-label>{label}</span>
@@ -37,7 +40,7 @@ export function MetricRow({ label, shortLabel, value, detail, progress, progress
           label
         )}
       </span>
-      <strong data-slot="metric-row-value" className="min-w-0 text-right font-medium tabular-nums text-foreground [overflow-wrap:anywhere]">
+      <strong data-slot="metric-row-value" className={cn("min-w-0 font-medium tabular-nums text-foreground", layout === 'stacked' ? "whitespace-nowrap text-left text-sm" : "text-right [overflow-wrap:anywhere]")}>
         {value}
       </strong>
       {typeof progress === 'number' && (
@@ -45,7 +48,7 @@ export function MetricRow({ label, shortLabel, value, detail, progress, progress
       )}
       {progress === null && <span data-slot="metric-unknown-space" className="col-span-2 h-1" aria-hidden="true" />}
       {detail != null && (
-        <small data-slot="metric-row-detail" className="col-span-2 truncate text-[11px] text-muted-foreground">
+        <small data-slot="metric-row-detail" className={cn("text-[11px] text-muted-foreground", layout === 'stacked' ? "whitespace-normal" : "col-span-2 truncate")}>
           {detail}
         </small>
       )}

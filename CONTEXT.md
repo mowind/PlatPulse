@@ -100,6 +100,10 @@ _Avoid_: Delegation APY, Operator commission, Pending reward ratio
 The Server-owned totals of the distinct Validators linked to the Active Nodes in the current Home selection, grouped by Network and deduplicated by Validator through automatically identified Node Validator Links. Blocks and rewards are reported separately, each with its known-value total, eligible-Validator count, valued count, and stale count. It describes the current selection rather than an ownership ledger, and it can decrease when filters, effective Links, or Active membership change.
 _Avoid_: Portfolio total, Node-summed total, Cross-network total
 
+**Cross-Network Validator Overview**:
+The numerical sum of the known cumulative Validator block counts or rewards from the per-Network Current-Selection Validator Summaries in the current Home selection, keeping Validator identity and coverage scoped to each Network. Rewards are added as native-unit numbers without conversion; the overview is neither a single-asset balance nor a monetary valuation, and unavailable contributions remain unknown rather than zero.
+_Avoid_: Portfolio value, Converted asset balance, Cross-network Validator identity
+
 **Agent Enrollment**:
 The one-time process through which a new Agent establishes its identity with the Server and receives its own revocable credential.
 _Avoid_: Agent login, Permanent install token

@@ -624,10 +624,13 @@ describe('App shell with private Home', () => {
     const homeLink = await screen.findByRole('link', { name: 'PlatPulse' })
     fireEvent.click(homeLink)
     expect(await screen.findByRole('region', { name: 'Home' })).toBeTruthy()
-    // The whole-card Node link names the Node; the Network stays plain text.
+    // Node navigation is the stretched title link naming the Node; the card
+    // body (Network, role, metrics, linked Validator) stays outside the anchor
+    // so its own controls never trigger navigation. The Network stays plain text.
     const nodeCard = await screen.findByRole('link', { name: /Validator A/ })
     expect(nodeCard.getAttribute('href')).toBe('/nodes/node-1')
-    expect(nodeCard.textContent).toContain('Mainnet')
+    const nodeArticle = nodeCard.closest('[data-slot="node-card"]')
+    expect(nodeArticle?.textContent).toContain('Mainnet')
     expect(screen.queryByRole('link', { name: 'Mainnet' })).toBeNull()
     expect(screen.getByRole('img', { name: 'Healthy' })).toBeTruthy()
     fireEvent.click(nodeCard)

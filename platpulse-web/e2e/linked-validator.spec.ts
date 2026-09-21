@@ -35,7 +35,7 @@ const LINKED_RANK = '#2'
  * must form three rows of two, with no overflowing labels or exact values. */
 async function expectTwoColumnMetrics(scope: Locator) {
   const metrics = scope.getByRole('group', { name: 'Linked Validator metrics' })
-  const cells = metrics.locator(':scope > [data-slot="metric-row"]')
+  const cells = metrics.locator(':scope > [data-slot="metric-row"], :scope > [data-slot="validator-metric"]')
   await expect(cells).toHaveCount(6)
   const boxes = await cells.evaluateAll(elements => elements.map(element => {
     const box = element.getBoundingClientRect()
@@ -54,7 +54,7 @@ async function expectTwoColumnMetrics(scope: Locator) {
       expect(left.y).toBeGreaterThanOrEqual(Math.max(boxes[index - 2].bottom, boxes[index - 1].bottom))
     }
   }
-  const overflowing = await metrics.locator('[data-slot]').evaluateAll(elements => elements
+  const overflowing = await metrics.locator('*').evaluateAll(elements => elements
     .filter(element => element.scrollWidth > element.clientWidth + 1)
     .map(element => element.textContent))
   expect(overflowing, 'metric labels and values must wrap within their cells').toEqual([])
@@ -65,16 +65,16 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
     await loginAs(page)
 
     // Home Node card: identity, Current Validator Status, and both cumulative Validator values.
-    const card = page.getByRole('link', { name: new RegExp(PUBLIC_NODE_NAME) }).first()
+    const card = page.getByRole('link', { name: PUBLIC_NODE_NAME, exact: true }).locator('xpath=ancestor::article[1]')
     await expect(card).toBeVisible()
     await expect(card.getByText('Linked Validator')).toBeVisible()
     await expect(card.getByText('Cumulative blocks')).toBeVisible()
     await expect(card.getByText('Cumulative rewards', { exact: true })).toBeVisible()
     await expect(
-      card.getByText('Cumulative blocks').locator('..').locator('[data-slot="metric-row-value"]'),
+      card.getByText('Cumulative blocks').locator('..').locator('strong'),
     ).toHaveText(LINKED_BLOCK_COUNT)
     await expect(
-      card.getByText('Cumulative rewards', { exact: true }).locator('..').locator('[data-slot="metric-row-value"]'),
+      card.getByText('Cumulative rewards', { exact: true }).locator('..').locator('strong'),
     ).toHaveText(LINKED_REWARD)
     // The card header carries the consensus role badge too, so scope the
     // Current Validator Status assertion to the linked-Validator section.
@@ -82,18 +82,18 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
       card.locator('[data-slot="linked-validator"]').getByText('Validator', { exact: true }),
     ).toBeVisible()
     await expect(
-      card.getByText('Network rank', { exact: true }).locator('..').locator('[data-slot="metric-row-value"]'),
+      card.getByText('Network rank', { exact: true }).locator('..').locator('strong'),
     ).toHaveText(LINKED_RANK)
     // The two rates stay distinguishable by label and source, and the
     // cumulative rate is abbreviated to two decimals on the card.
     await expect(
-      card.getByText('Production rate', { exact: true }).locator('..').locator('[data-slot="metric-row-value"]'),
+      card.getByText('Production rate', { exact: true }).locator('..').locator('strong'),
     ).toHaveText(LINKED_BLOCK_RATE_CARD)
     await expect(
-      card.getByText('PlatScan 24h rate', { exact: true }).locator('..').locator('[data-slot="metric-row-value"]'),
+      card.getByText('PlatScan 24h rate', { exact: true }).locator('..').locator('strong'),
     ).toHaveText(LINKED_GEN_BLOCKS_RATE_CARD)
     await expect(
-      card.getByText('Delegation reward share', { exact: true }).locator('..').locator('[data-slot="metric-row-value"]'),
+      card.getByText('Delegation reward share', { exact: true }).locator('..').locator('strong'),
     ).toHaveText(LINKED_DELEGATION_SHARE_CARD)
     await expectTwoColumnMetrics(card)
     await expectNoHorizontalOverflow(page)
@@ -130,7 +130,7 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
     await expectNoHorizontalOverflow(page)
   })
 
-  test('keeps long Validator identities and exact rewards within two columns on both Node views', async ({ page }) => {
+  test('keeps long Validator identities and exact rewards accessible with bounded metric cells', async ({ page }) => {
     const identity = '0x' + 'ab'.repeat(64)
     const reward = '123456789012345678901234567890.123456789012'
     const exactReward = '123,456,789,012,345,678,901,234,567,890.123456789012'
@@ -151,10 +151,30 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
       await route.fulfill({ response, json: withLongValidator(node) })
     })
     await loginAs(page)
-    const card = page.getByRole('link', { name: new RegExp(PUBLIC_NODE_NAME) }).first()
-    await expect(card.getByText(identity, { exact: true })).toBeVisible()
-    await expectTwoColumnMetrics(card)
+    const card = page.getByRole('link', { name: PUBLIC_NODE_NAME, exact: true }).locator('xpath=ancestor::article[1]')
+    await expect(card.getByText(identity, { exact: true })).toHaveCount(0)
+    await expect(card.getByLabel('Validator identifier: ' + identity.slice(0, 10) + '…' + identity.slice(-8))).toBeVisible()
+    const metrics = card.getByRole('group', { name: 'Linked Validator metrics' })
+    await expect(metrics.locator('[data-slot="validator-metric"]')).toHaveCount(6)
+    const rewardCell = metrics.getByText('Cumulative rewards', { exact: true }).locator('..')
+    await expect(rewardCell.locator('strong')).toHaveText('123456789012345678.9T')
+    const rewardBox = (await rewardCell.boundingBox())!
+    const metricsBox = (await metrics.boundingBox())!
+    expect(rewardBox.width, 'exceptionally long compact rewards use the full group width').toBeCloseTo(metricsBox.width, 0)
+    const overflowing = await metrics.locator('*').evaluateAll(elements => elements
+      .filter(element => element.scrollWidth > element.clientWidth + 1)
+      .map(element => element.textContent))
+    expect(overflowing, 'all six values remain bounded and untruncated').toEqual([])
     await expectNoHorizontalOverflow(page)
+
+    await card.getByRole('button', { name: 'Open Validator details' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Validator details' })
+    await expect(dialog.getByRole('textbox', { name: 'Full Validator identifier' })).toHaveValue(identity)
+    await expect(dialog.getByText(exactReward, { exact: true })).toBeVisible()
+    await expectNoHorizontalOverflow(page)
+    await page.keyboard.press('Escape')
+    await expect(dialog).toHaveCount(0)
+    await expect(card.getByRole('button', { name: 'Open Validator details' })).toBeFocused()
 
     await page.goto('/nodes/' + PUBLIC_NODE_ID)
     const detail = page.getByRole('region', { name: 'Linked Validator' })
@@ -169,20 +189,26 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
 
     // Node M: a complete live-staking cohort list that omits the Validator is
     // authoritative Unranked, never zero and never a collection failure.
-    const mCard = page.getByRole('link', { name: /Node M/ }).first()
+    const mCard = page.getByRole('link', { name: /Node M/ }).locator('xpath=ancestor::article[1]')
     await expect(mCard).toBeVisible()
     await expect(
-      mCard.getByText('Network rank', { exact: true }).locator('..').locator('[data-slot="metric-row-value"]'),
+      mCard.getByText('Network rank', { exact: true }).locator('..').locator('strong'),
     ).toHaveText('Unranked')
 
     // Node N: the ranking list failed, so the last-good rank is retained and
     // explicitly marked as retained rather than shown as Unranked or zero.
-    const nCard = page.getByRole('link', { name: /Node N/ }).first()
+    const nCard = page.getByRole('link', { name: /Node N/ }).locator('xpath=ancestor::article[1]')
     await expect(nCard).toBeVisible()
     await expect(
-      nCard.getByText('Network rank', { exact: true }).locator('..').locator('[data-slot="metric-row-value"]'),
+      nCard.getByText('Network rank', { exact: true }).locator('..').locator('strong'),
     ).toHaveText('#2')
-    await expect(nCard.getByText(/last successful rank is retained/)).toBeVisible()
+    await expect(nCard.getByText('Network ranking collection failed.', { exact: true })).toBeVisible()
+    await expect(nCard.getByText('Network rank stale · last ranking retained.', { exact: true })).toBeVisible()
+    await nCard.getByRole('button', { name: 'Open Validator details' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Validator details' })
+    await expect(dialog.getByText(/last successful rank is retained/)).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(dialog).toHaveCount(0)
 
     await expectNoHorizontalOverflow(page)
   })

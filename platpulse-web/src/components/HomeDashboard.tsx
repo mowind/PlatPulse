@@ -15,11 +15,14 @@ import { Alert, AlertDescription } from './ui/alert'
 import { Empty } from './ui/empty'
 import { Select } from './ui/input'
 import { Tabs, TabsList, TabsTrigger } from './ui/tabs'
-import { Server, HeartPulse, TriangleAlert, Network, ChevronUp, ChevronDown } from 'lucide-react'
-import { SURFACE_CARD, SURFACE_TOOLBAR } from '../lib/surface'
+import { Server, HeartPulse, TriangleAlert, Network, ChevronUp, ChevronDown, Info } from 'lucide-react'
+import { SURFACE_TOOLBAR } from '../lib/surface'
 import { cn } from '../lib/utils'
 import { LinkedValidatorSection } from './LinkedValidator'
-import { ValidatorTotalsSection } from './ValidatorTotals'
+import { ValidatorTotalCard } from './ValidatorTotals'
+import { HomeSummaryCard } from './HomeSummaryCard'
+import { Button } from './ui/button'
+import { Dialog, DialogTrigger, DialogContent, DialogTitle, DialogDescription } from './ui/dialog'
 
 type HomeDashboardProps = {
   networks: PublicNetwork[]
@@ -40,18 +43,8 @@ const sortOptions: Array<{ value: SortKey; label: string }> = [
   { value: 'head', label: 'Current Head' },
 ]
 
-/**
- * Home, laid out as Emerald's HomeView + NodeGeneralCards:
- * a 37:61 statistics/map top band at md and above (the approved reference-image
- * split), with the map followed by a compact 2×2 summary on small screens, then the
- * network toolbar built from Emerald Tabs, then the node grid at
- * repeat(auto-fill, minmax(300px, 1fr)) with a 12px gap.
- *
- * PlatPulse's own four counters stay in the statistics slot: Emerald's six
- * resource tiles include "remaining value", which has no PlatPulse field, and
- * aggregating Host resources across Nodes would double-count Hosts shared by
- * several Nodes (docs/visual-migration/emerald/README.md, deviation 2).
- */
+/** Emerald Home: six equal overview cards beside a proportional Peer map.
+ * Node cards keep their independent, content-width-driven column rules. */
 export default function HomeDashboard({
   networks,
   realtimeStatus,
@@ -112,32 +105,26 @@ export default function HomeDashboard({
         </p>
       )}
 
-      <div className="grid h-auto grid-cols-12 grid-rows-1 gap-2 p-4 md:h-58 md:grid-cols-[minmax(0,37fr)_minmax(0,61fr)]">
-        <div className="col-span-12 col-start-1 min-w-0 aspect-[2/1] md:aspect-auto md:col-span-1 md:col-start-2 md:row-start-1 md:h-full">
+      {/* 4:3 keeps each of the six tiles at the width the original four-card
+            2x2 grid gave them, instead of stretching the statistics track. */}
+        <div data-slot="home-overview" className="grid min-w-0 items-center gap-4 p-4 lg:grid-cols-[minmax(0,4fr)_minmax(0,3fr)]">
+        <div className="grid min-w-0 auto-rows-fr grid-cols-2 gap-2 sm:grid-cols-3" aria-label="Home summary">
+          <SummaryCard label="Active Nodes" value={hasProjection ? visibleRecords.length : null} tone="green" icon="server" />
+          <SummaryCard label="Healthy Nodes" value={healthyCount} tone="green" icon="heart" />
+          <ValidatorTotalCard networks={scopedNetworks} metric="blocks" availability={loading ? 'loading' : hasProjection ? 'ready' : 'unavailable'} />
+          <SummaryCard label="Attention" value={healthyCount === null ? null : visibleRecords.length - healthyCount}
+            tone={healthyCount !== null && visibleRecords.length === healthyCount ? 'green' : 'red'} icon="alert" />
+          <SummaryCard label="Networks" value={hasProjection ? scopedNetworks.length : null} tone="green" icon="network" />
+          <ValidatorTotalCard networks={scopedNetworks} metric="rewards" availability={loading ? 'loading' : hasProjection ? 'ready' : 'unavailable'} />
+        </div>
+        <div data-slot="home-map" className="min-w-0 aspect-[2/1]">
           <GeoMapBoundary>
             <GeoWorldMap networks={networks} networkFilter={networkFilter} loading={loading} hasProjection={hasProjection} />
           </GeoMapBoundary>
         </div>
-        <div
-          className="z-9 col-span-12 row-start-2 grid h-auto grid-cols-12 grid-rows-2 gap-2 min-w-0 md:col-span-1 md:col-start-1 md:row-start-1 md:mt-0 md:h-auto"
-          aria-label="Home summary"
-        >
-          <SummaryCard label="Active Nodes" value={hasProjection ? visibleRecords.length : null} tone="green" icon="server" />
-          <SummaryCard label="Healthy Nodes" value={healthyCount} tone="green" icon="heart" />
-          <SummaryCard
-            label="Attention"
-            value={healthyCount === null ? null : visibleRecords.length - healthyCount}
-            tone={healthyCount !== null && visibleRecords.length === healthyCount ? 'green' : 'red'}
-            icon="alert"
-          />
-          <SummaryCard label="Networks" value={hasProjection ? scopedNetworks.length : null} tone="green" icon="network" />
-        </div>
       </div>
 
-      {/* Only the control surfaces sit above the decorative map overflow;
-          the gap between them stays transparent. Wide desktop needs 40px of
-          clearance: the Australian marker otherwise falls inside Sort. */}
-      <div className="relative p-4 pt-0 md:static lg:pt-10">
+      <div className="relative p-4 pt-0 md:static">
         <div className="flex flex-nowrap items-start gap-2 md:items-center" aria-label="Node filters and sorting">
           <div className="overflow-x-auto rounded-sm py-1.5 -my-1.5 md:relative md:z-10">
             <Tabs
@@ -176,8 +163,6 @@ export default function HomeDashboard({
           </label>
         </div>
 
-        {hasProjection && <ValidatorTotalsSection networks={scopedNetworks} />}
-
         <div className="mt-4">
           {loading || (error && !hasLastGood) ? null : visibleRecords.length === 0 ? (
             <Empty description="No Active Nodes in this view.">
@@ -185,7 +170,8 @@ export default function HomeDashboard({
             </Empty>
           ) : (
             <div
-              className="grid grid-cols-1 gap-3 sm:grid-cols-[repeat(auto-fill,minmax(300px,1fr))]"
+              className="grid grid-cols-1 items-start gap-3 sm:grid-cols-[repeat(auto-fill,minmax(300px,1fr))]"
+              data-slot="node-grid"
               aria-label="Active Nodes"
             >
               {visibleRecords.map(({ network, node }) => (
@@ -208,56 +194,21 @@ const SUMMARY_ICONS = {
   network: Network,
 } as const
 
-function SummaryCard({
-  label,
-  value,
-  tone,
-  icon,
-}: {
-  label: string
-  value: number | null
-  tone: 'green' | 'red'
-  icon: keyof typeof SUMMARY_ICONS
+function SummaryCard({ label, value, tone, icon }: {
+  label: string; value: number | null; tone: 'green' | 'red'; icon: keyof typeof SUMMARY_ICONS
 }) {
-  const Icon = SUMMARY_ICONS[icon]
-  return (
-    <CardX
-      hoverable
-      bordered={false}
-      role="article"
-      size="small"
-      data-slot="summary-card"
-      data-tone={tone}
-      className={cn('group col-span-6 row-span-1 h-full rounded-md transition-all', SURFACE_CARD)}
-      contentClassName="h-full !p-3"
-    >
-      <div className="flex h-full flex-col justify-between gap-1">
-        <div className="flex items-start justify-between gap-1">
-          <span className="text-xs font-medium tracking-wider text-muted-foreground">{label}</span>
-          <Icon size={18} strokeWidth={2} aria-hidden="true" data-icon={icon} />
-        </div>
-        <div className="flex min-w-0 items-baseline gap-1">
-          <strong
-            data-slot="summary-value"
-            className={cn(
-              'text-base font-bold leading-none tracking-tight md:text-2xl',
-              tone === 'red' && value !== null && value > 0 && 'text-destructive',
-            )}
-          >
-            {value === null ? 'Unknown' : value.toLocaleString()}
-          </strong>
-        </div>
-      </div>
-    </CardX>
-  )
+  return <HomeSummaryCard label={label} value={value === null ? 'Unknown' : value.toLocaleString()}
+    tone={value !== null && value > 0 ? tone : 'green'} icon={SUMMARY_ICONS[icon]} />
 }
 
 /**
- * Compact Home card, styled as Emerald's NodeCard: one whole-card semantic link
- * to Node Detail, an emerald status dot with a ping ring, a two-column metric
- * grid with thin progress bars, and the dotted-leader info rows for the
- * consensus values. Healthy Nodes carry no routine prose; only an exceptional
- * Node keeps a single short diagnostic line (issue #97).
+ * Compact Home card, styled as Emerald's NodeCard: a stretched semantic title
+ * link to Node Detail, an emerald status dot with a ping ring, a two-column
+ * resource grid with thin progress bars, and a label-over-value consensus
+ * grid without per-row leaders. Copy, disclosure and identity controls sit
+ * outside the anchor so they never trigger navigation. Healthy Nodes carry no
+ * routine prose; only an exceptional Node keeps one short diagnostic line
+ * (issue #97).
  */
 function HomeNodeCard({ network, node }: NodeRecord) {
   const tone = toneFor(node.health)
@@ -270,24 +221,25 @@ function HomeNodeCard({ network, node }: NodeRecord) {
         // Borderless by design (the surface and its hover ring carry the
         // card): Tailwind's preflight leaves border-style: solid behind, so
         // this has to be stated explicitly.
-        'group/node-card relative h-full w-full rounded-md border-none bg-background/60 transition-all duration-200',
+        'group/node-card relative w-full rounded-md border-none bg-background/60 transition-all duration-200',
         'hover:z-1 hover:-translate-y-0.5 hover:bg-background hover:shadow-[0_0_20px,0_0_0_1px] hover:shadow-emerald-600/10',
         tone === 'bad' && 'shadow-[0_0_0_1px] shadow-red-600/20',
         tone === 'warn' && 'shadow-[0_0_0_1px] shadow-amber-500/20',
       )}
     >
-      <Link
-        className="flex h-full flex-col rounded-md focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
-        to={`/nodes/${node.nodeId}`}
-      >
-        <CardX bordered={false} className="h-full bg-transparent" contentClassName="flex flex-col gap-3" headerClassName="flex-wrap" header={<>
+      <CardX bordered={false} className="bg-transparent" contentClassName="flex flex-col gap-3" headerClassName="!grid grid-cols-[minmax(0,1fr)_auto] items-start" header={<>
           <div className="flex min-w-0 flex-1 basis-auto items-center gap-2">
             <NodeHealthMarker health={node.health} />
-            <h2 className="min-w-0 truncate text-base font-bold">{nodeLabel(node)}</h2>
+            <h2 className="min-w-0 flex-1 text-base font-bold"><Link to={`/nodes/${node.nodeId}`} aria-label={nodeLabel(node)} title={nodeLabel(node)} className="flex min-h-11 min-w-0 items-center after:absolute after:inset-0 after:rounded-md focus-visible:outline-none focus-visible:after:ring-[3px] focus-visible:after:ring-ring/50"><span className="truncate">{nodeLabel(node)}</span></Link></h2>
           </div>
           <ValidatorBadge consensus={node.consensus} />
         </>}>
-        <p className="truncate text-[11px] text-muted-foreground">{network.displayName}</p>
+        <div className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+          <p className="min-w-0 flex-1"><span className="[overflow-wrap:anywhere]">{network.displayName}</span> · <span className="whitespace-nowrap">Uptime {formatDuration(node.processUptimeMs)}</span></p>
+          <Dialog><DialogTrigger asChild><Button variant="ghost" size="icon" className="relative z-10 size-11 shrink-0" aria-label="Node identity details"><Info className="size-3.5" /></Button></DialogTrigger>
+            <DialogContent className="max-h-[85dvh] overflow-y-auto rounded-md shadow-sm"><DialogTitle className="pr-10 [overflow-wrap:anywhere]">{nodeLabel(node)}</DialogTitle><DialogDescription className="[overflow-wrap:anywhere]">Network: {network.displayName} · Uptime {formatDuration(node.processUptimeMs)}. Node role describes the Node’s consensus membership, not its linked Validator’s current staking validity or the freshness of Provider data.</DialogDescription></DialogContent>
+          </Dialog>
+        </div>
         {diagnostic && (
           <p
             data-slot="node-diagnostic"
@@ -303,22 +255,21 @@ function HomeNodeCard({ network, node }: NodeRecord) {
           </p>
         )}
         <ResourceRow node={node} />
-        <div data-slot="node-business-metrics" className="flex flex-col">
-          <MetricRow label="Head" value={formatNumber(node.currentHead)} />
+        <div data-slot="node-business-metrics" className="grid grid-cols-2 gap-x-4 gap-y-3 border-t border-border pt-3">
+          <MetricRow layout="stacked" label="Head" value={formatNumber(node.currentHead)} />
           <ConsensusRow consensus={node.consensus} />
-          <div data-slot="node-counts">
+          <div data-slot="node-counts" data-wide={formatNumber(node.latestBlockTransactionCount).length > 12 || formatPeerCount(node).length > 12 || undefined}>
             <MetricRow label="Txs" value={formatNumber(node.latestBlockTransactionCount)} />
             <MetricRow label="Peers" value={formatPeerCount(node)} />
           </div>
           {formatPeerObservation(node) && (
-            <small data-slot="metric-row-detail" className="text-[11px] text-muted-foreground">
+            <small data-slot="metric-row-detail" className="col-span-2 text-[11px] text-muted-foreground">
               {formatPeerObservation(node)}
             </small>
           )}
         </div>
         <LinkedValidatorSection node={node} />
         </CardX>
-      </Link>
     </article>
   )
 }
@@ -332,7 +283,7 @@ function ResourceRow({ node }: { node: PublicNode }) {
     >
       <MetricRow label="CPU" value={formatPercent(node.processCpuPercent)} progress={node.processCpuPercent ?? null} />
       <MetricRow label="Memory" value={formatPercent(node.processMemoryPercent)} progress={node.processMemoryPercent ?? null} />
-      <div className="md:col-span-2" data-slot="node-data-resource">
+      <div className="col-span-2" data-slot="node-data-resource">
         <MetricRow
           label="Node data"
           value={formatPercent(nodeDataProgressValue)}
@@ -345,9 +296,6 @@ function ResourceRow({ node }: { node: PublicNode }) {
           <span aria-label={`Upload ${formatRate(node.hostNetworkTxBytesPerSec)}`} className="inline-flex items-baseline text-green-600"><ChevronUp className="size-3 shrink-0 self-center" aria-hidden="true" />{formatRate(node.hostNetworkTxBytesPerSec)}</span>
           <span aria-label={`Download ${formatRate(node.hostNetworkRxBytesPerSec)}`} className="inline-flex items-baseline text-blue-600"><ChevronDown className="size-3 shrink-0 self-center" aria-hidden="true" />{formatRate(node.hostNetworkRxBytesPerSec)}</span>
         </span>} />
-      </div>
-      <div className="col-span-2" role="group" aria-label="Node uptime">
-        <MetricRow label="Node uptime" value={formatDuration(node.processUptimeMs)} />
       </div>
     </div>
   )
@@ -386,10 +334,10 @@ function ConsensusRow({ consensus }: { consensus: PublicConsensusInsight | undef
   const status = consensusValueStatus(consensus)
   const detail = status === 'stale' ? 'Stale' : undefined
   return (
-    <div className="flex flex-col" role="group" aria-label="Consensus values">
-      <MetricRow label="QC" value={formatConsensusBlock(consensus?.highestQcBlock, status)} detail={detail} />
-      <MetricRow label="Locked" value={formatConsensusBlock(consensus?.highestLockBlock, status)} detail={detail} />
-      <MetricRow label="Committed" value={formatConsensusBlock(consensus?.highestCommitBlock, status)} detail={detail} />
+    <div className="contents" role="group" aria-label="Consensus values">
+      <MetricRow layout="stacked" label="QC" value={formatConsensusBlock(consensus?.highestQcBlock, status)} detail={detail} />
+      <MetricRow layout="stacked" label="Locked" value={formatConsensusBlock(consensus?.highestLockBlock, status)} detail={detail} />
+      <MetricRow layout="stacked" label="Committed" value={formatConsensusBlock(consensus?.highestCommitBlock, status)} detail={detail} />
     </div>
   )
 }
@@ -399,8 +347,8 @@ function ValidatorBadge({ consensus }: { consensus: PublicConsensusInsight | und
   const status = consensusValueStatus(consensus)
   return (
     <span data-slot="validator-role" aria-label={`Role: ${formatConsensusValidator(consensus, status)}${status === 'stale' ? ' (Stale)' : ''}`}
-      className="ml-auto inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded border border-border/60 px-1.5 py-0.5 text-[11px] leading-4 text-muted-foreground">
-      {formatConsensusValidator(consensus, status)}
+      className="ml-auto inline-flex max-w-full flex-col items-end rounded border border-border/60 px-1.5 py-0.5 text-[11px] leading-4 text-muted-foreground">
+      <span>Node role:</span><span className="whitespace-nowrap">{formatConsensusValidator(consensus, status)}</span>
       {status === 'stale' && <span>Stale</span>}
     </span>
   )

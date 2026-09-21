@@ -24,7 +24,7 @@ import {
 const CONVERGENCE_NETWORK_NAME = 'Home Convergence Network With An Extremely Long Display Name'
 const NODE_H_ID = '0195f2a1-0060-4060-8060-000000000060'
 
-const nodeCard = (page: Page, name: RegExp) => page.getByRole('link', { name: name })
+const nodeCard = (page: Page, name: RegExp) => page.getByRole('link', { name }).locator('xpath=ancestor::article[1]')
 
 /** The visible text order of every Node-card link on Home. */
 async function nodeCardNames(page: Page): Promise<string[]> {
@@ -48,11 +48,11 @@ test.describe('Converged Public Home (issue #102)', () => {
     // Header: the two-state Node Health marker precedes the Node/Network
     // identity, and it is the card's only status cue. The current SPA renders
     // Node Validator Activity nowhere, so no Activity badge is rendered in any
-    // state, and the whole card is one semantic link whose accessible name
-    // carries that order.
+    // state. The title is the stretched semantic link; the independent marker
+    // and sibling controls keep their own accessible names.
     await expect(hCard.locator('[data-slot="status-badge"]')).toHaveCount(0)
     await expect(
-      page.getByRole('link', { name: /^Healthy Node H — Producing Card/ }),
+      page.getByRole('link', { name: /^Node H — Producing Card/ }),
     ).toHaveCount(1)
 
     // Business rows carry full labels; membership is a neutral header role.
@@ -62,15 +62,18 @@ test.describe('Converged Public Home (issue #102)', () => {
     for (const label of ['Head', 'Txs', 'Peers', 'QC', 'Locked', 'Committed']) {
       await expect(hCard.getByText(label, { exact: true })).toBeVisible()
     }
-    // Every metric is one data-item / value line with the value flush right,
-    // at every fixed viewport.
+    await expect(hCard.getByRole('img', { name: 'Healthy' })).toBeVisible()
+    // Resources/counts remain inline; chain/consensus units stack label over value.
+    // The shared geometry helper checks each unit's declared presentation.
     await expectMetricRowsAligned(hCard)
     // Head, QC, and Committed share the height; each appears once per row.
     await expect(hCard.getByText('12,842,025', { exact: true })).toHaveCount(3)
     await expect(hCard.getByText('12,842,024', { exact: true })).toHaveCount(1)
     await expect(hCard.getByText('21', { exact: true })).toHaveCount(1)
     await expect(hCard.getByText('3', { exact: true })).toHaveCount(1)
-    await expect(hCard.locator('[data-slot="validator-role"]')).toHaveText('Validator')
+    await expect(hCard.locator('[data-slot="validator-role"]')).toHaveAttribute('aria-label', 'Role: Validator')
+    await expect(hCard.locator('[data-slot="validator-role"]').getByText('Node role:', { exact: true })).toBeVisible()
+    await expect(hCard.locator('[data-slot="validator-role"]').getByText('Validator', { exact: true })).toBeVisible()
 
     await expectNoVerboseHomeSurface(page)
 
@@ -91,17 +94,15 @@ test.describe('Converged Public Home (issue #102)', () => {
       { label: 'Networks', value: '2' },
     ]
     for (const { label, value } of summaryFacts) {
-      const card = page.getByRole('article').filter({ hasText: label })
+      const card = page.getByRole('article', { name: label, exact: true })
       await expect(card).toHaveCount(1)
       // The card exposes marker, title, and number only - no explanatory
       // footer text.
       await expect(card).toHaveText(`${label} ${value}`, { useInnerText: true })
       const height = (await card.boundingBox())!.height
-      // The Emerald counter shell is compact: the stacked phone layout renders
-      // each card at about 62px, while the desktop band stretches the 2×2 grid
-      // to about 116px. Both keep a single readable counter card.
-      const phoneLayout = testInfo.project.name.startsWith('phone')
-      expect(height, 'summary card stays compact').toBeGreaterThanOrEqual(phoneLayout ? 56 : 80)
+      // The tiles keep the compact height of the original four-card 2x2 grid:
+      // a 44px control-sized header row plus the value, never a footer row.
+      expect(height, 'summary card keeps the restored compact height').toBeGreaterThanOrEqual(80)
       expect(height, 'summary card stays compact').toBeLessThanOrEqual(120)
     }
 
@@ -109,13 +110,13 @@ test.describe('Converged Public Home (issue #102)', () => {
     // several at 1280px, two at 768px, one on a phone. Read the first two
     // cards after the active Health sort instead of naming a pair: adding
     // another Active Node may legitimately shift row pairing.
-    const activeNodeLinks = page.getByLabel('Active Nodes', { exact: true }).getByRole('link')
+    const activeNodeCards = page.locator('[aria-label="Active Nodes"] [data-slot="node-card"]')
     // Park the pointer before measuring: a hovered card lifts by 2px, which
     // would otherwise read as a different grid row.
     await page.mouse.move(4, 4)
     await page.waitForTimeout(250)
-    const firstBox = (await activeNodeLinks.first().boundingBox())!
-    const secondBox = (await activeNodeLinks.nth(1).boundingBox())!
+    const firstBox = (await activeNodeCards.first().boundingBox())!
+    const secondBox = (await activeNodeCards.nth(1).boundingBox())!
     if (testInfo.project.name === 'phone-360-touch' || testInfo.project.name === 'phone-390-touch') {
       expect(Math.abs(firstBox.y - secondBox.y), 'a phone renders one Node column').toBeGreaterThan(1)
     } else {
@@ -151,8 +152,14 @@ test.describe('Converged Public Home (issue #102)', () => {
     // No, and a Node without an effective Link has Unknown Activity.
     const kCard = nodeCard(page, /Node K/)
     await expect(kCard).toBeVisible({ timeout: 15_000 })
-    // Txs plus six absent resource values now say Unknown, not an em dash.
-    await expect(kCard.getByText('Unknown', { exact: true })).toHaveCount(7)
+    // Txs and resource values remain Unknown; uptime now belongs to the identity line.
+    for (const label of ['Txs', 'CPU', 'Memory', 'Node data']) {
+      const row = kCard.locator('[data-slot="metric-row"]').filter({ has: page.getByText(label, { exact: true }) })
+      await expect(row.locator('[data-slot="metric-row-value"]')).toHaveText('Unknown')
+    }
+    await expect(kCard.getByLabel('Upload Unknown')).toBeVisible()
+    await expect(kCard.getByLabel('Download Unknown')).toBeVisible()
+    await expect(kCard.getByText('Uptime Unknown', { exact: true })).toBeVisible()
     await expect(kCard.getByText('12,842,024', { exact: true })).toHaveCount(3)
     await expect(kCard.getByText('12,842,023', { exact: true })).toHaveCount(1)
     await expect(kCard.getByText('0', { exact: true })).toHaveCount(1)
@@ -165,7 +172,8 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(lCard.getByText('13', { exact: true })).toHaveCount(1)
     await expect(lCard.getByText('12,842,023', { exact: true })).toHaveCount(3)
     await expect(lCard.getByText('12,842,022', { exact: true })).toHaveCount(1)
-    await expect(lCard.locator('[data-slot="validator-role"]')).toHaveText('ValidatorStale')
+    await expect(lCard.locator('[data-slot="validator-role"]')).toHaveAttribute('aria-label', 'Role: Validator (Stale)')
+    await expect(lCard.locator('[data-slot="validator-role"]').getByText('Validator', { exact: true })).toBeVisible()
     await expect(lCard.getByText('Stale', { exact: true })).toHaveCount(4)
 
     // Node M: effective Link with an authoritative no-live-validator result.
@@ -174,25 +182,29 @@ test.describe('Converged Public Home (issue #102)', () => {
     const mCard = nodeCard(page, /Node M/)
     await expect(mCard.locator('[data-slot="status-badge"]')).toHaveCount(0)
     await expect(
-      page.getByRole('link', { name: /^Healthy Node M — Validator Observing/ }),
+      page.getByRole('link', { name: /^Node M — Validator Observing/ }),
     ).toHaveCount(1)
 
     // Node N: a Provider error no longer surfaces as an Activity badge, and the
     // independent Node Health marker is unchanged by it.
     await expect(
-      page.getByRole('link', { name: /^Healthy Node N — Stale Last-Good/ }),
+      page.getByRole('link', { name: /^Node N — Stale Last-Good/ }),
     ).toHaveCount(1)
+    await expect(mCard.getByRole('img', { name: 'Healthy' })).toBeVisible()
+    await expect(nodeCard(page, /Node N/).getByRole('img', { name: 'Healthy' })).toBeVisible()
     await expect(nodeCard(page, /Node N/).locator('[data-slot="status-badge"]')).toHaveCount(0)
 
     // Node P has no Node observation; only the Agent-shared Host network
     // observation is known, and missing Node values never become 0 or No.
     const pCard = nodeCard(page, /Node P/)
     // All absent metrics are explicit, including resource and uptime values.
-    for (const label of ['CPU', 'Memory', 'Node data', 'Node uptime', 'Head', 'Txs', 'Peers', 'QC', 'Locked', 'Committed']) {
+    for (const label of ['CPU', 'Memory', 'Node data', 'Head', 'Txs', 'Peers', 'QC', 'Locked', 'Committed']) {
       const row = pCard.locator('[data-slot="metric-row"]').filter({ has: page.getByText(label, { exact: true }) })
       await expect(row.locator('[data-slot="metric-row-value"]')).toHaveText('Unknown')
     }
-    await expect(pCard.locator('[data-slot="validator-role"]')).toHaveText('Unknown')
+    await expect(pCard.getByText('Uptime Unknown', { exact: true })).toBeVisible()
+    await expect(pCard.locator('[data-slot="validator-role"]')).toHaveAttribute('aria-label', 'Role: Unknown')
+    await expect(pCard.locator('[data-slot="validator-role"]').getByText('Unknown', { exact: true })).toBeVisible()
     await expect(pCard.getByText('0', { exact: true })).toHaveCount(0)
     await expect(pCard.getByText('Non-validator', { exact: true })).toHaveCount(0)
     await expect(pCard.getByText('one or more observations are stale or unknown')).toHaveCount(1)

@@ -1,7 +1,12 @@
+import { useId, useState } from 'react'
+import { Copy } from 'lucide-react'
 import type { PublicNode, PublicValidatorInsight } from '../api/generated'
+import { Button } from './ui/button'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog'
 import { formatAmountCompact, formatAmountExact } from '../lib/amount'
 import { formatRatePercent2, formatRatePercentExact } from '../lib/rate'
 import { MetricRow } from './MetricRow'
+import { ExactAmount } from './ExactAmount'
 import { CardX } from './ui/card-x'
 import { formatUtcDateTime } from './StatusBadge'
 import { SURFACE_CARD } from '../lib/surface'
@@ -148,20 +153,23 @@ function stateNote(validator: PublicValidatorInsight): string | null {
  * production rate, PlatScan's own 24-hour rate, and the currently effective
  * delegation reward distribution percentage, plus the explicit
  * not-configured / never-observed / stale / unranked / not-applicable /
- * retained states. A Node with no effective Link renders nothing at all; later
- * Validator metrics extend the same metric group rather than adding a second
+ * retained states. A Node with no effective Link explains identity discovery
+ * separately; Validator metrics extend the same group rather than adding a second
  * region (#154, #155, #156, #157, #158).
  */
 export function LinkedValidatorSection({ node, variant = 'card' }: { node: PublicNode; variant?: 'card' | 'detail' }) {
   const validator = node.validator
-  // A Node without an established automatic correspondence explains itself
-  // once instead of offering a manual binding; a Node that is identified but
-  // has no Provider coverage already has a Link and takes the normal path.
+  // Missing identity discovery is not authoritative absence of staking. Keep
+  // it distinct from an established Link whose six metrics are still unknown.
   if (!validator) {
-    // The Server already sanitizes the reason and omits it for an identified
-    // Node, so React renders exactly what it was given (#173).
-    const reason = node.validatorIdentityReason
-    if (!reason) return null
+    const state = node.validatorIdentityState
+    // Prefer the Server's sanitized explanation. Optional null state means no
+    // discovery pass has run; identified without insight is data unavailability.
+    const reason = node.validatorIdentityReason || (state == null
+      ? 'Validator identity has not been observed yet.'
+      : state === 'identified'
+        ? 'Validator data is unavailable for the identified identity.'
+        : 'No Validator identity has been established for this Node.')
     return (
       <section
         data-slot="linked-validator"
@@ -169,7 +177,7 @@ export function LinkedValidatorSection({ node, variant = 'card' }: { node: Publi
         aria-label="Linked Validator identity"
       >
         <h3 className="m-0 text-xs font-medium tracking-wider text-muted-foreground">Validator identity</h3>
-        <p className="m-0 mt-1 text-[11px] text-muted-foreground" role="status">{reason}</p>
+        <p className="m-0 mt-1 text-[11px] text-muted-foreground" role="status" aria-label={`Validator identity state: ${state ?? 'not observed'}`}>{reason}</p>
       </section>
     )
   }
@@ -181,8 +189,9 @@ export function LinkedValidatorSection({ node, variant = 'card' }: { node: Publi
   const statusRetained = validator.currentValidatorStatusState === 'stale'
   const rankState = rankNote(validator)
   const retained = validator.state !== 'fresh' && validator.state !== 'stale' && (validator.blockCount != null || validator.rewardAmount != null || validator.rank != null || validator.blockRate != null || validator.genBlocksRate != null || validator.delegationRewardPercentage != null)
-  // Detail exposes every digit the source provided; cards may abbreviate, but
-  // both come from the same exact-decimal string and never through a float.
+  // Detail exposes every digit the source provided; the card keeps the
+  // abbreviated reward form. Both read the same exact-decimal string and never
+  // round-trip through a float.
   const cumulativeRewards = variant === 'detail'
     ? formatAmountExact(validator.rewardAmount)
     : formatAmountCompact(validator.rewardAmount)
@@ -241,7 +250,139 @@ export function LinkedValidatorSection({ node, variant = 'card' }: { node: Publi
       contentClassName="flex min-w-0 flex-col gap-2"
     >{body}</CardX>
   }
-  return <section data-slot="linked-validator" className="min-w-0 border-t border-border pt-3" aria-label="Linked Validator">{body}</section>
+  return <ValidatorCard key={validator.validatorNodeId} node={node} validator={validator} />
+}
+
+/** Only hide redundant empty slots, never evidence or a retained value. */
+function canFoldMissingMetrics(validator: PublicValidatorInsight): boolean {
+  return validator.currentValidatorStatus === 'not_validator'
+    && validator.currentValidatorStatusState === 'current'
+    // An authoritative empty response has no last-good observation, so its
+    // data freshness may be unknown even though staking status is current.
+    && ((validator.state === 'fresh' && validator.freshness === 'fresh')
+      || (validator.state === 'empty' && (validator.freshness === 'fresh' || validator.freshness === 'unknown')))
+    && !hasMetricValues(validator)
+    && validator.rankState !== 'ranked'
+    && validator.rankState !== 'unranked'
+    && validator.blockRateState !== 'not_applicable'
+}
+
+function hasMetricValues(validator: PublicValidatorInsight): boolean {
+  return [validator.blockCount, validator.rewardAmount, validator.rank, validator.blockRate,
+    validator.genBlocksRate, validator.delegationRewardPercentage].some(value => value != null)
+}
+
+/** Card-only typography: equal two-line labels, normal word boundaries. */
+function ValidatorMetric({ label, value, reason }: { label: string; value: string; reason: string }) {
+  const descriptionId = useId()
+  const unknown = value === 'Unknown'
+  return <div data-slot="validator-metric" className={cn("min-w-0", value.length > 15 && "col-span-2")}>
+    <span className="block min-h-8 text-xs leading-4 text-muted-foreground">{label}</span>
+    <strong className={cn('block text-sm font-medium leading-5 tabular-nums text-foreground', value.length > 15 ? '[overflow-wrap:anywhere]' : 'whitespace-nowrap')} aria-describedby={unknown ? descriptionId : undefined}>
+      {unknown ? '—' : <ExactAmount value={value} />}
+    </strong>
+    {unknown && <small id={descriptionId} className="block text-[11px] text-muted-foreground">
+      Unknown<span className="sr-only">: {reason}</span>
+    </small>}
+  </div>
+}
+
+function ValidatorCard({ node, validator }: { node: PublicNode; validator: PublicValidatorInsight }) {
+  const [copyStatus, setCopyStatus] = useState('')
+  const identifierId = useId()
+  const identifier = validator.validatorNodeId
+  // Display fragments only: never normalize the identifier sent to clipboard.
+  const fingerprint = identifier.length > 22 ? `${identifier.slice(0, 10)}…${identifier.slice(-8)}` : identifier
+  const qualifier = currentValidatorStatusQualifierLabel(validator.currentValidatorStatusQualifier)
+  const cumulativeRewards = formatAmountCompact(validator.rewardAmount)
+  const folded = canFoldMissingMetrics(validator)
+  const retained = validator.state !== 'fresh' && hasMetricValues(validator)
+  const copyIdentifier = async () => {
+    try {
+      await navigator.clipboard.writeText(identifier)
+      setCopyStatus('Validator identifier copied.')
+    } catch {
+      setCopyStatus('Copy failed. Open Validator details to select and copy the full identifier manually.')
+    }
+  }
+
+  return <section data-slot="linked-validator" className="min-w-0 border-t border-border pt-3" aria-label="Linked Validator">
+    <header className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+      <h3 className="m-0 text-xs font-medium tracking-wider text-muted-foreground">Linked Validator</h3>
+      <span className="flex flex-wrap items-center gap-1 text-[11px]">
+        <span className="font-medium">{currentValidatorStatusLabel(validator.currentValidatorStatus)}</span>
+        {qualifier && <span className="text-warning">{qualifier}</span>}
+      </span>
+    </header>
+    {validator.displayName && validator.displayName !== identifier && <p className="m-0 mt-1 text-sm font-semibold break-words">{validator.displayName}</p>}
+    <div className="flex min-w-0 items-center gap-1">
+      <code className="min-w-0 flex-1 text-xs text-muted-foreground" aria-label={`Validator identifier: ${fingerprint}`}>{fingerprint}</code>
+      <Button variant="ghost" size="icon" className="relative z-10" aria-label="Copy full Validator identifier" onClick={event => { event.stopPropagation(); void copyIdentifier() }}>
+        <Copy aria-hidden="true" />
+      </Button>
+      <Dialog>
+        <DialogTrigger asChild>
+          <Button variant="ghost" size="sm" className="relative z-10 text-xs" onClick={event => event.stopPropagation()} aria-label="Open Validator details">Details</Button>
+        </DialogTrigger>
+        <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto" onClick={event => event.stopPropagation()}>
+          <DialogHeader className="pr-11">
+            <DialogTitle>Validator details</DialogTitle>
+            <DialogDescription>Full identifier, exact values, explanations and provenance. Data state describes the Provider, not Node health or current staking validity.</DialogDescription>
+          </DialogHeader>
+          <div className="min-w-0">
+            <label htmlFor={identifierId} className="block text-xs font-medium text-muted-foreground">Full Validator identifier</label>
+            <textarea id={identifierId} readOnly value={identifier} rows={4} spellCheck={false}
+              className="mt-1 block w-full resize-y rounded-md border border-border bg-background p-2 font-mono text-xs break-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onFocus={event => event.currentTarget.select()} />
+            <p className="m-0 mt-1 text-xs text-muted-foreground">Select the full identifier to copy it manually.</p>
+          </div>
+          <LinkedValidatorSection node={node} variant="detail" />
+          <ValidatorPublicStates node={node} validator={validator} />
+        </DialogContent>
+      </Dialog>
+    </div>
+    <p role="status" aria-label="Identifier copy status" className={cn('m-0 text-xs text-muted-foreground', !copyStatus && 'sr-only')}>{copyStatus}</p>
+    <p className="m-0 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground" role="status" aria-label="Validator Provider data state">
+      <span className={cn('inline-block size-1.5 shrink-0 rounded-full', stateDotClass(validator.state))} aria-hidden="true" />
+      <span>Data: <span className="font-medium text-foreground">{validatorStateLabel(validator.state, validator.freshness)}</span></span>
+      {validator.freshness === 'stale' && validator.state !== 'stale' && <span>· Stale</span>}
+      {retained && <span>· last successful value retained</span>}
+    </p>
+    {validator.currentValidatorStatusState === 'stale' && <p className="m-0 mt-1 text-xs text-muted-foreground" role="status">Staking status stale · last confirmed status retained.</p>}
+    {node.validatorIdentityReason && <p className="m-0 mt-1 text-xs text-muted-foreground" role="status">Identity verification unavailable · last established association retained.</p>}
+    {validator.rankFreshness === 'stale' && <p className="m-0 mt-1 text-xs text-muted-foreground" role="status">Network rank stale · last ranking retained.</p>}
+    {validator.rankState === 'error' && <p className="m-0 mt-1 text-xs text-muted-foreground" role="status">Network ranking collection failed.</p>}
+    {validator.counterState === 'counter_reset' && <p className="m-0 mt-1 text-xs text-destructive" role="status">Counter reset or correction observed.</p>}
+    {folded ? <p className="m-0 mt-2 text-xs text-muted-foreground">No current staking identity; no Validator metrics available.</p> :
+      <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3" role="group" aria-label="Linked Validator metrics">
+        <ValidatorMetric label="Cumulative blocks" value={blockCountLabel(validator.blockCount)} reason="No cumulative block count is available from the Validator source." />
+        <ValidatorMetric label="Cumulative rewards" value={cumulativeRewards} reason="No cumulative reward amount is available from the Validator source." />
+        <ValidatorMetric label="Network rank" value={rankLabel(validator)} reason={rankNote(validator) ?? 'No Network rank is available.'} />
+        <ValidatorMetric label="Production rate" value={blockRateLabel(validator, 'card')} reason="The source has not supplied a complete cumulative produced/scheduled block pair." />
+        <ValidatorMetric label="PlatScan 24h rate" value={genBlocksRateLabel(validator, 'card')} reason="No PlatScan 24-hour block production rate is available." />
+        <ValidatorMetric label="Delegation reward share" value={delegationRewardShareLabel(validator, 'card')} reason="No effective delegation reward distribution ratio is available." />
+      </div>}
+  </section>
+}
+
+/** Public state strings are evidence, not raw Provider diagnostics. */
+function ValidatorPublicStates({ node, validator }: { node: PublicNode; validator: PublicValidatorInsight }) {
+  const states = [
+    ['Current staking status', validator.currentValidatorStatus],
+    ['Staking status state', validator.currentValidatorStatusState],
+    ['Staking qualifier', validator.currentValidatorStatusQualifier],
+    ['Provider state', validator.state], ['Data freshness', validator.freshness],
+    ['Rank state', validator.rankState], ['Rank freshness', validator.rankFreshness],
+    ['Production rate state', validator.blockRateState], ['Counter state', validator.counterState],
+    ['Activity', validator.activity], ['Activity state', validator.activityState],
+    ['Identity state', node.validatorIdentityState],
+  ]
+  return <dl className="m-0 grid grid-cols-2 gap-3 border-t border-border pt-3" aria-label="Public Validator states">
+    {states.map(([label, value]) => <div key={label} className="min-w-0">
+      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dd className="m-0 break-words text-xs">{value ?? 'Not provided'}</dd>
+    </div>)}
+  </dl>
 }
 
 function Provenance({ validator }: { validator: PublicValidatorInsight }) {
@@ -251,7 +392,7 @@ function Provenance({ validator }: { validator: PublicValidatorInsight }) {
   </div>
   return <dl className="m-0 grid grid-cols-[repeat(auto-fit,minmax(9rem,1fr))] gap-x-4 gap-y-2 border-t border-dashed border-border/60 pt-2">
     {fact('Last success', validator.receivedAt ? formatUtcDateTime(validator.receivedAt) : 'Never observed')}
-    // The ranking list is fetched independently, so it has its own success time.
+    {/* The ranking list is fetched independently, so it has its own success time. */}
     {fact('Rank last success', validator.rankReceivedAt ? formatUtcDateTime(validator.rankReceivedAt) : 'Never observed')}
     {fact('Rank cohort', validator.rankCohortSize != null ? `${validator.rankCohortSize}` : 'Unknown')}
     {fact('Source', validator.source ?? 'Unknown')}
