@@ -227,19 +227,23 @@ function HomeNodeCard({ network, node }: NodeRecord) {
         tone === 'warn' && 'shadow-[0_0_0_1px] shadow-amber-500/20',
       )}
     >
-      <CardX bordered={false} className="bg-transparent" contentClassName="flex flex-col gap-3" headerClassName="!grid grid-cols-[minmax(0,1fr)_auto] items-start" header={<>
-          <div className="flex min-w-0 flex-1 basis-auto items-center gap-2">
+      <CardX bordered={false} className="bg-transparent" contentClassName="flex flex-col gap-3" headerClassName="!grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-2 gap-y-1.5" header={<>
+          <div className="flex min-w-0 items-center gap-2">
             <NodeHealthMarker health={node.health} />
-            <h2 className="min-w-0 flex-1 text-base font-bold"><Link to={`/nodes/${node.nodeId}`} aria-label={nodeLabel(node)} title={nodeLabel(node)} className="flex min-h-11 min-w-0 items-center after:absolute after:inset-0 after:rounded-md focus-visible:outline-none focus-visible:after:ring-[3px] focus-visible:after:ring-ring/50"><span className="truncate">{nodeLabel(node)}</span></Link></h2>
+            {/* The 44px target is kept on the anchor; the negative block margin
+                keeps it from inflating the identity row, so the name row and
+                the Network · Uptime row stay content-driven and can sit 6px
+                apart. */}
+            <h2 className="min-w-0 text-base font-bold"><Link to={`/nodes/${node.nodeId}`} aria-label={nodeLabel(node)} title={nodeLabel(node)} className="flex -my-2.5 min-h-11 min-w-0 items-center after:absolute after:inset-0 after:rounded-md focus-visible:outline-none focus-visible:after:ring-[3px] focus-visible:after:ring-ring/50"><span className="truncate">{nodeLabel(node)}</span></Link></h2>
           </div>
           <ValidatorBadge consensus={node.consensus} />
+          <div className="col-span-2 flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+            <p className="min-w-0 flex-1"><span className="[overflow-wrap:anywhere]">{network.displayName}</span> · <span className="whitespace-nowrap">Uptime {formatDuration(node.processUptimeMs)}</span></p>
+            <Dialog><DialogTrigger asChild><Button variant="ghost" size="icon" className="relative z-10 -my-3.5 size-11 shrink-0" aria-label="Node identity details"><Info className="size-3.5" /></Button></DialogTrigger>
+              <DialogContent className="max-h-[85dvh] overflow-y-auto rounded-md shadow-sm"><DialogTitle className="pr-10 [overflow-wrap:anywhere]">{nodeLabel(node)}</DialogTitle><DialogDescription className="[overflow-wrap:anywhere]">Network: {network.displayName} · Uptime {formatDuration(node.processUptimeMs)}. Node role describes the Node’s consensus membership, not its linked Validator’s current staking validity or the freshness of Provider data.</DialogDescription></DialogContent>
+            </Dialog>
+          </div>
         </>}>
-        <div className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
-          <p className="min-w-0 flex-1"><span className="[overflow-wrap:anywhere]">{network.displayName}</span> · <span className="whitespace-nowrap">Uptime {formatDuration(node.processUptimeMs)}</span></p>
-          <Dialog><DialogTrigger asChild><Button variant="ghost" size="icon" className="relative z-10 size-11 shrink-0" aria-label="Node identity details"><Info className="size-3.5" /></Button></DialogTrigger>
-            <DialogContent className="max-h-[85dvh] overflow-y-auto rounded-md shadow-sm"><DialogTitle className="pr-10 [overflow-wrap:anywhere]">{nodeLabel(node)}</DialogTitle><DialogDescription className="[overflow-wrap:anywhere]">Network: {network.displayName} · Uptime {formatDuration(node.processUptimeMs)}. Node role describes the Node’s consensus membership, not its linked Validator’s current staking validity or the freshness of Provider data.</DialogDescription></DialogContent>
-          </Dialog>
-        </div>
         {diagnostic && (
           <p
             data-slot="node-diagnostic"
@@ -291,7 +295,7 @@ function ResourceRow({ node }: { node: PublicNode }) {
           progress={nodeDataProgressValue}
         />
       </div>
-      <div className="col-span-2" role="group" aria-label="Host network speed">
+      <div className="col-span-2" data-slot="host-network-speed" role="group" aria-label="Host network speed">
         <MetricRow label="Speed" value={<span className="flex gap-2">
           <span aria-label={`Upload ${formatRate(node.hostNetworkTxBytesPerSec)}`} className="inline-flex items-baseline text-green-600"><ChevronUp className="size-3 shrink-0 self-center" aria-hidden="true" />{formatRate(node.hostNetworkTxBytesPerSec)}</span>
           <span aria-label={`Download ${formatRate(node.hostNetworkRxBytesPerSec)}`} className="inline-flex items-baseline text-blue-600"><ChevronDown className="size-3 shrink-0 self-center" aria-hidden="true" />{formatRate(node.hostNetworkRxBytesPerSec)}</span>
@@ -342,14 +346,17 @@ function ConsensusRow({ consensus }: { consensus: PublicConsensusInsight | undef
   )
 }
 
-/** Neutral membership, independent of Node health; keep last-good freshness visible. */
+/** Neutral membership, independent of Node health; keep last-good freshness visible.
+ *  One line when the card has room: `Node: Non-validator`. */
 function ValidatorBadge({ consensus }: { consensus: PublicConsensusInsight | undefined }) {
   const status = consensusValueStatus(consensus)
+  const value = formatConsensusValidator(consensus, status)
+  const stale = status === 'stale'
   return (
-    <span data-slot="validator-role" aria-label={`Role: ${formatConsensusValidator(consensus, status)}${status === 'stale' ? ' (Stale)' : ''}`}
-      className="ml-auto inline-flex max-w-full flex-col items-end rounded border border-border/60 px-1.5 py-0.5 text-[11px] leading-4 text-muted-foreground">
-      <span>Node role:</span><span className="whitespace-nowrap">{formatConsensusValidator(consensus, status)}</span>
-      {status === 'stale' && <span>Stale</span>}
+    <span data-slot="validator-role" aria-label={`Role: ${value}${stale ? ' (Stale)' : ''}`}
+      className="ml-auto inline-flex min-w-0 max-w-full items-baseline gap-1 rounded border border-border/60 px-1.5 py-0.5 text-[11px] leading-4 text-muted-foreground">
+      <span className="shrink-0">Node:</span><span className="truncate">{value}</span>
+      {stale && <span className="shrink-0">Stale</span>}
     </span>
   )
 }

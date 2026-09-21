@@ -8,6 +8,7 @@ import { formatRatePercent2, formatRatePercentExact } from '../lib/rate'
 import { MetricRow } from './MetricRow'
 import { ExactAmount } from './ExactAmount'
 import { CardX } from './ui/card-x'
+import { DataTooltip } from './ui/data-tooltip'
 import { formatUtcDateTime } from './StatusBadge'
 import { SURFACE_CARD } from '../lib/surface'
 import { cn } from '../lib/utils'
@@ -25,6 +26,24 @@ export function currentValidatorStatusLabel(status: string | null | undefined): 
     default: return 'Validator status unknown'
   }
 }
+
+/** Case-insensitive comparison so a Server-supplied `Unknown` still matches. */
+function isUnknownValidatorStatus(status: string | null | undefined): boolean {
+  return (status ?? '').toLowerCase() === 'unknown'
+}
+
+/**
+ * Short chip text for the Current Validator Status beside the Linked Validator
+ * heading. Only the long unknown phrase is shortened; its full field name and
+ * meaning stay available through a focusable explanation and the Details view.
+ */
+export function currentValidatorStatusShortLabel(status: string | null | undefined): string {
+  return isUnknownValidatorStatus(status) ? 'Unknown' : currentValidatorStatusLabel(status)
+}
+
+/** One shared wording for an unestablished staking verdict, used by the heading
+ *  explanation and the always-visible staking-status note. */
+const UNKNOWN_STAKING_EXPLANATION = 'Current staking validity is not established; this is not a negative conclusion.'
 
 /** The explicit special state of a confirmed-valid identity. */
 export function currentValidatorStatusQualifierLabel(qualifier: string | null | undefined): string | null {
@@ -230,7 +249,7 @@ export function LinkedValidatorSection({ node, variant = 'card' }: { node: Publi
     </div>
     {qualifierLabel && <p className="m-0 mt-1 text-[11px] text-muted-foreground" role="status">This identity has a confirmed-valid staking identity but is {qualifierLabel.toLowerCase()}, not normally producing.</p>}
     {validator.currentValidatorStatus === 'not_validator' && <p className="m-0 mt-1 text-[11px] text-muted-foreground" role="status">Authoritative evidence reports no current staking identity for this chain key.</p>}
-    {validator.currentValidatorStatus === 'unknown' && <p className="m-0 mt-1 text-[11px] text-muted-foreground" role="status">Current staking validity is not established; this is not a negative conclusion.</p>}
+    {validator.currentValidatorStatus === 'unknown' && <p className="m-0 mt-1 text-[11px] text-muted-foreground" role="status">{UNKNOWN_STAKING_EXPLANATION}</p>}
     {statusRetained && <p className="m-0 mt-1 text-[11px] text-muted-foreground" role="status">The last confirmed Validator status is retained; the source has not refreshed it recently.</p>}
     {rankState && <p className="m-0 mt-1 text-[11px] text-muted-foreground" role="status">{rankState}</p>}
     {validator.blockRateState === 'not_applicable' && <p className="m-0 mt-0.5 text-[11px] text-muted-foreground" role="status">The source reported a zero scheduled-block denominator, so a rate is not applicable — not 0%.</p>}
@@ -253,7 +272,16 @@ export function LinkedValidatorSection({ node, variant = 'card' }: { node: Publi
   return <ValidatorCard key={validator.validatorNodeId} node={node} validator={validator} />
 }
 
-/** Only hide redundant empty slots, never evidence or a retained value. */
+/**
+ * Converge an authoritative no-live-Validator result with no effective metric
+ * values into the compact empty state. The decision reads the raw business
+ * data, the explicit staking-identity verdict and the request state — never a
+ * formatted UI string. Rank status is not a value: `unranked` is a ranking
+ * outcome, so it must not by itself keep six Unknown slots expanded (#158);
+ * `unknown`/`Unranked` formatted text is likewise not a value. A retained
+ * historical value, a known `not_applicable` production rate, a partial metric
+ * set, a failed request or an unresolved identity all keep the metric
+ * structure. */
 function canFoldMissingMetrics(validator: PublicValidatorInsight): boolean {
   return validator.currentValidatorStatus === 'not_validator'
     && validator.currentValidatorStatusState === 'current'
@@ -262,29 +290,73 @@ function canFoldMissingMetrics(validator: PublicValidatorInsight): boolean {
     && ((validator.state === 'fresh' && validator.freshness === 'fresh')
       || (validator.state === 'empty' && (validator.freshness === 'fresh' || validator.freshness === 'unknown')))
     && !hasMetricValues(validator)
+    // A `ranked` outcome always carries a value; keeping the guard preserves
+    // the structure if the Server ever reports the inconsistent pair.
     && validator.rankState !== 'ranked'
-    && validator.rankState !== 'unranked'
     && validator.blockRateState !== 'not_applicable'
 }
 
+/**
+ * Raw, business-valued metric slots. A status word is not a value: an
+ * `unranked` outcome means the retained `rank` number is not rendered as a
+ * value, so it must not keep the six-slot structure either.
+ */
 function hasMetricValues(validator: PublicValidatorInsight): boolean {
-  return [validator.blockCount, validator.rewardAmount, validator.rank, validator.blockRate,
-    validator.genBlocksRate, validator.delegationRewardPercentage].some(value => value != null)
+  if (validator.blockCount != null || validator.rewardAmount != null || validator.blockRate != null
+    || validator.genBlocksRate != null || validator.delegationRewardPercentage != null) return true
+  return validator.rank != null && validator.rankState !== 'unranked'
 }
 
-/** Card-only typography: equal two-line labels, normal word boundaries. */
+/**
+ * Card-only metric cell: label over value, with the short `Unknown` status
+ * shown inline under the placeholder and its reason announced to assistive
+ * technology. The grid rows are shared by the pair (see the metrics group), so
+ * a single-line label no longer reserves two lines and the paired values still
+ * align on the taller label's row. Long labels wrap at normal word boundaries;
+ * short statuses stay whole.
+ */
 function ValidatorMetric({ label, value, reason }: { label: string; value: string; reason: string }) {
   const descriptionId = useId()
   const unknown = value === 'Unknown'
-  return <div data-slot="validator-metric" className={cn("min-w-0", value.length > 15 && "col-span-2")}>
-    <span className="block min-h-8 text-xs leading-4 text-muted-foreground">{label}</span>
-    <strong className={cn('block text-sm font-medium leading-5 tabular-nums text-foreground', value.length > 15 ? '[overflow-wrap:anywhere]' : 'whitespace-nowrap')} aria-describedby={unknown ? descriptionId : undefined}>
-      {unknown ? '—' : <ExactAmount value={value} />}
-    </strong>
-    {unknown && <small id={descriptionId} className="block text-[11px] text-muted-foreground">
-      Unknown<span className="sr-only">: {reason}</span>
-    </small>}
+  // The grid mechanics live in one place (emerald.css, keyed on data-slot) so
+  // the cell cannot drift from the group's subgrid rules.
+  return <div data-slot="validator-metric" className={cn('min-w-0', value.length > 15 && 'col-span-2')}>
+    <span className="block pb-1 text-xs leading-4 text-muted-foreground">{label}</span>
+    <div className="min-w-0">
+      <strong className={cn('block text-sm font-medium leading-5 tabular-nums text-foreground', value.length > 15 ? '[overflow-wrap:anywhere]' : 'whitespace-nowrap')} aria-describedby={unknown ? descriptionId : undefined}>
+        {unknown ? '—' : <ExactAmount value={value} />}
+      </strong>
+      {unknown && <small id={descriptionId} className="block text-[11px] text-muted-foreground">
+        Unknown<span className="sr-only">: {reason}</span>
+      </small>}
+    </div>
   </div>
+}
+
+/**
+ * The Linked Validator heading status. A long `Validator status unknown` is
+ * shortened to `Unknown`; focusing, hovering or tapping the short status opens
+ * a safe explanation that carries the full field name and meaning. The full
+ * verdict is never replaced by Provider state or Node role.
+ */
+function ValidatorStatusChip({ validator, qualifierLabel }: { validator: PublicValidatorInsight; qualifierLabel: string | null }) {
+  const full = currentValidatorStatusLabel(validator.currentValidatorStatus)
+  const short = currentValidatorStatusShortLabel(validator.currentValidatorStatus)
+  const explanation = isUnknownValidatorStatus(validator.currentValidatorStatus)
+    ? `Validator status unknown — ${UNKNOWN_STAKING_EXPLANATION}`
+    : full
+  return <span className="flex min-w-0 flex-wrap items-center gap-1 text-[11px]">
+    {short === full
+      ? <span className="font-medium">{full}</span>
+      : <DataTooltip as="span" content={explanation} placement="left" className="relative z-10" contentClassName="max-w-[15rem] text-[11px] leading-snug">
+        {/* A real 44px control: the negative block margin keeps the heading row
+            content-driven while the hit area stays touch-sized. */}
+        <button type="button" aria-label={explanation}
+          className="-my-3.5 inline-flex min-h-11 min-w-11 items-center justify-center rounded-sm px-1 font-medium underline decoration-dotted underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onClick={event => event.stopPropagation()}>{short}</button>
+      </DataTooltip>}
+    {qualifierLabel && <span className="text-warning">{qualifierLabel}</span>}
+  </span>
 }
 
 function ValidatorCard({ node, validator }: { node: PublicNode; validator: PublicValidatorInsight }) {
@@ -309,10 +381,7 @@ function ValidatorCard({ node, validator }: { node: PublicNode; validator: Publi
   return <section data-slot="linked-validator" className="min-w-0 border-t border-border pt-3" aria-label="Linked Validator">
     <header className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
       <h3 className="m-0 text-xs font-medium tracking-wider text-muted-foreground">Linked Validator</h3>
-      <span className="flex flex-wrap items-center gap-1 text-[11px]">
-        <span className="font-medium">{currentValidatorStatusLabel(validator.currentValidatorStatus)}</span>
-        {qualifier && <span className="text-warning">{qualifier}</span>}
-      </span>
+      <ValidatorStatusChip validator={validator} qualifierLabel={qualifier} />
     </header>
     {validator.displayName && validator.displayName !== identifier && <p className="m-0 mt-1 text-sm font-semibold break-words">{validator.displayName}</p>}
     <div className="flex min-w-0 items-center gap-1">
@@ -353,8 +422,10 @@ function ValidatorCard({ node, validator }: { node: PublicNode; validator: Publi
     {validator.rankFreshness === 'stale' && <p className="m-0 mt-1 text-xs text-muted-foreground" role="status">Network rank stale · last ranking retained.</p>}
     {validator.rankState === 'error' && <p className="m-0 mt-1 text-xs text-muted-foreground" role="status">Network ranking collection failed.</p>}
     {validator.counterState === 'counter_reset' && <p className="m-0 mt-1 text-xs text-destructive" role="status">Counter reset or correction observed.</p>}
-    {folded ? <p className="m-0 mt-2 text-xs text-muted-foreground">No current staking identity; no Validator metrics available.</p> :
-      <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3" role="group" aria-label="Linked Validator metrics">
+    {folded ? <p className="m-0 mt-2 text-xs text-muted-foreground">{validator.rankState === 'unranked'
+      ? 'No current staking identity; no Validator metrics available. Network rank: Unranked.'
+      : 'No current staking identity; no Validator metrics available.'}</p> :
+      <div className="mt-3" data-slot="linked-validator-metrics" role="group" aria-label="Linked Validator metrics">
         <ValidatorMetric label="Cumulative blocks" value={blockCountLabel(validator.blockCount)} reason="No cumulative block count is available from the Validator source." />
         <ValidatorMetric label="Cumulative rewards" value={cumulativeRewards} reason="No cumulative reward amount is available from the Validator source." />
         <ValidatorMetric label="Network rank" value={rankLabel(validator)} reason={rankNote(validator) ?? 'No Network rank is available.'} />

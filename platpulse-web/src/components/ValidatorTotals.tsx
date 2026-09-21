@@ -69,9 +69,8 @@ export function ValidatorTotalCard({ networks, metric, availability = 'ready' }:
   const exact = formatAmountExact(total.knownSum)
   const scope = networks.length === 1 ? networks[0].displayName : networks.length + ' Networks'
   const populated = networks.filter(network => network.nodes.length > 0).length
-  // The card face stays a number-only tile. Scope, coverage and staleness are
-  // read from the accessible Breakdown, which also carries the per-Network
-  // evidence; nothing here is delegated to a hover-only tooltip.
+  // One coverage vocabulary for the Breakdown and the tile face: this is the
+  // same Server-owned per-metric coverage text, never a hover-only tooltip.
   const coverageSummary = total.missingNetworks > 0 && total.missingNetworks === populated
     ? 'Coverage unknown'
     : total.valuedCount + '/' + total.expectedCount + ' known'
@@ -79,8 +78,16 @@ export function ValidatorTotalCard({ networks, metric, availability = 'ready' }:
       + (total.state === 'partial' ? ' · Partial' : '')
       + (total.state === 'unknown' ? ' · Unknown' : '')
       + (total.staleCount > 0 ? ' · ' + total.staleCount + ' stale' : '')
+  // The tile face prints its own Network scope followed by that same coverage
+  // text, so the scope and the metric's own Partial/denominator are readable
+  // without opening the Breakdown. A load/unavailable result still names the
+  // scope it is waiting on rather than dropping it.
+  const caption = (availability === 'ready'
+    ? [scope, coverageSummary]
+    : [networks.length > 0 ? scope : null, availability === 'loading' ? 'Loading coverage…' : 'Coverage unavailable']
+  ).filter(Boolean).join(' · ')
   const shown = metric === 'blocks' ? <ExactAmount value={exact} split /> : formatAmountOverview(total.knownSum)
-  return <HomeSummaryCard label={label} value={shown} icon={metric === 'blocks' ? Blocks : Coins}
+  return <HomeSummaryCard label={label} value={shown} caption={caption} icon={metric === 'blocks' ? Blocks : Coins}
     action={<Dialog>
       <DialogTrigger asChild><Button variant="ghost" size="icon" className="-mr-2 shrink-0" aria-label={label + ' breakdown and exact values'}><Info className="size-[18px]" strokeWidth={2} aria-hidden="true" data-icon={label} /></Button></DialogTrigger>
       <DialogContent className="max-h-[85dvh] overflow-y-auto rounded-md shadow-sm">

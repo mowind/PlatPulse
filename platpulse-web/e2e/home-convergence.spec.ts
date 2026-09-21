@@ -72,8 +72,26 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(hCard.getByText('21', { exact: true })).toHaveCount(1)
     await expect(hCard.getByText('3', { exact: true })).toHaveCount(1)
     await expect(hCard.locator('[data-slot="validator-role"]')).toHaveAttribute('aria-label', 'Role: Validator')
-    await expect(hCard.locator('[data-slot="validator-role"]').getByText('Node role:', { exact: true })).toBeVisible()
+    await expect(hCard.locator('[data-slot="validator-role"]').getByText('Node:', { exact: true })).toBeVisible()
     await expect(hCard.locator('[data-slot="validator-role"]').getByText('Validator', { exact: true })).toBeVisible()
+
+    // The identity block is content-driven: the name row and the Network ·
+    // Uptime helper sit about 6px apart and the helper about 12px above the
+    // resource block, without the 44px controls inflating either line.
+    const identityGap = await hCard.evaluate(card => {
+      const link = card.querySelector('h2 a') as HTMLElement
+      const helper = card.querySelector('[data-slot="card-x-header"] p') as HTMLElement
+      const resources = card.querySelector('[aria-label="Node process and host network resources"]') as HTMLElement
+      const linkBox = link.getBoundingClientRect()
+      const helperBox = helper.getBoundingClientRect()
+      // The 44px anchor centres its 24px name line, so the visible name bottom
+      // is 10px above the anchor's border box.
+      return { nameToHelper: helperBox.top - (linkBox.bottom - 10), helperToResources: resources.getBoundingClientRect().top - helperBox.bottom }
+    })
+    expect(identityGap.nameToHelper, 'name-to-helper gap').toBeGreaterThanOrEqual(4)
+    expect(identityGap.nameToHelper, 'name-to-helper gap').toBeLessThanOrEqual(10)
+    expect(identityGap.helperToResources, 'helper-to-resources gap').toBeGreaterThanOrEqual(10)
+    expect(identityGap.helperToResources, 'helper-to-resources gap').toBeLessThanOrEqual(16)
 
     await expectNoVerboseHomeSurface(page)
 
@@ -86,7 +104,8 @@ test.describe('Converged Public Home (issue #102)', () => {
     const lCard = nodeCard(page, /Node L/)
     await expect(lCard.getByText('one or more observations are stale or unknown')).toHaveCount(1)
 
-    // Summary cards: marker, title, and number only, as compact counters.
+    // The four non-cumulative summary cards stay marker, title and number;
+    // only the two cumulative cards add their scope/coverage stat line.
     const summaryFacts: Array<{ label: string; value: string }> = [
       { label: 'Active Nodes', value: '12' },
       { label: 'Healthy Nodes', value: '5' },
@@ -101,9 +120,19 @@ test.describe('Converged Public Home (issue #102)', () => {
       await expect(card).toHaveText(`${label} ${value}`, { useInnerText: true })
       const height = (await card.boundingBox())!.height
       // The tiles keep the compact height of the original four-card 2x2 grid:
-      // a 44px control-sized header row plus the value, never a footer row.
+      // a 44px control-sized header row, the value and the shared stat slot.
+      // The two cumulative tiles add their scope/coverage line to that slot,
+      // and auto-rows-fr gives all six the same (possibly wrapped) height.
       expect(height, 'summary card keeps the restored compact height').toBeGreaterThanOrEqual(80)
-      expect(height, 'summary card stays compact').toBeLessThanOrEqual(120)
+      expect(height, 'summary card stays compact').toBeLessThanOrEqual(160)
+    }
+
+    // The cumulative tiles print their own Network scope, coverage and Partial
+    // marker directly on the face; coverage is no longer tooltip-only.
+    for (const label of ['Cumulative blocks', 'Cumulative rewards']) {
+      const caption = page.getByRole('article', { name: label, exact: true }).locator('[data-slot="summary-caption"]')
+      await expect(caption).toContainText('2 Networks')
+      await expect(caption).toContainText(/known|Coverage unknown/)
     }
 
     // The Node grid fits as many 300px columns as the content width allows:

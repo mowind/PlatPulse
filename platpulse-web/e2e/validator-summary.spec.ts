@@ -17,9 +17,11 @@ test.describe('Home Validator totals (#159)', () => {
     for (const [label, sum] of [['Cumulative blocks', '355'], ['Cumulative rewards', '42']]) {
       const card = page.getByRole('article', { name: label, exact: true })
       await expect(card.locator('[data-slot="summary-value"]')).toHaveText(sum)
-      // The tile face is number-only: scope, coverage, Partial and staleness
-      // are read from the accessible Breakdown rather than printed on the card.
-      await expect(card).not.toContainText(/known|Partial|Networks|stale/)
+      // The tile face carries its own scope and coverage denominator directly;
+      // the Breakdown keeps the full per-metric explanation.
+      const caption = card.locator('[data-slot="summary-caption"]')
+      await expect(caption).toContainText('2 Networks')
+      await expect(caption).toContainText(/4\/4 known/)
       await card.getByRole('button', { name: label + ' breakdown and exact values' }).click()
       const dialog = page.getByRole('dialog', { name: label + ' — Breakdown' })
       await expect(dialog).toBeVisible()
@@ -52,7 +54,9 @@ test.describe('Home Validator totals (#159)', () => {
     for (const [label, value] of [['Cumulative blocks', '100'], ['Cumulative rewards', '10']]) {
       const card = page.getByRole('article', { name: label, exact: true })
       await expect(card.locator('[data-slot="summary-value"]')).toHaveText(value)
-      await expect(card).not.toContainText(/known|Partial|Networks|stale/)
+      const caption = card.locator('[data-slot="summary-caption"]')
+      await expect(caption).toContainText('PlatON E2E Network')
+      await expect(caption).toContainText(/1\/1 known/)
       await card.getByRole('button', { name: label + ' breakdown and exact values' }).click()
       const dialog = page.getByRole('dialog')
       const facts = dialog.locator('[data-slot="validator-overview-scope"]')
@@ -83,8 +87,8 @@ test.describe('Home Validator totals (#159)', () => {
     await page.goto('/')
     const blocks = page.getByRole('article', { name: 'Cumulative blocks', exact: true })
     const rewards = page.getByRole('article', { name: 'Cumulative rewards', exact: true })
-    await expect(blocks).not.toContainText(/known|Partial|stale/)
-    await expect(rewards).not.toContainText(/known|Partial|stale/)
+    await expect(blocks.locator('[data-slot="summary-caption"]')).toHaveText('2 Networks · 4/6 known · Partial · 1 stale')
+    await expect(rewards.locator('[data-slot="summary-caption"]')).toHaveText('2 Networks · 1/6 known · Partial')
     for (const [label, exact, coverage] of [
       ['Cumulative blocks', '9,007,199,254,741,000', '4/6 known · Partial · 1 stale'],
       ['Cumulative rewards', '0.123456789012345678', '1/6 known · Partial'],

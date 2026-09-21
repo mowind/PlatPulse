@@ -28,6 +28,15 @@ async function overviewGeometry(page: Page) {
     if (index % columns) expect(current.x).toBeGreaterThanOrEqual(boxes[index - 1].x + boxes[index - 1].width)
     if (index >= columns) expect(current.y).toBeGreaterThanOrEqual(boxes[index - columns].y + boxes[index - columns].height)
   }
+  // Every tile starts its value directly under the uniform 44px header, so a
+  // caption that wraps on the two cumulative tiles cannot push their values off
+  // the shared baseline. Compare each value's offset from its own card top, so
+  // the per-row page offset is not mistaken for a baseline difference.
+  const valueOffsets = await summary.locator('[data-slot="summary-card"]').evaluateAll(cards => cards.map(card => {
+    const value = card.querySelector('[data-slot="summary-value"]')
+    return value ? value.getBoundingClientRect().top - card.getBoundingClientRect().top : Number.NaN
+  }))
+  for (const offset of valueOffsets) expect(Math.abs(offset - valueOffsets[0])).toBeLessThanOrEqual(1)
   const summaryBox = await box(summary)
   const mapBox = await box(page.locator('[data-slot="home-map"]'))
   if (width >= 1024) {

@@ -28,11 +28,11 @@ describe('Home cumulative overview', () => {
     render(<><ValidatorTotalCard networks={networks} metric="blocks" /><ValidatorTotalCard networks={networks} metric="rewards" /></>)
     const blocksCard = screen.getByRole('article', { name: 'Cumulative blocks' })
     expect(blocksCard.textContent).toContain('1,115')
-    // The tile stays number-only: scope, coverage, Partial and per-metric
-    // coverage live in the accessible Breakdown, not on the card face.
-    for (const card of [blocksCard, screen.getByRole('article', { name: 'Cumulative rewards' })]) {
-      expect(card.textContent).not.toMatch(/known|Partial|Unknown|Networks|Mainnet|Testnet|stale/)
-    }
+    // The tile face now carries its own Network scope and its own coverage
+    // denominator directly; Partial is visible without opening the Breakdown.
+    expect(blocksCard.querySelector('[data-slot="summary-caption"]')?.textContent).toBe('2 Networks · 5/6 known · Partial · 1 stale')
+    expect(screen.getByRole('article', { name: 'Cumulative rewards' }).querySelector('[data-slot="summary-caption"]')?.textContent)
+      .toBe('2 Networks · 4/6 known · Partial · 1 stale')
     fireEvent.click(screen.getByRole('button', { name: 'Cumulative blocks breakdown and exact values' }))
     const dialog = screen.getByRole('dialog')
     expect(within(dialog).getByText('5/6 known · Partial · 1 stale')).toBeTruthy()
@@ -69,7 +69,8 @@ describe('Home cumulative overview', () => {
     render(<ValidatorTotalCard networks={[missing]} metric="blocks" />)
     const card = screen.getByRole('article', { name: 'Cumulative blocks' })
     expect(card.querySelector('[data-slot="summary-value"]')?.textContent).toBe('Unknown')
-    expect(card.textContent).not.toMatch(/\d+\/\d+ known|Partial|stale/)
+    // A missing value is Unknown; the visible coverage line never fabricates a zero total.
+    expect(card.querySelector('[data-slot="summary-caption"]')?.textContent).toBe('Missing · 0/2 known · Unknown')
   })
 
   it('does not fabricate coverage for a missing summary or empty Network', () => {
@@ -78,7 +79,8 @@ describe('Home cumulative overview', () => {
     expect(selectionTotal([networks[0], missing], 'rewards')).toMatchObject({ knownSum: '11.750000000001', missingNetworks: 1, state: 'partial' })
     expect(selectionTotal([network('Empty', other, 0)], 'blocks').knownSum).toBeNull()
     render(<ValidatorTotalCard networks={[networks[0], missing]} metric="rewards" />)
-    expect(screen.getByRole('article', { name: 'Cumulative rewards' }).textContent).not.toMatch(/known|unavailable/)
+    expect(screen.getByRole('article', { name: 'Cumulative rewards' }).querySelector('[data-slot="summary-caption"]')?.textContent)
+      .toBe('2 Networks · 3/5 known (reported) · Partial · 1 stale')
     fireEvent.click(screen.getByRole('button', { name: /breakdown/ }))
     const dialog = screen.getByRole('dialog')
     expect(within(dialog).getByText('3/5 known (reported) · Partial · 1 stale')).toBeTruthy()
@@ -90,7 +92,10 @@ describe('Home cumulative overview', () => {
     // The tile stays number-only and never fabricates a total; the Breakdown
     // states whether the summaries are still loading or unavailable.
     expect(screen.getByRole('article').querySelector('[data-slot="summary-value"]')?.textContent).toBe('Unknown')
-    expect(screen.queryByText('5/6 known', { exact: false })).toBeNull()
+    // The visible stat line states the availability instead of inventing coverage.
+    // The scope is still named while coverage is pending or unavailable.
+    expect(screen.getByRole('article').querySelector('[data-slot="summary-caption"]')?.textContent)
+      .toBe('2 Networks · ' + (availability === 'loading' ? 'Loading coverage…' : 'Coverage unavailable'))
     fireEvent.click(screen.getByRole('button', { name: /breakdown/ }))
     expect(screen.getByRole('dialog').textContent).toContain(
       availability === 'loading' ? 'Loading Validator summaries…' : 'Validator summaries unavailable.',

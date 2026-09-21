@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { PublicNode, PublicValidatorInsight } from '../api/generated'
-import { LinkedValidatorSection, currentValidatorStatusLabel, validatorStateLabel } from './LinkedValidator'
+import { LinkedValidatorSection, currentValidatorStatusLabel, currentValidatorStatusShortLabel, validatorStateLabel } from './LinkedValidator'
 
 const node: PublicNode = {
   nodeId: 'node-1',
@@ -59,6 +59,9 @@ function openDetails() {
   return screen.getByRole('dialog', { name: 'Validator details' })
 }
 
+/** The rendered value of a Linked Validator metric cell (label over value). */
+const metricValue = (label: string) => screen.getByText(label).parentElement?.querySelector('strong')?.textContent
+
 describe('LinkedValidatorSection', () => {
   it.each([undefined, null])('explains a missing discovery pass without claiming absent staking: %s', validatorIdentityState => {
     render(<LinkedValidatorSection node={{ ...node, validatorIdentityState }} />)
@@ -102,7 +105,9 @@ describe('LinkedValidatorSection', () => {
 
     cleanup()
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, currentValidatorStatus: 'unknown', currentValidatorStatusState: 'unknown', currentValidatorStatusQualifier: null } }} />)
-    expect(screen.getByText('Validator status unknown')).toBeTruthy()
+    // The long heading status is shortened; its full field meaning stays in a
+    // focusable explanation and the Details dialog.
+    expect(screen.getByLabelText(/Validator status unknown/).textContent).toBe('Unknown')
     expect(within(openDetails()).getByText(/not a negative conclusion/)).toBeTruthy()
   })
 
@@ -124,7 +129,7 @@ describe('LinkedValidatorSection', () => {
 
     cleanup()
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, blockCount: null } }} />)
-    expect(screen.getByText('Cumulative blocks').nextElementSibling?.textContent).toBe('—')
+    expect(metricValue('Cumulative blocks')).toBe('—')
   })
 
   it('labels an unconfigured source explicitly and retains the last-good value', () => {
@@ -178,7 +183,7 @@ describe('LinkedValidatorSection', () => {
 
     cleanup()
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, rewardAmount: null } }} />)
-    expect(screen.getByText('Cumulative rewards').nextElementSibling?.textContent).toBe('—')
+    expect(metricValue('Cumulative rewards')).toBe('—')
   })
 
   it('retains a last-good reward after a source failure even without a block count', () => {
@@ -200,7 +205,7 @@ describe('LinkedValidatorSection', () => {
 
     cleanup()
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, blockRate: null, blockRateState: 'unknown' } }} />)
-    expect(screen.getByText('Production rate').nextElementSibling?.textContent).toBe('—')
+    expect(metricValue('Production rate')).toBe('—')
   })
 
   it('keeps a source-reported zero 24h rate distinct from a missing one', () => {
@@ -209,7 +214,7 @@ describe('LinkedValidatorSection', () => {
 
     cleanup()
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, genBlocksRate: null } }} />)
-    expect(screen.getByText('PlatScan 24h rate').nextElementSibling?.textContent).toBe('—')
+    expect(metricValue('PlatScan 24h rate')).toBe('—')
   })
 
   it('retains a last-good rate after a source failure and marks it retained', () => {
@@ -245,7 +250,7 @@ describe('LinkedValidatorSection', () => {
 
     cleanup()
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, delegationRewardPercentage: null } }} />)
-    expect(screen.getByText('Delegation reward share').nextElementSibling?.textContent).toBe('—')
+    expect(metricValue('Delegation reward share')).toBe('—')
   })
 
   it('retains a last-good delegation share after a failure without carrying it from another observation', () => {
@@ -266,7 +271,7 @@ describe('LinkedValidatorSection', () => {
 
     cleanup()
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, rank: null, rankState: 'error' } }} />)
-    expect(screen.getByText('Network rank').nextElementSibling?.textContent).toBe('—')
+    expect(metricValue('Network rank')).toBe('—')
     expect(screen.queryByText('Unranked')).toBeNull()
   })
 
@@ -284,7 +289,7 @@ describe('LinkedValidatorSection', () => {
 
   it('never presents a failed or absent ranking as unranked or zero', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, rank: null, rankState: 'unknown', rankFreshness: 'unknown' } }} />)
-    expect(screen.getByText('Network rank').nextElementSibling?.textContent).toBe('—')
+    expect(metricValue('Network rank')).toBe('—')
     expect(screen.queryByText('Unranked')).toBeNull()
     expect(screen.queryByText('0')).toBeNull()
   })
@@ -305,12 +310,15 @@ describe('LinkedValidatorSection', () => {
   it('keeps six metrics above the fold with stacked two-line labels and no metric decoration', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: insight }} />)
     const group = screen.getByRole('group', { name: 'Linked Validator metrics' })
-    expect(group.className).toContain('grid-cols-2')
+    expect(group.getAttribute('data-slot')).toBe('linked-validator-metrics')
     const metrics = group.querySelectorAll('[data-slot="validator-metric"]')
     expect(metrics).toHaveLength(6)
     for (const metric of metrics) {
-      expect(metric.firstElementChild?.className).toContain('min-h-8')
+      // The pair's shared subgrid rows live in one CSS place (keyed on the
+      // data-slot), and a single-line label must not reserve a second line.
+      expect(metric.getAttribute('data-slot')).toBe('validator-metric')
       expect(metric.firstElementChild?.className).toContain('text-xs')
+      expect(metric.firstElementChild?.className).not.toContain('min-h-8')
       expect(metric.querySelector('strong')?.className).toContain('tabular-nums')
       expect(metric.className).not.toMatch(/bg-|border-|break-all|overflow-wrap/)
     }
@@ -319,7 +327,7 @@ describe('LinkedValidatorSection', () => {
   it('distinguishes Provider Data: Current from unknown current staking status', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, currentValidatorStatus: 'unknown', currentValidatorStatusState: 'unknown' } }} />)
     expect(screen.getByRole('status', { name: 'Validator Provider data state' }).textContent).toBe('Data: Current')
-    expect(screen.getByText('Validator status unknown')).toBeTruthy()
+    expect(screen.getByLabelText(/Validator status unknown/)).toBeTruthy()
     expect(screen.queryByText('Healthy')).toBeNull()
     expect(screen.getByRole('group', { name: 'Linked Validator metrics' })).toBeTruthy()
   })
@@ -416,6 +424,30 @@ describe('LinkedValidatorSection', () => {
     expect(dialog.getByText('Provider state').nextElementSibling?.textContent).toBe(provider.state)
   })
 
+  it('folds a no-live-Validator result whose only extra status is Unranked', () => {
+    // The reported Sync / Sync LEB shape: an authoritative empty Validator
+    // response plus an Unranked ranking outcome and no metric value at all.
+    // Unranked is a ranking status, not a value, so it must not keep six
+    // Unknown slots expanded and make the empty card taller than a normal one.
+    render(<LinkedValidatorSection node={{ ...node, validator: { ...notValidator, state: 'empty', freshness: 'fresh', rankState: 'unranked', rankFreshness: 'fresh' } }} />)
+    expect(screen.getByText('Not a Validator')).toBeTruthy()
+    expect(screen.getByText('No live Validator')).toBeTruthy()
+    expect(screen.queryByRole('group', { name: 'Linked Validator metrics' })).toBeNull()
+    // The Unranked status is merged into the compact explanation, never dropped.
+    expect(screen.getByText(/Network rank: Unranked/)).toBeTruthy()
+    // Details still carries every raw field, including the metric structure.
+    const dialog = within(openDetails())
+    expect(dialog.getByRole('group', { name: 'Linked Validator metrics' }).querySelectorAll('[data-slot="metric-row"]')).toHaveLength(6)
+    expect(dialog.getByText('Rank state').nextElementSibling?.textContent).toBe('unranked')
+  })
+
+  it('keeps the six-metric structure when an Unranked Validator retains a value', () => {
+    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, currentValidatorStatus: 'not_validator', currentValidatorStatusState: 'current', rank: null, rankState: 'unranked' } }} />)
+    expect(screen.getByRole('group', { name: 'Linked Validator metrics' })).toBeTruthy()
+    expect(metricValue('Cumulative blocks')).toBe('4,321')
+    expect(metricValue('Network rank')).toBe('Unranked')
+  })
+
   it.each<Partial<PublicValidatorInsight>>([
     { currentValidatorStatus: 'unknown' }, { currentValidatorStatus: 'validator' },
     { currentValidatorStatusState: 'stale' }, { currentValidatorStatusState: 'unknown' },
@@ -423,7 +455,7 @@ describe('LinkedValidatorSection', () => {
     { state: 'error' }, { state: 'loading' }, { state: 'unknown' }, { state: 'stale' },
     { state: 'not_configured' }, { state: 'unsupported' }, { state: 'not_found' },
     { freshness: 'stale' }, { freshness: 'unknown' }, { state: 'empty', freshness: 'stale' },
-    { rankState: 'unranked' }, { rankState: 'ranked' }, { blockRateState: 'not_applicable' },
+    { rankState: 'ranked' }, { blockRateState: 'not_applicable' },
     { blockCount: 0 }, { rewardAmount: '0' }, { rank: 7 }, { blockRate: '125' },
     { genBlocksRate: '0' }, { delegationRewardPercentage: '0' },
   ])('does not fold missing slots when evidence or meaningful values remain: %j', override => {
@@ -440,7 +472,7 @@ describe('LinkedValidatorSection', () => {
       const description = document.getElementById(value.getAttribute('aria-describedby') ?? '')
       expect(description?.textContent).toMatch(/^Unknown: .+/)
     }
-    expect(screen.getByText('Validator status unknown')).toBeTruthy()
+    expect(screen.getByLabelText(/Validator status unknown/)).toBeTruthy()
     expect(screen.queryByText('Not a Validator')).toBeNull()
     expect(screen.queryByText('0')).toBeNull()
   })
@@ -473,6 +505,12 @@ describe('LinkedValidatorSection', () => {
     expect(currentValidatorStatusLabel('validator')).toBe('Validator')
     expect(currentValidatorStatusLabel('not_validator')).toBe('Not a Validator')
     expect(currentValidatorStatusLabel('unknown')).toBe('Validator status unknown')
+    expect(currentValidatorStatusShortLabel('validator')).toBe('Validator')
+    expect(currentValidatorStatusShortLabel('not_validator')).toBe('Not a Validator')
+    expect(currentValidatorStatusShortLabel('unknown')).toBe('Unknown')
+    // The Server value is compared case-insensitively, so a capitalized
+    // `Unknown` still gets the safe explanation rather than the generic label.
+    expect(currentValidatorStatusShortLabel('Unknown')).toBe('Unknown')
     expect(validatorStateLabel('fresh', 'fresh')).toBe('Current')
     expect(validatorStateLabel('stale', 'stale')).toBe('Stale')
     expect(validatorStateLabel('not_configured', 'unknown')).toBe('Not configured')
