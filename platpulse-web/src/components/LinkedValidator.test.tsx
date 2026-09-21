@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { PublicNode, PublicValidatorInsight } from '../api/generated'
-import { LinkedValidatorSection, currentValidatorStatusLabel, currentValidatorStatusShortLabel, validatorStateLabel } from './LinkedValidator'
+import { LinkedValidatorSection, currentValidatorStatusLabel, validatorDataStatus, validatorStateLabel } from './LinkedValidator'
 
 const node: PublicNode = {
   nodeId: 'node-1',
@@ -35,6 +35,7 @@ const insight: PublicValidatorInsight = {
   blockRate: '90.909091',
   blockRateState: 'ok',
   genBlocksRate: '75.5',
+  delegationRewardPercentage: '20',
   rewardAmount: '1234.123456789012',
   rank: 7,
   rankState: 'ranked',
@@ -54,10 +55,9 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-function openDetails() {
-  fireEvent.click(screen.getByRole('button', { name: 'Open Validator details' }))
-  return screen.getByRole('dialog', { name: 'Validator details' })
-}
+const renderCard = (value: Partial<PublicNode> = {}) => render(<LinkedValidatorSection node={{ ...node, validator: insight, ...value }} />)
+const renderDetail = (value: Partial<PublicNode> = {}) => render(<LinkedValidatorSection node={{ ...node, validator: insight, ...value }} variant="detail" />)
+const detailRegion = () => screen.getByRole('region', { name: 'Linked Validator' })
 
 /** The rendered value of a Linked Validator metric cell, in either the
  *  emphasized label-over-value form or the compact key-value form. */
@@ -67,267 +67,18 @@ const metricValue = (label: string) => {
   return cell?.querySelector('strong')?.textContent ?? undefined
 }
 
-describe('LinkedValidatorSection', () => {
-  it.each([undefined, null])('explains a missing discovery pass without claiming absent staking: %s', validatorIdentityState => {
-    render(<LinkedValidatorSection node={{ ...node, validatorIdentityState }} />)
-    const identity = screen.getByRole('region', { name: 'Linked Validator identity' })
-    expect(within(identity).getByRole('status', { name: 'Validator identity state: not observed' }).textContent).toBe('Validator identity has not been observed yet.')
-    expect(screen.queryByText('Linked Validator')).toBeNull()
-    expect(screen.queryByText('Cumulative blocks')).toBeNull()
-    expect(screen.queryByText('Not a Validator')).toBeNull()
-    expect(screen.queryByRole('group', { name: 'Linked Validator metrics' })).toBeNull()
-  })
-
-  it.each(['card', 'detail'] as const)('distinguishes identified data unavailability from unobserved discovery in %s', variant => {
-    render(<LinkedValidatorSection node={{ ...node, validatorIdentityState: 'identified' }} variant={variant} />)
-    expect(screen.getByRole('status', { name: 'Validator identity state: identified' }).textContent).toBe('Validator data is unavailable for the identified identity.')
-    expect(screen.queryByText('Not a Validator')).toBeNull()
-    expect(screen.queryByText('Validator identity has not been observed yet.')).toBeNull()
-    expect(screen.queryByRole('group', { name: 'Linked Validator metrics' })).toBeNull()
-  })
-
-  it.each(['missing_public_key', 'invalid_public_key', 'network_identity_missing', 'network_identity_mismatch'])('preserves canonical identity state access when no sanitized reason is supplied: %s', validatorIdentityState => {
-    render(<LinkedValidatorSection node={{ ...node, validatorIdentityState }} />)
-    expect(screen.getByRole('status', { name: 'Validator identity state: ' + validatorIdentityState }).textContent).toBe('No Validator identity has been established for this Node.')
-    expect(screen.queryByText('Not a Validator')).toBeNull()
-    expect(screen.queryByText('Cumulative blocks')).toBeNull()
-  })
-
-  it('shows identity, Current Validator Status, and the cumulative block count', () => {
-    render(<LinkedValidatorSection node={{ ...node, validator: insight }} />)
-    const section = screen.getByLabelText('Linked Validator')
-    expect(within(section).getByText('Validator One')).toBeTruthy()
-    expect(within(section).getByText('Validator')).toBeTruthy()
-    expect(within(section).getByText('Cumulative blocks')).toBeTruthy()
-    expect(within(section).getByText('4,321')).toBeTruthy()
-    expect(within(section).getByText('Current')).toBeTruthy()
-  })
-
-  it('shows the explicit locked qualifier and an unknown status without a manual role', () => {
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, currentValidatorStatus: 'validator', currentValidatorStatusState: 'current', currentValidatorStatusQualifier: 'locked' } }} />)
-    expect(screen.getByText('Locked')).toBeTruthy()
-    expect(within(openDetails()).getByText(/confirmed-valid staking identity but is locked/)).toBeTruthy()
-
-    cleanup()
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, currentValidatorStatus: 'unknown', currentValidatorStatusState: 'unknown', currentValidatorStatusQualifier: null } }} />)
-    // The long heading status is shortened; its full field meaning stays in a
-    // focusable explanation and the Details dialog.
-    expect(screen.getByLabelText(/Validator status unknown/).textContent).toBe('Unknown')
-    expect(within(openDetails()).getByText(/not a negative conclusion/)).toBeTruthy()
-  })
-
-  it('explains an unestablished automatic correspondence instead of guessing', () => {
-    const { container } = render(
-      <LinkedValidatorSection
-        node={{ ...node, validatorIdentityState: 'network_identity_mismatch', validatorIdentityReason: 'The observed Network Identity does not match.' }}
-      />,
-    )
-    expect(container.querySelector('[data-slot="linked-validator"]')).not.toBeNull()
-    expect(screen.getByText('Validator identity')).toBeTruthy()
-    expect(screen.getByText('The observed Network Identity does not match.')).toBeTruthy()
-    expect(screen.queryByText(/manual/i)).toBeNull()
-  })
-
-  it('keeps a source-reported zero distinct from an unknown value', () => {
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, blockCount: 0 } }} />)
-    expect(metricValue('Cumulative blocks')).toBe('0')
-
-    cleanup()
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, blockCount: null } }} />)
-    expect(metricValue('Cumulative blocks')).toBe('—')
-  })
-
-  it('labels an unconfigured source explicitly and retains the last-good value', () => {
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, state: 'not_configured', freshness: 'unknown', providerTimestamp: null } }} />)
-    expect(screen.getByText('Not configured')).toBeTruthy()
-    expect(screen.getByText('4,321')).toBeTruthy()
-    expect(screen.getByText(/last successful value retained/)).toBeTruthy()
-    expect(within(openDetails()).getByText(/No Validator source is configured for this Network/)).toBeTruthy()
-  })
-
-  it('marks a stale last-good value and a counter reset without splicing history', () => {
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, state: 'stale', freshness: 'stale', counterState: 'counter_reset' } }} />)
-    expect(screen.getByText(/last successful value retained/)).toBeTruthy()
-    expect(screen.getByText(/Counter reset or correction observed/)).toBeTruthy()
-  })
-
-  it('shows the last successful fetch time, source, and source cutoff only in detail', () => {
-    const { rerender } = render(<LinkedValidatorSection node={{ ...node, validator: insight }} />)
-    expect(screen.queryByText('Last success')).toBeNull()
-
-    rerender(<LinkedValidatorSection node={{ ...node, validator: insight }} variant="detail" />)
-    expect(screen.getByText('Last success')).toBeTruthy()
-    expect(screen.getAllByText(/2026/).length).toBeGreaterThanOrEqual(2)
-    expect(screen.getByText('platscan')).toBeTruthy()
-    expect(screen.getByText('Source cutoff')).toBeTruthy()
-    // The raw provider timestamp is never rendered as text.
-    expect(screen.queryByText('2026-08-25T00:00:00Z')).toBeNull()
-  })
-
-  it('never presents an absent source cutoff as a fabricated time', () => {
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, providerTimestamp: null } }} variant="detail" />)
-    expect(screen.getByText('Not provided by the source')).toBeTruthy()
-  })
-
-  it('shows gross cumulative rewards on the card and abbreviates them exactly', () => {
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, rewardAmount: '1234567.89' } }} />)
-    expect(screen.getByText('Cumulative rewards')).toBeTruthy()
-    // The card keeps the abbreviated reward form, never a JavaScript number.
-    expect(metricValue('Cumulative rewards')).toBe('1.23M')
-  })
-
-  it('shows the source full precision and native unit in Node detail', () => {
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, rewardAmount: '1234567.890123456789' } }} variant="detail" />)
-    expect(metricValue('Cumulative rewards')).toBe('1,234,567.890123456789')
-    expect(screen.getByText(/Network native unit/)).toBeTruthy()
-  })
-
-  it('keeps a source-reported zero reward distinct from unknown', () => {
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, rewardAmount: '0' } }} />)
-    expect(metricValue('Cumulative rewards')).toBe('0')
-
-    cleanup()
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, rewardAmount: null } }} />)
-    expect(metricValue('Cumulative rewards')).toBe('—')
-  })
-
-  it('retains a last-good reward after a source failure even without a block count', () => {
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, state: 'error', freshness: 'stale', blockCount: null, rewardAmount: '42.5' } }} />)
-    expect(metricValue('Cumulative rewards')).toBe('42.5')
-    expect(screen.getByText(/last successful value retained/)).toBeTruthy()
-  })
-
-  it('shows both production rates with their distinct source meanings', () => {
-    render(<LinkedValidatorSection node={{ ...node, validator: insight }} />)
-    expect(metricValue('Production rate')).toBe('90.91%')
-    expect(metricValue('PlatScan 24h rate')).toBe('75.50%')
-  })
-
-  it('distinguishes a zero scheduled denominator from an incomplete pair', () => {
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, blockRate: null, blockRateState: 'not_applicable' } }} />)
-    expect(metricValue('Production rate')).toBe('Not applicable')
-    expect(within(openDetails()).getByText(/zero scheduled-block denominator/)).toBeTruthy()
-
-    cleanup()
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, blockRate: null, blockRateState: 'unknown' } }} />)
-    expect(metricValue('Production rate')).toMatch(/^Unknown:/)
-  })
-
-  it('keeps a source-reported zero 24h rate distinct from a missing one', () => {
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, genBlocksRate: '0' } }} />)
-    expect(metricValue('PlatScan 24h rate')).toBe('0.00%')
-
-    cleanup()
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, genBlocksRate: null } }} />)
-    expect(metricValue('PlatScan 24h rate')).toMatch(/^Unknown:/)
-  })
-
-  it('retains a last-good rate after a source failure and marks it retained', () => {
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, state: 'error', freshness: 'stale', genBlocksRate: '0' } }} />)
-    expect(metricValue('PlatScan 24h rate')).toBe('0.00%')
-    expect(metricValue('Production rate')).toBe('90.91%')
-    expect(screen.getByText(/last successful value retained/)).toBeTruthy()
-  })
-
-  it('shows the full available rate precision only in Node detail', () => {
-    render(<LinkedValidatorSection node={{ ...node, validator: insight }} variant="detail" />)
-    expect(metricValue('Production rate')).toBe('90.909091%')
-    expect(metricValue('PlatScan 24h rate')).toBe('75.5%')
-  })
-
-  it('shows the delegation reward share in percentage points, not a fraction or basis points', () => {
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, delegationRewardPercentage: '20' } }} />)
-    expect(screen.getByText('Delegation reward share')).toBeTruthy()
-    expect(metricValue('Delegation reward share')).toBe('20.00%')
-
-    cleanup()
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, delegationRewardPercentage: '20' } }} variant="detail" />)
-    expect(metricValue('Delegation reward share')).toBe('20%')
-  })
-
-  it('keeps legitimate 0 and 100 boundaries and a missing delegation share distinct', () => {
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, delegationRewardPercentage: '0' } }} />)
-    expect(metricValue('Delegation reward share')).toBe('0.00%')
-
-    cleanup()
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, delegationRewardPercentage: '100' } }} />)
-    expect(metricValue('Delegation reward share')).toBe('100.00%')
-
-    cleanup()
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, delegationRewardPercentage: null } }} />)
-    expect(metricValue('Delegation reward share')).toMatch(/^Unknown:/)
-  })
-
-  it('retains a last-good delegation share after a failure without carrying it from another observation', () => {
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, state: 'error', freshness: 'stale', delegationRewardPercentage: '20' } }} />)
-    expect(metricValue('Delegation reward share')).toBe('20.00%')
-    expect(screen.getByText(/last successful value retained/)).toBeTruthy()
-  })
-
-  it('shows the Network rank and keeps unranked distinct from failure or unknown', () => {
-    render(<LinkedValidatorSection node={{ ...node, validator: insight }} />)
-    expect(screen.getByText('Network rank')).toBeTruthy()
-    expect(metricValue('Network rank')).toBe('#7')
-
-    cleanup()
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, rank: null, rankState: 'unranked' } }} />)
-    expect(metricValue('Network rank')).toBe('Unranked')
-    expect(within(openDetails()).getByText(/complete live-staking ALL cohort/)).toBeTruthy()
-
-    cleanup()
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, rank: null, rankState: 'error' } }} />)
-    expect(metricValue('Network rank')).toMatch(/^Unknown:/)
-    expect(screen.queryByText('Unranked')).toBeNull()
-  })
-
-  it('retains a last-good rank when the list cannot be refreshed and marks the stale ranking', () => {
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, state: 'error', freshness: 'stale', rankState: 'error', rankFreshness: 'stale' } }} />)
-    expect(metricValue('Network rank')).toBe('#7')
-    expect(within(openDetails()).getByText(/last successful rank is retained/)).toBeTruthy()
-
-    cleanup()
-    // Detail stays Current while the ranking list itself aged out.
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, state: 'fresh', freshness: 'fresh', rankFreshness: 'stale' } }} />)
-    expect(screen.getByText('Current')).toBeTruthy()
-    expect(within(openDetails()).getByText(/ranking list has not refreshed recently/)).toBeTruthy()
-  })
-
-  it('never presents a failed or absent ranking as unranked or zero', () => {
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, rank: null, rankState: 'unknown', rankFreshness: 'unknown' } }} />)
-    expect(metricValue('Network rank')).toMatch(/^Unknown:/)
-    expect(screen.queryByText('Unranked')).toBeNull()
-    expect(screen.queryByText('0')).toBeNull()
-  })
-
-  it('shows the independent ranking success time and cohort in Node detail', () => {
-    render(
-      <LinkedValidatorSection
-        node={{ ...node, validator: { ...insight, rankReceivedAt: '2026-08-20T01:02:03Z', rankCohortSize: 123 } }}
-        variant="detail"
-      />,
-    )
-    expect(screen.getByText('Rank last success')).toBeTruthy()
-    expect(screen.getByText('Rank cohort')).toBeTruthy()
-    expect(screen.getByText('123')).toBeTruthy()
-  })
-
-
-  it('keeps six metrics as two emphasized cells and four compact parameter rows', () => {
-    render(<LinkedValidatorSection node={{ ...node, validator: insight }} />)
+describe('LinkedValidatorSection Home card', () => {
+  it('keeps the six metrics as two emphasized cells and four compact parameter rows', () => {
+    renderCard()
     const group = screen.getByRole('group', { name: 'Linked Validator metrics' })
     expect(group.getAttribute('data-slot')).toBe('linked-validator-metrics')
-    // Cumulative blocks and rewards keep the label-over-value emphasis.
     const emphasized = group.querySelectorAll('[data-slot="validator-metric"]')
     expect(emphasized).toHaveLength(2)
     for (const metric of emphasized) {
-      expect(metric.firstElementChild?.className).toContain('text-xs')
-      expect(metric.firstElementChild?.className).not.toContain('min-h-8')
       expect(metric.querySelector('strong')?.className).toContain('tabular-nums')
       expect(metric.querySelector('strong')?.className).toContain('font-semibold')
       expect(metric.className).not.toMatch(/bg-|border-|break-all|overflow-wrap/)
     }
-    // The other four are left-label/right-value key-value rows with a full
-    // accessible name and no decoration or fixed two-line label height.
     const compact = group.querySelectorAll('[data-slot="metric-row"][data-layout="compact"]')
     expect(compact).toHaveLength(4)
     for (const row of compact) {
@@ -338,81 +89,114 @@ describe('LinkedValidatorSection', () => {
     }
   })
 
-  it('distinguishes Provider Data: Current from unknown current staking status', () => {
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, currentValidatorStatus: 'unknown', currentValidatorStatusState: 'unknown' } }} />)
-    expect(screen.getByRole('status', { name: 'Validator Provider data state' }).textContent).toBe('Data: Current')
-    expect(screen.getByLabelText(/Validator status unknown/)).toBeTruthy()
-    expect(screen.queryByText('Healthy')).toBeNull()
+  it('moves identity, the heading, the identifier, the copy control and Details off the Home card', () => {
+    renderCard()
+    expect(screen.queryByText('Linked Validator')).toBeNull()
+    expect(screen.queryByText('Validator One')).toBeNull()
+    expect(screen.queryByText('Data: Current')).toBeNull()
+    expect(screen.queryByText('0xvalidator')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Copy full Validator identifier' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Open Validator details' })).toBeNull()
+    expect(screen.queryByRole('dialog')).toBeNull()
+    // The six metrics stay directly visible.
+    expect(metricValue('Cumulative blocks')).toBe('4,321')
+    expect(metricValue('Cumulative rewards')).toBe('1.23K')
+    expect(metricValue('Network rank')).toBe('#7')
+    expect(metricValue('Production rate')).toBe('90.91%')
+    expect(metricValue('PlatScan 24h rate')).toBe('75.50%')
+    expect(metricValue('Delegation reward share')).toBe('20.00%')
+  })
+
+  it('keeps a source-reported zero distinct from an unknown value', () => {
+    renderCard({ validator: { ...insight, blockCount: 0 } })
+    expect(metricValue('Cumulative blocks')).toBe('0')
+    cleanup()
+    renderCard({ validator: { ...insight, blockCount: null } })
+    expect(metricValue('Cumulative blocks')).toBe('—')
+  })
+
+  it('shows gross cumulative rewards on the card and abbreviates them exactly', () => {
+    renderCard({ validator: { ...insight, rewardAmount: '1234567.89' } })
+    expect(metricValue('Cumulative rewards')).toBe('1.23M')
+    cleanup()
+    renderCard({ validator: { ...insight, rewardAmount: '0' } })
+    expect(metricValue('Cumulative rewards')).toBe('0')
+    cleanup()
+    renderCard({ validator: { ...insight, rewardAmount: null } })
+    expect(metricValue('Cumulative rewards')).toBe('—')
+  })
+
+  it('shows both production rates with their distinct source meanings', () => {
+    renderCard()
+    expect(metricValue('Production rate')).toBe('90.91%')
+    expect(metricValue('PlatScan 24h rate')).toBe('75.50%')
+  })
+
+  it('distinguishes a zero scheduled denominator from an incomplete pair', () => {
+    renderCard({ validator: { ...insight, blockRate: null, blockRateState: 'not_applicable' } })
+    expect(metricValue('Production rate')).toBe('Not applicable')
+    cleanup()
+    renderCard({ validator: { ...insight, blockRate: null, blockRateState: 'unknown' } })
+    expect(metricValue('Production rate')).toMatch(/^Unknown:/)
+  })
+
+  it('keeps a source-reported zero 24h rate distinct from a missing one', () => {
+    renderCard({ validator: { ...insight, genBlocksRate: '0' } })
+    expect(metricValue('PlatScan 24h rate')).toBe('0.00%')
+    cleanup()
+    renderCard({ validator: { ...insight, genBlocksRate: null } })
+    expect(metricValue('PlatScan 24h rate')).toMatch(/^Unknown:/)
+  })
+
+  it('keeps the delegation reward share in percentage points with legitimate 0 and 100', () => {
+    renderCard({ validator: { ...insight, delegationRewardPercentage: '20' } })
+    expect(metricValue('Delegation reward share')).toBe('20.00%')
+    cleanup()
+    renderCard({ validator: { ...insight, delegationRewardPercentage: '0' } })
+    expect(metricValue('Delegation reward share')).toBe('0.00%')
+    cleanup()
+    renderCard({ validator: { ...insight, delegationRewardPercentage: '100' } })
+    expect(metricValue('Delegation reward share')).toBe('100.00%')
+    cleanup()
+    renderCard({ validator: { ...insight, delegationRewardPercentage: null } })
+    expect(metricValue('Delegation reward share')).toMatch(/^Unknown:/)
+  })
+
+  it('shows the Network rank and keeps unranked distinct from failure or unknown', () => {
+    renderCard()
+    expect(metricValue('Network rank')).toBe('#7')
+    cleanup()
+    // Unranked is a ranking conclusion, not a value; a Validator that retains
+    // other metrics keeps its six-metric structure and prints Unranked.
+    renderCard({ validator: { ...insight, rank: null, rankState: 'unranked' } })
+    expect(metricValue('Network rank')).toBe('Unranked')
+    expect(screen.getByRole('group', { name: 'Linked Validator metrics' })).toBeTruthy()
+    cleanup()
+    // With no other metric and no live identity, Unranked alone must not reopen
+    // six Unknown slots.
+    renderCard({ validator: { ...insight, blockCount: null, rewardAmount: null, blockRate: null, blockRateState: 'unknown', genBlocksRate: null, delegationRewardPercentage: null, rank: null, rankState: 'unranked' } })
+    expect(screen.queryByRole('group', { name: 'Linked Validator metrics' })).toBeNull()
+    expect(screen.getByText(/Not in the Network’s complete live-staking cohort/)).toBeTruthy()
+    cleanup()
+    renderCard({ validator: { ...insight, rank: null, rankState: 'error' } })
+    expect(metricValue('Network rank')).toMatch(/^Unknown:/)
+  })
+
+  it('retains last-good values after a source failure', () => {
+    renderCard({ validator: { ...insight, state: 'error', freshness: 'stale', genBlocksRate: '0' } })
+    expect(metricValue('PlatScan 24h rate')).toBe('0.00%')
+    expect(metricValue('Production rate')).toBe('90.91%')
+  })
+
+  it('retains historical metrics when current staking identity is absent', () => {
+    renderCard({ validator: { ...insight, currentValidatorStatus: 'not_validator', activity: 'exited' } })
+    expect(metricValue('Cumulative blocks')).toBe('4,321')
+    expect(metricValue('Cumulative rewards')).toBe('1.23K')
     expect(screen.getByRole('group', { name: 'Linked Validator metrics' })).toBeTruthy()
   })
+})
 
-  it('copies the full original mixed-case prefixed identifier, not its display fragments', async () => {
-    const identifier = '0X' + 'AbCdEf0123456789'.repeat(8)
-    const writeText = vi.fn().mockResolvedValue(undefined)
-    vi.stubGlobal('navigator', { clipboard: { writeText } })
-    const navigate = vi.fn()
-    render(<div onClick={navigate}><LinkedValidatorSection node={{ ...node, validator: { ...insight, validatorNodeId: identifier } }} /></div>)
-    expect(screen.getByText(identifier.slice(0, 10) + '…' + identifier.slice(-8))).toBeTruthy()
-    expect(screen.queryByText(identifier)).toBeNull()
-    expect(screen.getByText('Validator One')).toBeTruthy()
-    const copy = screen.getByRole('button', { name: 'Copy full Validator identifier' })
-    const details = screen.getByRole('button', { name: 'Open Validator details' })
-    for (const control of [copy, details]) {
-      expect(control.className).toContain('relative z-10')
-      expect(control.closest('a')).toBeNull()
-    }
-    fireEvent.click(copy)
-    await waitFor(() => expect(screen.getByRole('status', { name: 'Identifier copy status' }).textContent).toBe('Validator identifier copied.'))
-    expect(writeText).toHaveBeenCalledExactlyOnceWith(identifier)
-    expect(navigate).not.toHaveBeenCalled()
-    const dialog = openDetails()
-    expect(navigate).not.toHaveBeenCalled()
-    const field = within(dialog).getByRole('textbox', { name: 'Full Validator identifier' })
-    expect(field).toBeInstanceOf(HTMLTextAreaElement)
-    if (!(field instanceof HTMLTextAreaElement)) throw new Error('Expected selectable identifier')
-    expect(field.value).toBe(identifier)
-    expect(field.readOnly).toBe(true)
-    fireEvent.focus(field)
-    expect(field.selectionStart).toBe(0)
-    expect(field.selectionEnd).toBe(identifier.length)
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
-    await waitFor(() => expect(document.activeElement).toBe(details))
-    expect(screen.queryByRole('dialog')).toBeNull()
-  })
-
-  it.each(['rejected', 'unavailable'])('announces %s clipboard access and keeps a manual full identifier fallback', async mode => {
-    const identifier = '0x' + 'aBcD'.repeat(32)
-    vi.stubGlobal('navigator', mode === 'rejected'
-      ? { clipboard: { writeText: vi.fn().mockRejectedValue(new Error('Denied')) } }
-      : {})
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, validatorNodeId: identifier, displayName: identifier } }} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Copy full Validator identifier' }))
-    await waitFor(() => expect(screen.getByRole('status', { name: 'Identifier copy status' }).textContent).toMatch(/Copy failed.*manually/))
-    expect(screen.queryByText(identifier)).toBeNull()
-    const field = within(openDetails()).getByRole('textbox', { name: 'Full Validator identifier' })
-    expect(field.getAttribute('readonly')).not.toBeNull()
-    expect(field.textContent).toBe(identifier)
-  })
-
-  it('keeps exact six metrics and provenance in the dialog without capping rates above 100', () => {
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, rewardAmount: '1234567.890123456789', blockRate: '125.123456', genBlocksRate: '135.987654', delegationRewardPercentage: '20.123456' } }} />)
-    expect(metricValue('Production rate')).toBe('125.12%')
-    expect(metricValue('PlatScan 24h rate')).toBe('135.99%')
-    const dialog = within(openDetails())
-    for (const [label, value] of [
-      ['Cumulative blocks', '4,321'], ['Cumulative rewards', '1,234,567.890123456789'],
-      ['Network rank', '#7'], ['Production rate', '125.123456%'],
-      ['PlatScan 24h rate', '135.987654%'], ['Delegation reward share', '20.123456%'],
-    ]) expect(dialog.getByText(label).nextElementSibling?.textContent).toBe(value)
-    expect(dialog.getByText('Source').nextElementSibling?.textContent).toBe('platscan')
-    expect(dialog.getByText('Last success')).toBeTruthy()
-    expect(dialog.getByText('Rank last success')).toBeTruthy()
-    expect(dialog.getByText('Source cutoff')).toBeTruthy()
-    expect(dialog.getByText('Staking status state').nextElementSibling?.textContent).toBe('current')
-    expect(dialog.getByText('Provider state').nextElementSibling?.textContent).toBe('fresh')
-    expect(dialog.getByText('Production rate state').nextElementSibling?.textContent).toBe('ok')
-  })
-
+describe('LinkedValidatorSection Home empty state', () => {
   const missing: PublicValidatorInsight = {
     ...insight, blockCount: null, rewardAmount: null, rank: null, rankState: 'unknown',
     blockRate: null, blockRateState: 'unknown', expectedBlockCount: null,
@@ -422,121 +206,188 @@ describe('LinkedValidatorSection', () => {
     ...missing, currentValidatorStatus: 'not_validator', currentValidatorStatusState: 'current',
   }
 
-  it.each([
-    { state: 'fresh', freshness: 'fresh' },
-    { state: 'empty', freshness: 'fresh' },
-    { state: 'empty', freshness: 'unknown' },
-  ])('folds only empty authoritative current non-validator metrics: $state/$freshness', provider => {
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...notValidator, ...provider } }} />)
-    expect(screen.getByText('Not a Validator')).toBeTruthy()
-    expect(screen.getByRole('status', { name: 'Validator Provider data state' }).textContent).toContain(validatorStateLabel(provider.state, provider.freshness))
+  it('never renders six Unknown slots when no metric is displayable', () => {
+    renderCard({ validator: { ...notValidator, state: 'empty', freshness: 'fresh' } })
     expect(screen.queryByRole('group', { name: 'Linked Validator metrics' })).toBeNull()
-    // The compact card never repeats the long explanation; Details keeps it.
-    expect(screen.queryByText('No current staking identity; no Validator metrics available.')).toBeNull()
-    const dialog = within(openDetails())
-    expect(dialog.getByRole('group', { name: 'Linked Validator metrics' }).querySelectorAll('[data-slot="metric-row"]')).toHaveLength(6)
-    expect(dialog.getByText(/No current staking identity; no Validator metrics available/)).toBeTruthy()
-    expect(dialog.getByText(/Authoritative evidence reports no current staking identity/)).toBeTruthy()
-    expect(dialog.getByText('Provider state').nextElementSibling?.textContent).toBe(provider.state)
-  })
-
-  it('folds a no-live-Validator result whose only extra status is Unranked', () => {
-    // The reported Sync / Sync LEB shape: an authoritative empty Validator
-    // response plus an Unranked ranking outcome and no metric value at all.
-    // Unranked is a ranking status, not a value, so it must not keep six
-    // Unknown slots expanded and make the empty card taller than a normal one.
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...notValidator, state: 'empty', freshness: 'fresh', rankState: 'unranked', rankFreshness: 'fresh' } }} />)
-    expect(screen.getByText('Not a Validator')).toBeTruthy()
-    expect(screen.getByText('No live Validator')).toBeTruthy()
-    expect(screen.queryByRole('group', { name: 'Linked Validator metrics' })).toBeNull()
-    // The Unranked status is merged into the compact explanation, never dropped.
-    expect(screen.getByText(/Network rank: Unranked/)).toBeTruthy()
-    // Details still carries every raw field, including the metric structure.
-    const dialog = within(openDetails())
-    expect(dialog.getByRole('group', { name: 'Linked Validator metrics' }).querySelectorAll('[data-slot="metric-row"]')).toHaveLength(6)
-    expect(dialog.getByText('Rank state').nextElementSibling?.textContent).toBe('unranked')
-  })
-
-  it('keeps the six-metric structure when an Unranked Validator retains a value', () => {
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, currentValidatorStatus: 'not_validator', currentValidatorStatusState: 'current', rank: null, rankState: 'unranked' } }} />)
-    expect(screen.getByRole('group', { name: 'Linked Validator metrics' })).toBeTruthy()
-    expect(metricValue('Cumulative blocks')).toBe('4,321')
-    expect(metricValue('Network rank')).toBe('Unranked')
-  })
-
-  it.each<Partial<PublicValidatorInsight>>([
-    { currentValidatorStatus: 'unknown' }, { currentValidatorStatus: 'validator' },
-    { currentValidatorStatusState: 'stale' }, { currentValidatorStatusState: 'unknown' },
-    { currentValidatorStatusState: undefined },
-    { state: 'error' }, { state: 'loading' }, { state: 'unknown' }, { state: 'stale' },
-    { state: 'not_configured' }, { state: 'unsupported' }, { state: 'not_found' },
-    { freshness: 'stale' }, { freshness: 'unknown' }, { state: 'empty', freshness: 'stale' },
-    { rankState: 'ranked' }, { blockRateState: 'not_applicable' },
-    { blockCount: 0 }, { rewardAmount: '0' }, { rank: 7 }, { blockRate: '125' },
-    { genBlocksRate: '0' }, { delegationRewardPercentage: '0' },
-  ])('does not fold missing slots when evidence or meaningful values remain: %j', override => {
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...notValidator, ...override } }} />)
-    expect(screen.getByRole('group', { name: 'Linked Validator metrics' }).querySelectorAll(':scope > [data-slot="validator-metric"], :scope > [data-slot="metric-row"]')).toHaveLength(6)
-  })
-
-  it('never infers absent staking or folds unknown metrics from consensus Non-validator alone', () => {
-    render(<LinkedValidatorSection node={{ ...node, consensus: { state: 'ok', freshness: 'current', validator: false }, validator: { ...missing, currentValidatorStatus: 'unknown', currentValidatorStatusState: 'unknown' } }} />)
-    const metrics = screen.getByRole('group', { name: 'Linked Validator metrics' })
-    // The two emphasized cells use the em-dash placeholder with a described-by
-    // reason; the four compact parameters state Unknown and keep their reason
-    // announced. A missing value is never zero.
-    expect(within(metrics).getAllByText('—')).toHaveLength(2)
-    for (const value of metrics.querySelectorAll('[data-slot="validator-metric"] strong')) {
-      const description = document.getElementById(value.getAttribute('aria-describedby') ?? '')
-      expect(description?.textContent).toMatch(/^Unknown: .+/)
-    }
-    const compact = metrics.querySelectorAll('[data-slot="metric-row"][data-layout="compact"]')
-    expect(compact).toHaveLength(4)
-    for (const row of compact) {
-      const value = row.querySelector('[data-slot="metric-row-value"]') as HTMLElement
-      expect(value.textContent).toMatch(/^Unknown: .+/)
-      const describedBy = value.querySelector('[aria-describedby]')?.getAttribute('aria-describedby') ?? ''
-      expect(document.getElementById(describedBy)?.textContent).toMatch(/^: .+/)
-    }
-    expect(screen.getByLabelText(/Validator status unknown/)).toBeTruthy()
     expect(screen.queryByText('Not a Validator')).toBeNull()
-    expect(screen.queryByText('0')).toBeNull()
+    expect(screen.queryAllByText('—')).toHaveLength(0)
   })
 
-  it('retains historical metrics when current staking identity is absent', () => {
-    render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, currentValidatorStatus: 'not_validator', activity: 'exited' } }} />)
-    expect(screen.getByText('Not a Validator')).toBeTruthy()
-    expect(metricValue('Cumulative blocks')).toBe('4,321')
-    expect(metricValue('Cumulative rewards')).toBe('1.23K')
+  it.each([
+    ['loading', { state: 'loading', freshness: 'unknown' }, 'Loading Validator metrics…'],
+    ['error', { state: 'error', freshness: 'stale' }, 'The Validator source could not be read; no metrics are available.'],
+    ['not_configured', { state: 'not_configured', freshness: 'unknown' }, 'No Validator source is configured for this Network.'],
+    ['unsupported', { state: 'unsupported', freshness: 'unknown' }, 'The Validator source does not support this Validator identifier.'],
+    ['not_found', { state: 'not_found', freshness: 'unknown' }, 'The source has no current record for this Validator.'],
+    ['empty', { state: 'empty', freshness: 'fresh' }, 'The source reported no live Validator; no metrics are available.'],
+  ] as const)('shows the %s state as one accurate short line', (state, override, text) => {
+    renderCard({ validator: { ...notValidator, ...override } })
+    const status = screen.getByRole('status')
+    expect(status.textContent).toBe(text)
+    // The region keeps its reserved height and stamps the real Server state.
+    expect(status.parentElement?.getAttribute('data-state')).toBe(state)
+    expect(screen.queryByRole('group', { name: 'Linked Validator metrics' })).toBeNull()
+    expect(screen.queryAllByText('Unknown')).toHaveLength(0)
+  })
+
+  it('keeps partial metrics visible instead of folding to the empty state', () => {
+    renderCard({ validator: { ...missing, rewardAmount: '42.5' } })
     expect(screen.getByRole('group', { name: 'Linked Validator metrics' })).toBeTruthy()
+    expect(metricValue('Cumulative rewards')).toBe('42.5')
   })
 
-  it('retains important independent stale, identity, qualifier and counter-reset cues outside details', () => {
-    render(<LinkedValidatorSection node={{ ...node, validatorIdentityReason: 'Identity verification is unavailable.', validator: { ...insight, currentValidatorStatusState: 'stale', currentValidatorStatusQualifier: 'exiting', state: 'error', freshness: 'stale', rankFreshness: 'stale', rankState: 'error', counterState: 'counter_reset' } }} />)
-    expect(screen.getByText('Exiting')).toBeTruthy()
-    expect(screen.getByText(/Staking status stale/)).toBeTruthy()
-    expect(screen.getByText(/last established association retained/)).toBeTruthy()
-    expect(screen.getByText(/Network rank stale/)).toBeTruthy()
-    expect(screen.getByText(/Network ranking collection failed/)).toBeTruthy()
-    expect(screen.getByText(/Counter reset or correction observed/)).toBeTruthy()
-    expect(screen.getByText('Collection failed')).toBeTruthy()
-    expect(screen.getByText(/last successful value retained/)).toBeTruthy()
-    const dialog = within(openDetails())
-    expect(dialog.getByText(/prior value was not treated as normal growth/)).toBeTruthy()
-    expect(dialog.getByText(/Identity verification is unavailable/)).toBeTruthy()
-    expect(dialog.getByText(/confirmed-valid staking identity but is exiting/)).toBeTruthy()
+  it('keeps the known not-applicable production rate visible', () => {
+    renderCard({ validator: { ...missing, blockRateState: 'not_applicable' } })
+    expect(screen.getByRole('group', { name: 'Linked Validator metrics' })).toBeTruthy()
+    expect(metricValue('Production rate')).toBe('Not applicable')
   })
 
+  it('explains a missing Link without claiming absent staking', () => {
+    render(<LinkedValidatorSection node={{ ...node, validator: null }} />)
+    expect(screen.getByRole('status', { name: 'Validator identity state: not observed' }).textContent).toBe('Validator identity has not been observed yet.')
+    expect(screen.queryByText('Linked Validator')).toBeNull()
+    expect(screen.queryByRole('group', { name: 'Linked Validator metrics' })).toBeNull()
+  })
+
+  it('keeps a long Server identity explanation on Node detail, not on the Home card', () => {
+    const longReason = 'The observed Network Identity does not match the registered Network tuple, so no automatic correspondence was established.'
+    render(<LinkedValidatorSection node={{ ...node, validator: null, validatorIdentityState: 'network_identity_mismatch', validatorIdentityReason: longReason }} />)
+    expect(screen.queryByText(longReason)).toBeNull()
+    expect(screen.getByText('No Validator identity has been established for this Node.')).toBeTruthy()
+    cleanup()
+    render(<LinkedValidatorSection node={{ ...node, validator: null, validatorIdentityState: 'network_identity_mismatch', validatorIdentityReason: longReason }} variant="detail" />)
+    expect(screen.getByText(longReason)).toBeTruthy()
+  })
+
+  it('distinguishes identified data unavailability from unobserved discovery', () => {
+    render(<LinkedValidatorSection node={{ ...node, validator: null, validatorIdentityState: 'identified' }} />)
+    expect(screen.getByRole('status', { name: 'Validator identity state: identified' }).textContent).toBe('Validator data is unavailable for the identified identity.')
+  })
+
+  it.each(['missing_public_key', 'invalid_public_key', 'network_identity_missing', 'network_identity_mismatch'])('preserves canonical identity state access: %s', validatorIdentityState => {
+    render(<LinkedValidatorSection node={{ ...node, validator: null, validatorIdentityState }} />)
+    expect(screen.getByRole('status', { name: 'Validator identity state: ' + validatorIdentityState }).textContent).toBe('No Validator identity has been established for this Node.')
+  })
+})
+
+describe('LinkedValidatorSection Node detail', () => {
+  it('keeps the identity, full identifier, copy control and all six metrics', async () => {
+    const identifier = '0X' + 'AbCdEf0123456789'.repeat(8)
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { clipboard: { writeText } })
+    renderDetail({ validator: { ...insight, validatorNodeId: identifier } })
+    const region = detailRegion()
+    expect(within(region).getByText('Linked Validator')).toBeTruthy()
+    expect(within(region).getByText('Validator One')).toBeTruthy()
+    expect(within(region).getByText(identifier, { exact: true })).toBeTruthy()
+    expect(region.querySelectorAll('[data-slot="metric-row"]')).toHaveLength(6)
+    fireEvent.click(within(region).getByRole('button', { name: 'Copy full Validator identifier' }))
+    await waitFor(() => expect(within(region).getByRole('status', { name: 'Identifier copy status' }).textContent).toBe('Validator identifier copied.'))
+    expect(writeText).toHaveBeenCalledExactlyOnceWith(identifier)
+  })
+
+  it('announces clipboard failure and keeps the full identifier selectable', async () => {
+    const identifier = '0x' + 'aBcD'.repeat(32)
+    vi.stubGlobal('navigator', {})
+    renderDetail({ validator: { ...insight, validatorNodeId: identifier } })
+    fireEvent.click(screen.getByRole('button', { name: 'Copy full Validator identifier' }))
+    await waitFor(() => expect(screen.getByRole('status', { name: 'Identifier copy status' }).textContent).toMatch(/Copy failed.*manually/))
+    expect(screen.getByText(identifier, { exact: true })).toBeTruthy()
+  })
+
+  it('shows the full available precision only in Node detail', () => {
+    renderDetail({ validator: { ...insight, rewardAmount: '1234567.890123456789', blockRate: '125.123456', genBlocksRate: '135.987654', delegationRewardPercentage: '20.123456' } })
+    expect(metricValue('Cumulative rewards')).toBe('1,234,567.890123456789')
+    expect(metricValue('Production rate')).toBe('125.123456%')
+    expect(metricValue('PlatScan 24h rate')).toBe('135.987654%')
+    expect(metricValue('Delegation reward share')).toBe('20.123456%')
+    expect(screen.getByText(/Network native unit/)).toBeTruthy()
+  })
+
+  it('shows the source, independent success times and cutoff', () => {
+    renderDetail()
+    const region = detailRegion()
+    expect(within(region).getByText('Last success')).toBeTruthy()
+    expect(within(region).getByText('Rank last success')).toBeTruthy()
+    expect(within(region).getByText('Rank cohort')).toBeTruthy()
+    expect(within(region).getByText('platscan')).toBeTruthy()
+    expect(within(region).getByText('Source cutoff')).toBeTruthy()
+    // The raw provider timestamp is never rendered as text.
+    expect(screen.queryByText('2026-08-25T00:00:00Z')).toBeNull()
+  })
+
+  it('never presents an absent source cutoff as a fabricated time', () => {
+    renderDetail({ validator: { ...insight, providerTimestamp: null } })
+    expect(screen.getByText('Not provided by the source')).toBeTruthy()
+  })
+
+  it('prints every public state vocabulary entry', () => {
+    renderDetail()
+    const states = screen.getByLabelText('Public Validator states')
+    expect(within(states).getByText('Provider state').nextElementSibling?.textContent).toBe('fresh')
+    expect(within(states).getByText('Staking status state').nextElementSibling?.textContent).toBe('current')
+    expect(within(states).getByText('Production rate state').nextElementSibling?.textContent).toBe('ok')
+  })
+
+  it('keeps retained and not-applicable explanations alongside the metrics', () => {
+    renderDetail({ validator: { ...insight, state: 'error', freshness: 'stale', blockRate: null, blockRateState: 'not_applicable', counterState: 'counter_reset' } })
+    expect(screen.getByText(/zero scheduled-block denominator/)).toBeTruthy()
+    expect(screen.getByText(/prior value was not treated as normal growth/)).toBeTruthy()
+    expect(screen.getByText(/Showing the last successful value/)).toBeTruthy()
+  })
+
+  it('keeps the locked qualifier and the unknown-staking explanation', () => {
+    renderDetail({ validator: { ...insight, currentValidatorStatus: 'validator', currentValidatorStatusQualifier: 'locked' } })
+    expect(screen.getByText('Locked')).toBeTruthy()
+    expect(screen.getByText(/confirmed-valid staking identity but is locked/)).toBeTruthy()
+    cleanup()
+    renderDetail({ validator: { ...insight, currentValidatorStatus: 'unknown', currentValidatorStatusState: 'unknown', currentValidatorStatusQualifier: null } })
+    expect(screen.getByText(/not a negative conclusion/)).toBeTruthy()
+  })
+
+  it('keeps the sanitized identity explanation when no Link is established', () => {
+    render(<LinkedValidatorSection node={{ ...node, validator: null, validatorIdentityState: 'network_identity_mismatch', validatorIdentityReason: 'The observed Network Identity does not match.' }} variant="detail" />)
+    expect(screen.getByText('Validator identity')).toBeTruthy()
+    expect(screen.getByText('The observed Network Identity does not match.')).toBeTruthy()
+  })
+})
+
+describe('validatorDataStatus', () => {
+  it('stays silent for routine fresh data and for the authoritative empty verdict', () => {
+    expect(validatorDataStatus(insight)).toBeNull()
+    expect(validatorDataStatus({ ...insight, state: 'empty', freshness: 'fresh', currentValidatorStatus: 'not_validator' })).toBeNull()
+  })
+
+  it.each([
+    ['error', 'Failed', 'destructive'],
+    ['stale', 'Stale', 'warning'],
+    ['not_configured', 'Not configured', 'warning'],
+    ['unsupported', 'Unsupported', 'warning'],
+    ['not_found', 'Not found', 'warning'],
+  ] as const)('surfaces %s as a short %s cue', (state, label, tone) => {
+    const status = validatorDataStatus({ ...insight, state, freshness: state === 'error' ? 'stale' : 'unknown' })
+    expect(status).not.toBeNull()
+    expect(status?.label).toBe(label)
+    expect(status?.tone).toBe(tone)
+    expect(status?.description).toBeTruthy()
+  })
+
+  it('surfaces aged data even when the Provider state itself is fresh', () => {
+    expect(validatorDataStatus({ ...insight, freshness: 'stale' })?.label).toBe('Stale')
+  })
+
+  it('surfaces an independently failed or aged ranking list', () => {
+    expect(validatorDataStatus({ ...insight, rankState: 'error', rankFreshness: 'stale' })?.label).toBe('Ranking failed')
+    expect(validatorDataStatus({ ...insight, rankState: 'ranked', rankFreshness: 'stale' })?.label).toBe('Rank stale')
+    expect(validatorDataStatus({ ...insight, rankState: 'ranked', rankFreshness: 'fresh' })).toBeNull()
+  })
+})
+
+describe('Validator label mapping', () => {
   it('maps Current Validator Status and Provider states to fixed labels', () => {
     expect(currentValidatorStatusLabel('validator')).toBe('Validator')
     expect(currentValidatorStatusLabel('not_validator')).toBe('Not a Validator')
     expect(currentValidatorStatusLabel('unknown')).toBe('Validator status unknown')
-    expect(currentValidatorStatusShortLabel('validator')).toBe('Validator')
-    expect(currentValidatorStatusShortLabel('not_validator')).toBe('Not a Validator')
-    expect(currentValidatorStatusShortLabel('unknown')).toBe('Unknown')
-    // The Server value is compared case-insensitively, so a capitalized
-    // `Unknown` still gets the safe explanation rather than the generic label.
-    expect(currentValidatorStatusShortLabel('Unknown')).toBe('Unknown')
     expect(validatorStateLabel('fresh', 'fresh')).toBe('Current')
     expect(validatorStateLabel('stale', 'stale')).toBe('Stale')
     expect(validatorStateLabel('not_configured', 'unknown')).toBe('Not configured')

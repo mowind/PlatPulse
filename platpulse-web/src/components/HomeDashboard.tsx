@@ -19,7 +19,7 @@ import { Tabs, TabsList, TabsTrigger } from './ui/tabs'
 import { Server, HeartPulse, TriangleAlert, Network, ChevronUp, ChevronDown, Info } from 'lucide-react'
 import { SURFACE_TOOLBAR } from '../lib/surface'
 import { cn } from '../lib/utils'
-import { LinkedValidatorSection } from './LinkedValidator'
+import { LinkedValidatorSection, validatorDataStatus, type ValidatorDataStatus } from './LinkedValidator'
 import { ValidatorTotalCard } from './ValidatorTotals'
 import { HomeSummaryCard } from './HomeSummaryCard'
 import { Button } from './ui/button'
@@ -179,12 +179,12 @@ export default function HomeDashboard({
             </Empty>
           ) : (
             <div
-              className="grid grid-cols-1 items-start gap-3 sm:grid-cols-[repeat(auto-fill,minmax(22.5rem,1fr))]"
+              className="grid auto-rows-fr grid-cols-1 gap-3 sm:grid-cols-[repeat(auto-fill,minmax(22.5rem,1fr))]"
               data-slot="node-grid"
               aria-label="Active Nodes"
             >
               {visibleRecords.map(({ network, node }) => (
-                <div className="min-w-0" key={node.nodeId}>
+                <div data-slot="node-card-frame" className="min-w-0" key={node.nodeId}>
                   <HomeNodeCard network={network} node={node} />
                 </div>
               ))}
@@ -234,6 +234,11 @@ function HomeNodeCard({ network, node }: NodeRecord) {
     peers: formatPeerCount(node),
   }
   const businessWide = Object.values(business).some((value) => value.length > 12)
+  const resyncing = (node.resyncState ?? '').toLowerCase() === 'resyncing'
+  // One compact, abnormal-only Provider data cue for the identity row. A
+  // routine Current value stays silent; the region below owns the authoritative
+  // no-live-Validator empty state.
+  const dataStatus = node.validator ? validatorDataStatus(node.validator) : null
   return (
     <article
       data-slot="node-card"
@@ -242,13 +247,13 @@ function HomeNodeCard({ network, node }: NodeRecord) {
         // Borderless by design (the surface and its hover ring carry the
         // card): Tailwind's preflight leaves border-style: solid behind, so
         // this has to be stated explicitly.
-        'group/node-card relative w-full rounded-md border-none bg-background/60 transition-all duration-200',
+        'group/node-card relative h-full w-full rounded-md border-none bg-background/60 transition-all duration-200',
         'hover:z-1 hover:-translate-y-0.5 hover:bg-background hover:shadow-[0_0_20px,0_0_0_1px] hover:shadow-emerald-600/10',
         tone === 'bad' && 'shadow-[0_0_0_1px] shadow-red-600/20',
         tone === 'warn' && 'shadow-[0_0_0_1px] shadow-amber-500/20',
       )}
     >
-      <CardX bordered={false} className="bg-transparent" contentClassName="flex flex-col gap-2.5" headerClassName="!grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-2 gap-y-1.5" header={<>
+      <CardX bordered={false} className="bg-transparent" contentClassName="gap-2.5" headerClassName="!grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-2 gap-y-1.5" header={<>
           <div className="flex min-w-0 items-center gap-2">
             <NodeHealthMarker health={node.health} />
             {/* The 44px target is kept on the anchor; the negative block margin
@@ -258,8 +263,15 @@ function HomeNodeCard({ network, node }: NodeRecord) {
             <h2 className="min-w-0 text-base font-semibold"><Link to={`/nodes/${node.nodeId}`} aria-label={nodeLabel(node)} title={nodeLabel(node)} className="flex -my-2.5 min-h-11 min-w-0 items-center after:absolute after:inset-0 after:rounded-md focus-visible:outline-none focus-visible:after:ring-[3px] focus-visible:after:ring-ring/50"><span className="truncate">{nodeLabel(node)}</span></Link></h2>
           </div>
           <ValidatorBadge consensus={node.consensus} />
-          <div className="col-span-2 flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+          <div data-slot="node-identity-meta" className="col-span-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
             <p className="min-w-0 flex-1"><span className="[overflow-wrap:anywhere]">{network.displayName}</span> · <span className="whitespace-nowrap">Uptime {formatDuration(node.processUptimeMs)}</span></p>
+            {/* One unified top status position: an abnormal Node-health summary,
+                a live resync percentage and an abnormal Provider data state sit
+                here as short chips. The normal Data: Current line is gone; the
+                full reason for each stays in the explanation and Node detail. */}
+            <span data-slot="node-status-slot" className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-1.5 gap-y-1">
+              {resyncing && <ResyncCue node={node} />}
+              {dataStatus && <ValidatorDataCue status={dataStatus} />}
             {/* State audit of the reference capture's conspicuous frame: the control is
                 transparent by default (transparent background, transparent 1px border, no
                 outline or shadow), paints the ghost accent on hover, and paints the shared
@@ -271,25 +283,29 @@ function HomeNodeCard({ network, node }: NodeRecord) {
               <DialogContent className="max-h-[85dvh] overflow-y-auto rounded-md shadow-sm"><DialogTitle className="pr-10 [overflow-wrap:anywhere]">{nodeLabel(node)}</DialogTitle><DialogDescription className="[overflow-wrap:anywhere]">Network: {network.displayName} · Uptime {formatDuration(node.processUptimeMs)}. Node role describes the Node’s consensus membership, not its linked Validator’s current staking validity or the freshness of Provider data.</DialogDescription>
                 <p className="text-sm text-muted-foreground">Active Nodes are in the latest Agent Inventory, not necessarily online. Healthy reflects successful, fresh RPC, sync and consensus observations. Process errors, a stopped or Unknown process state, or Network Identity Mismatch prevent Healthy; disabled process monitoring does not. Healthy does not mean synchronization is complete; Resyncing is shown independently.</p>
                 <p className="text-sm text-muted-foreground">Home Attention counts Active Nodes that are not Healthy, including Unknown. Counts and Node cards use the same selected Node data.</p>
+                {diagnostic && <p className="text-sm text-muted-foreground">Current health diagnostic: {diagnostic.text}</p>}
+                {dataStatus && <p className="text-sm text-muted-foreground">Validator data: {dataStatus.label}. {dataStatus.description}</p>}
               </DialogContent>
             </Dialog>
+            </span>
           </div>
-        </>}>
-        {diagnostic && (
+          {/* CONTEXT.md: the reason for an abnormal Node Health state stays
+              visible as text. The row is reserved in every card so a reason can
+              never stretch one card past another; a Healthy Node keeps it empty
+              and out of the accessibility tree. */}
           <p
             data-slot="node-diagnostic"
-            data-tone={diagnostic.tone}
+            data-tone={diagnostic?.tone}
+            aria-hidden={diagnostic ? undefined : true}
             className={cn(
-              'text-[11px]',
-              diagnostic.tone === 'destructive'
-                ? 'text-destructive'
-                : 'text-amber-500 dark:text-amber-400',
+              'col-span-2 m-0 text-[11px] [overflow-wrap:anywhere]',
+              !diagnostic && 'invisible',
+              diagnostic?.tone === 'destructive' ? 'text-destructive' : 'text-amber-500 dark:text-amber-400',
             )}
           >
-            {diagnostic.text}
+            {diagnostic?.text}
           </p>
-        )}
-        {(node.resyncState ?? '').toLowerCase() === 'resyncing' && <ResyncStatus node={node} />}
+        </>}>
         <ResourceRow node={node} />
         <div data-slot="node-business-metrics" data-wide={businessWide || undefined} className="border-t border-border pt-3">
           <MetricRow layout="compact" label="Head" value={business.head} />
@@ -311,8 +327,11 @@ function HomeNodeCard({ network, node }: NodeRecord) {
 }
 
 /** Resync targets the retained Historical High-Water Mark, not Network Head.
- * Keep it independent of health, consensus membership and Validator identity. */
-function ResyncStatus({ node }: { node: PublicNode }) {
+ * Keep it independent of health, consensus membership and Validator identity.
+ * Only the live percentage stays on the identity row; the retained target, the
+ * last progress and its full time remain reachable from the same focusable
+ * control, so nothing the removed three-line block carried is deleted. */
+function ResyncCue({ node }: { node: PublicNode }) {
   const [, refreshAge] = useState(0)
   useEffect(() => {
     // Display age only: Server-owned health, freshness and resync state stay untouched.
@@ -327,28 +346,41 @@ function ResyncStatus({ node }: { node: PublicNode }) {
   const timestamp = node.resyncLastProgressAt
   const date = validProgressDate(timestamp)
   return (
-    <div role="group" aria-label="Resync progress" className="min-w-0 space-y-1 text-xs text-muted-foreground">
-      <div className="flex items-baseline justify-between gap-2 font-medium text-amber-500 dark:text-amber-400">
-        <span>Resyncing</span><span className="tabular-nums">{percent}</span>
-      </div>
-      <p className="tabular-nums">{formatNumber(current)} / {formatNumber(target)}</p>
-      {date ? (
-        <Dialog>
-          <DialogTrigger asChild>
-            <Button variant="ghost" className="relative z-10 -my-3.5 -ml-2 px-2 text-[11px] font-normal text-muted-foreground underline decoration-dotted underline-offset-4">
-              Last progress: <time dateTime={date.toISOString()}>{formatRelativeTime(date)}</time>
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="max-h-[85dvh] overflow-y-auto rounded-md shadow-sm">
-            <DialogTitle>Last resync progress</DialogTitle>
-            <DialogDescription>The last recorded advance toward the Historical High-Water Mark, not the latest report time. The target is the Node’s retained historical height, not the Network Head.</DialogDescription>
-            <p className="text-sm"><time dateTime={date.toISOString()}>{formatUtcDateTime(date)}</time></p>
-            <p className="min-w-0 overflow-x-auto whitespace-nowrap font-mono text-xs text-muted-foreground" tabIndex={0} aria-label="Full source timestamp with UTC offset">{timestamp}</p>
-          </DialogContent>
-        </Dialog>
-      ) : <p className="text-[11px]">Last progress: Unknown</p>}
-    </div>
+    <Dialog>
+      <DialogTrigger asChild>
+        {/* A real 44px touch target. The reserved identity region absorbs its
+            height, so the chip stays compact without stretching only this card. */}
+        <button type="button" data-slot="node-resync-cue"
+          className="relative z-10 inline-flex min-h-11 items-center rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          aria-label={`Resync progress: ${percent} toward the Historical High-Water Mark`}>
+          <span className="inline-flex items-center gap-1 rounded border border-amber-500/40 px-1.5 py-0.5 text-[11px] font-medium leading-4 text-amber-500 dark:text-amber-400">
+            <span>Resyncing</span><span className="tabular-nums">{percent}</span>
+          </span>
+        </button>
+      </DialogTrigger>
+      <DialogContent className="max-h-[85dvh] overflow-y-auto rounded-md shadow-sm">
+        <DialogTitle>Resync progress</DialogTitle>
+        <DialogDescription>The last recorded advance toward the Historical High-Water Mark, not the latest report time. The target is the Node’s retained historical height, not the Network Head.</DialogDescription>
+        <p className="m-0 text-sm tabular-nums">{formatNumber(current)} / {formatNumber(target)}</p>
+        {date ? <p className="m-0 text-sm">Last progress <time dateTime={date.toISOString()}>{formatRelativeTime(date)}</time> · {formatUtcDateTime(date)}</p> : <p className="m-0 text-sm">Last progress: Unknown</p>}
+        {date && timestamp && <p className="m-0 min-w-0 overflow-x-auto whitespace-nowrap font-mono text-xs text-muted-foreground" tabIndex={0} aria-label="Full source timestamp with UTC offset">{timestamp}</p>}
+      </DialogContent>
+    </Dialog>
   )
+}
+
+/** The abnormal Provider data state, kept separate from the online/health
+ *  marker and from the freshness of the Node’s own observations. */
+function ValidatorDataCue({ status }: { status: ValidatorDataStatus }) {
+  return <span data-slot="validator-data-cue" data-tone={status.tone} role="status" title={status.description}
+    aria-label={`Validator data: ${status.label}. ${status.description}`}
+    className={cn('inline-flex min-w-0 items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] leading-4',
+      status.tone === 'destructive'
+        ? 'border-destructive/40 text-destructive'
+        : 'border-amber-500/40 text-amber-600 dark:text-amber-400')}>
+    <span className={cn('inline-block size-1.5 shrink-0 rounded-full', status.tone === 'destructive' ? 'bg-destructive' : 'bg-amber-500')} aria-hidden="true" />
+    <span className="whitespace-nowrap">Data: {status.label}</span>
+  </span>
 }
 
 /** Require a zoned RFC3339 value; Date alone normalizes impossible dates and
@@ -383,6 +415,7 @@ function ResourceRow({ node }: { node: PublicNode }) {
   const nodeDataValue = formatPercent(nodeDataProgressValue)
   return (
     <div
+      data-slot="node-resource-region"
       className="grid grid-cols-2 gap-x-3 gap-y-1"
       aria-label="Node process and host network resources"
     >

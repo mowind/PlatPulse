@@ -439,13 +439,16 @@ describe('Public Home dashboard', () => {
     expect(within(cardOf(nodeCardLink('Beta'))).getByRole('img', { name: 'Unknown' }).classList.contains('node-health-marker-other')).toBe(true)
     expect(within(cardOf(nodeCardLink('Unhealthy Node'))).getByRole('img', { name: 'Unhealthy' }).classList.contains('node-health-marker-other')).toBe(true)
 
-    // No badge remains on the card at all, and no Node Health word is rendered
-    // as card text: the marker's accessible name carries it.
+    // No badge remains on the card at all, and CONTEXT.md's rule holds: the
+    // reason for an abnormal Node Health state stays visible as text while a
+    // Healthy Node keeps the reserved line empty.
     for (const card of [alphaCard, cardOf(nodeCardLink('Beta')), cardOf(nodeCardLink('Unhealthy Node'))]) {
       expect(card.querySelectorAll('.status-badge')).toHaveLength(0)
-      expect(within(card).queryByText('Healthy', { exact: true })).toBeNull()
-      expect(within(card).queryByText('Unhealthy', { exact: true })).toBeNull()
+      expect(card.querySelectorAll('[data-slot="node-diagnostic"]')).toHaveLength(1)
     }
+    expect(within(alphaCard).queryByText('RPC reachable')).toBeNull()
+    expect(within(cardOf(nodeCardLink('Beta'))).getByText('Never observed')).toBeTruthy()
+    expect(within(cardOf(nodeCardLink('Unhealthy Node'))).getByText('RPC failed')).toBeTruthy()
   })
 
   it('keeps summary cards to marker, title, and number with a compact shell', () => {
@@ -579,7 +582,8 @@ describe('Public Home dashboard', () => {
     }
     render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes: [network.nodes[1], resyncingNode] }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
-    // Unknown Node: the Server-sanitized health reason is the single line.
+    // Unknown Node: the Server-sanitized health reason stays reachable from the
+    // single short status chip instead of a full diagnostic line.
     const betaCard = cardOf(nodeCardLink('Beta'))
     expect(within(betaCard).getByText('Never observed')).toBeTruthy()
     expect(betaCard.querySelectorAll('[data-slot="node-diagnostic"]')).toHaveLength(1)
@@ -587,15 +591,21 @@ describe('Public Home dashboard', () => {
     expect(within(betaCard).getByText(/No successful Peer snapshot is available/)).toBeTruthy()
     expect(within(betaCard).queryByText('Current observation')).toBeNull()
 
+    // Gamma keeps the live Resyncing percentage directly visible in the same
+    // identity status row, without the removed three-line sync block.
     const gammaCard = cardOf(nodeCardLink('Gamma'))
-    const progress = within(gammaCard).getByRole('group', { name: 'Resync progress' })
+    const progress = within(gammaCard).getByRole('button', { name: 'Resync progress: 4.34% toward the Historical High-Water Mark' })
     expect(within(progress).getByText('Resyncing')).toBeTruthy()
     expect(within(progress).getByText('4.34%')).toBeTruthy()
-    expect(within(progress).getByText('6,920,136 / 159,311,799')).toBeTruthy()
-    expect(within(progress).getByRole('button', { name: /Last progress/ })).toBeTruthy()
+    expect(within(gammaCard).queryByText('6,920,136 / 159,311,799')).toBeNull()
     expect(within(gammaCard).getByRole('img', { name: 'Healthy' })).toBeTruthy()
     expect(summaryValueOf('Healthy Nodes').textContent).toBe('1')
     expect(summaryValueOf('Attention').textContent).toBe('1')
+    fireEvent.click(progress)
+    const dialog = screen.getByRole('dialog', { name: 'Resync progress' })
+    expect(within(dialog).getByText('6,920,136 / 159,311,799')).toBeTruthy()
+    expect(within(dialog).getByText(/Last progress/)).toBeTruthy()
+    expect(dialog.textContent).toContain('not the latest report time')
   })
 
   it.each([
@@ -615,10 +625,11 @@ describe('Public Home dashboard', () => {
   ])('renders resync raw heights safely: $height ($percent)', ({ currentHead, historicalHighWatermark, height, percent }) => {
     const node = { ...network.nodes[0], resyncState: 'resyncing', currentHead, historicalHighWatermark }
     render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes: [node] }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
-    const progress = screen.getByRole('group', { name: 'Resync progress' })
-    expect(within(progress).getByText(height)).toBeTruthy()
-    expect(within(progress).getByText(percent)).toBeTruthy()
+    const progress = screen.getByRole('button', { name: /Resync progress: .* toward the Historical High-Water Mark/ })
+    expect(progress.textContent).toContain(percent)
     expect(progress.textContent).not.toMatch(/NaN|Infinity/)
+    fireEvent.click(progress)
+    expect(within(screen.getByRole('dialog', { name: 'Resync progress' })).getByText(height)).toBeTruthy()
   })
 
   it.each([null, undefined, '', 'invalid-time', '2026-02-30T00:00:00Z', '2026-08-25T00:00:00', '2026-08-25T24:00:00Z'])('keeps missing or invalid progress time Unknown: %s', timestamp => {
@@ -626,10 +637,12 @@ describe('Public Home dashboard', () => {
       lastReportAt: new Date().toISOString(), processUptimeMs: 0,
       resyncProgress: '120/120 (last progress 2026-08-25T00:00:00Z)' }
     render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes: [node] }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
-    const progress = screen.getByRole('group', { name: 'Resync progress' })
-    expect(within(progress).getByText('Last progress: Unknown')).toBeTruthy()
-    expect(within(progress).queryByRole('button')).toBeNull()
+    const progress = screen.getByRole('button', { name: /Resync progress: .* toward the Historical High-Water Mark/ })
     expect(progress.textContent).not.toMatch(/\bnow\b|\bago\b|2026|ETA/)
+    fireEvent.click(progress)
+    const dialog = screen.getByRole('dialog', { name: 'Resync progress' })
+    expect(within(dialog).getByText('Last progress: Unknown')).toBeTruthy()
+    expect(dialog.textContent).not.toMatch(/\bnow\b|\bago\b|2026|ETA/)
   })
 
   it('keeps resync independent of unhealthy diagnostics and trusts the completed Server state', () => {
@@ -638,7 +651,7 @@ describe('Public Home dashboard', () => {
       consensus: { ...network.nodes[0].consensus, highestQcBlock: 0, highestLockBlock: 0, highestCommitBlock: 0 } }
     const view = (resyncState: string) => <BrowserRouter><HomeDashboard networks={[{ ...network, nodes: [{ ...node, resyncState }] }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>
     const { rerender } = render(view('resyncing'))
-    expect(screen.getByRole('group', { name: 'Resync progress' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Resync progress:/ })).toBeTruthy()
     expect(screen.getByText('RPC observation failed')).toBeTruthy()
     for (const label of ['QC', 'Locked', 'Committed']) {
       expect(screen.getByText(label).nextElementSibling?.textContent).toBe('0')
@@ -646,7 +659,7 @@ describe('Public Home dashboard', () => {
     expect(summaryValueOf('Healthy Nodes').textContent).toBe('0')
     expect(summaryValueOf('Attention').textContent).toBe('1')
     rerender(view('normal'))
-    expect(screen.queryByRole('group', { name: 'Resync progress' })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Resync progress:/ })).toBeNull()
     expect(screen.getByText('RPC observation failed')).toBeTruthy()
   })
 
@@ -663,12 +676,12 @@ describe('Public Home dashboard', () => {
     vi.setSystemTime(new Date('2026-08-25T00:02:00Z'))
     const node = { ...network.nodes[0], resyncState: 'resyncing', resyncLastProgressAt: '2026-08-25T02:00:00.123456+02:00' }
     render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes: [node] }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
-    expect(screen.getByRole('button', { name: 'Last progress: 2 minutes ago' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /Resync progress:/ }))
+    const dialog = screen.getByRole('dialog', { name: 'Resync progress' })
+    expect(within(dialog).getByText(/2 minutes ago/)).toBeTruthy()
     act(() => { vi.advanceTimersByTime(60_000) })
-    const trigger = screen.getByRole('button', { name: 'Last progress: 3 minutes ago' })
-    fireEvent.click(trigger)
-    const dialog = screen.getByRole('dialog', { name: 'Last resync progress' })
-    expect(within(dialog).getByText('25 Aug 2026, 00:00:00 UTC')).toBeTruthy()
+    expect(within(dialog).getByText(/3 minutes ago/)).toBeTruthy()
+    expect(within(dialog).getByText(/25 Aug 2026, 00:00:00 UTC/)).toBeTruthy()
     expect(within(dialog).getByText('2026-08-25T02:00:00.123456+02:00')).toBeTruthy()
     expect(dialog.textContent).toContain('not the latest report time')
   })
@@ -680,7 +693,8 @@ describe('Public Home dashboard', () => {
     const { rerender } = render(view('2026-08-25T00:00:00Z'))
     vi.setSystemTime(new Date('2026-08-25T00:02:10Z'))
     rerender(view('2026-08-25T00:02:09Z'))
-    expect(screen.getByRole('button', { name: 'Last progress: 1 second ago' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /Resync progress:/ }))
+    expect(within(screen.getByRole('dialog', { name: 'Resync progress' })).getByText(/1 second ago/)).toBeTruthy()
   })
 
   it('filters by Network and sorts by supported operational fields', () => {
@@ -741,32 +755,32 @@ describe('Public Home dashboard', () => {
     render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes: [linkedNode, unlinkedNode] }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
     const card = cardOf(nodeCardLink('Calico'))
-    expect(within(card).getByText('Linked Validator')).toBeTruthy()
-    expect(within(card).getByText('Validator A')).toBeTruthy()
-    // The linked-Validator section carries the Server-owned Current Validator
-    // Status; the separate consensus membership cue is not a manual link role.
+    // The removed association area leaves no heading, identity, identifier,
+    // copy control, Details row or long explanation on the Home card.
+    expect(within(card).queryByText('Linked Validator')).toBeNull()
+    expect(within(card).queryByText('Validator A')).toBeNull()
+    expect(within(card).queryByRole('button', { name: 'Copy full Validator identifier' })).toBeNull()
+    expect(within(card).queryByRole('button', { name: 'Open Validator details' })).toBeNull()
+    expect(within(card).queryByText('Data: Current')).toBeNull()
     const linkedSection = card.querySelector('[data-slot="linked-validator"]') as HTMLElement
-    expect(within(linkedSection).getByText('Validator')).toBeTruthy()
-    expect(within(linkedSection).queryByText('Standby')).toBeNull()
+    expect(linkedSection).not.toBeNull()
+    expect(linkedSection.getAttribute('aria-label')).toBe('Linked Validator')
+    // The six metrics stay directly visible without hover or expansion, and a
+    // source 0% stays a value.
     expect(within(card).getByText('Cumulative blocks')).toBeTruthy()
     expect(within(card).getByText('123,456')).toBeTruthy()
-    // Both rates are visible on the card without hover or expansion, and the
-    // card abbreviates the computed rate while keeping a source 0% a value.
     expect(linkedParamValue(card, 'Production rate')).toBe('90.91%')
     expect(linkedParamValue(card, 'PlatScan 24h rate')).toBe('0.00%')
-    // The delegation reward share is visible without hover or expansion and is
-    // kept distinct from the annualized yield and the pending ratio.
     expect(linkedParamValue(card, 'Delegation reward share')).toBe('20.00%')
     const titleLink = nodeCardLink('Calico')
     expect(titleLink.querySelector('button, input, textarea, a')).toBeNull()
-    for (const name of ['Node identity details', 'Copy full Validator identifier', 'Open Validator details']) {
-      const control = within(card).getByRole('button', { name })
-      expect(control.closest('a')).toBeNull()
-      expect(control.className).toContain('relative z-10')
-    }
+    const control = within(card).getByRole('button', { name: 'Node identity details' })
+    expect(control.closest('a')).toBeNull()
+    expect(control.className).toContain('relative z-10')
 
     const unlinkedCard = cardOf(nodeCardLink('Domino'))
-    expect(within(unlinkedCard).queryByText('Linked Validator')).toBeNull()
+    expect(within(unlinkedCard).getByText('Validator identity has not been observed yet.')).toBeTruthy()
     expect(within(unlinkedCard).queryByText('Cumulative blocks')).toBeNull()
+    expect(within(unlinkedCard).queryByText('Linked Validator')).toBeNull()
   })
 })

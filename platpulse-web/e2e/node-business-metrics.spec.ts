@@ -187,18 +187,14 @@ test('Linked Validator keeps two emphasized cells and four compact parameter row
       }
     }
 
-    await expect(linked.getByRole('status', { name: 'Validator Provider data state' })).toBeVisible()
-    await linked.getByRole('button', { name: 'Copy full Validator identifier' }).click()
-    await expect(linked.getByRole('status', { name: 'Identifier copy status' })).toHaveText(/Validator identifier copied.|Copy failed./)
+    // The Home card no longer carries the association identity, the identifier,
+    // a copy control or a Details row: those live on Node detail now.
+    await expect(linked.getByRole('status', { name: 'Validator Provider data state' })).toHaveCount(0)
+    await expect(linked.getByRole('button', { name: 'Copy full Validator identifier' })).toHaveCount(0)
+    await expect(linked.getByRole('button', { name: 'Open Validator details' })).toHaveCount(0)
     await expect(page).toHaveURL(/\/$/)
-    await linked.getByRole('button', { name: 'Open Validator details' }).click()
-    const dialog = page.getByRole('dialog', { name: 'Validator details', exact: true })
-    await expect(dialog.getByLabel('Full Validator identifier', { exact: true })).not.toHaveValue('')
-    await expect(dialog.getByRole('region', { name: 'Linked Validator', exact: true })).toBeVisible()
-    await expect(dialog.getByLabel('Public Validator states')).toBeVisible()
     await expectNoHorizontalOverflow(page)
-    if (process.env.EMERALD_EVIDENCE === '1') await page.screenshot({ path: testInfo.outputPath(dark ? 'validator-details-dark.png' : 'validator-details-light.png'), fullPage: true })
-    await dialog.getByRole('button', { name: 'Close', exact: true }).click()
+    if (process.env.EMERALD_EVIDENCE === '1') await page.screenshot({ path: testInfo.outputPath(dark ? 'validator-card-dark.png' : 'validator-card-light.png'), fullPage: true })
   }
 })
 

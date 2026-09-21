@@ -291,6 +291,7 @@
    * keeps scaling with the root font size alongside the card's own padding and
    * type, instead of overflowing a larger text setting. */
   [data-slot='node-card'] { container-type: inline-size; container-name: node-card; }
+  [data-slot='node-card-frame'] { container-type: inline-size; container-name: node-card-frame; }
   [data-slot='metric-row'] { container-type: inline-size; }
   [data-slot='metric-row-label'] [data-short-label] { display: none; }
   @container (max-width: 12.5rem) {
@@ -386,3 +387,60 @@
   }
 }
 
+/* ---------------------------------------------------------------------------
+ * Home Node-card equal-height anatomy (#154–#158, #173)
+ *
+ * Every card is a grid item of the auto-fill Node grid. The grid uses
+ * `auto-rows-fr` so all rows share the tallest card's height, and every card
+ * stretches to its row; that is genuine cross-row equality, not the per-row
+ * stretch the audit warns against. Each internal region then reserves the same
+ * minimum height in every card, so the Resource, Chain and Validator regions
+ * start at identical offsets even when a card carries an abnormal status chip,
+ * the visible Node-Health reason or the Validator empty state.
+ *
+ * The per-breakpoint minima below were read from the rendered card at the fixed
+ * e2e viewports (real type, padding and full metric content) and rounded up to
+ * whole pixels. `minmax(<min>, auto)` lets genuinely taller content grow rather
+ * than clip it, and `auto-rows-fr` + `height: 100%` keep every row equal even
+ * then. The container is `node-card-frame`, the wrapper the Home grid gives
+ * each card, because a container query cannot size its own container; the card
+ * keeps its own `node-card` container for the metric-column rules.
+ * ------------------------------------------------------------------------- */
+@layer components {
+  [data-slot='node-grid'] { align-items: stretch; }
+  [data-slot='node-grid'] > * { height: 100%; }
+  [data-slot='node-grid'] [data-slot='node-card'] { height: 100%; }
+
+  [data-slot='node-card'] { --node-region-gap: 0.625rem; }
+  [data-slot='node-card'] [data-slot='card-x-content'] {
+    display: grid;
+    grid-template-rows:
+      minmax(var(--node-resource-h, auto), auto)
+      minmax(var(--node-chain-h, auto), auto)
+      minmax(var(--node-validator-h, auto), auto);
+    row-gap: var(--node-region-gap);
+    align-content: start;
+  }
+  /* align-content: start keeps the identity rows packed at the top and leaves
+     the measured residual inside the reserved region instead of stretching the
+     row gaps (which would push the Network · Uptime helper off its line). */
+  [data-slot='node-card'] [data-slot='card-x-header'] { min-height: var(--node-identity-h, auto); align-content: start; }
+
+  /* Narrow card (a phone's single column, or a genuinely narrow auto-filled
+   * track): the chain grid stacks every height and the Validator parameters
+   * take one full-width line each, so both regions need more rows. */
+  [data-slot='node-card'] {
+    --node-identity-h: 8.75rem;
+    --node-resource-h: 7rem;
+    --node-chain-h: 15rem;
+    --node-validator-h: 11rem;
+  }
+  @container node-card-frame (min-width: 22.5rem) {
+    [data-slot='node-card'] {
+      --node-identity-h: 7.75rem;
+      --node-resource-h: 7rem;
+      --node-chain-h: 10rem;
+      --node-validator-h: 7.25rem;
+    }
+  }
+}

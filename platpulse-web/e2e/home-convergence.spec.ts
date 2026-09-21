@@ -75,32 +75,34 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(hCard.locator('[data-slot="validator-role"]').getByText('Node:', { exact: true })).toBeVisible()
     await expect(hCard.locator('[data-slot="validator-role"]').getByText('Validator', { exact: true })).toBeVisible()
 
-    // The identity block is content-driven: the name row and the Network ·
-    // Uptime helper sit about 6px apart and the helper about 12px above the
-    // resource block, without the 44px controls inflating either line.
+    // The identity block keeps the name row and the Network · Uptime helper
+    // about 6px apart without the 44px controls inflating either line. Its
+    // reserved region height then starts the resource region at the same
+    // offset in every card, so only the header-to-resource gap is asserted.
     const identityGap = await hCard.evaluate(card => {
       const link = card.querySelector('h2 a') as HTMLElement
       const helper = card.querySelector('[data-slot="card-x-header"] p') as HTMLElement
+      const header = card.querySelector('[data-slot="card-x-header"]') as HTMLElement
       const resources = card.querySelector('[aria-label="Node process and host network resources"]') as HTMLElement
       const linkBox = link.getBoundingClientRect()
       const helperBox = helper.getBoundingClientRect()
       // The 44px anchor centres its 24px name line, so the visible name bottom
       // is 10px above the anchor's border box.
-      return { nameToHelper: helperBox.top - (linkBox.bottom - 10), helperToResources: resources.getBoundingClientRect().top - helperBox.bottom }
+      return { nameToHelper: helperBox.top - (linkBox.bottom - 10), headerToResources: resources.getBoundingClientRect().top - header.getBoundingClientRect().bottom }
     })
     expect(identityGap.nameToHelper, 'name-to-helper gap').toBeGreaterThanOrEqual(4)
     expect(identityGap.nameToHelper, 'name-to-helper gap').toBeLessThanOrEqual(10)
-    expect(identityGap.helperToResources, 'helper-to-resources gap').toBeGreaterThanOrEqual(10)
-    expect(identityGap.helperToResources, 'helper-to-resources gap').toBeLessThanOrEqual(16)
+    expect(Math.abs(identityGap.headerToResources), 'the resource region starts at the reserved identity boundary').toBeLessThanOrEqual(1)
 
     await expectNoVerboseHomeSurface(page)
 
-    // Healthy Nodes stay compact: no routine prose or diagnostic line, and
+    // Healthy Nodes stay compact: the reserved diagnostic line stays empty, and
     // exactly one whole-card link carries the Node identity.
-    await expect(hCard.getByText('one or more observations are stale or unknown')).toHaveCount(0)
+    await expect(hCard.locator('[data-slot="node-diagnostic"]')).toHaveText('')
     await expect(page.getByRole('link', { name: /Node H/ })).toHaveCount(1)
 
-    // Exceptional Nodes retain exactly one short Server-sanitized reason.
+    // CONTEXT.md: the reason for an abnormal Node Health state stays visible as
+    // text, on its own reserved line.
     const lCard = nodeCard(page, /Node L/)
     await expect(lCard.getByText('one or more observations are stale or unknown')).toHaveCount(1)
 

@@ -122,7 +122,7 @@ test('1920 desktop remains max1280 with proportional map and auto-fill Nodes', a
   }
 })
 
-test('short and long Node names retain identity actions and independent natural heights', async ({ page }, testInfo) => {
+test('short and long Node names retain identity actions and one shared card height', async ({ page }, testInfo) => {
   await loginAs(page)
   const longName = 'B Very Long Production Node Name With Readable Words And A Distinct Identity'
   await page.route('**/api/public/v1/networks*', async route => {
@@ -143,9 +143,13 @@ test('short and long Node names retain identity actions and independent natural 
   for (const dark of [false, true]) {
     await page.evaluate(value => document.documentElement.classList.toggle('dark', value), dark)
     await overviewGeometry(page)
-    const shortBox = await box(cards.nth(0))
-    const longBox = await box(cards.nth(1))
-    expect(longBox.height).toBeGreaterThan(shortBox.height + 10)
+    // The grid uses auto-rows-fr, so every card in every row shares the
+    // tallest card's height — not just the two cards in one row. Six cards at
+    // desktop span two rows, so a single unique height proves cross-row
+    // equality, and a longer sanitized reason cannot stretch a subset.
+    const cardHeights = await cards.evaluateAll(elements => elements.map(el => Math.round(el.getBoundingClientRect().height)))
+    expect(cardHeights).toHaveLength(6)
+    expect(new Set(cardHeights).size, 'all Node cards share one height across every row: ' + JSON.stringify(cardHeights)).toBe(1)
     await expect(cards.nth(0).getByRole('link', { name: 'A', exact: true })).toHaveAttribute('href', '/nodes/layout-0')
     await expect(cards.nth(1).getByRole('link', { name: longName, exact: true })).toHaveAttribute('href', '/nodes/layout-1')
     const linkGeometry = await cards.nth(1).getByRole('link', { name: longName, exact: true }).evaluate(el => {
