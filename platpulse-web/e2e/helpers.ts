@@ -30,6 +30,16 @@ export async function loginAs(
   await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()
 }
 
+/**
+ * Auto-fill track count for the Home Node grid at a measured content width.
+ * The grid's minimum track equals the card's own 22.5rem container switch, whose
+ * resolved pixel value is 360 at the default root font size; the grid exposes
+ * four columns only when the content column can hold four of those tracks.
+ */
+export function homeNodeColumns(gridWidth: number, gap: number): number {
+  return gridWidth < 640 ? 1 : Math.floor((gridWidth + gap) / (360 + gap))
+}
+
 /** The document must never overflow the viewport horizontally. */
 export async function expectNoHorizontalOverflow(page: Page) {
   const { overflow, offenders } = await page.evaluate(() => {

@@ -135,7 +135,7 @@ test.describe('Converged Public Home (issue #102)', () => {
       await expect(caption).toContainText(/known|Coverage unknown/)
     }
 
-    // The Node grid fits as many 300px columns as the content width allows:
+    // The Node grid fits as many 360px columns as the content width allows:
     // several at 1280px, two at 768px, one on a phone. Read the first two
     // cards after the active Health sort instead of naming a pair: adding
     // another Active Node may legitimately shift row pairing.

@@ -431,9 +431,11 @@ describe('LinkedValidatorSection', () => {
     expect(screen.getByText('Not a Validator')).toBeTruthy()
     expect(screen.getByRole('status', { name: 'Validator Provider data state' }).textContent).toContain(validatorStateLabel(provider.state, provider.freshness))
     expect(screen.queryByRole('group', { name: 'Linked Validator metrics' })).toBeNull()
-    expect(screen.getByText('No current staking identity; no Validator metrics available.')).toBeTruthy()
+    // The compact card never repeats the long explanation; Details keeps it.
+    expect(screen.queryByText('No current staking identity; no Validator metrics available.')).toBeNull()
     const dialog = within(openDetails())
     expect(dialog.getByRole('group', { name: 'Linked Validator metrics' }).querySelectorAll('[data-slot="metric-row"]')).toHaveLength(6)
+    expect(dialog.getByText(/No current staking identity; no Validator metrics available/)).toBeTruthy()
     expect(dialog.getByText(/Authoritative evidence reports no current staking identity/)).toBeTruthy()
     expect(dialog.getByText('Provider state').nextElementSibling?.textContent).toBe(provider.state)
   })

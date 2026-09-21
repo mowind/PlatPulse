@@ -165,13 +165,21 @@ export default function HomeDashboard({
         </div>
 
         <div className="mt-4">
+          {/* 22.5rem (360px at the default root font size) is the same width at
+              which the card's own container query turns on the two-column
+              consensus and Validator-parameter grids (see the node-card rules
+              in emerald.css). Aligning the minimum track with that switch means
+              every auto-filled card is wide enough to use its width, and the
+              grid still exposes four columns on a container that can hold four
+              of them. Both use rem so the threshold scales with the root font
+              size. */}
           {loading || (error && !hasLastGood) ? null : visibleRecords.length === 0 ? (
             <Empty description="No Active Nodes in this view.">
               <span className="text-xs">Retired Nodes are not listed on Home.</span>
             </Empty>
           ) : (
             <div
-              className="grid grid-cols-1 items-start gap-3 sm:grid-cols-[repeat(auto-fill,minmax(300px,1fr))]"
+              className="grid grid-cols-1 items-start gap-3 sm:grid-cols-[repeat(auto-fill,minmax(22.5rem,1fr))]"
               data-slot="node-grid"
               aria-label="Active Nodes"
             >
@@ -359,10 +367,12 @@ function validHeight(value: number | null | undefined): number | null {
 }
 
 /** PlatPulse owns no occupancy threshold rule for process CPU/Memory or the
- *  Node data directory, so none is invented here: the ordinary fill uses the
- *  theme's informational colour instead of the default primary (white in the
- *  dark theme). A Server-owned warning/error rule would replace this. */
-const RESOURCE_BAR_STATUS: ProgressStatus = 'info'
+ *  Node data directory, so none is invented here: the ordinary fill uses
+ *  Emerald's normal-state success token, the same green family as the online
+ *  dot and the theme accent, instead of the informational blue or the default
+ *  primary (white in the dark theme). A Server-owned warning/error rule would
+ *  replace this, and it would still have to map onto the existing tokens. */
+const RESOURCE_BAR_STATUS: ProgressStatus = 'success'
 
 function ResourceRow({ node }: { node: PublicNode }) {
   const nodeDataProgressValue = nodeDataProgress(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)

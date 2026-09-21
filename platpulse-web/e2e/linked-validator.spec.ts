@@ -226,4 +226,41 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
 
     await expectNoHorizontalOverflow(page)
   })
+  test('folds an authoritative no-live-Validator card without repeating its long explanation', async ({ page }) => {
+    const foldValidator = (node: PublicNode): PublicNode => {
+      if (node.nodeId !== PUBLIC_NODE_ID || !node.validator) return node
+      return { ...node, validator: { ...node.validator, state: 'empty', freshness: 'fresh',
+        currentValidatorStatus: 'not_validator', currentValidatorStatusState: 'current', currentValidatorStatusQualifier: null,
+        blockCount: null, rewardAmount: null, rank: null, rankState: 'unranked', rankFreshness: 'fresh',
+        blockRate: null, blockRateState: 'unknown', expectedBlockCount: null, genBlocksRate: null, delegationRewardPercentage: null } }
+    }
+    await page.route('**/api/public/v1/networks', async route => {
+      const response = await route.fetch()
+      const networks: PublicNetwork[] = await response.json()
+      await route.fulfill({ response, json: networks.map(network => ({ ...network, nodes: network.nodes.map(foldValidator) })) })
+    })
+    await loginAs(page)
+    const card = page.getByRole('link', { name: PUBLIC_NODE_NAME, exact: true }).locator('xpath=ancestor::article[1]')
+    const linked = card.locator('[data-slot="linked-validator"]')
+    await expect(linked.getByText('Not a Validator', { exact: true })).toBeVisible()
+    // Identity status and Provider Data state stay independent facts on the same
+    // status row, which also carries the necessary Unranked conclusion.
+    const status = linked.getByRole('status', { name: 'Validator Provider data state' })
+    await expect(status).toContainText('Data: No live Validator')
+    // Rank stays a separate dimension from the Provider-data status.
+    await expect(linked.getByText('Network rank: Unranked')).toBeVisible()
+    await expect(linked.getByRole('group', { name: 'Linked Validator metrics' })).toHaveCount(0)
+    // The long explanation belongs to Details, not to the Home card.
+    await expect(linked.getByText('No current staking identity; no Validator metrics available.', { exact: true })).toHaveCount(0)
+    // The status row starts at the left of its own line instead of being
+    // stranded right-aligned on a line of its own.
+    const sectionBox = (await linked.boundingBox())!
+    const statusBox = (await status.boundingBox())!
+    expect(statusBox.x - sectionBox.x).toBeLessThan(sectionBox.width / 2)
+    await linked.getByRole('button', { name: 'Open Validator details' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Validator details' })
+    await expect(dialog.getByText(/No current staking identity; no Validator metrics available/)).toBeVisible()
+    await expect(dialog.getByRole('group', { name: 'Linked Validator metrics' })).toBeVisible()
+    await expectNoHorizontalOverflow(page)
+  })
 })

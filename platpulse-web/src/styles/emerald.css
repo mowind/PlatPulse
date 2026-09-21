@@ -281,7 +281,15 @@
   /* The Node card is the query container for its own width: the chain grid, the
    * Linked Validator parameter grid and the merged Node-data caption switch on
    * the card's available width, never on the viewport. Named so the per-row
-   * metric-row container below stays usable for its own label vocabulary. */
+   * metric-row container below stays usable for its own label vocabulary.
+   *
+   * 22.5rem (360px at the default 16px root) is the measured switch point, and
+   * HomeDashboard's node-grid minimum track is the same 22.5rem on purpose:
+   * auto-fill can then never produce a card narrower than the two-column grids
+   * need, so a multi-column Home always uses the card's width instead of falling
+   * back to one full-width row per metric. Both stay in rem so the threshold
+   * keeps scaling with the root font size alongside the card's own padding and
+   * type, instead of overflowing a larger text setting. */
   [data-slot='node-card'] { container-type: inline-size; container-name: node-card; }
   [data-slot='metric-row'] { container-type: inline-size; }
   [data-slot='metric-row-label'] [data-short-label] { display: none; }

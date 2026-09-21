@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page, type TestInfo } from '@playwright/test'
 import type { PublicNetwork } from '../src/api/generated'
-import { expectNoHorizontalOverflow, loginAs } from './helpers'
+import { expectNoHorizontalOverflow, homeNodeColumns, loginAs } from './helpers'
 
 const labels = ['Active Nodes', 'Healthy Nodes', 'Cumulative blocks', 'Attention', 'Networks', 'Cumulative rewards']
 
@@ -71,8 +71,14 @@ async function overviewGeometry(page: Page) {
     const style = getComputedStyle(el)
     return { columns: style.gridTemplateColumns.split(' ').length, gap: parseFloat(style.columnGap) }
   })
-  // Preserve the existing min300 auto-fill rule; do not force four at 1920.
-  const expectedColumns = width < 640 ? 1 : Math.floor((gridBox.width + geometry.gap) / (300 + geometry.gap))
+  // The auto-fill minimum track is the same 22.5rem (360px at the default root)
+  // a card's own container query needs for its two-column consensus and
+  // Validator grids, so an auto-filled card is never narrower than its
+  // width-driven rules require (an over-long value still falls back on purpose).
+  // Four columns are exposed only when the content column can hold four of those
+  // tracks; since Home is capped at max-w-1280 (1248px of content), desktop
+  // yields three wide cards rather than four narrow ones. Never hardcoded.
+  const expectedColumns = homeNodeColumns(gridBox.width, geometry.gap)
   expect(geometry.columns).toBe(expectedColumns)
   const nodes = grid.locator('[data-slot="node-card"]')
   for (let index = 0; index < expectedColumns; index++) {

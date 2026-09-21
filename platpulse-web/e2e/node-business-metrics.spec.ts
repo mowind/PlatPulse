@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 import type { PublicNetwork } from '../src/api/generated'
-import { expectNoHorizontalOverflow, loginAs } from './helpers'
+import { expectNoHorizontalOverflow, homeNodeColumns, loginAs } from './helpers'
 
 /**
  * The Home Node card now keeps one emphasized label-over-value form only for
@@ -17,13 +17,15 @@ test('business metrics preserve full values, compact rows and neutral roles', as
     const base = network.nodes[0]
     const nodes = [true, false, null].map((validator, i) => ({
       ...base, nodeId: 'business-' + i, displayName: 'Node ' + i + ' Extremely Long Production Node Name That Must Not Squeeze The Role',
-      currentHead: i === 0 ? 9007199254740991 : 123456789,
+      // Node 1 carries the spec's own 11-character example heights, so the
+      // tightest two-column track is exercised with the longest ordinary value.
+      currentHead: i === 0 ? 9007199254740991 : 159320291,
       latestBlockTransactionCount: i === 0 ? 9007199254740991 : 12,
       peers: { ...base.peers, peerCount: i === 0 ? 9007199254740991 : 3 },
       consensus: { state: 'ok', freshness: 'current', validator,
-        highestQcBlock: i === 0 ? 9007199254740991 : 123456788,
-        highestLockBlock: i === 0 ? 9007199254740990 : 123456787,
-        highestCommitBlock: i === 0 ? 9007199254740989 : 123456786 },
+        highestQcBlock: i === 0 ? 9007199254740991 : 159320293,
+        highestLockBlock: i === 0 ? 9007199254740990 : 159320292,
+        highestCommitBlock: i === 0 ? 9007199254740989 : 159320291 },
     }))
     await route.fulfill({ response, json: [{ ...network, nodes }] })
   })
@@ -45,7 +47,7 @@ test('business metrics preserve full values, compact rows and neutral roles', as
         await expect(metrics.locator('[data-slot="metric-row-label"]')).toHaveText(['Head', 'QC', 'Locked', 'Committed', 'Txs', 'Peers'])
         await expect(metrics.locator('[data-slot="metric-row-value"]')).toHaveText(i === 0
           ? ['9,007,199,254,740,991', '9,007,199,254,740,991', '9,007,199,254,740,990', '9,007,199,254,740,989', '9,007,199,254,740,991', '9,007,199,254,740,991']
-          : ['123,456,789', ...(i === 1 ? ['123,456,788', '123,456,787', '123,456,786'] : ['Unknown', 'Unknown', 'Unknown']), '12', '3'])
+          : ['159,320,291', ...(i === 1 ? ['159,320,293', '159,320,292', '159,320,291'] : ['Unknown', 'Unknown', 'Unknown']), '12', '3'])
         const layout = await metrics.evaluate(el => {
           const rows = [...el.querySelectorAll('[data-slot="metric-row"]')].map(row => {
             const label = row.querySelector('[data-slot="metric-row-label"]')!
@@ -199,3 +201,56 @@ test('Linked Validator keeps two emphasized cells and four compact parameter row
     await dialog.getByRole('button', { name: 'Close', exact: true }).click()
   }
 })
+
+/**
+ * Density regression for the auto-fill minimum track. The grid minimum is the
+ * card's own 22.5rem container switch (360px at the default root): every
+ * auto-filled card is wide enough for its width-driven rules (an over-long
+ * value still falls back on purpose), and only a genuinely narrow card
+ * (mobile, where the grid is one column) keeps one full-width row per metric.
+ * The assertions read geometry, not the CSS rule, and adapt to every fixed
+ * project instead of hardcoding a desktop column count.
+ */
+test('auto-filled cards use the two-column metric grids their width allows', async ({ page }) => {
+  await loginAs(page)
+  const grid = page.locator('[data-slot="node-grid"]')
+  const cards = grid.locator('[data-slot="node-card"]')
+  await expect(cards.first()).toBeVisible()
+  const gridMath = await grid.evaluate(el => {
+    const style = getComputedStyle(el)
+    return { width: el.getBoundingClientRect().width, gap: parseFloat(style.columnGap), columns: style.gridTemplateColumns.split(' ').length }
+  })
+  expect(gridMath.columns).toBe(homeNodeColumns(gridMath.width, gridMath.gap))
+
+  // Count visually distinct rows rather than grid tracks: a narrow card keeps
+  // the two cumulative cells side by side while a wide card pairs four
+  // parameters into two rows, so track counts alone cannot describe it.
+  const count = await cards.count()
+  for (let index = 0; index < count; index++) {
+    const cardGeometry = await cards.nth(index).evaluate(cardEl => {
+      const rowCount = (el: Element, selector: string) => {
+        const tops = [...el.querySelectorAll(selector)].map(item => item.getBoundingClientRect().top)
+        return tops.reduce<number[]>((rows, top) => rows.some(existing => Math.abs(existing - top) <= 2) ? rows : [...rows, top], []).length
+      }
+      const business = cardEl.querySelector('[data-slot="node-business-metrics"]')
+      const validator = cardEl.querySelector('[data-slot="linked-validator-metrics"]')
+      return {
+        width: cardEl.getBoundingClientRect().width,
+        businessRows: business ? rowCount(business, ':scope > [data-slot="metric-row"], :scope > [role="group"] > [data-slot="metric-row"], :scope > [data-slot="node-counts"]') : 0,
+        validatorRows: validator ? rowCount(validator, ':scope > [data-slot="metric-row"], :scope > [data-slot="validator-metric"]') : null,
+      }
+    })
+    const expectedRows = cardGeometry.width >= 360 ? 3 : 5
+    const where = ' on card ' + index + ' at ' + cardGeometry.width + 'px'
+    expect(cardGeometry.businessRows, 'business rows' + where).toBe(expectedRows)
+    if (cardGeometry.validatorRows != null) expect(cardGeometry.validatorRows, 'Validator rows' + where).toBe(expectedRows)
+    // The two-column switch is only safe if no label or value overflows its
+    // cell at the tightest track, including an 11-character chain height.
+    const overflow = await cards.nth(index)
+      .locator('[data-slot="metric-row-value"], [data-slot="metric-row-label"], [data-slot="validator-metric"] strong')
+      .evaluateAll(elements => elements.filter(element => element.scrollWidth > element.clientWidth + 1).map(element => element.textContent))
+    expect(overflow, 'no metric label or value overflows its cell' + where).toEqual([])
+  }
+  await expectNoHorizontalOverflow(page)
+})
+

@@ -249,6 +249,11 @@ export function LinkedValidatorSection({ node, variant = 'card' }: { node: Publi
     </div>
     {qualifierLabel && <p className="m-0 mt-1 text-[11px] text-muted-foreground" role="status">This identity has a confirmed-valid staking identity but is {qualifierLabel.toLowerCase()}, not normally producing.</p>}
     {validator.currentValidatorStatus === 'not_validator' && <p className="m-0 mt-1 text-[11px] text-muted-foreground" role="status">Authoritative evidence reports no current staking identity for this chain key.</p>}
+    {/* The Home card folds its metric structure for this case; Details keeps the
+        explanation and the six Unknown slots visible. The rank outcome is not
+        repeated here: the Network-rank cell and its own state note already
+        carry it. */}
+    {canFoldMissingMetrics(validator) && <p className="m-0 mt-1 text-[11px] text-muted-foreground" role="status">No current staking identity; no Validator metrics available.</p>}
     {validator.currentValidatorStatus === 'unknown' && <p className="m-0 mt-1 text-[11px] text-muted-foreground" role="status">{UNKNOWN_STAKING_EXPLANATION}</p>}
     {statusRetained && <p className="m-0 mt-1 text-[11px] text-muted-foreground" role="status">The last confirmed Validator status is retained; the source has not refreshed it recently.</p>}
     {rankState && <p className="m-0 mt-1 text-[11px] text-muted-foreground" role="status">{rankState}</p>}
@@ -387,6 +392,10 @@ function ValidatorCard({ node, validator }: { node: PublicNode; validator: Publi
   const qualifier = currentValidatorStatusQualifierLabel(validator.currentValidatorStatusQualifier)
   const cumulativeRewards = formatAmountCompact(validator.rewardAmount)
   const folded = canFoldMissingMetrics(validator)
+  // Unranked is a ranking outcome, not a metric value, so a folded card keeps
+  // it as a short conclusion on the Provider-data line rather than expanding
+  // the six-slot metric structure (#158).
+  const foldedRank = folded && validator.rankState === 'unranked'
   const retained = validator.state !== 'fresh' && hasMetricValues(validator)
   const providerState = validatorStateLabel(validator.state, validator.freshness)
   const copyIdentifier = async () => {
@@ -400,18 +409,28 @@ function ValidatorCard({ node, validator }: { node: PublicNode; validator: Publi
 
   return <section data-slot="linked-validator" className="min-w-0 border-t border-border pt-3" aria-label="Linked Validator">
     {/* Identity status, the Provider Data state and the Validator identifier are
-        three independent facts. A wide card keeps them on two lines; each line
-        wraps on its own when the card or a status word is too long. */}
-    <header className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
-      <h3 className="m-0 text-xs font-medium tracking-wider text-muted-foreground">Linked Validator</h3>
-      {validator.displayName && validator.displayName !== identifier && <span className="min-w-0 break-words text-sm font-semibold">{validator.displayName}</span>}
-      <ValidatorStatusChip validator={validator} qualifierLabel={qualifier} />
-      <span role="status" aria-label="Validator Provider data state" className="ml-auto flex min-w-0 flex-wrap items-baseline gap-x-1.5 text-xs text-muted-foreground">
-        <span className={cn('inline-block size-1.5 shrink-0 self-center rounded-full', stateDotClass(validator.state))} aria-hidden="true" />
-        <span>Data: <span className="font-medium text-foreground">{providerState}</span></span>
-        {validator.freshness === 'stale' && validator.state !== 'stale' && <span>· Stale</span>}
-        {retained && <span>· last successful value retained</span>}
-      </span>
+        three independent facts. The heading and the status cluster each keep
+        their own row, so a wrapped cluster can never strand
+        "Data: No live Validator" right-aligned on a line of its own; each row
+        still wraps internally when the card or a status word is too long. */}
+    <header className="flex min-w-0 flex-col gap-1">
+      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+        <h3 className="m-0 text-xs font-medium tracking-wider text-muted-foreground">Linked Validator</h3>
+        {validator.displayName && validator.displayName !== identifier && <span className="min-w-0 break-words text-sm font-semibold">{validator.displayName}</span>}
+      </div>
+      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+        <ValidatorStatusChip validator={validator} qualifierLabel={qualifier} />
+        <span role="status" aria-label="Validator Provider data state" className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 text-xs text-muted-foreground">
+          <span className={cn('inline-block size-1.5 shrink-0 self-center rounded-full', stateDotClass(validator.state))} aria-hidden="true" />
+          <span>Data: <span className="font-medium text-foreground">{providerState}</span></span>
+          {validator.freshness === 'stale' && validator.state !== 'stale' && <span>· Stale</span>}
+          {retained && <span>· last successful value retained</span>}
+        </span>
+        {/* Rank is a separate dimension from the Provider-data state, so the
+            Unranked conclusion sits beside that status rather than inside its
+            live region. */}
+        {foldedRank && <span className="text-xs text-muted-foreground">· Network rank: {rankLabel(validator)}</span>}
+      </div>
     </header>
     <div className="mt-0.5 flex min-w-0 items-center gap-0.5">
       <code className="min-w-0 flex-1 truncate text-xs text-muted-foreground" aria-label={`Validator identifier: ${fingerprint}`}>{fingerprint}</code>
@@ -447,9 +466,10 @@ function ValidatorCard({ node, validator }: { node: PublicNode; validator: Publi
     {validator.rankFreshness === 'stale' && <p className="m-0 mt-1 text-xs text-muted-foreground" role="status">Network rank stale · last ranking retained.</p>}
     {validator.rankState === 'error' && <p className="m-0 mt-1 text-xs text-muted-foreground" role="status">Network ranking collection failed.</p>}
     {validator.counterState === 'counter_reset' && <p className="m-0 mt-1 text-xs text-destructive" role="status">Counter reset or correction observed.</p>}
-    {folded ? <p className="m-0 mt-2 text-xs text-muted-foreground">{validator.rankState === 'unranked'
-      ? 'No current staking identity; no Validator metrics available. Network rank: Unranked.'
-      : 'No current staking identity; no Validator metrics available.'}</p> :
+    {/* The folded state keeps its short conclusions on the Provider-data line
+        above and leaves the long "no metrics available" explanation to Details,
+        so the Home card never repeats it. */}
+    {folded ? null :
       <div className="mt-2" data-slot="linked-validator-metrics" role="group" aria-label="Linked Validator metrics">
         <ValidatorMetric label="Cumulative blocks" value={blockCountLabel(validator.blockCount)} reason="No cumulative block count is available from the Validator source." />
         <ValidatorMetric label="Cumulative rewards" value={cumulativeRewards} reason="No cumulative reward amount is available from the Validator source." />
