@@ -1,5 +1,5 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { BrowserRouter } from 'react-router'
 import type { PublicNetwork } from '../api/generated'
 import HomeDashboard from './HomeDashboard'
@@ -61,7 +61,7 @@ const summaryValueOf = (label: string) => {
   return value
 }
 
-afterEach(cleanup)
+afterEach(() => { cleanup(); vi.useRealTimers() })
 
 describe('Public Home dashboard', () => {
   it('scopes all six overview counters, map and cards to the selected network', () => {
@@ -559,11 +559,13 @@ describe('Public Home dashboard', () => {
     expect(alphaCard.querySelectorAll('.dashboard-node-diagnostic')).toHaveLength(0)
   })
 
-  it('keeps exactly one short diagnostic line on exceptional Nodes', () => {
+  it('keeps health diagnostics separate from structured resync progress', () => {
     const resyncingNode = {
       ...network.nodes[0],
       nodeId: 'node-c', displayName: 'Gamma', health: 'healthy', resyncState: 'resyncing',
-      resyncProgress: 'Backfilling 10,000 blocks', peers: { state: 'ok', freshness: 'current', peerCount: 3 },
+      currentHead: 6_920_136, historicalHighWatermark: 159_311_799,
+      resyncLastProgressAt: '2026-08-25T00:00:00Z',
+      resyncProgress: '6920136/159311799 (last progress 2026-08-25T00:00:00Z)', peers: { state: 'ok', freshness: 'current', peerCount: 3 },
     }
     render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes: [network.nodes[1], resyncingNode] }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
@@ -575,12 +577,100 @@ describe('Public Home dashboard', () => {
     expect(within(betaCard).getByText(/No successful Peer snapshot is available/)).toBeTruthy()
     expect(within(betaCard).queryByText('Current observation')).toBeNull()
 
-    // Healthy Node with an active resync: a labelled Warning, still one line.
     const gammaCard = cardOf(nodeCardLink('Gamma'))
-    expect(within(gammaCard).getByText('Resyncing · Backfilling 10,000 blocks')).toBeTruthy()
-    expect(within(gammaCard).queryByText('Current observation')).toBeNull()
-    expect(gammaCard.querySelector('[data-slot="node-diagnostic"]')?.getAttribute('data-tone')).toBe('warning')
-    expect(gammaCard.querySelectorAll('[data-slot="node-diagnostic"]')).toHaveLength(1)
+    const progress = within(gammaCard).getByRole('group', { name: 'Resync progress' })
+    expect(within(progress).getByText('Resyncing')).toBeTruthy()
+    expect(within(progress).getByText('4.34%')).toBeTruthy()
+    expect(within(progress).getByText('6,920,136 / 159,311,799')).toBeTruthy()
+    expect(within(progress).getByRole('button', { name: /Last progress/ })).toBeTruthy()
+    expect(within(gammaCard).getByRole('img', { name: 'Healthy' })).toBeTruthy()
+    expect(summaryValueOf('Healthy Nodes').textContent).toBe('1')
+    expect(summaryValueOf('Attention').textContent).toBe('1')
+  })
+
+  it.each([
+    { currentHead: 0, historicalHighWatermark: 100, height: '0 / 100', percent: '0.00%' },
+    { currentHead: 0, historicalHighWatermark: 0, height: '0 / 0', percent: 'Unknown' },
+    { currentHead: 50, historicalHighWatermark: null, height: '50 / Unknown', percent: 'Unknown' },
+    { currentHead: 50, historicalHighWatermark: undefined, height: '50 / Unknown', percent: 'Unknown' },
+    { currentHead: null, historicalHighWatermark: 100, height: 'Unknown / 100', percent: 'Unknown' },
+    { currentHead: undefined, historicalHighWatermark: 100, height: 'Unknown / 100', percent: 'Unknown' },
+    { currentHead: NaN, historicalHighWatermark: 100, height: 'Unknown / 100', percent: 'Unknown' },
+    { currentHead: Infinity, historicalHighWatermark: 100, height: 'Unknown / 100', percent: 'Unknown' },
+    { currentHead: 50, historicalHighWatermark: Infinity, height: '50 / Unknown', percent: 'Unknown' },
+    { currentHead: -1, historicalHighWatermark: 100, height: 'Unknown / 100', percent: 'Unknown' },
+    { currentHead: 50, historicalHighWatermark: -1, height: '50 / Unknown', percent: 'Unknown' },
+    { currentHead: 0.5, historicalHighWatermark: 100, height: 'Unknown / 100', percent: 'Unknown' },
+    { currentHead: 100, historicalHighWatermark: 100, height: '100 / 100', percent: '100.00%' },
+  ])('renders resync raw heights safely: $height ($percent)', ({ currentHead, historicalHighWatermark, height, percent }) => {
+    const node = { ...network.nodes[0], resyncState: 'resyncing', currentHead, historicalHighWatermark }
+    render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes: [node] }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+    const progress = screen.getByRole('group', { name: 'Resync progress' })
+    expect(within(progress).getByText(height)).toBeTruthy()
+    expect(within(progress).getByText(percent)).toBeTruthy()
+    expect(progress.textContent).not.toMatch(/NaN|Infinity/)
+  })
+
+  it.each([null, undefined, '', 'invalid-time', '2026-02-30T00:00:00Z', '2026-08-25T00:00:00', '2026-08-25T24:00:00Z'])('keeps missing or invalid progress time Unknown: %s', timestamp => {
+    const node = { ...network.nodes[0], resyncState: 'resyncing', resyncLastProgressAt: timestamp,
+      lastReportAt: new Date().toISOString(), processUptimeMs: 0,
+      resyncProgress: '120/120 (last progress 2026-08-25T00:00:00Z)' }
+    render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes: [node] }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+    const progress = screen.getByRole('group', { name: 'Resync progress' })
+    expect(within(progress).getByText('Last progress: Unknown')).toBeTruthy()
+    expect(within(progress).queryByRole('button')).toBeNull()
+    expect(progress.textContent).not.toMatch(/\bnow\b|\bago\b|2026|ETA/)
+  })
+
+  it('keeps resync independent of unhealthy diagnostics and trusts the completed Server state', () => {
+    const node = { ...network.nodes[0], resyncState: 'resyncing', health: 'unhealthy', healthReason: 'RPC observation failed',
+      currentHead: 100, historicalHighWatermark: 100,
+      consensus: { ...network.nodes[0].consensus, highestQcBlock: 0, highestLockBlock: 0, highestCommitBlock: 0 } }
+    const view = (resyncState: string) => <BrowserRouter><HomeDashboard networks={[{ ...network, nodes: [{ ...node, resyncState }] }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>
+    const { rerender } = render(view('resyncing'))
+    expect(screen.getByRole('group', { name: 'Resync progress' })).toBeTruthy()
+    expect(screen.getByText('RPC observation failed')).toBeTruthy()
+    for (const label of ['QC', 'Locked', 'Committed']) {
+      expect(screen.getByText(label).nextElementSibling?.textContent).toBe('0')
+    }
+    expect(summaryValueOf('Healthy Nodes').textContent).toBe('0')
+    expect(summaryValueOf('Attention').textContent).toBe('1')
+    rerender(view('normal'))
+    expect(screen.queryByRole('group', { name: 'Resync progress' })).toBeNull()
+    expect(screen.getByText('RPC observation failed')).toBeTruthy()
+  })
+
+  it('explains health and Home Attention without equating health with completed synchronization', () => {
+    render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+    fireEvent.click(within(cardOf(nodeCardLink('Alpha'))).getByRole('button', { name: 'Node identity details' }))
+    const dialog = screen.getByRole('dialog', { name: 'Alpha' })
+    expect(dialog.textContent).toContain('Healthy does not mean synchronization is complete')
+    expect(dialog.textContent).toContain('Attention counts Active Nodes that are not Healthy, including Unknown')
+  })
+
+  it('updates the real progress age without new reports and exposes its full UTC time', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-25T00:02:00Z'))
+    const node = { ...network.nodes[0], resyncState: 'resyncing', resyncLastProgressAt: '2026-08-25T02:00:00.123456+02:00' }
+    render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes: [node] }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+    expect(screen.getByRole('button', { name: 'Last progress: 2 minutes ago' })).toBeTruthy()
+    act(() => { vi.advanceTimersByTime(60_000) })
+    const trigger = screen.getByRole('button', { name: 'Last progress: 3 minutes ago' })
+    fireEvent.click(trigger)
+    const dialog = screen.getByRole('dialog', { name: 'Last resync progress' })
+    expect(within(dialog).getByText('25 Aug 2026, 00:00:00 UTC')).toBeTruthy()
+    expect(within(dialog).getByText('2026-08-25T02:00:00.123456+02:00')).toBeTruthy()
+    expect(dialog.textContent).toContain('not the latest report time')
+  })
+
+  it('uses the real current time when a new progress observation arrives between clock ticks', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-25T00:02:00Z'))
+    const view = (timestamp: string) => <BrowserRouter><HomeDashboard networks={[{ ...network, nodes: [{ ...network.nodes[0], resyncState: 'resyncing', resyncLastProgressAt: timestamp }] }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>
+    const { rerender } = render(view('2026-08-25T00:00:00Z'))
+    vi.setSystemTime(new Date('2026-08-25T00:02:10Z'))
+    rerender(view('2026-08-25T00:02:09Z'))
+    expect(screen.getByRole('button', { name: 'Last progress: 1 second ago' })).toBeTruthy()
   })
 
   it('filters by Network and sorts by supported operational fields', () => {

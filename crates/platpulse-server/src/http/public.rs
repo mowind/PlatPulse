@@ -1664,6 +1664,7 @@ pub struct PublicNode {
     pub network_reference_head: Option<i64>,
     pub network_reference_confidence: String,
     pub resync_progress: Option<String>,
+    pub resync_last_progress_at: Option<String>,
     pub validator: Option<PublicValidatorInsight>,
     /// Server-owned automatic-identity state for this Node (#173):
     /// `identified`, `missing_public_key`, `invalid_public_key`,
@@ -2195,6 +2196,7 @@ fn public_node(row: PublicNodeRow) -> (String, PublicNode) {
                 None => format!("{current}/{high}"),
             },
         ),
+        resync_last_progress_at: row.resync_last_progress_at,
         validator: None,
         validator_identity_reason: validator_identity_reason(
             row.auto_validator_identity_state.as_deref(),

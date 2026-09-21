@@ -1,9 +1,9 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router'
 import type { PublicConsensusInsight, PublicNetwork, PublicNode } from '../api/generated'
 import { realtimeStreamLabel } from './RealtimeNotice'
 import { peerInsightCollectionStatus, peerInsightFreshnessStatus, peerInsightValueStatus } from './PeerInsight'
-import { NodeHealthMarker } from './StatusBadge'
+import { NodeHealthMarker, formatRelativeTime, formatUtcDateTime } from './StatusBadge'
 import GeoMapBoundary from './GeoMapBoundary'
 import GeoWorldMap from './GeoWorldMap'
 import { formatNodeDataBytes } from '../formatBytes'
@@ -207,8 +207,8 @@ function SummaryCard({ label, value, tone, icon }: {
  * resource grid with thin progress bars, and a label-over-value consensus
  * grid without per-row leaders. Copy, disclosure and identity controls sit
  * outside the anchor so they never trigger navigation. Healthy Nodes carry no
- * routine prose; only an exceptional Node keeps one short diagnostic line
- * (issue #97).
+ * routine prose. Exceptional health keeps a short diagnostic line (issue #97);
+ * resync progress is a separate, lightweight status area.
  */
 function HomeNodeCard({ network, node }: NodeRecord) {
   const tone = toneFor(node.health)
@@ -240,7 +240,10 @@ function HomeNodeCard({ network, node }: NodeRecord) {
           <div className="col-span-2 flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
             <p className="min-w-0 flex-1"><span className="[overflow-wrap:anywhere]">{network.displayName}</span> · <span className="whitespace-nowrap">Uptime {formatDuration(node.processUptimeMs)}</span></p>
             <Dialog><DialogTrigger asChild><Button variant="ghost" size="icon" className="relative z-10 -my-3.5 size-11 shrink-0" aria-label="Node identity details"><Info className="size-3.5" /></Button></DialogTrigger>
-              <DialogContent className="max-h-[85dvh] overflow-y-auto rounded-md shadow-sm"><DialogTitle className="pr-10 [overflow-wrap:anywhere]">{nodeLabel(node)}</DialogTitle><DialogDescription className="[overflow-wrap:anywhere]">Network: {network.displayName} · Uptime {formatDuration(node.processUptimeMs)}. Node role describes the Node’s consensus membership, not its linked Validator’s current staking validity or the freshness of Provider data.</DialogDescription></DialogContent>
+              <DialogContent className="max-h-[85dvh] overflow-y-auto rounded-md shadow-sm"><DialogTitle className="pr-10 [overflow-wrap:anywhere]">{nodeLabel(node)}</DialogTitle><DialogDescription className="[overflow-wrap:anywhere]">Network: {network.displayName} · Uptime {formatDuration(node.processUptimeMs)}. Node role describes the Node’s consensus membership, not its linked Validator’s current staking validity or the freshness of Provider data.</DialogDescription>
+                <p className="text-sm text-muted-foreground">Active Nodes are in the latest Agent Inventory, not necessarily online. Healthy reflects successful, fresh RPC, sync and consensus observations. Process errors, a stopped or Unknown process state, or Network Identity Mismatch prevent Healthy; disabled process monitoring does not. Healthy does not mean synchronization is complete; Resyncing is shown independently.</p>
+                <p className="text-sm text-muted-foreground">Home Attention counts Active Nodes that are not Healthy, including Unknown. Counts and Node cards use the same selected Node data.</p>
+              </DialogContent>
             </Dialog>
           </div>
         </>}>
@@ -258,6 +261,7 @@ function HomeNodeCard({ network, node }: NodeRecord) {
             {diagnostic.text}
           </p>
         )}
+        {(node.resyncState ?? '').toLowerCase() === 'resyncing' && <ResyncStatus node={node} />}
         <ResourceRow node={node} />
         <div data-slot="node-business-metrics" className="grid grid-cols-2 gap-x-4 gap-y-3 border-t border-border pt-3">
           <MetricRow layout="stacked" label="Head" value={formatNumber(node.currentHead)} />
@@ -276,6 +280,62 @@ function HomeNodeCard({ network, node }: NodeRecord) {
         </CardX>
     </article>
   )
+}
+
+/** Resync targets the retained Historical High-Water Mark, not Network Head.
+ * Keep it independent of health, consensus membership and Validator identity. */
+function ResyncStatus({ node }: { node: PublicNode }) {
+  const [, refreshAge] = useState(0)
+  useEffect(() => {
+    // Display age only: Server-owned health, freshness and resync state stay untouched.
+    const timer = window.setInterval(() => refreshAge(tick => tick + 1), 15_000)
+    return () => window.clearInterval(timer)
+  }, [])
+  const current = validHeight(node.currentHead)
+  const target = validHeight(node.historicalHighWatermark)
+  const percent = current !== null && target !== null && target > 0
+    ? (current / target * 100).toFixed(2) + '%'
+    : 'Unknown'
+  const timestamp = node.resyncLastProgressAt
+  const date = validProgressDate(timestamp)
+  return (
+    <div role="group" aria-label="Resync progress" className="min-w-0 space-y-1 text-xs text-muted-foreground">
+      <div className="flex items-baseline justify-between gap-2 font-medium text-amber-500 dark:text-amber-400">
+        <span>Resyncing</span><span className="tabular-nums">{percent}</span>
+      </div>
+      <p className="tabular-nums">{formatNumber(current)} / {formatNumber(target)}</p>
+      {date ? (
+        <Dialog>
+          <DialogTrigger asChild>
+            <Button variant="ghost" className="relative z-10 -my-3.5 -ml-2 px-2 text-[11px] font-normal text-muted-foreground underline decoration-dotted underline-offset-4">
+              Last progress: <time dateTime={date.toISOString()}>{formatRelativeTime(date)}</time>
+            </Button>
+          </DialogTrigger>
+          <DialogContent className="max-h-[85dvh] overflow-y-auto rounded-md shadow-sm">
+            <DialogTitle>Last resync progress</DialogTitle>
+            <DialogDescription>The last recorded advance toward the Historical High-Water Mark, not the latest report time. The target is the Node’s retained historical height, not the Network Head.</DialogDescription>
+            <p className="text-sm"><time dateTime={date.toISOString()}>{formatUtcDateTime(date)}</time></p>
+            <p className="min-w-0 overflow-x-auto whitespace-nowrap font-mono text-xs text-muted-foreground" tabIndex={0} aria-label="Full source timestamp with UTC offset">{timestamp}</p>
+          </DialogContent>
+        </Dialog>
+      ) : <p className="text-[11px]">Last progress: Unknown</p>}
+    </div>
+  )
+}
+
+/** Require a zoned RFC3339 value; Date alone normalizes impossible dates and
+ * interprets zone-less strings in the viewer's timezone. Neither is evidence. */
+function validProgressDate(value: string | null | undefined): Date | null {
+  if (typeof value !== 'string' || !/^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/i.test(value)) return null
+  const date = new Date(value)
+  const calendarDate = value.slice(0, 10)
+  const calendar = new Date(calendarDate + 'T00:00:00Z')
+  if (!Number.isFinite(date.getTime()) || calendar.toISOString().slice(0, 10) !== calendarDate) return null
+  return date
+}
+
+function validHeight(value: number | null | undefined): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null
 }
 
 function ResourceRow({ node }: { node: PublicNode }) {
@@ -387,9 +447,8 @@ function formatConsensusValidator(insight: PublicConsensusInsight | undefined, s
 
 type NodeDiagnostic = { text: string; tone: 'destructive' | 'warning' }
 
-/** One sanitized diagnostic line for exceptional Nodes only (issue #97).
- *  A resync is a Warning rather than a failure, so it is labelled and kept
- *  out of the destructive red that marks an unhealthy Node. */
+/** One sanitized health diagnostic line for exceptional Nodes (issue #97).
+ * Resync progress is independent and never hidden by an unhealthy diagnostic. */
 function exceptionalDiagnostic(node: PublicNode): NodeDiagnostic | null {
   if (node.health !== 'healthy') {
     const reason = node.healthReason?.trim()
@@ -397,10 +456,6 @@ function exceptionalDiagnostic(node: PublicNode): NodeDiagnostic | null {
       text: reason || `Health ${healthLabel(node.health).toLowerCase()}`,
       tone: 'destructive',
     }
-  }
-  if ((node.resyncState ?? '').toLowerCase() === 'resyncing') {
-    const progress = node.resyncProgress?.trim()
-    return { text: `Resyncing · ${progress || 'progress unknown'}`, tone: 'warning' }
   }
   return null
 }

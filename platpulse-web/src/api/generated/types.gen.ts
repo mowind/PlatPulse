@@ -1866,6 +1866,7 @@ export type PublicNode = {
     processStartedAt?: string | null;
     processState: string;
     processUptimeMs?: number | null;
+    resyncLastProgressAt?: string | null;
     resyncProgress?: string | null;
     resyncState: string;
     rpcState: string;

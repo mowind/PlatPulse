@@ -12416,6 +12416,12 @@
             ],
             "format": "int64"
           },
+          "resyncLastProgressAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "resyncProgress": {
             "type": [
               "string",
