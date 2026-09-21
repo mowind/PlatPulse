@@ -44,4 +44,31 @@ describe('MetricRow', () => {
     expect(absent.querySelector('[role="progressbar"]')).toBeNull()
     expect(absent.querySelector('[data-slot="metric-unknown-space"]')).not.toBeNull()
   })
+
+  it('renders a compact key-value row without a two-line label reservation', () => {
+    const { container } = render(<MetricRow layout="compact" label="Committed" value="159,317,988" />)
+    const row = container.querySelector('[data-slot="metric-row"]') as HTMLElement
+    expect(row.getAttribute('data-layout')).toBe('compact')
+    expect(childSlots(row)).toEqual(['metric-row-label', 'metric-row-value'])
+    expect(row.querySelector('[data-slot="metric-row-label"]')?.className).toContain('whitespace-nowrap')
+    expect(row.querySelector('[data-slot="metric-row-value"]')?.className).toContain('whitespace-nowrap')
+  })
+
+  it('renders a wide value that absorbs the caption it supersedes', () => {
+    const { container } = render(
+      <MetricRow
+        layout="compact"
+        label="Node data"
+        value="8.8%"
+        wideValue="310 GiB / 3.43 TiB · 8.8%"
+        detail="310 GiB / 3.43 TiB"
+        progress={8.8}
+      />,
+    )
+    const row = container.querySelector('[data-slot="metric-row"]') as HTMLElement
+    expect(row.querySelector('[data-value-narrow]')?.textContent).toBe('8.8%')
+    expect(row.querySelector('[data-value-wide]')?.textContent).toBe('310 GiB / 3.43 TiB · 8.8%')
+    expect(row.querySelector('[data-slot="metric-row-detail"]')?.getAttribute('data-hide-wide')).toBe('true')
+    expect(row.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow')).toBe('9')
+  })
 })

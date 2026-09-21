@@ -59,8 +59,13 @@ function openDetails() {
   return screen.getByRole('dialog', { name: 'Validator details' })
 }
 
-/** The rendered value of a Linked Validator metric cell (label over value). */
-const metricValue = (label: string) => screen.getByText(label).parentElement?.querySelector('strong')?.textContent
+/** The rendered value of a Linked Validator metric cell, in either the
+ *  emphasized label-over-value form or the compact key-value form. */
+const metricValue = (label: string) => {
+  const labelNode = screen.getByText(label, { exact: true })
+  const cell = labelNode.closest('[data-slot="validator-metric"], [data-slot="metric-row"]')
+  return cell?.querySelector('strong')?.textContent ?? undefined
+}
 
 describe('LinkedValidatorSection', () => {
   it.each([undefined, null])('explains a missing discovery pass without claiming absent staking: %s', validatorIdentityState => {
@@ -125,7 +130,7 @@ describe('LinkedValidatorSection', () => {
 
   it('keeps a source-reported zero distinct from an unknown value', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, blockCount: 0 } }} />)
-    expect(screen.getByText('Cumulative blocks').nextElementSibling?.textContent).toBe('0')
+    expect(metricValue('Cumulative blocks')).toBe('0')
 
     cleanup()
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, blockCount: null } }} />)
@@ -168,18 +173,18 @@ describe('LinkedValidatorSection', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, rewardAmount: '1234567.89' } }} />)
     expect(screen.getByText('Cumulative rewards')).toBeTruthy()
     // The card keeps the abbreviated reward form, never a JavaScript number.
-    expect(screen.getByText('Cumulative rewards').nextElementSibling?.textContent).toBe('1.23M')
+    expect(metricValue('Cumulative rewards')).toBe('1.23M')
   })
 
   it('shows the source full precision and native unit in Node detail', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, rewardAmount: '1234567.890123456789' } }} variant="detail" />)
-    expect(screen.getByText('Cumulative rewards').nextElementSibling?.textContent).toBe('1,234,567.890123456789')
+    expect(metricValue('Cumulative rewards')).toBe('1,234,567.890123456789')
     expect(screen.getByText(/Network native unit/)).toBeTruthy()
   })
 
   it('keeps a source-reported zero reward distinct from unknown', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, rewardAmount: '0' } }} />)
-    expect(screen.getByText('Cumulative rewards').nextElementSibling?.textContent).toBe('0')
+    expect(metricValue('Cumulative rewards')).toBe('0')
 
     cleanup()
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, rewardAmount: null } }} />)
@@ -188,96 +193,96 @@ describe('LinkedValidatorSection', () => {
 
   it('retains a last-good reward after a source failure even without a block count', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, state: 'error', freshness: 'stale', blockCount: null, rewardAmount: '42.5' } }} />)
-    expect(screen.getByText('Cumulative rewards').nextElementSibling?.textContent).toBe('42.5')
+    expect(metricValue('Cumulative rewards')).toBe('42.5')
     expect(screen.getByText(/last successful value retained/)).toBeTruthy()
   })
 
   it('shows both production rates with their distinct source meanings', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: insight }} />)
-    expect(screen.getByText('Production rate').nextElementSibling?.textContent).toBe('90.91%')
-    expect(screen.getByText('PlatScan 24h rate').nextElementSibling?.textContent).toBe('75.50%')
+    expect(metricValue('Production rate')).toBe('90.91%')
+    expect(metricValue('PlatScan 24h rate')).toBe('75.50%')
   })
 
   it('distinguishes a zero scheduled denominator from an incomplete pair', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, blockRate: null, blockRateState: 'not_applicable' } }} />)
-    expect(screen.getByText('Production rate').nextElementSibling?.textContent).toBe('Not applicable')
+    expect(metricValue('Production rate')).toBe('Not applicable')
     expect(within(openDetails()).getByText(/zero scheduled-block denominator/)).toBeTruthy()
 
     cleanup()
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, blockRate: null, blockRateState: 'unknown' } }} />)
-    expect(metricValue('Production rate')).toBe('—')
+    expect(metricValue('Production rate')).toMatch(/^Unknown:/)
   })
 
   it('keeps a source-reported zero 24h rate distinct from a missing one', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, genBlocksRate: '0' } }} />)
-    expect(screen.getByText('PlatScan 24h rate').nextElementSibling?.textContent).toBe('0.00%')
+    expect(metricValue('PlatScan 24h rate')).toBe('0.00%')
 
     cleanup()
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, genBlocksRate: null } }} />)
-    expect(metricValue('PlatScan 24h rate')).toBe('—')
+    expect(metricValue('PlatScan 24h rate')).toMatch(/^Unknown:/)
   })
 
   it('retains a last-good rate after a source failure and marks it retained', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, state: 'error', freshness: 'stale', genBlocksRate: '0' } }} />)
-    expect(screen.getByText('PlatScan 24h rate').nextElementSibling?.textContent).toBe('0.00%')
-    expect(screen.getByText('Production rate').nextElementSibling?.textContent).toBe('90.91%')
+    expect(metricValue('PlatScan 24h rate')).toBe('0.00%')
+    expect(metricValue('Production rate')).toBe('90.91%')
     expect(screen.getByText(/last successful value retained/)).toBeTruthy()
   })
 
   it('shows the full available rate precision only in Node detail', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: insight }} variant="detail" />)
-    expect(screen.getByText('Production rate').nextElementSibling?.textContent).toBe('90.909091%')
-    expect(screen.getByText('PlatScan 24h rate').nextElementSibling?.textContent).toBe('75.5%')
+    expect(metricValue('Production rate')).toBe('90.909091%')
+    expect(metricValue('PlatScan 24h rate')).toBe('75.5%')
   })
 
   it('shows the delegation reward share in percentage points, not a fraction or basis points', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, delegationRewardPercentage: '20' } }} />)
     expect(screen.getByText('Delegation reward share')).toBeTruthy()
-    expect(screen.getByText('Delegation reward share').nextElementSibling?.textContent).toBe('20.00%')
+    expect(metricValue('Delegation reward share')).toBe('20.00%')
 
     cleanup()
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, delegationRewardPercentage: '20' } }} variant="detail" />)
-    expect(screen.getByText('Delegation reward share').nextElementSibling?.textContent).toBe('20%')
+    expect(metricValue('Delegation reward share')).toBe('20%')
   })
 
   it('keeps legitimate 0 and 100 boundaries and a missing delegation share distinct', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, delegationRewardPercentage: '0' } }} />)
-    expect(screen.getByText('Delegation reward share').nextElementSibling?.textContent).toBe('0.00%')
+    expect(metricValue('Delegation reward share')).toBe('0.00%')
 
     cleanup()
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, delegationRewardPercentage: '100' } }} />)
-    expect(screen.getByText('Delegation reward share').nextElementSibling?.textContent).toBe('100.00%')
+    expect(metricValue('Delegation reward share')).toBe('100.00%')
 
     cleanup()
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, delegationRewardPercentage: null } }} />)
-    expect(metricValue('Delegation reward share')).toBe('—')
+    expect(metricValue('Delegation reward share')).toMatch(/^Unknown:/)
   })
 
   it('retains a last-good delegation share after a failure without carrying it from another observation', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, state: 'error', freshness: 'stale', delegationRewardPercentage: '20' } }} />)
-    expect(screen.getByText('Delegation reward share').nextElementSibling?.textContent).toBe('20.00%')
+    expect(metricValue('Delegation reward share')).toBe('20.00%')
     expect(screen.getByText(/last successful value retained/)).toBeTruthy()
   })
 
   it('shows the Network rank and keeps unranked distinct from failure or unknown', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: insight }} />)
     expect(screen.getByText('Network rank')).toBeTruthy()
-    expect(screen.getByText('Network rank').nextElementSibling?.textContent).toBe('#7')
+    expect(metricValue('Network rank')).toBe('#7')
 
     cleanup()
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, rank: null, rankState: 'unranked' } }} />)
-    expect(screen.getByText('Network rank').nextElementSibling?.textContent).toBe('Unranked')
+    expect(metricValue('Network rank')).toBe('Unranked')
     expect(within(openDetails()).getByText(/complete live-staking ALL cohort/)).toBeTruthy()
 
     cleanup()
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, rank: null, rankState: 'error' } }} />)
-    expect(metricValue('Network rank')).toBe('—')
+    expect(metricValue('Network rank')).toMatch(/^Unknown:/)
     expect(screen.queryByText('Unranked')).toBeNull()
   })
 
   it('retains a last-good rank when the list cannot be refreshed and marks the stale ranking', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, state: 'error', freshness: 'stale', rankState: 'error', rankFreshness: 'stale' } }} />)
-    expect(screen.getByText('Network rank').nextElementSibling?.textContent).toBe('#7')
+    expect(metricValue('Network rank')).toBe('#7')
     expect(within(openDetails()).getByText(/last successful rank is retained/)).toBeTruthy()
 
     cleanup()
@@ -289,7 +294,7 @@ describe('LinkedValidatorSection', () => {
 
   it('never presents a failed or absent ranking as unranked or zero', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, rank: null, rankState: 'unknown', rankFreshness: 'unknown' } }} />)
-    expect(metricValue('Network rank')).toBe('—')
+    expect(metricValue('Network rank')).toMatch(/^Unknown:/)
     expect(screen.queryByText('Unranked')).toBeNull()
     expect(screen.queryByText('0')).toBeNull()
   })
@@ -307,20 +312,29 @@ describe('LinkedValidatorSection', () => {
   })
 
 
-  it('keeps six metrics above the fold with stacked two-line labels and no metric decoration', () => {
+  it('keeps six metrics as two emphasized cells and four compact parameter rows', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: insight }} />)
     const group = screen.getByRole('group', { name: 'Linked Validator metrics' })
     expect(group.getAttribute('data-slot')).toBe('linked-validator-metrics')
-    const metrics = group.querySelectorAll('[data-slot="validator-metric"]')
-    expect(metrics).toHaveLength(6)
-    for (const metric of metrics) {
-      // The pair's shared subgrid rows live in one CSS place (keyed on the
-      // data-slot), and a single-line label must not reserve a second line.
-      expect(metric.getAttribute('data-slot')).toBe('validator-metric')
+    // Cumulative blocks and rewards keep the label-over-value emphasis.
+    const emphasized = group.querySelectorAll('[data-slot="validator-metric"]')
+    expect(emphasized).toHaveLength(2)
+    for (const metric of emphasized) {
       expect(metric.firstElementChild?.className).toContain('text-xs')
       expect(metric.firstElementChild?.className).not.toContain('min-h-8')
       expect(metric.querySelector('strong')?.className).toContain('tabular-nums')
+      expect(metric.querySelector('strong')?.className).toContain('font-semibold')
       expect(metric.className).not.toMatch(/bg-|border-|break-all|overflow-wrap/)
+    }
+    // The other four are left-label/right-value key-value rows with a full
+    // accessible name and no decoration or fixed two-line label height.
+    const compact = group.querySelectorAll('[data-slot="metric-row"][data-layout="compact"]')
+    expect(compact).toHaveLength(4)
+    for (const row of compact) {
+      expect(row.querySelector('[data-slot="metric-row-value"]')?.className).toContain('tabular-nums')
+      expect(row.querySelector('[data-full-label]')?.textContent).toBeTruthy()
+      expect(row.querySelector('[data-short-label]')?.textContent).toBeTruthy()
+      expect(row.className).not.toMatch(/bg-|border-|break-all|overflow-wrap/)
     }
   })
 
@@ -382,8 +396,8 @@ describe('LinkedValidatorSection', () => {
 
   it('keeps exact six metrics and provenance in the dialog without capping rates above 100', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, rewardAmount: '1234567.890123456789', blockRate: '125.123456', genBlocksRate: '135.987654', delegationRewardPercentage: '20.123456' } }} />)
-    expect(screen.getByText('Production rate').nextElementSibling?.textContent).toBe('125.12%')
-    expect(screen.getByText('PlatScan 24h rate').nextElementSibling?.textContent).toBe('135.99%')
+    expect(metricValue('Production rate')).toBe('125.12%')
+    expect(metricValue('PlatScan 24h rate')).toBe('135.99%')
     const dialog = within(openDetails())
     for (const [label, value] of [
       ['Cumulative blocks', '4,321'], ['Cumulative rewards', '1,234,567.890123456789'],
@@ -460,17 +474,27 @@ describe('LinkedValidatorSection', () => {
     { genBlocksRate: '0' }, { delegationRewardPercentage: '0' },
   ])('does not fold missing slots when evidence or meaningful values remain: %j', override => {
     render(<LinkedValidatorSection node={{ ...node, validator: { ...notValidator, ...override } }} />)
-    expect(screen.getByRole('group', { name: 'Linked Validator metrics' }).querySelectorAll('[data-slot="validator-metric"]')).toHaveLength(6)
+    expect(screen.getByRole('group', { name: 'Linked Validator metrics' }).querySelectorAll(':scope > [data-slot="validator-metric"], :scope > [data-slot="metric-row"]')).toHaveLength(6)
   })
 
   it('never infers absent staking or folds unknown metrics from consensus Non-validator alone', () => {
     render(<LinkedValidatorSection node={{ ...node, consensus: { state: 'ok', freshness: 'current', validator: false }, validator: { ...missing, currentValidatorStatus: 'unknown', currentValidatorStatusState: 'unknown' } }} />)
     const metrics = screen.getByRole('group', { name: 'Linked Validator metrics' })
-    expect(within(metrics).getAllByText('—')).toHaveLength(6)
-    expect(within(metrics).getAllByText(/^Unknown/)).toHaveLength(6)
-    for (const value of metrics.querySelectorAll('strong')) {
+    // The two emphasized cells use the em-dash placeholder with a described-by
+    // reason; the four compact parameters state Unknown and keep their reason
+    // announced. A missing value is never zero.
+    expect(within(metrics).getAllByText('—')).toHaveLength(2)
+    for (const value of metrics.querySelectorAll('[data-slot="validator-metric"] strong')) {
       const description = document.getElementById(value.getAttribute('aria-describedby') ?? '')
       expect(description?.textContent).toMatch(/^Unknown: .+/)
+    }
+    const compact = metrics.querySelectorAll('[data-slot="metric-row"][data-layout="compact"]')
+    expect(compact).toHaveLength(4)
+    for (const row of compact) {
+      const value = row.querySelector('[data-slot="metric-row-value"]') as HTMLElement
+      expect(value.textContent).toMatch(/^Unknown: .+/)
+      const describedBy = value.querySelector('[aria-describedby]')?.getAttribute('aria-describedby') ?? ''
+      expect(document.getElementById(describedBy)?.textContent).toMatch(/^: .+/)
     }
     expect(screen.getByLabelText(/Validator status unknown/)).toBeTruthy()
     expect(screen.queryByText('Not a Validator')).toBeNull()
@@ -480,8 +504,8 @@ describe('LinkedValidatorSection', () => {
   it('retains historical metrics when current staking identity is absent', () => {
     render(<LinkedValidatorSection node={{ ...node, validator: { ...insight, currentValidatorStatus: 'not_validator', activity: 'exited' } }} />)
     expect(screen.getByText('Not a Validator')).toBeTruthy()
-    expect(screen.getByText('Cumulative blocks').nextElementSibling?.textContent).toBe('4,321')
-    expect(screen.getByText('Cumulative rewards').nextElementSibling?.textContent).toBe('1.23K')
+    expect(metricValue('Cumulative blocks')).toBe('4,321')
+    expect(metricValue('Cumulative rewards')).toBe('1.23K')
     expect(screen.getByRole('group', { name: 'Linked Validator metrics' })).toBeTruthy()
   })
 

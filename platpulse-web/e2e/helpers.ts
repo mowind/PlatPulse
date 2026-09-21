@@ -78,12 +78,10 @@ export async function expectNoHorizontalOverflow(page: Page) {
   ).toBeLessThanOrEqual(0)
 }
 
-/** Every metric row inside a surface declares its presentation at the current
- *  viewport. An inline row (the default) keeps the label and value on one line,
- *  with the value's right edge meeting the row's right edge; an explicitly
- *  `data-layout="stacked"` row puts the label above its value, left-aligned,
- *  rather than squeezing both into a narrow cell. A progress track always spans
- *  the full row (issue #140). Returns the offending rows as the failure payload. */
+/** Every metric row inside a surface keeps the muted label and the value on one
+ *  line, with the value's right edge meeting the row's right edge. A progress
+ *  track always spans the full row (issue #140). Returns the offending rows as
+ *  the failure payload. */
 export async function expectMetricRowsAligned(scope: Locator) {
   const offenders = await scope.locator('[data-slot="metric-row"]').evaluateAll((rows) =>
     rows.flatMap((row) => {
@@ -95,14 +93,6 @@ export async function expectMetricRowsAligned(scope: Locator) {
       const rowBox = row.getBoundingClientRect()
       const progress = row.querySelector('[data-slot="progress-thin"]')
       const progressFullWidth = progress === null || Math.abs(progress.getBoundingClientRect().width - rowBox.width) <= 1.5
-      if (row.getAttribute('data-layout') === 'stacked') {
-        const stacked = valueBox.top >= labelBox.bottom - 1
-          && valueBox.left >= rowBox.left - 1
-          && valueBox.right <= rowBox.right + 1.5
-        return stacked && progressFullWidth
-          ? []
-          : [`"${(row.textContent ?? '').replace(/\s+/g, ' ').trim()}" stacked=${stacked} fullTrack=${progressFullWidth}`]
-      }
       const sameLine = Math.abs(labelBox.top - valueBox.top) <= 8
       const valueRightAligned = Math.abs(valueBox.right - rowBox.right) <= 1.5
       const valueRightOfLabel = valueBox.left >= labelBox.right - 1
@@ -111,7 +101,7 @@ export async function expectMetricRowsAligned(scope: Locator) {
         : [`"${(row.textContent ?? '').replace(/\s+/g, ' ').trim()}" sameLine=${sameLine} rightAligned=${valueRightAligned} rightOfLabel=${valueRightOfLabel} fullTrack=${progressFullWidth}`]
     }),
   )
-  expect(offenders, 'every metric row keeps its declared label/value presentation without overflow').toEqual([])
+  expect(offenders, 'every metric row keeps its label and value on one aligned line without overflow').toEqual([])
 }
 
 /** Open the Node Detail Peer diagnostics disclosure by pointer or keyboard

@@ -47,6 +47,13 @@ const network = {
 const nodeCardLink = (name: string) => screen.getByRole('link', { name: new RegExp(name) })
 const cardOf = (link: HTMLElement) => link.closest('article') as HTMLElement
 
+/** A compact Linked Validator parameter value, addressed by its full accessible
+ *  label even though the card may render the shorter display name. */
+const linkedParamValue = (scope: HTMLElement, label: string) => {
+  const full = [...scope.querySelectorAll('[data-full-label]')].find(node => node.textContent === label)
+  return full?.closest('[data-slot="metric-row"]')?.querySelector('[data-slot="metric-row-value"]')?.textContent
+}
+
 /** The summary card carrying the given label (issue #142). */
 const summaryCardOf = (label: string) => {
   const card = screen.getByRole('article', { name: label })
@@ -213,31 +220,34 @@ describe('Public Home dashboard', () => {
     expect(nodeDataMetric.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow')).toBe('25')
   })
 
-  it('uses inline resource and count metrics plus stacked chain heights', () => {
+  it('uses compact key-value rows for every resource, chain height and count', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
     const alphaCard = cardOf(nodeCardLink('Alpha'))
     // Uptime is identity metadata, not a resource row. Resources (4), chain
-    // heights (4), and Txs/Peers (2) retain their independent observations.
+    // heights (4), and Txs/Peers (2) retain their independent observations, and
+    // every ordinary parameter uses the same left-label/right-value line.
     expect(alphaCard.querySelectorAll('[data-slot="metric-row"]')).toHaveLength(10)
-    expect(alphaCard.querySelectorAll('[data-slot="metric-row"][data-layout="inline"]')).toHaveLength(6)
-    expect(alphaCard.querySelectorAll('[data-slot="metric-row"][data-layout="stacked"]')).toHaveLength(4)
+    expect(alphaCard.querySelectorAll('[data-slot="metric-row"][data-layout="compact"]')).toHaveLength(10)
+    expect(alphaCard.querySelectorAll('[data-slot="metric-row"][data-layout="inline"]')).toHaveLength(0)
   })
 
-  it('pairs stacked chain heights before inline Txs and Peers and keeps Node role in the header', () => {
+  it('orders Head/QC/Locked/Committed as compact rows before Txs and Peers and keeps Node role in the header', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
     const card = cardOf(nodeCardLink('Alpha'))
     expect(card.querySelector('[data-slot="metric-triple"]')).toBeNull()
     const metrics = card.querySelector('[data-slot="node-business-metrics"]')!
     expect(Array.from(metrics.querySelectorAll('[data-slot="metric-row-label"]'), el => el.textContent))
       .toEqual(['Head', 'QC', 'Locked', 'Committed', 'Txs', 'Peers'])
-    expect(metrics.classList.contains('grid-cols-2')).toBe(true)
+    // The two-column/full-width switch is a card-width container rule keyed on
+    // the group's data-wide marker: no hard-coded class, no viewport breakpoint.
+    expect(metrics.getAttribute('data-wide')).toBeNull()
     for (const label of ['Head', 'QC', 'Locked', 'Committed']) {
-      expect(within(metrics as HTMLElement).getByText(label).parentElement?.getAttribute('data-layout')).toBe('stacked')
+      expect(within(metrics as HTMLElement).getByText(label).parentElement?.getAttribute('data-layout')).toBe('compact')
     }
     const counts = metrics.querySelector('[data-slot="node-counts"]')!
     expect(Array.from(counts.querySelectorAll('[data-slot="metric-row-label"]'), el => el.textContent)).toEqual(['Txs', 'Peers'])
-    expect(counts.querySelectorAll('[data-layout="inline"]')).toHaveLength(2)
+    expect(counts.querySelectorAll('[data-layout="compact"]')).toHaveLength(2)
     expect(metrics.querySelector('[data-short-label]')).toBeNull()
     expect(metrics.querySelector('[data-slot="validator-role"]')).toBeNull()
     expect(card.querySelector('[data-slot="card-x-header"] [data-slot="validator-role"]')?.getAttribute('aria-label')).toBe('Role: Validator')
@@ -742,11 +752,11 @@ describe('Public Home dashboard', () => {
     expect(within(card).getByText('123,456')).toBeTruthy()
     // Both rates are visible on the card without hover or expansion, and the
     // card abbreviates the computed rate while keeping a source 0% a value.
-    expect(within(card).getByText('Production rate').nextElementSibling?.textContent).toBe('90.91%')
-    expect(within(card).getByText('PlatScan 24h rate').nextElementSibling?.textContent).toBe('0.00%')
+    expect(linkedParamValue(card, 'Production rate')).toBe('90.91%')
+    expect(linkedParamValue(card, 'PlatScan 24h rate')).toBe('0.00%')
     // The delegation reward share is visible without hover or expansion and is
     // kept distinct from the annualized yield and the pending ratio.
-    expect(within(card).getByText('Delegation reward share').nextElementSibling?.textContent).toBe('20.00%')
+    expect(linkedParamValue(card, 'Delegation reward share')).toBe('20.00%')
     const titleLink = nodeCardLink('Calico')
     expect(titleLink.querySelector('button, input, textarea, a')).toBeNull()
     for (const name of ['Node identity details', 'Copy full Validator identifier', 'Open Validator details']) {

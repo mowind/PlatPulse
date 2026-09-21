@@ -127,7 +127,7 @@ test('refinement scenarios and measured evidence', async ({ page }, info) => {
         await expect(card.locator('[data-slot="metric-row-value"]').first()).toHaveText('Unknown')
       }
       if (scenario === 'long-value') {
-        const labels = page.locator('[data-slot="node-card"]').first().locator('[data-short-label]')
+        const labels = page.locator('[data-slot="node-card"]').first().locator('[data-slot="node-business-metrics"] [data-short-label]')
         await expect(labels).toHaveCount(0)
         await expect(card.getByText('Locked', { exact: true })).toBeVisible()
         await expect(card.getByText('Committed', { exact: true })).toBeVisible()

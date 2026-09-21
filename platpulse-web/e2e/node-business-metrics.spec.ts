@@ -2,7 +2,14 @@ import { expect, test } from '@playwright/test'
 import type { PublicNetwork } from '../src/api/generated'
 import { expectNoHorizontalOverflow, loginAs } from './helpers'
 
-test('business metrics preserve full values, stacked heights, inline counts and neutral roles', async ({ page }, testInfo) => {
+/**
+ * The Home Node card now keeps one emphasized label-over-value form only for
+ * the cumulative metrics and uses a compact left-label/right-value key-value
+ * line for ordinary parameters. Whether a group is two columns or one
+ * full-width line per metric is decided by the card's own width through a CSS
+ * container query, so the same DOM is measured here at forced card widths.
+ */
+test('business metrics preserve full values, compact rows and neutral roles', async ({ page }, testInfo) => {
   await loginAs(page)
   await page.route('**/api/public/v1/networks*', async route => {
     const response = await route.fetch()
@@ -39,58 +46,65 @@ test('business metrics preserve full values, stacked heights, inline counts and 
         await expect(metrics.locator('[data-slot="metric-row-value"]')).toHaveText(i === 0
           ? ['9,007,199,254,740,991', '9,007,199,254,740,991', '9,007,199,254,740,990', '9,007,199,254,740,989', '9,007,199,254,740,991', '9,007,199,254,740,991']
           : ['123,456,789', ...(i === 1 ? ['123,456,788', '123,456,787', '123,456,786'] : ['Unknown', 'Unknown', 'Unknown']), '12', '3'])
-        const geometry = await metrics.locator('[data-slot="metric-row"]').evaluateAll(els => els.map(el => {
-          const label = el.querySelector('[data-slot="metric-row-label"]')!
-          const value = el.querySelector('[data-slot="metric-row-value"]')!
-          const range = document.createRange()
-          range.selectNodeContents(value)
-          const rect = el.getBoundingClientRect()
-          const labelBox = label.getBoundingClientRect()
-          const textBox = range.getBoundingClientRect()
-          return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom,
-            textTop: textBox.top, textRight: textBox.right, textLeft: textBox.left,
-            labelTop: labelBox.top, labelBottom: labelBox.bottom, labelRight: labelBox.right,
-            textLines: range.getClientRects().length, fontSize: getComputedStyle(value).fontSize,
-            wordBreak: getComputedStyle(label).wordBreak,
-            overflow: el.scrollWidth > el.clientWidth }
-        }))
-        for (const row of geometry) {
-          expect(row.textLines).toBe(1)
-          expect(row.overflow, JSON.stringify({ width, i, geometry })).toBe(false)
+        const layout = await metrics.evaluate(el => {
+          const rows = [...el.querySelectorAll('[data-slot="metric-row"]')].map(row => {
+            const label = row.querySelector('[data-slot="metric-row-label"]')!
+            const value = row.querySelector('[data-slot="metric-row-value"]')!
+            const range = document.createRange()
+            range.selectNodeContents(value)
+            const rect = row.getBoundingClientRect()
+            const labelBox = label.getBoundingClientRect()
+            const textBox = range.getBoundingClientRect()
+            return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom,
+              textTop: textBox.top, textRight: textBox.right, textLeft: textBox.left,
+              labelTop: labelBox.top, labelBottom: labelBox.bottom, labelRight: labelBox.right,
+              textLines: range.getClientRects().length, fontSize: getComputedStyle(value).fontSize,
+              overflow: row.scrollWidth > row.clientWidth }
+          })
+          const counts = el.querySelector('[data-slot="node-counts"]')!
+          return {
+            rows,
+            columns: getComputedStyle(el).gridTemplateColumns.split(' ').length,
+            countsColumns: getComputedStyle(counts).gridTemplateColumns.split(' ').length,
+          }
+        })
+        for (const row of layout.rows) {
+          // A compact key-value line: one line, right-aligned, label at the left.
+          expect(row.textLines, JSON.stringify({ width, i, layout })).toBe(1)
+          expect(row.overflow, JSON.stringify({ width, i, layout })).toBe(false)
           expect(row.textRight).toBeLessThanOrEqual(row.right + 1)
           expect(row.textLeft).toBeGreaterThanOrEqual(row.left - 1)
-          expect(row.wordBreak).toBe('normal')
-        }
-        for (const row of geometry.slice(0, 4)) {
-          expect(row.fontSize).toBe('14px')
-          expect(row.textTop).toBeGreaterThanOrEqual(row.labelBottom)
-        }
-        if (i === 0) {
-          // Exceptionally long safe-integer heights/counts span both columns, never truncate.
-          expect(geometry[5].left).toBeCloseTo(geometry[4].left, 1)
-          expect(geometry[5].right).toBeCloseTo(geometry[4].right, 1)
-          expect(geometry[5].top).toBeGreaterThanOrEqual(geometry[4].bottom)
-          for (let j = 1; j < 4; j++) {
-            expect(geometry[j].left).toBeCloseTo(geometry[0].left, 1)
-            expect(geometry[j].right).toBeCloseTo(geometry[0].right, 1)
-            expect(geometry[j].top).toBeGreaterThanOrEqual(geometry[j - 1].bottom)
-          }
-        } else {
-          expect(geometry[1].top).toBeCloseTo(geometry[0].top, 1)
-          expect(geometry[1].left).toBeGreaterThan(geometry[0].right)
-          expect(geometry[2].left).toBeCloseTo(geometry[0].left, 1)
-          expect(geometry[3].top).toBeCloseTo(geometry[2].top, 1)
-          expect(geometry[3].left).toBeCloseTo(geometry[1].left, 1)
-          expect(geometry[2].top).toBeGreaterThan(geometry[0].bottom)
-          expect(geometry[5].top).toBeCloseTo(geometry[4].top, 1)
-          expect(geometry[5].left).toBeGreaterThan(geometry[4].right)
-        }
-        for (const row of geometry.slice(4)) {
-          expect(row.top).toBeGreaterThanOrEqual(geometry[3].bottom)
+          expect(row.fontSize).toBe('13px')
           expect(Math.abs(row.textTop - row.labelTop)).toBeLessThanOrEqual(4)
           expect(row.textLeft).toBeGreaterThan(row.labelRight)
         }
-        await expect(card.locator('[data-short-label]')).toHaveCount(0)
+        const [head, qc, locked, committed, txs, peers] = layout.rows
+        if (layout.columns === 1) {
+          // A narrow card (or an over-long safe integer) gives each of the four
+          // chain metrics its own full-width line; nothing is split or clipped.
+          for (let j = 1; j < 4; j++) {
+            expect(layout.rows[j].left).toBeCloseTo(layout.rows[0].left, 1)
+            expect(layout.rows[j].right).toBeCloseTo(layout.rows[0].right, 1)
+            expect(layout.rows[j].top).toBeGreaterThanOrEqual(layout.rows[j - 1].bottom)
+          }
+        } else {
+          expect(qc.top).toBeCloseTo(head.top, 1)
+          expect(qc.left).toBeGreaterThan(head.right)
+          expect(locked.left).toBeCloseTo(head.left, 1)
+          expect(committed.top).toBeCloseTo(locked.top, 1)
+          expect(committed.left).toBeCloseTo(qc.left, 1)
+          expect(locked.top).toBeGreaterThan(head.bottom)
+        }
+        expect(txs.top).toBeGreaterThanOrEqual(committed.bottom)
+        if (layout.countsColumns === 1) {
+          expect(peers.top).toBeGreaterThanOrEqual(txs.bottom)
+          expect(peers.left).toBeCloseTo(txs.left, 1)
+        } else {
+          expect(peers.top).toBeCloseTo(txs.top, 1)
+          expect(peers.left).toBeGreaterThan(txs.right)
+          expect(Math.abs(peers.textTop - txs.textTop)).toBeLessThanOrEqual(4)
+        }
+        await expect(card.locator('[data-slot="node-business-metrics"] [data-short-label]')).toHaveCount(0)
         expect(await badge.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true)
       }
     }
@@ -101,35 +115,76 @@ test('business metrics preserve full values, stacked heights, inline counts and 
   }
 })
 
-test('Linked Validator has six label-over-value metrics and independent details and copy actions', async ({ page }, testInfo) => {
+test('Linked Validator keeps two emphasized cells and four compact parameter rows', async ({ page }, testInfo) => {
   await loginAs(page)
   const linked = page.locator('[data-slot="node-card"] [data-slot="linked-validator"]').filter({ has: page.getByRole('group', { name: 'Linked Validator metrics' }) }).first()
   await expect(linked).toBeVisible()
   for (const dark of [false, true]) {
     await page.evaluate(value => document.documentElement.classList.toggle('dark', value), dark)
     const metrics = linked.getByRole('group', { name: 'Linked Validator metrics' })
-    const cells = metrics.locator(':scope > div')
-    await expect(cells).toHaveCount(6)
-    await expect(cells.locator(':scope > span')).toHaveText(['Cumulative blocks', 'Cumulative rewards', 'Network rank', 'Production rate', 'PlatScan 24h rate', 'Delegation reward share'])
-    const geometry = await cells.evaluateAll(elements => elements.map(el => {
+    // Cumulative blocks and rewards keep the emphasized label-over-value cell.
+    const emphasized = metrics.locator(':scope > [data-slot="validator-metric"]')
+    await expect(emphasized).toHaveCount(2)
+    await expect(emphasized.locator(':scope > span')).toHaveText(['Cumulative blocks', 'Cumulative rewards'])
+    const emphasizedGeometry = await emphasized.evaluateAll(elements => elements.map(el => {
       const label = el.querySelector('span')!
       const value = el.querySelector('strong')!
-      const rect = el.getBoundingClientRect()
-      return { left: rect.left, right: rect.right, top: rect.top,
-        labelBottom: label.getBoundingClientRect().bottom, valueTop: value.getBoundingClientRect().top,
-        wordBreak: getComputedStyle(label).wordBreak, overflowWrap: getComputedStyle(label).overflowWrap,
-        overflow: el.scrollWidth > el.clientWidth }
+      return {
+        valueTop: value.getBoundingClientRect().top,
+        labelBottom: label.getBoundingClientRect().bottom,
+        fontWeight: getComputedStyle(value).fontWeight,
+        overflow: el.scrollWidth > el.clientWidth,
+      }
     }))
-    for (const cell of geometry) {
-      expect(cell.valueTop).toBeGreaterThanOrEqual(cell.labelBottom)
-      expect(cell.wordBreak).toBe('normal')
-      expect(cell.overflowWrap).toBe('normal')
+    for (const cell of emphasizedGeometry) {
+      expect(cell.valueTop).toBeGreaterThanOrEqual(cell.labelBottom - 1)
+      expect(cell.fontWeight).toBe('600')
       expect(cell.overflow).toBe(false)
     }
-    for (let index = 0; index < 6; index += 2) {
-      expect(geometry[index + 1].top).toBeCloseTo(geometry[index].top, 1)
-      expect(geometry[index + 1].left).toBeGreaterThan(geometry[index].right)
+
+    // The other four are compact key-value rows that always keep their full
+    // field name available, even when the card paints the short name.
+    const compact = metrics.locator(':scope > [data-slot="metric-row"]')
+    await expect(compact).toHaveCount(4)
+    const fullNames = await metrics.locator('[data-full-label]').evaluateAll(elements => elements.map(el => el.textContent))
+    expect(fullNames).toEqual(['Network rank', 'Production rate', 'PlatScan 24h rate', 'Delegation reward share'])
+    const shortNames = await metrics.locator('[data-short-label]').evaluateAll(elements => elements.map(el => el.getAttribute('aria-label')))
+    expect(shortNames).toEqual(fullNames)
+
+    const rows = await metrics.locator(':scope > [data-slot="metric-row"]').evaluateAll(elements => elements.map(row => {
+      const label = row.querySelector('[data-slot="metric-row-label"]')!
+      const value = row.querySelector('[data-slot="metric-row-value"]')!
+      const rect = row.getBoundingClientRect()
+      const labelBox = label.getBoundingClientRect()
+      const valueBox = value.getBoundingClientRect()
+      const lineHeight = parseFloat(getComputedStyle(value).lineHeight) || 22
+      return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom,
+        valueTop: valueBox.top, valueRight: valueBox.right, labelTop: labelBox.top,
+        lines: Math.max(1, Math.round(valueBox.height / lineHeight)), overflow: row.scrollWidth > row.clientWidth }
+    }))
+    for (const row of rows) {
+      // A compact key-value line: one line, right-aligned against the row edge.
+      expect(row.lines, JSON.stringify(rows)).toBe(1)
+      expect(row.overflow, JSON.stringify(rows)).toBe(false)
+      expect(Math.abs(row.valueTop - row.labelTop)).toBeLessThanOrEqual(4)
+      expect(Math.abs(row.valueRight - row.right)).toBeLessThanOrEqual(1.5)
     }
+    const paired = Math.abs(rows[1].top - rows[0].top) <= 1
+    if (paired) {
+      // Wide card: rank/production and PlatScan/delegation form two rows of two.
+      expect(rows[1].left).toBeGreaterThan(rows[0].right)
+      expect(rows[3].top).toBeCloseTo(rows[2].top, 1)
+      expect(rows[3].left).toBeGreaterThan(rows[2].right)
+      expect(rows[2].top).toBeGreaterThan(rows[0].bottom)
+    } else {
+      // Narrow card: four full-width key-value lines, all default-visible.
+      for (let index = 1; index < 4; index++) {
+        expect(rows[index].left).toBeCloseTo(rows[0].left, 1)
+        expect(rows[index].right).toBeCloseTo(rows[0].right, 1)
+        expect(rows[index].top).toBeGreaterThanOrEqual(rows[index - 1].bottom)
+      }
+    }
+
     await expect(linked.getByRole('status', { name: 'Validator Provider data state' })).toBeVisible()
     await linked.getByRole('button', { name: 'Copy full Validator identifier' }).click()
     await expect(linked.getByRole('status', { name: 'Identifier copy status' })).toHaveText(/Validator identifier copied.|Copy failed./)

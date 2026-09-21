@@ -10,6 +10,7 @@ import { formatNodeDataBytes } from '../formatBytes'
 import { formatDuration } from '../formatDuration'
 import { nodeDataProgress } from '../nodeData'
 import { MetricRow } from './MetricRow'
+import type { ProgressStatus } from './ui/progress-thin'
 import { CardX } from './ui/card-x'
 import { Alert, AlertDescription } from './ui/alert'
 import { Empty } from './ui/empty'
@@ -213,6 +214,18 @@ function SummaryCard({ label, value, tone, icon }: {
 function HomeNodeCard({ network, node }: NodeRecord) {
   const tone = toneFor(node.health)
   const diagnostic = exceptionalDiagnostic(node)
+  // Every displayed chain value is computed once: the grid borrows the same
+  // strings to decide whether a compact two-column cell can hold them.
+  const consensusStatus = consensusValueStatus(node.consensus)
+  const business = {
+    head: formatNumber(node.currentHead),
+    qc: formatConsensusBlock(node.consensus?.highestQcBlock, consensusStatus),
+    locked: formatConsensusBlock(node.consensus?.highestLockBlock, consensusStatus),
+    committed: formatConsensusBlock(node.consensus?.highestCommitBlock, consensusStatus),
+    txs: formatNumber(node.latestBlockTransactionCount),
+    peers: formatPeerCount(node),
+  }
+  const businessWide = Object.values(business).some((value) => value.length > 12)
   return (
     <article
       data-slot="node-card"
@@ -227,18 +240,25 @@ function HomeNodeCard({ network, node }: NodeRecord) {
         tone === 'warn' && 'shadow-[0_0_0_1px] shadow-amber-500/20',
       )}
     >
-      <CardX bordered={false} className="bg-transparent" contentClassName="flex flex-col gap-3" headerClassName="!grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-2 gap-y-1.5" header={<>
+      <CardX bordered={false} className="bg-transparent" contentClassName="flex flex-col gap-2.5" headerClassName="!grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-2 gap-y-1.5" header={<>
           <div className="flex min-w-0 items-center gap-2">
             <NodeHealthMarker health={node.health} />
             {/* The 44px target is kept on the anchor; the negative block margin
                 keeps it from inflating the identity row, so the name row and
                 the Network · Uptime row stay content-driven and can sit 6px
                 apart. */}
-            <h2 className="min-w-0 text-base font-bold"><Link to={`/nodes/${node.nodeId}`} aria-label={nodeLabel(node)} title={nodeLabel(node)} className="flex -my-2.5 min-h-11 min-w-0 items-center after:absolute after:inset-0 after:rounded-md focus-visible:outline-none focus-visible:after:ring-[3px] focus-visible:after:ring-ring/50"><span className="truncate">{nodeLabel(node)}</span></Link></h2>
+            <h2 className="min-w-0 text-base font-semibold"><Link to={`/nodes/${node.nodeId}`} aria-label={nodeLabel(node)} title={nodeLabel(node)} className="flex -my-2.5 min-h-11 min-w-0 items-center after:absolute after:inset-0 after:rounded-md focus-visible:outline-none focus-visible:after:ring-[3px] focus-visible:after:ring-ring/50"><span className="truncate">{nodeLabel(node)}</span></Link></h2>
           </div>
           <ValidatorBadge consensus={node.consensus} />
           <div className="col-span-2 flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
             <p className="min-w-0 flex-1"><span className="[overflow-wrap:anywhere]">{network.displayName}</span> · <span className="whitespace-nowrap">Uptime {formatDuration(node.processUptimeMs)}</span></p>
+            {/* State audit of the reference capture's conspicuous frame: the control is
+                transparent by default (transparent background, transparent 1px border, no
+                outline or shadow), paints the ghost accent on hover, and paints the shared
+                3px focus-visible ring while keyboard-focused. The open dialog also gives the
+                trigger aria-expanded's accent background. The captured frame is that
+                focus-visible ring — required keyboard feedback, so it is kept; the icon
+                matches the copy/Details controls at 14px. */}
             <Dialog><DialogTrigger asChild><Button variant="ghost" size="icon" className="relative z-10 -my-3.5 size-11 shrink-0" aria-label="Node identity details"><Info className="size-3.5" /></Button></DialogTrigger>
               <DialogContent className="max-h-[85dvh] overflow-y-auto rounded-md shadow-sm"><DialogTitle className="pr-10 [overflow-wrap:anywhere]">{nodeLabel(node)}</DialogTitle><DialogDescription className="[overflow-wrap:anywhere]">Network: {network.displayName} · Uptime {formatDuration(node.processUptimeMs)}. Node role describes the Node’s consensus membership, not its linked Validator’s current staking validity or the freshness of Provider data.</DialogDescription>
                 <p className="text-sm text-muted-foreground">Active Nodes are in the latest Agent Inventory, not necessarily online. Healthy reflects successful, fresh RPC, sync and consensus observations. Process errors, a stopped or Unknown process state, or Network Identity Mismatch prevent Healthy; disabled process monitoring does not. Healthy does not mean synchronization is complete; Resyncing is shown independently.</p>
@@ -263,12 +283,12 @@ function HomeNodeCard({ network, node }: NodeRecord) {
         )}
         {(node.resyncState ?? '').toLowerCase() === 'resyncing' && <ResyncStatus node={node} />}
         <ResourceRow node={node} />
-        <div data-slot="node-business-metrics" className="grid grid-cols-2 gap-x-4 gap-y-3 border-t border-border pt-3">
-          <MetricRow layout="stacked" label="Head" value={formatNumber(node.currentHead)} />
-          <ConsensusRow consensus={node.consensus} />
-          <div data-slot="node-counts" data-wide={formatNumber(node.latestBlockTransactionCount).length > 12 || formatPeerCount(node).length > 12 || undefined}>
-            <MetricRow label="Txs" value={formatNumber(node.latestBlockTransactionCount)} />
-            <MetricRow label="Peers" value={formatPeerCount(node)} />
+        <div data-slot="node-business-metrics" data-wide={businessWide || undefined} className="border-t border-border pt-3">
+          <MetricRow layout="compact" label="Head" value={business.head} />
+          <ConsensusRow status={consensusStatus} values={business} />
+          <div data-slot="node-counts" data-wide={business.txs.length > 12 || business.peers.length > 12 || undefined}>
+            <MetricRow layout="compact" label="Txs" value={business.txs} />
+            <MetricRow layout="compact" label="Peers" value={business.peers} />
           </div>
           {formatPeerObservation(node) && (
             <small data-slot="metric-row-detail" className="col-span-2 text-[11px] text-muted-foreground">
@@ -338,27 +358,41 @@ function validHeight(value: number | null | undefined): number | null {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null
 }
 
+/** PlatPulse owns no occupancy threshold rule for process CPU/Memory or the
+ *  Node data directory, so none is invented here: the ordinary fill uses the
+ *  theme's informational colour instead of the default primary (white in the
+ *  dark theme). A Server-owned warning/error rule would replace this. */
+const RESOURCE_BAR_STATUS: ProgressStatus = 'info'
+
 function ResourceRow({ node }: { node: PublicNode }) {
   const nodeDataProgressValue = nodeDataProgress(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)
+  const nodeDataBytes = formatNodeDataBytes(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)
+  // Wide cards fold the used / total caption into the value line; a narrow
+  // card keeps it as its own caption under the track. The bytes and the
+  // percentage are both always rendered, only regrouped.
+  const nodeDataValue = formatPercent(nodeDataProgressValue)
   return (
     <div
       className="grid grid-cols-2 gap-x-3 gap-y-1"
       aria-label="Node process and host network resources"
     >
-      <MetricRow label="CPU" value={formatPercent(node.processCpuPercent)} progress={node.processCpuPercent ?? null} />
-      <MetricRow label="Memory" value={formatPercent(node.processMemoryPercent)} progress={node.processMemoryPercent ?? null} />
+      <MetricRow layout="compact" label="CPU" value={formatPercent(node.processCpuPercent)} progress={node.processCpuPercent ?? null} progressStatus={RESOURCE_BAR_STATUS} />
+      <MetricRow layout="compact" label="Memory" value={formatPercent(node.processMemoryPercent)} progress={node.processMemoryPercent ?? null} progressStatus={RESOURCE_BAR_STATUS} />
       <div className="col-span-2" data-slot="node-data-resource">
         <MetricRow
+          layout="compact"
           label="Node data"
-          value={formatPercent(nodeDataProgressValue)}
-          detail={formatNodeDataBytes(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)}
+          value={nodeDataValue}
+          wideValue={nodeDataBytes && nodeDataProgressValue != null ? nodeDataBytes + ' · ' + nodeDataValue : undefined}
+          detail={nodeDataBytes}
           progress={nodeDataProgressValue}
+          progressStatus={RESOURCE_BAR_STATUS}
         />
       </div>
       <div className="col-span-2" data-slot="host-network-speed" role="group" aria-label="Host network speed">
-        <MetricRow label="Speed" value={<span className="flex gap-2">
-          <span aria-label={`Upload ${formatRate(node.hostNetworkTxBytesPerSec)}`} className="inline-flex items-baseline text-green-600"><ChevronUp className="size-3 shrink-0 self-center" aria-hidden="true" />{formatRate(node.hostNetworkTxBytesPerSec)}</span>
-          <span aria-label={`Download ${formatRate(node.hostNetworkRxBytesPerSec)}`} className="inline-flex items-baseline text-blue-600"><ChevronDown className="size-3 shrink-0 self-center" aria-hidden="true" />{formatRate(node.hostNetworkRxBytesPerSec)}</span>
+        <MetricRow layout="compact" label="Speed" value={<span className="flex items-center gap-2 whitespace-nowrap">
+          <span aria-label={`Upload ${formatRate(node.hostNetworkTxBytesPerSec)}`} className="inline-flex items-center gap-0.5 text-green-600"><ChevronUp className="size-3 shrink-0" aria-hidden="true" />{formatRate(node.hostNetworkTxBytesPerSec)}</span>
+          <span aria-label={`Download ${formatRate(node.hostNetworkRxBytesPerSec)}`} className="inline-flex items-center gap-0.5 text-blue-600"><ChevronDown className="size-3 shrink-0" aria-hidden="true" />{formatRate(node.hostNetworkRxBytesPerSec)}</span>
         </span>} />
       </div>
     </div>
@@ -394,14 +428,16 @@ function formatRate(value: number | null | undefined): string {
  * or No; failed or stale collections keep the last-good values and visibly mark
  * them Stale.
  */
-function ConsensusRow({ consensus }: { consensus: PublicConsensusInsight | undefined }) {
-  const status = consensusValueStatus(consensus)
+function ConsensusRow({ status, values }: {
+  status: 'current' | 'stale' | 'unknown'
+  values: { qc: string; locked: string; committed: string }
+}) {
   const detail = status === 'stale' ? 'Stale' : undefined
   return (
     <div className="contents" role="group" aria-label="Consensus values">
-      <MetricRow layout="stacked" label="QC" value={formatConsensusBlock(consensus?.highestQcBlock, status)} detail={detail} />
-      <MetricRow layout="stacked" label="Locked" value={formatConsensusBlock(consensus?.highestLockBlock, status)} detail={detail} />
-      <MetricRow layout="stacked" label="Committed" value={formatConsensusBlock(consensus?.highestCommitBlock, status)} detail={detail} />
+      <MetricRow layout="compact" label="QC" value={values.qc} detail={detail} />
+      <MetricRow layout="compact" label="Locked" value={values.locked} detail={detail} />
+      <MetricRow layout="compact" label="Committed" value={values.committed} detail={detail} />
     </div>
   )
 }

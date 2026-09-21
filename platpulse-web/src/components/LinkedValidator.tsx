@@ -1,5 +1,5 @@
 import { useId, useState } from 'react'
-import { Copy } from 'lucide-react'
+import { ChevronRight, Copy } from 'lucide-react'
 import type { PublicNode, PublicValidatorInsight } from '../api/generated'
 import { Button } from './ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog'
@@ -308,22 +308,21 @@ function hasMetricValues(validator: PublicValidatorInsight): boolean {
 }
 
 /**
- * Card-only metric cell: label over value, with the short `Unknown` status
- * shown inline under the placeholder and its reason announced to assistive
- * technology. The grid rows are shared by the pair (see the metrics group), so
- * a single-line label no longer reserves two lines and the paired values still
- * align on the taller label's row. Long labels wrap at normal word boundaries;
- * short statuses stay whole.
+ * The two emphasized cumulative cells (Cumulative blocks and rewards) keep the
+ * label-over-value form. A missing value uses the em-dash placeholder with its
+ * reason announced to assistive technology, and a long compact reward can span
+ * the full group width rather than splitting. The ordinary parameters use the
+ * compact key-value row instead (ValidatorParamRow).
  */
 function ValidatorMetric({ label, value, reason }: { label: string; value: string; reason: string }) {
   const descriptionId = useId()
   const unknown = value === 'Unknown'
-  // The grid mechanics live in one place (emerald.css, keyed on data-slot) so
-  // the cell cannot drift from the group's subgrid rules.
+  // The two emphasized cumulative cells keep the label-over-value form and
+  // span the full group width only when a long compact reward needs it.
   return <div data-slot="validator-metric" className={cn('min-w-0', value.length > 15 && 'col-span-2')}>
     <span className="block pb-1 text-xs leading-4 text-muted-foreground">{label}</span>
     <div className="min-w-0">
-      <strong className={cn('block text-sm font-medium leading-5 tabular-nums text-foreground', value.length > 15 ? '[overflow-wrap:anywhere]' : 'whitespace-nowrap')} aria-describedby={unknown ? descriptionId : undefined}>
+      <strong className={cn('block text-sm font-semibold leading-5 tabular-nums text-foreground', value.length > 15 ? '[overflow-wrap:anywhere]' : 'whitespace-nowrap')} aria-describedby={unknown ? descriptionId : undefined}>
         {unknown ? '—' : <ExactAmount value={value} />}
       </strong>
       {unknown && <small id={descriptionId} className="block text-[11px] text-muted-foreground">
@@ -331,6 +330,26 @@ function ValidatorMetric({ label, value, reason }: { label: string; value: strin
       </small>}
     </div>
   </div>
+}
+
+/**
+ * Card-only compact key-value parameter: the full field name stays available
+ * (the short label carries it as an accessible name and the Details view prints
+ * it), and a missing value is an explicit Unknown whose sanitized reason is
+ * announced, never a zero. Ordinary parameters use this row; only the two
+ * cumulative metrics keep the emphasized label-over-value cell above.
+ */
+function ValidatorParamRow({ label, shortLabel, value, reason }: { label: string; shortLabel: string; value: string; reason: string }) {
+  const descriptionId = useId()
+  const unknown = value === 'Unknown'
+  return <MetricRow
+    layout="compact"
+    label={label}
+    shortLabel={shortLabel}
+    value={unknown
+      ? <span aria-describedby={descriptionId}>Unknown<span id={descriptionId} className="sr-only">: {reason}</span></span>
+      : <ExactAmount value={value} />}
+  />
 }
 
 /**
@@ -369,6 +388,7 @@ function ValidatorCard({ node, validator }: { node: PublicNode; validator: Publi
   const cumulativeRewards = formatAmountCompact(validator.rewardAmount)
   const folded = canFoldMissingMetrics(validator)
   const retained = validator.state !== 'fresh' && hasMetricValues(validator)
+  const providerState = validatorStateLabel(validator.state, validator.freshness)
   const copyIdentifier = async () => {
     try {
       await navigator.clipboard.writeText(identifier)
@@ -379,19 +399,30 @@ function ValidatorCard({ node, validator }: { node: PublicNode; validator: Publi
   }
 
   return <section data-slot="linked-validator" className="min-w-0 border-t border-border pt-3" aria-label="Linked Validator">
-    <header className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+    {/* Identity status, the Provider Data state and the Validator identifier are
+        three independent facts. A wide card keeps them on two lines; each line
+        wraps on its own when the card or a status word is too long. */}
+    <header className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
       <h3 className="m-0 text-xs font-medium tracking-wider text-muted-foreground">Linked Validator</h3>
+      {validator.displayName && validator.displayName !== identifier && <span className="min-w-0 break-words text-sm font-semibold">{validator.displayName}</span>}
       <ValidatorStatusChip validator={validator} qualifierLabel={qualifier} />
+      <span role="status" aria-label="Validator Provider data state" className="ml-auto flex min-w-0 flex-wrap items-baseline gap-x-1.5 text-xs text-muted-foreground">
+        <span className={cn('inline-block size-1.5 shrink-0 self-center rounded-full', stateDotClass(validator.state))} aria-hidden="true" />
+        <span>Data: <span className="font-medium text-foreground">{providerState}</span></span>
+        {validator.freshness === 'stale' && validator.state !== 'stale' && <span>· Stale</span>}
+        {retained && <span>· last successful value retained</span>}
+      </span>
     </header>
-    {validator.displayName && validator.displayName !== identifier && <p className="m-0 mt-1 text-sm font-semibold break-words">{validator.displayName}</p>}
-    <div className="flex min-w-0 items-center gap-1">
-      <code className="min-w-0 flex-1 text-xs text-muted-foreground" aria-label={`Validator identifier: ${fingerprint}`}>{fingerprint}</code>
+    <div className="mt-0.5 flex min-w-0 items-center gap-0.5">
+      <code className="min-w-0 flex-1 truncate text-xs text-muted-foreground" aria-label={`Validator identifier: ${fingerprint}`}>{fingerprint}</code>
       <Button variant="ghost" size="icon" className="relative z-10" aria-label="Copy full Validator identifier" onClick={event => { event.stopPropagation(); void copyIdentifier() }}>
-        <Copy aria-hidden="true" />
+        <Copy className="size-3.5" aria-hidden="true" />
       </Button>
       <Dialog>
         <DialogTrigger asChild>
-          <Button variant="ghost" size="sm" className="relative z-10 text-xs" onClick={event => event.stopPropagation()} aria-label="Open Validator details">Details</Button>
+          <Button variant="ghost" size="sm" className="relative z-10 gap-0.5 px-1.5 text-xs font-normal text-muted-foreground" onClick={event => event.stopPropagation()} aria-label="Open Validator details">
+            <span className="inline-flex items-baseline gap-0.5">Details<ChevronRight className="size-3.5 translate-y-[2px]" aria-hidden="true" /></span>
+          </Button>
         </DialogTrigger>
         <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto" onClick={event => event.stopPropagation()}>
           <DialogHeader className="pr-11">
@@ -411,12 +442,6 @@ function ValidatorCard({ node, validator }: { node: PublicNode; validator: Publi
       </Dialog>
     </div>
     <p role="status" aria-label="Identifier copy status" className={cn('m-0 text-xs text-muted-foreground', !copyStatus && 'sr-only')}>{copyStatus}</p>
-    <p className="m-0 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground" role="status" aria-label="Validator Provider data state">
-      <span className={cn('inline-block size-1.5 shrink-0 rounded-full', stateDotClass(validator.state))} aria-hidden="true" />
-      <span>Data: <span className="font-medium text-foreground">{validatorStateLabel(validator.state, validator.freshness)}</span></span>
-      {validator.freshness === 'stale' && validator.state !== 'stale' && <span>· Stale</span>}
-      {retained && <span>· last successful value retained</span>}
-    </p>
     {validator.currentValidatorStatusState === 'stale' && <p className="m-0 mt-1 text-xs text-muted-foreground" role="status">Staking status stale · last confirmed status retained.</p>}
     {node.validatorIdentityReason && <p className="m-0 mt-1 text-xs text-muted-foreground" role="status">Identity verification unavailable · last established association retained.</p>}
     {validator.rankFreshness === 'stale' && <p className="m-0 mt-1 text-xs text-muted-foreground" role="status">Network rank stale · last ranking retained.</p>}
@@ -425,13 +450,13 @@ function ValidatorCard({ node, validator }: { node: PublicNode; validator: Publi
     {folded ? <p className="m-0 mt-2 text-xs text-muted-foreground">{validator.rankState === 'unranked'
       ? 'No current staking identity; no Validator metrics available. Network rank: Unranked.'
       : 'No current staking identity; no Validator metrics available.'}</p> :
-      <div className="mt-3" data-slot="linked-validator-metrics" role="group" aria-label="Linked Validator metrics">
+      <div className="mt-2" data-slot="linked-validator-metrics" role="group" aria-label="Linked Validator metrics">
         <ValidatorMetric label="Cumulative blocks" value={blockCountLabel(validator.blockCount)} reason="No cumulative block count is available from the Validator source." />
         <ValidatorMetric label="Cumulative rewards" value={cumulativeRewards} reason="No cumulative reward amount is available from the Validator source." />
-        <ValidatorMetric label="Network rank" value={rankLabel(validator)} reason={rankNote(validator) ?? 'No Network rank is available.'} />
-        <ValidatorMetric label="Production rate" value={blockRateLabel(validator, 'card')} reason="The source has not supplied a complete cumulative produced/scheduled block pair." />
-        <ValidatorMetric label="PlatScan 24h rate" value={genBlocksRateLabel(validator, 'card')} reason="No PlatScan 24-hour block production rate is available." />
-        <ValidatorMetric label="Delegation reward share" value={delegationRewardShareLabel(validator, 'card')} reason="No effective delegation reward distribution ratio is available." />
+        <ValidatorParamRow label="Network rank" shortLabel="Rank" value={rankLabel(validator)} reason={rankNote(validator) ?? 'No Network rank is available.'} />
+        <ValidatorParamRow label="Production rate" shortLabel="Production" value={blockRateLabel(validator, 'card')} reason="The source has not supplied a complete cumulative produced/scheduled block pair." />
+        <ValidatorParamRow label="PlatScan 24h rate" shortLabel="PlatScan 24h" value={genBlocksRateLabel(validator, 'card')} reason="No PlatScan 24-hour block production rate is available." />
+        <ValidatorParamRow label="Delegation reward share" shortLabel="Delegation share" value={delegationRewardShareLabel(validator, 'card')} reason="No effective delegation reward distribution ratio is available." />
       </div>}
   </section>
 }
