@@ -75,17 +75,18 @@ test('Home retains six overview cards beside a proportional map', async ({ page 
       summaryTop: element.getBoundingClientRect().top,
       summaryBottom: element.getBoundingClientRect().bottom,
       mapTop: map.getBoundingClientRect().top,
+      mapBottom: map.getBoundingClientRect().bottom,
     }
   })
   const width = page.viewportSize()!.width
   if (width >= 1024) {
-    // Desktop keeps the map beside the statistics. The 4:3 split holds each of
-    // the six tiles at the width the original four-card grid gave them.
-    expect(geometry.summary / geometry.map).toBeCloseTo(4 / 3, 1)
+    // Desktop keeps the map beside the statistics, and the map track is the
+    // larger half of the band exactly as the Emerald reference lays it out.
+    expect(geometry.summary / geometry.map).toBeCloseTo(5 / 6, 1)
     expect(geometry.mapTop).toBeLessThan(geometry.summaryBottom)
   } else {
-    // Narrow layouts stack the complete map below the statistics.
-    expect(geometry.mapTop).toBeGreaterThanOrEqual(geometry.summaryBottom - 1)
+    // Narrow layouts place the complete map first and the statistics after it.
+    expect(geometry.summaryTop).toBeGreaterThanOrEqual(geometry.mapBottom - 1)
   }
   await expectNoHorizontalOverflow(page)
 })

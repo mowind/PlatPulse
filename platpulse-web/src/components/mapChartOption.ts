@@ -82,7 +82,6 @@ export type MapOptionInput = {
   labelFor: (code: string) => string
   dark: boolean
   reducedMotion: boolean
-  mobile?: boolean
 }
 
 /**
@@ -90,10 +89,15 @@ export type MapOptionInput = {
  * transparent `geo` used only as the scatter's coordinate system; a `map`
  * series that paints the polygons; a `scatter` with upstream's symbol, 1px
  * white ring and 10px white aggregate numeral; and upstream's tooltip box.
- * Both layers fill the canvas with preserveAspect: 'contain': this avoids the
- * implicit 20% padding of automatic sizing without cropping or stretching the
- * world. Home supplies an independent desktop canvas, not the shallow summary
- * height. Zoom, geographic center, projection and scaleLimit keep their defaults.
+ *
+ * Both layers set only `left/top/width` — exactly as upstream does — so each
+ * layer fills the available width and derives its own height from the map's
+ * natural aspect ratio (ECharts' default `aspectScale`). A track shorter than
+ * that natural height therefore crops the poles instead of shrinking the world;
+ * this is upstream's own composition. Setting an explicit `height` (or
+ * `preserveAspect: 'contain'`) would letterbox or stretch the world instead.
+ * The `map` series keeps its polygons silent (`tooltip.show: false`): only the
+ * scatter marker answers, which is what upstream does.
  */
 export function mapChartOption({
   mapName,
@@ -102,22 +106,10 @@ export function mapChartOption({
   labelFor,
   dark,
   reducedMotion,
-  mobile = false,
 }: MapOptionInput): EChartsOption {
-  const base = dark ? DARK_PALETTE : LIGHT_PALETTE
-  const colors = mobile ? {
-    ...base,
-    borderColor: dark ? 'rgba(255,255,255,0.15)' : 'rgba(15,23,42,0.16)',
-    activeAreaColor: dark ? 'rgba(16,185,129,0.18)' : 'rgba(16,185,129,0.14)',
-    offlineAreaColor: dark ? 'rgba(234,179,8,0.15)' : 'rgba(202,138,4,0.12)',
-    activeBorderColor: dark ? 'rgba(16,185,129,0.35)' : 'rgba(5,150,105,0.35)',
-    offlineBorderColor: 'rgba(202,138,4,0.35)',
-  } : base
-  // Both coordinate systems must use the same contain fit, independent of data.
-  const layout = {
-    left: 'center', top: 'center', width: '100%', height: '100%',
-    preserveAspect: 'contain' as const,
-  }
+  const colors = dark ? DARK_PALETTE : LIGHT_PALETTE
+  // Both coordinate systems use the same fit, independent of data.
+  const layout = { left: 'center' as const, top: 'center' as const, width: '100%' as const }
   const byCode = new Map(countries.map(country => [country.code, country]))
 
   // One datum per country, matching ECharts' region name. A datum whose
@@ -139,7 +131,7 @@ export function mapChartOption({
       emphasis: {
         itemStyle: {
           areaColor: stale ? colors.offlineAreaColor : colors.activeAreaColor,
-          borderColor: colors.hoverBorderColor,
+          borderColor: stale ? colors.offlineBorderColor : colors.activeBorderColor,
           borderWidth: 0.5,
         },
       },
@@ -153,21 +145,18 @@ export function mapChartOption({
       name: labelFor(country.code),
       code: country.code,
       value: [country.point.lon, country.point.lat, country.count],
-      symbolSize: mobile ? 7 : country.count <= 1 ? MAP_DOT_SINGLE : MAP_DOT_MULTIPLE,
-      label: { show: !mobile && country.count > 1 },
+      symbolSize: country.count <= 1 ? MAP_DOT_SINGLE : MAP_DOT_MULTIPLE,
+      label: { show: country.count > 1 },
       itemStyle: { color: stale ? colors.dotYellow : colors.dotEmerald },
     }]
   })
 
   return {
-    animation: !mobile && !reducedMotion,
+    animation: !reducedMotion,
     animationDurationUpdate: 300,
     animationEasingUpdate: 'cubicOut',
     tooltip: {
       trigger: 'item',
-      triggerOn: mobile ? 'click' : 'mousemove|click|mousewheel',
-      enterable: false,
-      transitionDuration: mobile ? 0 : 0.4,
       confine: true,
       backgroundColor: colors.tooltipBg,
       borderColor: 'transparent',
@@ -175,7 +164,7 @@ export function mapChartOption({
       borderRadius: 6,
       textStyle: { color: colors.text, fontSize: 12, lineHeight: 20 },
       extraCssText:
-        'max-width:calc(100vw - 48px);white-space:normal;overflow-wrap:anywhere;padding: 3px 6px;backdrop-filter: blur(5px);z-index:9;box-shadow:0 0 0 0.5px ' +
+        'padding: 3px 6px;backdrop-filter: blur(5px);z-index:9;box-shadow:0 0 0 0.5px ' +
         colors.tooltipShadow + ', 0 0 16px ' + colors.tooltipShadow,
       formatter: (params) => {
         const single = Array.isArray(params) ? params[0] : params
@@ -220,7 +209,8 @@ export function mapChartOption({
         roam: false,
         selectedMode: false,
         ...layout,
-        tooltip: { show: true },
+        // Upstream keeps the polygons silent: the marker is the only tooltip.
+        tooltip: { show: false },
         emphasis: {
           label: { show: false },
           itemStyle: { areaColor: colors.borderColor, borderColor: colors.hoverBorderColor, borderWidth: 0.5 },

@@ -41,12 +41,13 @@ async function overviewGeometry(page: Page) {
   const mapBox = await box(page.locator('[data-slot="home-map"]'))
   if (width >= 1024) {
     expect(mapBox.x).toBeGreaterThanOrEqual(summaryBox.x + summaryBox.width)
-    // 4:3 restores the original four-card tile width inside the six-card grid.
-    expect(mapBox.width / summaryBox.width).toBeCloseTo(3 / 4, 1)
+    // The map owns the larger half of the band, matching the Emerald reference.
+    expect(mapBox.width / summaryBox.width).toBeCloseTo(6 / 5, 1)
     expect(mapBox.y + mapBox.height).toBeGreaterThan(summaryBox.y)
     expect(summaryBox.y + summaryBox.height).toBeGreaterThan(mapBox.y)
   } else {
-    expect(mapBox.y).toBeGreaterThanOrEqual(summaryBox.y + summaryBox.height)
+    // Narrow layouts place the map first and stack the six statistics below it.
+    expect(summaryBox.y).toBeGreaterThanOrEqual(mapBox.y + mapBox.height)
   }
   // Check the painted chart container as well as its grid track: a translated
   // canvas must not visually drift back over the summary or Node controls.

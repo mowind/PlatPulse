@@ -39,11 +39,19 @@ function loadECharts() {
 
 /**
  * Home Peer country map (issue #133), rendered by ECharts following
- * komari-theme-emerald@c2c5e88 NodeEarthMaps.vue, with automatic fitting: the
- * same geometry, the same silent transparent geo coordinate system, the same
- * scatter symbol, the same 8px/14px sizes, white 10px aggregate numerals, and
- * the same tooltip box. The option itself lives in mapChartOption.ts so the
- * encoding can be tested without a canvas.
+ * komari-theme-emerald@c2c5e88 NodeEarthMaps.vue: the same geometry, the same
+ * silent transparent geo coordinate system, the same scatter symbol, the same
+ * 8px/14px sizes, white 10px aggregate numerals, and the same tooltip box. The
+ * option itself lives in mapChartOption.ts so the encoding can be tested
+ * without a canvas.
+ *
+ * The layer sets only left/top/width, exactly as upstream does, so the world
+ * fills the track width and derives its own height. The desktop track is
+ * upstream's fixed 22rem (352px) band, which is slightly taller than the world
+ * at Home's 1280px ceiling: the world therefore fits without cropping instead
+ * of overflowing a shorter proportional track. Below xl the track stays
+ * proportional (2:1), so phones and tablets keep the compact map the mobile
+ * acceptance measured.
  *
  * PlatPulse keeps its own data semantics: the map plots Peer records by
  * country from Server-provided country representative points, never node
@@ -105,20 +113,6 @@ function useIsDark() {
   return dark
 }
 
-/** Match the layout breakpoint, including orientation changes. */
-function useMobileMap() {
-  const [mobile, setMobile] = useState(() => typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 767px)').matches)
-  useEffect(() => {
-    if (typeof window.matchMedia !== 'function') return
-    const query = window.matchMedia('(max-width: 767px)')
-    const update = () => setMobile(query.matches)
-    query.addEventListener('change', update)
-    update()
-    return () => query.removeEventListener('change', update)
-  }, [])
-  return mobile
-}
-
 export default function GeoWorldMap({ networks, networkFilter, loading, hasProjection }: GeoWorldMapProps) {
   const container = useRef<HTMLDivElement>(null)
   const chart = useRef<ECharts | null>(null)
@@ -126,7 +120,6 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
   const [world, setWorld] = useState<{ geojson: WorldGeoJson; names: Map<string, string> } | null>(null)
   const [failed, setFailed] = useState(false)
   const dark = useIsDark()
-  const mobile = useMobileMap()
 
   const overview = useMemo(() => homeGeoOverview(networks, networkFilter), [networks, networkFilter])
   const status: MapStatus = loading
@@ -205,13 +198,12 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
       countries,
       labelFor: countryDisplayName,
       dark,
-      mobile,
       reducedMotion: prefersReducedMotion(),
     })
     optionRef.current = option
     chart.current?.dispatchAction({ type: 'hideTip' })
     chart.current?.setOption(option)
-  }, [world, countries, dark, mobile])
+  }, [world, countries, dark])
 
   const scopedPeerCount = hasProjection && !loading ? overview.availablePeerCount : null
   const unknownCount = overview.unknownCountryCount
@@ -263,8 +255,8 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
       {failed ? (
         <div className="h-full" aria-hidden="true" />
       ) : (
-        // Preserve the world’s 2:1 aspect inside the resized map track. The
-        // six-card overview no longer needs overflow or an upward offset.
+        // The layer fills the track; the desktop band is tall enough for the
+        // world's own aspect ratio, so nothing is cropped there.
         <div
           ref={container}
           role="img"

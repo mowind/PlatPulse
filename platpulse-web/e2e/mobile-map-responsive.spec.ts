@@ -32,7 +32,9 @@ test('mobile contain layout, touch targets, rotation and honest exception states
       await expect.poll(() => chart.evaluate(el => el.clientHeight)).toBe((width - 32) / 2)
       const map = (await chart.boundingBox())!
       const summary = (await page.locator('[aria-label="Home summary"]').boundingBox())!
-      expect(summary.y - map.y - map.height).toBe(8)
+      // Upstream places the complete map first and the six-card overview after
+      // it on a phone, separated by the overview grid's own 16px gap.
+      expect(summary.y - map.y - map.height).toBe(16)
       expect(summary.x).toBe(map.x)
       expect(summary.width).toBe(map.width)
       const overflow = await page.evaluate(() => [...document.querySelectorAll('*')].filter(el => el.getBoundingClientRect().right > innerWidth && getComputedStyle(el).position !== 'absolute').map(el => ({tag:el.tagName, cls:el.className, right:el.getBoundingClientRect().right})))
@@ -42,35 +44,34 @@ test('mobile contain layout, touch targets, rotation and honest exception states
       expect(cards[2].y).toBe(cards[3].y)
       expect(cards[0].x).toBe(cards[2].x)
       await page.waitForTimeout(120)
-      // Hit actual painted pixels: opaque emerald is the marker, translucent
-      // emerald is China's polygon. Both must resolve the exact same DTO.
-      for (const target of ['marker', 'region']) {
-        const point = await canvas.evaluate((el, target) => {
-          const c = el as HTMLCanvasElement
-          const ctx = c.getContext('2d')!
-          const pixels = ctx.getImageData(0, 0, c.width, c.height).data
-          const candidates: Array<{x:number;y:number}> = []
-          for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) {
-            const i = (y*c.width+x)*4
-            const [r,g,b,a] = pixels.slice(i,i+4)
-            if (g > r+40 && g > b+20 && (target === 'marker' ? a>150 : a>25 && a<65)) candidates.push({x,y})
-          }
-          const p = candidates[Math.floor(candidates.length/2)]
-          if (!p) return null
-          const rect = c.getBoundingClientRect()
-          return {x:rect.x+p.x/c.width*rect.width,y:rect.y+p.y/c.height*rect.height}
-        }, target)
-        expect(point, target).not.toBeNull()
-        await page.touchscreen.tap(point!.x, point!.y)
-        const tooltip = chart.locator('div').filter({ has: page.locator('img[src="/assets/flags/cn.svg"]') }).last()
-        await expect(tooltip).toContainText('1001 records')
-        await expect(tooltip).toBeVisible()
-        const box = (await tooltip.boundingBox())!
-        expect(box.x).toBeGreaterThanOrEqual(0)
-        expect(box.x+box.width).toBeLessThanOrEqual(width)
-        await page.touchscreen.tap(map.x+2,map.y+map.height-2)
-        await expect(tooltip).not.toBeVisible()
-      }
+      // Hit actual painted pixels. With the polygons silent (upstream's own
+      // option), the opaque emerald marker is the only pointer target; the
+      // translucent China polygon no longer opens a tooltip of its own.
+      const point = await canvas.evaluate((el) => {
+        const c = el as HTMLCanvasElement
+        const ctx = c.getContext('2d')!
+        const pixels = ctx.getImageData(0, 0, c.width, c.height).data
+        const candidates: Array<{x:number;y:number}> = []
+        for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) {
+          const i = (y*c.width+x)*4
+          const [r,g,b,a] = pixels.slice(i,i+4)
+          if (g > r+40 && g > b+20 && a > 150) candidates.push({x,y})
+        }
+        const p = candidates[Math.floor(candidates.length/2)]
+        if (!p) return null
+        const rect = c.getBoundingClientRect()
+        return {x:rect.x+p.x/c.width*rect.width,y:rect.y+p.y/c.height*rect.height}
+      })
+      expect(point, 'marker').not.toBeNull()
+      await page.touchscreen.tap(point!.x, point!.y)
+      const tooltip = chart.locator('div').filter({ has: page.locator('img[src="/assets/flags/cn.svg"]') }).last()
+      await expect(tooltip).toContainText('1001 records')
+      await expect(tooltip).toBeVisible()
+      const box = (await tooltip.boundingBox())!
+      expect(box.x).toBeGreaterThanOrEqual(0)
+      expect(box.x+box.width).toBeLessThanOrEqual(width)
+      await page.touchscreen.tap(map.x+2,map.y+map.height-2)
+      await expect(tooltip).not.toBeVisible()
     }
   }
   // Crossing md in both directions resizes/updates the existing instance.

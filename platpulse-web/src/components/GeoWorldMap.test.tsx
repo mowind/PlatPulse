@@ -134,12 +134,9 @@ describe('GeoWorldMap', () => {
     expect(mocks.dispose).toHaveBeenCalledTimes(1)
   })
 
-  it('updates density on breakpoint changes and resizes without reinitializing', async () => {
+  it('updates in place and resizes without reinitializing', async () => {
     stubBasemap()
-    let breakpointChange = () => {}
     let resize = () => {}
-    const query = { matches: true, addEventListener: vi.fn((_type, callback) => { breakpointChange = callback }), removeEventListener: vi.fn() }
-    vi.stubGlobal('matchMedia', () => query)
     const disconnect = vi.fn()
     vi.stubGlobal('ResizeObserver', class {
       constructor(callback: () => void) { resize = callback }
@@ -149,11 +146,13 @@ describe('GeoWorldMap', () => {
     const view = renderMap()
     await waitFor(() => expect(mocks.init).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(mocks.setOption).toHaveBeenCalled())
-    expect(mocks.setOption.mock.lastCall?.[0].series[1].data[0].symbolSize).toBe(7)
+    // The marker size follows the observed quantity, never the viewport.
+    expect(mocks.setOption.mock.lastCall?.[0].series[1].data.map((datum: { symbolSize: number }) => datum.symbolSize)).toEqual([14])
     expect(mocks.setOption.mock.lastCall?.[0].series[0].data).toEqual(expect.arrayContaining([expect.objectContaining({code: 'DE', value: 2})]))
-    act(() => { query.matches = false; breakpointChange(); resize() })
-    await waitFor(() => expect(mocks.setOption.mock.lastCall?.[0].series[1].data[0].symbolSize).toBe(14))
-    expect(mocks.resize).toHaveBeenCalled()
+    // The map polygons stay silent; only the scatter marker answers.
+    expect(mocks.setOption.mock.lastCall?.[0].series[0].tooltip).toEqual({ show: false })
+    act(() => { resize() })
+    await waitFor(() => expect(mocks.resize).toHaveBeenCalled())
     view.rerender(<GeoWorldMap networks={[network()]} networkFilter="mainnet" loading={false} hasProjection />)
     expect(mocks.init).toHaveBeenCalledTimes(1)
     const click = mocks.on.mock.calls.find(([name]) => name === 'click')?.[1]
@@ -161,7 +160,6 @@ describe('GeoWorldMap', () => {
     expect(mocks.dispatchAction).toHaveBeenCalledWith({type: 'hideTip'})
     view.unmount()
     expect(disconnect).toHaveBeenCalledTimes(1)
-    expect(query.removeEventListener).toHaveBeenCalled()
     expect(mocks.dispose).toHaveBeenCalledTimes(1)
   })
 

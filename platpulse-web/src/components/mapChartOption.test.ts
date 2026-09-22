@@ -42,15 +42,15 @@ describe('mapChartOption', () => {
     expect(option.geo.map).toBe('platpulse-world')
     expect(option.geo.roam).toBe(false)
     expect(option.geo.silent).toBe(true)
-    expect(option.geo.left).toBe('center')
-    expect(option.geo.top).toBe('center')
-    // Both layers must auto-fit the available width AND height.
+    // Upstream sets only left/top/width: each layer fills the width and derives
+    // its own height from the world's aspect ratio. An explicit height or a
+    // contain fit would letterbox or stretch the world instead.
     for (const layer of [option.geo, option.series[0]]) {
       expect(layer.left).toBe('center')
       expect(layer.top).toBe('center')
       expect(layer.width).toBe('100%')
-      expect(layer.height).toBe('100%')
-      expect(layer.preserveAspect).toBe('contain')
+      expect(layer.height).toBeUndefined()
+      expect(layer.preserveAspect).toBeUndefined()
     }
     expect(option.geo.itemStyle).toEqual({ areaColor: 'transparent', borderColor: 'transparent' })
     // Upstream sets no zoom, center, projection, scaleLimit or boundingCoords,
@@ -58,6 +58,10 @@ describe('mapChartOption', () => {
     for (const key of ['zoom', 'center', 'projection', 'scaleLimit', 'boundingCoords']) {
       expect(option.geo[key], key + ' must stay an ECharts default').toBeUndefined()
     }
+  })
+
+  it('keeps the map polygons silent so only the marker answers a pointer', () => {
+    expect(build().series[0].tooltip).toEqual({ show: false })
   })
 
   it('fills an observed country emerald, a stale country yellow, and leaves the rest on the base fill', () => {
@@ -82,7 +86,7 @@ describe('mapChartOption', () => {
     expect(data.some((datum) => datum.name === 'XK')).toBe(false)
   })
 
-  it('sizes the dot by quantity and prints the aggregate numeral only above one record', () => {
+  it('sizes the dot and prints the aggregate numeral by quantity alone', () => {
     const option = build()
     const scatterSeries = option.series[1]
     const data = scatterSeries.data as ScatterDatum[]
@@ -126,6 +130,11 @@ describe('mapChartOption', () => {
     const se = option.tooltip.formatter({ data: { code: 'SE', value: [18, 60, 3] } })
     expect(se).toContain('3 records')
     expect(se).not.toContain('stale')
+    // A map polygon value is a scalar and a scatter value is a tuple; both
+    // resolve through the same observed country, and neither invents a zero.
+    expect(option.tooltip.formatter({ data: { code: 'DE', value: 2 } })).toContain('2 records')
+    expect(option.tooltip.formatter({ data: { name: 'Unmatched', value: NaN } })).toBe('')
+    expect(option.tooltip.formatter({ data: { code: 'ZZ', value: 0 } })).toBe('')
   })
 
   it('switches palette with the theme and honours reduced motion', () => {
@@ -133,33 +142,5 @@ describe('mapChartOption', () => {
     expect(build({ dark: true }).tooltip.backgroundColor).toBe(DARK_PALETTE.tooltipBg)
     expect(build().animation).toBe(true)
     expect(build({ reducedMotion: true }).animation).toBe(false)
-  })
-})
-
-
-describe('mobile map density and country hit targets', () => {
-  it.each([false, true])('keeps shared contain fit and honest small markers (dark=%s)', dark => {
-    const option = build({ mobile: true, dark })
-    const desktop = build({ dark })
-    expect(option.animation).toBe(false)
-    expect(option.geo).toEqual(desktop.geo)
-    for (const key of ['left', 'top', 'width', 'height', 'preserveAspect', 'roam']) {
-      expect(option.series[0][key]).toEqual(option.geo[key])
-    }
-    const dots = option.series[1].data as ScatterDatum[]
-    expect(dots.map(dot => dot.value)).toEqual((desktop.series[1].data as ScatterDatum[]).map(dot => dot.value))
-    expect(dots.every(dot => dot.symbolSize === 7 && !dot.label.show)).toBe(true)
-    expect(option.series[0].tooltip).toEqual({ show: true })
-    expect(option.tooltip).toMatchObject({ triggerOn: 'click', confine: true })
-    const polygon = option.tooltip.formatter({ data: { code: 'DE', value: 2 } })
-    expect(polygon).toEqual(option.tooltip.formatter({ data: { code: 'DE', value: [10, 51, 2] } }))
-    expect(polygon).toContain('2 records')
-    expect(polygon).toContain('1 stale')
-    expect(option.tooltip.formatter({ data: { name: 'Unmatched', value: NaN } })).toBe('')
-    expect(option.tooltip.formatter({ data: { code: 'ZZ', value: 0 } })).toBe('')
-    // No representative point: the country region still exposes observed data.
-    const unplotted = build({ mobile: true, countries: [{ code: 'DE', point: null, count: 9, staleCount: 9 }] })
-    expect(unplotted.series[1].data).toEqual([])
-    expect(unplotted.tooltip.formatter({ data: (unplotted.series[0].data as unknown[])[0] })).toContain('9 stale')
   })
 })
