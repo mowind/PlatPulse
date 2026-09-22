@@ -138,6 +138,11 @@ fn is_ip_candidate(byte: u8) -> bool {
     byte.is_ascii_hexdigit() || matches!(byte, b'.' | b':' | b'%')
 }
 
+/// The longest textual IPv4/IPv6 literal is 45 bytes
+/// (`0000:0000:0000:0000:0000:ffff:255.255.255.255`); nothing longer can
+/// parse as an address, so the prefix search never needs to look further.
+const MAX_IP_LITERAL_LEN: usize = 45;
+
 fn redact_ip_literals(input: &str) -> String {
     let bytes = input.as_bytes();
     let mut output = String::with_capacity(input.len());
@@ -149,28 +154,52 @@ fn redact_ip_literals(input: &str) -> String {
             continue;
         }
         let start = index;
+        // A valid IPv4 literal contains '.', a valid IPv6 literal contains
+        // ':'. A run of hex digits and '%' alone (Block/transaction hashes,
+        // key fingerprints) can never hold one, so it is skipped without any
+        // parse attempt. This is what keeps snapshot redaction from parsing a
+        // prefix at every offset of every 66-byte hash.
+        let mut can_contain_ip = false;
         while index < bytes.len() && is_ip_candidate(bytes[index]) {
+            can_contain_ip |= matches!(bytes[index], b'.' | b':');
             index += 1;
         }
-        let candidate = &input[start..index];
-        let Some(ip_end) = parse_ip_prefix(candidate) else {
-            // Try each byte so an IP adjacent to an alphanumeric prefix is
-            // still masked instead of being hidden inside one failed token.
-            index = start + 1;
+        if !can_contain_ip {
             continue;
-        };
-        let absolute_end = start + ip_end;
-        output.push_str(&input[cursor..start]);
-        output.push_str("[REDACTED_IP]");
-        cursor = absolute_end;
-        index = absolute_end;
+        }
+        let run_end = index;
+        // An IP literal may still start part-way into the run (for example
+        // adjacent to an alphanumeric prefix), so try each byte; the bounded
+        // prefix length keeps the search linear in the run length.
+        let mut scan = start;
+        while scan < run_end {
+            if let Some(ip_len) = parse_ip_prefix(&input[scan..run_end]) {
+                output.push_str(&input[cursor..scan]);
+                output.push_str("[REDACTED_IP]");
+                cursor = scan + ip_len;
+                scan = cursor;
+            } else {
+                scan += 1;
+            }
+        }
     }
     output.push_str(&input[cursor..]);
     output
 }
 
+// Test-only count of IP prefix parse attempts. The redaction path runs over
+// every stored text value on each backup, so an unbounded attempt count is a
+// performance regression even when the output is correct.
+#[cfg(test)]
+thread_local! {
+    static IP_PARSE_ATTEMPTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 fn parse_ip_prefix(candidate: &str) -> Option<usize> {
-    for end in (1..=candidate.len()).rev() {
+    #[cfg(test)]
+    IP_PARSE_ATTEMPTS.with(|count| count.set(count.get() + 1));
+    let max_end = candidate.len().min(MAX_IP_LITERAL_LEN);
+    for end in (1..=max_end).rev() {
         let prefix = &candidate[..end];
         let address = prefix.split('%').next().unwrap_or(prefix);
         if address.parse::<std::net::IpAddr>().is_ok() {
@@ -320,6 +349,17 @@ mod tests {
         assert!(!redacted.contains("2001:db8::7"));
         assert!(redacted.contains("[REDACTED_IP]"));
     }
+    /// An IP literal can sit inside a longer run of candidate bytes (for
+    /// example directly after an alphanumeric prefix), so the hex fast-skip
+    /// must still mask it.
+    #[test]
+    fn still_masks_an_ip_inside_a_longer_candidate_run() {
+        let redacted = redact_sensitive("abc203.0.113.7 fe80::1%eth0 encoded=0x1234");
+        assert!(!redacted.contains("203.0.113.7"));
+        assert!(!redacted.contains("fe80::1"));
+        assert!(redacted.contains("[REDACTED_IP]"));
+    }
+
     #[test]
     fn redacts_sentence_final_and_space_separated_secrets_without_overmatching_keys() {
         let redacted = redact_sensitive(
@@ -365,5 +405,22 @@ mod tests {
         let redacted = redact_sensitive("error=invalid_report stack=panic at src/lib.rs:1");
         assert!(redacted.contains("error=invalid_report"));
         assert!(redacted.contains("stack=panic"));
+    }
+
+    /// Block hashes and other long hex runs are the bulk of stored text. They
+    /// can never be IP literals, so redaction must not attempt to parse them:
+    /// the old every-prefix scan cost ~55 microseconds per 66-character hash
+    /// and pinned a core for the whole backup.
+    #[test]
+    fn hex_only_runs_do_not_attempt_ip_parsing() {
+        let input = format!("0x{}", "a1b2c3d4".repeat(8));
+        super::IP_PARSE_ATTEMPTS.with(|count| count.set(0));
+        let redacted = redact_sensitive(&input);
+        assert_eq!(redacted, input, "a hex hash is not an IP literal");
+        assert_eq!(
+            super::IP_PARSE_ATTEMPTS.with(std::cell::Cell::get),
+            0,
+            "hex-only runs must be skipped without any IpAddr parse attempt"
+        );
     }
 }
