@@ -188,7 +188,8 @@ describe('GeoWorldMap', () => {
     stubBasemap()
     const { unmount } = renderMap({ networks: [network({ geo: { state: 'stale' } })] })
     await screen.findByRole('img')
-    expect(document.body.textContent).toContain('Data stale')
+    expect(screen.getByRole('status').textContent).toBe('Map data stale · 1 unknown locations')
+    expect(screen.getByRole('note', { name: '7 Peer records in scope for All Networks' }).textContent).toBe('Peers: 7')
     unmount()
 
     stubBasemap()

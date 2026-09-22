@@ -302,10 +302,10 @@ function ValidatorIdentityAbsent({ node, variant }: { node: PublicNode; variant:
   return (
     <section
       data-slot="linked-validator"
-      className="min-w-0 border-t border-border pt-3"
+      className="min-w-0"
       aria-label="Linked Validator"
     >
-      <p className="m-0 text-[11px] text-muted-foreground" role="status" aria-label={`Validator identity state: ${state ?? 'not observed'}`}>{short}</p>
+      <p data-slot="linked-validator-empty" className="m-0 text-[11px] text-muted-foreground" role="status" aria-label={`Validator identity state: ${state ?? 'not observed'}`}>{short}</p>
     </section>
   )
 }
@@ -414,7 +414,7 @@ function ValidatorDetail({ node, validator }: { node: PublicNode; validator: Pub
 function ValidatorCard({ validator }: { validator: PublicValidatorInsight }) {
   if (!hasDisplayableMetrics(validator)) {
     const empty = emptyMetricsState(validator)
-    return <section data-slot="linked-validator" data-state={empty.state} className="min-w-0 border-t border-border pt-3" aria-label="Linked Validator">
+    return <section data-slot="linked-validator" data-state={empty.state} className="min-w-0" aria-label="Linked Validator">
       <p data-slot="linked-validator-empty" className="m-0 text-[11px] text-muted-foreground" role="status">{empty.text}</p>
     </section>
   }

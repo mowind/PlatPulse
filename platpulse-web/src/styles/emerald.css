@@ -400,9 +400,18 @@
     align-content: start;
   }
   [data-node-region='identity'] { min-height: var(--node-identity-h, auto); }
-  [data-node-region='resource'] { min-height: max(7rem, var(--node-resource-h, 0px)); }
+  [data-node-region='resource'] { min-height: var(--node-resource-h, auto); }
   [data-node-region='chain'] { min-height: var(--node-chain-h, auto); }
   [data-node-region='validator'] { min-height: max(11rem, var(--node-validator-h, 0px)); }
+  /* Center only empty messages, leaving the measured inner content intrinsic.
+     Move their existing separator to the region edge; stretching the observed
+     content would feed the shared minimum back into ResizeObserver. */
+  [data-node-region='validator']:has([data-slot='linked-validator-empty']) {
+    display: grid;
+    align-items: center;
+    border-top: 1px solid var(--border);
+    text-align: center;
+  }
   [data-slot='node-business-metrics'] {
     align-content: start;
     row-gap: 0.125rem;

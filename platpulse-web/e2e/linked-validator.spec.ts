@@ -228,10 +228,12 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
     await expect(linked.getByText('Not a Validator', { exact: true })).toHaveCount(0)
     await expect(card.getByText('Data: No live Validator')).toHaveCount(0)
     await expect(card.getByRole('button', { name: 'Open Validator details' })).toHaveCount(0)
-    // The empty state starts at the left of its own line.
-    const sectionBox = (await linked.boundingBox())!
+    // Only the empty message is centered in the full reserved metric region.
+    const regionBox = (await card.locator('[data-node-region="validator"]').boundingBox())!
     const emptyBox = (await empty.boundingBox())!
-    expect(emptyBox.x - sectionBox.x).toBeLessThan(sectionBox.width / 2)
+    expect(Math.abs(emptyBox.y + emptyBox.height / 2 - regionBox.y - regionBox.height / 2)).toBeLessThanOrEqual(1)
+    await expect(empty).toHaveCSS('text-align', 'center')
+    expect(emptyBox.x + emptyBox.width / 2).toBeCloseTo(regionBox.x + regionBox.width / 2, 0)
     await expectNoHorizontalOverflow(page)
   })
 })

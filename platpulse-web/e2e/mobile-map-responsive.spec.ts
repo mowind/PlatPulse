@@ -110,7 +110,7 @@ test('mobile contain layout, touch targets, rotation and honest exception states
     await page.reload()
     const map = page.getByRole('region', {name:'Peer countries'})
     await expect(map).toHaveAttribute('data-state', state)
-    await expect(map.getByRole('status')).toContainText(state === 'stale' ? 'Data stale' : state === 'empty' ? 'No data' : /No observations yet|Data unknown/)
+    await expect(map.getByRole('status')).toContainText(state === 'stale' ? 'Map data stale' : state === 'empty' ? 'No data' : /No observations yet|Data unknown/)
     if (state === 'stale') await expect(page.locator('[data-slot="geo-country-list"]')).toContainText('1,001 stale')
   }
 })

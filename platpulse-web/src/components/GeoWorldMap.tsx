@@ -225,7 +225,7 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
     : neverObserved ? 'No observations yet'
     : status === 'error' ? 'Data unavailable'
     : status === 'unknown' ? 'Data unknown'
-    : status === 'stale' || overview.peerObservation === 'stale' || overview.countries.some((country) => country.staleCount > 0) ? 'Data stale'
+    : status === 'stale' || overview.peerObservation === 'stale' || overview.countries.some((country) => country.staleCount > 0) ? 'Map data stale'
     : overview.availablePeerCount === 0 ? 'No data'
     : !countsAvailable ? 'Data unavailable'
     : overview.scope !== 'complete' || overview.networksWithBasis < overview.networksInScope ? 'Partial data'

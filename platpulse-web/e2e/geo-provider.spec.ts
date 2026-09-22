@@ -103,7 +103,7 @@ test.describe('Geo provider selection and background country resolution', () => 
       // boundary, so the Server reports the database as Stale while still
       // serving the retained country result as last-good.
       await expect(countries).toHaveAttribute('data-state', 'stale')
-      await expect(countries.getByRole('status')).toContainText('Data stale')
+      await expect(countries.getByRole('status')).toContainText('Map data stale')
       await expect(countries.getByRole('status')).toContainText('2 unknown locations')
       await expect(
         countries.locator('[data-slot="geo-counter"]'),
