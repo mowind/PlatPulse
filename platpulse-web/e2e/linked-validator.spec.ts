@@ -222,7 +222,7 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
     // One short, accurate empty state keeps the region's reserved height.
     const empty = linked.locator('[data-slot="linked-validator-empty"]')
     await expect(empty).toBeVisible()
-    await expect(empty).toHaveText('The source reported no live Validator; no metrics are available.')
+    await expect(empty).toHaveText('No validator metrics')
     await expect(linked.getByRole('group', { name: 'Linked Validator metrics' })).toHaveCount(0)
     // The removed association area is not replaced by a Not a Validator line.
     await expect(linked.getByText('Not a Validator', { exact: true })).toHaveCount(0)

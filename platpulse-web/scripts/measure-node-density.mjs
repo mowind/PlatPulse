@@ -16,7 +16,7 @@ try {
   const base = network.nodes.find(node => node.validator?.blockCount != null)
   if (!base) throw new Error('Expected the test harness full Validator fixture')
   const complete = {
-    ...base.validator, state: 'fresh', freshness: 'fresh', rank: 5, rankState: 'ranked',
+    ...base.validator, state: 'fresh', freshness: 'fresh', rank: 5, rankState: 'ranked', rankFreshness: 'fresh',
     blockCount: 123456, rewardAmount: '123456.78', blockRateState: 'ok',
     blockRate: '99.5', genBlocksRate: '99.2', delegationRewardPercentage: '20',
   }
@@ -76,7 +76,7 @@ try {
         emptyText: card.querySelector('[data-slot="linked-validator-empty"]')?.textContent ?? null,
       }
     }))
-    console.log(JSON.stringify({ scenario, width, fontSize: process.env.DENSITY_FONT_SIZE ?? '16', cards }))
+    console.log(JSON.stringify({ scenario, width, fontSize: process.env.DENSITY_FONT_SIZE ?? '16', cards }, null, 2))
     if (process.env.DENSITY_SCREENSHOTS && [1440, 360].includes(width)) {
       await page.locator('[data-slot="node-grid"]').screenshot({ path: process.env.DENSITY_SCREENSHOTS + '-' + width + '.png' })
     }

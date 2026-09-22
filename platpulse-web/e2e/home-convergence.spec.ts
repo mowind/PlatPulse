@@ -96,9 +96,9 @@ test.describe('Converged Public Home (issue #102)', () => {
 
     await expectNoVerboseHomeSurface(page)
 
-    // Healthy Nodes stay compact: the reserved diagnostic line stays empty, and
+    // Healthy Nodes stay compact: no diagnostic placeholder is rendered, and
     // exactly one whole-card link carries the Node identity.
-    await expect(hCard.locator('[data-slot="node-diagnostic"]')).toHaveText('')
+    await expect(hCard.locator('[data-slot="node-diagnostic"]')).toHaveCount(0)
     await expect(page.getByRole('link', { name: /Node H/ })).toHaveCount(1)
 
     // CONTEXT.md: the reason for an abnormal Node Health state stays visible as
