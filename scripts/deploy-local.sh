@@ -133,8 +133,14 @@ dist_fingerprint() {
     | xargs -0 sha256sum | sha256sum | cut -c1-16
 }
 
+# HTML comments may legitimately mention "/assets/." while explaining the
+# build; strip comment blocks so prose is never mistaken for a reference.
+strip_html_comments() {
+  sed '/<!--/,/-->/d'
+}
+
 asset_refs() {
-  grep -oE '/assets/[A-Za-z0-9._-]+' "$1" 2>/dev/null | LC_ALL=C sort -u || true
+  strip_html_comments < "$1" 2>/dev/null | grep -oE '/assets/[A-Za-z0-9._-]+' | LC_ALL=C sort -u || true
 }
 
 # 0 when the live Server answers with the current build and every asset it
@@ -144,7 +150,7 @@ server_serves_current_assets() {
   disk_refs="$(asset_refs "$DIST/index.html")"
   [[ -n "$disk_refs" ]] || return 1
   live_index="$(curl -fsS --max-time 5 "$BASE_URL/" 2>/dev/null)" || return 1
-  live_refs="$(printf '%s' "$live_index" | grep -oE '/assets/[A-Za-z0-9._-]+' | LC_ALL=C sort -u || true)"
+  live_refs="$(printf '%s' "$live_index" | strip_html_comments | grep -oE '/assets/[A-Za-z0-9._-]+' | LC_ALL=C sort -u || true)"
   [[ "$live_refs" == "$disk_refs" ]] || return 1
   while IFS= read -r ref; do
     [[ -n "$ref" ]] || continue
