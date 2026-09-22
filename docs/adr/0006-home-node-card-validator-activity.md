@@ -14,6 +14,7 @@ The Home Node-card top-right badge shows the Node's PlatScan Validator Activity:
 
 - The four named states map from PlatScan's numeric `data.status` exactly as the Server already adapts it: `active` (1|2), `producing` (3), `verifying` (6), and `observing` (an authoritative empty staking identity).
 - `exiting`, `exited` and `locked` keep their own real names with the neutral treatment rather than being forced into the four named states. An unlisted value keeps its own name too.
+- Switching status never reflows the card: all four named states share one frame — position, size, padding and a fixed 14px, 2px-stroke `currentColor` icon slot — while the glyph and the tone (foreground plus its matching border and background tint) name the state. `observing` stays neutral; `active` keeps Producing's background tint and a lighter border, and takes a solid Emerald foreground chosen per theme (`emerald-700` on light, `emerald-400` on dark) instead of one opacity, so the text and waveform stay legible on either surface without a brighter background, glow or solid fill.
 - No status is ever inferred from Node role, `isValidator`, Node Health/online state, CPU, sync height, rank, or rewards.
 
 ## Consequences

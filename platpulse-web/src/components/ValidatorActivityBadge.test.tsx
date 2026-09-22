@@ -46,6 +46,17 @@ const sizersOf = (badge: HTMLElement) =>
 
 const iconClassOf = (badge: HTMLElement) => badge.querySelector('svg')?.getAttribute('class') ?? ''
 
+const svgOf = (badge: HTMLElement): SVGElement => {
+  const svg = badge.querySelector('svg')
+  if (!svg) throw new Error('the activity badge has no icon')
+  return svg
+}
+
+/** The layout-only part of the badge's class list. Colour utilities vary by
+ *  tone; size, spacing, radius and focus ring must not. */
+const geometryOf = (badge: HTMLElement) =>
+  [...badge.classList].filter((name) => !/(?:emerald|teal|muted|border-border)/.test(name)).sort()
+
 describe('ValidatorActivityBadge', () => {
   it.each([
     ['verifying', 'Verifying', 'verifying', 'lucide-shield-check'],
@@ -93,6 +104,39 @@ describe('ValidatorActivityBadge', () => {
     for (const activity of ['producing', 'active', 'observing', 'exiting', 'exited', 'locked', 'unknown']) {
       const badge = renderBadge(linked(activity))
       expect(sizersOf(badge)).toEqual(reference)
+      cleanup()
+    }
+  })
+
+  it('keeps Active legible in both themes with a full-strength Emerald foreground', () => {
+    const classes = renderBadge(linked('active')).className
+    // Light surfaces take the darker Emerald that clears AA for 11px text; the
+    // bright dark-surface shade stays scoped to `dark:` and never leaks into light.
+    expect(classes).toContain('text-emerald-700')
+    expect(classes).toContain('dark:text-emerald-400')
+    // The previously dimmed 70% wash is gone, and no pale Emerald replaces it in light.
+    expect(classes).not.toMatch(/text-emerald-\d+\/70/)
+    expect(classes).not.toMatch(/(?:^|\s)text-emerald-[1-5]00(?:\s|$)/)
+  })
+
+  it('keeps Observing neutral so the status name, not colour, carries the meaning', () => {
+    const classes = renderBadge(linked('observing')).className
+    expect(classes).toContain('text-muted-foreground')
+    expect(classes).not.toMatch(/emerald|teal/)
+  })
+
+  it('keeps one badge geometry and one 14px currentColor glyph across the four states', () => {
+    const reference = geometryOf(renderBadge(linked('verifying')))
+    expect(reference.length).toBeGreaterThan(0)
+    cleanup()
+    for (const activity of ['producing', 'active', 'observing'] as const) {
+      const badge = renderBadge(linked(activity))
+      expect(geometryOf(badge)).toEqual(reference)
+      const svg = svgOf(badge)
+      expect(svg.getAttribute('width')).toBe('14')
+      expect(svg.getAttribute('height')).toBe('14')
+      expect(svg.getAttribute('stroke-width')).toBe('2')
+      expect(svg.getAttribute('stroke')).toBe('currentColor')
       cleanup()
     }
   })

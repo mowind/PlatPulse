@@ -59,8 +59,12 @@ const TONE_CLASS: Record<ActivityTone, string> = {
     'border-teal-600/20 bg-teal-600/5 text-teal-600 dark:border-teal-400/25 dark:bg-teal-400/10 dark:text-teal-400',
   producing:
     'border-emerald-600/20 bg-emerald-600/5 text-emerald-600 dark:border-emerald-400/25 dark:bg-emerald-400/10 dark:text-emerald-400',
+  // Active is the calm Emerald state: it keeps Producing's background tint and a
+  // lighter border, and only the foreground is lifted from the old 70% wash to a
+  // solid, theme-correct shade. Emerald-700 clears 4.5:1 on a light surface and
+  // Emerald-400 clears it on a dark one, so neither shade is reused across themes.
   active:
-    'border-emerald-600/15 bg-emerald-600/5 text-emerald-600/70 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-400/70',
+    'border-emerald-600/15 bg-emerald-600/5 text-emerald-700 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-400',
   muted: 'border-border/60 bg-muted/40 text-muted-foreground',
 }
 
