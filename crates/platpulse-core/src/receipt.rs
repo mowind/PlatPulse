@@ -280,6 +280,38 @@ impl RejectionCode {
     pub fn is_retryable(self) -> bool {
         matches!(self, Self::GapNotOpen | Self::ServerNotReady)
     }
+
+    /// The stable wire name of this code, matching its `snake_case` serde
+    /// representation. Exhaustive on purpose: a new code must be named here
+    /// before it can be persisted as Server diagnostic evidence.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::UnsupportedProtocolVersion => "unsupported_protocol_version",
+            Self::InvalidProtocolVersion => "invalid_protocol_version",
+            Self::InvalidEnvelope => "invalid_envelope",
+            Self::StaleBoot => "stale_boot",
+            Self::ConflictingBoot => "conflicting_boot",
+            Self::InvalidBootTransition => "invalid_boot_transition",
+            Self::StaleReport => "stale_report",
+            Self::InventoryInvalid => "inventory_invalid",
+            Self::InventoryDuplicateNode => "inventory_duplicate_node",
+            Self::InventoryRevisionConflict => "inventory_revision_conflict",
+            Self::NetworkKeyUnknown => "network_key_unknown",
+            Self::NodeNotInInventory => "node_not_in_inventory",
+            Self::NodeOwnershipMismatch => "node_ownership_mismatch",
+            Self::NodePurged => "node_purged",
+            Self::NodeCurrentInvalid => "node_current_invalid",
+            Self::NetworkIdentityMismatch => "network_identity_mismatch",
+            Self::ChainDivergence => "chain_divergence",
+            Self::ResyncReplay => "resync_replay",
+            Self::GapBackfillOutsideOpenGap => "gap_backfill_outside_open_gap",
+            Self::PermanentGapSample => "permanent_gap_sample",
+            Self::SampleHashMismatch => "sample_hash_mismatch",
+            Self::HistoryGapInvalid => "history_gap_invalid",
+            Self::GapNotOpen => "gap_not_open",
+            Self::ServerNotReady => "server_not_ready",
+        }
+    }
 }
 
 impl ReportReceipt {
@@ -423,6 +455,41 @@ fn require_appliable_inventory(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The persisted diagnostic name of a rejection must be the same string
+    /// the wire carries, or Admin evidence would not match the receipt.
+    #[test]
+    fn rejection_code_wire_names_match_their_serialized_form() {
+        for code in [
+            RejectionCode::UnsupportedProtocolVersion,
+            RejectionCode::InvalidProtocolVersion,
+            RejectionCode::InvalidEnvelope,
+            RejectionCode::StaleBoot,
+            RejectionCode::ConflictingBoot,
+            RejectionCode::InvalidBootTransition,
+            RejectionCode::StaleReport,
+            RejectionCode::InventoryInvalid,
+            RejectionCode::InventoryDuplicateNode,
+            RejectionCode::InventoryRevisionConflict,
+            RejectionCode::NetworkKeyUnknown,
+            RejectionCode::NodeNotInInventory,
+            RejectionCode::NodeOwnershipMismatch,
+            RejectionCode::NodePurged,
+            RejectionCode::NodeCurrentInvalid,
+            RejectionCode::NetworkIdentityMismatch,
+            RejectionCode::ChainDivergence,
+            RejectionCode::ResyncReplay,
+            RejectionCode::GapBackfillOutsideOpenGap,
+            RejectionCode::PermanentGapSample,
+            RejectionCode::SampleHashMismatch,
+            RejectionCode::HistoryGapInvalid,
+            RejectionCode::GapNotOpen,
+            RejectionCode::ServerNotReady,
+        ] {
+            let serialized = serde_json::to_value(code).unwrap();
+            assert_eq!(serialized.as_str(), Some(code.as_str()), "{code:?}");
+        }
+    }
 
     #[test]
     fn receipt_disposition_wire_forms() {

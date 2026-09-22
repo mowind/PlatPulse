@@ -159,6 +159,13 @@ pub enum AgentConfigError {
     InvalidCollectionInterval,
     #[error("inventory_revision must be greater than zero")]
     InvalidInventoryRevision,
+    /// The declared Inventory conflicts with the last Inventory the Server
+    /// effectively accepted (issue #181). Carries the operator-facing remedy
+    /// rather than the structured conflict: the CLI prints errors with `{:?}`
+    /// at the process boundary, which would show the two hashes and hide the
+    /// sentence telling the operator to bump `inventory_revision`.
+    #[error("{0}")]
+    InventoryDeclaration(String),
 }
 
 impl AgentConfigFile {

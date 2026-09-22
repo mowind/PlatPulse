@@ -134,6 +134,7 @@ fn receipt_response(receipt: ReportReceipt) -> Response {
 }
 
 async fn store_rejected(
+    state: &AppState,
     mut tx: Transaction<'_, Sqlite>,
     report: &AgentReport,
     hash: Sha256Hex,
@@ -141,12 +142,25 @@ async fn store_rejected(
     request_id: &str,
 ) -> Response {
     let stored = serde_json::to_vec(&receipt).expect("receipt serializes");
-    let result = sqlx::query("INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    // Durable Inventory evidence (issue #181): which code refused the report
+    // and what Inventory the Agent declared. Admin must never have to decode
+    // the receipt body, nor trust an Agent-reported diagnostic, to answer "is
+    // this Agent's latest ingestion attempt an Inventory rejection?". A
+    // whole-report rejection decides by its first rejection.
+    let rejection_code = receipt
+        .rejections
+        .first()
+        .map(|rejection| rejection.code.as_str());
+    let result = sqlx::query("INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at, rejection_code, inventory_revision, inventory_sha256) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .bind(report.report_id.to_string()).bind(report.agent_id.to_string())
         .bind(report.agent_epoch as i64).bind(report.boot_id.to_string())
         .bind(report.report_sequence as i64).bind(hash.to_string())
         .bind(disposition_name(receipt.disposition)).bind(&stored)
-        .bind(now().to_string()).execute(&mut *tx).await;
+        .bind(now().to_string())
+        .bind(rejection_code)
+        .bind(report.inventory.revision as i64)
+        .bind(report.inventory.content_sha256().to_string())
+        .execute(&mut *tx).await;
     if result.is_err() || tx.commit().await.is_err() {
         return error(
             request_id,
@@ -155,6 +169,16 @@ async fn store_rejected(
             "Server database is unavailable",
         );
     }
+    // A rejection writes no projection row, but it does change derived Admin
+    // state: the Agent's Inventory rejection Attention Item. Without this
+    // signal an already-open Agent page would keep showing the frozen Agent
+    // with no explanation. The realtime layer coalesces same-resource events,
+    // so a rejection every collection interval is not an event flood.
+    state.admin_realtime().publish(
+        "agent",
+        Some(report.agent_id.to_string()),
+        report.report_sequence,
+    );
     receipt_response(receipt)
 }
 
@@ -1604,6 +1628,7 @@ async fn handler(
     };
     if parsed.agent_epoch != agent.agent_epoch as u64 {
         return store_rejected(
+            &state,
             tx,
             &parsed,
             hash.clone(),
@@ -1632,6 +1657,7 @@ async fn handler(
     let _boot_markers = (&agent.previous_boot_id, &agent.close_report_id);
     if parsed.inventory.revision < agent.last_inventory_revision as u64 {
         return store_rejected(
+            &state,
             tx,
             &parsed,
             hash.clone(),
@@ -1646,8 +1672,7 @@ async fn handler(
         .await;
     }
 
-    let inventory_bytes = serde_json::to_vec(&parsed.inventory).expect("inventory serializes");
-    let inventory_hash = format!("0x{:x}", Sha256::digest(&inventory_bytes));
+    let inventory_hash = parsed.inventory.content_sha256();
     let prior_inventory_hash: Option<String> =
         match sqlx::query_scalar("SELECT inventory_sha256 FROM agents WHERE agent_id=?")
             .bind(&auth.agent_id)
@@ -1669,6 +1694,7 @@ async fn handler(
         && prior_inventory_hash.as_deref() != Some(inventory_hash.as_str())
     {
         return store_rejected(
+            &state,
             tx,
             &parsed,
             hash.clone(),
@@ -1714,6 +1740,7 @@ async fn handler(
                 && parsed.boot_transition != platpulse_core::BootTransition::DrainedPrevious
             {
                 return store_rejected(
+                    &state,
                     tx,
                     &parsed,
                     hash.clone(),
@@ -1737,6 +1764,7 @@ async fn handler(
             {
                 let _ = record_security_event(&mut tx, &auth.agent_id).await;
                 return store_rejected(
+                    &state,
                     tx,
                     &parsed,
                     hash.clone(),
@@ -1753,6 +1781,7 @@ async fn handler(
             if agent.active_boot_status != "closed" {
                 let _ = record_security_event(&mut tx, &auth.agent_id).await;
                 return store_rejected(
+                    &state,
                     tx,
                     &parsed,
                     hash.clone(),
@@ -1773,6 +1802,7 @@ async fn handler(
                 .is_some_and(|last| parsed.report_sequence <= last as u64)
         {
             return store_rejected(
+                &state,
                 tx,
                 &parsed,
                 hash.clone(),
@@ -1848,6 +1878,7 @@ async fn handler(
         };
         if known.is_none() {
             return store_rejected(
+                &state,
                 tx,
                 &parsed,
                 hash.clone(),
@@ -1933,8 +1964,7 @@ async fn handler(
         .map(|node| node.node_id.to_string())
         .collect::<Vec<_>>();
 
-    let inventory_bytes = serde_json::to_vec(&parsed.inventory).expect("inventory serializes");
-    let inventory_hash = format!("0x{:x}", Sha256::digest(&inventory_bytes));
+    let inventory_hash = parsed.inventory.content_sha256();
     let prior_inventory_hash: Option<String> =
         sqlx::query_scalar("SELECT inventory_sha256 FROM agents WHERE agent_id=?")
             .bind(&auth.agent_id)
@@ -2514,7 +2544,7 @@ async fn handler(
         .bind(parsed.previous_boot_id.map(|v| v.to_string()))
         .bind(lifecycle_status).bind(parsed.report_id.to_string())
         .bind(parsed.report_sequence as i64).bind(parsed.inventory.revision as i64)
-        .bind(&inventory_hash).bind(&now_text).bind(clock_skew_ms).bind(clock_status)
+        .bind(inventory_hash.as_str()).bind(&now_text).bind(clock_skew_ms).bind(clock_status)
         .bind(capabilities)
         .bind(shutdown_state)
         .bind(shutdown_diag.and_then(|v| v.shutdown_started_at.as_ref()).map(ToString::to_string))
@@ -4189,6 +4219,71 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(endpoint, "ws://127.0.0.1:6790");
+    }
+
+    #[tokio::test]
+    async fn equal_revision_inventory_conflict_records_durable_rejection_evidence() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let original: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        let accepted = submit(&state, &agent_id, serde_json::to_vec(&original).unwrap()).await;
+        assert_eq!(accepted.disposition, ReceiptDisposition::Accepted);
+
+        let mut conflict = original.clone();
+        conflict.report_sequence = 2;
+        conflict.report_id = "0195f2a1-0013-4013-8013-000000000120".parse().unwrap();
+        conflict.inventory.nodes[0].rpc_endpoint = "ws://127.0.0.1:6799".parse().unwrap();
+        let reported_revision = conflict.inventory.revision;
+        let reported_sha256 = conflict.inventory.content_sha256();
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&conflict).unwrap()).await;
+        assert_eq!(receipt.disposition, ReceiptDisposition::Rejected);
+        assert_eq!(
+            receipt.rejections[0].code,
+            platpulse_core::RejectionCode::InventoryRevisionConflict
+        );
+
+        // Issue #181: the refusal is durable Server evidence, not only a
+        // decoded receipt body: the newest receipt names the deciding code
+        // and the revision/hash the refused report declared.
+        let (disposition, rejection_code, inventory_revision, inventory_sha256): (
+            String,
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+        ) = sqlx::query_as(
+            "SELECT disposition, rejection_code, inventory_revision, inventory_sha256 FROM agent_report_receipts WHERE agent_id=? ORDER BY received_at DESC, report_sequence DESC LIMIT 1",
+        )
+        .bind(&agent_id)
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(disposition, "rejected");
+        assert_eq!(
+            rejection_code.as_deref(),
+            Some("inventory_revision_conflict")
+        );
+        assert_eq!(inventory_revision, Some(reported_revision as i64));
+        assert_eq!(
+            inventory_sha256.as_deref(),
+            Some(reported_sha256.as_str()),
+            "the refused report's declared Inventory hash must be recorded"
+        );
+
+        // Issue #181: a rejection writes no projection row, so the Admin
+        // invalidation is the only signal an already-open Agent page gets. An
+        // accepted report publishes node/peer/geo work but never scopes an
+        // `agent` event, so this event can only come from the refusal.
+        assert!(
+            state
+                .admin_realtime()
+                .pending_events()
+                .iter()
+                .any(|event| event.resource == "agent"
+                    && event.resource_id.as_deref() == Some(agent_id.as_str())),
+            "a rejected report must invalidate the Admin view of its Agent"
+        );
     }
 
     #[tokio::test]

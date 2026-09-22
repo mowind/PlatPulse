@@ -8182,6 +8182,7 @@
           "capabilities",
           "credentials",
           "nodes",
+          "inventory",
           "attention"
         ],
         "properties": {
@@ -8253,6 +8254,10 @@
                 "$ref": "#/components/schemas/HostDiagnostic"
               }
             ]
+          },
+          "inventory": {
+            "$ref": "#/components/schemas/AgentInventoryDiagnostic",
+            "description": "Server-owned Inventory diagnosis (issue #181): the revision/hash the\nServer currently accepts, and the Agent's latest Inventory-caused\nrejection. Node `inventory_revision` is the per-Node accepted revision;\nthis is the Agent-wide Inventory declaration."
           },
           "last_received_at": {
             "type": [
@@ -8362,6 +8367,73 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "AgentInventoryDiagnostic": {
+        "type": "object",
+        "description": "What the Server currently accepts for one Agent's Node Inventory, and which\ndeclaration it refused last (issue #181). The pair is what makes the remedy\nobvious: the Agent declares revision `reported_revision` with hash\n`reported_sha256`, while the Server accepts `accepted_revision` with\n`accepted_sha256`.",
+        "required": [
+          "accepted_revision"
+        ],
+        "properties": {
+          "accepted_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision of the Node Inventory the Server currently accepts."
+          },
+          "accepted_sha256": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Content hash of that accepted Inventory. `None` means the Server has\nnever accepted an Inventory from this Agent."
+          },
+          "last_rejection": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AgentInventoryRejectionEvidence",
+                "description": "The refusal that stopped the Agent's most recent report, when that\nreport was refused because of its Inventory. `None` means the latest\ningestion attempt was not an Inventory rejection."
+              }
+            ]
+          }
+        }
+      },
+      "AgentInventoryRejectionEvidence": {
+        "type": "object",
+        "description": "Server-recorded evidence of one whole-report Inventory rejection. All of it\nis Server-computed or Server-stored; nothing here is Agent-reported\ndiagnostics.",
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Stable rejection code: `inventory_revision_conflict` or\n`network_key_unknown`."
+          },
+          "received_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the Server stored the refusing Report Receipt."
+          },
+          "reported_revision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The Inventory revision the refused report declared."
+          },
+          "reported_sha256": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The Inventory content hash the refused report declared."
           }
         }
       },
@@ -8840,6 +8912,7 @@
           "agent_report_gap",
           "agent_security_event",
           "agent_shutdown_incomplete",
+          "agent_inventory_rejected",
           "node_unhealthy",
           "node_health_unknown",
           "node_resync",

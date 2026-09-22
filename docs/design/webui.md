@@ -419,6 +419,7 @@ agent_spool_overflow
 agent_report_gap
 agent_security_event
 agent_shutdown_incomplete
+agent_inventory_rejected
 node_unhealthy
 node_health_unknown
 node_resync
@@ -431,6 +432,7 @@ Typed severities are `critical` and `warning`. Critical means a confirmed availa
 agent_spool_fatal
 agent_spool_overflow
 agent_security_event
+agent_inventory_rejected
 node_unhealthy
 node_identity_mismatch
 ```

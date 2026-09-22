@@ -556,6 +556,13 @@ export type AgentDiagnostic = {
      */
     display_name?: string | null;
     host?: null | HostDiagnostic;
+    /**
+     * Server-owned Inventory diagnosis (issue #181): the revision/hash the
+     * Server currently accepts, and the Agent's latest Inventory-caused
+     * rejection. Node `inventory_revision` is the per-Node accepted revision;
+     * this is the Agent-wide Inventory declaration.
+     */
+    inventory: AgentInventoryDiagnostic;
     last_received_at?: string | null;
     last_report_sequence?: number | null;
     liveness: string;
@@ -580,6 +587,51 @@ export type AgentDiagnostic = {
         number
     ] | null;
     shutdown_updated_at?: string | null;
+};
+
+/**
+ * What the Server currently accepts for one Agent's Node Inventory, and which
+ * declaration it refused last (issue #181). The pair is what makes the remedy
+ * obvious: the Agent declares revision `reported_revision` with hash
+ * `reported_sha256`, while the Server accepts `accepted_revision` with
+ * `accepted_sha256`.
+ */
+export type AgentInventoryDiagnostic = {
+    /**
+     * The revision of the Node Inventory the Server currently accepts.
+     */
+    accepted_revision: number;
+    /**
+     * Content hash of that accepted Inventory. `None` means the Server has
+     * never accepted an Inventory from this Agent.
+     */
+    accepted_sha256?: string | null;
+    last_rejection?: null | AgentInventoryRejectionEvidence;
+};
+
+/**
+ * Server-recorded evidence of one whole-report Inventory rejection. All of it
+ * is Server-computed or Server-stored; nothing here is Agent-reported
+ * diagnostics.
+ */
+export type AgentInventoryRejectionEvidence = {
+    /**
+     * Stable rejection code: `inventory_revision_conflict` or
+     * `network_key_unknown`.
+     */
+    code: string;
+    /**
+     * When the Server stored the refusing Report Receipt.
+     */
+    received_at?: string | null;
+    /**
+     * The Inventory revision the refused report declared.
+     */
+    reported_revision?: number | null;
+    /**
+     * The Inventory content hash the refused report declared.
+     */
+    reported_sha256?: string | null;
 };
 
 export type AgentMetadataRequest = {
@@ -755,7 +807,7 @@ export type AttentionItem = {
  * The Server-owned Agent Attention kinds (design §8.4.2). Node, Network, and
  * Settings kinds are never acknowledgeable.
  */
-export type AttentionKind = 'agent_offline' | 'agent_spool_fatal' | 'agent_spool_overflow' | 'agent_report_gap' | 'agent_security_event' | 'agent_shutdown_incomplete' | 'node_unhealthy' | 'node_health_unknown' | 'node_resync' | 'node_identity_mismatch';
+export type AttentionKind = 'agent_offline' | 'agent_spool_fatal' | 'agent_spool_overflow' | 'agent_report_gap' | 'agent_security_event' | 'agent_shutdown_incomplete' | 'agent_inventory_rejected' | 'node_unhealthy' | 'node_health_unknown' | 'node_resync' | 'node_identity_mismatch';
 
 export type AttentionSeverity = 'critical' | 'warning';
 

@@ -481,7 +481,7 @@ summary.networks: total, with_identity_mismatch
 
 不变量为 `nodes.active = nodes.healthy + nodes.unhealthy + nodes.unknown`、`nodes.total = nodes.active + nodes.retired`。Retired Node 不参与实时健康分桶或当前 Attention Item。当前 `AdminOverviewSummary` 没有 `published` 字段；Node list/detail DTO 仍保留 `visibility` 与对应 Owner mutation/filter 作为 legacy compatibility/diagnostic surface。Public 查询不使用它过滤 Home，Site Access Mode 是匿名访问范围的唯一有效站点级开关。
 
-`AttentionItem.kind`、`severity` 与 `subject_kind` 是 typed Server contract，不是浏览器任意字符串。`subject_kind` 限定为 `agent`、`node`、`network`、`settings`。当前 kind 为 `agent_offline`、`agent_spool_fatal`、`agent_spool_overflow`、`agent_report_gap`、`agent_security_event`、`agent_shutdown_incomplete`、`node_unhealthy`、`node_health_unknown`、`node_resync`、`node_identity_mismatch`。severity 只有 `critical` 与 `warning`：Spool fatal/overflow、security event、unhealthy Node 与 Network Identity Mismatch 为 Critical；Agent offline、report gap、incomplete shutdown、unknown Node health 与 resync 为 Warning。新 Agent 在尚无 accepted report 时是 Unknown 而非 Offline；新 Active Node 在 Server-owned first-observation grace period 内是 Starting，不提前产生 unknown-health Attention。Server 按 Critical 优先、权威观察时间与稳定身份排序；WebUI 可以按 Subject 分组展示，但不能丢弃 Item 或重算 severity。
+`AttentionItem.kind`、`severity` 与 `subject_kind` 是 typed Server contract，不是浏览器任意字符串。`subject_kind` 限定为 `agent`、`node`、`network`、`settings`。当前 kind 为 `agent_offline`、`agent_spool_fatal`、`agent_spool_overflow`、`agent_report_gap`、`agent_security_event`、`agent_shutdown_incomplete`、`agent_inventory_rejected`、`node_unhealthy`、`node_health_unknown`、`node_resync`、`node_identity_mismatch`。severity 只有 `critical` 与 `warning`：Spool fatal/overflow、security event、Inventory rejection、unhealthy Node 与 Network Identity Mismatch 为 Critical；Agent offline、report gap、incomplete shutdown、unknown Node health 与 resync 为 Warning。新 Agent 在尚无 accepted report 时是 Unknown 而非 Offline；新 Active Node 在 Server-owned first-observation grace period 内是 Starting，不提前产生 unknown-health Attention。Server 按 Critical 优先、权威观察时间与稳定身份排序；WebUI 可以按 Subject 分组展示，但不能丢弃 Item 或重算 severity。
 
 Public 与 Admin Projection 都由 Server 计算 Health，浏览器不得自行重算；但当前实现是 route-specific precedence，而非一个可复用的 canonical evaluator：Public `health_for` 会纳入 process/identity 错误、RPC、Sync、Consensus 与 freshness，Admin `derive_health` 主要基于 RPC、Sync、Consensus 与 freshness，identity mismatch 另作为 Admin attention/identity disposition。因而同一 Node 在两种 DTO 中可能有不同的主标签；两边都必须保持 Unknown、Stale、Disabled、Unsupported 与从未观察输入不因缺省而成为 Healthy。
 
@@ -766,3 +766,25 @@ Incident 保留证据不等于继续把它当作当前待处理故障；删除�
 | 权限、故障与响应式 | Owner-only、CSRF/Origin、Audit、失败/冲突重取、不可逆确认；Public 无管理数据泄漏；固定移动/桌面项目可用 |
 
 具体 DTO、端点、schema、迁移顺序、Receipt disposition 编码和 PlatScan 状态证据尚需在实现工单中落实；本次未生成 API、未开展新的实时 PlatScan 验证，也未运行 Rust/WebUI 测试或执行清理。不得据本节把旧的导出但未注册页面当作新能力已上线。
+
+### 15.9 Node Inventory 声明纪律与拒收可观测（已实现）
+
+本节来自 issue #177 的 `/grill-with-docs` 访谈共识，是目标设计。目标是让「Node Inventory 内容变了但 `inventory_revision` 没 bump」在 Agent 声明之前就可见、可操作，并让「整份 Inventory 被拒收」在 Admin 可见，而不是等当前投影冻住、且只能直连 SQLite 排查。
+
+实现前的事实（issue #177 报告的现象）：
+
+- Server 对「同 revision、内容哈希不一致」的整份 Inventory 拒收（`inventory_revision_conflict`），revision 回退使用同一个 code；`inventory_sha256` 只存在于 Server（`agents.inventory_sha256`），Agent 不计算 Inventory 哈希。
+- Agent 每次构建报告都重新读取 `agent.toml`，配置改动无需重启即生效；因此「启动时自检」既不覆盖运行中改配置，也不能在 Operator bump 后自愈。
+- Agent 把拒收原因写入本地 `delivery_diagnostics.last_error` 并随 `host.spool.last_delivery_error` 上报，但该字段只在整份报告被接受时落库，因此在这条「每份报告都被整份拒收」的路径上永不更新；Admin 侧也不读取 `agent_report_receipts`。
+
+已确认设计：
+
+1. **Inventory Declaration Record**：Agent 持久化「最后一次已生效 Node Inventory 的 revision 与内容哈希」（术语见 CONTEXT.md）。只在 Report Receipt 的 Inventory disposition 为 accepted/unchanged 时，于 receipt 应用事务内写入；记录缺失（首次运行或存量升级）时静默采用，不报错。
+2. **共享哈希口径**：canonical 哈希实现放在 `platpulse-core`，由 Server 的比较/记录与 Agent 自检共用。哈希对象是已发布 `NodeInventory` 的序列化（含 revision 与 nodes），因此 `data_directory`、`collection_interval_seconds` 等本地字段不参与；`display_name` 属于 wire 字段，改它而不 bump 同样应被拒绝。
+3. **Agent 自检**：声明前比较本地配置与记录——同 revision 而内容不同 → 拒绝声明；revision 低于记录 → 拒绝声明。声明的入口（`run`、`collect-report`、`persist-report`）拒绝启动并以非 0 退出，且在 `recover_previous_boot` 之前判定，避免产出注定被拒的 Closing 报告；长期运行中出现的配置漂移不结束进程，只拒绝声明并以去重日志给出可操作诊断，Operator bump 后下一个采集周期自愈。`shutdown` 与 `recover` 不受守卫，保证仍能收尾与排障；`validate-config` 以只读方式检查 Agent Store 并报错。
+4. **复现诊断**：整份 terminal 拒收在 Agent 控制台按 `(code, reason)` 去重打印并带计数。现有实现只在 transport `Err` 时打印，拒收走「receipt 已应用」路径因而静默。
+5. **Server 侧证据**：`agent_report_receipts` 增加可空列记录拒收 code 与本次上报的 Inventory revision/哈希。不改 wire `RejectionCode`、不改 `ReportReceipt`，也不为该表新增保留策略。
+6. **Admin 可观测**：新增 Agent Attention kind `agent_inventory_rejected`（critical，可按 §15.6 确认），条件是「该 Agent 最新一行 receipt 是整份 Inventory 拒收」；evidence 边界取「原因 + 已接受 revision/哈希 + 上报 revision/哈希」，因此内容不变而每周期重报不会让确认失效，只有内容或已接受状态变化才重新提示。Admin Agent DTO 增加嵌套的 Inventory 诊断（已接受 revision/哈希 + 最近一次拒收证据），WebUI 在 Inventory 与 Diagnostics 面板展示；拒收提交后向 Admin realtime 发 `agent` invalidation。
+7. **不改**：wire 契约、接受路径的同 revision 哈希判定、以及「整份 Inventory 才生效」的语义都不放宽。
+
+实现状态：已实现（issue #181），§8.4.2 的 kind 与 severity 清单已同步。方向 3（Server 托管 revision）会改动 wire 契约与幂等/重放模型，需要单独 ADR 与迁移方案，见 issue #182。

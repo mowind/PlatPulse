@@ -19,8 +19,9 @@ use platpulse_core::observation::{
     SpoolDiagnostics, SyncCurrent,
 };
 use platpulse_core::{
-    AgentCapability, AgentReport, BootTransition, FingerprintHex, NodeCurrentDisposition,
-    ReceiptDisposition, ReportReceipt, Rfc3339, SampleDispositionKind, SampleRef,
+    AgentCapability, AgentReport, BootTransition, FingerprintHex, InventoryDisposition,
+    NodeCurrentDisposition, ReceiptDisposition, ReportReceipt, Rfc3339, SampleDispositionKind,
+    SampleRef,
 };
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
@@ -219,6 +220,22 @@ pub enum CollectionError {
     Serialization(#[from] serde_json::Error),
     #[error("Agent state changed while assembling the report")]
     ConcurrentStateChange,
+    /// The declared Inventory conflicts with the last Inventory the Server
+    /// accepted, so the report would be refused whole (issue #181). This is an
+    /// operator configuration error, not a transient failure: it repeats every
+    /// collection tick until `inventory_revision` is bumped.
+    #[error("{0}")]
+    InventoryDeclaration(#[from] crate::inventory_declaration::InventoryDeclarationConflict),
+}
+
+impl From<crate::inventory_declaration::InventoryGuardError> for CollectionError {
+    fn from(error: crate::inventory_declaration::InventoryGuardError) -> Self {
+        use crate::inventory_declaration::InventoryGuardError;
+        match error {
+            InventoryGuardError::Conflict(conflict) => Self::InventoryDeclaration(conflict),
+            InventoryGuardError::Database(error) => Self::Database(error),
+        }
+    }
 }
 
 /// Failure while applying a Server receipt to the Agent Store. Storage failures
@@ -271,7 +288,52 @@ pub(crate) fn is_transient_database_lock(error: &CollectionError) -> bool {
 /// trip, the next assembly observes that benign transition and must retry
 /// instead of turning a normal Boot settlement into a fatal startup loop.
 pub(crate) fn is_deferrable_collection(error: &CollectionError) -> bool {
-    is_transient_database_lock(error) || matches!(error, CollectionError::ConcurrentStateChange)
+    is_transient_database_lock(error)
+        || matches!(
+            error,
+            CollectionError::ConcurrentStateChange | CollectionError::InventoryDeclaration(_)
+        )
+}
+
+/// Refuse to declare an Inventory the Server would refuse (issue #181).
+///
+/// The check is deliberately at the declaration site rather than only at
+/// startup: `validated_inventory()` re-reads `agent.toml` for every report, so
+/// an operator edit while the Agent is running is exactly the case that must
+/// be caught, and a startup-only check could neither see it nor heal after the
+/// revision is bumped.
+pub(crate) async fn guard_inventory_declaration(
+    store: &mut AgentStore,
+    inventory: &NodeInventory,
+) -> Result<(), crate::inventory_declaration::InventoryGuardError> {
+    let recorded =
+        crate::inventory_declaration::read_inventory_declaration(store.connection()).await?;
+    crate::inventory_declaration::guard_declaration(recorded.as_ref(), inventory)?;
+    Ok(())
+}
+
+/// The startup form of [`guard_inventory_declaration`]: open the Agent Store,
+/// check the declaration, and close it again.
+///
+/// This runs before boot recovery so the Agent never emits a Closing report
+/// that is doomed to the same refusal, while still failing fast: the issue
+/// asks the Agent to refuse to start with an actionable message rather than
+/// report forever against a frozen projection.
+pub(crate) async fn guard_startup_inventory_declaration(
+    config: &AgentConfig,
+    inventory: &NodeInventory,
+    write_permit: AgentStoreWritePermit,
+) -> Result<(), CollectionError> {
+    let mut store = AgentStore::open_with_write_permit(
+        AgentDatabaseConfig::new(&config.state_db),
+        write_permit,
+    )
+    .await?;
+    let guarded = guard_inventory_declaration(&mut store, inventory).await;
+    let closed = store.close().await;
+    guarded?;
+    closed?;
+    Ok(())
 }
 
 pub(crate) fn timestamp() -> Rfc3339 {
@@ -1310,6 +1372,8 @@ async fn collect_and_persist_in_store_with_data_directories<A: RpcAdapter>(
     let validated = config
         .validated_inventory()
         .map_err(|error| CollectionError::Identity(error.to_string()))?;
+    // Refuse to declare an Inventory the Server would refuse (issue #181).
+    guard_inventory_declaration(store, &validated.inventory).await?;
     let previous = load_last_report(store).await?;
     let clock_at = timestamp();
     let clock_skew = match crate::time_exchange::exchange_server_time(config).await {
@@ -1903,6 +1967,8 @@ pub(crate) async fn collect_and_persist_with_blocks_with_permit<A: RpcAdapter>(
     let validated = config
         .validated_inventory()
         .map_err(|error| CollectionError::Identity(error.to_string()))?;
+    // Refuse to declare an Inventory the Server would refuse (issue #181).
+    guard_inventory_declaration(&mut store, &validated.inventory).await?;
     let clock_at = timestamp();
     let clock_skew = match crate::time_exchange::exchange_server_time(config).await {
         Ok(estimate) => ok(estimate.offset_ms, clock_at),
@@ -2495,24 +2561,31 @@ pub async fn apply_receipt(
         .execute(&mut *tx)
         .await?;
     delete_expired_receipt_markers(&mut *tx, &expiry_cutoff).await?;
+    // Inventory Declaration Record (issue #181): remember the Inventory this
+    // receipt made effective, using the report that was actually accepted. A
+    // rejection leaves the record alone, because nothing about a refused
+    // declaration became effective.
+    if receipt.disposition != ReceiptDisposition::Rejected
+        && matches!(
+            receipt.inventory,
+            Some(InventoryDisposition::Accepted | InventoryDisposition::Unchanged)
+        )
+    {
+        crate::inventory_declaration::record_inventory_declaration(
+            &mut tx,
+            &parsed_report.inventory,
+            report_id,
+            applied_at,
+        )
+        .await?;
+    }
     if receipt.disposition == ReceiptDisposition::Rejected {
         // A rejected report leaves the spool, but its rejection must stay
         // visible: the Agent keeps re-sending an unacknowledged Boot transition
         // until the Server accepts it, so the last rejection (bounded to the
         // Agent's single diagnostic row) is the operator's only local signal
         // for why delivery is not progressing (issue #164).
-        let detail = receipt
-            .rejections
-            .iter()
-            .map(|rejection| {
-                format!(
-                    "{} ({})",
-                    rejection_code_name(rejection.code),
-                    rejection.reason
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("; ");
+        let detail = crate::reporting::rejection_summary(&receipt);
         let pending = match parsed_report.boot_transition {
             BootTransition::DrainedPrevious => format!(
                 "; still retrying drained_previous previous_boot_id={}",
@@ -2617,15 +2690,6 @@ fn sample_reference(sample: SampleRef) -> (&'static str, u64, u64) {
             to_height,
         } => ("gap", from_height, to_height),
     }
-}
-
-/// Stable lowercase wire name of a rejection code, used only for bounded
-/// local diagnostics.
-fn rejection_code_name(code: platpulse_core::RejectionCode) -> String {
-    serde_json::to_value(code)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .unwrap_or_else(|| "unknown".to_owned())
 }
 
 pub(crate) fn receipt_disposition_name(disposition: ReceiptDisposition) -> &'static str {
@@ -4512,5 +4576,21 @@ mod tests {
                 .unwrap();
         assert_eq!(boot_state, "drained_pending");
         reopened.close().await.unwrap();
+    }
+
+    /// Issue #181: an operator's Inventory mistake must not exit the long-lived
+    /// Agent. The collection loop keeps ticking so the guard can re-read
+    /// `agent.toml` and declare again once the revision is bumped.
+    #[test]
+    fn an_inventory_declaration_conflict_is_deferrable_not_fatal() {
+        let error = CollectionError::InventoryDeclaration(
+            crate::inventory_declaration::InventoryDeclarationConflict::ContentChanged {
+                revision: 4,
+                recorded_sha256: "0xaa".to_owned(),
+                declared_sha256: "0xbb".to_owned(),
+            },
+        );
+        assert!(is_deferrable_collection(&error));
+        assert!(!is_transient_database_lock(&error));
     }
 }

@@ -99,7 +99,7 @@ hex_type!(
     64
 );
 hex_type!(
-    /// SHA-256 of a report body (`0x` + 64 lowercase hex digits).
+    /// A SHA-256 digest (`0x` + 64 lowercase hex digits).
     Sha256Hex,
     64
 );

@@ -1025,12 +1025,53 @@ pub struct AgentDiagnostic {
     pub credentials: Vec<AgentCredentialSummary>,
     pub host: Option<HostDiagnostic>,
     pub nodes: Vec<NodeDiagnostic>,
+    /// Server-owned Inventory diagnosis (issue #181): the revision/hash the
+    /// Server currently accepts, and the Agent's latest Inventory-caused
+    /// rejection. Node `inventory_revision` is the per-Node accepted revision;
+    /// this is the Agent-wide Inventory declaration.
+    pub inventory: AgentInventoryDiagnostic,
     /// Server-owned, currently unacknowledged Agent Attention Items with
     /// their occurrence/evidence boundaries (issue #172). The Agent Detail
     /// page renders these instead of rebuilding warning predicates from
     /// cumulative counters, so an acknowledged occurrence stays suppressed
     /// while raw evidence remains in Diagnostics.
     pub attention: Vec<AttentionItem>,
+}
+
+/// What the Server currently accepts for one Agent's Node Inventory, and which
+/// declaration it refused last (issue #181). The pair is what makes the remedy
+/// obvious: the Agent declares revision `reported_revision` with hash
+/// `reported_sha256`, while the Server accepts `accepted_revision` with
+/// `accepted_sha256`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct AgentInventoryDiagnostic {
+    /// The revision of the Node Inventory the Server currently accepts.
+    pub accepted_revision: i64,
+    /// Content hash of that accepted Inventory. `None` means the Server has
+    /// never accepted an Inventory from this Agent.
+    pub accepted_sha256: Option<String>,
+    /// The refusal that stopped the Agent's most recent report, when that
+    /// report was refused because of its Inventory. `None` means the latest
+    /// ingestion attempt was not an Inventory rejection.
+    pub last_rejection: Option<AgentInventoryRejectionEvidence>,
+}
+
+/// Server-recorded evidence of one whole-report Inventory rejection. All of it
+/// is Server-computed or Server-stored; nothing here is Agent-reported
+/// diagnostics.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct AgentInventoryRejectionEvidence {
+    /// Stable rejection code: `inventory_revision_conflict` or
+    /// `network_key_unknown`.
+    pub code: String,
+    /// The Inventory revision the refused report declared.
+    pub reported_revision: Option<i64>,
+    /// The Inventory content hash the refused report declared.
+    pub reported_sha256: Option<String>,
+    /// When the Server stored the refusing Report Receipt.
+    pub received_at: Option<String>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -2537,6 +2578,8 @@ struct AgentAdminRow {
     clock_status: Option<String>,
     last_received_at: Option<String>,
     security_event_count: i64,
+    accepted_inventory_revision: i64,
+    accepted_inventory_sha256: Option<String>,
 }
 
 #[utoipa::path(
@@ -2551,7 +2594,7 @@ async fn diagnostics(
 ) -> impl IntoResponse {
     let agents = sqlx::query_as::<_, AgentAdminRow>(
 
-        "SELECT agent_id, display_name, notes, agent_epoch, active_boot_id, active_boot_status, previous_boot_id, close_report_id, shutdown_state, shutdown_started_at, shutdown_deadline_at, shutdown_finished_at, shutdown_unresolved_from, shutdown_unresolved_to, shutdown_last_error, shutdown_forced, shutdown_report_id, shutdown_report_sequence, shutdown_updated_at, last_report_sequence, agent_capabilities_json, clock_skew_ms, clock_status, last_received_at, security_event_count FROM agents WHERE deleted_at IS NULL ORDER BY agent_id",
+        "SELECT agent_id, display_name, notes, agent_epoch, active_boot_id, active_boot_status, previous_boot_id, close_report_id, shutdown_state, shutdown_started_at, shutdown_deadline_at, shutdown_finished_at, shutdown_unresolved_from, shutdown_unresolved_to, shutdown_last_error, shutdown_forced, shutdown_report_id, shutdown_report_sequence, shutdown_updated_at, last_report_sequence, agent_capabilities_json, clock_skew_ms, clock_status, last_received_at, security_event_count, last_inventory_revision AS accepted_inventory_revision, inventory_sha256 AS accepted_inventory_sha256 FROM agents WHERE deleted_at IS NULL ORDER BY agent_id",
     )
     .fetch_all(state.db().pool())
     .await
@@ -2593,6 +2636,8 @@ async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> AgentDiagnost
         clock_status,
         last_received_at,
         security_event_count,
+        accepted_inventory_revision,
+        accepted_inventory_sha256,
     } = row;
     let capabilities = serde_json::from_str::<Vec<String>>(&capabilities_json)
         .unwrap_or_default()
@@ -2664,6 +2709,16 @@ async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> AgentDiagnost
             .await,
         );
     }
+    // Server-owned Inventory diagnosis (issue #181): the fact the Server
+    // accepts and the refusal that stopped the newest report. One extra
+    // per-Agent query, the same shape as the gap and credential reads above.
+    let inventory = agent_inventory_diagnostic(
+        state,
+        &agent_id,
+        accepted_inventory_revision,
+        accepted_inventory_sha256.clone(),
+    )
+    .await;
     // Server-owned Attention Items for this Agent, with the occurrence
     // boundary and any acknowledged occurrence already applied (issue #172).
     let attention = {
@@ -2683,6 +2738,31 @@ async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> AgentDiagnost
                 .as_ref()
                 .and_then(|host| host.spool_dropped_sequence_to),
             host_updated_at: host.as_ref().map(|host| host.updated_at.clone()),
+            // The newest-receipt evidence is read once and feeds both the
+            // Admin DTO and the attention boundary, so the page and the item
+            // can never disagree about which attempt was refused.
+            latest_receipt_disposition: inventory
+                .last_rejection
+                .as_ref()
+                .map(|_| "rejected".to_owned()),
+            latest_rejection_code: inventory
+                .last_rejection
+                .as_ref()
+                .map(|evidence| evidence.code.clone()),
+            latest_rejection_inventory_revision: inventory
+                .last_rejection
+                .as_ref()
+                .and_then(|evidence| evidence.reported_revision),
+            latest_rejection_inventory_sha256: inventory
+                .last_rejection
+                .as_ref()
+                .and_then(|evidence| evidence.reported_sha256.clone()),
+            latest_receipt_at: inventory
+                .last_rejection
+                .as_ref()
+                .and_then(|evidence| evidence.received_at.clone()),
+            accepted_inventory_revision,
+            accepted_inventory_sha256,
         };
         crate::attention::evaluate_agent(state.db().pool(), &evidence)
             .await
@@ -2718,7 +2798,52 @@ async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> AgentDiagnost
         credentials,
         host,
         nodes,
+        inventory,
         attention,
+    }
+}
+
+/// The Agent's Inventory diagnosis (issue #181): the revision/hash the Server
+/// accepts, plus the newest stored Report Receipt when that receipt refused
+/// the report because of its Inventory.
+///
+/// A read failure degrades to "no rejection" instead of failing the whole
+/// diagnostics page; the accepted fact still comes from the `agents` row, and
+/// a hidden refusal is loud elsewhere (the Agent console and the frozen
+/// projections). One extra per-Agent query, matching the existing N+1 shape of
+/// this builder.
+async fn agent_inventory_diagnostic(
+    state: &AppState,
+    agent_id: &str,
+    accepted_revision: i64,
+    accepted_sha256: Option<String>,
+) -> AgentInventoryDiagnostic {
+    let latest = sqlx::query_as::<_, (String, Option<String>, Option<i64>, Option<String>, String)>(
+        "SELECT disposition, rejection_code, inventory_revision, inventory_sha256, received_at FROM agent_report_receipts WHERE agent_id = ? ORDER BY received_at DESC, report_sequence DESC LIMIT 1",
+    )
+    .bind(agent_id)
+    .fetch_optional(state.db().pool())
+    .await
+    .ok()
+    .flatten();
+    let last_rejection = latest.and_then(
+        |(disposition, code, reported_revision, reported_sha256, received_at)| {
+            let code = code?;
+            if disposition != "rejected" || !crate::attention::is_inventory_rejection_code(&code) {
+                return None;
+            }
+            Some(AgentInventoryRejectionEvidence {
+                code,
+                reported_revision,
+                reported_sha256,
+                received_at: Some(received_at),
+            })
+        },
+    );
+    AgentInventoryDiagnostic {
+        accepted_revision,
+        accepted_sha256,
+        last_rejection,
     }
 }
 
@@ -3265,7 +3390,7 @@ pub(crate) async fn admin_agent_detail(
     Extension(request_id): Extension<super::RequestId>,
 ) -> Response {
     let Some(row) = sqlx::query_as::<_, AgentAdminRow>(
-        "SELECT agent_id, display_name, notes, agent_epoch, active_boot_id, active_boot_status, previous_boot_id, close_report_id, shutdown_state, shutdown_started_at, shutdown_deadline_at, shutdown_finished_at, shutdown_unresolved_from, shutdown_unresolved_to, shutdown_last_error, shutdown_forced, shutdown_report_id, shutdown_report_sequence, shutdown_updated_at, last_report_sequence, agent_capabilities_json, clock_skew_ms, clock_status, last_received_at, security_event_count FROM agents WHERE agent_id = ? AND deleted_at IS NULL",
+        "SELECT agent_id, display_name, notes, agent_epoch, active_boot_id, active_boot_status, previous_boot_id, close_report_id, shutdown_state, shutdown_started_at, shutdown_deadline_at, shutdown_finished_at, shutdown_unresolved_from, shutdown_unresolved_to, shutdown_last_error, shutdown_forced, shutdown_report_id, shutdown_report_sequence, shutdown_updated_at, last_report_sequence, agent_capabilities_json, clock_skew_ms, clock_status, last_received_at, security_event_count, last_inventory_revision AS accepted_inventory_revision, inventory_sha256 AS accepted_inventory_sha256 FROM agents WHERE agent_id = ? AND deleted_at IS NULL",
     )
     .bind(&agent_id)
     .fetch_optional(state.db().pool())
@@ -9044,5 +9169,140 @@ mod tests {
                 .unwrap();
         assert_eq!(value["transfer"]["transfer_id"], "transfer-stale-1");
         assert_eq!(value["transfer"]["status"], "expired");
+    }
+
+    /// Insert one stored Report Receipt directly for `agent-lifecycle-test`.
+    /// The Agent detail only reads the Server-owned evidence columns, so an
+    /// opaque `receipt_body` is enough.
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_report_receipt(
+        state: &AppState,
+        report_id: &str,
+        report_sequence: i64,
+        disposition: &str,
+        rejection_code: Option<&str>,
+        inventory_revision: Option<i64>,
+        inventory_sha256: Option<&str>,
+        received_at: &str,
+    ) {
+        sqlx::query(
+            "INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at, rejection_code, inventory_revision, inventory_sha256) VALUES (?, 'agent-lifecycle-test', 1, 'boot-inventory-test', ?, 'body-hash', ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(report_id)
+        .bind(report_sequence)
+        .bind(disposition)
+        .bind(b"{}".as_slice())
+        .bind(received_at)
+        .bind(rejection_code)
+        .bind(inventory_revision)
+        .bind(inventory_sha256)
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+    }
+
+    async fn lifecycle_agent_detail(state: &AppState) -> Value {
+        let response = admin_agent_detail(
+            State(state.clone()),
+            Path("agent-lifecycle-test".to_owned()),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn agent_detail_exposes_newest_inventory_rejection_evidence() {
+        let (_dir, state) = lifecycle_state().await;
+        sqlx::query("UPDATE agents SET last_inventory_revision=6, inventory_sha256='accepted-hash' WHERE agent_id='agent-lifecycle-test'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        // An Inventory rejection is the newest receipt: the Server-accepted
+        // fact and the refused declaration are both visible.
+        insert_report_receipt(
+            &state,
+            "receipt-rejected-1",
+            1,
+            "rejected",
+            Some("inventory_revision_conflict"),
+            Some(9),
+            Some("refused-hash"),
+            "2026-08-12T08:00:00Z",
+        )
+        .await;
+        let rejected = lifecycle_agent_detail(&state).await;
+        assert_eq!(rejected["inventory"]["accepted_revision"], 6);
+        assert_eq!(rejected["inventory"]["accepted_sha256"], "accepted-hash");
+        assert_eq!(
+            rejected["inventory"]["last_rejection"]["code"],
+            "inventory_revision_conflict"
+        );
+        assert_eq!(
+            rejected["inventory"]["last_rejection"]["reported_revision"],
+            9
+        );
+        assert_eq!(
+            rejected["inventory"]["last_rejection"]["reported_sha256"],
+            "refused-hash"
+        );
+        assert_eq!(
+            rejected["inventory"]["last_rejection"]["received_at"],
+            "2026-08-12T08:00:00Z"
+        );
+        // The same newest receipt drives the Agent Attention Item.
+        assert!(
+            rejected["attention"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| {
+                    item["kind"] == "agent_inventory_rejected" && item["severity"] == "critical"
+                })
+        );
+
+        // Same instant but higher report_sequence: report_sequence is the
+        // tie-break, so an accepted attempt clears the rejection evidence.
+        insert_report_receipt(
+            &state,
+            "receipt-accepted-2",
+            2,
+            "accepted",
+            None,
+            None,
+            None,
+            "2026-08-12T08:00:00Z",
+        )
+        .await;
+        let accepted = lifecycle_agent_detail(&state).await;
+        assert!(
+            accepted["inventory"]["last_rejection"].is_null(),
+            "an accepted newest receipt clears the rejection evidence"
+        );
+
+        // A later rejection (newer received_at) wins over report_sequence.
+        insert_report_receipt(
+            &state,
+            "receipt-rejected-3",
+            3,
+            "rejected",
+            Some("network_key_unknown"),
+            Some(9),
+            Some("refused-hash-2"),
+            "2026-08-12T09:00:00Z",
+        )
+        .await;
+        let latest = lifecycle_agent_detail(&state).await;
+        assert_eq!(
+            latest["inventory"]["last_rejection"]["code"],
+            "network_key_unknown"
+        );
+        assert_eq!(
+            latest["inventory"]["last_rejection"]["reported_sha256"],
+            "refused-hash-2"
+        );
     }
 }

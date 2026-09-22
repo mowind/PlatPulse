@@ -61,6 +61,8 @@ pub enum ReportStoreError {
     InvalidReport(String),
     #[error("report inventory does not match the validated Agent configuration")]
     InventoryMismatch,
+    #[error("{0}")]
+    InventoryDeclaration(#[from] crate::inventory_declaration::InventoryDeclarationConflict),
     #[error("Agent configuration is invalid: {0}")]
     Config(#[from] AgentConfigError),
     #[error("Agent Store initialization failed: {0}")]
@@ -73,6 +75,16 @@ pub enum ReportStoreError {
     Database(#[from] sqlx::Error),
     #[error("stale Closing report {report_id} does not belong to the current Agent state")]
     StaleClosing { report_id: String },
+}
+
+impl From<crate::inventory_declaration::InventoryGuardError> for ReportStoreError {
+    fn from(error: crate::inventory_declaration::InventoryGuardError) -> Self {
+        use crate::inventory_declaration::InventoryGuardError;
+        match error {
+            InventoryGuardError::Conflict(conflict) => Self::InventoryDeclaration(conflict),
+            InventoryGuardError::Database(error) => Self::Database(error),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -196,6 +208,19 @@ pub async fn claim_oldest_report(
     }
 }
 
+/// The operator-facing summary of a whole-report rejection: every rejection the
+/// Server returned, in one bounded line. Shared by the durable Agent diagnostic
+/// (which the Agent Store keeps) and the delivery loop's console print, so both
+/// surfaces always show the same codes and reasons (issue #181).
+pub(crate) fn rejection_summary(receipt: &ReportReceipt) -> String {
+    receipt
+        .rejections
+        .iter()
+        .map(|rejection| format!("{} ({})", rejection.code.as_str(), rejection.reason))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 /// Record a bounded delivery failure inside an existing transaction, so a
 /// receipt rejection can share the same diagnostic write as a transport
 /// failure without leaving the caller's transaction.
@@ -265,7 +290,9 @@ pub async fn deliver_one<T: ReportTransport>(
     store: &mut AgentStore,
     transport: &T,
 ) -> Result<Option<StoredReport>, ReportStoreError> {
-    deliver_one_inner(store, transport, None).await
+    Ok(deliver_one_typed(store, transport, None)
+        .await?
+        .map(|step| step.report))
 }
 
 /// Deliver one report while applying a deadline only to the HTTP send. Once
@@ -276,14 +303,23 @@ pub async fn deliver_one_with_send_deadline<T: ReportTransport>(
     transport: &T,
     send_deadline: tokio::time::Instant,
 ) -> Result<Option<StoredReport>, ReportStoreError> {
-    deliver_one_inner(store, transport, Some(send_deadline)).await
+    Ok(deliver_one_typed(store, transport, Some(send_deadline))
+        .await?
+        .map(|step| step.report))
 }
 
-async fn deliver_one_inner<T: ReportTransport>(
+/// One applied report, with the operator-facing rejection summary when the
+/// Server refused it whole.
+struct DeliveryStep {
+    report: StoredReport,
+    rejection: Option<String>,
+}
+
+async fn deliver_one_typed<T: ReportTransport>(
     store: &mut AgentStore,
     transport: &T,
     send_deadline: Option<tokio::time::Instant>,
-) -> Result<Option<StoredReport>, ReportStoreError> {
+) -> Result<Option<DeliveryStep>, ReportStoreError> {
     ensure_spool_healthy(store).await?;
     let Some(report) = claim_oldest_report(store).await? else {
         return Ok(None);
@@ -335,6 +371,16 @@ async fn deliver_one_inner<T: ReportTransport>(
         ReceiptDisposition::PartiallyAccepted => "partially_accepted",
         ReceiptDisposition::Rejected => "rejected",
     };
+    // A whole-report rejection is an applied receipt, not a transport failure:
+    // it must reach the caller as data so the delivery loop can tell the
+    // operator why every report is being refused (issue #181).
+    let rejection = (envelope.receipt.disposition == ReceiptDisposition::Rejected).then(|| {
+        format!(
+            "report {} rejected by Server: {}",
+            report.report_id,
+            rejection_summary(&envelope.receipt)
+        )
+    });
     apply_receipt(
         store,
         &report.report_id,
@@ -350,7 +396,7 @@ async fn deliver_one_inner<T: ReportTransport>(
             ReportStoreError::StaleClosing { report_id }
         }
     })?;
-    Ok(Some(report))
+    Ok(Some(DeliveryStep { report, rejection }))
 }
 
 /// Claim the durable block and gap samples included in a report.
@@ -629,6 +675,30 @@ pub(crate) async fn persist_last_report_snapshot(
     .map(|_| ())
 }
 
+/// What one delivery pass did (issue #181).
+///
+/// A whole-report rejection is not an error: the Server's receipt was applied,
+/// the report left the spool, and only the Agent's declaration is wrong. It is
+/// returned instead of only being written to the durable Agent diagnostic, so
+/// the delivery loop can tell the operator instead of leaving the failure
+/// visible nowhere but the Admin page.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DeliveryOutcome {
+    /// Reports whose receipt was applied in this pass, accepted or rejected.
+    pub applied: usize,
+    /// Operator-facing summaries of the whole-report rejections applied in
+    /// this pass, in delivery order.
+    pub rejections: Vec<String>,
+}
+
+impl DeliveryOutcome {
+    /// The most recent rejection summary, which is what a one-line-per-pass
+    /// console prints.
+    pub fn last_rejection(&self) -> Option<&str> {
+        self.rejections.last().map(String::as_str)
+    }
+}
+
 /// Deliver a bounded amount of oldest-first work.
 ///
 /// A single queued report is the steady state: collection produced it and the
@@ -642,7 +712,7 @@ pub async fn deliver_periodic<T: ReportTransport>(
     store: &mut AgentStore,
     transport: &T,
     policy: &SpoolPolicy,
-) -> Result<usize, ReportStoreError> {
+) -> Result<DeliveryOutcome, ReportStoreError> {
     deliver_periodic_inner(store, transport, policy, None).await
 }
 
@@ -651,7 +721,7 @@ pub(crate) async fn deliver_periodic_with_send_deadline<T: ReportTransport>(
     transport: &T,
     policy: &SpoolPolicy,
     send_deadline: tokio::time::Instant,
-) -> Result<usize, ReportStoreError> {
+) -> Result<DeliveryOutcome, ReportStoreError> {
     deliver_periodic_inner(store, transport, policy, Some(send_deadline)).await
 }
 
@@ -660,7 +730,7 @@ async fn deliver_periodic_inner<T: ReportTransport>(
     transport: &T,
     policy: &SpoolPolicy,
     send_deadline: Option<tokio::time::Instant>,
-) -> Result<usize, ReportStoreError> {
+) -> Result<DeliveryOutcome, ReportStoreError> {
     let queued_bytes: i64 =
         sqlx::query_scalar("SELECT COALESCE(SUM(body_bytes), 0) FROM reports WHERE in_flight = 0")
             .fetch_one(store.connection())
@@ -671,23 +741,28 @@ async fn deliver_periodic_inner<T: ReportTransport>(
             .await?;
     let backlogged = queued_bytes.max(0) as u64 >= policy.preflush_bytes || queued_reports > 1;
     let max_reports = if backlogged { 8 } else { 1 };
-    let mut delivered = 0;
+    let mut outcome = DeliveryOutcome::default();
     for _ in 0..max_reports {
         let result = match send_deadline {
             Some(deadline) => {
                 if tokio::time::Instant::now() >= deadline {
                     return Err(ReportStoreError::DeliveryDeadline);
                 }
-                deliver_one_with_send_deadline(store, transport, deadline).await
+                deliver_one_typed(store, transport, Some(deadline)).await
             }
-            None => deliver_one(store, transport).await,
+            None => deliver_one_typed(store, transport, None).await,
         }?;
         match result {
-            Some(_) => delivered += 1,
+            Some(step) => {
+                outcome.applied += 1;
+                if let Some(rejection) = step.rejection {
+                    outcome.rejections.push(rejection);
+                }
+            }
             None => break,
         }
     }
-    Ok(delivered)
+    Ok(outcome)
 }
 
 /// Refuse new collection/delivery when durable spool corruption was observed.
@@ -1037,6 +1112,10 @@ pub(crate) async fn persist_report_from_config_with_permit(
     )
     .await?;
     validate_receipt_history(&mut store).await?;
+    // Refuse to spool a report whose Inventory the Server would refuse
+    // (issue #181): the report is immutable, so a conflict cannot be fixed
+    // after the fact.
+    crate::collector::guard_inventory_declaration(&mut store, &validated.inventory).await?;
     let digest = persist_immutable_report(
         &mut store,
         &report.report_id.to_string(),
@@ -1191,6 +1270,14 @@ mod delivery_tests {
             .unwrap()
     }
 
+    /// A whole-report rejection with an Inventory conflict, as the Server
+    /// returns it when the declared Inventory content does not match the
+    /// accepted content at the same revision (issue #181).
+    fn rejected_receipt_body(report_id: &str, body: &[u8]) -> Vec<u8> {
+        let receipt = serde_json::json!({"report_id": report_id, "disposition": "rejected", "report_body_sha256": format!("0x{}", hex::encode(Sha256::digest(body))), "server_version": "0.1.0", "supported_protocol_majors": [1], "server_time": "2026-01-01T00:00:00Z", "inventory": "rejected", "rejections": [{"code": "inventory_revision_conflict", "retryable": false, "reason": "Inventory content conflicts at the accepted revision"}], "nodes": [], "samples": []});
+        serde_json::to_vec(&serde_json::json!({"receipt": receipt})).unwrap()
+    }
+
     #[tokio::test]
     async fn large_receipt_history_keeps_empty_spool_hot_paths_bounded() {
         const SEEDED_RECEIPT_COUNT: i64 = 100_000;
@@ -1311,11 +1398,11 @@ mod delivery_tests {
             responses: Arc::new(Mutex::new(responses)),
         };
 
-        let delivered = deliver_periodic(&mut store, &transport, &policy)
+        let outcome = deliver_periodic(&mut store, &transport, &policy)
             .await
             .unwrap();
         assert_eq!(
-            delivered, 5,
+            outcome.applied, 5,
             "a below-preflush backlog must be drained in one tick, not one report"
         );
         assert_eq!(
@@ -1350,7 +1437,8 @@ mod delivery_tests {
         assert_eq!(
             deliver_periodic(&mut store, &transport, &SpoolPolicy::default())
                 .await
-                .unwrap(),
+                .unwrap()
+                .applied,
             0
         );
         assert_eq!(
@@ -1901,6 +1989,130 @@ mod delivery_tests {
             1
         );
     }
+
+    /// Issue #181, direction 1: the record is written from the accepted
+    /// receipt, and the guard then refuses exactly the declaration the Server
+    /// would refuse — while accepting it once the revision is bumped.
+    #[tokio::test]
+    async fn accepted_receipt_records_the_declaration_and_the_guard_catches_drift() {
+        let mut store = test_store().await;
+        let body = report_body(1);
+        let id = report_id(1);
+        persist_immutable_report(
+            &mut store,
+            &id,
+            1,
+            "0195f2a1-0012-4012-8012-000000000012",
+            1,
+            "2026-08-12T09:00:00Z",
+            &body,
+        )
+        .await
+        .unwrap();
+        let transport = FakeTransport {
+            bodies: Arc::new(Mutex::new(Vec::new())),
+            responses: Arc::new(Mutex::new(vec![Ok(receipt_body(&id, &body))])),
+        };
+        assert!(deliver_one(&mut store, &transport).await.unwrap().is_some());
+
+        let declared: AgentReport = serde_json::from_slice(&body).unwrap();
+        let declared = declared.inventory;
+        let recorded = crate::inventory_declaration::read_inventory_declaration(store.connection())
+            .await
+            .unwrap()
+            .expect("an accepted Inventory must be recorded");
+        assert_eq!(recorded.revision, declared.revision);
+        assert_eq!(recorded.sha256, declared.content_sha256().to_string());
+        assert_eq!(recorded.report_id, id);
+
+        // Editing the content without bumping the revision is exactly the
+        // failure this issue is about: refuse it before it is declared.
+        let mut drifted = declared.clone();
+        drifted.nodes[0].rpc_endpoint = "ws://127.0.0.1:6791".parse().unwrap();
+        let refused = crate::collector::guard_inventory_declaration(&mut store, &drifted)
+            .await
+            .expect_err("changed content at the accepted revision must be refused");
+        assert!(
+            matches!(
+                refused,
+                crate::inventory_declaration::InventoryGuardError::Conflict(
+                    crate::inventory_declaration::InventoryDeclarationConflict::ContentChanged {
+                        revision,
+                        ..
+                    }
+                ) if revision == declared.revision
+            ),
+            "{refused:?}"
+        );
+
+        // Bumping the revision declares the new content, so the Agent heals
+        // without any other intervention.
+        drifted.revision += 1;
+        crate::collector::guard_inventory_declaration(&mut store, &drifted)
+            .await
+            .expect("a bumped revision declares the new Node set");
+        store.close().await.unwrap();
+    }
+
+    /// Issue #181, directions 1+2: a refused report reaches the delivery
+    /// caller, never becomes the declaration record, and keeps its durable
+    /// local diagnostic.
+    #[tokio::test]
+    async fn rejected_receipt_reaches_the_caller_and_never_becomes_a_declaration() {
+        let mut store = test_store().await;
+        let body = report_body(1);
+        let id = report_id(1);
+        persist_immutable_report(
+            &mut store,
+            &id,
+            1,
+            "0195f2a1-0012-4012-8012-000000000012",
+            1,
+            "2026-08-12T09:00:00Z",
+            &body,
+        )
+        .await
+        .unwrap();
+        let transport = FakeTransport {
+            bodies: Arc::new(Mutex::new(Vec::new())),
+            responses: Arc::new(Mutex::new(vec![Ok(rejected_receipt_body(&id, &body))])),
+        };
+
+        let outcome = deliver_periodic(&mut store, &transport, &SpoolPolicy::default())
+            .await
+            .unwrap();
+        assert_eq!(outcome.applied, 1);
+        let rejection = outcome
+            .last_rejection()
+            .expect("a whole-report rejection must reach the delivery caller");
+        assert!(
+            rejection.contains("inventory_revision_conflict"),
+            "{rejection}"
+        );
+        assert!(
+            rejection.contains("Inventory content conflicts at the accepted revision"),
+            "{rejection}"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM inventory_declaration")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            0,
+            "a refused declaration must never become the record"
+        );
+        let diagnostic: Option<String> =
+            sqlx::query_scalar("SELECT last_error FROM delivery_diagnostics WHERE singleton=1")
+                .fetch_one(store.connection())
+                .await
+                .unwrap();
+        assert!(
+            diagnostic
+                .expect("the refusal stays visible in the Agent diagnostic")
+                .contains("inventory_revision_conflict")
+        );
+        store.close().await.unwrap();
+    }
 }
 
 /// Issue #137 end-to-end recovery, in the same style as the Enrollment tests:
@@ -2096,7 +2308,7 @@ mod backlog_recovery_tests {
             .await
             .unwrap();
         assert_eq!(
-            delivered, REPORT_COUNT as usize,
+            delivered.applied, REPORT_COUNT as usize,
             "one tick must drain the backlog once the Server returns"
         );
         assert_eq!(

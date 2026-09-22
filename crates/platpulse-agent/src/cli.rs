@@ -8,7 +8,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use clap::{Args, Parser, Subcommand};
 use platpulse_core::identity::NodeId;
@@ -139,11 +139,22 @@ pub fn run_generate_node_id() {
     println!("{}", generate_node_id());
 }
 
-pub fn run_validate_config(args: &ValidateConfigArgs) -> Result<(), Box<AgentCliError>> {
+pub async fn run_validate_config(args: &ValidateConfigArgs) -> Result<(), Box<AgentCliError>> {
     let file = AgentConfigFile::load(&args.config).map_err(|e| Box::new(AgentCliError::from(e)))?;
     let validated = file
         .validate()
         .map_err(|e| Box::new(AgentCliError::from(e)))?;
+    // The Agent Store holds the only local record of the Inventory the Server
+    // effectively accepted, and `validate-config` is where an operator checks a
+    // configuration edit before restarting. The check is read-only: this command
+    // must not create or migrate the Agent Store (issue #181).
+    crate::inventory_declaration::check_declaration_read_only(&file.state_db, &validated.inventory)
+        .await
+        .map_err(|conflict| {
+            Box::new(AgentCliError::from(
+                crate::config::AgentConfigError::InventoryDeclaration(conflict.to_string()),
+            ))
+        })?;
     println!(
         "Validated {} Node(s), inventory revision {}.",
         validated.inventory.nodes.len(),
@@ -182,11 +193,21 @@ pub async fn run_collect_report(args: &CollectReportArgs) -> Result<(), AgentCli
         .map_err(|error| AgentCliError::Collection(error.to_string()))?;
     let adapter = AlloyRpcAdapter;
     let write_permit = crate::database::AgentStoreWritePermit::new();
-    crate::collector::recover_previous_boot_with_permit(&config, &adapter, write_permit.clone())
-        .await
-        .map_err(|error| AgentCliError::Collection(error.to_string()))?;
     let validated = config
         .validated_inventory()
+        .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    // Same startup refusal as `run`, and for the same reason: this command
+    // would otherwise recover the previous boot with a Closing report the
+    // Server refuses (issue #181).
+    crate::collector::guard_startup_inventory_declaration(
+        &config,
+        &validated.inventory,
+        write_permit.clone(),
+    )
+    .await
+    .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    crate::collector::recover_previous_boot_with_permit(&config, &adapter, write_permit.clone())
+        .await
         .map_err(|error| AgentCliError::Collection(error.to_string()))?;
     let mut subscriptions = validated
         .inventory
@@ -327,6 +348,63 @@ async fn run_data_directory_worker(
     }
 }
 
+/// How often a repeating operator message is repeated after its first
+/// occurrence.
+const REPEAT_MESSAGE_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Deduplicates a message that repeats until an operator fixes the condition
+/// (issue #181: a drifted Inventory, or every report being refused).
+///
+/// The first occurrence prints immediately, the same message then prints at
+/// most once per [`REPEAT_MESSAGE_INTERVAL`] with a running count, and a
+/// different message is never delayed. Without this the Agent would either
+/// flood the console every collection tick or leave the failure invisible.
+struct RepeatingMessage {
+    message: String,
+    occurrences: u64,
+    last_printed: Option<Instant>,
+}
+
+impl RepeatingMessage {
+    fn new() -> Self {
+        Self {
+            message: String::new(),
+            occurrences: 0,
+            last_printed: None,
+        }
+    }
+
+    /// Note one occurrence of `message` at `now`; returns the line to print
+    /// when this occurrence is due.
+    fn observe(&mut self, message: &str, now: Instant) -> Option<String> {
+        if self.message != message {
+            self.message = message.to_owned();
+            self.occurrences = 1;
+            self.last_printed = Some(now);
+            return Some(self.message.clone());
+        }
+        self.occurrences += 1;
+        let due = self
+            .last_printed
+            .is_none_or(|last| now.duration_since(last) >= REPEAT_MESSAGE_INTERVAL);
+        if !due {
+            return None;
+        }
+        self.last_printed = Some(now);
+        Some(format!(
+            "{} (repeated {} times)",
+            self.message, self.occurrences
+        ))
+    }
+
+    /// Forget the condition: a later recurrence is a new first occurrence.
+    fn clear(&mut self) {
+        self.message.clear();
+        self.occurrences = 0;
+        self.last_printed = None;
+    }
+}
+
 async fn run_report_collection_loop(
     config: AgentConfig,
     mut snapshots: Vec<RpcSnapshotReceiver>,
@@ -341,6 +419,7 @@ async fn run_report_collection_loop(
     .await
     .map_err(|error| AgentCliError::Collection(error.to_string()))?;
     let mut tick = periodic_interval(Duration::from_secs(config.collection_interval_seconds));
+    let mut inventory_conflict = RepeatingMessage::new();
     let result = loop {
         tokio::select! {
             _ = cancel.cancelled() => break Ok(()),
@@ -369,6 +448,21 @@ async fn run_report_collection_loop(
                 )
                 .await;
                 if let Err(error) = collection {
+                    // A refused Inventory declaration is an operator error that
+                    // repeats every tick until `agent.toml` is fixed
+                    // (issue #181). The process deliberately keeps running: the
+                    // guard re-reads the configuration on the next tick, so
+                    // bumping `inventory_revision` heals the Agent without a
+                    // restart.
+                    if let crate::collector::CollectionError::InventoryDeclaration(conflict) = &error {
+                        let line = format!("Agent refuses to declare its Node Inventory: {conflict}");
+                        if let Some(printed) =
+                            inventory_conflict.observe(&line, Instant::now())
+                        {
+                            eprintln!("{printed}");
+                        }
+                        continue;
+                    }
                     if crate::collector::is_deferrable_collection(&error) {
                         eprintln!(
                             "Agent report collection deferred: {}",
@@ -378,6 +472,10 @@ async fn run_report_collection_loop(
                     }
                     break Err(AgentCliError::Collection(error.to_string()));
                 }
+                // A successful declaration is positive evidence that the
+                // conflict is gone: a later one is a new occurrence, not a
+                // continuation of the old count.
+                inventory_conflict.clear();
             }
         }
     };
@@ -404,6 +502,7 @@ async fn run_delivery_loop(
         .map_err(|error| AgentCliError::Collection(error.to_string()))?;
     let policy = crate::collector::SpoolPolicy::default();
     let mut tick = periodic_interval(Duration::from_secs(1));
+    let mut rejections = RepeatingMessage::new();
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
@@ -418,11 +517,34 @@ async fn run_delivery_loop(
                     tokio::time::Instant::now() + send_timeout,
                 )
                 .await;
-                if let Err(error) = result {
-                    eprintln!(
-                        "Agent report delivery deferred: {}",
-                        crate::redaction::redact_sensitive(&error.to_string())
-                    );
+                match result {
+                    Ok(outcome) => match outcome.last_rejection() {
+                        Some(rejection) => {
+                            // A whole-report rejection is an applied receipt,
+                            // not a transport error, so it never reaches the
+                            // error arm below. Without this the console stays
+                            // silent while every report is refused and the
+                            // projections freeze (issue #177).
+                            let line = format!(
+                                "Agent report rejected by Server: {}",
+                                crate::redaction::redact_sensitive(rejection)
+                            );
+                            if let Some(printed) = rejections.observe(&line, Instant::now()) {
+                                eprintln!("{printed}");
+                            }
+                        }
+                        // An accepted report proves the Server takes this
+                        // Agent's reports again, so a later refusal is a new
+                        // condition. An idle tick is no evidence either way.
+                        None if outcome.applied > 0 => rejections.clear(),
+                        None => {}
+                    },
+                    Err(error) => {
+                        eprintln!(
+                            "Agent report delivery deferred: {}",
+                            crate::redaction::redact_sensitive(&error.to_string())
+                        );
+                    }
                 }
             }
         }
@@ -438,12 +560,26 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
     let _runtime_lock = crate::database::AgentRuntimeLock::acquire(&config.state_db)
         .map_err(|error| AgentCliError::Collection(error.to_string()))?;
     let write_permit = crate::database::AgentStoreWritePermit::new();
+    let validated = config
+        .validated_inventory()
+        .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    // Refuse to start on an Inventory the Server would refuse, *before* boot
+    // recovery (issue #181): recovering first would emit a Closing report for
+    // the previous boot that is doomed to the same refusal, leaving the
+    // operator with a frozen projection instead of an actionable message.
+    // The signature reads the same for a startup refusal and a runtime drift;
+    // only the duration differs — the Agent refuses to start here, and the
+    // collection loop refuses to declare while staying alive.
+    crate::collector::guard_startup_inventory_declaration(
+        &config,
+        &validated.inventory,
+        write_permit.clone(),
+    )
+    .await
+    .map_err(|error| AgentCliError::Collection(error.to_string()))?;
     let adapter = AlloyRpcAdapter;
     crate::collector::recover_previous_boot_with_permit(&config, &adapter, write_permit.clone())
         .await
-        .map_err(|error| AgentCliError::Collection(error.to_string()))?;
-    let validated = config
-        .validated_inventory()
         .map_err(|error| AgentCliError::Collection(error.to_string()))?;
     let node_ids = validated
         .inventory
@@ -1017,6 +1153,58 @@ mod tests {
         assert_eq!(
             "pp_enroll_x_abc\r\n".trim_end_matches(['\r', '\n']),
             "pp_enroll_x_abc"
+        );
+    }
+
+    #[test]
+    fn the_validate_config_conflict_keeps_its_operator_remedy() {
+        // `main` prints errors with `{:?}`, so the remedy must survive the
+        // Debug form of the CLI error: a structured variant would print the
+        // two hashes and hide the sentence telling the operator what to do.
+        let conflict = crate::inventory_declaration::InventoryDeclarationConflict::ContentChanged {
+            revision: 4,
+            recorded_sha256: "0xaa".to_owned(),
+            declared_sha256: "0xbb".to_owned(),
+        };
+        let error = AgentCliError::from(crate::config::AgentConfigError::InventoryDeclaration(
+            conflict.to_string(),
+        ));
+        let printed = format!("{error:?}");
+        assert!(printed.contains("bump inventory_revision"), "{printed}");
+    }
+
+    #[test]
+    fn repeating_message_prints_once_then_reminds_with_a_count() {
+        let start = Instant::now();
+        let mut message = RepeatingMessage::new();
+        assert_eq!(
+            message.observe("declined", start),
+            Some("declined".to_owned())
+        );
+        // Inside the interval nothing prints, no matter how often the
+        // condition repeats: a per-tick retry must not flood the console.
+        assert_eq!(
+            message.observe("declined", start + Duration::from_secs(1)),
+            None
+        );
+        assert_eq!(
+            message.observe("declined", start + Duration::from_secs(59)),
+            None
+        );
+        assert_eq!(
+            message.observe("declined", start + Duration::from_secs(60)),
+            Some("declined (repeated 4 times)".to_owned())
+        );
+        // A different condition is never delayed behind the interval.
+        assert_eq!(
+            message.observe("other", start + Duration::from_secs(61)),
+            Some("other".to_owned())
+        );
+        // Once the condition clears, a recurrence is a first occurrence again.
+        message.clear();
+        assert_eq!(
+            message.observe("declined", start + Duration::from_secs(62)),
+            Some("declined".to_owned())
         );
     }
 }

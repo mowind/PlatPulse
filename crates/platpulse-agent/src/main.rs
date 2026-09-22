@@ -18,7 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match command {
         Command::Enroll(args) => run_enroll(&args).await?,
         Command::GenerateNodeId => run_generate_node_id(),
-        Command::ValidateConfig(args) => run_validate_config(&args)?,
+        Command::ValidateConfig(args) => run_validate_config(&args).await?,
         Command::CollectReport(args) => run_collect_report(&args).await?,
         Command::Run(args) => run_agent(&args).await?,
         Command::Shutdown(args) => run_shutdown(&args).await?,

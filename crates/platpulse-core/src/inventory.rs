@@ -9,8 +9,10 @@
 //! never pushes endpoints.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::envelope::AgentCapability;
+use crate::hex::Sha256Hex;
 use crate::identity::NodeId;
 use crate::network::{NetworkKey, RpcEndpoint};
 
@@ -23,6 +25,24 @@ pub struct NodeInventory {
     /// The complete set of Nodes. May be empty (authoritative empty set),
     /// but must not list a Node twice.
     pub nodes: Vec<InventoryNode>,
+}
+
+impl NodeInventory {
+    /// The canonical content hash of this Inventory: SHA-256 over its
+    /// canonical JSON serialization (revision and nodes), exactly the value
+    /// the Server persists as `agents.inventory_sha256` and compares when a
+    /// report declares the already-accepted revision. It lives here so the
+    /// Server's comparison and the Agent's Inventory Declaration Record can
+    /// never drift apart.
+    ///
+    /// The serialization includes `revision`, so only two Inventories at the
+    /// same revision are meaningfully comparable by this value.
+    pub fn content_sha256(&self) -> Sha256Hex {
+        let bytes = serde_json::to_vec(self).expect("inventory serializes");
+        format!("0x{:x}", Sha256::digest(&bytes))
+            .parse()
+            .expect("a sha256 digest is canonical lowercase hex")
+    }
 }
 
 /// One declared Node in the Inventory.
@@ -155,5 +175,52 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    fn one_node(display_name: Option<&str>) -> InventoryNode {
+        InventoryNode {
+            node_id: "0195f2a1-2b3c-4d5e-8f90-123456789abc".parse().unwrap(),
+            display_name: display_name.map(str::to_owned),
+            network_key: "platon-mainnet".parse().unwrap(),
+            rpc_endpoint: "ws://127.0.0.1:6790".parse().unwrap(),
+            process: None,
+        }
+    }
+
+    #[test]
+    fn inventory_content_hash_is_the_canonical_serialized_digest() {
+        let inventory = NodeInventory {
+            revision: 4,
+            nodes: vec![one_node(None)],
+        };
+        let expected = format!(
+            "0x{:x}",
+            Sha256::digest(serde_json::to_vec(&inventory).unwrap())
+        );
+        assert_eq!(inventory.content_sha256().as_str(), expected);
+        assert_eq!(inventory.content_sha256(), inventory.content_sha256());
+    }
+
+    #[test]
+    fn inventory_content_hash_changes_with_content_and_with_revision() {
+        let base = NodeInventory {
+            revision: 4,
+            nodes: vec![one_node(None)],
+        };
+        let renamed = NodeInventory {
+            revision: 4,
+            nodes: vec![one_node(Some("validator-a"))],
+        };
+        let bumped = NodeInventory {
+            revision: 5,
+            nodes: base.nodes.clone(),
+        };
+        let removed = NodeInventory {
+            revision: 4,
+            nodes: Vec::new(),
+        };
+        assert_ne!(base.content_sha256(), renamed.content_sha256());
+        assert_ne!(base.content_sha256(), bumped.content_sha256());
+        assert_ne!(base.content_sha256(), removed.content_sha256());
     }
 }

@@ -136,6 +136,10 @@ _Avoid_: Agent shutdown, Credential revocation alone, Automatic recovery
 The complete set of PlatON Nodes that an Agent declares from its local configuration. It identifies which Nodes currently belong to that Agent without transferring connection configuration ownership to the Server.
 _Avoid_: Server node config, Agent chain sources
 
+**Inventory Declaration Record**:
+The Agent-local record of the revision and content hash of the last Node Inventory the Server effectively accepted from that Agent, used to detect changed Inventory content declared under an unchanged revision. It is not a copy of the Server's accepted Inventory, not the Agent's last declared revision, and not Report History.
+_Avoid_: Accepted inventory copy, Inventory history, Local revision counter
+
 **Active Node**:
 A PlatON Node present in its Agent's latest valid Node Inventory, not purged by an Owner, and eligible for current observation and alert evaluation.
 _Avoid_: Online node

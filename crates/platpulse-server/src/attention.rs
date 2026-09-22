@@ -54,6 +54,7 @@ pub enum AttentionKind {
     AgentReportGap,
     AgentSecurityEvent,
     AgentShutdownIncomplete,
+    AgentInventoryRejected,
     NodeUnhealthy,
     NodeHealthUnknown,
     NodeResync,
@@ -70,6 +71,7 @@ impl AttentionKind {
             Self::AgentReportGap => "agent_report_gap",
             Self::AgentSecurityEvent => "agent_security_event",
             Self::AgentShutdownIncomplete => "agent_shutdown_incomplete",
+            Self::AgentInventoryRejected => "agent_inventory_rejected",
             Self::NodeUnhealthy => "node_unhealthy",
             Self::NodeHealthUnknown => "node_health_unknown",
             Self::NodeResync => "node_resync",
@@ -77,7 +79,7 @@ impl AttentionKind {
         }
     }
 
-    /// The six kinds that carry a Server-owned evidence boundary and can be
+    /// The seven kinds that carry a Server-owned evidence boundary and can be
     /// acknowledged by an Owner.
     pub fn is_agent_acknowledgeable(self) -> bool {
         matches!(
@@ -88,6 +90,7 @@ impl AttentionKind {
                 | Self::AgentReportGap
                 | Self::AgentSecurityEvent
                 | Self::AgentShutdownIncomplete
+                | Self::AgentInventoryRejected
         )
     }
 }
@@ -201,6 +204,20 @@ pub struct AgentAttentionEvidence {
     pub spool_store_fatal: bool,
     pub spool_dropped_sequence_to: Option<i64>,
     pub host_updated_at: Option<String>,
+    /// The Agent's latest stored Report Receipt, whatever its disposition.
+    pub latest_receipt_disposition: Option<String>,
+    /// Evidence of that receipt when it was a rejection (issue #181): the
+    /// deciding code, and the Inventory the Agent declared in the refused
+    /// report. All NULL for receipts stored before the evidence columns
+    /// existed.
+    pub latest_rejection_code: Option<String>,
+    pub latest_rejection_inventory_revision: Option<i64>,
+    pub latest_rejection_inventory_sha256: Option<String>,
+    pub latest_receipt_at: Option<String>,
+    /// The Inventory the Server currently accepts (last accepted revision and
+    /// its content hash), from `agents`.
+    pub accepted_inventory_revision: i64,
+    pub accepted_inventory_sha256: Option<String>,
 }
 
 /// One row of the shared Agent Attention source query.
@@ -216,11 +233,23 @@ pub struct AgentAttentionRow {
     pub spool_store_fatal: Option<i64>,
     pub spool_dropped_sequence_to: Option<i64>,
     pub host_updated_at: Option<String>,
+    pub accepted_inventory_revision: i64,
+    pub accepted_inventory_sha256: Option<String>,
+    pub latest_receipt_disposition: Option<String>,
+    pub latest_rejection_code: Option<String>,
+    pub latest_rejection_inventory_revision: Option<i64>,
+    pub latest_rejection_inventory_sha256: Option<String>,
+    pub latest_receipt_at: Option<String>,
 }
 
 /// Shared projection read by the overview and the Agent detail. Live Agents
 /// only: a removed Agent has no current Attention.
-pub const AGENT_ATTENTION_SELECT: &str = "SELECT a.agent_id, a.last_received_at, a.shutdown_updated_at, a.shutdown_state, a.security_event_count, (SELECT COUNT(*) FROM report_sequence_gaps g WHERE g.agent_id = a.agent_id) AS sequence_gap_count, (SELECT MAX(g.created_at) FROM report_sequence_gaps g WHERE g.agent_id = a.agent_id) AS latest_gap_at, h.spool_store_fatal, h.spool_dropped_sequence_to, h.updated_at AS host_updated_at FROM agents a LEFT JOIN current_host_observations h ON h.agent_id = a.agent_id WHERE a.deleted_at IS NULL";
+///
+/// The correlated subquery picks the Agent's newest receipt by
+/// `(received_at, report_sequence)`, matching the receipt table's index, so
+/// the Inventory rejection boundary always reflects the latest ingestion
+/// attempt rather than an arbitrary historical rejection.
+pub const AGENT_ATTENTION_SELECT: &str = "SELECT a.agent_id, a.last_received_at, a.shutdown_updated_at, a.shutdown_state, a.security_event_count, (SELECT COUNT(*) FROM report_sequence_gaps g WHERE g.agent_id = a.agent_id) AS sequence_gap_count, (SELECT MAX(g.created_at) FROM report_sequence_gaps g WHERE g.agent_id = a.agent_id) AS latest_gap_at, h.spool_store_fatal, h.spool_dropped_sequence_to, h.updated_at AS host_updated_at, a.last_inventory_revision AS accepted_inventory_revision, a.inventory_sha256 AS accepted_inventory_sha256, r.disposition AS latest_receipt_disposition, r.rejection_code AS latest_rejection_code, r.inventory_revision AS latest_rejection_inventory_revision, r.inventory_sha256 AS latest_rejection_inventory_sha256, r.received_at AS latest_receipt_at FROM agents a LEFT JOIN current_host_observations h ON h.agent_id = a.agent_id LEFT JOIN agent_report_receipts r ON r.report_id = (SELECT r2.report_id FROM agent_report_receipts r2 WHERE r2.agent_id = a.agent_id ORDER BY r2.received_at DESC, r2.report_sequence DESC LIMIT 1) WHERE a.deleted_at IS NULL";
 
 impl AgentAttentionRow {
     /// Every acknowledgeable Attention Item currently present for this Agent,
@@ -237,6 +266,13 @@ impl AgentAttentionRow {
             spool_store_fatal: self.spool_store_fatal.is_some_and(|value| value != 0),
             spool_dropped_sequence_to: self.spool_dropped_sequence_to,
             host_updated_at: self.host_updated_at.clone(),
+            latest_receipt_disposition: self.latest_receipt_disposition.clone(),
+            latest_rejection_code: self.latest_rejection_code.clone(),
+            latest_rejection_inventory_revision: self.latest_rejection_inventory_revision,
+            latest_rejection_inventory_sha256: self.latest_rejection_inventory_sha256.clone(),
+            latest_receipt_at: self.latest_receipt_at.clone(),
+            accepted_inventory_revision: self.accepted_inventory_revision,
+            accepted_inventory_sha256: self.accepted_inventory_sha256.clone(),
         })
     }
 }
@@ -342,7 +378,74 @@ pub fn agent_attention_items(evidence: &AgentAttentionEvidence) -> Vec<Attention
             ),
         ));
     }
+    // An Inventory rejection is terminal for the whole report (issue #177):
+    // the Agent keeps reporting on its own clock while the Server refuses
+    // every report, so the projections freeze with no explanation on the
+    // Agent console and nothing on the Admin surfaces. This item is derived
+    // from the Agent's newest stored receipt, so a later accepted report
+    // clears it without an explicit retirement, and the evidence boundary
+    // keeps an identical repeated rejection from re-arming an acknowledgment
+    // while genuinely new content does not.
+    if let Some(code) = inventory_rejection_code(evidence) {
+        let accepted_revision = evidence.accepted_inventory_revision;
+        let accepted_hash = evidence.accepted_inventory_sha256.as_deref().unwrap_or("");
+        let reported_revision = evidence.latest_rejection_inventory_revision;
+        let reported_hash = evidence
+            .latest_rejection_inventory_sha256
+            .as_deref()
+            .unwrap_or("");
+        let message = match (code, reported_revision) {
+            ("network_key_unknown", _) => {
+                "the declared Node Inventory references a Network key the Server does not know"
+                    .to_owned()
+            }
+            (_, Some(reported)) if reported < accepted_revision => format!(
+                "the Agent declares Node Inventory revision {reported}, below the accepted revision {accepted_revision}; bump inventory_revision to declare the current Node set"
+            ),
+            (_, Some(reported)) => format!(
+                "Node Inventory content changed while inventory_revision stayed {reported}; bump inventory_revision to declare the new Node set"
+            ),
+            (_, None) => {
+                "the declared Node Inventory conflicts with the Inventory the Server accepts"
+                    .to_owned()
+            }
+        };
+        items.push(AttentionItem::agent(
+            agent_id,
+            AttentionKind::AgentInventoryRejected,
+            AttentionSeverity::Critical,
+            message,
+            evidence.latest_receipt_at.clone(),
+            format!(
+                "agent_inventory_rejected:code={code}:accepted={accepted_revision}:{accepted_hash}:reported={}:{reported_hash}",
+                reported_revision.map(|value| value.to_string()).unwrap_or_default()
+            ),
+        ));
+    }
     items
+}
+
+/// Whether a whole-report rejection code is caused by the declared Inventory
+/// (issue #181). These are the refusals the Agent Inventory rejection Attention
+/// Item and the Admin Inventory diagnosis both speak to: the report was
+/// refused because its Inventory conflicts with accepted state, or because it
+/// names a Network key the Server does not know.
+pub fn is_inventory_rejection_code(code: &str) -> bool {
+    matches!(code, "inventory_revision_conflict" | "network_key_unknown")
+}
+
+/// The deciding rejection code when the Agent's newest stored receipt was a
+/// whole-report Inventory rejection, i.e. when the report the Agent is still
+/// trying to deliver was refused because of its Inventory.
+///
+/// `inventory_revision_conflict` covers both changed content at the accepted
+/// revision and a regressed revision.
+fn inventory_rejection_code(evidence: &AgentAttentionEvidence) -> Option<&str> {
+    if evidence.latest_receipt_disposition.as_deref() != Some("rejected") {
+        return None;
+    }
+    let code = evidence.latest_rejection_code.as_deref()?;
+    is_inventory_rejection_code(code).then_some(code)
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -512,6 +615,13 @@ mod tests {
             spool_store_fatal: false,
             spool_dropped_sequence_to: None,
             host_updated_at: None,
+            latest_receipt_disposition: None,
+            latest_rejection_code: None,
+            latest_rejection_inventory_revision: None,
+            latest_rejection_inventory_sha256: None,
+            latest_receipt_at: None,
+            accepted_inventory_revision: 0,
+            accepted_inventory_sha256: None,
         }
     }
 
@@ -582,6 +692,178 @@ mod tests {
     }
 
     #[test]
+    fn inventory_rejection_is_critical_for_both_inventory_codes() {
+        for code in ["inventory_revision_conflict", "network_key_unknown"] {
+            let mut row = evidence("agent-inventory");
+            row.latest_receipt_disposition = Some("rejected".to_owned());
+            row.latest_rejection_code = Some(code.to_owned());
+            row.latest_rejection_inventory_revision = Some(4);
+            row.latest_rejection_inventory_sha256 = Some("reported-hash".to_owned());
+            row.latest_receipt_at = Some(crate::auth::format_rfc3339(crate::auth::now_utc()));
+            row.accepted_inventory_revision = 4;
+            row.accepted_inventory_sha256 = Some("accepted-hash".to_owned());
+            let items = agent_attention_items(&row);
+            let item = items
+                .iter()
+                .find(|item| item.kind == AttentionKind::AgentInventoryRejected)
+                .unwrap_or_else(|| panic!("missing AgentInventoryRejected for {code}"));
+            assert_eq!(item.severity, AttentionSeverity::Critical, "{code}");
+            assert!(AttentionKind::AgentInventoryRejected.is_agent_acknowledgeable());
+            assert_eq!(item.observed_at, row.latest_receipt_at);
+        }
+    }
+
+    #[test]
+    fn no_inventory_rejection_item_without_inventory_rejection_evidence() {
+        let mut accepted = evidence("agent-accepted");
+        accepted.latest_receipt_disposition = Some("accepted".to_owned());
+        // A stale rejection code on an accepted receipt is not a rejection.
+        accepted.latest_rejection_code = Some("inventory_revision_conflict".to_owned());
+        assert!(
+            agent_attention_items(&accepted)
+                .iter()
+                .all(|item| item.kind != AttentionKind::AgentInventoryRejected)
+        );
+
+        let mut non_inventory = evidence("agent-stale");
+        non_inventory.latest_receipt_disposition = Some("rejected".to_owned());
+        non_inventory.latest_rejection_code = Some("stale_report".to_owned());
+        assert!(
+            agent_attention_items(&non_inventory)
+                .iter()
+                .all(|item| item.kind != AttentionKind::AgentInventoryRejected)
+        );
+
+        // A receipt stored before migration 0055 has no code at all.
+        let mut pre_migration = evidence("agent-pre-migration");
+        pre_migration.latest_receipt_disposition = Some("rejected".to_owned());
+        assert!(
+            agent_attention_items(&pre_migration)
+                .iter()
+                .all(|item| item.kind != AttentionKind::AgentInventoryRejected)
+        );
+    }
+
+    #[test]
+    fn inventory_rejection_evidence_key_tracks_reported_and_accepted_inventory() {
+        let inventory_rejection = || {
+            let mut row = evidence("agent-inventory");
+            row.latest_receipt_disposition = Some("rejected".to_owned());
+            row.latest_rejection_code = Some("inventory_revision_conflict".to_owned());
+            row.latest_rejection_inventory_revision = Some(7);
+            row.latest_rejection_inventory_sha256 = Some("reported-hash".to_owned());
+            row.latest_receipt_at = Some("2026-08-12T08:00:00Z".to_owned());
+            row.accepted_inventory_revision = 7;
+            row.accepted_inventory_sha256 = Some("accepted-hash".to_owned());
+            row
+        };
+        let baseline = key(
+            &agent_attention_items(&inventory_rejection()),
+            AttentionKind::AgentInventoryRejected,
+        );
+        // An identical repeated rejection must not re-arm an acknowledgment.
+        assert_eq!(
+            baseline,
+            key(
+                &agent_attention_items(&inventory_rejection()),
+                AttentionKind::AgentInventoryRejected
+            )
+        );
+
+        let mut reported_revision = inventory_rejection();
+        reported_revision.latest_rejection_inventory_revision = Some(8);
+        assert_ne!(
+            baseline,
+            key(
+                &agent_attention_items(&reported_revision),
+                AttentionKind::AgentInventoryRejected
+            )
+        );
+
+        let mut reported_hash = inventory_rejection();
+        reported_hash.latest_rejection_inventory_sha256 = Some("other-reported-hash".to_owned());
+        assert_ne!(
+            baseline,
+            key(
+                &agent_attention_items(&reported_hash),
+                AttentionKind::AgentInventoryRejected
+            )
+        );
+
+        let mut accepted_revision = inventory_rejection();
+        accepted_revision.accepted_inventory_revision = 8;
+        assert_ne!(
+            baseline,
+            key(
+                &agent_attention_items(&accepted_revision),
+                AttentionKind::AgentInventoryRejected
+            )
+        );
+
+        let mut accepted_hash = inventory_rejection();
+        accepted_hash.accepted_inventory_sha256 = Some("other-accepted-hash".to_owned());
+        assert_ne!(
+            baseline,
+            key(
+                &agent_attention_items(&accepted_hash),
+                AttentionKind::AgentInventoryRejected
+            )
+        );
+    }
+
+    #[test]
+    fn inventory_rejection_message_names_the_remedy() {
+        let message = |accepted: i64, reported: Option<i64>| {
+            let mut row = evidence("agent-inventory");
+            row.latest_receipt_disposition = Some("rejected".to_owned());
+            row.latest_rejection_code = Some("inventory_revision_conflict".to_owned());
+            row.latest_rejection_inventory_revision = reported;
+            row.latest_rejection_inventory_sha256 = Some("reported-hash".to_owned());
+            row.accepted_inventory_revision = accepted;
+            row.accepted_inventory_sha256 = Some("accepted-hash".to_owned());
+            agent_attention_items(&row)
+                .into_iter()
+                .find(|item| item.kind == AttentionKind::AgentInventoryRejected)
+                .unwrap()
+                .message
+        };
+
+        // Equal revisions: content changed under the accepted revision.
+        let content_conflict = message(5, Some(5));
+        assert!(
+            content_conflict.contains("inventory_revision"),
+            "must name the field to bump: {content_conflict}"
+        );
+        assert!(
+            content_conflict.contains("bump"),
+            "must state the remedy: {content_conflict}"
+        );
+
+        // Regressed revision: the Agent is behind what the Server accepts.
+        let below = message(5, Some(2));
+        assert!(
+            below.contains("below the accepted revision 5"),
+            "must explain the regression: {below}"
+        );
+
+        // Unknown Network key has its own cause, not a revision bump.
+        let mut unknown_key = evidence("agent-inventory");
+        unknown_key.latest_receipt_disposition = Some("rejected".to_owned());
+        unknown_key.latest_rejection_code = Some("network_key_unknown".to_owned());
+        unknown_key.latest_rejection_inventory_revision = Some(5);
+        unknown_key.accepted_inventory_revision = 5;
+        let unknown_key = agent_attention_items(&unknown_key)
+            .into_iter()
+            .find(|item| item.kind == AttentionKind::AgentInventoryRejected)
+            .unwrap()
+            .message;
+        assert!(
+            unknown_key.contains("Network key"),
+            "must name the unknown Network key: {unknown_key}"
+        );
+    }
+
+    #[test]
     fn node_kinds_are_not_acknowledgeable() {
         for kind in [
             AttentionKind::NodeUnhealthy,
@@ -598,6 +880,7 @@ mod tests {
             AttentionKind::AgentReportGap,
             AttentionKind::AgentSecurityEvent,
             AttentionKind::AgentShutdownIncomplete,
+            AttentionKind::AgentInventoryRejected,
         ] {
             assert!(kind.is_agent_acknowledgeable(), "{kind:?}");
         }

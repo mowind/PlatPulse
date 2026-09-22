@@ -36,7 +36,6 @@ import type {
   AgentDiagnostic,
   AgentRemovalResponse,
   HostDiagnostic,
-  NodeDiagnostic,
 } from '../api/generated'
 
 /**
@@ -53,6 +52,13 @@ const CARD_SURFACE = cn('rounded-md border-none', SURFACE_CARD)
 
 function shortId(id: string): string {
   return id.length > 14 ? id.slice(0, 8) + '…' + id.slice(-4) : id
+}
+
+/** A `0x` + 64 hex digit Inventory hash is unreadable inline; the head and tail
+ * are enough to compare two hashes by eye, and the full value stays available
+ * on hover. */
+function shortHash(hash: string): string {
+  return hash.length > 14 ? hash.slice(0, 10) + '…' + hash.slice(-4) : hash
 }
 
 /** Credential state maps onto the fixed WebUI vocabulary (`Current`,
@@ -687,7 +693,7 @@ export function AdminAgentDetail() {
             </div>
             <div className="grid gap-3 lg:grid-cols-2">
               <IdentityPanel agent={agent.data} />
-              <InventoryPanel nodes={agent.data.nodes} />
+              <InventoryPanel agent={agent.data} />
             </div>
           </section>
           <section className="space-y-3" aria-labelledby="agent-runtime-heading">
@@ -1161,14 +1167,34 @@ function BootReportPanel({ agent }: { agent: AgentDiagnostic }) {
   )
 }
 
-function InventoryPanel({ nodes }: { nodes: NodeDiagnostic[] }) {
+/** Inventory dimension: the Agent-wide Node Inventory declaration the Server
+ * currently accepts, and the Nodes it declares. The Server refuses a whole
+ * report when the content changes while `inventory_revision` does not
+ * (issue #181), so the accepted revision and hash are shown next to the Nodes
+ * they describe instead of being inferred from the per-Node revisions. */
+function InventoryPanel({ agent }: { agent: AgentDiagnostic }) {
+  const nodes = agent.nodes
+  const { accepted_revision, accepted_sha256 } = agent.inventory
   return (
     <CardX size="medium" className={CARD_SURFACE} header={<h3 className="text-sm font-medium">Inventory</h3>}>
+      <DetailList>
+        <DetailItem label="Accepted revision">
+          {accepted_revision}{' '}
+          <small
+            className="text-[11px] text-muted-foreground"
+            title={accepted_sha256 ? 'Accepted Inventory content hash: ' + accepted_sha256 : undefined}
+          >
+            {accepted_sha256 ? shortHash(accepted_sha256) : 'content hash not recorded'}
+          </small>
+        </DetailItem>
+      </DetailList>
       {nodes.length === 0 && (
-        <Empty description="No PlatON Nodes declared by this Agent yet." />
+        <div className="mt-3">
+          <Empty description="No PlatON Nodes declared by this Agent yet." />
+        </div>
       )}
       {nodes.length > 0 && (
-        <ul className="space-y-2">
+        <ul className="mt-3 space-y-2">
           {nodes.map((node) => (
             <li key={node.node_id} className="flex flex-wrap items-center gap-3 text-sm">
               <span className="min-w-0">
@@ -1532,6 +1558,30 @@ function DiagnosticsPanel({ agent }: { agent: AgentDiagnostic }) {
           </DetailItem>
           <DetailItem label="Recorded gap intervals">{agent.sequence_gap_count}</DetailItem>
           <DetailItem label="Accumulated recorded security events">{agent.security_event_count}</DetailItem>
+          <DetailItem label="Inventory rejection evidence">
+            {agent.inventory.last_rejection ? (
+              <div className="space-y-0.5">
+                <div>{agent.inventory.last_rejection.code}</div>
+                <small className="block text-[11px] text-muted-foreground">
+                  Declared revision {agent.inventory.last_rejection.reported_revision ?? 'Unknown'} ·{' '}
+                  {agent.inventory.last_rejection.reported_sha256
+                    ? shortHash(agent.inventory.last_rejection.reported_sha256)
+                    : 'content hash not recorded'}
+                </small>
+                <small className="block text-[11px] text-muted-foreground">
+                  Accepted revision {agent.inventory.accepted_revision} ·{' '}
+                  {agent.inventory.accepted_sha256
+                    ? shortHash(agent.inventory.accepted_sha256)
+                    : 'content hash not recorded'}
+                </small>
+                <small className="block text-[11px] text-muted-foreground">
+                  Received {formatObservedAt(agent.inventory.last_rejection.received_at)}
+                </small>
+              </div>
+            ) : (
+              'No Inventory rejection recorded'
+            )}
+          </DetailItem>
           {!host && (
             <DetailItem label="Host observation">No host observation yet</DetailItem>
           )}

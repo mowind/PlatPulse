@@ -32,7 +32,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 pub static AGENT_MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 /// The latest migration version compiled into the Agent binary.
-pub const AGENT_SCHEMA_VERSION: i64 = 13;
+pub const AGENT_SCHEMA_VERSION: i64 = 14;
 
 /// Applied Receipt Records are retained for a recent duplicate/conflict window.
 pub(crate) const APPLIED_RECEIPT_RETENTION: time::Duration = time::Duration::hours(24);
@@ -67,6 +67,7 @@ const REQUIRED_TABLES: &[&str] = &[
     "spool_state",
     "node_recovery_state",
     "agent_boots",
+    "inventory_declaration",
 ];
 /// Connection settings for the Agent Store.
 #[derive(Debug, Clone)]

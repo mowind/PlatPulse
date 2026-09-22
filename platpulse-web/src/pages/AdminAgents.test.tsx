@@ -41,6 +41,11 @@ const AGENT_DIAGNOSTIC = {
   security_event_count: 0,
   clock_status: 'ok',
   clock_skew_ms: 12,
+  inventory: {
+    accepted_revision: 4,
+    accepted_sha256: '0x1111111111111111111111111111111111111111111111111111111111111111',
+    last_rejection: null,
+  },
   liveness: 'online',
   last_received_at: '2026-08-12T08:00:00Z',
   capabilities: ['host', 'node_chain'],
@@ -538,6 +543,14 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
     expect(screen.getByText('Liveness')).toBeTruthy()
     expect(screen.getByText('Boot and report state')).toBeTruthy()
     expect(screen.getByText('Inventory')).toBeTruthy()
+    // The Inventory dimension shows the declaration the Server accepts
+    // (issue #181), not an inferred per-Node counter.
+    const acceptedRevision = screen.getByText('Accepted revision', { exact: true }).parentElement
+    expect(acceptedRevision?.textContent).toContain('4')
+    expect(acceptedRevision?.textContent).toContain('0x11111111…1111')
+    expect(
+      screen.getByText('Inventory rejection evidence', { exact: true }).parentElement?.textContent,
+    ).toContain('No Inventory rejection recorded')
     expect(screen.getByText('Credentials')).toBeTruthy()
     expect(screen.getByText('Diagnostics')).toBeTruthy()
     expect(screen.getByText('Host CPU')).toBeTruthy()
@@ -570,6 +583,41 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
     // Actions are offered as links, not executed remotely.
     expect(screen.queryByRole('link', { name: 'Rotate credential' })).toBeNull()
     expect(screen.queryByRole('link', { name: 'Recover agent' })).toBeNull()
+  })
+
+  it('shows the Server-recorded Inventory rejection next to the accepted declaration', async () => {
+    const rejected = {
+      ...AGENT_DIAGNOSTIC,
+      inventory: {
+        accepted_revision: 4,
+        accepted_sha256: '0x1111111111111111111111111111111111111111111111111111111111111111',
+        last_rejection: {
+          code: 'inventory_revision_conflict',
+          reported_revision: 4,
+          reported_sha256: '0x2222222222222222222222222222222222222222222222222222222222222222',
+          received_at: '2026-08-12T08:30:00Z',
+        },
+      },
+    }
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}`]: () => jsonResponse(rejected, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/audit`]: () => jsonResponse({ agent_id: AGENT_ID, items: [] }, 200),
+    })
+    renderAt(`/admin/agents/${AGENT_ID}`)
+
+    await screen.findByRole('heading', { level: 1, name: /Agent 0195f2a1/ })
+    const evidence = (
+      await screen.findByText('Inventory rejection evidence', { exact: true })
+    ).parentElement
+    // Both sides of the comparison, so the remedy (bump the revision) is
+    // readable from the page alone.
+    expect(evidence?.textContent).toContain('inventory_revision_conflict')
+    expect(evidence?.textContent).toContain('Declared revision 4')
+    expect(evidence?.textContent).toContain('0x22222222…2222')
+    expect(evidence?.textContent).toContain('Accepted revision 4')
+    expect(evidence?.textContent).toContain('0x11111111…1111')
+    expect(evidence?.textContent).toContain('Received 2026-08-12 08:30:00 UTC')
   })
 
   it('revokes a credential through explicit confirmation and refetches state', async () => {

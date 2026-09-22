@@ -17,6 +17,7 @@ pub mod credential;
 pub mod data_directory;
 pub mod database;
 pub mod enroll;
+pub mod inventory_declaration;
 pub mod process;
 pub mod recover;
 pub mod redaction;
