@@ -27,52 +27,129 @@ use std::time::{Duration, Instant};
 const INTEGRITY_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 const INTEGRITY_SCAN_BUDGET: Duration = Duration::from_secs(60);
 const INTEGRITY_ACQUIRE_TIMEOUT: Duration = Duration::from_millis(250);
+// A scan that cannot run to completion is retried far sooner than the healthy
+// cadence: startup workers contend for the sole connection, and a sub-second
+// race must not defer the next scan by six hours. The delay doubles after each
+// consecutive incomplete scan and is capped, so a persistently contended or
+// interrupted database is probed at most hourly instead of being hammered.
+const INTEGRITY_RETRY_START: Duration = Duration::from_secs(30);
+const INTEGRITY_RETRY_CAP: Duration = Duration::from_secs(60 * 60);
 // Two intervals plus a budget of slack: a missed scan degrades readiness
 // rather than silently reporting healthy.
 pub(super) const INTEGRITY_STALE_AFTER: Duration = Duration::from_secs(13 * 60 * 60);
 
+/// Timing for the integrity monitor. Production uses INTEGRITY_CADENCE;
+/// regression tests inject a fast cadence to drive the real loop without
+/// waiting an actual six-hour interval.
+#[derive(Debug, Clone, Copy)]
+struct IntegrityCadence {
+    /// Delay between scans that ran to completion.
+    healthy: Duration,
+    /// First delay after a scan that could not run to completion.
+    retry_start: Duration,
+    /// Upper bound for the retried delay.
+    retry_cap: Duration,
+}
+
+const INTEGRITY_CADENCE: IntegrityCadence = IntegrityCadence {
+    healthy: INTEGRITY_INTERVAL,
+    retry_start: INTEGRITY_RETRY_START,
+    retry_cap: INTEGRITY_RETRY_CAP,
+};
+
+/// Verdict of one monitor iteration; it selects the next cadence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum IntegrityOutcome {
+    /// A scan completed and reported the database healthy.
+    Healthy,
+    /// A scan completed (or errored) with a corruption indication; the runtime
+    /// corruption latch is set and readiness fails closed until restart.
+    Corrupt,
+    /// The scan could not run to completion (pool contention, cancellation, or
+    /// the scan budget). The last completed scan stays authoritative.
+    Transient,
+}
+
 /// Run outside HTTP handlers: full scans must not be triggered by public probes.
-/// A failed or stalled monitor becomes unavailable; detected corruption is
-/// latched until restart, which requires another successful startup check.
+/// A completed scan reporting corruption is latched until restart, which
+/// requires another successful startup check. A scan that cannot run to
+/// completion (pool contention, budget exhaustion) leaves the last completed
+/// scan authoritative and is retried on a short backoff, so readiness is only
+/// degraded once INTEGRITY_STALE_AFTER has actually elapsed.
 pub(crate) async fn monitor_integrity(state: AppState) {
-    let mut tick = tokio::time::interval(INTEGRITY_INTERVAL);
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    run_integrity_monitor(state, INTEGRITY_CADENCE).await
+}
+
+async fn run_integrity_monitor(state: AppState, cadence: IntegrityCadence) {
+    // Startup already verified the database, so the first scan runs immediately.
+    let mut delay = Duration::ZERO;
+    let mut transient_retry: Option<Duration> = None;
     loop {
         if state.is_shutting_down() || state.is_corrupt() {
             return;
         }
         tokio::select! {
             _ = state.shutdown_signal() => return,
-            _ = tick.tick() => {}
+            _ = tokio::time::sleep(delay) => {}
         }
         if state.is_shutting_down() {
             return;
         }
-        check_integrity(&state).await;
+        delay = match check_integrity(&state).await {
+            IntegrityOutcome::Healthy | IntegrityOutcome::Corrupt => {
+                transient_retry = None;
+                cadence.healthy
+            }
+            IntegrityOutcome::Transient => {
+                let next = transient_retry
+                    .map_or(cadence.retry_start, |previous| previous.saturating_mul(2))
+                    .min(cadence.retry_cap);
+                transient_retry = Some(next);
+                next
+            }
+        };
     }
 }
 
 /// One production monitor iteration, also used by real-SQLite regression tests.
-pub(super) async fn check_integrity(state: &AppState) {
+pub(super) async fn check_integrity(state: &AppState) -> IntegrityOutcome {
     if state.is_corrupt() {
-        return;
+        return IntegrityOutcome::Corrupt;
     }
     let result =
         bounded_integrity_query(state, "PRAGMA integrity_check(1)", INTEGRITY_SCAN_BUDGET).await;
-    let (available, corrupt) = match result {
-        Ok(result) => (true, result != "ok"),
-        Err(error) => (false, is_corruption_error(&error)),
+    let corrupt = match &result {
+        Ok(result) => result != "ok",
+        Err(error) => is_corruption_error(error),
     };
     if corrupt {
         state.runtime.corrupt.store(true, Ordering::Release);
+        state
+            .runtime
+            .integrity_available
+            .store(false, Ordering::Release);
+        mark_integrity_checked(state);
         eprintln!("SQLite runtime integrity check detected corruption; recovery required");
-    } else if !available {
-        eprintln!("SQLite runtime integrity check unavailable");
+        return IntegrityOutcome::Corrupt;
     }
-    state
-        .runtime
-        .integrity_available
-        .store(available, Ordering::Release);
+    if result.is_ok() {
+        state
+            .runtime
+            .integrity_available
+            .store(true, Ordering::Release);
+        mark_integrity_checked(state);
+        IntegrityOutcome::Healthy
+    } else {
+        // Pool contention, a shutdown race, or a scan that exhausted its budget.
+        // The last completed scan stays authoritative: its availability and
+        // timestamp are untouched, so readiness is only degraded once
+        // INTEGRITY_STALE_AFTER has actually elapsed.
+        eprintln!("SQLite runtime integrity check unavailable");
+        IntegrityOutcome::Transient
+    }
+}
+
+fn mark_integrity_checked(state: &AppState) {
     *state
         .runtime
         .integrity_checked_at
@@ -353,16 +430,56 @@ mod monitor_tests {
     }
 
     #[tokio::test]
-    async fn unavailable_acquisition_recovers_without_latching_corruption() {
+    async fn unavailable_acquisition_keeps_the_last_completed_scan_authoritative() {
         let (_dir, state) = state().await;
         let connection = state.db().pool().acquire().await.unwrap();
-        tokio::time::timeout(Duration::from_secs(2), check_integrity(&state))
+        let outcome = tokio::time::timeout(Duration::from_secs(2), check_integrity(&state))
             .await
             .unwrap();
-        assert!(!state.integrity_healthy());
+        assert_eq!(outcome, IntegrityOutcome::Transient);
+        // A transient failure must never latch readiness unavailable: the
+        // startup scan (or the last completed scan) still stands.
+        assert!(state.integrity_healthy());
         assert!(!state.is_corrupt());
         drop(connection);
-        check_integrity(&state).await;
+        assert_eq!(check_integrity(&state).await, IntegrityOutcome::Healthy);
+        assert!(state.integrity_healthy());
+    }
+
+    #[tokio::test]
+    async fn monitor_retries_a_transient_acquire_failure_before_the_healthy_interval() {
+        let (_dir, state) = state().await;
+        // The healthy interval is deliberately an hour so a passing test can
+        // only be explained by the monitor retrying the transient failure.
+        let cadence = IntegrityCadence {
+            healthy: Duration::from_secs(60 * 60),
+            retry_start: Duration::from_millis(20),
+            retry_cap: Duration::from_millis(200),
+        };
+        // Hold the sole connection across the monitor's immediate first scan,
+        // so it exhausts its acquire budget: a transient failure, not corruption.
+        let connection = state.db().pool().acquire().await.unwrap();
+        let monitor = tokio::spawn({
+            let state = state.clone();
+            async move { run_integrity_monitor(state, cadence).await }
+        });
+        tokio::time::sleep(INTEGRITY_ACQUIRE_TIMEOUT + Duration::from_millis(250)).await;
+        let before = *state.runtime.integrity_checked_at.lock().unwrap();
+        drop(connection);
+
+        // Readiness must not latch for the whole healthy interval: the monitor
+        // has to come back and complete a scan as soon as the pool is free.
+        let recovered = tokio::time::timeout(Duration::from_secs(3), async {
+            while *state.runtime.integrity_checked_at.lock().unwrap() <= before {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        monitor.abort();
+        assert!(
+            recovered.is_ok(),
+            "a transient acquire failure must not defer the next scan to the healthy interval"
+        );
         assert!(state.integrity_healthy());
     }
 
