@@ -219,7 +219,7 @@ describe('LinkedValidatorSection Home empty state', () => {
     ['not_configured', { state: 'not_configured', freshness: 'unknown' }, 'No Validator source is configured for this Network.'],
     ['unsupported', { state: 'unsupported', freshness: 'unknown' }, 'The Validator source does not support this Validator identifier.'],
     ['not_found', { state: 'not_found', freshness: 'unknown' }, 'The source has no current record for this Validator.'],
-    ['empty', { state: 'empty', freshness: 'fresh' }, 'The source reported no live Validator; no metrics are available.'],
+    ['empty', { state: 'empty', freshness: 'fresh' }, 'No validator metrics'],
   ] as const)('shows the %s state as one accurate short line', (state, override, text) => {
     renderCard({ validator: { ...notValidator, ...override } })
     const status = screen.getByRole('status')

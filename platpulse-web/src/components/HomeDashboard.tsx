@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useNodeRegionHeights } from './useNodeRegionHeights'
 import { Link } from 'react-router'
 import type { PublicConsensusInsight, PublicNetwork, PublicNode } from '../api/generated'
 import { realtimeStreamLabel } from './RealtimeNotice'
@@ -72,6 +73,7 @@ export default function HomeDashboard({
   }, [networkFilter, records, sortBy])
 
   const hasProjection = !loading && (error === null || hasLastGood)
+  const nodeGridRef = useNodeRegionHeights(visibleRecords, hasProjection)
   const scopedNetworks = networkFilter === 'all' ? networks : networks.filter(network => network.networkKey === networkFilter)
   const healthyCount = hasProjection ? visibleRecords.filter(({ node }) => isHealthy(node.health)).length : null
   const streamLabel = realtimeStreamLabel(realtimeStatus)
@@ -180,6 +182,7 @@ export default function HomeDashboard({
           ) : (
             <div
               className="grid auto-rows-fr grid-cols-1 gap-3 sm:grid-cols-[repeat(auto-fill,minmax(22.5rem,1fr))]"
+              ref={nodeGridRef}
               data-slot="node-grid"
               aria-label="Active Nodes"
             >
@@ -253,7 +256,7 @@ function HomeNodeCard({ network, node }: NodeRecord) {
         tone === 'warn' && 'shadow-[0_0_0_1px] shadow-amber-500/20',
       )}
     >
-      <CardX bordered={false} className="bg-transparent" contentClassName="gap-2.5" headerClassName="!grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-2 gap-y-1.5" header={<>
+      <CardX bordered={false} className="bg-transparent" contentClassName="gap-2.5" headerClassName="!block !p-0" header={<div data-node-region="identity"><div data-node-region-content className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-2 gap-y-1.5 px-4 pt-3 pb-2.5">
           <div className="flex min-w-0 items-center gap-2">
             <NodeHealthMarker health={node.health} />
             {/* The 44px target is kept on the anchor; the negative block margin
@@ -289,24 +292,20 @@ function HomeNodeCard({ network, node }: NodeRecord) {
             </Dialog>
             </span>
           </div>
-          {/* CONTEXT.md: the reason for an abnormal Node Health state stays
-              visible as text. The row is reserved in every card so a reason can
-              never stretch one card past another; a Healthy Node keeps it empty
-              and out of the accessibility tree. */}
-          <p
+          {/* Abnormal reasons remain readable; healthy cards create no empty row. */}
+          {diagnostic && <p
             data-slot="node-diagnostic"
             data-tone={diagnostic?.tone}
-            aria-hidden={diagnostic ? undefined : true}
             className={cn(
               'col-span-2 m-0 text-[11px] [overflow-wrap:anywhere]',
-              !diagnostic && 'invisible',
               diagnostic?.tone === 'destructive' ? 'text-destructive' : 'text-amber-500 dark:text-amber-400',
             )}
           >
-            {diagnostic?.text}
-          </p>
-        </>}>
-        <ResourceRow node={node} />
+            {diagnostic.text}
+          </p>}
+        </div></div>}>
+        <div data-node-region="resource"><div data-node-region-content><ResourceRow node={node} /></div></div>
+        <div data-node-region="chain"><div data-node-region-content>
         <div data-slot="node-business-metrics" data-wide={businessWide || undefined} className="border-t border-border pt-3">
           <MetricRow layout="compact" label="Head" value={business.head} />
           <ConsensusRow status={consensusStatus} values={business} />
@@ -320,7 +319,8 @@ function HomeNodeCard({ network, node }: NodeRecord) {
             </small>
           )}
         </div>
-        <LinkedValidatorSection node={node} />
+        </div></div>
+        <div data-node-region="validator"><div data-node-region-content><LinkedValidatorSection node={node} /></div></div>
         </CardX>
     </article>
   )
@@ -348,10 +348,10 @@ function ResyncCue({ node }: { node: PublicNode }) {
   return (
     <Dialog>
       <DialogTrigger asChild>
-        {/* A real 44px touch target. The reserved identity region absorbs its
-            height, so the chip stays compact without stretching only this card. */}
+        {/* Keep the 44px touch target without reserving its full height in the
+            compact metadata line, matching the neighbouring information entry. */}
         <button type="button" data-slot="node-resync-cue"
-          className="relative z-10 inline-flex min-h-11 items-center rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="relative z-10 -my-3.5 inline-flex min-h-11 items-center rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           aria-label={`Resync progress: ${percent} toward the Historical High-Water Mark`}>
           <span className="inline-flex items-center gap-1 rounded border border-amber-500/40 px-1.5 py-0.5 text-[11px] font-medium leading-4 text-amber-500 dark:text-amber-400">
             <span>Resyncing</span><span className="tabular-nums">{percent}</span>

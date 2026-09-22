@@ -235,7 +235,7 @@ function emptyMetricsState(validator: PublicValidatorInsight): { text: string; s
     case 'not_configured': return { text: 'No Validator source is configured for this Network.', state: 'not_configured' }
     case 'unsupported': return { text: 'The Validator source does not support this Validator identifier.', state: 'unsupported' }
     case 'not_found': return { text: 'The source has no current record for this Validator.', state: 'not_found' }
-    case 'empty': return { text: 'The source reported no live Validator; no metrics are available.', state: 'empty' }
+    case 'empty': return { text: 'No validator metrics', state: 'empty' }
     case 'stale': return { text: 'The Validator source has not refreshed; no metrics are available.', state: 'stale' }
     default: break
   }

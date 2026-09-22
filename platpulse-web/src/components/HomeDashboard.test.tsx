@@ -441,10 +441,10 @@ describe('Public Home dashboard', () => {
 
     // No badge remains on the card at all, and CONTEXT.md's rule holds: the
     // reason for an abnormal Node Health state stays visible as text while a
-    // Healthy Node keeps the reserved line empty.
+    // Healthy Node has no diagnostic placeholder.
     for (const card of [alphaCard, cardOf(nodeCardLink('Beta')), cardOf(nodeCardLink('Unhealthy Node'))]) {
       expect(card.querySelectorAll('.status-badge')).toHaveLength(0)
-      expect(card.querySelectorAll('[data-slot="node-diagnostic"]')).toHaveLength(1)
+      expect(card.querySelectorAll('[data-slot="node-diagnostic"]')).toHaveLength(card === alphaCard ? 0 : 1)
     }
     expect(within(alphaCard).queryByText('RPC reachable')).toBeNull()
     expect(within(cardOf(nodeCardLink('Beta'))).getByText('Never observed')).toBeTruthy()
