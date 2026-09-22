@@ -819,6 +819,7 @@ fn closing_directory_observations(
     paths: &HashMap<NodeId, std::path::PathBuf>,
     inventory: &NodeInventory,
     previous: Option<&AgentReport>,
+    attempted_at: Rfc3339,
 ) -> HashMap<NodeId, crate::data_directory::DataDirectoryObservations> {
     inventory
         .nodes
@@ -830,10 +831,10 @@ fn closing_directory_observations(
                 crate::data_directory::DataDirectoryObservations {
                     size_bytes: previous_size
                         .cloned()
-                        .unwrap_or_else(crate::data_directory::starting),
+                        .unwrap_or_else(|| crate::data_directory::starting(attempted_at)),
                     capacity_bytes: previous_capacity
                         .cloned()
-                        .unwrap_or_else(crate::data_directory::starting),
+                        .unwrap_or_else(|| crate::data_directory::starting(attempted_at)),
                 }
             } else {
                 reconcile_data_directory_observations(
@@ -1168,12 +1169,13 @@ pub(crate) async fn recover_previous_boot_with_transport<A: RpcAdapter, T: Repor
         .validated_inventory()
         .map_err(|error| CollectionError::Identity(error.to_string()))?;
     let previous = load_last_report(&mut store).await?;
+    let at = timestamp();
     let data_directories = closing_directory_observations(
         &validated.data_directories,
         &validated.inventory,
         previous.as_ref(),
+        at,
     );
-    let at = timestamp();
     let mut closing = collect_report_with_data_directories(
         config,
         agent_id,
@@ -3166,8 +3168,12 @@ mod tests {
             HashMap::from([(
                 node_id,
                 crate::data_directory::DataDirectoryObservations {
-                    size_bytes: crate::data_directory::starting(),
-                    capacity_bytes: crate::data_directory::starting(),
+                    size_bytes: crate::data_directory::starting(
+                        "2026-08-20T00:00:00Z".parse().unwrap(),
+                    ),
+                    capacity_bytes: crate::data_directory::starting(
+                        "2026-08-20T00:00:00Z".parse().unwrap(),
+                    ),
                 },
             )]),
             &previous.inventory,
@@ -3207,13 +3213,60 @@ mod tests {
             std::path::PathBuf::from("/configured/platon-data"),
         );
 
-        let observations =
-            closing_directory_observations(&paths, &previous.inventory, Some(&previous));
+        let observations = closing_directory_observations(
+            &paths,
+            &previous.inventory,
+            Some(&previous),
+            "2026-08-20T00:05:00Z".parse().unwrap(),
+        );
 
         assert_eq!(
             observations[&previous.nodes[0].node_id].size_bytes,
             observation
         );
+    }
+
+    #[test]
+    fn starting_directory_observation_without_a_previous_report_is_reportable() {
+        // A configured data directory has no persisted previous observation on
+        // the first boot, or during crash recovery before the first report is
+        // persisted. While the first scan is in flight the assembled report
+        // must still satisfy the Observation Envelope invariants.
+        let previous: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        let node_id = previous.nodes[0].node_id;
+
+        let mut paths = HashMap::new();
+        paths.insert(node_id, std::path::PathBuf::from("/configured/platon-data"));
+        let closing = closing_directory_observations(
+            &paths,
+            &previous.inventory,
+            None,
+            "2026-08-20T00:05:00Z".parse().unwrap(),
+        );
+        let precollected = reconcile_precollected_directory_observations(
+            HashMap::from([(
+                node_id,
+                crate::data_directory::starting_observations(
+                    "2026-08-20T00:05:00Z".parse().unwrap(),
+                ),
+            )]),
+            &previous.inventory,
+            None,
+        );
+
+        for (label, observations) in [("closing", closing), ("precollected", precollected)] {
+            let mut report = previous.clone();
+            report.nodes[0].data_directory_size_bytes =
+                Some(observations[&node_id].size_bytes.clone());
+            report.nodes[0].data_directory_capacity_bytes =
+                Some(observations[&node_id].capacity_bytes.clone());
+            report
+                .validate()
+                .unwrap_or_else(|error| panic!("{label}: {error}"));
+        }
     }
 
     #[test]

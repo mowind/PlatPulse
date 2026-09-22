@@ -24,10 +24,10 @@ pub fn disabled_observations() -> DataDirectoryObservations {
     }
 }
 
-pub fn starting_observations() -> DataDirectoryObservations {
+pub fn starting_observations(attempted_at: Rfc3339) -> DataDirectoryObservations {
     DataDirectoryObservations {
-        size_bytes: starting(),
-        capacity_bytes: starting(),
+        size_bytes: starting(attempted_at),
+        capacity_bytes: starting(attempted_at),
     }
 }
 
@@ -44,10 +44,13 @@ pub fn disabled() -> ComponentObservation<u64> {
     }
 }
 
-pub fn starting() -> ComponentObservation<u64> {
+/// First attempt in this boot is in flight. The Observation Envelope requires
+/// an `attempted_at` for every active status, so the caller supplies when the
+/// attempt began.
+pub fn starting(attempted_at: Rfc3339) -> ComponentObservation<u64> {
     ComponentObservation {
         status: ComponentStatus::Starting,
-        attempted_at: None,
+        attempted_at: Some(attempted_at),
         latest_observed_at: None,
         received_at: None,
         state_revision: 1,

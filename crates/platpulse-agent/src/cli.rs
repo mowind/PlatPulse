@@ -479,7 +479,7 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
     let mut data_directory_snapshots = Vec::with_capacity(validated.inventory.nodes.len());
     for node in &validated.inventory.nodes {
         let initial = if validated.data_directories.contains_key(&node.node_id) {
-            crate::data_directory::starting_observations()
+            crate::data_directory::starting_observations(crate::collector::timestamp())
         } else {
             crate::data_directory::disabled_observations()
         };
@@ -991,8 +991,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("data"), vec![0_u8; 11]).unwrap();
         let cancel = CancellationToken::new();
-        let (sender, mut receiver) =
-            tokio::sync::watch::channel(crate::data_directory::starting_observations());
+        let (sender, mut receiver) = tokio::sync::watch::channel(
+            crate::data_directory::starting_observations("2026-08-12T09:00:00Z".parse().unwrap()),
+        );
         let task = tokio::spawn(run_data_directory_worker(
             temp.path().to_owned(),
             sender,
