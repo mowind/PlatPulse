@@ -232,7 +232,7 @@ describe('Public Home dashboard', () => {
     expect(alphaCard.querySelectorAll('[data-slot="metric-row"][data-layout="inline"]')).toHaveLength(0)
   })
 
-  it('orders Head/QC/Locked/Committed as compact rows before Txs and Peers and keeps Node role in the header', () => {
+  it('orders Head/QC/Locked/Committed as compact rows before Txs and Peers and keeps the PlatScan status in the header', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
     const card = cardOf(nodeCardLink('Alpha'))
     expect(card.querySelector('[data-slot="metric-triple"]')).toBeNull()
@@ -249,8 +249,11 @@ describe('Public Home dashboard', () => {
     expect(Array.from(counts.querySelectorAll('[data-slot="metric-row-label"]'), el => el.textContent)).toEqual(['Txs', 'Peers'])
     expect(counts.querySelectorAll('[data-layout="compact"]')).toHaveLength(2)
     expect(metrics.querySelector('[data-short-label]')).toBeNull()
-    expect(metrics.querySelector('[data-slot="validator-role"]')).toBeNull()
-    expect(card.querySelector('[data-slot="card-x-header"] [data-slot="validator-role"]')?.getAttribute('aria-label')).toBe('Role: Validator')
+    // The PlatScan status belongs to the identity row, never to the metric grid.
+    expect(metrics.querySelector('[data-slot="validator-activity"]')).toBeNull()
+    // Node alpha has no effective Node Validator Link, so its Activity is the
+    // unified Observing state rather than a named production status.
+    expect(card.querySelector('[data-slot="card-x-header"] [data-slot="validator-activity"]')?.getAttribute('data-activity')).toBe('observing')
   })
 
   it.each([
@@ -285,9 +288,9 @@ describe('Public Home dashboard', () => {
     expect(within(alphaCard).getByText('99')).toBeTruthy()
     expect(within(alphaCard).getByText('Committed')).toBeTruthy()
     expect(within(alphaCard).getByText('98')).toBeTruthy()
-    expect(within(alphaCard).getByLabelText('Role: Validator')).toBeTruthy()
-    // Current successful membership renders a neutral role badge.
-    expect(within(alphaCard).getByLabelText('Role: Validator')).toBeTruthy()
+    // Consensus membership no longer drives the header chip: the PlatScan
+    // Activity badge is an independent dimension.
+    expect(within(alphaCard).getByLabelText(/^PlatScan status: Observing/)).toBeTruthy()
     expect(within(alphaCard).queryByText('Stale')).toBeNull()
 
     // Never-observed consensus is Unknown for every metric, never zero/No.
@@ -296,7 +299,7 @@ describe('Public Home dashboard', () => {
       expect(within(betaCard).getByText(label)).toBeTruthy()
     }
     expect(within(betaCard).getAllByText('Unknown').length).toBeGreaterThanOrEqual(7)
-    expect(within(betaCard).queryByLabelText('Role: Non-validator')).toBeNull()
+    expect(within(betaCard).getByLabelText(/^PlatScan status: Observing/)).toBeTruthy()
   })
 
   it('retains last-good consensus values and visibly marks failed or stale collections', () => {
@@ -341,86 +344,77 @@ describe('Public Home dashboard', () => {
     expect(within(staleCard).getByText('141')).toBeTruthy()
     expect(within(staleCard).getByText('140')).toBeTruthy()
     expect(within(staleCard).getByText('139')).toBeTruthy()
-    expect(within(staleCard).getByLabelText('Role: Validator (Stale)')).toBeTruthy()
-    expect(within(staleCard).getAllByText('Stale')).toHaveLength(4)
+    // QC/Locked/Committed carry the retained-row Stale text; the Activity badge
+    // marks its own staleness with a mark plus an accessible name, not a word.
+    expect(within(staleCard).getAllByText('Stale')).toHaveLength(3)
 
     // A failed collection with last-good true keeps the value and is Stale.
     const failedCard = cardOf(nodeCardLink('Failed True'))
     expect(within(failedCard).getByText('151')).toBeTruthy()
     expect(within(failedCard).getByText('150')).toBeTruthy()
     expect(within(failedCard).getByText('149')).toBeTruthy()
-    expect(within(failedCard).getByLabelText('Role: Validator (Stale)')).toBeTruthy()
-    expect(within(failedCard).getAllByText('Stale')).toHaveLength(4)
+    expect(within(failedCard).getAllByText('Stale')).toHaveLength(3)
 
     // A stale successful non-membership keeps No and marks it Stale.
     const staleFalseCard = cardOf(nodeCardLink('Stale False'))
     expect(within(staleFalseCard).getByText('161')).toBeTruthy()
-    expect(within(staleFalseCard).getByLabelText('Role: Non-validator (Stale)')).toBeTruthy()
-    expect(within(staleFalseCard).getAllByText('Stale')).toHaveLength(4)
+    expect(within(staleFalseCard).getAllByText('Stale')).toHaveLength(3)
 
     // A failed collection without a last-good membership is Unknown, never
     // No, and is not dressed up as Stale with no retained value.
     const failedNoneCard = cardOf(nodeCardLink('Failed None'))
     expect(within(failedNoneCard).getAllByText('Unknown').length).toBeGreaterThanOrEqual(4)
     expect(within(failedNoneCard).queryByText('Stale')).toBeNull()
-    expect(within(failedNoneCard).queryByLabelText('Role: Non-validator')).toBeNull()
 
     // A current successful non-membership renders No; an observed zero
     // block height is an authoritative zero, never Unknown.
     const falseCard = cardOf(nodeCardLink('Current False'))
-    expect(within(falseCard).getByLabelText('Role: Non-validator')).toBeTruthy()
     expect(within(falseCard).getAllByText('0').length).toBeGreaterThanOrEqual(4)
     expect(within(falseCard).queryByText('Stale')).toBeNull()
 
     // Unknown freshness means currency cannot be certified: the retained
     // value must not be presented as current Yes/No or block heights.
     const unknownFreshnessCard = cardOf(nodeCardLink('Unknown Freshness'))
-    expect(within(unknownFreshnessCard).getAllByText('Unknown').length).toBeGreaterThanOrEqual(4)
-    expect(within(unknownFreshnessCard).queryByLabelText('Role: Validator')).toBeNull()
-    expect(within(unknownFreshnessCard).queryByLabelText('Role: Non-validator')).toBeNull()
+    expect(within(unknownFreshnessCard).getAllByText('Unknown').length).toBeGreaterThanOrEqual(3)
     expect(within(unknownFreshnessCard).queryByText('Stale')).toBeNull()
   })
 
-  it('keeps the two-state health marker as the header status cue with no activity badge', () => {
+  it('shows the PlatScan Activity badge beside the independent Node Health marker', () => {
     const linked = (activity: string, activityState: string) => ({
       validatorId: 'validator-a', validatorNodeId: '0xvalidator', displayName: 'Validator A',
       nodeId: 'node-a', state: activityState === 'stale' ? 'error' : 'fresh',
-      freshness: activityState === 'stale' ? 'fresh' : 'fresh', source: 'fake',
+      freshness: 'fresh', source: 'platscan',
       receivedAt: '2026-08-25T00:00:00Z', rankState: 'unknown', rankFreshness: 'unknown', blockRateState: 'unknown', counterState: 'normal', activity, activityState,
       currentValidatorStatus: 'validator', currentValidatorStatusState: 'current', currentValidatorStatusQualifier: null,
     })
-    const active = {
-      ...network.nodes[0], nodeId: 'node-active', displayName: 'Active Node',
-      validator: linked('producing', 'current'),
-    }
-    const observing = {
-      ...network.nodes[0], nodeId: 'node-observing', displayName: 'Observing Node',
-      validator: linked('observing', 'current'),
-    }
-    const unknown = {
-      ...network.nodes[0], nodeId: 'node-unknown', displayName: 'Unknown Node',
-      validator: null,
-    }
-    const stale = {
-      ...network.nodes[0], nodeId: 'node-stale', displayName: 'Stale Node',
-      validator: linked('locked', 'stale'),
-    }
+    // Producing is deliberately seeded test data: the captured PlatScan detail
+    // responses have not presented status 3, so only labelled data reaches it.
+    const cases = [
+      { name: 'Active Node', validator: linked('active', 'current'), activity: 'active', label: 'Active' },
+      { name: 'Producing Node', validator: linked('producing', 'current'), activity: 'producing', label: 'Producing' },
+      { name: 'Verifying Node', validator: linked('verifying', 'current'), activity: 'verifying', label: 'Verifying' },
+      { name: 'Observing Node', validator: linked('observing', 'current'), activity: 'observing', label: 'Observing' },
+      { name: 'Unlinked Node', validator: null, activity: 'observing', label: 'Observing' },
+    ]
+    const nodes = cases.map(({ name, validator }, index) => ({
+      ...network.nodes[0], nodeId: `node-activity-${index}`, displayName: name, validator,
+    }))
     render(<BrowserRouter><HomeDashboard
-      networks={[{ ...network, nodes: [active, observing, unknown, stale] }]}
+      networks={[{ ...network, nodes }]}
       realtimeStatus="connected" online resetting={false} error={null} loading={false}
     /></BrowserRouter>)
 
-    // The current SPA renders Node Validator Activity nowhere, so no activity
-    // or freshness value can put a badge on a Home card. Node Health stays a
-    // two-state marker whose accessible name carries the health word (#141).
-    for (const name of ['Active Node', 'Observing Node', 'Unknown Node', 'Stale Node']) {
+    // The status is the Node's own Validator Activity projection; the
+    // two-state Node Health marker beside the name stays an independent cue.
+    for (const { name, activity, label } of cases) {
       const card = cardOf(nodeCardLink(name))
-      expect(card.querySelectorAll('.status-badge')).toHaveLength(0)
+      const badge = card.querySelector('[data-slot="validator-activity"]') as HTMLElement
+      expect(badge.getAttribute('data-activity')).toBe(activity)
+      expect(badge.querySelector('[data-slot="validator-activity-label"]')?.textContent).toBe(label)
       expect(within(card).getByRole('img', { name: 'Healthy' })).toBeTruthy()
     }
-    expect(within(cardOf(nodeCardLink('Active Node'))).queryByText('Producing')).toBeNull()
-    expect(within(cardOf(nodeCardLink('Observing Node'))).queryByText('Observing')).toBeNull()
-    expect(within(cardOf(nodeCardLink('Stale Node'))).queryByText('Locked (Stale)')).toBeNull()
+    // The local Node role is no longer repeated in the card header.
+    expect(document.querySelector('[data-slot="validator-role"]')).toBeNull()
   })
 
   it('marks Healthy green and every other Node grey before the name (issue #141)', () => {
@@ -439,11 +433,12 @@ describe('Public Home dashboard', () => {
     expect(within(cardOf(nodeCardLink('Beta'))).getByRole('img', { name: 'Unknown' }).classList.contains('node-health-marker-other')).toBe(true)
     expect(within(cardOf(nodeCardLink('Unhealthy Node'))).getByRole('img', { name: 'Unhealthy' }).classList.contains('node-health-marker-other')).toBe(true)
 
-    // No badge remains on the card at all, and CONTEXT.md's rule holds: the
-    // reason for an abnormal Node Health state stays visible as text while a
-    // Healthy Node has no diagnostic placeholder.
+    // The health marker is the only header status cue besides the independent
+    // PlatScan Activity badge; CONTEXT.md's rule holds: the reason for an
+    // abnormal Node Health state stays visible as text while a Healthy Node has
+    // no diagnostic placeholder.
     for (const card of [alphaCard, cardOf(nodeCardLink('Beta')), cardOf(nodeCardLink('Unhealthy Node'))]) {
-      expect(card.querySelectorAll('.status-badge')).toHaveLength(0)
+      expect(card.querySelectorAll('[data-slot="status-badge"]')).toHaveLength(0)
       expect(card.querySelectorAll('[data-slot="node-diagnostic"]')).toHaveLength(card === alphaCard ? 0 : 1)
     }
     expect(within(alphaCard).queryByText('RPC reachable')).toBeNull()

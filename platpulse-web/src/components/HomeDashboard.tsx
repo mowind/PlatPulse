@@ -22,6 +22,7 @@ import { SURFACE_TOOLBAR } from '../lib/surface'
 import { cn } from '../lib/utils'
 import { LinkedValidatorSection, validatorDataStatus, type ValidatorDataStatus } from './LinkedValidator'
 import { ValidatorTotalCard } from './ValidatorTotals'
+import { ValidatorActivityBadge } from './ValidatorActivityBadge'
 import { HomeSummaryCard } from './HomeSummaryCard'
 import { Button } from './ui/button'
 import { Dialog, DialogTrigger, DialogContent, DialogTitle, DialogDescription } from './ui/dialog'
@@ -265,7 +266,7 @@ function HomeNodeCard({ network, node }: NodeRecord) {
                 apart. */}
             <h2 className="min-w-0 text-base font-semibold"><Link to={`/nodes/${node.nodeId}`} aria-label={nodeLabel(node)} title={nodeLabel(node)} className="flex -my-2.5 min-h-11 min-w-0 items-center after:absolute after:inset-0 after:rounded-md focus-visible:outline-none focus-visible:after:ring-[3px] focus-visible:after:ring-ring/50"><span className="truncate">{nodeLabel(node)}</span></Link></h2>
           </div>
-          <ValidatorBadge consensus={node.consensus} />
+          <ValidatorActivityBadge validator={node.validator} identityReason={node.validatorIdentityReason} />
           <div data-slot="node-identity-meta" className="col-span-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
             <p className="min-w-0 flex-1"><span className="[overflow-wrap:anywhere]">{network.displayName}</span> · <span className="whitespace-nowrap">Uptime {formatDuration(node.processUptimeMs)}</span></p>
             {/* One unified top status position: an abnormal Node-health summary,
@@ -485,21 +486,6 @@ function ConsensusRow({ status, values }: {
   )
 }
 
-/** Neutral membership, independent of Node health; keep last-good freshness visible.
- *  One line when the card has room: `Node: Non-validator`. */
-function ValidatorBadge({ consensus }: { consensus: PublicConsensusInsight | undefined }) {
-  const status = consensusValueStatus(consensus)
-  const value = formatConsensusValidator(consensus, status)
-  const stale = status === 'stale'
-  return (
-    <span data-slot="validator-role" aria-label={`Role: ${value}${stale ? ' (Stale)' : ''}`}
-      className="ml-auto inline-flex min-w-0 max-w-full items-baseline gap-1 rounded border border-border/60 px-1.5 py-0.5 text-[11px] leading-4 text-muted-foreground">
-      <span className="shrink-0">Node:</span><span className="truncate">{value}</span>
-      {stale && <span className="shrink-0">Stale</span>}
-    </span>
-  )
-}
-
 function consensusValueStatus(insight: PublicConsensusInsight | undefined): 'current' | 'stale' | 'unknown' {
   if (!insight || insight.validator == null) return 'unknown'
   // Starting/Disabled/Unsupported never carry a usable consensus value;
@@ -517,11 +503,6 @@ function consensusValueStatus(insight: PublicConsensusInsight | undefined): 'cur
 function formatConsensusBlock(value: number | null | undefined, status: 'current' | 'stale' | 'unknown'): string {
   if (value == null || status === 'unknown') return 'Unknown'
   return value.toLocaleString()
-}
-
-function formatConsensusValidator(insight: PublicConsensusInsight | undefined, status: 'current' | 'stale' | 'unknown'): string {
-  if (status === 'unknown' || insight?.validator == null) return 'Unknown'
-  return insight.validator ? 'Validator' : 'Non-validator'
 }
 
 type NodeDiagnostic = { text: string; tone: 'destructive' | 'warning' }

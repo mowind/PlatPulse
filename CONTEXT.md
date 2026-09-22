@@ -68,6 +68,10 @@ _Avoid_: Manual validator binding, Positional mapping, Inferred validator owners
 Whether a Node's chain identity has a currently valid staking identity in its Network, including candidates not selected for the current consensus round and locked or exiting identities whose staking identity is confirmed to remain valid. Completed exit or authoritative absence means Not Validator; historical records alone, verification in progress, or unavailable or inconclusive evidence do not establish current status and remain Unknown when validity cannot be confirmed.
 _Avoid_: Current consensus membership, Historical validator presence, Default false
 
+**Validator Activity**:
+The canonical last-good activity of a Validator in its Network as reported by that Network's Validator Provider: Active, Producing, Verifying, Observing, Exiting, Exited, or Locked. It is an independent dimension from Node Health, consensus membership, and Current Validator Status, and it is never inferred from them. Observing also stands for unavailable Provider evidence and for a Node with no effective Node Validator Link; the actual reason stays in the badge's explanation rather than in the visible state.
+_Avoid_: Node role, Consensus membership, Node Health, Default status
+
 **Validator Provider**:
 A Server-side Network adapter that supplies Validator current data and snapshots, such as the PlatScan browser-server adapter. Provider failure does not change Node health or erase the last successful Validator value.
 _Avoid_: Agent collector, Validator authority
