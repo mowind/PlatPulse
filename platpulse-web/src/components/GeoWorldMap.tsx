@@ -190,8 +190,20 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
     [overview.countries],
   )
 
+  // Every Public refetch returns a new Network array, so `countries` changes
+  // identity even when the Server's country projection did not. ECharts
+  // re-parses the world geometry and rebuilds the map graphic on every
+  // setOption, so applying an option whose plotted data is unchanged burns CPU
+  // for no visible change. Compare the plotted values and only re-apply when
+  // the map actually changes (or the chart instance was rebuilt for a new
+  // basemap/theme).
+  const appliedSignature = useRef<string | null>(null)
+
   useEffect(() => {
     if (!world) return
+    const signature = JSON.stringify(countries) + '|' + (dark ? 'dark' : 'light')
+    if (appliedSignature.current === signature) return
+    appliedSignature.current = signature
     const option = mapChartOption({
       mapName: WORLD_MAP_NAME,
       regionNameByCode: world.names,

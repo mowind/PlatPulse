@@ -163,6 +163,31 @@ describe('GeoWorldMap', () => {
     expect(mocks.dispose).toHaveBeenCalledTimes(1)
   })
 
+  it('does not rebuild the map graphic when a Public refetch did not change the plotted countries', async () => {
+    stubBasemap()
+    const view = renderMap()
+    await waitFor(() => expect(mocks.setOption).toHaveBeenCalledTimes(1))
+
+    // An SSE-driven refetch returns a new Network array with equal country
+    // values. Re-applying the option would make ECharts re-parse the world
+    // geometry and rebuild the graphic for no visible change.
+    view.rerender(
+      <GeoWorldMap networks={[network()]} networkFilter="all" loading={false} hasProjection />,
+    )
+    await waitFor(() => expect(mocks.setOption).toHaveBeenCalledTimes(1))
+
+    // A real country change still reaches the canvas.
+    view.rerender(
+      <GeoWorldMap
+        networks={[network({ geo: { countries: [{ ...seCountry, count: 9 }, deCountry, xkCountry] } })]}
+        networkFilter="all"
+        loading={false}
+        hasProjection
+      />,
+    )
+    await waitFor(() => expect(mocks.setOption.mock.calls.length).toBeGreaterThan(1))
+  })
+
   it('never requests a basemap while the Owner disabled Geo', async () => {
     vi.resetModules()
     const fetchMock = vi.fn()

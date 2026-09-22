@@ -224,6 +224,13 @@ const publicRevisions = new Map<string, number>()
 
 export function resetPublicCache(generation: number): void {
   setActiveAccessGeneration(generation)
+  // A reset retires the whole namespace, so a queued invalidation for the
+  // previous generation must never refetch a query the reset just cleared.
+  if (publicInvalidationTimer !== null) {
+    clearTimeout(publicInvalidationTimer)
+    publicInvalidationTimer = null
+  }
+  pendingPublicInvalidations.clear()
   void publicQueryClient.cancelQueries({ queryKey: publicKeys.all })
   publicQueryClient.clear()
   publicRevisions.clear()
@@ -249,20 +256,63 @@ function samePrefix(queryKey: readonly unknown[], prefix: readonly unknown[]): b
   return prefix.every((part, index) => queryKey[index] === part)
 }
 
+/**
+ * High-frequency invalidations are coalesced (design webui.md §3): the Public
+ * stream can publish a Network change on every Agent report, and one refetch
+ * per event cancels the previous in-flight REST read before it can complete.
+ * Pending keys are flushed at most once per window, and the flush never cancels
+ * a request that is already in flight, so the projection still converges while
+ * the request rate stays bounded.
+ */
+export const PUBLIC_INVALIDATION_COALESCE_MS = 250
+
+type PendingPublicInvalidation =
+  | { kind: 'exact'; queryKey: readonly unknown[]; generation: number }
+  | { kind: 'namespace'; namespace: readonly unknown[]; generation: number }
+
+const pendingPublicInvalidations = new Map<string, PendingPublicInvalidation>()
+let publicInvalidationTimer: ReturnType<typeof setTimeout> | null = null
+
+function pendingToken(entry: PendingPublicInvalidation): string {
+  const parts = entry.kind === 'exact' ? entry.queryKey : entry.namespace
+  return entry.kind + ':' + entry.generation + ':' + JSON.stringify(parts)
+}
+
+function schedulePublicInvalidation(entry: PendingPublicInvalidation): void {
+  pendingPublicInvalidations.set(pendingToken(entry), entry)
+  if (publicInvalidationTimer !== null) return
+  publicInvalidationTimer = setTimeout(flushPublicInvalidations, PUBLIC_INVALIDATION_COALESCE_MS)
+}
+
+function flushPublicInvalidations(): void {
+  publicInvalidationTimer = null
+  const entries = [...pendingPublicInvalidations.values()]
+  pendingPublicInvalidations.clear()
+  for (const entry of entries) {
+    if (entry.kind === 'exact') {
+      void publicQueryClient.invalidateQueries(
+        { queryKey: [...entry.queryKey, entry.generation], exact: true, refetchType: 'active' },
+        { cancelRefetch: false },
+      )
+      continue
+    }
+    void publicQueryClient.invalidateQueries(
+      {
+        predicate: ({ queryKey }) =>
+          samePrefix(queryKey, entry.namespace) && queryKey.at(-1) === entry.generation,
+        refetchType: 'active',
+      },
+      { cancelRefetch: false },
+    )
+  }
+}
+
 function invalidatePublicNamespace(namespace: readonly unknown[], generation: number): void {
-  void publicQueryClient.invalidateQueries({
-    predicate: ({ queryKey }) =>
-      samePrefix(queryKey, namespace) && queryKey.at(-1) === generation,
-    refetchType: 'active',
-  })
+  schedulePublicInvalidation({ kind: 'namespace', namespace, generation })
 }
 
 function invalidatePublicExact(queryKey: readonly unknown[], generation: number): void {
-  void publicQueryClient.invalidateQueries({
-    queryKey: [...queryKey, generation],
-    exact: true,
-    refetchType: 'active',
-  })
+  schedulePublicInvalidation({ kind: 'exact', queryKey, generation })
 }
 
 export function invalidatePublicResource(resource: string, resourceId?: string, eventId?: number): void {

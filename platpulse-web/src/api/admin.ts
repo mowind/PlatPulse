@@ -992,6 +992,13 @@ export function resetAdminCache(generation: number): void {
   if (adminCacheGeneration === generation) return
   adminCacheGeneration = generation
   setActiveAccessGeneration(generation)
+  // A reset retires the whole namespace, so a queued invalidation for the
+  // previous generation must never refetch a query the reset just cleared.
+  if (adminInvalidationTimer !== null) {
+    clearTimeout(adminInvalidationTimer)
+    adminInvalidationTimer = null
+  }
+  pendingAdminInvalidations.clear()
   void adminQueryClient.cancelQueries({ queryKey: adminKeys.all })
   adminQueryClient.clear()
   adminRevisions.clear()
@@ -1363,7 +1370,7 @@ function isHistoryWindowCurrentQuery(queryKey: readonly unknown[]): boolean {
   return samePrefix(queryKey, adminKeys.historyWindow) && queryKey.length === 3
 }
 
-function invalidateAdminResource(resource: string, resourceId: string | undefined, generation: number): void {
+function applyAdminInvalidation(resource: string, resourceId: string | undefined, generation: number): void {
   const keys: Array<readonly unknown[]> = (() => {
     switch (resource) {
       case 'node':
@@ -1427,9 +1434,39 @@ function invalidateAdminResource(resource: string, resourceId: string | undefine
     .map(({ queryKey }) => queryKey)
   void Promise.all(
     matchingKeys.map((queryKey) =>
-      adminQueryClient.invalidateQueries({ queryKey, exact: true, refetchType: 'active' }),
+      adminQueryClient.invalidateQueries(
+        { queryKey, exact: true, refetchType: 'active' },
+        { cancelRefetch: false },
+      ),
     ),
   )
+}
+
+/**
+ * High-frequency invalidations are coalesced (design webui.md §3): report
+ * ingestion publishes a Node/Peer/Geo signal for every accepted report, and one
+ * refetch per event cancels the previous in-flight REST read before it can
+ * complete. Pending resources are flushed at most once per window, and the
+ * flush never cancels a request that is already in flight.
+ */
+export const ADMIN_INVALIDATION_COALESCE_MS = 250
+
+type PendingAdminInvalidation = { resource: string; resourceId?: string; generation: number }
+
+const pendingAdminInvalidations = new Map<string, PendingAdminInvalidation>()
+let adminInvalidationTimer: ReturnType<typeof setTimeout> | null = null
+
+function invalidateAdminResource(resource: string, resourceId: string | undefined, generation: number): void {
+  pendingAdminInvalidations.set(`${resource}:${resourceId ?? ''}:${generation}`, { resource, resourceId, generation })
+  if (adminInvalidationTimer !== null) return
+  adminInvalidationTimer = setTimeout(flushAdminInvalidations, ADMIN_INVALIDATION_COALESCE_MS)
+}
+
+function flushAdminInvalidations(): void {
+  adminInvalidationTimer = null
+  const entries = [...pendingAdminInvalidations.values()]
+  pendingAdminInvalidations.clear()
+  for (const entry of entries) applyAdminInvalidation(entry.resource, entry.resourceId, entry.generation)
 }
 
 function acceptAdminEvent(resource: string, resourceId: string | undefined, eventId: number | undefined): boolean {
