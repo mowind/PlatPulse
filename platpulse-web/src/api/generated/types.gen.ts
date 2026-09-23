@@ -595,15 +595,30 @@ export type AgentDiagnostic = {
  * obvious: the Agent declares revision `reported_revision` with hash
  * `reported_sha256`, while the Server accepts `accepted_revision` with
  * `accepted_sha256`.
+ *
+ * The declaration protocol is Server-recorded (issue #188). A v2
+ * (Server-managed) declaration carries no Agent-assigned revision, so it is
+ * explained from the Server-assigned revision/canonical fingerprint plus the
+ * actual refusal evidence, never from a fabricated Agent revision. An Agent
+ * whose declaration was never accepted has no accepted revision at all, which
+ * is distinct from an accepted empty Inventory.
  */
 export type AgentInventoryDiagnostic = {
     /**
-     * The revision of the Node Inventory the Server currently accepts.
+     * Which protocol produced the accepted declaration: `server_managed`
+     * (v2), `agent_declared` (v1), or `unknown` when nothing has been
+     * accepted or the evidence predates this field.
      */
-    accepted_revision: number;
+    accepted_declaration: string;
     /**
-     * Content hash of that accepted Inventory. `None` means the Server has
-     * never accepted an Inventory from this Agent.
+     * The revision of the currently accepted Node Inventory: Server-assigned
+     * for a v2 declaration, Agent-declared for v1. `None` means the Server has
+     * never accepted a declaration from this Agent.
+     */
+    accepted_revision?: number | null;
+    /**
+     * Content hash (v1) or canonical declaration fingerprint (v2) of that
+     * accepted Inventory. `None` means no declaration was ever accepted.
      */
     accepted_sha256?: string | null;
     last_rejection?: null | AgentInventoryRejectionEvidence;
@@ -621,15 +636,22 @@ export type AgentInventoryRejectionEvidence = {
      */
     code: string;
     /**
+     * Which protocol produced the refused declaration: `server_managed` (v2)
+     * or `agent_declared` (v1). A v2 refusal declares no revision.
+     */
+    declaration: string;
+    /**
      * When the Server stored the refusing Report Receipt.
      */
     received_at?: string | null;
     /**
-     * The Inventory revision the refused report declared.
+     * The Inventory revision the refused report declared. `None` for a v2
+     * (Server-managed) declaration, which declares no revision.
      */
     reported_revision?: number | null;
     /**
-     * The Inventory content hash the refused report declared.
+     * The Inventory content hash (v1) or canonical declaration fingerprint
+     * (v2) the refused report declared.
      */
     reported_sha256?: string | null;
 };

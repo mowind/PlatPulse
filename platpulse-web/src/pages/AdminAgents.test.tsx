@@ -44,6 +44,7 @@ const AGENT_DIAGNOSTIC = {
   inventory: {
     accepted_revision: 4,
     accepted_sha256: '0x1111111111111111111111111111111111111111111111111111111111111111',
+    accepted_declaration: 'agent_declared',
     last_rejection: null,
   },
   liveness: 'online',
@@ -545,8 +546,8 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
     expect(screen.getByText('Inventory')).toBeTruthy()
     // The Inventory dimension shows the declaration the Server accepts
     // (issue #181), not an inferred per-Node counter.
-    const acceptedRevision = screen.getByText('Accepted revision', { exact: true }).parentElement
-    expect(acceptedRevision?.textContent).toContain('4')
+    const acceptedRevision = screen.getByText('Accepted declaration', { exact: true }).parentElement
+    expect(acceptedRevision?.textContent).toContain('Accepted revision 4')
     expect(acceptedRevision?.textContent).toContain('0x11111111…1111')
     expect(
       screen.getByText('Inventory rejection evidence', { exact: true }).parentElement?.textContent,
@@ -591,8 +592,10 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
       inventory: {
         accepted_revision: 4,
         accepted_sha256: '0x1111111111111111111111111111111111111111111111111111111111111111',
+        accepted_declaration: 'agent_declared',
         last_rejection: {
           code: 'inventory_revision_conflict',
+          declaration: 'agent_declared',
           reported_revision: 4,
           reported_sha256: '0x2222222222222222222222222222222222222222222222222222222222222222',
           received_at: '2026-08-12T08:30:00Z',
@@ -618,6 +621,70 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
     expect(evidence?.textContent).toContain('Accepted revision 4')
     expect(evidence?.textContent).toContain('0x11111111…1111')
     expect(evidence?.textContent).toContain('Received 2026-08-12 08:30:00 UTC')
+  })
+
+  it('explains a Server-managed declaration without inventing an Agent revision', async () => {
+    const serverManaged = {
+      ...AGENT_DIAGNOSTIC,
+      inventory: {
+        accepted_revision: 3,
+        accepted_sha256: '0x3333333333333333333333333333333333333333333333333333333333333333',
+        accepted_declaration: 'server_managed',
+        last_rejection: {
+          code: 'inventory_revision_conflict',
+          declaration: 'server_managed',
+          reported_revision: null,
+          reported_sha256: '0x4444444444444444444444444444444444444444444444444444444444444444',
+          received_at: '2026-08-12T08:30:00Z',
+        },
+      },
+    }
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}`]: () => jsonResponse(serverManaged, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/audit`]: () => jsonResponse({ agent_id: AGENT_ID, items: [] }, 200),
+    })
+    renderAt(`/admin/agents/${AGENT_ID}`)
+
+    await screen.findByRole('heading', { level: 1, name: /Agent 0195f2a1/ })
+    const inventory = (await screen.findByText('Accepted declaration', { exact: true })).parentElement
+    // The Server owns the revision in v2, so the page names it as assigned.
+    expect(inventory?.textContent).toContain('Server-assigned revision 3')
+    expect(inventory?.textContent).toContain('0x33333333…3333')
+
+    const evidence = (
+      await screen.findByText('Inventory rejection evidence', { exact: true })
+    ).parentElement
+    expect(evidence?.textContent).toContain('inventory_revision_conflict')
+    expect(evidence?.textContent).toContain('server-managed declaration')
+    // A v2 refusal reports the refused fingerprint, never a fabricated
+    // Agent-assigned revision.
+    expect(evidence?.textContent).toContain('Declared fingerprint 0x44444444…4444')
+    expect(evidence?.textContent).not.toContain('Declared revision')
+    expect(evidence?.textContent).toContain('Server-assigned revision 3')
+  })
+
+  it('shows an uninitialized Inventory as Unknown rather than revision 0', async () => {
+    const neverAccepted = {
+      ...AGENT_DIAGNOSTIC,
+      inventory: {
+        accepted_revision: null,
+        accepted_sha256: null,
+        accepted_declaration: 'unknown',
+        last_rejection: null,
+      },
+    }
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}`]: () => jsonResponse(neverAccepted, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/audit`]: () => jsonResponse({ agent_id: AGENT_ID, items: [] }, 200),
+    })
+    renderAt(`/admin/agents/${AGENT_ID}`)
+
+    await screen.findByRole('heading', { level: 1, name: /Agent 0195f2a1/ })
+    const inventory = (await screen.findByText('Accepted declaration', { exact: true })).parentElement
+    expect(inventory?.textContent).toContain('Unknown')
+    expect(inventory?.textContent).not.toContain('revision 0')
   })
 
   it('revokes a credential through explicit confirmation and refetches state', async () => {

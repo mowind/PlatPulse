@@ -1167,25 +1167,44 @@ function BootReportPanel({ agent }: { agent: AgentDiagnostic }) {
   )
 }
 
+/** The Server-owned label for how the accepted Inventory revision was
+ * produced. v2 (Server-managed) declarations carry no Agent revision, so the
+ * page must never present one as if the Agent had supplied it (issue #188). */
+function revisionSourceLabel(declaration: string): string {
+  return declaration === 'server_managed' ? 'Server-assigned revision' : 'Accepted revision'
+}
+
+function acceptedHashLabel(declaration: string): string {
+  return declaration === 'server_managed'
+    ? 'Accepted declaration fingerprint'
+    : 'Accepted Inventory content hash'
+}
+
 /** Inventory dimension: the Agent-wide Node Inventory declaration the Server
- * currently accepts, and the Nodes it declares. The Server refuses a whole
- * report when the content changes while `inventory_revision` does not
- * (issue #181), so the accepted revision and hash are shown next to the Nodes
- * they describe instead of being inferred from the per-Node revisions. */
+ * currently accepts, and the Nodes it declares. The accepted revision and
+ * fingerprint are shown next to the Nodes they describe instead of being
+ * inferred from the per-Node revisions; an Agent whose declaration was never
+ * accepted stays explicitly Unknown rather than showing revision 0 (issue #188). */
 function InventoryPanel({ agent }: { agent: AgentDiagnostic }) {
   const nodes = agent.nodes
-  const { accepted_revision, accepted_sha256 } = agent.inventory
+  const { accepted_revision, accepted_sha256, accepted_declaration } = agent.inventory
   return (
     <CardX size="medium" className={CARD_SURFACE} header={<h3 className="text-sm font-medium">Inventory</h3>}>
       <DetailList>
-        <DetailItem label="Accepted revision">
-          {accepted_revision}{' '}
-          <small
-            className="text-[11px] text-muted-foreground"
-            title={accepted_sha256 ? 'Accepted Inventory content hash: ' + accepted_sha256 : undefined}
-          >
-            {accepted_sha256 ? shortHash(accepted_sha256) : 'content hash not recorded'}
-          </small>
+        <DetailItem label="Accepted declaration">
+          {accepted_revision == null ? (
+            <span>Unknown · no declaration accepted yet</span>
+          ) : (
+            <>
+              {revisionSourceLabel(accepted_declaration)} {accepted_revision}{' '}
+              <small
+                className="text-[11px] text-muted-foreground"
+                title={accepted_sha256 ? acceptedHashLabel(accepted_declaration) + ': ' + accepted_sha256 : undefined}
+              >
+                {accepted_sha256 ? shortHash(accepted_sha256) : 'content hash not recorded'}
+              </small>
+            </>
+          )}
         </DetailItem>
       </DetailList>
       {nodes.length === 0 && (
@@ -1561,15 +1580,28 @@ function DiagnosticsPanel({ agent }: { agent: AgentDiagnostic }) {
           <DetailItem label="Inventory rejection evidence">
             {agent.inventory.last_rejection ? (
               <div className="space-y-0.5">
-                <div>{agent.inventory.last_rejection.code}</div>
+                <div>
+                  {agent.inventory.last_rejection.code}
+                  {agent.inventory.last_rejection.declaration === 'server_managed'
+                    ? ' · server-managed declaration'
+                    : ''}
+                </div>
                 <small className="block text-[11px] text-muted-foreground">
-                  Declared revision {agent.inventory.last_rejection.reported_revision ?? 'Unknown'} ·{' '}
-                  {agent.inventory.last_rejection.reported_sha256
-                    ? shortHash(agent.inventory.last_rejection.reported_sha256)
-                    : 'content hash not recorded'}
+                  {agent.inventory.last_rejection.declaration === 'server_managed'
+                    ? 'Declared fingerprint ' +
+                      (agent.inventory.last_rejection.reported_sha256
+                        ? shortHash(agent.inventory.last_rejection.reported_sha256)
+                        : 'not recorded')
+                    : 'Declared revision ' +
+                      (agent.inventory.last_rejection.reported_revision ?? 'Unknown') +
+                      ' · ' +
+                      (agent.inventory.last_rejection.reported_sha256
+                        ? shortHash(agent.inventory.last_rejection.reported_sha256)
+                        : 'content hash not recorded')}
                 </small>
                 <small className="block text-[11px] text-muted-foreground">
-                  Accepted revision {agent.inventory.accepted_revision} ·{' '}
+                  {revisionSourceLabel(agent.inventory.accepted_declaration)}{' '}
+                  {agent.inventory.accepted_revision ?? 'Unknown'} ·{' '}
                   {agent.inventory.accepted_sha256
                     ? shortHash(agent.inventory.accepted_sha256)
                     : 'content hash not recorded'}

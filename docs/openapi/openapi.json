@@ -8372,22 +8372,29 @@
       },
       "AgentInventoryDiagnostic": {
         "type": "object",
-        "description": "What the Server currently accepts for one Agent's Node Inventory, and which\ndeclaration it refused last (issue #181). The pair is what makes the remedy\nobvious: the Agent declares revision `reported_revision` with hash\n`reported_sha256`, while the Server accepts `accepted_revision` with\n`accepted_sha256`.",
+        "description": "What the Server currently accepts for one Agent's Node Inventory, and which\ndeclaration it refused last (issue #181). The pair is what makes the remedy\nobvious: the Agent declares revision `reported_revision` with hash\n`reported_sha256`, while the Server accepts `accepted_revision` with\n`accepted_sha256`.\n\nThe declaration protocol is Server-recorded (issue #188). A v2\n(Server-managed) declaration carries no Agent-assigned revision, so it is\nexplained from the Server-assigned revision/canonical fingerprint plus the\nactual refusal evidence, never from a fabricated Agent revision. An Agent\nwhose declaration was never accepted has no accepted revision at all, which\nis distinct from an accepted empty Inventory.",
         "required": [
-          "accepted_revision"
+          "accepted_declaration"
         ],
         "properties": {
+          "accepted_declaration": {
+            "type": "string",
+            "description": "Which protocol produced the accepted declaration: `server_managed`\n(v2), `agent_declared` (v1), or `unknown` when nothing has been\naccepted or the evidence predates this field."
+          },
           "accepted_revision": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int64",
-            "description": "The revision of the Node Inventory the Server currently accepts."
+            "description": "The revision of the currently accepted Node Inventory: Server-assigned\nfor a v2 declaration, Agent-declared for v1. `None` means the Server has\nnever accepted a declaration from this Agent."
           },
           "accepted_sha256": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Content hash of that accepted Inventory. `None` means the Server has\nnever accepted an Inventory from this Agent."
+            "description": "Content hash (v1) or canonical declaration fingerprint (v2) of that\naccepted Inventory. `None` means no declaration was ever accepted."
           },
           "last_rejection": {
             "oneOf": [
@@ -8406,12 +8413,17 @@
         "type": "object",
         "description": "Server-recorded evidence of one whole-report Inventory rejection. All of it\nis Server-computed or Server-stored; nothing here is Agent-reported\ndiagnostics.",
         "required": [
-          "code"
+          "code",
+          "declaration"
         ],
         "properties": {
           "code": {
             "type": "string",
             "description": "Stable rejection code: `inventory_revision_conflict` or\n`network_key_unknown`."
+          },
+          "declaration": {
+            "type": "string",
+            "description": "Which protocol produced the refused declaration: `server_managed` (v2)\nor `agent_declared` (v1). A v2 refusal declares no revision."
           },
           "received_at": {
             "type": [
@@ -8426,14 +8438,14 @@
               "null"
             ],
             "format": "int64",
-            "description": "The Inventory revision the refused report declared."
+            "description": "The Inventory revision the refused report declared. `None` for a v2\n(Server-managed) declaration, which declares no revision."
           },
           "reported_sha256": {
             "type": [
               "string",
               "null"
             ],
-            "description": "The Inventory content hash the refused report declared."
+            "description": "The Inventory content hash (v1) or canonical declaration fingerprint\n(v2) the refused report declared."
           }
         }
       },

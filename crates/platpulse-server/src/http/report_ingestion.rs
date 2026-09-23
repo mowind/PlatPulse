@@ -279,7 +279,7 @@ async fn store_rejected<I: ReportInventory>(
         .rejections()
         .first()
         .map(|rejection| rejection.code.as_str());
-    let result = sqlx::query("INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at, rejection_code, inventory_revision, inventory_sha256) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    let result = sqlx::query("INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at, rejection_code, inventory_revision, inventory_sha256, inventory_protocol_major) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .bind(report.report_id.to_string()).bind(report.agent_id.to_string())
         .bind(report.agent_epoch as i64).bind(report.boot_id.to_string())
         .bind(report.report_sequence as i64).bind(hash.to_string())
@@ -288,6 +288,11 @@ async fn store_rejected<I: ReportInventory>(
         .bind(rejection_code)
         .bind(report.inventory.declared_revision().map(|revision| revision as i64))
         .bind(report.inventory.accepted_sha256().to_string())
+        // The Server-owned protocol major of the refused declaration. v2
+        // declares no revision, so the Admin diagnosis explains it from the
+        // accepted revision/fingerprint and this evidence instead of forging a
+        // removed Agent-supplied revision (issue #188).
+        .bind(I::protocol_version() as i64)
         .execute(&mut *tx).await;
     if result.is_err() || tx.commit().await.is_err() {
         return error(
@@ -2755,12 +2760,13 @@ async fn ingest_report<I: ReportInventory>(
     let shutdown_last_error = shutdown_diag
         .and_then(|value| value.shutdown_last_error.as_deref())
         .map(crate::redaction::redact_sensitive);
-    let updated = sqlx::query("UPDATE agents SET active_boot_id=?, active_boot_status=?, previous_boot_id=?, close_report_id=CASE WHEN ?='closed' THEN ? ELSE close_report_id END, last_report_sequence=?, last_inventory_revision=?, inventory_sha256=?, last_received_at=?, clock_skew_ms=?, clock_status=?, agent_capabilities_json=?, shutdown_state=?, shutdown_started_at=?, shutdown_deadline_at=?, shutdown_finished_at=?, shutdown_unresolved_from=?, shutdown_unresolved_to=?, shutdown_last_error=?, shutdown_forced=?, shutdown_report_id=CASE WHEN ?='closed' THEN ? ELSE shutdown_report_id END, shutdown_report_sequence=?, shutdown_updated_at=?, updated_at=? WHERE agent_id=?")
+    let updated = sqlx::query("UPDATE agents SET active_boot_id=?, active_boot_status=?, previous_boot_id=?, close_report_id=CASE WHEN ?='closed' THEN ? ELSE close_report_id END, last_report_sequence=?, last_inventory_revision=?, inventory_sha256=?, inventory_protocol_major=?, last_received_at=?, clock_skew_ms=?, clock_status=?, agent_capabilities_json=?, shutdown_state=?, shutdown_started_at=?, shutdown_deadline_at=?, shutdown_finished_at=?, shutdown_unresolved_from=?, shutdown_unresolved_to=?, shutdown_last_error=?, shutdown_forced=?, shutdown_report_id=CASE WHEN ?='closed' THEN ? ELSE shutdown_report_id END, shutdown_report_sequence=?, shutdown_updated_at=?, updated_at=? WHERE agent_id=?")
         .bind(parsed.boot_id.to_string()).bind(lifecycle_status)
         .bind(parsed.previous_boot_id.map(|v| v.to_string()))
         .bind(lifecycle_status).bind(parsed.report_id.to_string())
         .bind(parsed.report_sequence as i64).bind(effective_inventory_revision as i64)
-        .bind(inventory_hash.as_str()).bind(&now_text).bind(clock_skew_ms).bind(clock_status)
+        .bind(inventory_hash.as_str()).bind(I::protocol_version() as i64)
+        .bind(&now_text).bind(clock_skew_ms).bind(clock_status)
         .bind(capabilities)
         .bind(shutdown_state)
         .bind(shutdown_diag.and_then(|v| v.shutdown_started_at.as_ref()).map(ToString::to_string))

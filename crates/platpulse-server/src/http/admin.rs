@@ -1043,14 +1043,27 @@ pub struct AgentDiagnostic {
 /// obvious: the Agent declares revision `reported_revision` with hash
 /// `reported_sha256`, while the Server accepts `accepted_revision` with
 /// `accepted_sha256`.
+///
+/// The declaration protocol is Server-recorded (issue #188). A v2
+/// (Server-managed) declaration carries no Agent-assigned revision, so it is
+/// explained from the Server-assigned revision/canonical fingerprint plus the
+/// actual refusal evidence, never from a fabricated Agent revision. An Agent
+/// whose declaration was never accepted has no accepted revision at all, which
+/// is distinct from an accepted empty Inventory.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct AgentInventoryDiagnostic {
-    /// The revision of the Node Inventory the Server currently accepts.
-    pub accepted_revision: i64,
-    /// Content hash of that accepted Inventory. `None` means the Server has
-    /// never accepted an Inventory from this Agent.
+    /// The revision of the currently accepted Node Inventory: Server-assigned
+    /// for a v2 declaration, Agent-declared for v1. `None` means the Server has
+    /// never accepted a declaration from this Agent.
+    pub accepted_revision: Option<i64>,
+    /// Content hash (v1) or canonical declaration fingerprint (v2) of that
+    /// accepted Inventory. `None` means no declaration was ever accepted.
     pub accepted_sha256: Option<String>,
+    /// Which protocol produced the accepted declaration: `server_managed`
+    /// (v2), `agent_declared` (v1), or `unknown` when nothing has been
+    /// accepted or the evidence predates this field.
+    pub accepted_declaration: String,
     /// The refusal that stopped the Agent's most recent report, when that
     /// report was refused because of its Inventory. `None` means the latest
     /// ingestion attempt was not an Inventory rejection.
@@ -1066,12 +1079,25 @@ pub struct AgentInventoryRejectionEvidence {
     /// Stable rejection code: `inventory_revision_conflict` or
     /// `network_key_unknown`.
     pub code: String,
-    /// The Inventory revision the refused report declared.
+    /// Which protocol produced the refused declaration: `server_managed` (v2)
+    /// or `agent_declared` (v1). A v2 refusal declares no revision.
+    pub declaration: String,
+    /// The Inventory revision the refused report declared. `None` for a v2
+    /// (Server-managed) declaration, which declares no revision.
     pub reported_revision: Option<i64>,
-    /// The Inventory content hash the refused report declared.
+    /// The Inventory content hash (v1) or canonical declaration fingerprint
+    /// (v2) the refused report declared.
     pub reported_sha256: Option<String>,
     /// When the Server stored the refusing Report Receipt.
     pub received_at: Option<String>,
+}
+
+/// The Admin Inventory diagnosis plus the raw protocol major of the refused
+/// declaration, which the shared Attention evidence reuses so the page and the
+/// item can never disagree about how to explain the same refusal.
+struct InventoryDiagnosis {
+    diagnostic: AgentInventoryDiagnostic,
+    rejected_protocol_major: Option<i64>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -2580,6 +2606,7 @@ struct AgentAdminRow {
     security_event_count: i64,
     accepted_inventory_revision: i64,
     accepted_inventory_sha256: Option<String>,
+    accepted_inventory_protocol_major: Option<i64>,
 }
 
 #[utoipa::path(
@@ -2594,7 +2621,7 @@ async fn diagnostics(
 ) -> impl IntoResponse {
     let agents = sqlx::query_as::<_, AgentAdminRow>(
 
-        "SELECT agent_id, display_name, notes, agent_epoch, active_boot_id, active_boot_status, previous_boot_id, close_report_id, shutdown_state, shutdown_started_at, shutdown_deadline_at, shutdown_finished_at, shutdown_unresolved_from, shutdown_unresolved_to, shutdown_last_error, shutdown_forced, shutdown_report_id, shutdown_report_sequence, shutdown_updated_at, last_report_sequence, agent_capabilities_json, clock_skew_ms, clock_status, last_received_at, security_event_count, last_inventory_revision AS accepted_inventory_revision, inventory_sha256 AS accepted_inventory_sha256 FROM agents WHERE deleted_at IS NULL ORDER BY agent_id",
+        "SELECT agent_id, display_name, notes, agent_epoch, active_boot_id, active_boot_status, previous_boot_id, close_report_id, shutdown_state, shutdown_started_at, shutdown_deadline_at, shutdown_finished_at, shutdown_unresolved_from, shutdown_unresolved_to, shutdown_last_error, shutdown_forced, shutdown_report_id, shutdown_report_sequence, shutdown_updated_at, last_report_sequence, agent_capabilities_json, clock_skew_ms, clock_status, last_received_at, security_event_count, last_inventory_revision AS accepted_inventory_revision, inventory_sha256 AS accepted_inventory_sha256, inventory_protocol_major AS accepted_inventory_protocol_major FROM agents WHERE deleted_at IS NULL ORDER BY agent_id",
     )
     .fetch_all(state.db().pool())
     .await
@@ -2638,6 +2665,7 @@ async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> AgentDiagnost
         security_event_count,
         accepted_inventory_revision,
         accepted_inventory_sha256,
+        accepted_inventory_protocol_major,
     } = row;
     let capabilities = serde_json::from_str::<Vec<String>>(&capabilities_json)
         .unwrap_or_default()
@@ -2717,6 +2745,7 @@ async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> AgentDiagnost
         &agent_id,
         accepted_inventory_revision,
         accepted_inventory_sha256.clone(),
+        accepted_inventory_protocol_major,
     )
     .await;
     // Server-owned Attention Items for this Agent, with the occurrence
@@ -2742,22 +2771,28 @@ async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> AgentDiagnost
             // Admin DTO and the attention boundary, so the page and the item
             // can never disagree about which attempt was refused.
             latest_receipt_disposition: inventory
+                .diagnostic
                 .last_rejection
                 .as_ref()
                 .map(|_| "rejected".to_owned()),
             latest_rejection_code: inventory
+                .diagnostic
                 .last_rejection
                 .as_ref()
                 .map(|evidence| evidence.code.clone()),
             latest_rejection_inventory_revision: inventory
+                .diagnostic
                 .last_rejection
                 .as_ref()
                 .and_then(|evidence| evidence.reported_revision),
             latest_rejection_inventory_sha256: inventory
+                .diagnostic
                 .last_rejection
                 .as_ref()
                 .and_then(|evidence| evidence.reported_sha256.clone()),
+            latest_rejection_inventory_protocol_major: inventory.rejected_protocol_major,
             latest_receipt_at: inventory
+                .diagnostic
                 .last_rejection
                 .as_ref()
                 .and_then(|evidence| evidence.received_at.clone()),
@@ -2798,7 +2833,7 @@ async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> AgentDiagnost
         credentials,
         host,
         nodes,
-        inventory,
+        inventory: inventory.diagnostic,
         attention,
     }
 }
@@ -2817,33 +2852,51 @@ async fn agent_inventory_diagnostic(
     agent_id: &str,
     accepted_revision: i64,
     accepted_sha256: Option<String>,
-) -> AgentInventoryDiagnostic {
-    let latest = sqlx::query_as::<_, (String, Option<String>, Option<i64>, Option<String>, String)>(
-        "SELECT disposition, rejection_code, inventory_revision, inventory_sha256, received_at FROM agent_report_receipts WHERE agent_id = ? ORDER BY received_at DESC, report_sequence DESC LIMIT 1",
+    accepted_protocol_major: Option<i64>,
+) -> InventoryDiagnosis {
+    let latest = sqlx::query_as::<_, (String, Option<String>, Option<i64>, Option<String>, String, Option<i64>)>(
+        "SELECT disposition, rejection_code, inventory_revision, inventory_sha256, received_at, inventory_protocol_major FROM agent_report_receipts WHERE agent_id = ? ORDER BY received_at DESC, report_sequence DESC LIMIT 1",
     )
     .bind(agent_id)
     .fetch_optional(state.db().pool())
     .await
     .ok()
     .flatten();
-    let last_rejection = latest.and_then(
-        |(disposition, code, reported_revision, reported_sha256, received_at)| {
-            let code = code?;
-            if disposition != "rejected" || !crate::attention::is_inventory_rejection_code(&code) {
-                return None;
-            }
-            Some(AgentInventoryRejectionEvidence {
-                code,
+    let rejection = latest.filter(|row| {
+        row.0.as_str() == "rejected"
+            && row
+                .1
+                .as_deref()
+                .is_some_and(crate::attention::is_inventory_rejection_code)
+    });
+    // The refusal keeps the protocol Server-recorded with the receipt, so a v2
+    // declaration is explained as Server-managed and never given a fabricated
+    // Agent revision (issue #188).
+    let rejected_protocol_major = rejection
+        .as_ref()
+        .and_then(|(_, _, _, _, _, protocol_major)| *protocol_major);
+    let last_rejection = rejection.map(
+        |(_, code, reported_revision, reported_sha256, received_at, protocol_major)| {
+            AgentInventoryRejectionEvidence {
+                code: code.expect("filtered on an Inventory rejection code"),
+                declaration: crate::attention::declaration_kind(protocol_major).to_owned(),
                 reported_revision,
                 reported_sha256,
                 received_at: Some(received_at),
-            })
+            }
         },
     );
-    AgentInventoryDiagnostic {
-        accepted_revision,
-        accepted_sha256,
-        last_rejection,
+    InventoryDiagnosis {
+        diagnostic: AgentInventoryDiagnostic {
+            // No accepted hash means the Server never accepted a declaration:
+            // uninitialized, not an accepted Inventory at revision 0.
+            accepted_revision: accepted_sha256.as_ref().map(|_| accepted_revision),
+            accepted_sha256,
+            accepted_declaration: crate::attention::declaration_kind(accepted_protocol_major)
+                .to_owned(),
+            last_rejection,
+        },
+        rejected_protocol_major,
     }
 }
 
@@ -3390,7 +3443,7 @@ pub(crate) async fn admin_agent_detail(
     Extension(request_id): Extension<super::RequestId>,
 ) -> Response {
     let Some(row) = sqlx::query_as::<_, AgentAdminRow>(
-        "SELECT agent_id, display_name, notes, agent_epoch, active_boot_id, active_boot_status, previous_boot_id, close_report_id, shutdown_state, shutdown_started_at, shutdown_deadline_at, shutdown_finished_at, shutdown_unresolved_from, shutdown_unresolved_to, shutdown_last_error, shutdown_forced, shutdown_report_id, shutdown_report_sequence, shutdown_updated_at, last_report_sequence, agent_capabilities_json, clock_skew_ms, clock_status, last_received_at, security_event_count, last_inventory_revision AS accepted_inventory_revision, inventory_sha256 AS accepted_inventory_sha256 FROM agents WHERE agent_id = ? AND deleted_at IS NULL",
+        "SELECT agent_id, display_name, notes, agent_epoch, active_boot_id, active_boot_status, previous_boot_id, close_report_id, shutdown_state, shutdown_started_at, shutdown_deadline_at, shutdown_finished_at, shutdown_unresolved_from, shutdown_unresolved_to, shutdown_last_error, shutdown_forced, shutdown_report_id, shutdown_report_sequence, shutdown_updated_at, last_report_sequence, agent_capabilities_json, clock_skew_ms, clock_status, last_received_at, security_event_count, last_inventory_revision AS accepted_inventory_revision, inventory_sha256 AS accepted_inventory_sha256, inventory_protocol_major AS accepted_inventory_protocol_major FROM agents WHERE agent_id = ? AND deleted_at IS NULL",
     )
     .bind(&agent_id)
     .fetch_optional(state.db().pool())
@@ -9183,10 +9236,11 @@ mod tests {
         rejection_code: Option<&str>,
         inventory_revision: Option<i64>,
         inventory_sha256: Option<&str>,
+        inventory_protocol_major: Option<i64>,
         received_at: &str,
     ) {
         sqlx::query(
-            "INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at, rejection_code, inventory_revision, inventory_sha256) VALUES (?, 'agent-lifecycle-test', 1, 'boot-inventory-test', ?, 'body-hash', ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at, rejection_code, inventory_revision, inventory_sha256, inventory_protocol_major) VALUES (?, 'agent-lifecycle-test', 1, 'boot-inventory-test', ?, 'body-hash', ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(report_id)
         .bind(report_sequence)
@@ -9196,6 +9250,7 @@ mod tests {
         .bind(rejection_code)
         .bind(inventory_revision)
         .bind(inventory_sha256)
+        .bind(inventory_protocol_major)
         .execute(state.db().pool())
         .await
         .unwrap();
@@ -9216,7 +9271,7 @@ mod tests {
     #[tokio::test]
     async fn agent_detail_exposes_newest_inventory_rejection_evidence() {
         let (_dir, state) = lifecycle_state().await;
-        sqlx::query("UPDATE agents SET last_inventory_revision=6, inventory_sha256='accepted-hash' WHERE agent_id='agent-lifecycle-test'")
+        sqlx::query("UPDATE agents SET last_inventory_revision=6, inventory_sha256='accepted-hash', inventory_protocol_major=1 WHERE agent_id='agent-lifecycle-test'")
             .execute(state.db().pool())
             .await
             .unwrap();
@@ -9231,6 +9286,7 @@ mod tests {
             Some("inventory_revision_conflict"),
             Some(9),
             Some("refused-hash"),
+            Some(1),
             "2026-08-12T08:00:00Z",
         )
         .await;
@@ -9238,8 +9294,16 @@ mod tests {
         assert_eq!(rejected["inventory"]["accepted_revision"], 6);
         assert_eq!(rejected["inventory"]["accepted_sha256"], "accepted-hash");
         assert_eq!(
+            rejected["inventory"]["accepted_declaration"],
+            "agent_declared"
+        );
+        assert_eq!(
             rejected["inventory"]["last_rejection"]["code"],
             "inventory_revision_conflict"
+        );
+        assert_eq!(
+            rejected["inventory"]["last_rejection"]["declaration"],
+            "agent_declared"
         );
         assert_eq!(
             rejected["inventory"]["last_rejection"]["reported_revision"],
@@ -9274,6 +9338,7 @@ mod tests {
             None,
             None,
             None,
+            Some(1),
             "2026-08-12T08:00:00Z",
         )
         .await;
@@ -9292,6 +9357,7 @@ mod tests {
             Some("network_key_unknown"),
             Some(9),
             Some("refused-hash-2"),
+            Some(1),
             "2026-08-12T09:00:00Z",
         )
         .await;
@@ -9304,5 +9370,76 @@ mod tests {
             latest["inventory"]["last_rejection"]["reported_sha256"],
             "refused-hash-2"
         );
+    }
+
+    /// Issue #188: the Server-owned declaration protocol explains a v2
+    /// (Server-managed) diagnosis from the accepted pair and the refusal
+    /// evidence, without fabricating the Agent revision v2 removed; an Agent
+    /// with no accepted declaration is Unknown, never revision 0.
+    #[tokio::test]
+    async fn agent_detail_explains_server_managed_inventory_evidence() {
+        let (_dir, state) = lifecycle_state().await;
+
+        // Never accepted: no revision exists, and no evidence is invented.
+        let never = lifecycle_agent_detail(&state).await;
+        assert!(never["inventory"]["accepted_revision"].is_null());
+        assert!(never["inventory"]["accepted_sha256"].is_null());
+        assert_eq!(never["inventory"]["accepted_declaration"], "unknown");
+        assert!(never["inventory"]["last_rejection"].is_null());
+
+        // A v2 declaration was accepted with a Server-assigned revision and
+        // canonical fingerprint; the newest attempt was refused.
+        sqlx::query("UPDATE agents SET last_inventory_revision=3, inventory_sha256='canonical-fingerprint', inventory_protocol_major=2 WHERE agent_id='agent-lifecycle-test'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        insert_report_receipt(
+            &state,
+            "receipt-v2-rejected",
+            1,
+            "rejected",
+            Some("inventory_revision_conflict"),
+            None,
+            Some("refused-fingerprint"),
+            Some(2),
+            "2026-08-12T08:00:00Z",
+        )
+        .await;
+        let rejected = lifecycle_agent_detail(&state).await;
+        assert_eq!(rejected["inventory"]["accepted_revision"], 3);
+        assert_eq!(
+            rejected["inventory"]["accepted_sha256"],
+            "canonical-fingerprint"
+        );
+        assert_eq!(
+            rejected["inventory"]["accepted_declaration"],
+            "server_managed"
+        );
+        assert_eq!(
+            rejected["inventory"]["last_rejection"]["declaration"],
+            "server_managed"
+        );
+        assert!(
+            rejected["inventory"]["last_rejection"]["reported_revision"].is_null(),
+            "a v2 refusal must not fabricate an Agent-supplied revision"
+        );
+        assert_eq!(
+            rejected["inventory"]["last_rejection"]["reported_sha256"],
+            "refused-fingerprint"
+        );
+        // The Attention message speaks to the Server-managed remedy, never to
+        // bumping a revision the Agent no longer supplies.
+        let message = rejected["attention"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["kind"] == "agent_inventory_rejected")
+            .map(|item| item["message"].as_str().unwrap().to_owned())
+            .expect("the Server-managed refusal is an Attention Item");
+        assert!(
+            message.contains("Server-assigned") && message.contains("exhausted"),
+            "unexpected v2 message: {message}"
+        );
+        assert!(!message.contains("bump inventory_revision"));
     }
 }

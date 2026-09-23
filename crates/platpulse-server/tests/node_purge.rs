@@ -19,8 +19,8 @@ use tower::ServiceExt;
 
 use platpulse_core::block::{BlockProductionAttribution, BlockSource, BlockSummary};
 use platpulse_core::{
-    AgentReport, InventoryDisposition, NodeCurrentDisposition, ReceiptDisposition, RejectionCode,
-    ReportReceipt, SampleDispositionKind,
+    AgentReport, InventoryDeclaration, InventoryDisposition, NodeCurrentDisposition,
+    ReceiptDisposition, RejectionCode, ReportReceipt, ReportReceiptV2, SampleDispositionKind,
 };
 use platpulse_server::{AppState, auth, database, http, network, secrets};
 
@@ -1081,4 +1081,639 @@ async fn a_purged_entrys_unknown_network_key_neither_blocks_siblings_nor_leaks()
         leaked, 0,
         "a purged entry's unvalidated Network key must not create shared Network state"
     );
+}
+// ---------------------------------------------------------------------------
+// v2 (Server-managed Inventory Revision) Node lifecycle (issue #188).
+//
+// A v2 declaration carries content only; the Server allocates the accepted
+// revision and canonical fingerprint. Purge, ownership, Transfer and Network
+// admission stay per-Node decisions that every new report re-evaluates, even
+// when the declaration fingerprint is unchanged.
+// ---------------------------------------------------------------------------
+
+/// The frozen v2 fixture reshaped for one Agent/epoch. The declaration carries
+/// no Agent-assigned revision.
+fn v2_fixture_report(agent_id: &str, agent_epoch: u64) -> AgentReport<InventoryDeclaration> {
+    let mut report: AgentReport<InventoryDeclaration> = serde_json::from_slice(include_bytes!(
+        "../../platpulse-core/tests/fixtures/report_v2_minimal.json"
+    ))
+    .unwrap();
+    report.agent_id = agent_id.parse().unwrap();
+    report.agent_epoch = agent_epoch;
+    report
+}
+
+/// The v2 twin of two_node_report: two declared Nodes, registered Network
+/// Identity, and one Block Summary per Node. No Agent revision.
+fn v2_two_node_report(
+    agent_id: &str,
+    agent_epoch: u64,
+    report_sequence: u64,
+    report_id: &str,
+    first_height: u64,
+) -> AgentReport<InventoryDeclaration> {
+    let mut report = v2_fixture_report(agent_id, agent_epoch);
+    report.report_sequence = report_sequence;
+    report.report_id = report_id.parse().unwrap();
+    align_registered_identity(&mut report);
+    let mut inventory_node = report.inventory.nodes[0].clone();
+    inventory_node.node_id = SECOND_NODE_ID.parse().unwrap();
+    report.inventory.nodes.push(inventory_node);
+    let mut observation = report.nodes[0].clone();
+    observation.node_id = SECOND_NODE_ID.parse().unwrap();
+    report.nodes.push(observation);
+    let block_summaries: Vec<BlockSummary> = report
+        .inventory
+        .nodes
+        .iter()
+        .zip(report.nodes.iter())
+        .enumerate()
+        .map(|(index, (node, observation))| BlockSummary {
+            node_id: node.node_id,
+            network_identity: observation.chain.network_identity.latest.clone().unwrap(),
+            block_number: first_height + index as u64,
+            block_hash: format!("0x{:064x}", 0xaa + index).parse().unwrap(),
+            parent_hash: format!("0x{:064x}", 0xbb + index).parse().unwrap(),
+            block_timestamp_ms: 1_000,
+            observed_at: report.generated_at,
+            transaction_count: 3,
+            block_interval_ms: None,
+            source: BlockSource::Subscription,
+            attribution: BlockProductionAttribution::unknown_attribution(
+                "0x1111111111111111111111111111111111111111"
+                    .parse()
+                    .unwrap(),
+                "test",
+            ),
+        })
+        .collect();
+    report.block_summaries.extend(block_summaries);
+    report.validate().unwrap();
+    report
+}
+
+/// Align every Node observation Network Identity with the registered Network
+/// so its Block Summary is genuinely admissible.
+fn align_registered_identity(report: &mut AgentReport<InventoryDeclaration>) {
+    for node in &mut report.nodes {
+        let identity = node.chain.network_identity.latest.as_mut().unwrap();
+        identity.genesis_hash = NETWORK_GENESIS.parse().unwrap();
+        identity.address_hrp = Some("lat".to_owned());
+    }
+}
+
+/// The v2 twin of fixture_report: the single fixture Node with a registered
+/// Network Identity.
+fn v2_single_node_report(
+    agent_id: &str,
+    agent_epoch: u64,
+    report_sequence: u64,
+    report_id: &str,
+) -> AgentReport<InventoryDeclaration> {
+    let mut report = v2_fixture_report(agent_id, agent_epoch);
+    report.report_sequence = report_sequence;
+    report.report_id = report_id.parse().unwrap();
+    align_registered_identity(&mut report);
+    report.validate().unwrap();
+    report
+}
+
+async fn post_v2_report(
+    harness: &Harness,
+    credential: &str,
+    report: &AgentReport<InventoryDeclaration>,
+) -> (StatusCode, Value) {
+    let response = harness
+        .send(bearer_post(
+            "/api/agent/v2/reports",
+            credential,
+            serde_json::to_vec(report).unwrap(),
+        ))
+        .await;
+    let status = response.status();
+    (status, body_json(response).await)
+}
+
+fn v2_receipt_of(value: &Value) -> ReportReceiptV2 {
+    serde_json::from_value(value["receipt"].clone()).unwrap()
+}
+
+async fn accepted_revision(harness: &Harness, agent_id: &str) -> i64 {
+    sqlx::query_scalar("SELECT last_inventory_revision FROM agents WHERE agent_id = ?")
+        .bind(agent_id)
+        .fetch_one(harness.pool())
+        .await
+        .unwrap()
+}
+
+async fn accepted_fingerprint(harness: &Harness, agent_id: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT inventory_sha256 FROM agents WHERE agent_id = ?")
+        .bind(agent_id)
+        .fetch_one(harness.pool())
+        .await
+        .unwrap()
+}
+
+/// A still-pending Transfer into the reporting Agent, valid for the whole test.
+async fn pending_v2_transfer(harness: &Harness, node_id: &str, source: &str, target: &str) {
+    sqlx::query(
+        "INSERT INTO node_transfers (transfer_id, node_id, source_agent_id, target_agent_id, status, operator_reason, created_at, expires_at, updated_at) VALUES ('transfer-v2-1', ?, ?, ?, 'pending', 'v2 handover', '2026-01-01T00:00:00Z', '2099-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+    )
+    .bind(node_id)
+    .bind(source)
+    .bind(target)
+    .execute(harness.pool())
+    .await
+    .unwrap();
+}
+
+/// Identical declaration content (same canonical fingerprint, including the
+/// still-declared purged ID) keeps the Server-assigned revision, but every
+/// report still re-runs Purge admission per entry; a genuine declaration change
+/// allocates the next revision yet never rebuilds the purged Node.
+#[tokio::test]
+async fn v2_purged_node_is_rejected_per_entry_while_its_sibling_is_admitted() {
+    let harness = Harness::boot().await;
+    let owner = login(&harness, OWNER_LOGIN_BODY).await;
+    let (agent_id, credential) = enroll_agent(&harness, &owner).await;
+
+    let first = v2_two_node_report(&agent_id, 1, 1, "0195f2a1-0060-4060-8060-000000000060", 10);
+    let purged = first.inventory.nodes[0].node_id.to_string();
+    let sibling = first.inventory.nodes[1].node_id.to_string();
+    let fingerprint = first.inventory.fingerprint();
+    let (status, value) = post_v2_report(&harness, &credential, &first).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let receipt = v2_receipt_of(&value);
+    assert_eq!(receipt.disposition, ReceiptDisposition::Accepted);
+    let acceptance = receipt
+        .inventory
+        .as_ref()
+        .unwrap()
+        .acceptance
+        .as_ref()
+        .unwrap();
+    assert_eq!(acceptance.revision, 1);
+    assert_eq!(acceptance.fingerprint, fingerprint);
+
+    purge_node(&harness, &owner, &purged).await;
+    // Node Purge is an admission change, not a declaration change: it neither
+    // advances the revision nor rewrites the accepted fingerprint.
+    assert_eq!(accepted_revision(&harness, &agent_id).await, 1);
+    assert_eq!(
+        accepted_fingerprint(&harness, &agent_id).await.as_deref(),
+        Some(fingerprint.as_str())
+    );
+
+    // Same content: Inventory unchanged (revision 1), purged entry rejected,
+    // valid sibling admitted.
+    let second = v2_two_node_report(&agent_id, 1, 2, "0195f2a1-0061-4061-8061-000000000061", 20);
+    assert_eq!(second.inventory.fingerprint(), fingerprint);
+    let (status, value) = post_v2_report(&harness, &credential, &second).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let receipt = v2_receipt_of(&value);
+    assert_eq!(receipt.disposition, ReceiptDisposition::PartiallyAccepted);
+    let inventory = receipt.inventory.as_ref().unwrap();
+    assert_eq!(inventory.disposition, InventoryDisposition::Unchanged);
+    let acceptance = inventory.acceptance.as_ref().unwrap();
+    assert_eq!(
+        acceptance.revision, 1,
+        "an unchanged declaration keeps the Server-assigned revision"
+    );
+    assert_eq!(acceptance.fingerprint, fingerprint);
+    let purged_entry = receipt
+        .nodes
+        .iter()
+        .find(|node| node.node_id.to_string() == purged)
+        .unwrap();
+    assert_eq!(purged_entry.current, NodeCurrentDisposition::Rejected);
+    assert_eq!(purged_entry.rejections[0].code, RejectionCode::NodePurged);
+    let sibling_entry = receipt
+        .nodes
+        .iter()
+        .find(|node| node.node_id.to_string() == sibling)
+        .unwrap();
+    assert_eq!(sibling_entry.current, NodeCurrentDisposition::Accepted);
+    let purged_sample = receipt
+        .samples
+        .iter()
+        .find(|sample| sample.node_id.to_string() == purged)
+        .unwrap();
+    assert_eq!(
+        purged_sample.disposition,
+        SampleDispositionKind::TerminalRejected
+    );
+    assert_eq!(
+        purged_sample.rejection.as_ref().unwrap().code,
+        RejectionCode::NodePurged
+    );
+    let sibling_sample = receipt
+        .samples
+        .iter()
+        .find(|sample| sample.node_id.to_string() == sibling)
+        .unwrap();
+    assert_eq!(sibling_sample.disposition, SampleDispositionKind::Accepted);
+    assert_eq!(node_row_count(&harness, &purged).await, 0);
+    assert_eq!(node_row_count(&harness, &sibling).await, 1);
+
+    // A real content change allocates the next revision and still refuses the
+    // purged entry without rebuilding any of its state.
+    let mut changed =
+        v2_two_node_report(&agent_id, 1, 3, "0195f2a1-0062-4062-8062-000000000062", 30);
+    changed.inventory.nodes[1].display_name = Some("Sibling renamed".to_owned());
+    changed.validate().unwrap();
+    assert_ne!(changed.inventory.fingerprint(), fingerprint);
+    let (status, value) = post_v2_report(&harness, &credential, &changed).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let receipt = v2_receipt_of(&value);
+    let inventory = receipt.inventory.as_ref().unwrap();
+    assert_eq!(inventory.disposition, InventoryDisposition::Accepted);
+    assert_eq!(inventory.acceptance.as_ref().unwrap().revision, 2);
+    let purged_entry = receipt
+        .nodes
+        .iter()
+        .find(|node| node.node_id.to_string() == purged)
+        .unwrap();
+    assert_eq!(purged_entry.rejections[0].code, RejectionCode::NodePurged);
+    assert_eq!(node_row_count(&harness, &purged).await, 0);
+    assert_eq!(accepted_revision(&harness, &agent_id).await, 2);
+    for table in [
+        "component_status",
+        "block_summaries",
+        "block_history_state",
+        "block_identity_window",
+        "observed_network_heads",
+        "node_transfers",
+    ] {
+        assert_eq!(
+            count_for_node(&harness, table, &purged).await,
+            0,
+            "{table} rebuilt the purged Node"
+        );
+    }
+    assert!(count_for_node(&harness, "component_status", &sibling).await > 0);
+}
+
+/// A valid v2 declaration whose every Node was purged is still an accepted
+/// (or unchanged) Inventory with every entry rejected per Node: a per-Node
+/// admission failure is never disguised as a half-Inventory success or an
+/// invalid structure.
+#[tokio::test]
+async fn v2_inventory_with_every_node_purged_is_accepted_with_every_entry_rejected() {
+    let harness = Harness::boot().await;
+    let owner = login(&harness, OWNER_LOGIN_BODY).await;
+    let (agent_id, credential) = enroll_agent(&harness, &owner).await;
+
+    let first = v2_two_node_report(&agent_id, 1, 1, "0195f2a1-0063-4063-8063-000000000063", 10);
+    let nodes: Vec<String> = first
+        .inventory
+        .nodes
+        .iter()
+        .map(|node| node.node_id.to_string())
+        .collect();
+    let fingerprint = first.inventory.fingerprint();
+    let (status, value) = post_v2_report(&harness, &credential, &first).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    assert_eq!(
+        v2_receipt_of(&value).disposition,
+        ReceiptDisposition::Accepted
+    );
+    for node_id in &nodes {
+        purge_node(&harness, &owner, node_id).await;
+    }
+    assert_eq!(accepted_revision(&harness, &agent_id).await, 1);
+
+    // Unchanged content: Inventory accepted/unchanged with revision 1, every
+    // entry rejected.
+    let second = v2_two_node_report(&agent_id, 1, 2, "0195f2a1-0064-4064-8064-000000000064", 20);
+    assert_eq!(second.inventory.fingerprint(), fingerprint);
+    let (status, value) = post_v2_report(&harness, &credential, &second).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let receipt = v2_receipt_of(&value);
+    assert_eq!(receipt.disposition, ReceiptDisposition::PartiallyAccepted);
+    let inventory = receipt.inventory.as_ref().unwrap();
+    assert_eq!(inventory.disposition, InventoryDisposition::Unchanged);
+    assert_eq!(inventory.acceptance.as_ref().unwrap().revision, 1);
+    assert_eq!(receipt.nodes.len(), 2);
+    for entry in &receipt.nodes {
+        assert_eq!(entry.current, NodeCurrentDisposition::Rejected);
+        assert_eq!(entry.rejections[0].code, RejectionCode::NodePurged);
+    }
+
+    // A content change is a real declaration transition (revision 2) while all
+    // entries stay per-Node rejected; it is never a whole-Inventory rejection.
+    let mut changed =
+        v2_two_node_report(&agent_id, 1, 3, "0195f2a1-0065-4065-8065-000000000065", 30);
+    changed.inventory.nodes[0].rpc_endpoint = "ws://127.0.0.1:6799".parse().unwrap();
+    changed.validate().unwrap();
+    assert_ne!(changed.inventory.fingerprint(), fingerprint);
+    let (status, value) = post_v2_report(&harness, &credential, &changed).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let receipt = v2_receipt_of(&value);
+    assert_eq!(receipt.disposition, ReceiptDisposition::PartiallyAccepted);
+    let inventory = receipt.inventory.as_ref().unwrap();
+    assert_eq!(inventory.disposition, InventoryDisposition::Accepted);
+    assert_eq!(inventory.acceptance.as_ref().unwrap().revision, 2);
+    assert!(receipt.rejections.is_empty());
+    for entry in &receipt.nodes {
+        assert_eq!(entry.rejections[0].code, RejectionCode::NodePurged);
+    }
+    for node_id in &nodes {
+        assert_eq!(node_row_count(&harness, node_id).await, 0);
+    }
+    assert_eq!(accepted_revision(&harness, &agent_id).await, 2);
+}
+
+/// An authenticated exact replay returns the stored immutable Receipt and
+/// never re-applies the removed projection; a new report at the same content
+/// and a genuinely changed declaration are both refused at the same per-Node
+/// purge boundary, including after a Server restart.
+#[tokio::test]
+async fn v2_replay_and_new_content_cannot_rebuild_a_purged_node() {
+    let harness = Harness::boot().await;
+    let owner = login(&harness, OWNER_LOGIN_BODY).await;
+    let (agent_id, credential) = enroll_agent(&harness, &owner).await;
+
+    let first = v2_single_node_report(&agent_id, 1, 1, "0195f2a1-0066-4066-8066-000000000066");
+    let node_id = first.inventory.nodes[0].node_id.to_string();
+    let (status, value) = post_v2_report(&harness, &credential, &first).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let original = value["receipt"].clone();
+    let dedup_before: (String, String) = sqlx::query_as(
+        "SELECT report_body_sha256, disposition FROM agent_report_receipts WHERE report_id = ?",
+    )
+    .bind(first.report_id.to_string())
+    .fetch_one(harness.pool())
+    .await
+    .unwrap();
+
+    purge_node(&harness, &owner, &node_id).await;
+
+    // Exact replay: the stored Receipt wins and nothing is re-applied.
+    let (status, replayed) = post_v2_report(&harness, &credential, &first).await;
+    assert_eq!(status, StatusCode::OK, "{replayed}");
+    assert_eq!(replayed["receipt"], original);
+    assert_eq!(node_row_count(&harness, &node_id).await, 0);
+    let dedup_after: (String, String) = sqlx::query_as(
+        "SELECT report_body_sha256, disposition FROM agent_report_receipts WHERE report_id = ?",
+    )
+    .bind(first.report_id.to_string())
+    .fetch_one(harness.pool())
+    .await
+    .unwrap();
+    assert_eq!(dedup_after, dedup_before);
+
+    // A new report id with the same content is not a replay: the purged ID is
+    // still rejected and never inserted.
+    let mut same = first.clone();
+    same.report_sequence = 2;
+    same.report_id = "0195f2a1-0067-4067-8067-000000000067".parse().unwrap();
+    let (status, value) = post_v2_report(&harness, &credential, &same).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let receipt = v2_receipt_of(&value);
+    assert_eq!(
+        receipt.inventory.as_ref().unwrap().disposition,
+        InventoryDisposition::Unchanged
+    );
+    assert_eq!(receipt.disposition, ReceiptDisposition::PartiallyAccepted);
+    assert_eq!(
+        receipt.nodes[0].rejections[0].code,
+        RejectionCode::NodePurged
+    );
+    assert_eq!(node_row_count(&harness, &node_id).await, 0);
+
+    // Changed content is a new accepted declaration, but the permanent purge
+    // boundary still refuses the Node.
+    let mut changed = first.clone();
+    changed.report_sequence = 3;
+    changed.report_id = "0195f2a1-0068-4068-8068-000000000068".parse().unwrap();
+    changed.inventory.nodes[0].rpc_endpoint = "ws://127.0.0.1:6799".parse().unwrap();
+    let (status, value) = post_v2_report(&harness, &credential, &changed).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let receipt = v2_receipt_of(&value);
+    assert_eq!(
+        receipt.inventory.as_ref().unwrap().disposition,
+        InventoryDisposition::Accepted
+    );
+    assert_eq!(
+        receipt
+            .inventory
+            .as_ref()
+            .unwrap()
+            .acceptance
+            .as_ref()
+            .unwrap()
+            .revision,
+        2
+    );
+    assert_eq!(
+        receipt.nodes[0].rejections[0].code,
+        RejectionCode::NodePurged
+    );
+    assert_eq!(node_row_count(&harness, &node_id).await, 0);
+
+    // A restart keeps the deletion identity and the same per-Node refusal.
+    let harness = harness.restart().await;
+    let _owner = login(&harness, OWNER_LOGIN_BODY).await;
+    let mut late = first.clone();
+    late.report_sequence = 4;
+    late.report_id = "0195f2a1-0069-4069-8069-000000000069".parse().unwrap();
+    let (status, value) = post_v2_report(&harness, &credential, &late).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let receipt = v2_receipt_of(&value);
+    assert_eq!(
+        receipt.nodes[0].rejections[0].code,
+        RejectionCode::NodePurged
+    );
+    assert_eq!(node_row_count(&harness, &node_id).await, 0);
+    let deleted: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM deleted_nodes WHERE node_id = ?")
+        .bind(&node_id)
+        .fetch_one(harness.pool())
+        .await
+        .unwrap();
+    assert_eq!(deleted, 1, "the purge identity must survive a restart");
+}
+
+/// A Node removed from the latest valid v2 declaration is Retired with its
+/// history retained; Agent silence is not retirement.
+#[tokio::test]
+async fn v2_node_removed_from_the_latest_declaration_is_retired_not_deleted() {
+    let harness = Harness::boot().await;
+    let owner = login(&harness, OWNER_LOGIN_BODY).await;
+    let (agent_id, credential) = enroll_agent(&harness, &owner).await;
+
+    let first = v2_two_node_report(&agent_id, 1, 1, "0195f2a1-006a-406a-806a-00000000006a", 10);
+    let removed = first.inventory.nodes[1].node_id.to_string();
+    let kept = first.inventory.nodes[0].node_id.to_string();
+    let (status, value) = post_v2_report(&harness, &credential, &first).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+
+    // The next valid declaration omits the second Node: the Server retires it
+    // rather than deleting it, and the omission is a real declaration change.
+    let mut reduced =
+        v2_two_node_report(&agent_id, 1, 2, "0195f2a1-006b-406b-806b-00000000006b", 20);
+    reduced.inventory.nodes.truncate(1);
+    reduced.nodes.truncate(1);
+    reduced.block_summaries.truncate(1);
+    reduced.validate().unwrap();
+    let (status, value) = post_v2_report(&harness, &credential, &reduced).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let receipt = v2_receipt_of(&value);
+    assert_eq!(
+        receipt.inventory.as_ref().unwrap().disposition,
+        InventoryDisposition::Accepted
+    );
+    assert_eq!(
+        receipt
+            .inventory
+            .as_ref()
+            .unwrap()
+            .acceptance
+            .as_ref()
+            .unwrap()
+            .revision,
+        2
+    );
+    let lifecycle: String = sqlx::query_scalar("SELECT lifecycle FROM nodes WHERE node_id = ?")
+        .bind(&removed)
+        .fetch_one(harness.pool())
+        .await
+        .unwrap();
+    assert_eq!(lifecycle, "retired");
+    assert!(
+        count_for_node(&harness, "component_status", &removed).await > 0,
+        "Retired keeps the Node history"
+    );
+    let kept_lifecycle: String =
+        sqlx::query_scalar("SELECT lifecycle FROM nodes WHERE node_id = ?")
+            .bind(&kept)
+            .fetch_one(harness.pool())
+            .await
+            .unwrap();
+    assert_eq!(kept_lifecycle, "active");
+
+    // Agent silence is not retirement: an old liveness timestamp and a
+    // background evaluation leave the declared Node Active.
+    sqlx::query("UPDATE agents SET last_received_at = '2020-01-01T00:00:00Z' WHERE agent_id = ?")
+        .bind(&agent_id)
+        .execute(harness.pool())
+        .await
+        .unwrap();
+    platpulse_server::alerts::sweep(&harness.state)
+        .await
+        .unwrap();
+    let kept_after: String = sqlx::query_scalar("SELECT lifecycle FROM nodes WHERE node_id = ?")
+        .bind(&kept)
+        .fetch_one(harness.pool())
+        .await
+        .unwrap();
+    assert_eq!(kept_after, "active");
+}
+
+/// A pending Transfer remains authoritative under v2: the declaration
+/// fingerprint alone never skips the ownership and Network Identity checks, so
+/// the same content can stay rejected until a valid identity probe arrives and
+/// then complete the handover atomically.
+#[tokio::test]
+async fn v2_transfer_conditions_are_evaluated_even_when_the_declaration_is_unchanged() {
+    let harness = Harness::boot().await;
+    let owner = login(&harness, OWNER_LOGIN_BODY).await;
+    let (source_agent, source_credential) = enroll_agent(&harness, &owner).await;
+    let (target_agent, target_credential) = enroll_agent(&harness, &owner).await;
+
+    // The source declares and owns the fixture Node under v2.
+    let source = v2_single_node_report(&source_agent, 1, 1, "0195f2a1-006c-406c-806c-00000000006c");
+    let node_id = source.inventory.nodes[0].node_id.to_string();
+    let (status, value) = post_v2_report(&harness, &source_credential, &source).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    pending_v2_transfer(&harness, &node_id, &source_agent, &target_agent).await;
+
+    // The target declares the same Node without a usable identity probe: the
+    // Transfer stays pending and the entry is rejected per Node.
+    let mut unverified =
+        v2_single_node_report(&target_agent, 1, 1, "0195f2a1-006d-406d-806d-00000000006d");
+    unverified.inventory.nodes[0].node_id = node_id.parse().unwrap();
+    unverified.nodes[0].node_id = node_id.parse().unwrap();
+    unverified.nodes[0].chain.network_identity.status = platpulse_core::ComponentStatus::Error;
+    unverified.nodes[0].chain.network_identity.latest = None;
+    unverified.nodes[0]
+        .chain
+        .network_identity
+        .latest_observed_at = None;
+    unverified.nodes[0].chain.network_identity.error =
+        Some(platpulse_core::component::BoundedError {
+            code: "rpc_unreachable".into(),
+            message: "identity probe failed".into(),
+        });
+    unverified.validate().unwrap();
+    let unverified_fingerprint = unverified.inventory.fingerprint();
+    let (status, value) = post_v2_report(&harness, &target_credential, &unverified).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let receipt = v2_receipt_of(&value);
+    assert_eq!(receipt.disposition, ReceiptDisposition::PartiallyAccepted);
+    assert_eq!(receipt.nodes[0].current, NodeCurrentDisposition::Rejected);
+    let transfer_status: String =
+        sqlx::query_scalar("SELECT status FROM node_transfers WHERE transfer_id='transfer-v2-1'")
+            .fetch_one(harness.pool())
+            .await
+            .unwrap();
+    assert_eq!(transfer_status, "pending");
+    let owner_now: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id = ?")
+        .bind(&node_id)
+        .fetch_one(harness.pool())
+        .await
+        .unwrap();
+    assert_eq!(owner_now, source_agent);
+
+    // The very same declaration content (same fingerprint) with a valid
+    // matching identity observation still completes the Transfer: unchanged
+    // content cannot skip a legitimate Transfer condition.
+    let mut verified =
+        v2_single_node_report(&target_agent, 1, 2, "0195f2a1-006e-406e-806e-00000000006e");
+    verified.inventory.nodes[0].node_id = node_id.parse().unwrap();
+    verified.nodes[0].node_id = node_id.parse().unwrap();
+    verified.validate().unwrap();
+    assert_eq!(verified.inventory.fingerprint(), unverified_fingerprint);
+    let (status, value) = post_v2_report(&harness, &target_credential, &verified).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let receipt = v2_receipt_of(&value);
+    assert_eq!(receipt.disposition, ReceiptDisposition::Accepted);
+    assert_eq!(receipt.nodes[0].current, NodeCurrentDisposition::Accepted);
+    let transfer_status: String =
+        sqlx::query_scalar("SELECT status FROM node_transfers WHERE transfer_id='transfer-v2-1'")
+            .fetch_one(harness.pool())
+            .await
+            .unwrap();
+    assert_eq!(transfer_status, "completed");
+    let owner_now: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id = ?")
+        .bind(&node_id)
+        .fetch_one(harness.pool())
+        .await
+        .unwrap();
+    assert_eq!(owner_now, target_agent);
+
+    // The source's later declaration of the handed-over Node is a per-entry
+    // ownership rejection with a security event, not a rebuild.
+    let late = v2_single_node_report(&source_agent, 1, 2, "0195f2a1-006f-406f-806f-00000000006f");
+    let (status, value) = post_v2_report(&harness, &source_credential, &late).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let receipt = v2_receipt_of(&value);
+    assert_eq!(receipt.disposition, ReceiptDisposition::PartiallyAccepted);
+    assert_eq!(
+        receipt.nodes[0].rejections[0].code,
+        RejectionCode::NodeOwnershipMismatch
+    );
+    let events: i64 =
+        sqlx::query_scalar("SELECT security_event_count FROM agents WHERE agent_id = ?")
+            .bind(&source_agent)
+            .fetch_one(harness.pool())
+            .await
+            .unwrap();
+    assert_eq!(events, 1);
+    let owner_now: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id = ?")
+        .bind(&node_id)
+        .fetch_one(harness.pool())
+        .await
+        .unwrap();
+    assert_eq!(owner_now, target_agent);
+    let _ = late;
 }

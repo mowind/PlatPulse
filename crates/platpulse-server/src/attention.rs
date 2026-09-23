@@ -213,6 +213,10 @@ pub struct AgentAttentionEvidence {
     pub latest_rejection_code: Option<String>,
     pub latest_rejection_inventory_revision: Option<i64>,
     pub latest_rejection_inventory_sha256: Option<String>,
+    /// Protocol major of the refused declaration (issue #188): 2 for a
+    /// Server-managed v2 declaration that carries no Agent revision, 1 for a
+    /// frozen v1 declaration, NULL for evidence recorded before this column.
+    pub latest_rejection_inventory_protocol_major: Option<i64>,
     pub latest_receipt_at: Option<String>,
     /// The Inventory the Server currently accepts (last accepted revision and
     /// its content hash), from `agents`.
@@ -239,6 +243,7 @@ pub struct AgentAttentionRow {
     pub latest_rejection_code: Option<String>,
     pub latest_rejection_inventory_revision: Option<i64>,
     pub latest_rejection_inventory_sha256: Option<String>,
+    pub latest_rejection_inventory_protocol_major: Option<i64>,
     pub latest_receipt_at: Option<String>,
 }
 
@@ -249,7 +254,7 @@ pub struct AgentAttentionRow {
 /// `(received_at, report_sequence)`, matching the receipt table's index, so
 /// the Inventory rejection boundary always reflects the latest ingestion
 /// attempt rather than an arbitrary historical rejection.
-pub const AGENT_ATTENTION_SELECT: &str = "SELECT a.agent_id, a.last_received_at, a.shutdown_updated_at, a.shutdown_state, a.security_event_count, (SELECT COUNT(*) FROM report_sequence_gaps g WHERE g.agent_id = a.agent_id) AS sequence_gap_count, (SELECT MAX(g.created_at) FROM report_sequence_gaps g WHERE g.agent_id = a.agent_id) AS latest_gap_at, h.spool_store_fatal, h.spool_dropped_sequence_to, h.updated_at AS host_updated_at, a.last_inventory_revision AS accepted_inventory_revision, a.inventory_sha256 AS accepted_inventory_sha256, r.disposition AS latest_receipt_disposition, r.rejection_code AS latest_rejection_code, r.inventory_revision AS latest_rejection_inventory_revision, r.inventory_sha256 AS latest_rejection_inventory_sha256, r.received_at AS latest_receipt_at FROM agents a LEFT JOIN current_host_observations h ON h.agent_id = a.agent_id LEFT JOIN agent_report_receipts r ON r.report_id = (SELECT r2.report_id FROM agent_report_receipts r2 WHERE r2.agent_id = a.agent_id ORDER BY r2.received_at DESC, r2.report_sequence DESC LIMIT 1) WHERE a.deleted_at IS NULL";
+pub const AGENT_ATTENTION_SELECT: &str = "SELECT a.agent_id, a.last_received_at, a.shutdown_updated_at, a.shutdown_state, a.security_event_count, (SELECT COUNT(*) FROM report_sequence_gaps g WHERE g.agent_id = a.agent_id) AS sequence_gap_count, (SELECT MAX(g.created_at) FROM report_sequence_gaps g WHERE g.agent_id = a.agent_id) AS latest_gap_at, h.spool_store_fatal, h.spool_dropped_sequence_to, h.updated_at AS host_updated_at, a.last_inventory_revision AS accepted_inventory_revision, a.inventory_sha256 AS accepted_inventory_sha256, r.disposition AS latest_receipt_disposition, r.rejection_code AS latest_rejection_code, r.inventory_revision AS latest_rejection_inventory_revision, r.inventory_sha256 AS latest_rejection_inventory_sha256, r.inventory_protocol_major AS latest_rejection_inventory_protocol_major, r.received_at AS latest_receipt_at FROM agents a LEFT JOIN current_host_observations h ON h.agent_id = a.agent_id LEFT JOIN agent_report_receipts r ON r.report_id = (SELECT r2.report_id FROM agent_report_receipts r2 WHERE r2.agent_id = a.agent_id ORDER BY r2.received_at DESC, r2.report_sequence DESC LIMIT 1) WHERE a.deleted_at IS NULL";
 
 impl AgentAttentionRow {
     /// Every acknowledgeable Attention Item currently present for this Agent,
@@ -270,6 +275,8 @@ impl AgentAttentionRow {
             latest_rejection_code: self.latest_rejection_code.clone(),
             latest_rejection_inventory_revision: self.latest_rejection_inventory_revision,
             latest_rejection_inventory_sha256: self.latest_rejection_inventory_sha256.clone(),
+            latest_rejection_inventory_protocol_major: self
+                .latest_rejection_inventory_protocol_major,
             latest_receipt_at: self.latest_receipt_at.clone(),
             accepted_inventory_revision: self.accepted_inventory_revision,
             accepted_inventory_sha256: self.accepted_inventory_sha256.clone(),
@@ -394,18 +401,27 @@ pub fn agent_attention_items(evidence: &AgentAttentionEvidence) -> Vec<Attention
             .latest_rejection_inventory_sha256
             .as_deref()
             .unwrap_or("");
-        let message = match (code, reported_revision) {
-            ("network_key_unknown", _) => {
+        // The refusal is explained from the Server-accepted pair and the actual
+        // refusal evidence (issue #188). A v2 declaration carries no
+        // Agent-supplied revision, so the remedy must never tell the Owner to
+        // bump one that no longer exists.
+        let declaration = declaration_kind(evidence.latest_rejection_inventory_protocol_major);
+        let message = match (code, declaration, reported_revision) {
+            ("network_key_unknown", _, _) => {
                 "the declared Node Inventory references a Network key the Server does not know"
                     .to_owned()
             }
-            (_, Some(reported)) if reported < accepted_revision => format!(
+            (_, "server_managed", _) => {
+                "the Server-assigned Node Inventory revision range is exhausted; no declaration change can be accepted"
+                    .to_owned()
+            }
+            (_, _, Some(reported)) if reported < accepted_revision => format!(
                 "the Agent declares Node Inventory revision {reported}, below the accepted revision {accepted_revision}; bump inventory_revision to declare the current Node set"
             ),
-            (_, Some(reported)) => format!(
+            (_, _, Some(reported)) => format!(
                 "Node Inventory content changed while inventory_revision stayed {reported}; bump inventory_revision to declare the new Node set"
             ),
-            (_, None) => {
+            (_, _, None) => {
                 "the declared Node Inventory conflicts with the Inventory the Server accepts"
                     .to_owned()
             }
@@ -432,6 +448,23 @@ pub fn agent_attention_items(evidence: &AgentAttentionEvidence) -> Vec<Attention
 /// names a Network key the Server does not know.
 pub fn is_inventory_rejection_code(code: &str) -> bool {
     matches!(code, "inventory_revision_conflict" | "network_key_unknown")
+}
+
+/// The Server-owned name of the protocol that produced a declaration (issue
+/// #188): v2 is `server_managed` because the Server assigns the revision, v1 is
+/// `agent_declared` because the Agent supplies it, and NULL is `unknown` for
+/// evidence recorded before the protocol column existed. It is derived only
+/// from Server-stored evidence, never from an Agent-reported diagnostic.
+pub fn declaration_kind(protocol_major: Option<i64>) -> &'static str {
+    match protocol_major {
+        Some(major) if major == platpulse_core::protocol::PROTOCOL_VERSION_V2 as i64 => {
+            "server_managed"
+        }
+        Some(major) if major == platpulse_core::protocol::PROTOCOL_VERSION as i64 => {
+            "agent_declared"
+        }
+        _ => "unknown",
+    }
 }
 
 /// The deciding rejection code when the Agent's newest stored receipt was a
@@ -619,6 +652,7 @@ mod tests {
             latest_rejection_code: None,
             latest_rejection_inventory_revision: None,
             latest_rejection_inventory_sha256: None,
+            latest_rejection_inventory_protocol_major: None,
             latest_receipt_at: None,
             accepted_inventory_revision: 0,
             accepted_inventory_sha256: None,
@@ -860,6 +894,31 @@ mod tests {
         assert!(
             unknown_key.contains("Network key"),
             "must name the unknown Network key: {unknown_key}"
+        );
+
+        // A v2 (Server-managed) refusal explains the Server-assigned remedy and
+        // never tells the Owner to bump a revision the Agent no longer supplies
+        // (issue #188).
+        let mut server_managed = evidence("agent-inventory");
+        server_managed.latest_receipt_disposition = Some("rejected".to_owned());
+        server_managed.latest_rejection_code = Some("inventory_revision_conflict".to_owned());
+        server_managed.latest_rejection_inventory_revision = None;
+        server_managed.latest_rejection_inventory_protocol_major = Some(2);
+        server_managed.latest_rejection_inventory_sha256 = Some("reported-fingerprint".to_owned());
+        server_managed.accepted_inventory_revision = 5;
+        server_managed.accepted_inventory_sha256 = Some("accepted-fingerprint".to_owned());
+        let server_managed = agent_attention_items(&server_managed)
+            .into_iter()
+            .find(|item| item.kind == AttentionKind::AgentInventoryRejected)
+            .unwrap()
+            .message;
+        assert!(
+            server_managed.contains("Server-assigned"),
+            "must explain the Server-managed revision: {server_managed}"
+        );
+        assert!(
+            !server_managed.contains("bump"),
+            "must not ask for an Agent revision bump: {server_managed}"
         );
     }
 
