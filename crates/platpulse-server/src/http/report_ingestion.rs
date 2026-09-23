@@ -126,6 +126,38 @@ fn error(
         .into_response()
 }
 
+/// Turn a failed report-transaction database write into a response an
+/// operator can act on. Folding every `sqlx::Error` into a bare
+/// `unavailable` hides a schema/constraint bug behind an ordinary outage
+/// signal and leaves the Agent retrying forever with no Server-side clue
+/// (issue #179). Log the redacted error under its request id and keep a
+/// distinct code for a constraint violation.
+fn storage_error(request_id: &str, operation: &str, failure: &sqlx::Error) -> Response {
+    let constraint = matches!(
+        failure,
+        sqlx::Error::Database(database)
+            if database.is_unique_violation() || database.is_check_violation()
+    );
+    eprintln!(
+        "report ingestion storage error [{operation}] request_id={request_id}: {}",
+        crate::redaction::redact_sensitive(&failure.to_string())
+    );
+    if constraint {
+        return error(
+            request_id,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "storage_conflict",
+            "Server storage rejected the report",
+        );
+    }
+    error(
+        request_id,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "unavailable",
+        "Server database is unavailable",
+    )
+}
+
 fn receipt_response(receipt: ReportReceipt) -> Response {
     let disposition = receipt.disposition;
     let mut response = (StatusCode::OK, Json(ReportResponse { receipt })).into_response();
@@ -2170,16 +2202,7 @@ async fn handler(
     if let Err(save_error) =
         save_current(&mut tx, &projection_report, &now_text, geo_provider).await
     {
-        eprintln!(
-            "save_current error: {}",
-            crate::redaction::redact_sensitive(&save_error.to_string())
-        );
-        return error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
+        return storage_error(&request_id.0, "save current observations", &save_error);
     }
     // Only admitted Nodes feed the Network-scoped reference head; a purged
     // Node's unvalidated Network key must not reach shared Network state.
@@ -2460,7 +2483,7 @@ async fn handler(
     };
     let stored = serde_json::to_vec(&receipt).expect("receipt serializes");
     let inserted = sqlx::query("INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(parsed.report_id.to_string()).bind(&auth.agent_id).bind(parsed.agent_epoch as i64).bind(parsed.boot_id.to_string()).bind(parsed.report_sequence as i64).bind(hash.to_string()).bind(disposition_name(receipt.disposition)).bind(&stored).bind(&now_text).execute(&mut *tx).await;
-    if inserted.is_err() {
+    if let Err(insert_failure) = inserted {
         let concurrent = sqlx::query_as::<_, ReceiptRow>(
             "SELECT report_body_sha256, receipt_body FROM agent_report_receipts WHERE report_id=?",
         )
@@ -2479,17 +2502,34 @@ async fn handler(
                 }
             }
         }
-        return error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
+        return storage_error(&request_id.0, "store report receipt", &insert_failure);
     }
     let lifecycle_status = match parsed.boot_transition {
         platpulse_core::BootTransition::Closing => "closed",
         _ => "active",
     };
+    // `agent_boots_one_active` permits at most one active/closing Boot per
+    // (agent_id, agent_epoch). Activating a Boot must be a single atomic write
+    // rather than one that relies on `agents.active_boot_status` and the Boot
+    // row already agreeing: a manual repair or a crash/fork window can leave a
+    // stale active row behind, and the new Boot's first `drained_previous`
+    // report would then hard-fail the upsert forever (issue #179). Close every
+    // other active/closing row in this epoch first. For any accepted report the
+    // only such row is the previous Boot, which this transaction is replacing.
+    if let Err(stale_failure) = sqlx::query(
+        "UPDATE agent_boots SET status='closed', closed_at=COALESCE(closed_at, ?), updated_at=? \
+         WHERE agent_id=? AND agent_epoch=? AND boot_id<>? AND status IN ('active','closing')",
+    )
+    .bind(&now_text)
+    .bind(&now_text)
+    .bind(&auth.agent_id)
+    .bind(parsed.agent_epoch as i64)
+    .bind(parsed.boot_id.to_string())
+    .execute(&mut *tx)
+    .await
+    {
+        return storage_error(&request_id.0, "close stale agent boot", &stale_failure);
+    }
     let boot_upsert = sqlx::query("INSERT INTO agent_boots (agent_id, agent_epoch, boot_id, status, previous_boot_id, last_sequence, close_report_id, closed_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, CASE WHEN ?='closed' THEN ? ELSE NULL END, CASE WHEN ?='closed' THEN ? ELSE NULL END, ?, ?) ON CONFLICT(agent_id, agent_epoch, boot_id) DO UPDATE SET status=excluded.status, previous_boot_id=COALESCE(excluded.previous_boot_id, agent_boots.previous_boot_id), last_sequence=MAX(agent_boots.last_sequence, excluded.last_sequence), close_report_id=COALESCE(excluded.close_report_id, agent_boots.close_report_id), closed_at=COALESCE(excluded.closed_at, agent_boots.closed_at), updated_at=excluded.updated_at")
         .bind(&auth.agent_id)
         .bind(parsed.agent_epoch as i64)
@@ -2505,13 +2545,8 @@ async fn handler(
         .bind(&now_text)
         .execute(&mut *tx)
         .await;
-    if boot_upsert.is_err() {
-        return error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
+    if let Err(boot_failure) = boot_upsert {
+        return storage_error(&request_id.0, "upsert agent boot", &boot_failure);
     }
     let clock_skew_ms = parsed.host.clock_skew.latest;
     let clock_status = match clock_skew_ms {
@@ -2580,13 +2615,8 @@ async fn handler(
             .map_err(|_| ())
             .ok();
     }
-    if updated.is_err() {
-        return error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
+    if let Err(update_failure) = updated {
+        return storage_error(&request_id.0, "update agent report state", &update_failure);
     }
     // Alert evaluation runs in the same transaction as the accepted
     // projection (design §1058: Alert input and invalidation belong to the
@@ -2638,13 +2668,8 @@ async fn handler(
         .iter()
         .map(|node| node.network_key.to_string())
         .collect::<HashSet<_>>();
-    if tx.commit().await.is_err() {
-        return error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
+    if let Err(commit_failure) = tx.commit().await {
+        return storage_error(&request_id.0, "commit report transaction", &commit_failure);
     }
     if let Err(error) =
         crate::retention::cleanup_raw_block_summaries(state.db().pool(), crate::auth::now_utc())
@@ -3322,6 +3347,90 @@ mod tests {
                 .unwrap();
         assert_eq!(security_events, 0);
     }
+
+    // Issue #179: a manual repair (or a crash/fork window) can leave
+    // `agents.active_boot_status = 'closed'` while the matching `agent_boots`
+    // row is still `active`. The first report of the next Boot must close that
+    // stale row inside the same transaction instead of hard-failing the
+    // `agent_boots_one_active` upsert and answering a bare 503 forever.
+    #[tokio::test]
+    async fn inconsistent_agents_boot_status_does_not_block_a_new_boot() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let first: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        let old_boot = first.boot_id;
+        submit(&state, &agent_id, serde_json::to_vec(&first).unwrap()).await;
+
+        // Operator repair that only touched `agents`: the Boot row is stale.
+        sqlx::query("UPDATE agents SET active_boot_status='closed' WHERE agent_id=?")
+            .bind(&agent_id)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let mut next = first.clone();
+        next.boot_id = "0195f2a1-0094-4094-8094-000000000094".parse().unwrap();
+        next.previous_boot_id = Some(old_boot);
+        next.boot_transition = platpulse_core::BootTransition::DrainedPrevious;
+        next.report_sequence = 1;
+        next.report_id = "0195f2a1-0095-4095-8095-000000000095".parse().unwrap();
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&next).unwrap()).await;
+        assert_eq!(receipt.disposition, ReceiptDisposition::Accepted);
+
+        let statuses = sqlx::query_as::<_, (String, String)>(
+            "SELECT boot_id, status FROM agent_boots WHERE agent_id=? ORDER BY boot_id",
+        )
+        .bind(&agent_id)
+        .fetch_all(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(statuses.len(), 2);
+        assert!(
+            statuses
+                .iter()
+                .any(|(boot, status)| boot == &old_boot.to_string() && status == "closed")
+        );
+        assert!(
+            statuses
+                .iter()
+                .any(|(boot, status)| boot == &next.boot_id.to_string() && status == "active")
+        );
+        let active: (Option<String>, String) = sqlx::query_as(
+            "SELECT active_boot_id, active_boot_status FROM agents WHERE agent_id=?",
+        )
+        .bind(&agent_id)
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            active,
+            (Some(next.boot_id.to_string()), "active".to_owned())
+        );
+    }
+
+    // Issue #179: a database constraint failure during ingestion must not be
+    // reported as a content-free `unavailable`; the operator needs a concrete
+    // code to tell a constraint bug from a genuinely unavailable database.
+    #[tokio::test]
+    async fn database_constraint_failures_are_not_reported_as_unavailable() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let failure = sqlx::query("INSERT INTO agents (agent_id, agent_epoch, active_boot_id, last_report_sequence, last_received_at, created_at, updated_at) VALUES (?, 1, NULL, NULL, NULL, ?, ?)")
+            .bind(&agent_id)
+            .bind("2026-08-12T08:00:00Z")
+            .bind("2026-08-12T08:00:00Z")
+            .execute(state.db().pool())
+            .await
+            .unwrap_err();
+        let response = storage_error("test-request", "test constraint", &failure);
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["code"], "storage_conflict");
+        assert_eq!(body["error"]["requestId"], "test-request");
+    }
+
     #[tokio::test]
     async fn accepted_inventory_persists_observations_and_replay_is_exact() {
         let (_dir, state, agent_id) = state_with_agent().await;
