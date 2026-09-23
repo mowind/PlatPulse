@@ -638,8 +638,18 @@ pub async fn ready(State(state): State<AppState>) -> impl IntoResponse {
     } else {
         ReadyComponent::ready("corruption")
     };
+    // A converted deployment that has not passed the coordinated cutover gate
+    // is deliberately not ready: it serves read-only diagnostics only while the
+    // operator completes the switch (issue #192).
+    let cutover = if state.db().inventory_cutover().business_writes_blocked() {
+        ReadyComponent::not_ready("inventory_cutover", "cutover_not_resumed")
+    } else {
+        ReadyComponent::ready("inventory_cutover")
+    };
 
-    let components = vec![sqlite, owner, web_assets, shutdown, workers, corruption];
+    let components = vec![
+        sqlite, owner, web_assets, shutdown, workers, corruption, cutover,
+    ];
     let ready = components
         .iter()
         .all(|component| component.status == ReadyState::Ready);

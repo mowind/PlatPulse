@@ -21,7 +21,7 @@ use thiserror::Error;
 pub static SERVER_MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 /// The latest migration version compiled into the Server binary.
-pub const SERVER_SCHEMA_VERSION: i64 = 57;
+pub const SERVER_SCHEMA_VERSION: i64 = 58;
 
 /// The Server currently serializes all SQLite operations through one pool
 /// connection. Read scaling can be added with a concrete query need; it is
@@ -80,6 +80,8 @@ const REQUIRED_TABLES: &[&str] = &[
     "validator_daily_snapshots",
     "validator_monthly_aggregates",
     "validator_model_migration",
+    "inventory_migration",
+    "inventory_cutover",
 ];
 
 /// Connection settings for the Server database.
@@ -199,6 +201,10 @@ pub enum ServerDatabaseError {
 pub struct ServerDatabase {
     pool: SqlitePool,
     path: PathBuf,
+    /// The runtime Inventory protocol mode, resolved once at startup from the
+    /// durable conversion/cutover markers (issue #192). It is fixed for the
+    /// process lifetime because resuming the cutover requires a stopped Server.
+    inventory_cutover: crate::cutover::InventoryCutover,
 }
 
 impl ServerDatabase {
@@ -279,15 +285,28 @@ impl ServerDatabase {
             return Err(error);
         }
         secure_database_files(config.path(), create_if_missing)?;
+        // Resolve the durable Inventory protocol mode once at startup. A
+        // converted deployment (issue #191) stays gated until the coordinated
+        // cutover is resumed (issue #192); a fresh or pre-conversion
+        // deployment keeps the ordinary v1/v2 behaviour.
+        let inventory_cutover = crate::cutover::detect_inventory_cutover(&pool)
+            .await
+            .map_err(ServerDatabaseError::IntegrityQuery)?;
         Ok(Self {
             pool,
             path: config.path().to_owned(),
+            inventory_cutover,
         })
     }
 
     /// Filesystem path of the validated Server database.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The Inventory protocol mode resolved at startup (issue #192).
+    pub fn inventory_cutover(&self) -> crate::cutover::InventoryCutover {
+        self.inventory_cutover
     }
     /// Access the serialized SQLx pool for typed SQL operations.
     pub fn pool(&self) -> &SqlitePool {

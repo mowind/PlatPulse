@@ -18,6 +18,7 @@ pub mod backup_schedule;
 pub mod checkpoint;
 pub mod cli;
 pub mod config;
+pub mod cutover;
 pub mod database;
 pub mod doctor;
 pub mod enrollment;

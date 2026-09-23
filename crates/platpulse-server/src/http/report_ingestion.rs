@@ -1711,6 +1711,19 @@ async fn ingest_report<I: ReportInventory>(
             "Agent identity is not authorized",
         );
     }
+    // Issue #192: a converted deployment stays gated until the explicit cutover
+    // resume. No collection/ingestion, Admin mutation or external-effect worker
+    // is authorized before then, so a converted database can never be served as
+    // if the switch had happened.
+    let cutover = state.db().inventory_cutover();
+    if cutover.business_writes_blocked() {
+        return error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "inventory_cutover_required",
+            "Converted deployment awaits the coordinated Inventory cutover; stop the Server and run 'platpulse-server cutover resume'",
+        );
+    }
     let mut tx = match state.db().pool().begin().await {
         Ok(tx) => tx,
         Err(_) => {
@@ -1749,6 +1762,34 @@ async fn ingest_report<I: ReportInventory>(
                 "Report identity conflicts with a stored report",
             );
         }
+        // Replay never bypasses the live Agent boundary: a removed Agent's
+        // retained Receipt is not returned even when the immutable bytes match
+        // (design 15.10.5, issue #192).
+        match sqlx::query_scalar::<_, i64>(
+            "SELECT 1 FROM agents WHERE agent_id = ? AND deleted_at IS NULL",
+        )
+        .bind(&auth.agent_id)
+        .fetch_optional(&mut *tx)
+        .await
+        {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return error(
+                    &request_id.0,
+                    StatusCode::UNAUTHORIZED,
+                    "agent_auth_required",
+                    "Agent credential is invalid",
+                );
+            }
+            Err(_) => {
+                return error(
+                    &request_id.0,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "Server database is unavailable",
+                );
+            }
+        }
         let receipt = match replay_receipt::<I>(&existing.receipt_body) {
             Ok(receipt) => receipt,
             Err(()) => {
@@ -1761,6 +1802,21 @@ async fn ingest_report<I: ReportInventory>(
             }
         };
         return receipt_response(receipt);
+    }
+    // After the coordinated cutover the frozen v1 route is replay-only. An
+    // unseen v1 Report is explicitly unsupported: it creates no acceptance
+    // Receipt, advances no Boot, allocates no revision and changes no
+    // projection. It is not mixed-version ingestion, an automatic downgrade or
+    // an old-backlog submission path (design 15.10.5).
+    if cutover.v1_replay_only()
+        && I::protocol_version() != platpulse_core::protocol::PROTOCOL_VERSION_V2
+    {
+        return error(
+            &request_id.0,
+            StatusCode::CONFLICT,
+            "report_not_replayable",
+            "Frozen v1 Reports are replay-only after the Inventory cutover; new Reports must use protocol v2",
+        );
     }
     // A removed Agent carries the durable removal boundary (design §15.2,
     // #171). Reading the row inside the receipt transaction with the live

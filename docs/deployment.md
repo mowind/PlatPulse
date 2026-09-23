@@ -589,3 +589,32 @@ The checked-in deployment assets are:
 Before upgrading, stop the Server, take a backup with the packaged `backup` command, and copy the backup plus the pepper and TLS secret files to protected storage. Verify the release `SHA256SUMS` file and keep the previous binary/archive available. Start the new Server and confirm `/health/live`, `/health/ready`, migrations, and the Admin audit surface before returning traffic.
 
 If readiness or a post-upgrade smoke check fails, stop the new process, restore the previous matching Server/Agent artifacts, and start the previous version against the unchanged state directory. Do not delete or downgrade the database in place: a schema migration is forward-only. If the new version has already migrated the database, restore the pre-upgrade backup into a fresh state directory, restore the pepper and secret files with their private permissions, and validate the restored instance before switching the service back. Keep the failed release logs and recovery-rehearsal evidence for incident review.
+
+### Coordinated Inventory v2 cutover (issue #192)
+
+The Server-managed Inventory Revision protocol (v2) replaces the Agent-supplied inventory_revision. Migrating an existing frozen-v1 deployment is a coordinated offline operation with one explicit switch gate; it is not a rolling upgrade, and new and old protocols must never run mixed.
+
+Not switched yet (still frozen v1):
+
+- inventory_migration is absent: nothing to do; the deployment keeps the v1 baseline.
+- inventory_migration is present but inventory_cutover is not: the database is a converted deployment that has not been authorized. The Server serves read-only diagnostics only, refuses ingestion, Admin mutations and every external-effect worker, and /health/ready reports the inventory_cutover component with reason cutover_not_resumed. Do not point the previous binary at this database: a schema migration is forward-only.
+
+Switched (v2 active):
+
+- inventory_cutover records state = resumed. Ordinary Reports must use /api/agent/v2/reports; the frozen v1 route returns the original retained Receipt only for an identical report identity and byte hash. An unknown v1 Report is refused with report_not_replayable and causes no write. Restoring the coordinated checkpoint is no longer a software rollback.
+- The frozen v1 route still enforces normal authentication, Agent ownership and input-size limits; replay never bypasses Agent Removal.
+
+Operator sequence (each step runs with the Server stopped; never point the old binary at the converted database):
+
+1. platpulse-agent prepare-upgrade, then platpulse-agent checkpoint create: stop ordinary collection and drain the immutable backlog through the final Closing (issues #189/#190).
+2. platpulse-server checkpoint create --config server.toml --agent-checkpoint AGENT_DIR --output CHECKPOINT: preserve the exact Server/Agent state and re-verify the preparation.
+3. platpulse-server checkpoint convert --checkpoint CHECKPOINT --output CONVERTED: write the converted deployment; this does not authorize a switch.
+4. platpulse-server checkpoint verify-conversion --checkpoint CHECKPOINT --converted CONVERTED: prove both halves offline without starting a worker.
+5. platpulse-server cutover status --config CONVERTED/server/server.toml: must report awaiting_resume.
+6. To abort before the switch, run platpulse-server cutover rollback --checkpoint CHECKPOINT --restore-dir RESTORE --converted CONVERTED and start the old binaries against the restored state. The command refuses once the cutover has resumed.
+7. platpulse-server cutover resume --config CONVERTED/server/server.toml --checkpoint CHECKPOINT --converted CONVERTED: pass the gate. It re-verifies the checkpoint and the conversion, refuses a changed or inconsistent participant, and records the durable cutover marker.
+8. Start the new Server with the converted server.toml and the Agent with the converted agent.toml. Confirm /health/ready, that the first v2 Report completes the existing DrainedPrevious transition without changing the preserved revision, and that the Admin Inventory diagnosis reports protocol v2.
+
+Failure diagnosis: cutover status distinguishes not_converted, awaiting_resume and resumed. A missing transcript, a mismatched hash or revision, a changed Boot/Closing identity or a failed offline verification leaves the deployment at awaiting_resume and refuses the switch; it never silently adopts a new baseline. After the switch, repair forward: do not restore an older backup as a routine rollback, because that may discard post-cutover declarations, Purge barriers and other writes.
+
+

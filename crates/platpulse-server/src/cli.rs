@@ -59,6 +59,12 @@ pub enum Command {
     /// Server-managed Inventory cutover must be able to reproduce.
     #[command(subcommand)]
     Checkpoint(CheckpointCommand),
+    /// Coordinated v1 -> v2 production cutover gate (design 15.10.4/15.10.5,
+    /// issue #192): resume the converted deployment only after re-verifying the
+    /// preparation, checkpoint and conversion, roll back before business writes
+    /// resume, or report the current state.
+    #[command(subcommand)]
+    Cutover(CutoverCommand),
     /// Run the HTTP Server.
     Serve(ServeArgs),
 }
@@ -131,6 +137,56 @@ pub struct CheckpointVerifyConversionArgs {
     /// The converted deployment produced by `checkpoint convert`.
     #[arg(long)]
     pub converted: PathBuf,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum CutoverCommand {
+    /// Report whether this deployment is converted and whether the coordinated
+    /// v2 switch has been resumed. Read-only; starts no worker.
+    Status(CutoverStatusArgs),
+    /// Pass the explicit switch gate for a verified converted deployment:
+    /// re-verify the coordination checkpoint and the offline conversion, prove
+    /// the converted baseline still matches, then authorize v2-only business
+    /// writes. A stopped-Server operation.
+    Resume(CutoverResumeArgs),
+    /// Restore the coordinated checkpoint wholesale while business writes are
+    /// still stopped. Refused once the cutover resumed business writes.
+    Rollback(CutoverRollbackArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct CutoverStatusArgs {
+    /// server.toml of the deployment to inspect.
+    #[arg(long)]
+    pub config: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct CutoverResumeArgs {
+    /// server.toml of the converted deployment (its db_path must be the
+    /// verified converted database).
+    #[arg(long)]
+    pub config: PathBuf,
+    /// The verified coordinated checkpoint produced by checkpoint create.
+    #[arg(long)]
+    pub checkpoint: PathBuf,
+    /// The verified converted deployment produced by checkpoint convert.
+    #[arg(long)]
+    pub converted: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct CutoverRollbackArgs {
+    /// The verified coordinated checkpoint to restore.
+    #[arg(long)]
+    pub checkpoint: PathBuf,
+    /// Empty or non-existent directory that receives the isolated restore.
+    #[arg(long)]
+    pub restore_dir: PathBuf,
+    /// Optional converted deployment. When it already recorded a resumed
+    /// cutover the rollback is refused as a software rollback.
+    #[arg(long)]
+    pub converted: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -649,6 +705,94 @@ fn print_conversion_summary(summary: &crate::migration::ConversionSummary) {
     println!("  Preserved deletion identities: {}", summary.deleted_nodes);
 }
 
+/// Report the coordinated Inventory cutover state (issue #192). Read-only.
+pub async fn run_cutover_status(
+    args: &CutoverStatusArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let config = ServerConfig::resolve(Some(args.config.as_path()), &Default::default())?;
+    let status = crate::cutover::cutover_status(&config).await?;
+    match status.mode {
+        crate::cutover::InventoryCutover::NotConverted => println!(
+            "Inventory protocol: v1 baseline (no conversion marker). The coordinated v2 cutover does not apply to this deployment yet."
+        ),
+        crate::cutover::InventoryCutover::AwaitingResume => println!(
+            "Inventory protocol: converted, awaiting cutover resume. Business writes are refused; run 'platpulse-server cutover resume --config <converted server.toml> --checkpoint <dir> --converted <dir>'."
+        ),
+        crate::cutover::InventoryCutover::Resumed => println!(
+            "Inventory protocol: v2 active. Ordinary Reports must use v2; the frozen v1 route replays retained Receipts exactly."
+        ),
+    }
+    if let Some(binding) = &status.binding {
+        println!("  Cutover state: {}", binding.state);
+        println!("  Resumed at: {}", binding.resumed_at);
+        println!("  Agent: {}", binding.agent_id);
+        println!("  Preserved revision: {}", binding.preserved_revision);
+        println!(
+            "  Frozen v1 hash: {}",
+            binding.previous_sha256.as_deref().unwrap_or("unset")
+        );
+        println!(
+            "  v2 fingerprint: {}",
+            binding.fingerprint_sha256.as_deref().unwrap_or("unset")
+        );
+    }
+    Ok(())
+}
+
+/// Pass the explicit coordinated cutover gate for a verified converted
+/// deployment. It re-verifies the preparation, checkpoint and offline
+/// conversion, proves the converted baseline still matches, and only then
+/// writes the durable cutover marker. A stopped-Server operation.
+pub async fn run_cutover_resume(
+    args: &CutoverResumeArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let config = ServerConfig::resolve(Some(args.config.as_path()), &Default::default())?;
+    let summary =
+        crate::cutover::resume_cutover(&config, &args.checkpoint, &args.converted).await?;
+    println!(
+        "Coordinated Inventory cutover resumed for Agent {}.",
+        summary.agent_id.as_deref().unwrap_or("unknown")
+    );
+    if let Some(revision) = summary.preserved_revision {
+        println!("  Preserved revision: {revision}");
+    }
+    if let Some(fingerprint) = &summary.fingerprint_sha256 {
+        println!("  v2 fingerprint: {fingerprint}");
+    }
+    if let Some(resumed_at) = &summary.resumed_at {
+        println!("  Resumed at: {resumed_at}");
+    }
+    println!(
+        "Business writes are now authorized: ordinary Reports are v2-only and the frozen v1 route replays retained Receipts exactly. Restoring the coordinated checkpoint is no longer a software rollback."
+    );
+    Ok(())
+}
+
+/// Restore a coordinated checkpoint while the cutover has not resumed business
+/// writes. After resume this is refused; forward repair or a separate
+/// disaster-recovery action is required instead.
+pub async fn run_cutover_rollback(
+    args: &CutoverRollbackArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let summary = crate::cutover::rollback_cutover(
+        &args.checkpoint,
+        &args.restore_dir,
+        args.converted.as_deref(),
+    )
+    .await
+    .map_err(|error| format!("cutover rollback failed: {error}"))?;
+    println!(
+        "Coordinated checkpoint restored in isolation to {}.",
+        args.restore_dir.display()
+    );
+    print_checkpoint_summary(&summary);
+    println!(
+        "Point the old binaries at the restored deployment (server.isolated.toml and agent.isolated.toml). Do not start the old binary against the converted database."
+    );
+    println!("No collector, ingestion, Admin write or external notification worker was started.");
+    Ok(())
+}
+
 /// Create one sanitized backup using the same implementation as the Admin
 /// backup Operation. The configured backup_dir remains the only destination.
 pub async fn run_backup(config: &ServerConfig) -> Result<String, Box<dyn std::error::Error>> {
@@ -711,24 +855,37 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         ServerDatabaseConfig::for_deployment(&config.db_path, config.development),
     )
     .await?;
-    // Retention is a fixed, bounded startup task. Re-running after a crash is
-    // safe: each invocation deletes at most one batch and never touches the
-    // history state/coverage/evidence tables.
-    if let Err(error) =
-        crate::retention::cleanup_raw_block_summaries(database.pool(), crate::auth::now_utc()).await
-    {
+    // Issue #192: a converted deployment that has not passed the explicit
+    // cutover gate must not start a single business writer. It still serves
+    // read-only diagnostics and reports itself not ready, so an operator can
+    // inspect the deployment without any write or external side effect.
+    let cutover_blocked = database.inventory_cutover().business_writes_blocked();
+    if cutover_blocked {
         eprintln!(
-            "raw block retention cleanup deferred: {}",
-            crate::redaction::redact_sensitive(&error.to_string())
+            "Inventory cutover not resumed: serving read-only diagnostics only. No collection, ingestion, Admin mutation or external-effect worker will start. Run 'platpulse-server cutover resume' against the converted deployment."
         );
     }
-    // Retention policies are seeded idempotently with the design §11.3
-    // defaults; existing rows are never rewritten.
-    if let Err(error) = crate::retention::ensure_seeded(database.pool()).await {
-        eprintln!(
-            "retention policy seeding deferred: {}",
-            crate::redaction::redact_sensitive(&error.to_string())
-        );
+    if !cutover_blocked {
+        // Retention is a fixed, bounded startup task. Re-running after a crash
+        // is safe: each invocation deletes at most one batch and never touches
+        // the history state/coverage/evidence tables.
+        if let Err(error) =
+            crate::retention::cleanup_raw_block_summaries(database.pool(), crate::auth::now_utc())
+                .await
+        {
+            eprintln!(
+                "raw block retention cleanup deferred: {}",
+                crate::redaction::redact_sensitive(&error.to_string())
+            );
+        }
+        // Retention policies are seeded idempotently with the design §11.3
+        // defaults; existing rows are never rewritten.
+        if let Err(error) = crate::retention::ensure_seeded(database.pool()).await {
+            eprintln!(
+                "retention policy seeding deferred: {}",
+                crate::redaction::redact_sensitive(&error.to_string())
+            );
+        }
     }
     let geo_loader = std::sync::Arc::new(crate::geo::GeoLoader::new(config.geo.clone()));
     if config.geo.is_some() {
@@ -752,21 +909,25 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
     // configuration decides, so an upgrade keeps resolving with the same
     // local database and an installation without one stays Disabled. Neither
     // branch adds outbound traffic.
-    let geo_selection = match crate::geo::ensure_provider_selection(
-        state.db().pool(),
-        config.geo.is_some(),
-    )
-    .await
-    {
-        Ok(selection) => selection,
-        Err(error) => {
-            eprintln!(
-                "Geo provider selection deferred: {}",
-                crate::redaction::redact_sensitive(&error.to_string())
-            );
-            crate::geo::GeoSelection {
-                provider: crate::geo::GeoProvider::Disabled,
-                generation: 0,
+    let geo_selection = if cutover_blocked {
+        // No durable selection write before the cutover gate. A quiesced
+        // deployment keeps the disabled provider and starts no outbound work.
+        crate::geo::GeoSelection {
+            provider: crate::geo::GeoProvider::Disabled,
+            generation: 0,
+        }
+    } else {
+        match crate::geo::ensure_provider_selection(state.db().pool(), config.geo.is_some()).await {
+            Ok(selection) => selection,
+            Err(error) => {
+                eprintln!(
+                    "Geo provider selection deferred: {}",
+                    crate::redaction::redact_sensitive(&error.to_string())
+                );
+                crate::geo::GeoSelection {
+                    provider: crate::geo::GeoProvider::Disabled,
+                    generation: 0,
+                }
             }
         }
     };
@@ -827,309 +988,318 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         state.clone(),
     ))];
 
-    // Server-owned online backups (design §20.1): the schedule snapshots the
-    // database on the owning connection and verifies every automatic
-    // artifact, so no Owner credential or second SQLite opener is involved.
-    if let Some(schedule) = config.backup_schedule.clone() {
-        let schedule_state = state.clone();
-        worker_handles.push(tokio::spawn(crate::backup_schedule::run(
-            schedule_state,
-            schedule,
-        )));
-    }
+    if !cutover_blocked {
+        // Server-owned online backups (design §20.1): the schedule snapshots the
+        // database on the owning connection and verifies every automatic
+        // artifact, so no Owner credential or second SQLite opener is involved.
+        if let Some(schedule) = config.backup_schedule.clone() {
+            let schedule_state = state.clone();
+            worker_handles.push(tokio::spawn(crate::backup_schedule::run(
+                schedule_state,
+                schedule,
+            )));
+        }
 
-    // Geo database reload and raw-IP cache cleanup are deliberately
-    // best-effort. A malformed replacement keeps the last-good reader and
-    // never interrupts report ingestion or readiness. A provider that does
-    // not read a local database is never reloaded.
-    {
-        let geo_state = state.clone();
-        worker_handles.push(tokio::spawn(async move {
-            let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
-            loop {
-                if geo_state.is_shutting_down() {
-                    break;
-                }
-                tokio::select! {
-                    _ = geo_state.shutdown_signal() => break,
-                    _ = tick.tick() => {}
-                }
-                if geo_state.is_shutting_down() {
-                    break;
-                }
-                let before_geo = geo_state.geo_status();
-                let reload_changed = if geo_state.geo_config().provider.needs_local_database() {
-                    let geo_loader = std::sync::Arc::clone(geo_state.geo());
-                    tokio::task::spawn_blocking(move || geo_loader.reload_if_changed())
+        // Geo database reload and raw-IP cache cleanup are deliberately
+        // best-effort. A malformed replacement keeps the last-good reader and
+        // never interrupts report ingestion or readiness. A provider that does
+        // not read a local database is never reloaded.
+        {
+            let geo_state = state.clone();
+            worker_handles.push(tokio::spawn(async move {
+                let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+                loop {
+                    if geo_state.is_shutting_down() {
+                        break;
+                    }
+                    tokio::select! {
+                        _ = geo_state.shutdown_signal() => break,
+                        _ = tick.tick() => {}
+                    }
+                    if geo_state.is_shutting_down() {
+                        break;
+                    }
+                    let before_geo = geo_state.geo_status();
+                    let reload_changed = if geo_state.geo_config().provider.needs_local_database() {
+                        let geo_loader = std::sync::Arc::clone(geo_state.geo());
+                        tokio::task::spawn_blocking(move || geo_loader.reload_if_changed())
+                            .await
+                            .unwrap_or(false)
+                    } else {
+                        false
+                    };
+                    let after_geo = geo_state.geo_status();
+                    let cleanup_changed = {
+                        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+                        match crate::geo::cleanup_cache(
+                            geo_state.db().pool(),
+                            &now,
+                            geo_state.geo_config().provider,
+                        )
                         .await
-                        .unwrap_or(false)
-                } else {
-                    false
-                };
-                let after_geo = geo_state.geo_status();
-                let cleanup_changed = {
-                    let now = crate::auth::format_rfc3339(crate::auth::now_utc());
-                    match crate::geo::cleanup_cache(
-                        geo_state.db().pool(),
-                        &now,
-                        geo_state.geo_config().provider,
-                    )
-                    .await
-                    {
-                        Ok(removed) => removed > 0,
-                        Err(error) => {
-                            eprintln!(
-                                "geo cache cleanup deferred: {}",
-                                crate::redaction::redact_sensitive(&error.to_string())
-                            );
-                            false
-                        }
-                    }
-                };
-                if reload_changed || before_geo != after_geo || cleanup_changed {
-                    geo_state.admin_realtime().publish("geo", None::<String>, 1);
-                    geo_state
-                        .public_realtime()
-                        .publish("geo", None::<String>, 1);
-                }
-            }
-        }));
-    }
-
-    // Background Geo resolution (issue #132): report ingestion only records
-    // Peer references; this worker owns country lookups and cache writes, so
-    // a slow or replaced database never occupies the receipt transaction and
-    // a provider change never leaves work running under the old selection.
-    {
-        let geo_state = state.clone();
-        worker_handles.push(tokio::spawn(crate::geo_backfill::run_worker(geo_state)));
-    }
-
-    // Operations left `running` by a crash are honestly failed (issue #50,
-    // webui.md §5.5); queued rows survive and the worker below picks them up.
-    if let Err(error) = crate::operations::requeue_interrupted_operations(state.db().pool()).await {
-        eprintln!(
-            "operation re-arm deferred: {}",
-            crate::redaction::redact_sensitive(&error.to_string())
-        );
-    }
-
-    // Alert evaluation sweep: persists rule state and Incident transitions
-    // for every active subject on a fixed cadence (design §17.2). Report
-    // ingestion already evaluates its reported subjects in-transaction; the
-    // sweep covers time-based facts and restores timers after restart. The
-    // loop stops on shutdown and every sweep drains before the WAL
-    // checkpoint.
-    {
-        let sweep_state = state.clone();
-        worker_handles.push(tokio::spawn(async move {
-            let mut tick = tokio::time::interval(crate::alerts::SWEEP_INTERVAL);
-            loop {
-                if sweep_state.is_shutting_down() {
-                    break;
-                }
-                tokio::select! {
-                    _ = sweep_state.shutdown_signal() => break,
-                    _ = tick.tick() => {}
-                }
-                if sweep_state.is_shutting_down() {
-                    break;
-                }
-                sweep_state.mark_critical_worker_heartbeat(0);
-                match crate::alerts::sweep(&sweep_state).await {
-                    Ok(changes) if changes > 0 => {
-                        sweep_state
-                            .admin_realtime()
-                            .publish("alerts", None::<String>, 1);
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        eprintln!(
-                            "alert evaluation sweep deferred: {}",
-                            crate::redaction::redact_sensitive(&error.to_string())
-                        );
-                    }
-                }
-            }
-        }));
-    }
-
-    // Notification delivery worker (design §17.4): sends due Outbox rows
-    // through the configured channels with bounded retry/backoff and
-    // Retry-After awareness, reaches DeadLetter after max attempts, and
-    // re-arms Deliveries left in_flight by a crash. The loop stops on
-    // shutdown; the worker publishes Admin invalidations only.
-    {
-        let worker_state = state.clone();
-        worker_handles.push(tokio::spawn(async move {
-            let mut tick = tokio::time::interval(crate::notifications::DELIVERY_INTERVAL);
-            loop {
-                if worker_state.is_shutting_down() {
-                    break;
-                }
-                tokio::select! {
-                    _ = worker_state.shutdown_signal() => break,
-                    _ = tick.tick() => {}
-                }
-                if worker_state.is_shutting_down() {
-                    break;
-                }
-                worker_state.mark_critical_worker_heartbeat(1);
-                match crate::notifications::process_due_deliveries(
-                    &worker_state,
-                    &*worker_state.delivery_provider(),
-                )
-                .await
-                {
-                    Ok(_) => {}
-                    Err(error) => {
-                        eprintln!(
-                            "notification delivery deferred: {}",
-                            crate::redaction::redact_sensitive(&error.to_string())
-                        );
-                    }
-                }
-            }
-        }));
-    }
-
-    // Operations worker (issue #50, webui.md §5.5): advances one queued
-    // retention/backup/Doctor Operation per tick in bounded steps. State is
-    // persisted per step, so navigation, browser close, or SSE loss never
-    // loses progress; SSE publishes only accelerate REST refetches.
-    {
-        let worker_state = state.clone();
-        worker_handles.push(tokio::spawn(async move {
-            let mut tick = tokio::time::interval(crate::operations::OPERATION_INTERVAL);
-            loop {
-                if worker_state.is_shutting_down() {
-                    break;
-                }
-                tokio::select! {
-                    _ = worker_state.shutdown_signal() => break,
-                    _ = tick.tick() => {}
-                }
-                if worker_state.is_shutting_down() {
-                    break;
-                }
-                worker_state.mark_critical_worker_heartbeat(2);
-                match crate::operations::process_operations(&worker_state).await {
-                    Ok(_) => {}
-                    Err(error) => {
-                        eprintln!(
-                            "operation worker deferred: {}",
-                            crate::redaction::redact_sensitive(&error.to_string())
-                        );
-                    }
-                }
-            }
-        }));
-    }
-
-    // Automatic Validator identity discovery and Provider refresh are
-    // Server-owned. Discovery runs even when no Provider is configured, so a
-    // Node with a validated Network and a full P2P public key still gets an
-    // automatic correspondence whose Current Validator Status is an explicit
-    // Unknown/not-configured. Provider refresh is deduplicated by the
-    // registered Validator table, never by Node links, and its failures are
-    // persisted as diagnostics without entering Node health or readiness.
-    {
-        let refresh_seconds = config
-            .validator_provider
-            .as_ref()
-            .map(|provider| provider.refresh_seconds)
-            .unwrap_or(60);
-        let timezone = config
-            .validator_provider
-            .as_ref()
-            .map(|provider| provider.timezone.clone())
-            .unwrap_or_else(|| "UTC".to_owned());
-        // Whether a Provider is configured at all. Discovery still runs for an
-        // unconfigured deployment so an observed chain key establishes its
-        // automatic correspondence. Without a deployment there is no source to
-        // query, so the refresh pass is skipped instead of replacing every
-        // established observation with a blanket NotConfigured result.
-        let provider_configured = config.validator_provider.is_some();
-        let provider_state = state.clone();
-        worker_handles.push(tokio::spawn(async move {
-            let mut tick = tokio::time::interval(std::time::Duration::from_secs(refresh_seconds));
-            loop {
-                if provider_state.is_shutting_down() {
-                    break;
-                }
-                tokio::select! {
-                    _ = provider_state.shutdown_signal() => break,
-                    _ = tick.tick() => {}
-                }
-                if provider_state.is_shutting_down() {
-                    break;
-                }
-                // Automatic identity discovery runs first so a newly observed
-                // chain key is registered and fetched in the same cycle
-                // (#173). It only writes Validator identity state and never
-                // enters Node health or Server readiness.
-                if let Err(error) =
-                    crate::validator::discover_automatic_links(provider_state.db()).await
-                {
-                    eprintln!(
-                        "Validator identity discovery deferred: {}",
-                        crate::redaction::redact_sensitive(&error.to_string())
-                    );
-                }
-                if !provider_configured {
-                    continue;
-                }
-                match crate::validator::refresh_all_with_channels_in_timezone(
-                    provider_state.db(),
-                    &*provider_state.validator_provider(),
-                    provider_state.channels(),
-                    &timezone,
-                )
-                .await
-                {
-                    Ok(summary) if summary.invalidations > 0 || summary.alert_invalidations > 0 => {
-                        if summary.invalidations > 0 {
-                            for validator_id in &summary.invalidated_validator_ids {
-                                provider_state.admin_realtime().publish(
-                                    "validator",
-                                    Some(validator_id.clone()),
-                                    1,
+                        {
+                            Ok(removed) => removed > 0,
+                            Err(error) => {
+                                eprintln!(
+                                    "geo cache cleanup deferred: {}",
+                                    crate::redaction::redact_sensitive(&error.to_string())
                                 );
-                                provider_state.public_realtime().publish(
-                                    "validator",
-                                    Some(validator_id.clone()),
-                                    1,
-                                );
-                            }
-                            for network_key in &summary.invalidated_network_keys {
-                                provider_state.admin_realtime().publish(
-                                    "network",
-                                    Some(network_key.clone()),
-                                    1,
-                                );
-                                provider_state.public_realtime().publish(
-                                    "network",
-                                    Some(network_key.clone()),
-                                    1,
-                                );
+                                false
                             }
                         }
-                        if summary.alert_invalidations > 0 {
-                            provider_state
+                    };
+                    if reload_changed || before_geo != after_geo || cleanup_changed {
+                        geo_state.admin_realtime().publish("geo", None::<String>, 1);
+                        geo_state
+                            .public_realtime()
+                            .publish("geo", None::<String>, 1);
+                    }
+                }
+            }));
+        }
+
+        // Background Geo resolution (issue #132): report ingestion only records
+        // Peer references; this worker owns country lookups and cache writes, so
+        // a slow or replaced database never occupies the receipt transaction and
+        // a provider change never leaves work running under the old selection.
+        {
+            let geo_state = state.clone();
+            worker_handles.push(tokio::spawn(crate::geo_backfill::run_worker(geo_state)));
+        }
+
+        // Operations left `running` by a crash are honestly failed (issue #50,
+        // webui.md §5.5); queued rows survive and the worker below picks them up.
+        if let Err(error) =
+            crate::operations::requeue_interrupted_operations(state.db().pool()).await
+        {
+            eprintln!(
+                "operation re-arm deferred: {}",
+                crate::redaction::redact_sensitive(&error.to_string())
+            );
+        }
+
+        // Alert evaluation sweep: persists rule state and Incident transitions
+        // for every active subject on a fixed cadence (design §17.2). Report
+        // ingestion already evaluates its reported subjects in-transaction; the
+        // sweep covers time-based facts and restores timers after restart. The
+        // loop stops on shutdown and every sweep drains before the WAL
+        // checkpoint.
+        {
+            let sweep_state = state.clone();
+            worker_handles.push(tokio::spawn(async move {
+                let mut tick = tokio::time::interval(crate::alerts::SWEEP_INTERVAL);
+                loop {
+                    if sweep_state.is_shutting_down() {
+                        break;
+                    }
+                    tokio::select! {
+                        _ = sweep_state.shutdown_signal() => break,
+                        _ = tick.tick() => {}
+                    }
+                    if sweep_state.is_shutting_down() {
+                        break;
+                    }
+                    sweep_state.mark_critical_worker_heartbeat(0);
+                    match crate::alerts::sweep(&sweep_state).await {
+                        Ok(changes) if changes > 0 => {
+                            sweep_state
                                 .admin_realtime()
                                 .publish("alerts", None::<String>, 1);
                         }
+                        Ok(_) => {}
+                        Err(error) => {
+                            eprintln!(
+                                "alert evaluation sweep deferred: {}",
+                                crate::redaction::redact_sensitive(&error.to_string())
+                            );
+                        }
                     }
-                    Ok(_) => {}
-                    Err(error) => {
+                }
+            }));
+        }
+
+        // Notification delivery worker (design §17.4): sends due Outbox rows
+        // through the configured channels with bounded retry/backoff and
+        // Retry-After awareness, reaches DeadLetter after max attempts, and
+        // re-arms Deliveries left in_flight by a crash. The loop stops on
+        // shutdown; the worker publishes Admin invalidations only.
+        {
+            let worker_state = state.clone();
+            worker_handles.push(tokio::spawn(async move {
+                let mut tick = tokio::time::interval(crate::notifications::DELIVERY_INTERVAL);
+                loop {
+                    if worker_state.is_shutting_down() {
+                        break;
+                    }
+                    tokio::select! {
+                        _ = worker_state.shutdown_signal() => break,
+                        _ = tick.tick() => {}
+                    }
+                    if worker_state.is_shutting_down() {
+                        break;
+                    }
+                    worker_state.mark_critical_worker_heartbeat(1);
+                    match crate::notifications::process_due_deliveries(
+                        &worker_state,
+                        &*worker_state.delivery_provider(),
+                    )
+                    .await
+                    {
+                        Ok(_) => {}
+                        Err(error) => {
+                            eprintln!(
+                                "notification delivery deferred: {}",
+                                crate::redaction::redact_sensitive(&error.to_string())
+                            );
+                        }
+                    }
+                }
+            }));
+        }
+
+        // Operations worker (issue #50, webui.md §5.5): advances one queued
+        // retention/backup/Doctor Operation per tick in bounded steps. State is
+        // persisted per step, so navigation, browser close, or SSE loss never
+        // loses progress; SSE publishes only accelerate REST refetches.
+        {
+            let worker_state = state.clone();
+            worker_handles.push(tokio::spawn(async move {
+                let mut tick = tokio::time::interval(crate::operations::OPERATION_INTERVAL);
+                loop {
+                    if worker_state.is_shutting_down() {
+                        break;
+                    }
+                    tokio::select! {
+                        _ = worker_state.shutdown_signal() => break,
+                        _ = tick.tick() => {}
+                    }
+                    if worker_state.is_shutting_down() {
+                        break;
+                    }
+                    worker_state.mark_critical_worker_heartbeat(2);
+                    match crate::operations::process_operations(&worker_state).await {
+                        Ok(_) => {}
+                        Err(error) => {
+                            eprintln!(
+                                "operation worker deferred: {}",
+                                crate::redaction::redact_sensitive(&error.to_string())
+                            );
+                        }
+                    }
+                }
+            }));
+        }
+
+        // Automatic Validator identity discovery and Provider refresh are
+        // Server-owned. Discovery runs even when no Provider is configured, so a
+        // Node with a validated Network and a full P2P public key still gets an
+        // automatic correspondence whose Current Validator Status is an explicit
+        // Unknown/not-configured. Provider refresh is deduplicated by the
+        // registered Validator table, never by Node links, and its failures are
+        // persisted as diagnostics without entering Node health or readiness.
+        {
+            let refresh_seconds = config
+                .validator_provider
+                .as_ref()
+                .map(|provider| provider.refresh_seconds)
+                .unwrap_or(60);
+            let timezone = config
+                .validator_provider
+                .as_ref()
+                .map(|provider| provider.timezone.clone())
+                .unwrap_or_else(|| "UTC".to_owned());
+            // Whether a Provider is configured at all. Discovery still runs for an
+            // unconfigured deployment so an observed chain key establishes its
+            // automatic correspondence. Without a deployment there is no source to
+            // query, so the refresh pass is skipped instead of replacing every
+            // established observation with a blanket NotConfigured result.
+            let provider_configured = config.validator_provider.is_some();
+            let provider_state = state.clone();
+            worker_handles.push(tokio::spawn(async move {
+                let mut tick =
+                    tokio::time::interval(std::time::Duration::from_secs(refresh_seconds));
+                loop {
+                    if provider_state.is_shutting_down() {
+                        break;
+                    }
+                    tokio::select! {
+                        _ = provider_state.shutdown_signal() => break,
+                        _ = tick.tick() => {}
+                    }
+                    if provider_state.is_shutting_down() {
+                        break;
+                    }
+                    // Automatic identity discovery runs first so a newly observed
+                    // chain key is registered and fetched in the same cycle
+                    // (#173). It only writes Validator identity state and never
+                    // enters Node health or Server readiness.
+                    if let Err(error) =
+                        crate::validator::discover_automatic_links(provider_state.db()).await
+                    {
                         eprintln!(
-                            "Validator Provider refresh deferred: {}",
+                            "Validator identity discovery deferred: {}",
                             crate::redaction::redact_sensitive(&error.to_string())
                         );
                     }
+                    if !provider_configured {
+                        continue;
+                    }
+                    match crate::validator::refresh_all_with_channels_in_timezone(
+                        provider_state.db(),
+                        &*provider_state.validator_provider(),
+                        provider_state.channels(),
+                        &timezone,
+                    )
+                    .await
+                    {
+                        Ok(summary)
+                            if summary.invalidations > 0 || summary.alert_invalidations > 0 =>
+                        {
+                            if summary.invalidations > 0 {
+                                for validator_id in &summary.invalidated_validator_ids {
+                                    provider_state.admin_realtime().publish(
+                                        "validator",
+                                        Some(validator_id.clone()),
+                                        1,
+                                    );
+                                    provider_state.public_realtime().publish(
+                                        "validator",
+                                        Some(validator_id.clone()),
+                                        1,
+                                    );
+                                }
+                                for network_key in &summary.invalidated_network_keys {
+                                    provider_state.admin_realtime().publish(
+                                        "network",
+                                        Some(network_key.clone()),
+                                        1,
+                                    );
+                                    provider_state.public_realtime().publish(
+                                        "network",
+                                        Some(network_key.clone()),
+                                        1,
+                                    );
+                                }
+                            }
+                            if summary.alert_invalidations > 0 {
+                                provider_state.admin_realtime().publish(
+                                    "alerts",
+                                    None::<String>,
+                                    1,
+                                );
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            eprintln!(
+                                "Validator Provider refresh deferred: {}",
+                                crate::redaction::redact_sensitive(&error.to_string())
+                            );
+                        }
+                    }
                 }
-            }
-        }));
+            }));
+        }
     }
 
     println!("listening on {}", config.listen);

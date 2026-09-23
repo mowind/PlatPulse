@@ -850,6 +850,10 @@ pub fn build_app_with_native_tls(state: AppState, native_tls: bool) -> Router {
         .merge(operations_admin::router())
         .merge(notifications_admin::router())
         .merge(validators_admin::router())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            admin_cutover_guard,
+        ))
         .layer(axum::middleware::from_fn(owner_role_guard))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -925,6 +929,36 @@ pub fn build_app_with_native_tls(state: AppState, native_tls: bool) -> Router {
     } else {
         app
     }
+}
+
+/// Refuse Admin mutations on a converted deployment that has not passed the
+/// coordinated cutover gate (issue #192). Read-only diagnostics stay available
+/// so an operator can diagnose the conversion without authorizing any write.
+async fn admin_cutover_guard(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if state.db().inventory_cutover().business_writes_blocked() {
+        let method = request.method();
+        if !matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
+            let request_id = request
+                .extensions()
+                .get::<RequestId>()
+                .map(|id| id.0.to_string())
+                .unwrap_or_default();
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ApiErrorBody::new(
+                    "inventory_cutover_required",
+                    "Converted deployment awaits the coordinated Inventory cutover; stop the Server and run 'platpulse-server cutover resume'",
+                    &request_id,
+                )),
+            )
+                .into_response();
+        }
+    }
+    next.run(request).await
 }
 
 async fn transport_security_headers(request: Request, next: Next) -> Response {

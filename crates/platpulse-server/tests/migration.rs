@@ -17,6 +17,10 @@ use platpulse_core::inventory::{InventoryDeclaration, InventoryNode, NodeInvento
 use platpulse_core::protocol::{AGENT_API_REPORTS_PATH, AGENT_API_REPORTS_PATH_V2};
 use platpulse_server::auth::{AuthConfig, create_owner, hash_password};
 use platpulse_server::checkpoint::{AgentCheckpointManifest, CheckpointArtifact};
+use platpulse_server::config::ServerConfig;
+use platpulse_server::cutover::{
+    CutoverError, InventoryCutover, cutover_status, resume_cutover, rollback_cutover,
+};
 use platpulse_server::database::{ServerDatabaseConfig, initialize};
 use platpulse_server::enrollment::{create_enrollment_token, enroll};
 use platpulse_server::http::{AppState, build_app};
@@ -553,6 +557,19 @@ async fn the_first_v2_report_keeps_the_revision_and_completes_drained_previous()
         .unwrap();
     let fingerprint = summary.fingerprint_sha256.clone().unwrap();
 
+    // Issue #192: a converted deployment stays quiesced until the explicit
+    // cutover gate is passed.
+    let converted_config_path = deployment.converted.join("server/server.toml");
+    let converted_config =
+        ServerConfig::resolve(Some(&converted_config_path), &Default::default()).unwrap();
+    resume_cutover(
+        &converted_config,
+        &deployment.checkpoint,
+        &deployment.converted,
+    )
+    .await
+    .unwrap();
+
     let converted_db = deployment.converted.join("server/server.db");
     let pepper = load_pepper_file(&deployment.converted.join("server/server-pepper")).unwrap();
     let database = initialize(ServerDatabaseConfig::new(&converted_db))
@@ -661,12 +678,24 @@ async fn the_first_v2_report_keeps_the_revision_and_completes_drained_previous()
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    // After the cutover the frozen v1 route is replay-only: an unseen v1
+    // Report is explicitly unsupported and creates no Receipt at all.
+    assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
     let body: serde_json::Value = response.json().await.unwrap();
     assert_eq!(
-        body["receipt"]["disposition"].as_str(),
-        Some("rejected"),
+        body["error"]["code"].as_str(),
+        Some("report_not_replayable"),
         "{body}"
+    );
+    let legacy_receipts: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM agent_report_receipts WHERE report_id = ?")
+            .bind("0195f2a1-0072-4072-8072-000000000072")
+            .fetch_one(probe.db().pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        legacy_receipts, 0,
+        "an unsupported v1 report wrote a Receipt"
     );
 
     server.abort();
@@ -829,4 +858,439 @@ async fn conversion_applies_the_marker_migration_to_a_pre_migration_checkpoint()
     assert_eq!(revision, PRESERVED_REVISION);
     assert_eq!(sha.as_deref(), summary.fingerprint_sha256.as_deref());
     assert_eq!(protocol, Some(2));
+}
+
+/// Issue #192: the explicit switch gate. A converted deployment must not resume
+/// business writes until the coordinated checkpoint and the offline conversion
+/// are both re-verified. The gate refuses a changed participant and is
+/// idempotent for the same verified source.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cutover_gate_blocks_business_until_resume_and_resume_is_idempotent() {
+    let deployment = make_deployment(true, true).await;
+    let summary = convert_checkpoint(&deployment.checkpoint, &deployment.converted)
+        .await
+        .unwrap();
+    let fingerprint = summary.fingerprint_sha256.clone().unwrap();
+    let converted_db = deployment.converted.join("server/server.db");
+    let converted_config_path = deployment.converted.join("server/server.toml");
+    let converted_config =
+        ServerConfig::resolve(Some(&converted_config_path), &Default::default()).unwrap();
+
+    let status = cutover_status(&converted_config).await.unwrap();
+    assert_eq!(status.mode, InventoryCutover::AwaitingResume);
+
+    let database = initialize(ServerDatabaseConfig::new(&converted_db))
+        .await
+        .unwrap();
+    assert_eq!(
+        database.inventory_cutover(),
+        InventoryCutover::AwaitingResume
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let pepper = load_pepper_file(&deployment.converted.join("server/server-pepper")).unwrap();
+    let state = AppState::new(
+        database,
+        None,
+        AuthConfig::development(pepper, format!("http://{addr}")),
+    );
+    let probe = state.clone();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, build_app(state)).await.unwrap();
+    });
+    let client = reqwest::Client::new();
+
+    let blocked = v2_report_body(
+        &deployment.agent_id,
+        "0195f2a1-0080-4080-8080-000000000080",
+        5,
+        "ws://127.0.0.1:6790",
+    );
+    let response = client
+        .post(format!("http://{addr}{AGENT_API_REPORTS_PATH_V2}"))
+        .bearer_auth(&deployment.credential)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(blocked)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(
+        body["error"]["code"].as_str(),
+        Some("inventory_cutover_required"),
+        "{body}"
+    );
+    let receipts: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM agent_report_receipts WHERE report_id = ?")
+            .bind("0195f2a1-0080-4080-8080-000000000080")
+            .fetch_one(probe.db().pool())
+            .await
+            .unwrap();
+    assert_eq!(receipts, 0, "a gated report created a Receipt");
+
+    let ready = client
+        .get(format!("http://{addr}/health/ready"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ready.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+    let ready_body: serde_json::Value = ready.json().await.unwrap();
+    assert!(
+        ready_body["components"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|component| component["name"] == "inventory_cutover"
+                && component["reason"] == "cutover_not_resumed"),
+        "{ready_body}"
+    );
+
+    server.abort();
+    probe.db().close().await;
+
+    // Passing the gate re-verifies the checkpoint and the conversion, and the
+    // same source can be resumed idempotently.
+    let resumed = resume_cutover(
+        &converted_config,
+        &deployment.checkpoint,
+        &deployment.converted,
+    )
+    .await
+    .unwrap();
+    assert_eq!(resumed.mode, InventoryCutover::Resumed);
+    assert_eq!(resumed.preserved_revision, Some(PRESERVED_REVISION));
+    let again = resume_cutover(
+        &converted_config,
+        &deployment.checkpoint,
+        &deployment.converted,
+    )
+    .await
+    .unwrap();
+    assert_eq!(again.resumed_at, resumed.resumed_at);
+    let status = cutover_status(&converted_config).await.unwrap();
+    assert_eq!(status.mode, InventoryCutover::Resumed);
+    assert_eq!(
+        status.binding.unwrap().fingerprint_sha256.as_deref(),
+        Some(fingerprint.as_str())
+    );
+}
+
+/// Issue #192: after the switch ordinary Reports are v2-only and the frozen v1
+/// route returns the original retained Receipt for identical bytes, conflicts
+/// on different bytes, refuses an unseen Report without side effects, and never
+/// bypasses Agent Removal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resumed_cutover_is_v2_only_and_replays_retained_v1_receipts_exactly() {
+    let deployment = make_deployment(true, true).await;
+    convert_checkpoint(&deployment.checkpoint, &deployment.converted)
+        .await
+        .unwrap();
+    let converted_db = deployment.converted.join("server/server.db");
+    let converted_config_path = deployment.converted.join("server/server.toml");
+    let converted_config =
+        ServerConfig::resolve(Some(&converted_config_path), &Default::default()).unwrap();
+    resume_cutover(
+        &converted_config,
+        &deployment.checkpoint,
+        &deployment.converted,
+    )
+    .await
+    .unwrap();
+
+    const REPLAY_ID: &str = "0195f2a1-0081-4081-8081-000000000081";
+    const UNKNOWN_ID: &str = "0195f2a1-0082-4082-8082-000000000082";
+    let body = v1_report_body(&deployment.agent_id, REPLAY_ID, 5);
+    let hash = format!("0x{}", sha256_hex(&body));
+    let receipt = platpulse_core::ReportReceipt {
+        report_id: REPLAY_ID.parse().unwrap(),
+        disposition: platpulse_core::ReceiptDisposition::Accepted,
+        report_body_sha256: hash.parse().unwrap(),
+        server_version: "0.1.0".to_owned(),
+        supported_protocol_majors: vec![1, 2],
+        server_time: "2026-08-12T09:00:00Z".parse().unwrap(),
+        rotation_hint: None,
+        inventory: Some(platpulse_core::InventoryDisposition::Accepted),
+        rejections: Vec::new(),
+        nodes: Vec::new(),
+        samples: Vec::new(),
+    };
+    let receipt_bytes = serde_json::to_vec(&receipt).unwrap();
+    let mut connection = sqlx::SqliteConnection::connect_with(
+        &sqlx::sqlite::SqliteConnectOptions::new().filename(&converted_db),
+    )
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at, inventory_protocol_major) VALUES (?, ?, 1, ?, 5, ?, 'accepted', ?, '2026-08-12T09:00:00Z', 1)",
+    )
+    .bind(REPLAY_ID)
+    .bind(&deployment.agent_id)
+    .bind(NEXT_BOOT)
+    .bind(&hash)
+    .bind(&receipt_bytes)
+    .execute(&mut connection)
+    .await
+    .unwrap();
+    connection.close().await.unwrap();
+
+    let database = initialize(ServerDatabaseConfig::new(&converted_db))
+        .await
+        .unwrap();
+    assert_eq!(database.inventory_cutover(), InventoryCutover::Resumed);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let pepper = load_pepper_file(&deployment.converted.join("server/server-pepper")).unwrap();
+    let state = AppState::new(
+        database,
+        None,
+        AuthConfig::development(pepper, format!("http://{addr}")),
+    );
+    let probe = state.clone();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, build_app(state)).await.unwrap();
+    });
+    let client = reqwest::Client::new();
+
+    // Exact retained identity and bytes: the original v1 Receipt verbatim.
+    let response = client
+        .post(format!("http://{addr}{AGENT_API_REPORTS_PATH}"))
+        .bearer_auth(&deployment.credential)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let replayed: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(
+        replayed["receipt"],
+        serde_json::from_slice::<serde_json::Value>(&receipt_bytes).unwrap()
+    );
+
+    // Same identity, different bytes: conflict.
+    let mut changed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    changed["report_sequence"] = serde_json::json!(6);
+    let altered = serde_json::to_vec(&changed).unwrap();
+    let response = client
+        .post(format!("http://{addr}{AGENT_API_REPORTS_PATH}"))
+        .bearer_auth(&deployment.credential)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(altered)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+    let body_json: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(
+        body_json["error"]["code"].as_str(),
+        Some("report_identity_conflict"),
+        "{body_json}"
+    );
+
+    // An unseen v1 Report is explicitly unsupported and side-effect free.
+    let unknown = v1_report_body(&deployment.agent_id, UNKNOWN_ID, 7);
+    let response = client
+        .post(format!("http://{addr}{AGENT_API_REPORTS_PATH}"))
+        .bearer_auth(&deployment.credential)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(unknown)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+    let body_json: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(
+        body_json["error"]["code"].as_str(),
+        Some("report_not_replayable"),
+        "{body_json}"
+    );
+    let unknown_receipts: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM agent_report_receipts WHERE report_id = ?")
+            .bind(UNKNOWN_ID)
+            .fetch_one(probe.db().pool())
+            .await
+            .unwrap();
+    assert_eq!(unknown_receipts, 0);
+
+    // Agent Removal is not bypassed by the replay path.
+    sqlx::query("UPDATE agents SET deleted_at = '2026-08-12T10:00:00Z' WHERE agent_id = ?")
+        .bind(&deployment.agent_id)
+        .execute(probe.db().pool())
+        .await
+        .unwrap();
+    let response = client
+        .post(format!("http://{addr}{AGENT_API_REPORTS_PATH}"))
+        .bearer_auth(&deployment.credential)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    server.abort();
+}
+
+/// Issue #192: before the switch resumes business writes the coordinated
+/// checkpoint can be restored wholesale; after resume the same action is
+/// refused as a software rollback.
+#[tokio::test]
+async fn cutover_rollback_restores_the_checkpoint_before_resume_and_is_refused_after() {
+    let deployment = make_deployment(true, true).await;
+    convert_checkpoint(&deployment.checkpoint, &deployment.converted)
+        .await
+        .unwrap();
+    let directory = deployment.checkpoint.parent().unwrap().to_path_buf();
+
+    let restore = directory.join("cutover-rollback-before");
+    let restored = rollback_cutover(
+        &deployment.checkpoint,
+        &restore,
+        Some(&deployment.converted),
+    )
+    .await
+    .unwrap();
+    assert_eq!(restored.inventory_revision, PRESERVED_REVISION);
+    platpulse_server::checkpoint::verify_checkpoint(&restore)
+        .await
+        .unwrap();
+    assert!(restore.join("server/server.db").exists());
+
+    let converted_config_path = deployment.converted.join("server/server.toml");
+    let converted_config =
+        ServerConfig::resolve(Some(&converted_config_path), &Default::default()).unwrap();
+    resume_cutover(
+        &converted_config,
+        &deployment.checkpoint,
+        &deployment.converted,
+    )
+    .await
+    .unwrap();
+    let error = rollback_cutover(
+        &deployment.checkpoint,
+        &directory.join("cutover-rollback-after"),
+        Some(&deployment.converted),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(error, CutoverError::ForwardRepairRequired(_)));
+}
+
+/// Issue #192: the gate refuses a converted deployment whose state changed
+/// after verification and leaves it unauthorized.
+#[tokio::test]
+async fn cutover_resume_refuses_a_changed_conversion() {
+    let deployment = make_deployment(true, true).await;
+    convert_checkpoint(&deployment.checkpoint, &deployment.converted)
+        .await
+        .unwrap();
+    let converted_db = deployment.converted.join("server/server.db");
+    let mut connection = sqlx::SqliteConnection::connect_with(
+        &sqlx::sqlite::SqliteConnectOptions::new().filename(&converted_db),
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE agents SET inventory_sha256 = '0xtampered' WHERE agent_id = ?")
+        .bind(&deployment.agent_id)
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    connection.close().await.unwrap();
+
+    let converted_config_path = deployment.converted.join("server/server.toml");
+    let converted_config =
+        ServerConfig::resolve(Some(&converted_config_path), &Default::default()).unwrap();
+    assert!(
+        resume_cutover(
+            &converted_config,
+            &deployment.checkpoint,
+            &deployment.converted
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(
+        cutover_status(&converted_config).await.unwrap().mode,
+        InventoryCutover::AwaitingResume
+    );
+}
+
+/// Issue #192: the operator entry points wire through, and status distinguishes
+/// the not-switched and switched protocol configurations.
+#[tokio::test]
+async fn the_cli_cutover_entry_points_wire_through() {
+    let deployment = make_deployment(true, true).await;
+    let binary = env!("CARGO_BIN_EXE_platpulse-server");
+    let converted = deployment
+        .checkpoint
+        .parent()
+        .unwrap()
+        .join("cli-cutover-converted");
+    let output = Command::new(binary)
+        .args([
+            "checkpoint",
+            "convert",
+            "--checkpoint",
+            &deployment.checkpoint.display().to_string(),
+            "--output",
+            &converted.display().to_string(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "checkpoint convert failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let config = converted.join("server/server.toml");
+    let status = Command::new(binary)
+        .args([
+            "cutover",
+            "status",
+            "--config",
+            &config.display().to_string(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        status.status.success(),
+        "cutover status failed: {}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let text = String::from_utf8_lossy(&status.stdout);
+    assert!(text.contains("awaiting cutover resume"), "{text}");
+
+    let resume = Command::new(binary)
+        .args([
+            "cutover",
+            "resume",
+            "--config",
+            &config.display().to_string(),
+            "--checkpoint",
+            &deployment.checkpoint.display().to_string(),
+            "--converted",
+            &converted.display().to_string(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        resume.status.success(),
+        "cutover resume failed: {}",
+        String::from_utf8_lossy(&resume.stderr)
+    );
+
+    let status = Command::new(binary)
+        .args([
+            "cutover",
+            "status",
+            "--config",
+            &config.display().to_string(),
+        ])
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    let text = String::from_utf8_lossy(&status.stdout);
+    assert!(text.contains("v2 active"), "{text}");
 }
