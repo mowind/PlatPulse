@@ -248,6 +248,14 @@ to the SPA;
 for operational readiness. Schema/Owner queries alone do not establish database
 integrity.
 
+> **Target change ([ADR 0008](adr/0008-offline-server-backup.md), issue #194).**
+> The authoritative whole-database integrity verdict moves into the Offline
+> Backup Window, and the serving process stops running a periodic
+> whole-database scan: on a deployment-sized database it cannot complete
+> inside a useful budget on the only SQLite connection, and every attempt
+> stalls ingestion. The behaviour below describes the code until that slice
+> lands.
+
 After the startup integrity check, a Server-owned monitor runs
 `PRAGMA integrity_check(1)` immediately and every six hours. The `(1)` limits
 the number of reported errors, not the tables examined. Scans use the owning
@@ -306,7 +314,7 @@ backs up and diagnoses. Quarantining a `reports` row cascades to
 `report_sample_assignments`, returning those samples to the re-assignable pool
 (issue #163).
 
-## systemd services and backup timer
+## systemd services and offline backups
 
 Install the binary and WebUI tree using the package manager or release archive.
 The checked-in units under `release/systemd/` run Server and Agent as separate
@@ -314,7 +322,7 @@ dedicated users, apply a strict filesystem sandbox, and leave service enabling
 to the operator. Copy the example configuration, create same-user-owned secret
 files with mode `0600`, initialize the Server, then enable the selected unit.
 
-**The shipped backup timer must not run against a running Server.** Every
+**A backup job must not run against a running Server.** Every
 offline Server CLI command that opens the database (`init`, `owner create`,
 `viewer create`, `network create`, `agent create-enrollment-token`,
 `backup`, and `restore`) now takes the same exclusive ownership guard the
@@ -329,15 +337,16 @@ holds the guard, and `restore` is always a stopped-Server operation, in every
 mode.
 
 That guard makes the independent CLI safe, not scheduled-safe: it neither stops
-nor restarts the Server. For online backups, use the authenticated Admin backup
-Operation inside the owning Server process, or the Server-owned schedule below.
-A stopped-Server schedule must serialize stop/backup/start and guarantee restart
-even when backup fails; the packaged timer does not do that orchestration.
-Apply the same rule to user-level systemd (`systemctl --user`) units and cron
-jobs: use the same state, backup, and secret paths as the service, run with
-`UMask=0077`, keep the backup directory private, and wrap the command so the
-Server is started again on every failure path. Do not copy the system units'
-users or paths blindly into a user service.
+nor restarts the Server. [ADR 0008](adr/0008-offline-server-backup.md) retires
+the in-process online backup and **the package ships no backup timer**: creating
+a Backup Artifact is an explicit operator action inside an Offline Backup
+Window, and the operator owns the stop → backup → start orchestration,
+including starting the Server again when the backup fails. Apply the same rule
+to user-level systemd (`systemctl --user`) units and cron jobs: use the same
+state, backup, and secret paths as the service, run with `UMask=0077`, keep the
+backup directory private, and wrap the command so the Server is started again
+on every failure path. Do not copy the system units' users or paths blindly
+into a user service.
 
 ### Node process selectors and supervisor authorization
 
@@ -377,69 +386,59 @@ Missing `supervisorctl`, a non-zero exit, a non-numeric PID, and a `0` PID are
 distinct typed collection errors: the component keeps its last-good value with
 an explicit error and is never rendered as `0` or Healthy.
 
-### Server-owned online backup schedule
+### Offline backups (no packaged automation)
 
-> **ADR 0008 retires this path.** [ADR 0008](adr/0008-offline-server-backup.md)
-> decides that the Server process no longer creates backup artifacts: creation
-> and restore are offline, stopped-Server operations, redacted at write time,
-> with the packaged timer (or a filesystem/volume snapshot) as the automation
-> path. The section below documents the current code until that removal lands;
-> treat the online schedule as deprecated.
+[ADR 0008](adr/0008-offline-server-backup.md) makes creation and restore
+offline, stopped-Server operations and **deletes the packaged
+`platpulse-backup.timer` / `.service` pair**. The default deployment has no
+automatic backup: `platpulse-server backup` is an explicit operator command run
+inside an Offline Backup Window, and the operator owns its schedule.
 
-`[backup_schedule]` makes the running Server create and verify its own daily
-backup on the owning SQLite connection. It stores no Owner password or machine
-token and never opens a second connection to a live database:
+`[backup_schedule]` is removed with the in-process scheduler. A `server.toml`
+that still contains the section is rejected at startup with a dedicated error;
+delete the section before upgrading. `backup_dir` remains:
 
 ```toml
 backup_dir = "/data/platpulse-backups"
-
-[backup_schedule]
-required_mount = "/data"
-interval_hours = 24   # optional, default 24, minimum 1
 ```
 
-- The first attempt runs two minutes after startup; it is deliberately not
-  immediate so a restart never races ingestion with a `VACUUM`.
-- A success is recorded only after checksum, read-only integrity, schema, and
-  privacy verification pass. A failed auto-verification keeps the artifact and
-  records the error; the schedule retries within an hour.
-- `required_mount` fails closed: the backup directory must live under that
-  mount point, on that mount device, and on a filesystem distinct from the
-  live database. An absent or unmounted disk produces no artifact instead of
-  writing beside the database.
-- Old artifacts are never pruned automatically; retention and off-host copies
-  remain operator policy.
-- Every schedule result is durable in `server_settings` keys prefixed
-  `backup_schedule_`, so a restart does not duplicate a recent success.
+- `platpulse-server backup` holds the exclusive ownership guard and refuses
+  while a Server owns the database, so it can only run with the Server stopped.
+- The offline command keeps the layout guard: the backup directory must live
+  under the configured mount, that mount must be a distinct real filesystem,
+  and it must not be the live database filesystem. An absent or unmounted disk
+  produces no artifact instead of writing beside the database.
+- Creation runs one bounded redaction pass. Verifying an existing artifact is a
+  separate read-only step (Admin `backup_verify`) and still scans it
+  independently.
+- A killed or disk-full attempt can leave a `platpulse-*.db.part` (and a
+  `.part-journal`) behind. Nothing reclaims it automatically: remove it
+  manually, and confirm no backup is running before deleting anything. Doctor
+  reports the residue count and the age of the last successful artifact.
+- Retained artifacts are never pruned automatically; retention and off-host
+  copies remain operator policy.
+- Place `backup_dir` on a distinct disk where possible, keep the directory
+  private (`0700`), and never let a missing mount fall back to the database
+  disk. A second local disk is not an off-host backup.
 
-Place `backup_dir` on a distinct disk where possible, require the expected mount
-before running a scheduled backup, and keep the directory private (`0700`).
-Do not allow a missing mount to silently fall back to the database disk.
-Creation is not verification: verify checksum/integrity/schema, rehearse an
-isolated restore, monitor last successful backup and capacity, and retain
-protected configuration/secret recovery material separately. A second local
-disk is not an off-host backup.
-
-The packaged `platpulse-backup.timer` invokes `platpulse-server backup --config
-/etc/platpulse/server.toml`. That command uses the same sanitized `VACUUM INTO`,
-redaction, fsync, atomic-rename, and metadata path as the Admin backup Operation;
-it writes restrictive artifacts to the configured `backup_dir` (the example uses
-`/var/backups/platpulse`), separate from Server state. If `db_path` or `backup_dir` is changed, add the same paths to a systemd drop-in
-for `ReadWritePaths`. Restore remains an explicit,
-stopped-Server operation using the documented `platpulse-server restore` flow;
-never restore by copying a live database or its WAL/SHM sidecars.
+The offline command writes restrictive artifacts to the configured `backup_dir`
+(the example uses `/var/backups/platpulse`), separate from Server state. If
+`db_path` or `backup_dir` is changed, add the same paths to a systemd drop-in
+for `ReadWritePaths`. Restore remains an explicit, stopped-Server operation
+using the documented `platpulse-server restore` flow; never restore by copying
+a live database or its WAL/SHM sidecars.
 
 ### Safe daily backups, verification, and restore rehearsal
 
 - **Use the offline path.** [ADR 0008](adr/0008-offline-server-backup.md)
-  retires the in-process online schedule, so create and verify only in a
-  maintenance window with the Server stopped, or from a filesystem/volume
-  snapshot.
-- **The packaged timer is the automation path; orchestrate the stop.** The
-  `platpulse-server backup` command now refuses while a running Server owns the
-  database, so a timer that fires against a live Server fails closed instead of
-  opening the file. A safe wrapper stops the Server, runs the backup, and always
-  starts the Server again, even when the backup fails:
+  retires the in-process online schedule and the packaged timer, so create
+  and verify only in an Offline Backup Window with the Server stopped, or
+  from a filesystem/volume snapshot.
+- **You own the schedule; orchestrate the stop.** No packaged timer exists.
+  The `platpulse-server backup` command refuses while a running Server owns
+  the database, so a job that fires against a live Server fails closed
+  instead of opening the file. Write a wrapper that stops the Server, runs
+  the backup, and always starts the Server again, even when the backup fails:
 
   ```bash
   #!/bin/sh
@@ -456,12 +455,12 @@ never restore by copying a live database or its WAL/SHM sidecars.
   every failure path. Never schedule the raw `platpulse-server backup` command.
 - **Verification is not creation.** A successful `backup` writes a sanitized,
   fsync'd, atomically renamed artifact plus a registry manifest; that does not
-  prove the artifact restores. The Server-owned schedule and the Admin backup
-  Operation record checksum, read-only `integrity_check`, schema, and privacy
-  verification. For an artifact created by the independent CLI, verify it in the
-  same maintenance window: compare the artifact's SHA-256 with the
-  `backup_artifacts` manifest, run a read-only integrity check, and confirm the
-  recorded schema is not newer than the running binary.
+  prove the artifact restores. Creation performs one bounded redaction pass
+  and records the source integrity result. To verify an artifact afterwards,
+  use the Admin `backup_verify` Operation or verify it in the same Offline
+  Backup Window: compare the artifact's SHA-256 with the `backup_artifacts`
+  manifest, run a read-only integrity check, and confirm the recorded schema
+  is not newer than the running binary.
 - **Rehearse an isolated restore.** At least once per release, and after any
   hardware or path change, copy the state directory and the artifact to an
   isolated scratch location, point `backup_dir` in the copied configuration at
@@ -526,8 +525,8 @@ reports an explicit unavailable status otherwise.
 
 Native archives and packages include the repository `LICENSE` in their package-specific
 documentation directories. Each Server archive includes the same-origin WebUI, non-root
-systemd units, the Caddy and Compose examples, the optional MaxMind `geoipupdate` example, and the
-backup timer/service. Agent archives include the Agent unit and configuration
+systemd units, the Caddy and Compose examples, and the optional MaxMind `geoipupdate` example.
+Agent archives include the Agent unit and configuration
 reference. Packages install dedicated `platpulse-server` and `platpulse-agent`
 system users, create their private state directories plus the Server backup and
 `/etc/platpulse/secrets` directories with runtime-user ownership and mode `0700`,
@@ -587,7 +586,7 @@ unsigned artifacts must not be described as a verified supply chain.
 
 The checked-in deployment assets are:
 
-- `release/systemd/` — Server, Agent, backup service, and backup timer;
+- `release/systemd/` — Server and Agent units;
 - `release/examples/Caddyfile` — trusted reverse-proxy example;
 - `release/compose/server.compose.yml` and `release/compose/server.toml` — non-root Server Compose example and matching container configuration;
 - `release/geo/geoipupdate.compose.yml` — optional Geo sidecar example.

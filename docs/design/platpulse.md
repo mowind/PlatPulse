@@ -468,7 +468,7 @@ GET  /api/public/v1/nodes/{node_id}/peer-history
 /api/admin/v1/doctor
 ~~~
 
-这些 family 表示当前实际 route 集合；每个 operation 的 GET/POST/PUT/PATCH/DELETE 方法、参数和响应以源 handler/OpenAPI operation 为准。Session 撤销是 `POST /api/admin/v1/sessions/{session_id}/revoke`，不是 DELETE。运行时 handlers 还可能返回 OpenAPI 未列出的 typed `ApiErrorBody`（特别是 503/500），客户端必须把任何非 2xx 当作错误处理。
+这些 family 表示当前实际 route 集合；每个 operation 的 GET/POST/PUT/PATCH/DELETE 方法、参数和响应以源 handler/OpenAPI operation 为准。备份创建与恢复是**离线操作**（[ADR 0008](../adr/0008-offline-server-backup.md)）：服务进程不创建 backup artifact，因此 `/api/admin/v1/backups` 只保留列表/详情/verify，`POST /api/admin/v1/backups` 随 `backup_create` Operation 一起移除。Session 撤销是 `POST /api/admin/v1/sessions/{session_id}/revoke`，不是 DELETE。运行时 handlers 还可能返回 OpenAPI 未列出的 typed `ApiErrorBody`（特别是 503/500），客户端必须把任何非 2xx 当作错误处理。
 
 ### 8.5 Admin Overview 契约
 
@@ -788,7 +788,7 @@ Incident 保留证据不等于继续把它当作当前待处理故障；删除�
 2. **共享哈希口径**：canonical 哈希实现放在 `platpulse-core`，由 Server 的比较/记录与 Agent 自检共用。哈希对象是已发布 `NodeInventory` 的序列化（含 revision 与 nodes），因此 `data_directory`、`collection_interval_seconds` 等本地字段不参与；`display_name` 属于 wire 字段，改它而不 bump 同样应被拒绝。
 3. **Agent 自检**：声明前比较本地配置与记录——同 revision 而内容不同 → 拒绝声明；revision 低于记录 → 拒绝声明。声明的入口（`run`、`collect-report`、`persist-report`）拒绝启动并以非 0 退出，且在 `recover_previous_boot` 之前判定，避免产出注定被拒的 Closing 报告；长期运行中出现的配置漂移不结束进程，只拒绝声明并以去重日志给出可操作诊断，Operator bump 后下一个采集周期自愈。`shutdown` 与 `recover` 不受守卫，保证仍能收尾与排障；`validate-config` 以只读方式检查 Agent Store 并报错。
 4. **复现诊断**：整份 terminal 拒收在 Agent 控制台按 `(code, reason)` 去重打印并带计数。现有实现只在 transport `Err` 时打印，拒收走「receipt 已应用」路径因而静默。
-5. **Server 侧证据**：`agent_report_receipts` 增加可空列记录拒收 code 与本次上报的 Inventory revision/哈希。不改 wire `RejectionCode`、不改 `ReportReceipt`，也不为该表新增保留策略。
+5. **Server 侧证据**：`agent_report_receipts` 增加可空列记录拒收 code 与本次上报的 Inventory revision/哈希。不改 wire `RejectionCode`、不改 `ReportReceipt`，也不为该表新增保留策略。（2026-09-23 增补：该结论不变——不新增**行**保留；身份行永久保留，只有 `receipt_body` 在固定 30 天窗口后瘦身为紧凑 receipt，见 [ADR 0009](../adr/0009-report-receipt-body-slimming.md)。）
 6. **Admin 可观测**：新增 Agent Attention kind `agent_inventory_rejected`（critical，可按 §15.6 确认），条件是「该 Agent 最新一行 receipt 是整份 Inventory 拒收」；evidence 边界取「原因 + 已接受 revision/哈希 + 上报 revision/哈希」，因此内容不变而每周期重报不会让确认失效，只有内容或已接受状态变化才重新提示。Admin Agent DTO 增加嵌套的 Inventory 诊断（已接受 revision/哈希 + 最近一次拒收证据），WebUI 在 Inventory 与 Diagnostics 面板展示；拒收提交后向 Admin realtime 发 `agent` invalidation。
 7. **不改**：wire 契约、接受路径的同 revision 哈希判定、以及「整份 Inventory 才生效」的语义都不放宽。
 

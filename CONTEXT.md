@@ -346,7 +346,19 @@ _Avoid_: Alert disable, Incident deletion
 
 **Maintenance Window**:
 A time-bounded operational context for an Agent, Node, or Network that suppresses expected delivery while preserving Alert facts and auditability.
-_Avoid_: Silence without scope, Health override
+_Avoid_: Silence without scope, Health override, Backup window
+
+**Offline Backup Window**:
+A stopped-Server period in which a Backup Artifact is created or restored. It suppresses nothing and is never a Maintenance Window.
+_Avoid_: Maintenance Window, Downtime, Outage
+
+**Backup Artifact**:
+A sanitized, consistent copy of the whole Server database, produced as a recovery point. It is not a projection export.
+_Avoid_: Snapshot, Database dump, Export
+
+**Storage Snapshot**:
+A copy of the Server state taken by the storage layer, outside the Server process.
+_Avoid_: Backup Artifact, Database snapshot
 
 **Owner**:
 A human principal allowed to access the Admin Dashboard and manage PlatPulse.
