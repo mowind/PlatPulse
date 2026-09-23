@@ -1278,7 +1278,7 @@ async fn mark_spool_fatal_store(
     mark_spool_fatal_under_permit(store, now, message).await
 }
 
-async fn mark_spool_fatal_under_permit(
+pub(crate) async fn mark_spool_fatal_under_permit(
     store: &mut AgentStore,
     now: &str,
     message: &str,
@@ -2432,7 +2432,11 @@ mod delivery_tests {
 /// the same real Server, transport and receipt application.
 #[cfg(test)]
 mod backlog_recovery_tests {
+    use std::fs;
+    use std::future::Future;
     use std::path::Path;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use platpulse_server::auth::{AuthConfig, create_owner, hash_password};
     use platpulse_server::database::{ServerDatabaseConfig, initialize};
@@ -2446,7 +2450,10 @@ mod backlog_recovery_tests {
     use tokio::task::JoinHandle;
     use tokio_util::sync::CancellationToken;
 
-    use super::{AgentReport, HttpReportTransport, deliver_periodic, persist_immutable_report};
+    use super::{
+        AgentReport, HttpReportTransport, ReportStoreError, ReportTransport, deliver_periodic,
+        persist_immutable_report,
+    };
     use crate::collector::{CollectionError, SpoolPolicy, guard_startup_inventory_declaration};
     use crate::config::{AgentConfig, BackfillConfig};
     use crate::database::{AgentDatabaseConfig, AgentStore, AgentStoreWritePermit};
@@ -2484,6 +2491,31 @@ mod backlog_recovery_tests {
             self.shutdown.cancel();
             let _ = self.task.await;
             self.state.db().close().await;
+        }
+    }
+
+    /// A real HTTP transport that discards the response of its first successful
+    /// send, simulating a Server that committed a report but whose receipt never
+    /// reached the Agent (issue #187).
+    struct LostResponseTransport {
+        inner: HttpReportTransport,
+        drop_next: AtomicBool,
+    }
+
+    impl ReportTransport for LostResponseTransport {
+        fn send<'a>(
+            &'a self,
+            body: &'a [u8],
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, ReportStoreError>> + Send + 'a>> {
+            Box::pin(async move {
+                let response = self.inner.send(body).await?;
+                if self.drop_next.swap(false, Ordering::SeqCst) {
+                    return Err(ReportStoreError::Delivery(
+                        "simulated lost receipt".to_owned(),
+                    ));
+                }
+                Ok(response)
+            })
         }
     }
 
@@ -3043,6 +3075,266 @@ mod backlog_recovery_tests {
             "an applied rejection still removes the acknowledged report"
         );
 
+        store.close().await.unwrap();
+        server.stop().await;
+    }
+
+    /// Issue #187: a Server-managed Agent keeps generating and persisting new
+    /// immutable Reports through the normal configuration/persistence entry while
+    /// the Server is offline. No confirmation record exists yet, and the missing
+    /// confirmation is never treated as permission or as a blocker. Once the
+    /// Server returns, the backlog drains and the Server assigns a fresh revision
+    /// per accepted content change, without rewriting the original bytes.
+    #[tokio::test]
+    async fn a_v2_agent_declares_while_the_server_is_offline_and_drains_after_restart() {
+        let dir = TempDir::new().unwrap();
+        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = probe.local_addr().unwrap();
+        drop(probe);
+
+        let (server, token) = boot_server(addr, dir.path()).await;
+        let config = agent_config(dir.path(), &format!("http://{addr}"));
+        let enrolled = crate::enroll::enroll_agent(&config, &token).await.unwrap();
+        let agent_id = enrolled.agent_id.to_string();
+        server.stop().await;
+
+        // The Server is down: three content changes are still declared and
+        // spooled through the production persistence path, with no local
+        // revision and no confirmation record to consult.
+        let config_path = dir.path().join("agent.toml");
+        let report_path = dir.path().join("report.json");
+        let endpoints = [
+            "ws://127.0.0.1:6790",
+            "ws://127.0.0.1:6791",
+            "ws://127.0.0.1:6792",
+        ];
+        for (index, endpoint) in endpoints.iter().enumerate() {
+            let sequence = index as u64 + 1;
+            fs::write(
+                &report_path,
+                v2_report_body(sequence, &agent_id, 1, &[(V2_NODE_A, endpoint, None)]),
+            )
+            .unwrap();
+            fs::write(
+                &config_path,
+                format!(
+                    "server_url=\"http://{addr}\"\ncredential_file=\"{}\"\nstate_db=\"{}\"\nnodes=[{{node_id=\"{V2_NODE_A}\",network_key=\"platon-mainnet\",rpc_endpoint=\"{endpoint}\"}}]\n",
+                    config.credential_file.display(),
+                    config.state_db.display()
+                ),
+            )
+            .unwrap();
+            crate::reporting::persist_report_from_config(&config_path, &report_path)
+                .await
+                .unwrap();
+        }
+
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(&config.state_db))
+            .await
+            .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            3,
+            "the offline Server must not stop new Reports from being persisted"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM inventory_declaration")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            0,
+            "no confirmation record exists while the Server is offline"
+        );
+        let transport = HttpReportTransport::from_config(&config).unwrap();
+        let policy = SpoolPolicy::default();
+        assert!(
+            deliver_periodic(&mut store, &transport, &policy)
+                .await
+                .is_err(),
+            "delivery against a stopped Server must fail"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            3,
+            "a failed delivery must keep every queued Report"
+        );
+
+        let (restarted, _token) = boot_server(addr, dir.path()).await;
+        let delivered = deliver_periodic(&mut store, &transport, &policy)
+            .await
+            .unwrap();
+        assert_eq!(
+            delivered.applied, 3,
+            "one tick must drain the v2 backlog: {:?}",
+            delivered.rejections
+        );
+        assert!(
+            delivered.rejections.is_empty(),
+            "{:?}",
+            delivered.rejections
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            0,
+            "the Durable Spool must be empty once the backlog is acknowledged"
+        );
+        assert_eq!(
+            server_inventory_revision(&restarted, &agent_id).await,
+            3,
+            "each accepted content change advances the Server-assigned revision"
+        );
+        let record = read_inventory_declaration(store.connection())
+            .await
+            .unwrap()
+            .expect("the final accepted declaration is recorded");
+        assert_eq!(record.revision, 3);
+        let server_hash: Option<String> =
+            sqlx::query_scalar("SELECT inventory_sha256 FROM agents WHERE agent_id = ?")
+                .bind(&agent_id)
+                .fetch_one(restarted.state.db().pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            record.sha256,
+            server_hash.expect("the accepted declaration fingerprint is stored"),
+            "the Agent confirmation record must match the Server's accepted fingerprint"
+        );
+        store.close().await.unwrap();
+        restarted.stop().await;
+    }
+
+    /// Issue #187: when the Server committed a Report but its Receipt was lost,
+    /// the Agent resends the identical bytes. The Server returns the original
+    /// exact Receipt without re-allocating, re-projecting, or counting twice.
+    #[tokio::test]
+    async fn a_lost_v2_receipt_is_replayed_exactly_without_duplicating_effects() {
+        let dir = TempDir::new().unwrap();
+        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = probe.local_addr().unwrap();
+        drop(probe);
+        let (server, token) = boot_server(addr, dir.path()).await;
+        let config = agent_config(dir.path(), &format!("http://{addr}"));
+        let enrolled = crate::enroll::enroll_agent(&config, &token).await.unwrap();
+        let agent_id = enrolled.agent_id.to_string();
+
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(&config.state_db))
+            .await
+            .unwrap();
+        let body = v2_report_body(1, &agent_id, 1, &[(V2_NODE_A, "ws://127.0.0.1:6790", None)]);
+        persist_immutable_report(
+            &mut store,
+            &report_id(1),
+            1,
+            BOOT_ID,
+            1,
+            "2026-08-12T09:00:00Z",
+            &body,
+        )
+        .await
+        .unwrap();
+        let transport = LostResponseTransport {
+            inner: HttpReportTransport::from_config(&config).unwrap(),
+            drop_next: AtomicBool::new(true),
+        };
+        let policy = SpoolPolicy::default();
+        assert!(
+            deliver_periodic(&mut store, &transport, &policy)
+                .await
+                .is_err(),
+            "a lost response must surface as a transport failure"
+        );
+        // The Server committed despite the lost response.
+        assert_eq!(server_inventory_revision(&server, &agent_id).await, 1);
+        let receipt_body: Vec<u8> = sqlx::query_scalar(
+            "SELECT receipt_body FROM agent_report_receipts WHERE report_id = ?",
+        )
+        .bind(report_id(1))
+        .fetch_one(server.state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM nodes WHERE agent_id = ?")
+                .bind(&agent_id)
+                .fetch_one(server.state.db().pool())
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            1,
+            "the unacknowledged Report stays queued with its exact bytes"
+        );
+
+        let delivered = deliver_periodic(&mut store, &transport, &policy)
+            .await
+            .unwrap();
+        assert_eq!(delivered.applied, 1, "{:?}", delivered.rejections);
+        assert!(
+            delivered.rejections.is_empty(),
+            "{:?}",
+            delivered.rejections
+        );
+        assert_eq!(
+            server_inventory_revision(&server, &agent_id).await,
+            1,
+            "a replayed Report must not allocate a new revision"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM agent_report_receipts WHERE report_id = ?"
+            )
+            .bind(report_id(1))
+            .fetch_one(server.state.db().pool())
+            .await
+            .unwrap(),
+            1,
+            "the replay must not store a second Receipt"
+        );
+        let replayed_body: Vec<u8> = sqlx::query_scalar(
+            "SELECT receipt_body FROM agent_report_receipts WHERE report_id = ?",
+        )
+        .bind(report_id(1))
+        .fetch_one(server.state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            replayed_body, receipt_body,
+            "the stored Receipt must stay byte-for-byte the original"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM nodes WHERE agent_id = ?")
+                .bind(&agent_id)
+                .fetch_one(server.state.db().pool())
+                .await
+                .unwrap(),
+            1,
+            "the replay must not duplicate the projection"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            0
+        );
+        let record = read_inventory_declaration(store.connection())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.revision, 1);
         store.close().await.unwrap();
         server.stop().await;
     }

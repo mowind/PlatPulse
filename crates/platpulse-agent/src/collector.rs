@@ -2470,6 +2470,7 @@ pub async fn apply_receipt_typed<I: ReportInventory>(
         )));
     }
     let mut stale_closing = false;
+    let mut inventory_acceptance_conflict: Option<String> = None;
     let transaction_result: Result<(), sqlx::Error> = async {
         let (raw_report, stored_body_sha256, stored_body_bytes): (Vec<u8>, String, i64) =
             sqlx::query_as("SELECT body, body_sha256, body_bytes FROM reports WHERE report_id = ?")
@@ -2671,7 +2672,12 @@ pub async fn apply_receipt_typed<I: ReportInventory>(
         // declaration, and never treats it as permission to generate a report.
         let (revision, fingerprint) = match &acceptance {
             Some(acceptance) => {
-                if acceptance.fingerprint != parsed_report.inventory.accepted_sha256() {
+                let declared_fingerprint = parsed_report.inventory.accepted_sha256();
+                if acceptance.fingerprint != declared_fingerprint {
+                    inventory_acceptance_conflict = Some(format!(
+                        "receipt fingerprint {} does not match the stored declaration {}",
+                        acceptance.fingerprint, declared_fingerprint
+                    ));
                     return Err(sqlx::Error::Protocol(
                         "receipt inventory fingerprint does not match the stored declaration"
                             .to_owned(),
@@ -2691,6 +2697,10 @@ pub async fn apply_receipt_typed<I: ReportInventory>(
             // the report for investigation; a lower revision may complete its
             // acknowledgement but never moves the record backward.
             if record.revision == revision && record.sha256 != fingerprint.as_str() {
+                inventory_acceptance_conflict = Some(format!(
+                    "revision {revision} binds fingerprint {fingerprint} but the record holds {}",
+                    record.sha256
+                ));
                 return Err(sqlx::Error::Protocol(
                     "inventory acceptance conflicts with the local confirmation record".to_owned(),
                 ));
@@ -2806,6 +2816,23 @@ pub async fn apply_receipt_typed<I: ReportInventory>(
                     Err(ApplyReceiptError::StaleClosing {
                         report_id: report_id.to_owned(),
                     })
+                } else if let Some(conflict) = inventory_acceptance_conflict {
+                    // A confirmation that contradicts accepted state is a peer
+                    // protocol violation: the report and the record are both
+                    // retained, and the store fails closed instead of silently
+                    // dequeuing an acknowledgement.
+                    let reason = format!(
+                        "report {report_id} receipt conflicts with the local confirmation record ({conflict}); manual investigation required"
+                    );
+                    if let Err(mark_error) =
+                        crate::reporting::mark_spool_fatal_under_permit(store, applied_at, &reason)
+                            .await
+                    {
+                        return Err(ApplyReceiptError::Database(sqlx::Error::Protocol(format!(
+                            "{reason}; additionally failed to mark the store fatal: {mark_error}"
+                        ))));
+                    }
+                    Err(ApplyReceiptError::Database(sqlx::Error::Protocol(reason)))
                 } else {
                     Err(ApplyReceiptError::Database(error))
                 }
@@ -4950,5 +4977,396 @@ mod tests {
         let v1: serde_json::Value = serde_json::from_slice(&v1_body).unwrap();
         assert_eq!(v1["protocol_version"], 1);
         assert_eq!(v1["inventory"]["revision"], 1);
+    }
+
+    fn v2_test_report() -> (Vec<u8>, AgentReport<InventoryDeclaration>) {
+        let body =
+            include_bytes!("../../platpulse-core/tests/fixtures/report_v2_minimal.json").to_vec();
+        let report: AgentReport<InventoryDeclaration> = serde_json::from_slice(&body).unwrap();
+        (body, report)
+    }
+
+    fn v2_test_receipt(report: &AgentReport<InventoryDeclaration>, hash: &str) -> ReportReceipt {
+        ReportReceipt {
+            report_id: report.report_id,
+            disposition: ReceiptDisposition::Accepted,
+            report_body_sha256: hash.parse().unwrap(),
+            server_version: "test".to_owned(),
+            supported_protocol_majors: vec![2],
+            server_time: report.generated_at,
+            rotation_hint: None,
+            inventory: Some(InventoryDisposition::Accepted),
+            rejections: vec![],
+            nodes: report
+                .inventory
+                .nodes
+                .iter()
+                .map(|node| platpulse_core::NodeReceipt {
+                    node_id: node.node_id,
+                    current: NodeCurrentDisposition::Accepted,
+                    accepted_component_revisions: vec![],
+                    rejections: vec![],
+                })
+                .collect(),
+            samples: vec![],
+        }
+    }
+
+    async fn spool_v2_test_report(
+        store: &mut AgentStore,
+    ) -> (AgentReport<InventoryDeclaration>, String) {
+        let (body, report) = v2_test_report();
+        let hash = format!("0x{}", hex::encode(sha2::Sha256::digest(&body)));
+        crate::reporting::persist_immutable_report(
+            store,
+            &report.report_id.to_string(),
+            report.agent_epoch,
+            &report.boot_id.to_string(),
+            report.report_sequence,
+            &report.generated_at.to_string(),
+            &body,
+        )
+        .await
+        .unwrap();
+        (report, hash)
+    }
+
+    async fn apply_v2_acceptance(
+        store: &mut AgentStore,
+        report: &AgentReport<InventoryDeclaration>,
+        hash: &str,
+        acceptance: InventoryAcceptance,
+        receipt: ReportReceipt,
+        applied_at: &str,
+    ) -> Result<(), ApplyReceiptError> {
+        apply_receipt_typed::<InventoryDeclaration>(
+            store,
+            &report.report_id.to_string(),
+            hash,
+            "accepted",
+            receipt,
+            Some(acceptance),
+            applied_at,
+        )
+        .await
+    }
+
+    /// Issue #187: the v2 confirmation record, the Applied Receipt Record, and
+    /// the report dequeue are one transaction. A failure anywhere leaves the
+    /// report queued with neither the record nor the marker written, and the
+    /// committed result survives reopening the real database.
+    #[tokio::test]
+    async fn v2_receipt_application_is_atomic_and_records_the_confirmation() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("agent.db");
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(&path))
+            .await
+            .unwrap();
+        let (report, hash) = spool_v2_test_report(&mut store).await;
+        let fingerprint = report.inventory.fingerprint();
+        let acceptance = InventoryAcceptance {
+            revision: 3,
+            fingerprint: fingerprint.clone(),
+        };
+        let applied_at = crate::database::now_rfc3339();
+
+        sqlx::query(
+            "CREATE TRIGGER abort_v2_confirmation BEFORE INSERT ON report_receipts BEGIN SELECT RAISE(ABORT, 'injected marker failure'); END",
+        )
+        .execute(store.connection())
+        .await
+        .unwrap();
+        assert!(
+            apply_v2_acceptance(
+                &mut store,
+                &report,
+                &hash,
+                acceptance.clone(),
+                v2_test_receipt(&report, &hash),
+                &applied_at,
+            )
+            .await
+            .is_err(),
+            "the injected marker failure must fail the application"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            1,
+            "the report must stay queued"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM report_receipts")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM inventory_declaration")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            0,
+            "the confirmation record must not be half-written"
+        );
+        sqlx::query("DROP TRIGGER abort_v2_confirmation")
+            .execute(store.connection())
+            .await
+            .unwrap();
+
+        apply_v2_acceptance(
+            &mut store,
+            &report,
+            &hash,
+            acceptance,
+            v2_test_receipt(&report, &hash),
+            &applied_at,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            0
+        );
+        let record = crate::inventory_declaration::read_inventory_declaration(store.connection())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.revision, 3);
+        assert_eq!(record.sha256, fingerprint.to_string());
+        assert_eq!(record.report_id, report.report_id.to_string());
+        store.close().await.unwrap();
+
+        let mut reopened = AgentStore::open(AgentDatabaseConfig::new(&path))
+            .await
+            .unwrap();
+        let record =
+            crate::inventory_declaration::read_inventory_declaration(reopened.connection())
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(record.revision, 3);
+        assert_eq!(record.sha256, fingerprint.to_string());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM report_receipts WHERE report_id = ?"
+            )
+            .bind(report.report_id.to_string())
+            .fetch_one(reopened.connection())
+            .await
+            .unwrap(),
+            1
+        );
+        reopened.close().await.unwrap();
+    }
+
+    /// Issue #187: the same revision bound to a different declaration
+    /// fingerprint is a peer protocol violation. The report and the record stay
+    /// put, and the store fails closed instead of silently dequeuing an
+    /// acknowledgement that contradicts accepted state.
+    #[tokio::test]
+    async fn a_v2_acceptance_that_conflicts_with_the_record_fails_closed() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("agent.db");
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(&path))
+            .await
+            .unwrap();
+        let (report, hash) = spool_v2_test_report(&mut store).await;
+        let fingerprint = report.inventory.fingerprint();
+        sqlx::query(
+            "INSERT INTO inventory_declaration (singleton, revision, sha256, report_id, adopted_at) VALUES (1, 7, '0xdeadbeef', 'older', '2026-01-01T00:00:00Z')",
+        )
+        .execute(store.connection())
+        .await
+        .unwrap();
+
+        let acceptance = InventoryAcceptance {
+            revision: 7,
+            fingerprint,
+        };
+        let error = apply_v2_acceptance(
+            &mut store,
+            &report,
+            &hash,
+            acceptance,
+            v2_test_receipt(&report, &hash),
+            &crate::database::now_rfc3339(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("conflicts"), "{error}");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            1,
+            "a conflicting acceptance must not silently dequeue the report"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM report_receipts")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            0
+        );
+        let record = crate::inventory_declaration::read_inventory_declaration(store.connection())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.revision, 7);
+        assert_eq!(record.sha256, "0xdeadbeef");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT store_fatal FROM spool_state WHERE singleton = 1")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            1,
+            "the conflict must fail closed"
+        );
+        store.close().await.unwrap();
+
+        let mut reopened = AgentStore::open(AgentDatabaseConfig::new(&path))
+            .await
+            .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports")
+                .fetch_one(reopened.connection())
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(matches!(
+            crate::reporting::ensure_spool_healthy(&mut reopened).await,
+            Err(ReportStoreError::StoreFatal(_))
+        ));
+        reopened.close().await.unwrap();
+    }
+
+    /// Issue #187: a delayed lower revision may complete its Report
+    /// acknowledgement but never moves the confirmation record backwards.
+    #[tokio::test]
+    async fn an_older_v2_acceptance_completes_acknowledgement_without_regressing_the_record() {
+        let dir = tempdir().unwrap();
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(dir.path().join("agent.db")))
+            .await
+            .unwrap();
+        let (report, hash) = spool_v2_test_report(&mut store).await;
+        let fingerprint = report.inventory.fingerprint();
+        sqlx::query(
+            "INSERT INTO inventory_declaration (singleton, revision, sha256, report_id, adopted_at) VALUES (1, 9, '0xfeedface', 'newer', '2026-01-01T00:00:00Z')",
+        )
+        .execute(store.connection())
+        .await
+        .unwrap();
+
+        let acceptance = InventoryAcceptance {
+            revision: 4,
+            fingerprint,
+        };
+        apply_v2_acceptance(
+            &mut store,
+            &report,
+            &hash,
+            acceptance,
+            v2_test_receipt(&report, &hash),
+            &crate::database::now_rfc3339(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            0,
+            "the acknowledged report leaves the spool"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM report_receipts")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            1
+        );
+        let record = crate::inventory_declaration::read_inventory_declaration(store.connection())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            record.revision, 9,
+            "a delayed receipt must not move the record backward"
+        );
+        assert_eq!(record.sha256, "0xfeedface");
+        store.close().await.unwrap();
+    }
+
+    /// Issue #187: the confirmation-record write shares the receipt-application
+    /// transaction. A failure there must roll back the Applied Receipt Record and
+    /// the report deletion too, never leaving a half-applied acknowledgement.
+    #[tokio::test]
+    async fn v2_confirmation_failure_rolls_back_the_applied_receipt_record() {
+        let dir = tempdir().unwrap();
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(dir.path().join("agent.db")))
+            .await
+            .unwrap();
+        let (report, hash) = spool_v2_test_report(&mut store).await;
+        let fingerprint = report.inventory.fingerprint();
+        let acceptance = InventoryAcceptance {
+            revision: 5,
+            fingerprint,
+        };
+        sqlx::query(
+            "CREATE TRIGGER abort_v2_declaration BEFORE INSERT ON inventory_declaration BEGIN SELECT RAISE(ABORT, 'injected confirmation failure'); END",
+        )
+        .execute(store.connection())
+        .await
+        .unwrap();
+        assert!(
+            apply_v2_acceptance(
+                &mut store,
+                &report,
+                &hash,
+                acceptance,
+                v2_test_receipt(&report, &hash),
+                &crate::database::now_rfc3339(),
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            1,
+            "the report must not be dequeued by a half-applied receipt"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM report_receipts")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            0,
+            "the Applied Receipt Record must roll back with the confirmation"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM inventory_declaration")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            0
+        );
+        sqlx::query("DROP TRIGGER abort_v2_declaration")
+            .execute(store.connection())
+            .await
+            .unwrap();
+        store.close().await.unwrap();
     }
 }

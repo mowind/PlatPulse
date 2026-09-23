@@ -1885,8 +1885,12 @@ async fn ingest_report<I: ReportInventory>(
         Some(declared) => declared,
         None if inventory_unchanged => agent.last_inventory_revision.max(0) as u64,
         None => {
+            // The column is a positive signed 64-bit integer, so the ceiling is
+            // i64::MAX even though the arithmetic runs in u64. The checked add
+            // plus the signed-range filter keep exhaustion an explicit refusal
+            // instead of a cast that would wrap negative.
             let last = agent.last_inventory_revision.max(0) as u64;
-            if last >= i64::MAX as u64 {
+            let Some(next) = last.checked_add(1).filter(|next| *next <= i64::MAX as u64) else {
                 return store_rejected(
                     &state,
                     tx,
@@ -1901,8 +1905,8 @@ async fn ingest_report<I: ReportInventory>(
                     &request_id.0,
                 )
                 .await;
-            }
-            last + 1
+            };
+            next
         }
     };
 
@@ -3022,7 +3026,9 @@ mod tests {
     use super::*;
     use crate::auth::{AuthConfig, format_rfc3339, now_utc};
     use crate::database::{ServerDatabaseConfig, initialize};
-    use crate::enrollment::AgentAuthInfo;
+    use crate::enrollment::{
+        AgentAuthInfo, RECOVERY_TOKEN_DEFAULT_LIFETIME, create_recovery_token, recover,
+    };
     use crate::network::create_network;
     use crate::secrets::{create_pepper_file, load_pepper_file};
     use axum::body::{Bytes, to_bytes};
@@ -3094,6 +3100,218 @@ mod tests {
         )
         .await
         .status()
+    }
+
+    /// The two Nodes the v2 fixtures declare. A content change in these tests
+    /// moves an RPC Endpoint, which the canonical declaration fingerprint covers.
+    const V2_NODE_A: &str = "0195f2a1-0014-4014-8014-000000000014";
+    const V2_NODE_B: &str = "0195f2a1-0015-4015-8015-000000000015";
+    const V2_BOOT_ID: &str = "0195f2a1-0012-4012-8012-000000000012";
+
+    /// A v2 report built from the frozen v2 fixture. The declaration lists one
+    /// Node per endpoint and the observation view is regenerated to match, so
+    /// the report is a complete current view whose only declared change is the
+    /// endpoint (or Node set).
+    fn v2_report_body(
+        report_id: &str,
+        sequence: u64,
+        epoch: u64,
+        boot_id: &str,
+        endpoints: &[&str],
+    ) -> Vec<u8> {
+        let mut report: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../platpulse-core/tests/fixtures/report_v2_minimal.json"
+        ))
+        .unwrap();
+        let template_node = report["inventory"]["nodes"][0].clone();
+        let template_observation = report["nodes"][0].clone();
+        let mut inventory_nodes = Vec::new();
+        let mut observations = Vec::new();
+        for (index, endpoint) in endpoints.iter().enumerate() {
+            let node_id = if index == 0 { V2_NODE_A } else { V2_NODE_B };
+            let mut node = template_node.clone();
+            node["node_id"] = serde_json::json!(node_id);
+            node["rpc_endpoint"] = serde_json::json!(endpoint);
+            inventory_nodes.push(node);
+            let mut observation = template_observation.clone();
+            observation["node_id"] = serde_json::json!(node_id);
+            observations.push(observation);
+        }
+        report["agent_epoch"] = serde_json::json!(epoch);
+        report["report_sequence"] = serde_json::json!(sequence);
+        report["report_id"] = serde_json::json!(report_id);
+        report["boot_id"] = serde_json::json!(boot_id);
+        report["inventory"]["nodes"] = serde_json::json!(inventory_nodes);
+        report["nodes"] = serde_json::json!(observations);
+        serde_json::to_vec(&report).unwrap()
+    }
+
+    fn declaration_fingerprint(body: &[u8]) -> String {
+        let report: AgentReport<InventoryDeclaration> = serde_json::from_slice(body).unwrap();
+        report.inventory.fingerprint().to_string()
+    }
+
+    async fn submit_v2_raw(
+        state: &AppState,
+        agent_id: &str,
+        body: Vec<u8>,
+    ) -> (StatusCode, Vec<u8>) {
+        let response = handler_v2(
+            State(state.clone()),
+            Extension(AgentAuthInfo {
+                agent_id: agent_id.to_owned(),
+                credential_id: "test-credential".to_owned(),
+            }),
+            Extension(RequestId(Arc::from("test-request"))),
+            Bytes::from(body),
+        )
+        .await;
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, bytes.to_vec())
+    }
+
+    async fn submit_v2(state: &AppState, agent_id: &str, body: Vec<u8>) -> ReportReceiptV2 {
+        let (status, bytes) = submit_v2_raw(state, agent_id, body).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "unexpected v2 report response: {}",
+            String::from_utf8_lossy(&bytes)
+        );
+        serde_json::from_slice::<ReportResponseV2>(&bytes)
+            .unwrap()
+            .receipt
+    }
+
+    fn v2_acceptance(receipt: &ReportReceiptV2) -> InventoryAcceptance {
+        receipt
+            .inventory
+            .as_ref()
+            .expect("v2 receipt carries an Inventory outcome")
+            .acceptance
+            .clone()
+            .expect("an appliable v2 receipt binds an acceptance pair")
+    }
+
+    async fn accepted_inventory_revision(state: &AppState, agent_id: &str) -> i64 {
+        sqlx::query_scalar("SELECT last_inventory_revision FROM agents WHERE agent_id = ?")
+            .bind(agent_id)
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap()
+    }
+
+    async fn accepted_inventory_fingerprint(state: &AppState, agent_id: &str) -> Option<String> {
+        sqlx::query_scalar("SELECT inventory_sha256 FROM agents WHERE agent_id = ?")
+            .bind(agent_id)
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap()
+    }
+
+    /// Issue #187: a failed write anywhere in the v2 receipt transaction must
+    /// roll back the whole thing — allocation, projection, and receipt — and
+    /// publish no post-commit invalidation. A SQLite trigger is the controlled
+    /// failure source; the production path itself is untouched.
+    async fn v2_write_failure_rolls_back_all_writes(trigger_name: &str, trigger: &str) {
+        let (dir, state, agent_id) = state_with_agent().await;
+        let body = v2_report_body(
+            "0195f2a1-0240-4240-8240-000000000001",
+            1,
+            1,
+            V2_BOOT_ID,
+            &["ws://127.0.0.1:6790"],
+        );
+        let events_before = state.admin_realtime().pending_events().len();
+        sqlx::query(trigger)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let (status, response) = submit_v2_raw(&state, &agent_id, body.clone()).await;
+        assert_ne!(
+            status,
+            StatusCode::OK,
+            "the injected failure must not be accepted: {}",
+            String::from_utf8_lossy(&response)
+        );
+
+        assert_eq!(
+            accepted_inventory_revision(&state, &agent_id).await,
+            0,
+            "a rollback must not leave an allocated revision"
+        );
+        assert_eq!(
+            accepted_inventory_fingerprint(&state, &agent_id).await,
+            None
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM agent_report_receipts")
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap(),
+            0,
+            "a rollback must not leave a receipt"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM nodes")
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap(),
+            0,
+            "a rollback must not leave a projection"
+        );
+        assert_eq!(
+            state.admin_realtime().pending_events().len(),
+            events_before,
+            "a rollback must publish no invalidation"
+        );
+
+        // Drop the trigger and reopen the real database: the rolled-back state
+        // is durable, and no invalidation is replayed across the restart.
+        sqlx::query(&format!("DROP TRIGGER {trigger_name}"))
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        state.db().close().await;
+        let database = initialize(ServerDatabaseConfig::new(dir.path().join("server.db")))
+            .await
+            .unwrap();
+        let auth = AuthConfig::development(
+            load_pepper_file(&dir.path().join("pepper")).unwrap(),
+            "http://127.0.0.1:8080".to_owned(),
+        );
+        let reopened = AppState::new(database, None, auth);
+        assert_eq!(
+            accepted_inventory_revision(&reopened, &agent_id).await,
+            0,
+            "a rollback must stay rolled back after reopening the database"
+        );
+        assert_eq!(
+            accepted_inventory_fingerprint(&reopened, &agent_id).await,
+            None
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM agent_report_receipts")
+                .fetch_one(reopened.db().pool())
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM nodes")
+                .fetch_one(reopened.db().pool())
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(reopened.admin_realtime().pending_events().len(), 0);
+
+        // The database is still usable: the same report now commits revision 1.
+        let recovered = submit_v2(&reopened, &agent_id, body).await;
+        assert_eq!(v2_acceptance(&recovered).revision, 1);
+        assert_eq!(accepted_inventory_revision(&reopened, &agent_id).await, 1);
     }
 
     #[test]
@@ -5854,5 +6072,555 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(events, 1);
+    }
+
+    fn v2_with_transition(
+        body: Vec<u8>,
+        transition: platpulse_core::BootTransition,
+        previous_boot_id: Option<&str>,
+    ) -> Vec<u8> {
+        let mut report: AgentReport<InventoryDeclaration> = serde_json::from_slice(&body).unwrap();
+        report.boot_transition = transition;
+        report.previous_boot_id = previous_boot_id.map(|id| id.parse().expect("valid boot id"));
+        serde_json::to_vec(&report).unwrap()
+    }
+
+    /// Issue #187: a Server that committed a receipt but lost the response
+    /// returns the *original* receipt for the identical report identity and
+    /// bytes, even after a newer declaration was accepted. Different bytes
+    /// under the same identity are a conflict.
+    #[tokio::test]
+    async fn v2_replay_returns_the_original_receipt_and_identity_conflict_is_rejected() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let first_body = v2_report_body(
+            "0195f2a1-0200-4200-8200-000000000001",
+            1,
+            1,
+            V2_BOOT_ID,
+            &["ws://127.0.0.1:6790"],
+        );
+        let first = submit_v2(&state, &agent_id, first_body.clone()).await;
+        assert_eq!(first.disposition, ReceiptDisposition::Accepted);
+        assert_eq!(v2_acceptance(&first).revision, 1);
+        let first_fingerprint = v2_acceptance(&first).fingerprint;
+
+        let second = submit_v2(
+            &state,
+            &agent_id,
+            v2_report_body(
+                "0195f2a1-0200-4200-8200-000000000002",
+                2,
+                1,
+                V2_BOOT_ID,
+                &["ws://127.0.0.1:6791"],
+            ),
+        )
+        .await;
+        let second_fingerprint = v2_acceptance(&second).fingerprint;
+        assert_ne!(first_fingerprint, second_fingerprint);
+        assert_eq!(accepted_inventory_revision(&state, &agent_id).await, 2);
+
+        // The exact original bytes return the exact original receipt and move
+        // nothing: no allocation, no projection, no revision change.
+        let replayed = submit_v2(&state, &agent_id, first_body).await;
+        assert_eq!(replayed, first, "the replay must be the original receipt");
+        assert_eq!(accepted_inventory_revision(&state, &agent_id).await, 2);
+        assert_eq!(
+            accepted_inventory_fingerprint(&state, &agent_id)
+                .await
+                .as_deref(),
+            Some(second_fingerprint.as_str()),
+            "a replay must not move the accepted declaration back"
+        );
+
+        let tampered = v2_report_body(
+            "0195f2a1-0200-4200-8200-000000000001",
+            1,
+            1,
+            V2_BOOT_ID,
+            &["ws://127.0.0.1:6799"],
+        );
+        let (status, _body) = submit_v2_raw(&state, &agent_id, tampered).await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "same identity with different bytes must conflict"
+        );
+        assert_eq!(accepted_inventory_revision(&state, &agent_id).await, 2);
+    }
+
+    /// Issue #187: the existing Epoch/Boot/Report Sequence fences stay
+    /// authoritative. A late, older, or competing report cannot allocate a new
+    /// revision merely because its content differs, while a legitimate newer
+    /// report that restores earlier content is still a new declaration change.
+    #[tokio::test]
+    async fn v2_ordering_fences_refuse_late_reports_without_allocating() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let content_a = "ws://127.0.0.1:6790";
+        let content_b = "ws://127.0.0.1:6791";
+        let content_c = "ws://127.0.0.1:6792";
+
+        let first = submit_v2(
+            &state,
+            &agent_id,
+            v2_report_body(
+                "0195f2a1-0210-4210-8210-000000000001",
+                1,
+                1,
+                V2_BOOT_ID,
+                &[content_a],
+            ),
+        )
+        .await;
+        assert_eq!(v2_acceptance(&first).revision, 1);
+        let second = submit_v2(
+            &state,
+            &agent_id,
+            v2_report_body(
+                "0195f2a1-0210-4210-8210-000000000002",
+                3,
+                1,
+                V2_BOOT_ID,
+                &[content_b],
+            ),
+        )
+        .await;
+        assert_eq!(v2_acceptance(&second).revision, 2);
+        let accepted_before = accepted_inventory_fingerprint(&state, &agent_id).await;
+        assert_eq!(accepted_inventory_revision(&state, &agent_id).await, 2);
+
+        // A late report with an unused but older sequence and new content is a
+        // stale report: refused with no allocation.
+        let stale = submit_v2(
+            &state,
+            &agent_id,
+            v2_report_body(
+                "0195f2a1-0210-4210-8210-000000000003",
+                2,
+                1,
+                V2_BOOT_ID,
+                &[content_c],
+            ),
+        )
+        .await;
+        assert_eq!(stale.disposition, ReceiptDisposition::Rejected);
+        assert_eq!(
+            stale.rejections[0].code,
+            platpulse_core::RejectionCode::StaleReport
+        );
+        assert_eq!(accepted_inventory_revision(&state, &agent_id).await, 2);
+        assert_eq!(
+            accepted_inventory_fingerprint(&state, &agent_id).await,
+            accepted_before
+        );
+
+        // A stale Epoch is refused before any allocation.
+        let old_epoch = v2_report_body(
+            "0195f2a1-0210-4210-8210-000000000004",
+            4,
+            0,
+            V2_BOOT_ID,
+            &[content_c],
+        );
+        assert_eq!(
+            submit_v2(&state, &agent_id, old_epoch).await.disposition,
+            ReceiptDisposition::Rejected
+        );
+        assert_eq!(accepted_inventory_revision(&state, &agent_id).await, 2);
+
+        // A competing Boot is refused before any allocation.
+        let competing_boot = v2_report_body(
+            "0195f2a1-0210-4210-8210-000000000005",
+            4,
+            1,
+            "0195f2a1-0212-4212-8212-000000000099",
+            &[content_c],
+        );
+        assert_eq!(
+            submit_v2(&state, &agent_id, competing_boot)
+                .await
+                .disposition,
+            ReceiptDisposition::Rejected
+        );
+        assert_eq!(accepted_inventory_revision(&state, &agent_id).await, 2);
+
+        // A legitimate newer report that restores earlier content is a new
+        // declaration change, not a reuse of the historical revision.
+        let restored = submit_v2(
+            &state,
+            &agent_id,
+            v2_report_body(
+                "0195f2a1-0210-4210-8210-000000000006",
+                4,
+                1,
+                V2_BOOT_ID,
+                &[content_a],
+            ),
+        )
+        .await;
+        assert_eq!(restored.disposition, ReceiptDisposition::Accepted);
+        assert_eq!(v2_acceptance(&restored).revision, 3);
+        assert_eq!(accepted_inventory_revision(&state, &agent_id).await, 3);
+    }
+
+    /// Issue #187: the revision stays within the positive signed 64-bit range.
+    /// At the ceiling an unchanged declaration is still accepted and a change
+    /// that must increment fails explicitly, never wrapping or resetting.
+    #[tokio::test]
+    async fn v2_revision_exhaustion_rejects_only_a_required_increment() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let body_a = v2_report_body(
+            "0195f2a1-0220-4220-8220-000000000001",
+            1,
+            1,
+            V2_BOOT_ID,
+            &["ws://127.0.0.1:6790"],
+        );
+        let fingerprint_a = declaration_fingerprint(&body_a);
+        sqlx::query(
+            "UPDATE agents SET last_inventory_revision = ?, inventory_sha256 = ? WHERE agent_id = ?",
+        )
+        .bind(i64::MAX)
+        .bind(&fingerprint_a)
+        .bind(&agent_id)
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+
+        let unchanged = submit_v2(&state, &agent_id, body_a).await;
+        assert_eq!(unchanged.disposition, ReceiptDisposition::Accepted);
+        assert_eq!(
+            unchanged.inventory.as_ref().unwrap().disposition,
+            InventoryDisposition::Unchanged
+        );
+        assert_eq!(v2_acceptance(&unchanged).revision, i64::MAX as u64);
+        assert_eq!(
+            accepted_inventory_revision(&state, &agent_id).await,
+            i64::MAX
+        );
+
+        let changed = v2_report_body(
+            "0195f2a1-0220-4220-8220-000000000002",
+            2,
+            1,
+            V2_BOOT_ID,
+            &["ws://127.0.0.1:6791"],
+        );
+        let rejected = submit_v2(&state, &agent_id, changed).await;
+        assert_eq!(rejected.disposition, ReceiptDisposition::Rejected);
+        assert_eq!(
+            rejected.rejections[0].code,
+            platpulse_core::RejectionCode::InventoryRevisionConflict
+        );
+        assert_eq!(
+            accepted_inventory_revision(&state, &agent_id).await,
+            i64::MAX,
+            "exhaustion must keep the existing revision"
+        );
+        assert_eq!(
+            accepted_inventory_fingerprint(&state, &agent_id)
+                .await
+                .as_deref(),
+            Some(fingerprint_a.as_str()),
+            "exhaustion must keep the existing fingerprint"
+        );
+    }
+
+    /// Issue #187: declaration comparison and version allocation live in one
+    /// authoritative transaction. Two concurrent declarations that occupy the
+    /// same sequence cannot both allocate: exactly one commits revision 1 and
+    /// the other is fenced out by the existing sequence barrier.
+    #[tokio::test]
+    async fn concurrent_v2_ingestion_never_shares_or_duplicates_a_revision() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let left = v2_report_body(
+            "0195f2a1-0230-4230-8230-000000000001",
+            1,
+            1,
+            V2_BOOT_ID,
+            &["ws://127.0.0.1:6790"],
+        );
+        let right = v2_report_body(
+            "0195f2a1-0230-4230-8230-000000000002",
+            1,
+            1,
+            V2_BOOT_ID,
+            &["ws://127.0.0.1:6791"],
+        );
+        let (left_result, right_result) = tokio::join!(
+            submit_v2_raw(&state, &agent_id, left),
+            submit_v2_raw(&state, &agent_id, right),
+        );
+        let statuses = [left_result.0, right_result.0];
+        assert_eq!(
+            statuses
+                .iter()
+                .filter(|status| **status == StatusCode::OK)
+                .count(),
+            1,
+            "exactly one concurrent declaration may commit"
+        );
+        assert_eq!(
+            statuses
+                .iter()
+                .filter(|status| **status == StatusCode::CONFLICT)
+                .count(),
+            1,
+            "the loser is refused by the sequence barrier"
+        );
+        assert_eq!(accepted_inventory_revision(&state, &agent_id).await, 1);
+        let winner = if left_result.0 == StatusCode::OK {
+            &left_result.1
+        } else {
+            &right_result.1
+        };
+        let receipt: ReportResponseV2 = serde_json::from_slice(winner).unwrap();
+        assert_eq!(v2_acceptance(&receipt.receipt).revision, 1);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM agent_report_receipts WHERE agent_id = ?"
+            )
+            .bind(&agent_id)
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            1
+        );
+    }
+
+    /// Issue #187: a failed write anywhere in the v2 receipt transaction rolls
+    /// back allocation, projection, and receipt, and emits no post-commit
+    /// invalidation. Controlled SQLite triggers are the failure source.
+    #[tokio::test]
+    async fn v2_receipt_failure_rolls_back_allocation_and_projection() {
+        v2_write_failure_rolls_back_all_writes(
+            "abort_v2_receipt",
+            "CREATE TRIGGER abort_v2_receipt BEFORE INSERT ON agent_report_receipts BEGIN SELECT RAISE(ABORT, 'injected receipt failure'); END",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn v2_projection_failure_rolls_back_allocation_and_receipt() {
+        v2_write_failure_rolls_back_all_writes(
+            "abort_v2_projection",
+            "CREATE TRIGGER abort_v2_projection BEFORE INSERT ON nodes BEGIN SELECT RAISE(ABORT, 'injected projection failure'); END",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn v2_allocation_failure_rolls_back_projection_and_receipt() {
+        v2_write_failure_rolls_back_all_writes(
+            "abort_v2_allocation",
+            "CREATE TRIGGER abort_v2_allocation BEFORE UPDATE ON agents BEGIN SELECT RAISE(ABORT, 'injected allocation failure'); END",
+        )
+        .await;
+    }
+
+    /// Issue #187: the accepted revision, fingerprint, and exact receipt are
+    /// durable. A Server restart must return the original receipt and must not
+    /// recompute the accepted pair against the current state.
+    #[tokio::test]
+    async fn v2_accepted_revision_and_exact_replay_survive_a_server_restart() {
+        let (dir, state, agent_id) = state_with_agent().await;
+        let body = v2_report_body(
+            "0195f2a1-0250-4250-8250-000000000001",
+            1,
+            1,
+            V2_BOOT_ID,
+            &["ws://127.0.0.1:6790"],
+        );
+        let first = submit_v2(&state, &agent_id, body.clone()).await;
+        let fingerprint = v2_acceptance(&first).fingerprint;
+        state.db().close().await;
+
+        let database = initialize(ServerDatabaseConfig::new(dir.path().join("server.db")))
+            .await
+            .unwrap();
+        let auth = AuthConfig::development(
+            load_pepper_file(&dir.path().join("pepper")).unwrap(),
+            "http://127.0.0.1:8080".to_owned(),
+        );
+        let restarted = AppState::new(database, None, auth);
+        assert_eq!(accepted_inventory_revision(&restarted, &agent_id).await, 1);
+        assert_eq!(
+            accepted_inventory_fingerprint(&restarted, &agent_id)
+                .await
+                .as_deref(),
+            Some(fingerprint.as_str())
+        );
+        assert_eq!(submit_v2(&restarted, &agent_id, body).await, first);
+    }
+
+    /// Issue #187: the revision belongs to the Agent identity. A Boot rotation
+    /// (Closing then DrainedPrevious) and an Owner-authorized Agent Recovery
+    /// (epoch advance) preserve it; only a genuine content change increments it.
+    #[tokio::test]
+    async fn v2_revision_survives_boot_rotation_and_agent_recovery() {
+        let (dir, state, agent_id) = state_with_agent().await;
+        let content_a = "ws://127.0.0.1:6790";
+        let content_b = "ws://127.0.0.1:6791";
+        let first = submit_v2(
+            &state,
+            &agent_id,
+            v2_report_body(
+                "0195f2a1-0260-4260-8260-000000000001",
+                1,
+                1,
+                V2_BOOT_ID,
+                &[content_a],
+            ),
+        )
+        .await;
+        assert_eq!(v2_acceptance(&first).revision, 1);
+
+        let closing = v2_with_transition(
+            v2_report_body(
+                "0195f2a1-0260-4260-8260-000000000002",
+                2,
+                1,
+                V2_BOOT_ID,
+                &[content_a],
+            ),
+            platpulse_core::BootTransition::Closing,
+            None,
+        );
+        assert_eq!(
+            v2_acceptance(&submit_v2(&state, &agent_id, closing).await).revision,
+            1
+        );
+
+        let rotated_boot = "0195f2a1-0262-4262-8262-000000000062";
+        let drained = v2_with_transition(
+            v2_report_body(
+                "0195f2a1-0260-4260-8260-000000000003",
+                1,
+                1,
+                rotated_boot,
+                &[content_b],
+            ),
+            platpulse_core::BootTransition::DrainedPrevious,
+            Some(V2_BOOT_ID),
+        );
+        assert_eq!(
+            v2_acceptance(&submit_v2(&state, &agent_id, drained).await).revision,
+            2
+        );
+
+        let unchanged_after_rotation = v2_report_body(
+            "0195f2a1-0260-4260-8260-000000000004",
+            2,
+            1,
+            rotated_boot,
+            &[content_b],
+        );
+        assert_eq!(
+            v2_acceptance(&submit_v2(&state, &agent_id, unchanged_after_rotation).await).revision,
+            2
+        );
+
+        // Owner-authorized Agent Recovery runs through the real enrollment path:
+        // it advances the Agent Epoch and rotates the credential without
+        // touching the accepted Inventory Revision.
+        let pepper = load_pepper_file(&dir.path().join("pepper")).unwrap();
+        let token = create_recovery_token(
+            state.db(),
+            &pepper,
+            None,
+            &agent_id,
+            RECOVERY_TOKEN_DEFAULT_LIFETIME,
+        )
+        .await
+        .unwrap();
+        let recovered_agent = recover(state.db(), &pepper, &token.token).await.unwrap();
+        assert_eq!(recovered_agent.agent_id, agent_id);
+        assert_eq!(recovered_agent.agent_epoch, 2);
+        let recovered = v2_report_body(
+            "0195f2a1-0260-4260-8260-000000000005",
+            3,
+            2,
+            rotated_boot,
+            &[content_b],
+        );
+        assert_eq!(
+            v2_acceptance(&submit_v2(&state, &agent_id, recovered).await).revision,
+            2
+        );
+        let changed = v2_report_body(
+            "0195f2a1-0260-4260-8260-000000000006",
+            4,
+            2,
+            rotated_boot,
+            &[content_a],
+        );
+        assert_eq!(
+            v2_acceptance(&submit_v2(&state, &agent_id, changed).await).revision,
+            3
+        );
+        assert_eq!(accepted_inventory_revision(&state, &agent_id).await, 3);
+    }
+
+    /// Issue #187: the revision belongs to one Agent identity. A second Agent
+    /// identity has its own independent sequence, so one Agent's declaration
+    /// change never advances another's revision.
+    #[tokio::test]
+    async fn v2_distinct_agent_identities_keep_independent_revisions() {
+        let (_dir, state, first_agent) = state_with_agent().await;
+        let second_agent = "0195f2a1-0011-4011-8011-000000000022";
+        sqlx::query(
+            "INSERT INTO agents (agent_id, agent_epoch, active_boot_id, last_report_sequence, last_received_at, created_at, updated_at) VALUES (?, 1, NULL, NULL, NULL, ?, ?)",
+        )
+        .bind(second_agent)
+        .bind("2026-08-12T08:00:00Z")
+        .bind("2026-08-12T08:00:00Z")
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+
+        let first_body = v2_report_body(
+            "0195f2a1-0270-4270-8270-000000000001",
+            1,
+            1,
+            V2_BOOT_ID,
+            &["ws://127.0.0.1:6790"],
+        );
+        let mut second_value: serde_json::Value = serde_json::from_slice(&v2_report_body(
+            "0195f2a1-0270-4270-8270-000000000002",
+            1,
+            1,
+            V2_BOOT_ID,
+            &["ws://127.0.0.1:6791"],
+        ))
+        .unwrap();
+        second_value["agent_id"] = serde_json::json!(second_agent);
+        let second_body = serde_json::to_vec(&second_value).unwrap();
+
+        let first = submit_v2(&state, &first_agent, first_body).await;
+        assert_eq!(v2_acceptance(&first).revision, 1);
+        let second = submit_v2(&state, second_agent, second_body).await;
+        assert_eq!(
+            v2_acceptance(&second).revision,
+            1,
+            "a new Agent identity starts its own sequence"
+        );
+
+        // A content change for the first identity advances only its revision.
+        let first_changed = v2_report_body(
+            "0195f2a1-0270-4270-8270-000000000003",
+            2,
+            1,
+            V2_BOOT_ID,
+            &["ws://127.0.0.1:6799"],
+        );
+        assert_eq!(
+            v2_acceptance(&submit_v2(&state, &first_agent, first_changed).await).revision,
+            2
+        );
+        assert_eq!(
+            accepted_inventory_revision(&state, second_agent).await,
+            1,
+            "another identity's sequence must not move"
+        );
     }
 }

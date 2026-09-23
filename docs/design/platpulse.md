@@ -794,11 +794,11 @@ Incident 保留证据不等于继续把它当作当前待处理故障；删除�
 
 <a id="server-managed-inventory-revision-target"></a>
 
-### 15.10 Server 托管 Inventory Revision（已确认，协议与分配已实现；迁移未实现）
+### 15.10 Server 托管 Inventory Revision（已确认，协议、分配与故障语义已实现；迁移未实现）
 
 #### 15.10.1 状态与边界
 
-本节记录 [issue #182](https://github.com/mowind/PlatPulse/issues/182) 的 Q1–Q12 访谈及最终确认，以及 [issue #186](https://github.com/mowind/PlatPulse/issues/186) 的首个实现切片。长期取舍见 [ADR 0007](../adr/0007-server-managed-inventory-revision.md)。v2 协议 major、Server 端事务内版本分配、v2 Receipt 与 Agent 确认记录已实现；省略 `inventory_revision` 的新 Agent 配置选择 Server 托管路径。存量迁移、协调停机与升级准备工具仍未实现，也不授权生产切换。
+本节记录 [issue #182](https://github.com/mowind/PlatPulse/issues/182) 的 Q1–Q12 访谈及最终确认，以及 [issue #186](https://github.com/mowind/PlatPulse/issues/186) 的首个实现切片。长期取舍见 [ADR 0007](../adr/0007-server-managed-inventory-revision.md)。v2 协议 major、Server 端事务内版本分配、v2 Receipt 与 Agent 确认记录已实现；省略 `inventory_revision` 的新 Agent 配置选择 Server 托管路径。issue #187 补齐了重试、乱序、并发与事务失败下的确认一致性：真实 Agent→Server→Agent 链路上的离线积压、精确 Receipt 重放、身份冲突、顺序屏障、编号耗尽、Boot 轮换与 Agent Recovery 连续性，以及受控 SQLite 故障注入下的整事务回滚，见 §15.10.6。存量迁移、协调停机与升级准备工具仍未实现，也不授权生产切换。
 
 Agent 继续拥有完整 Node Inventory 和连接配置；Server 只接管接受版本的编号，不下发 Endpoint 或其他采集配置。不可变 Agent Report、事务性 Receipt、Network Registry 校验、last-good、每 Node 隔离及 §15.3 永久删除屏障保持不变。
 
@@ -853,7 +853,7 @@ Agent 的 Inventory Declaration Record 保留为有界单条确认状态，不�
 
 #### 15.10.6 后续实现验收矩阵
 
-以下为验收矩阵。首次、相同内容、仅重排、字段变化、A → B → A、空 Inventory 与拒绝路径已由 issue #186 的 core 契约测试与 `backlog_recovery_tests` 端到端测试覆盖；迁移、协调停机、预检与离线回退相关行仍待实现：
+以下为验收矩阵。首次、相同内容、仅重排、字段变化、A → B → A、空 Inventory 与拒绝路径已由 issue #186 的 core 契约测试与 `backlog_recovery_tests` 端到端测试覆盖。issue #187 已交付：晚到/旧 Epoch/竞争 Boot 的顺序屏障、并发接收的单事务比较与分配、编号上限的 checked 递增、精确 Receipt 重放与同身份异字节冲突、Server 分配/指纹/投影/Receipt 失败的全量回滚与无 post-commit invalidation、Agent Receipt effects 与确认记录出队的原子性、同版本异指纹的失败关闭、较小确认不回溯、无确认下的离线继续声明，以及重启、Boot 轮换与 Agent Recovery 不重置编号。迁移、协调停机、预检与离线回退相关行仍待实现：
 
 | 场景 | 必须验证的结果 |
 |---|---|

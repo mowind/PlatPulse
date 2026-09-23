@@ -114,7 +114,10 @@ pub(crate) async fn read_inventory_declaration(
 /// v2 confirms the Server-assigned revision and canonical declaration
 /// fingerprint; v1 confirms the Agent-declared revision and content hash. The
 /// record is bounded single-row confirmation state, never an allocator or a
-/// declaration guard, and it never moves backwards.
+/// declaration guard, and it never moves backwards. A strictly greater
+/// revision replaces it; an equal revision is a literal no-op (the caller has
+/// already rejected an equal revision with a different fingerprint), so an
+/// idempotent replay cannot rewrite the confirmation's provenance.
 pub(crate) async fn record_inventory_acceptance(
     tx: &mut Transaction<'_, Sqlite>,
     revision: u64,
@@ -125,7 +128,7 @@ pub(crate) async fn record_inventory_acceptance(
     sqlx::query(
         "INSERT INTO inventory_declaration (singleton, revision, sha256, report_id, adopted_at) VALUES (1, ?, ?, ?, ?) \
          ON CONFLICT(singleton) DO UPDATE SET revision=excluded.revision, sha256=excluded.sha256, report_id=excluded.report_id, adopted_at=excluded.adopted_at \
-         WHERE excluded.revision >= inventory_declaration.revision",
+         WHERE excluded.revision > inventory_declaration.revision",
     )
     .bind(revision as i64)
     .bind(fingerprint)
@@ -276,6 +279,15 @@ mod tests {
             .unwrap();
         assert_eq!(recorded.revision, 5);
         assert_eq!(recorded.sha256, bumped.content_sha256().to_string());
+
+        // An equal revision with the same fingerprint is a literal no-op: an
+        // idempotent replay cannot rewrite the confirmation's provenance.
+        let recorded = record(&mut store, &bumped, "report-3", "2026-01-01T00:00:09Z")
+            .await
+            .unwrap();
+        assert_eq!(recorded.revision, 5);
+        assert_eq!(recorded.report_id, "report-2");
+        assert_eq!(recorded.adopted_at, "2026-01-01T00:00:05Z");
 
         // A replayed older receipt can never move the record backwards: the
         // record is a high-water mark for the Agent's declaration.
