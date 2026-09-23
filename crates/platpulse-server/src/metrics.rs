@@ -689,12 +689,16 @@ async fn grouped_counts(pool: &SqlitePool, query: &str) -> Option<Vec<(String, u
 
 async fn update_readiness(state: &AppState) {
     let registry = state.metrics();
-    let sqlite_ready =
+    let schema =
         sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(version), 0) FROM _sqlx_migrations")
             .fetch_one(state.db().pool())
-            .await
-            .is_ok_and(|version| version >= crate::database::SERVER_SCHEMA_VERSION)
-            && !state.is_corrupt();
+            .await;
+    if let Err(error) = &schema {
+        state.note_sqlite_error(error);
+    }
+    let sqlite_ready = schema
+        .is_ok_and(|version| version >= crate::database::SERVER_SCHEMA_VERSION)
+        && !state.is_corrupt();
     registry.set_readiness("sqlite", sqlite_ready);
     registry.set_readiness(
         "owner",
@@ -703,7 +707,7 @@ async fn update_readiness(state: &AppState) {
     registry.set_readiness("web_assets", state.web_assets_ready());
     registry.set_readiness("shutdown", !state.is_shutting_down());
     registry.set_readiness("critical_workers", state.critical_workers_healthy());
-    registry.set_readiness("corruption", state.integrity_healthy());
+    registry.set_readiness("corruption", !state.is_corrupt());
 }
 
 #[cfg(test)]

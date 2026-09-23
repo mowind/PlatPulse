@@ -50,6 +50,9 @@ pub enum Command {
     Agent(AgentCommand),
     /// Create one sanitized backup artifact using the configured backup_dir.
     Backup(BackupArgs),
+    /// Verify the stopped Server database's physical integrity and exit
+    /// non-zero on a corrupt or unreadable database (ADR 0008, issue #194).
+    VerifyIntegrity(VerifyIntegrityArgs),
     /// Offline Restore (design §19/§20.2): the only path that may replace
     /// the database. Requires an exclusive stopped-Server condition, the
     /// artifact id, and a typed confirmation phrase (or explicit `--yes`).
@@ -199,6 +202,13 @@ pub struct InitArgs {
 #[derive(Debug, Args)]
 pub struct BackupArgs {
     /// `server.toml` containing db_path, pepper_file, and backup_dir.
+    #[arg(long)]
+    pub config: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct VerifyIntegrityArgs {
+    /// `server.toml` containing db_path.
     #[arg(long)]
     pub config: PathBuf,
 }
@@ -828,6 +838,32 @@ pub async fn run_backup(config: &ServerConfig) -> Result<String, Box<dyn std::er
     Ok(artifact.filename)
 }
 
+/// Run one authoritative integrity check against the stopped Server database
+/// and report the verdict. This is the offline decision the serving process no
+/// longer attempts: it needs the exclusive ownership guard, opens read-write so
+/// SQLite can attach its WAL sidecars, and reuses the bounded start-up check
+/// (ADR 0008, issue #194).
+pub async fn run_verify_integrity(config: &ServerConfig) -> Result<(), Box<dyn std::error::Error>> {
+    crate::init::restrict_umask();
+    let _ownership = crate::ownership::acquire_for_deployment(&config.db_path, config.development)?;
+    match ServerDatabase::open_existing(ServerDatabaseConfig::for_deployment(
+        &config.db_path,
+        config.development,
+    ))
+    .await
+    {
+        Ok(database) => {
+            database.close().await;
+            println!("SQLite integrity check: ok");
+            Ok(())
+        }
+        Err(crate::database::ServerDatabaseError::IntegrityFailed(message)) => {
+            Err(format!("SQLite integrity check failed: {message}").into())
+        }
+        Err(error) => Err(Box::new(error)),
+    }
+}
+
 /// Run the HTTP Server: validate the listen address, load the pepper and
 /// database with strict permission checks, and serve the API plus Web
 /// assets until shutdown.
@@ -997,9 +1033,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         state.metrics().set_listener_ready(true);
     }
 
-    let mut worker_handles = vec![tokio::spawn(crate::http::health::monitor_integrity(
-        state.clone(),
-    ))];
+    let mut worker_handles = Vec::new();
 
     if !cutover_blocked {
         // Geo database reload and raw-IP cache cleanup are deliberately

@@ -5,7 +5,8 @@ use platpulse_server::cli::{
     ViewerCommand, resolve_serve_config, run_backup, run_checkpoint_convert, run_checkpoint_create,
     run_checkpoint_restore, run_checkpoint_verify, run_checkpoint_verify_conversion,
     run_create_enrollment_token, run_cutover_resume, run_cutover_rollback, run_cutover_status,
-    run_network_create, run_owner_create, run_restore, run_serve, run_viewer_create,
+    run_network_create, run_owner_create, run_restore, run_serve, run_verify_integrity,
+    run_viewer_create,
 };
 use platpulse_server::config::ServerConfig;
 use platpulse_server::init::run_init;
@@ -85,6 +86,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             let config = ServerConfig::resolve(Some(args.config.as_path()), &Default::default())?;
             let filename = run_backup(&config).await?;
             println!("Created sanitized backup '{filename}'.");
+        }
+        Command::VerifyIntegrity(args) => {
+            let config = ServerConfig::resolve(Some(args.config.as_path()), &Default::default())?;
+            run_verify_integrity(&config).await?;
         }
         Command::Restore(args) => {
             let config = ServerConfig::resolve(Some(args.config.as_path()), &Default::default())?;

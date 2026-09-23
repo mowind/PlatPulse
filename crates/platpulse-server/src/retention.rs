@@ -596,6 +596,7 @@ pub async fn execute_step(
             plan[index].deleted += rows as i64;
         }
         Err(error) => {
+            state.note_sqlite_error(&error);
             let _ = crate::operations::add_error(
                 state,
                 operation_id,

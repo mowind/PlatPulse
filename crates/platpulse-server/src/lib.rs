@@ -43,6 +43,8 @@ pub mod redaction;
 pub mod restore;
 pub mod retention;
 pub mod secrets;
+/// Bounded, interruptible SQLite integrity queries (issue #194).
+pub(crate) mod sqlite_check;
 pub mod subject_deletion;
 pub mod transport;
 pub mod validator;

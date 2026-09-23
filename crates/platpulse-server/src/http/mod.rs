@@ -257,8 +257,6 @@ pub(crate) struct ServerRuntime {
     accepting: AtomicBool,
     shutting_down: AtomicBool,
     corrupt: AtomicBool,
-    integrity_available: AtomicBool,
-    integrity_checked_at: std::sync::Mutex<std::time::Instant>,
     critical_workers: AtomicBool,
     critical_worker_heartbeats_ms: [AtomicU64; CRITICAL_WORKER_COUNT],
     critical_worker_heartbeat_ms: AtomicU64,
@@ -273,9 +271,6 @@ impl ServerRuntime {
             accepting: AtomicBool::new(true),
             shutting_down: AtomicBool::new(false),
             corrupt: AtomicBool::new(false),
-            // ServerDatabase has already passed its startup integrity check.
-            integrity_available: AtomicBool::new(true),
-            integrity_checked_at: std::sync::Mutex::new(std::time::Instant::now()),
             critical_workers: AtomicBool::new(true),
             critical_worker_heartbeats_ms: std::array::from_fn(|_| AtomicU64::new(0)),
             critical_worker_heartbeat_ms: AtomicU64::new(0),
@@ -594,14 +589,14 @@ impl AppState {
     pub(crate) fn is_corrupt(&self) -> bool {
         self.runtime.corrupt.load(Ordering::Acquire)
     }
-    pub(crate) fn integrity_healthy(&self) -> bool {
-        !self.is_corrupt()
-            && self.runtime.integrity_available.load(Ordering::Acquire)
-            && self
-                .runtime
-                .integrity_checked_at
-                .lock()
-                .is_ok_and(|checked| checked.elapsed() <= health::INTEGRITY_STALE_AFTER)
+    /// Latch runtime corruption from an `SQLITE_CORRUPT` observed on a real
+    /// query. The latch never clears: once a page is corrupt, a later
+    /// successful query must not let readiness claim health again (ADR 0008,
+    /// issue #194). Cold tables are covered by the offline checks.
+    pub(crate) fn note_sqlite_error(&self, error: &sqlx::Error) {
+        if health::is_corruption_error(error) {
+            self.runtime.corrupt.store(true, Ordering::Release);
+        }
     }
 
     pub(crate) fn critical_workers_healthy(&self) -> bool {
@@ -1655,7 +1650,6 @@ mod tests {
         ])
         .await;
         seed_owner(&state).await;
-        health::check_integrity(&state).await;
         state.runtime.recover_critical_worker();
         assert_eq!(
             get(build_app(state.clone()), "/health/ready")
@@ -1663,30 +1657,26 @@ mod tests {
                 .status(),
             StatusCode::OK
         );
-        // A real SQLite integrity failure outside the migration/Owner tables.
-        // No production database files or runtime health flags are touched.
+        // Corrupt a real page so a plain query returns SQLITE_CORRUPT. No
+        // production database files or runtime health flags are touched.
         sqlx::raw_sql(
-            "CREATE TABLE integrity_fixture (value INTEGER CHECK(value > 0));
-             PRAGMA ignore_check_constraints = ON;
-             INSERT INTO integrity_fixture VALUES (-1);
-             PRAGMA ignore_check_constraints = OFF;",
+            "CREATE TABLE integrity_broken_page (value INTEGER);
+             PRAGMA writable_schema=ON;
+             UPDATE sqlite_schema SET rootpage=2147483647
+                 WHERE name='integrity_broken_page';
+             PRAGMA writable_schema=RESET;",
         )
         .execute(state.db().pool())
         .await
         .unwrap();
-        let integrity: String = sqlx::query_scalar("PRAGMA integrity_check(1)")
+        let error = sqlx::query_scalar::<_, String>("PRAGMA integrity_check(1)")
             .fetch_one(state.db().pool())
             .await
-            .unwrap();
-        assert_ne!(integrity, "ok");
-        // Exercise the real background producer, not a manually set health flag.
-        tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            health::monitor_integrity(state.clone()),
-        )
-        .await
-        .expect("monitor should latch corruption and stop scanning");
-        state.runtime.recover_critical_worker();
+            .unwrap_err();
+        assert!(health::is_corruption_error(&error));
+        // The observed error is the only producer of the runtime latch; there
+        // is no periodic scan (ADR 0008, issue #194).
+        state.note_sqlite_error(&error);
         let (status, value) = json(get(build_app(state.clone()), "/health/ready").await).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{value}");
         assert_eq!(component(&value, "corruption")["status"], "not_ready");
@@ -1699,53 +1689,20 @@ mod tests {
             StatusCode::OK
         );
         // Later successful queries must not silently clear confirmed corruption.
-        sqlx::query("DELETE FROM integrity_fixture")
-            .execute(state.db().pool())
-            .await
-            .unwrap();
-        health::monitor_integrity(state.clone()).await;
+        let _ = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM _sqlx_migrations")
+            .fetch_one(state.db().pool())
+            .await;
         let (status, value) = json(get(build_app(state.clone()), "/health/ready").await).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
             component(&value, "corruption")["reason"],
             "integrity_check_failed"
         );
-        assert!(!state.integrity_healthy());
         let response = get(crate::metrics::build_app(&state, false), "/metrics").await;
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(body.to_vec()).unwrap();
         assert!(body.contains("platpulse_readiness{component=\"corruption\"} 0"));
         assert!(body.contains("platpulse_readiness{component=\"sqlite\"} 0"));
-    }
-
-    #[tokio::test]
-    async fn ready_reports_unavailable_when_integrity_monitor_is_stale() {
-        let (_db_dir, _web_dir, state) = test_state().await;
-        *state.runtime.integrity_checked_at.lock().unwrap() = std::time::Instant::now()
-            - health::INTEGRITY_STALE_AFTER
-            - std::time::Duration::from_secs(1);
-        let (_, value) = json(get(build_app(state.clone()), "/health/ready").await).await;
-        assert_eq!(
-            component(&value, "corruption")["reason"],
-            "integrity_check_unavailable"
-        );
-        assert!(!state.is_corrupt());
-        health::check_integrity(&state).await;
-        let (_, value) = json(get(build_app(state.clone()), "/health/ready").await).await;
-        assert_eq!(component(&value, "corruption")["status"], "ready");
-        assert!(state.integrity_healthy());
-    }
-
-    #[tokio::test]
-    async fn integrity_monitor_stops_on_shutdown() {
-        let (_db_dir, _web_dir, state) = test_state().await;
-        state.begin_shutdown();
-        tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            health::monitor_integrity(state),
-        )
-        .await
-        .unwrap();
     }
 
     #[tokio::test]

@@ -248,39 +248,29 @@ to the SPA;
 for operational readiness. Schema/Owner queries alone do not establish database
 integrity.
 
-> **Target change ([ADR 0008](adr/0008-offline-server-backup.md), issue #194).**
-> The authoritative whole-database integrity verdict moves into the Offline
-> Backup Window, and the serving process stops running a periodic
-> whole-database scan: on a deployment-sized database it cannot complete
-> inside a useful budget on the only SQLite connection, and every attempt
-> stalls ingestion. The behaviour below describes the code until that slice
-> lands.
+Runtime integrity is split by where it can actually work
+([ADR 0008](adr/0008-offline-server-backup.md), issue #194):
 
-After the startup integrity check, a Server-owned monitor runs
-`PRAGMA integrity_check(1)` immediately and every six hours. The `(1)` limits
-the number of reported errors, not the tables examined. Scans use the owning
-SQLite connection, never an external connection to a live EXCLUSIVE database.
-They are not triggered by public health requests. The cadence is deliberately
-low: the scan holds the only SQLite connection for its whole duration, so a
-deployment-sized database (measured: ~2.5 s for 1.16 GB) would otherwise stall
-ingestion on every tick.
-
-- Confirmed corruption is latched: the `corruption` and `sqlite` components
-  report `integrity_check_failed`; later successful queries do not clear it.
-  Recovery is an explicit operator procedure, followed by a restart that must
-  pass startup validation. Liveness remains independent.
-- A failed/interrupted scan or an integrity result older than six minutes makes
-  `corruption` report `integrity_check_unavailable`, not healthy and not a
-  diagnosis of corruption. The watchdog uses monotonic time.
-- Detection is periodic, not instantaneous. The SQLite VM scan has a 60-second
-  cooperative execution budget and observes shutdown. The sole connection can
-  still delay ingestion for the scan duration; native progress callbacks cannot
-  preempt a blocked kernel filesystem operation.
-- Before rollout, validate scan duration and ingestion latency on a
-  representative isolated database. A database that cannot complete within the
-  budget will remain not-ready until a check can complete; do not interpret that
-  as permission to delete data or disable integrity monitoring. Raise the budget
-  in `http/health.rs` only after measuring, and never widen it silently.
+- **Start-up** runs one bounded `PRAGMA integrity_check` as a fail-closed gate.
+  A corrupt, unreadable, or budget-exhausted database refuses to start with an
+  explicit error; it is never silently served.
+- **The serving process runs no periodic whole-database scan.** On a
+  deployment-sized database such a scan cannot complete inside a useful budget
+  on the only SQLite connection, and every attempt would stall ingestion while
+  still producing no verdict.
+- **Runtime corruption is latched from an observed `SQLITE_CORRUPT`.** When a
+  real query on a hot path (report ingestion, readiness, retention, Doctor)
+  returns SQLite's corruption code, the `corruption` and `sqlite` readiness
+  components report `integrity_check_failed` and the latch never clears; later
+  successful queries do not let the Server claim health again. Liveness stays
+  independent.
+- **Doctor's `quick_check` is bounded.** If it cannot finish inside its budget
+  it reports that it did not finish (a warning) instead of a verdict.
+- **The authoritative verdict is offline.** Run
+  `platpulse-server verify-integrity --config /etc/platpulse/server.toml` with
+  the Server stopped (the command takes the exclusive ownership guard), or rely
+  on the same bounded check `platpulse-server backup` runs before creating an
+  artifact. There is no separate "integrity unavailable" readiness state.
 
 Keep corruption evidence and known-good rollback copies until recovery and
 backup verification are complete. Do not repair or replace files underneath a

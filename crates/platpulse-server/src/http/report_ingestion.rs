@@ -1726,7 +1726,8 @@ async fn ingest_report<I: ReportInventory>(
     }
     let mut tx = match state.db().pool().begin().await {
         Ok(tx) => tx,
-        Err(_) => {
+        Err(db_error) => {
+            state.note_sqlite_error(&db_error);
             return error(
                 &request_id.0,
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -1744,7 +1745,8 @@ async fn ingest_report<I: ReportInventory>(
     .await
     {
         Ok(row) => row,
-        Err(_) => {
+        Err(db_error) => {
+            state.note_sqlite_error(&db_error);
             return error(
                 &request_id.0,
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -2744,6 +2746,7 @@ async fn ingest_report<I: ReportInventory>(
                 }
             }
         }
+        state.note_sqlite_error(&insert_failure);
         return storage_error(&request_id.0, "store report receipt", &insert_failure);
     }
     let lifecycle_status = match parsed.boot_transition {

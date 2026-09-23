@@ -196,6 +196,19 @@ pub enum ServerDatabaseError {
     EmptyDatabase,
 }
 
+impl ServerDatabaseError {
+    /// The underlying SQLite error, when this failure came from a query. Used
+    /// to latch runtime corruption from an observed `SQLITE_CORRUPT`.
+    pub(crate) fn as_sqlx(&self) -> Option<&sqlx::Error> {
+        match self {
+            Self::Connect(error) | Self::PragmaQuery(error) | Self::IntegrityQuery(error) => {
+                Some(error)
+            }
+            _ => None,
+        }
+    }
+}
+
 /// An initialized Server database whose writes are serialized by one pool
 /// connection.
 pub struct ServerDatabase {
@@ -525,13 +538,31 @@ async fn read_pragmas(pool: &SqlitePool) -> Result<SqlitePragmas, sqlx::Error> {
     })
 }
 
+/// Start-up runs one full integrity check as a fail-closed gate. It is bounded
+/// so a pathological database cannot block start-up silently: budget exhaustion
+/// is an explicit failure, never a silent "healthy" (ADR 0008, issue #194).
+const STARTUP_INTEGRITY_BUDGET: Duration = Duration::from_secs(600);
+
 async fn verify_integrity(pool: &SqlitePool) -> Result<(), ServerDatabaseError> {
-    let result = sqlx::query_scalar::<_, String>("PRAGMA integrity_check")
-        .fetch_one(pool)
-        .await
-        .map_err(ServerDatabaseError::IntegrityQuery)?;
-    if result != "ok" {
-        return Err(ServerDatabaseError::IntegrityFailed(result));
+    match crate::sqlite_check::bounded_scalar_query(
+        pool,
+        "PRAGMA integrity_check",
+        STARTUP_INTEGRITY_BUDGET,
+    )
+    .await
+    {
+        crate::sqlite_check::BoundedQuery::Completed(result) if result == "ok" => {}
+        crate::sqlite_check::BoundedQuery::Completed(result) => {
+            return Err(ServerDatabaseError::IntegrityFailed(result));
+        }
+        crate::sqlite_check::BoundedQuery::Exhausted => {
+            return Err(ServerDatabaseError::IntegrityFailed(
+                "the startup integrity check exceeded its budget".to_owned(),
+            ));
+        }
+        crate::sqlite_check::BoundedQuery::Failed(error) => {
+            return Err(ServerDatabaseError::IntegrityQuery(error));
+        }
     }
     if sqlx::query("PRAGMA foreign_key_check")
         .fetch_optional(pool)

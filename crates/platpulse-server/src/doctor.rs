@@ -6,9 +6,16 @@
 //! The result is stored on a `doctor_run` Operation so the previous
 //! diagnostic result survives a failed run.
 
+use std::time::Duration;
+
 use serde_json::Value;
 
 use crate::http::AppState;
+
+/// Budget for the in-process `quick_check`. It still reads the whole database,
+/// so a deployment-sized database may exhaust it; the authoritative verdict is
+/// the offline `verify-integrity` command (ADR 0008, issue #194).
+const DOCTOR_INTEGRITY_BUDGET: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,6 +44,7 @@ pub async fn run(
     let checks = match collect_checks(state).await {
         Ok(checks) => checks,
         Err(error) => {
+            state.note_sqlite_error(&error);
             let _ = crate::operations::add_error(
                 state,
                 operation_id,
@@ -168,24 +176,50 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
     let mut checks = Vec::new();
     let pool = state.db().pool();
 
-    // 1. Database integrity (read-only quick check; never repairs).
-    let integrity: String = sqlx::query_scalar("PRAGMA quick_check(1)")
-        .fetch_one(pool)
-        .await?;
-    checks.push(DoctorCheck {
-        check_id: "database_integrity".to_owned(),
-        label: "Database integrity".to_owned(),
-        status: if integrity == "ok" {
-            STATUS_PASS
-        } else {
-            STATUS_FAIL
+    // 1. Database integrity (read-only, bounded quick check; never repairs).
+    //    Budget exhaustion is reported as exhausted, distinctly from a failed
+    //    check; the authoritative whole-database verdict is the offline
+    //    `verify-integrity` command (ADR 0008, issue #194).
+    checks.push(
+        match crate::sqlite_check::bounded_scalar_query(
+            pool,
+            "PRAGMA quick_check(1)",
+            DOCTOR_INTEGRITY_BUDGET,
+        )
+        .await
+        {
+            crate::sqlite_check::BoundedQuery::Completed(result) if result == "ok" => DoctorCheck {
+                check_id: "database_integrity".to_owned(),
+                label: "Database integrity".to_owned(),
+                status: STATUS_PASS,
+                detail: "SQLite quick_check reports a consistent database".to_owned(),
+            },
+            crate::sqlite_check::BoundedQuery::Completed(result) => DoctorCheck {
+                check_id: "database_integrity".to_owned(),
+                label: "Database integrity".to_owned(),
+                status: STATUS_FAIL,
+                detail: format!("SQLite quick_check failed: {result}"),
+            },
+            crate::sqlite_check::BoundedQuery::Exhausted => DoctorCheck {
+                check_id: "database_integrity".to_owned(),
+                label: "Database integrity".to_owned(),
+                status: STATUS_WARNING,
+                detail: "SQLite quick_check did not finish within its budget; run `platpulse-server verify-integrity` offline for an authoritative verdict".to_owned(),
+            },
+            crate::sqlite_check::BoundedQuery::Failed(error) => {
+                state.note_sqlite_error(&error);
+                DoctorCheck {
+                    check_id: "database_integrity".to_owned(),
+                    label: "Database integrity".to_owned(),
+                    status: STATUS_FAIL,
+                    detail: format!(
+                        "SQLite quick_check failed: {}",
+                        crate::redaction::redact_sensitive(&error.to_string())
+                    ),
+                }
+            }
         },
-        detail: if integrity == "ok" {
-            "SQLite quick_check reports a consistent database".to_owned()
-        } else {
-            format!("SQLite quick_check failed: {integrity}")
-        },
-    });
+    );
 
     // 2. Schema version matches the Server binary.
     let schema: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(version), 0) FROM _sqlx_migrations")
