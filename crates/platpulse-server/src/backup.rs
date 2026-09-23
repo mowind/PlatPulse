@@ -37,11 +37,23 @@ pub enum BackupError {
     Operation(#[from] crate::operations::OperationError),
 }
 
+/// How many stored values one sanitize pass actually rewrote. Offline creation
+/// keeps this as its only local evidence that redaction ran; the independent
+/// read-only proof stays with the Admin `backup_verify` Operation and the
+/// restore pre-check (ADR 0008).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SanitizeSummary {
+    pub rewritten_text_values: u64,
+    pub rewritten_receipts: u64,
+}
+
 /// Identity of a freshly created offline backup artifact.
 #[derive(Debug, Clone)]
 pub struct CreatedArtifact {
     pub artifact_id: String,
     pub filename: String,
+    /// What the single offline redaction pass rewrote (ADR 0008).
+    pub sanitize_summary: SanitizeSummary,
 }
 
 /// Create one sanitized backup artifact in an Offline Backup Window. This is
@@ -68,13 +80,17 @@ pub async fn create_offline(state: &AppState) -> Result<CreatedArtifact, BackupE
         &now,
     )
     .await;
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temp_path);
-    }
-    result?;
+    let sanitize_summary = match result {
+        Ok(summary) => summary,
+        Err(error) => {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(error);
+        }
+    };
     Ok(CreatedArtifact {
         artifact_id,
         filename,
+        sanitize_summary,
     })
 }
 
@@ -85,7 +101,7 @@ async fn create_snapshot(
     artifact_id: &str,
     filename: &str,
     now: &str,
-) -> Result<(), BackupError> {
+) -> Result<SanitizeSummary, BackupError> {
     let temp_absolute = temp_path
         .to_str()
         .ok_or_else(|| std::io::Error::other("backup directory path is not valid UTF-8"))?;
@@ -114,14 +130,16 @@ async fn create_snapshot(
         let _ = std::fs::remove_file(temp_path);
         return Err(std::io::Error::other(error).into());
     }
-    if let Err(error) = sanitize_snapshot(temp_path).await {
-        let _ = std::fs::remove_file(temp_path);
-        return Err(error);
-    }
-    if let Err(error) = validate_snapshot_privacy(temp_path).await {
-        let _ = std::fs::remove_file(temp_path);
-        return Err(error);
-    }
+    // One bounded redaction pass (ADR 0008). Creation deliberately does not
+    // re-scan the artifact it just wrote; the independent read-only proof is
+    // the Admin `backup_verify` Operation and the restore pre-check.
+    let sanitize_summary = match sanitize_snapshot(temp_path).await {
+        Ok(summary) => summary,
+        Err(error) => {
+            let _ = std::fs::remove_file(temp_path);
+            return Err(error);
+        }
+    };
 
     let file = crate::file_security::open_readonly(temp_path).map_err(std::io::Error::other)?;
     let bytes = file.metadata()?.len() as i64;
@@ -171,7 +189,7 @@ async fn create_snapshot(
         let _ = std::fs::remove_file(final_path);
         return Err(error.into());
     }
-    Ok(())
+    Ok(sanitize_summary)
 }
 
 fn sync_file(path: &Path) -> Result<(), BackupError> {
@@ -180,7 +198,7 @@ fn sync_file(path: &Path) -> Result<(), BackupError> {
     Ok(())
 }
 
-pub(crate) async fn sanitize_snapshot(path: &Path) -> Result<(), BackupError> {
+pub(crate) async fn sanitize_snapshot(path: &Path) -> Result<SanitizeSummary, BackupError> {
     crate::file_security::validate_file(path).map_err(std::io::Error::other)?;
     let options = SqliteConnectOptions::new()
         .filename(path)
@@ -203,12 +221,15 @@ pub(crate) async fn sanitize_snapshot(path: &Path) -> Result<(), BackupError> {
         .execute(&pool)
         .await?;
 
-    redact_snapshot_text_columns(&pool, true).await?;
-    redact_snapshot_receipts(&pool, true).await?;
+    let rewritten_text_values = redact_snapshot_text_columns(&pool, true).await?;
+    let rewritten_receipts = redact_snapshot_receipts(&pool, true).await?;
     sqlx::query("VACUUM").execute(&pool).await?;
     pool.close().await;
     crate::file_security::validate_file(path).map_err(std::io::Error::other)?;
-    Ok(())
+    Ok(SanitizeSummary {
+        rewritten_text_values,
+        rewritten_receipts,
+    })
 }
 
 pub(crate) async fn validate_snapshot_privacy(path: &Path) -> Result<(), BackupError> {
@@ -222,9 +243,10 @@ pub(crate) async fn validate_snapshot_privacy(path: &Path) -> Result<(), BackupE
         .max_connections(1)
         .connect_with(options)
         .await?;
-    let result = async {
+    let result: Result<(), BackupError> = async {
         process_snapshot_text_columns(&pool, false).await?;
-        process_snapshot_receipts(&pool, false).await
+        process_snapshot_receipts(&pool, false).await?;
+        Ok(())
     }
     .await;
     pool.close().await;
@@ -258,14 +280,15 @@ fn next_scan_limit(bytes: usize, fetched: usize) -> i64 {
 async fn redact_snapshot_text_columns(
     pool: &SqlitePool,
     sanitize: bool,
-) -> Result<(), BackupError> {
+) -> Result<u64, BackupError> {
     process_snapshot_text_columns(pool, sanitize).await
 }
 
 async fn process_snapshot_text_columns(
     pool: &SqlitePool,
     sanitize: bool,
-) -> Result<(), BackupError> {
+) -> Result<u64, BackupError> {
+    let mut rewritten = 0u64;
     let tables: Vec<String> = sqlx::query_scalar(
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
     )
@@ -319,6 +342,7 @@ async fn process_snapshot_text_columns(
                         .bind(row_id)
                         .execute(pool)
                         .await?;
+                    rewritten += 1;
                 }
                 if fetched < limit as usize {
                     break;
@@ -327,22 +351,23 @@ async fn process_snapshot_text_columns(
             }
         }
     }
-    Ok(())
+    Ok(rewritten)
 }
 
-async fn redact_snapshot_receipts(pool: &SqlitePool, sanitize: bool) -> Result<(), BackupError> {
+async fn redact_snapshot_receipts(pool: &SqlitePool, sanitize: bool) -> Result<u64, BackupError> {
     process_snapshot_receipts(pool, sanitize).await
 }
 
-async fn process_snapshot_receipts(pool: &SqlitePool, sanitize: bool) -> Result<(), BackupError> {
+async fn process_snapshot_receipts(pool: &SqlitePool, sanitize: bool) -> Result<u64, BackupError> {
     let exists: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_report_receipts'",
     )
     .fetch_one(pool)
     .await?;
     if exists == 0 {
-        return Ok(());
+        return Ok(0);
     }
+    let mut rewritten = 0u64;
     let mut after: i64 = 0;
     let mut limit = SNAPSHOT_SCAN_MIN_ROWS;
     loop {
@@ -377,13 +402,14 @@ async fn process_snapshot_receipts(pool: &SqlitePool, sanitize: bool) -> Result<
                 .bind(row_id)
                 .execute(pool)
                 .await?;
+            rewritten += 1;
         }
         if fetched < limit as usize {
             break;
         }
         limit = next_scan_limit(batch_bytes, fetched);
     }
-    Ok(())
+    Ok(rewritten)
 }
 
 fn redact_stored_text(value: &str) -> String {
@@ -782,6 +808,141 @@ mod tests {
         // A row wider than the whole budget still yields a non-empty batch.
         assert_eq!(next_scan_limit(16 * 1024 * 1024, 1), SNAPSHOT_SCAN_MIN_ROWS);
         assert_eq!(next_scan_limit(0, 0), SNAPSHOT_SCAN_MIN_ROWS);
+    }
+
+    #[test]
+    fn redact_stored_text_is_idempotent() {
+        let wide = format!(
+            r#"{{"receipt":"{}","ip":"10.0.0.1"}}"#,
+            "x".repeat(175 * 1024)
+        );
+        let cases = [
+            r#"{"apiKey":"secret","rpcEndpoint":"ws://user:pass@host:8545","password_hash":"abc"}"#,
+            r#"{"nested":{"token":"t","key":"k"},"list":["1.2.3.4","ws://a:b@c:8545","plain"]}"#,
+            "peer=1.2.3.4 key=value authorization: Bearer abc cursor=42",
+            "[REDACTED] [REDACTED_IP] [REDACTED_PEER_0123456789abcdef]",
+            wide.as_str(),
+        ];
+        for case in cases {
+            let once = redact_stored_text(case);
+            let twice = redact_stored_text(&once);
+            assert_eq!(once, twice, "redaction is not idempotent for {:.80}", case);
+        }
+    }
+
+    #[tokio::test]
+    async fn sanitize_summary_counts_rewrites_and_a_second_pass_changes_nothing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let snapshot = dir.path().join("summary.db");
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(&snapshot)
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE nodes (rpc_endpoint TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE current_node_peers (remote_ip TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE geo_location_cache (provider TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE agent_report_receipts (receipt_body BLOB NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO nodes (rpc_endpoint) VALUES ('ws://user:pass@127.0.0.1:8545')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO current_node_peers (remote_ip) VALUES ('8.8.4.4')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO agent_report_receipts (receipt_body) VALUES (?)")
+            .bind(br#"{"apiKey":"secret","ip":"10.0.0.1"}"#.to_vec())
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&snapshot, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        let first = crate::backup::sanitize_snapshot(&snapshot).await.unwrap();
+        assert!(
+            first.rewritten_text_values >= 1,
+            "expected a text rewrite, got {first:?}"
+        );
+        assert!(
+            first.rewritten_receipts >= 1,
+            "expected a receipt rewrite, got {first:?}"
+        );
+        let second = crate::backup::sanitize_snapshot(&snapshot).await.unwrap();
+        assert_eq!(
+            second,
+            SanitizeSummary::default(),
+            "a second sanitize pass must be a no-op"
+        );
+    }
+
+    #[tokio::test]
+    async fn independent_verification_still_rejects_unredacted_text() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let snapshot = dir.path().join("unredacted.db");
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(&snapshot)
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap();
+        // The artifact still carries a raw IP literal in a TEXT column.
+        sqlx::query("CREATE TABLE _sqlx_migrations (version INTEGER)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE nodes (rpc_endpoint TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO nodes (rpc_endpoint) VALUES ('ws://127.0.0.1:8545')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&snapshot, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        // The read-only scanner shared by the Admin backup_verify Operation
+        // and the restore pre-check must refuse the artifact.
+        assert!(matches!(
+            validate_snapshot_privacy(&snapshot).await,
+            Err(BackupError::Privacy(_))
+        ));
+
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(std::fs::read(&snapshot).unwrap());
+        let digest = crate::secrets::encode_hex(&hasher.finalize());
+        assert!(matches!(
+            verify_artifact(&snapshot, &digest, 0).await,
+            Err(BackupError::Privacy(_))
+        ));
     }
 
     /// A portable backup must not carry a raw Peer address or any retained

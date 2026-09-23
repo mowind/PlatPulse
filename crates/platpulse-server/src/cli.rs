@@ -819,7 +819,13 @@ pub async fn run_backup(config: &ServerConfig) -> Result<String, Box<dyn std::er
     .await?;
     let state =
         crate::http::AppState::new(database, None, auth).with_backup_dir(config.backup_dir.clone());
-    Ok(crate::backup::create_offline(&state).await?.filename)
+    let artifact = crate::backup::create_offline(&state).await?;
+    println!(
+        "Redaction rewrote {} text value(s) and {} receipt(s).",
+        artifact.sanitize_summary.rewritten_text_values,
+        artifact.sanitize_summary.rewritten_receipts
+    );
+    Ok(artifact.filename)
 }
 
 /// Run the HTTP Server: validate the listen address, load the pepper and
