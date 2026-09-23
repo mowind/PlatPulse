@@ -18,6 +18,13 @@ const RECEIPT_V2_REJECTED: &str = include_str!("fixtures/receipt_v2_rejected.jso
 const GOLDEN_V2_FINGERPRINT: &str =
     "0xd27190dc94800a57f196427b996857ad7582414b535ffe51853d580c8917b0c4";
 
+/// SHA-256 of the v1 canonical fixture's revision-inclusive, order-sensitive
+/// Inventory serialization `{"revision":7,"nodes":[...]}`, computed with an
+/// independent SHA-256 implementation. A serializer or field-order change that
+/// alters the frozen v1 rule surfaces here.
+const GOLDEN_V1_INVENTORY_SHA256: &str =
+    "0x4ccd54eee9d8da83f182b14f66dad3d16520ded61615aa89e80c17441d22a36c";
+
 fn canonical_v1_report() -> AgentReport {
     serde_json::from_str(REPORT_V1_CANONICAL).expect("v1 canonical fixture parses")
 }
@@ -93,11 +100,34 @@ fn v2_fingerprint_ignores_node_order_and_excludes_revision() {
         declaration.fingerprint(),
         "a declared field change must change the fingerprint"
     );
+
+    let mut retargeted = declaration.clone();
+    retargeted.nodes[0].process = Some(platpulse_core::ProcessSelector::PidFile {
+        path: "/run/platon-a.pid".to_owned(),
+    });
+    assert_ne!(
+        retargeted.fingerprint(),
+        declaration.fingerprint(),
+        "the process selector is part of the declaration"
+    );
+
+    let mut rekeyed = declaration.clone();
+    rekeyed.nodes[0].network_key = "platon-testnet".parse().unwrap();
+    assert_ne!(
+        rekeyed.fingerprint(),
+        declaration.fingerprint(),
+        "the Network key is part of the declaration"
+    );
 }
 
 #[test]
 fn frozen_v1_hash_stays_revision_inclusive_and_order_sensitive() {
     let base = canonical_v1_report().inventory;
+    assert_eq!(
+        base.content_sha256().as_str(),
+        GOLDEN_V1_INVENTORY_SHA256,
+        "the frozen v1 content hash must not drift"
+    );
     let mut reordered = base.clone();
     reordered.nodes.reverse();
     assert_ne!(

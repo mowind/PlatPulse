@@ -1528,7 +1528,14 @@ async fn collect_and_persist_in_store_with_data_directories<A: RpcAdapter>(
         BootTransition::DrainedPrevious => "drained_previous",
         BootTransition::RecoveredAfterStale => "recovered_after_stale",
     };
-    update_agent_state_for_persisted_report(&mut tx, &report, transition, &now).await?;
+    update_agent_state_for_persisted_report(
+        &mut tx,
+        &report,
+        validated.server_managed_inventory,
+        transition,
+        &now,
+    )
+    .await?;
         Ok(())
     }
     .await;
@@ -2191,7 +2198,14 @@ pub(crate) async fn collect_and_persist_with_blocks_with_permit<A: RpcAdapter>(
         BootTransition::DrainedPrevious => "drained_previous",
         BootTransition::RecoveredAfterStale => "recovered_after_stale",
     };
-    update_agent_state_for_persisted_report(&mut tx, &report, transition, &now).await?;
+    update_agent_state_for_persisted_report(
+        &mut tx,
+        &report,
+        validated.server_managed_inventory,
+        transition,
+        &now,
+    )
+    .await?;
         Ok(())
     }
     .await;
@@ -2230,6 +2244,7 @@ fn spool_diagnostics_for_transition(
 async fn update_agent_state_for_persisted_report(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     report: &AgentReport,
+    server_managed_inventory: bool,
     transition: &str,
     now: &str,
 ) -> Result<(), sqlx::Error> {
@@ -2240,7 +2255,9 @@ async fn update_agent_state_for_persisted_report(
     // would silently degrade every later report to a continuing transition
     // while the Server still waits for a matching drained_previous (issue #164).
     sqlx::query("UPDATE agent_state SET agent_id=?, agent_epoch=?, boot_id=?, report_sequence=?, inventory_revision=?, updated_at=? WHERE singleton=1")
-        .bind(report.agent_id.to_string()).bind(report.agent_epoch as i64).bind(report.boot_id.to_string()).bind(report.report_sequence as i64).bind(report.inventory.revision as i64).bind(now).execute(&mut **tx).await?;
+        // A Server-managed (v2) Agent never declares a revision, so the legacy
+        // local column records 0 rather than an invented value.
+        .bind(report.agent_id.to_string()).bind(report.agent_epoch as i64).bind(report.boot_id.to_string()).bind(report.report_sequence as i64).bind(if server_managed_inventory { 0 } else { report.inventory.revision as i64 }).bind(now).execute(&mut **tx).await?;
     if transition == "drained_previous" {
         sqlx::query("UPDATE agent_state SET shutdown_state='running', shutdown_started_at=NULL, shutdown_deadline_at=NULL, shutdown_finished_at=NULL, shutdown_unresolved_from=NULL, shutdown_unresolved_to=NULL, shutdown_last_error=NULL, shutdown_forced=0, shutdown_report_id=NULL, shutdown_report_sequence=NULL, shutdown_updated_at=? WHERE singleton=1")
             .bind(now)
@@ -4909,5 +4926,29 @@ mod tests {
         );
         assert!(is_deferrable_collection(&error));
         assert!(!is_transient_database_lock(&error));
+    }
+
+    /// The production collector -> spool conversion for a Server-managed Agent
+    /// must emit the revision-excluded v2 declaration, while the v1 path keeps
+    /// the revision-inclusive shape.
+    #[test]
+    fn server_managed_report_body_is_the_revision_excluded_v2_declaration() {
+        let report: AgentReport = serde_json::from_str(include_str!(
+            "../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        let body = report_body_bytes(&report, true).unwrap();
+        let declaration: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(declaration["protocol_version"], 2);
+        assert_eq!(declaration["inventory"].get("revision"), None);
+        assert_eq!(
+            declaration["inventory"]["nodes"].as_array().unwrap().len(),
+            report.inventory.nodes.len()
+        );
+
+        let v1_body = report_body_bytes(&report, false).unwrap();
+        let v1: serde_json::Value = serde_json::from_slice(&v1_body).unwrap();
+        assert_eq!(v1["protocol_version"], 1);
+        assert_eq!(v1["inventory"]["revision"], 1);
     }
 }

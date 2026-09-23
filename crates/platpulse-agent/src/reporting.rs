@@ -114,8 +114,16 @@ impl HttpReportTransport {
                 .user_agent(format!("platpulse-agent/{}", crate::VERSION))
                 .build()
                 .map_err(|error| ReportStoreError::Delivery(error.to_string()))?,
-            url: format!("{}/api/agent/v1/reports", config.server_url),
-            url_v2: format!("{}/api/agent/v2/reports", config.server_url),
+            url: format!(
+                "{}{}",
+                config.server_url,
+                platpulse_core::protocol::AGENT_API_REPORTS_PATH
+            ),
+            url_v2: format!(
+                "{}{}",
+                config.server_url,
+                platpulse_core::protocol::AGENT_API_REPORTS_PATH_V2
+            ),
             credential: load_credential_file(&config.credential_file)?,
         })
     }
@@ -1451,6 +1459,52 @@ mod tests {
             Err(ReportStoreError::InventoryMismatch)
         ));
         assert!(!dir.path().join("agent.db").exists());
+    }
+
+    /// A Server-managed configuration (no inventory_revision) must spool the
+    /// revision-excluded v2 declaration, exercising the production
+    /// `report_body_bytes` -> `into_v2_report` path rather than a hand-built body.
+    #[tokio::test]
+    async fn configured_v2_report_without_inventory_revision_is_spooled_as_a_declaration() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("agent.toml");
+        let report_path = dir.path().join("report.json");
+        let db_path = dir.path().join("agent.db");
+        let body = include_str!("../../platpulse-core/tests/fixtures/report_v2_minimal.json");
+        fs::write(&report_path, body).unwrap();
+        fs::write(
+            &config_path,
+            format!(
+                "server_url=\"https://example.com\"\ncredential_file=\"{}/credential\"\nstate_db=\"{}\"\nnodes=[{{node_id=\"0195f2a1-0014-4014-8014-000000000014\",network_key=\"platon-mainnet\",rpc_endpoint=\"ws://127.0.0.1:6790\"}}]\n",
+                dir.path().display(),
+                db_path.display()
+            ),
+        )
+        .unwrap();
+        let digest = persist_report_from_config(&config_path, &report_path)
+            .await
+            .unwrap();
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(&db_path))
+            .await
+            .unwrap();
+        let stored: (Vec<u8>, String) =
+            sqlx::query_as("SELECT body, body_sha256 FROM reports WHERE report_id = ?")
+                .bind("0195f2a1-0013-4013-8013-000000000013")
+                .fetch_one(store.connection())
+                .await
+                .unwrap();
+        let spooled: serde_json::Value = serde_json::from_slice(&stored.0).unwrap();
+        assert_eq!(
+            spooled["protocol_version"], 2,
+            "a Server-managed configuration must spool the v2 declaration"
+        );
+        assert_eq!(
+            spooled["inventory"].get("revision"),
+            None,
+            "v2 must not carry an Agent-assigned revision"
+        );
+        assert_eq!(stored.1, digest);
+        store.close().await.unwrap();
     }
 }
 

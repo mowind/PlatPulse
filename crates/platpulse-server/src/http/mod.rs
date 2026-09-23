@@ -173,7 +173,9 @@ async fn request_metrics_middleware(
     let response = next.run(request).await;
     let status = response.status().as_u16();
     state.metrics.observe_http_response(&path, status);
-    if path == "/api/agent/v1/reports" || path == "/api/agent/v2/reports" {
+    if path == platpulse_core::protocol::AGENT_API_REPORTS_PATH
+        || path == platpulse_core::protocol::AGENT_API_REPORTS_PATH_V2
+    {
         let outcome = response
             .extensions()
             .get::<platpulse_core::ReceiptDisposition>()

@@ -376,6 +376,11 @@ pub(crate) async fn validate_snapshot_privacy(path: &Path) -> Result<(), BackupE
     result
 }
 
+/// Upper bound on the rows one snapshot scan keeps resident. The receipts
+/// table alone can hold gigabytes, so materialising a whole table pins the
+/// Server's resident set for the length of every backup attempt.
+const SNAPSHOT_SCAN_BATCH: i64 = 512;
+
 async fn redact_snapshot_text_columns(
     pool: &SqlitePool,
     sanitize: bool,
@@ -404,28 +409,43 @@ async fn process_snapshot_text_columns(
                 continue;
             }
             let quoted_column = quote_identifier(&name);
+            // Keyset pagination over rowid keeps the working set bounded: at
+            // most SNAPSHOT_SCAN_BATCH rows are resident at any moment.
             let select = format!(
-                "SELECT rowid AS __rowid, {quoted_column} FROM {quoted_table} WHERE typeof({quoted_column})='text'"
+                "SELECT rowid AS __rowid, {quoted_column} FROM {quoted_table} \
+                 WHERE typeof({quoted_column})='text' AND rowid > ? ORDER BY rowid LIMIT ?"
             );
-            let rows = sqlx::query(&select).fetch_all(pool).await?;
             let update = format!("UPDATE {quoted_table} SET {quoted_column}=? WHERE rowid=?");
-            for row in rows {
-                let row_id: i64 = row.try_get("__rowid")?;
-                let value: String = row.try_get(1)?;
-                let redacted = redact_stored_text(&value);
-                if redacted == value {
-                    continue;
-                }
-                if !sanitize {
-                    return Err(BackupError::Privacy(
-                        "snapshot contains unredacted sensitive text".to_owned(),
-                    ));
-                }
-                sqlx::query(&update)
-                    .bind(redacted)
-                    .bind(row_id)
-                    .execute(pool)
+            let mut after: i64 = 0;
+            loop {
+                let rows = sqlx::query(&select)
+                    .bind(after)
+                    .bind(SNAPSHOT_SCAN_BATCH)
+                    .fetch_all(pool)
                     .await?;
+                let fetched = rows.len();
+                for row in &rows {
+                    let row_id: i64 = row.try_get("__rowid")?;
+                    after = row_id;
+                    let value: String = row.try_get(1)?;
+                    let redacted = redact_stored_text(&value);
+                    if redacted == value {
+                        continue;
+                    }
+                    if !sanitize {
+                        return Err(BackupError::Privacy(
+                            "snapshot contains unredacted sensitive text".to_owned(),
+                        ));
+                    }
+                    sqlx::query(&update)
+                        .bind(redacted)
+                        .bind(row_id)
+                        .execute(pool)
+                        .await?;
+                }
+                if fetched < SNAPSHOT_SCAN_BATCH as usize {
+                    break;
+                }
             }
         }
     }
@@ -445,28 +465,41 @@ async fn process_snapshot_receipts(pool: &SqlitePool, sanitize: bool) -> Result<
     if exists == 0 {
         return Ok(());
     }
-    let rows = sqlx::query("SELECT rowid AS __rowid, receipt_body FROM agent_report_receipts")
+    let mut after: i64 = 0;
+    loop {
+        let rows = sqlx::query(
+            "SELECT rowid AS __rowid, receipt_body FROM agent_report_receipts \
+             WHERE rowid > ? ORDER BY rowid LIMIT ?",
+        )
+        .bind(after)
+        .bind(SNAPSHOT_SCAN_BATCH)
         .fetch_all(pool)
         .await?;
-    for row in rows {
-        let row_id: i64 = row.try_get("__rowid")?;
-        let bytes: Vec<u8> = row.try_get("receipt_body")?;
-        let value = String::from_utf8(bytes)
-            .map_err(|_| BackupError::Privacy("receipt body is not valid UTF-8".to_owned()))?;
-        let redacted = redact_stored_text(&value);
-        if redacted == value {
-            continue;
+        let fetched = rows.len();
+        for row in &rows {
+            let row_id: i64 = row.try_get("__rowid")?;
+            after = row_id;
+            let bytes: Vec<u8> = row.try_get("receipt_body")?;
+            let value = String::from_utf8(bytes)
+                .map_err(|_| BackupError::Privacy("receipt body is not valid UTF-8".to_owned()))?;
+            let redacted = redact_stored_text(&value);
+            if redacted == value {
+                continue;
+            }
+            if !sanitize {
+                return Err(BackupError::Privacy(
+                    "snapshot contains an unredacted receipt".to_owned(),
+                ));
+            }
+            sqlx::query("UPDATE agent_report_receipts SET receipt_body=? WHERE rowid=?")
+                .bind(redacted.into_bytes())
+                .bind(row_id)
+                .execute(pool)
+                .await?;
         }
-        if !sanitize {
-            return Err(BackupError::Privacy(
-                "snapshot contains an unredacted receipt".to_owned(),
-            ));
+        if fetched < SNAPSHOT_SCAN_BATCH as usize {
+            break;
         }
-        sqlx::query("UPDATE agent_report_receipts SET receipt_body=? WHERE rowid=?")
-            .bind(redacted.into_bytes())
-            .bind(row_id)
-            .execute(pool)
-            .await?;
     }
     Ok(())
 }
@@ -939,6 +972,84 @@ mod tests {
             verify_artifact(&snapshot, &digest, crate::database::SERVER_SCHEMA_VERSION)
                 .await
                 .is_ok()
+        );
+    }
+
+    /// The snapshot privacy scan must never materialise a whole table. When it
+    /// does, every scheduled backup pins the entire snapshot's text in RSS for
+    /// the length of the scan, and repeated attempts ratchet Server memory
+    /// upward instead of releasing it.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn snapshot_privacy_scan_memory_stays_bounded() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+        fn resident_kb() -> u64 {
+            let statm = std::fs::read_to_string("/proc/self/statm").unwrap_or_default();
+            let pages: u64 = statm
+                .split_whitespace()
+                .nth(1)
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0);
+            pages.saturating_mul(4)
+        }
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let snapshot = dir.path().join("privacy-scan.db");
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(&snapshot)
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE agent_report_receipts (receipt_body BLOB NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        // ~48 MiB of valid-UTF-8 receipt bodies across many rows: large enough
+        // that a whole-table materialisation is unmistakable, small enough to
+        // build in a moment.
+        sqlx::query(
+            "WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 24000)
+             INSERT INTO agent_report_receipts (receipt_body)
+             SELECT hex(randomblob(1024)) FROM seq",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&snapshot, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        let baseline = resident_kb();
+        let stop = Arc::new(AtomicBool::new(false));
+        let peak = Arc::new(AtomicU64::new(baseline));
+        let sampler = {
+            let stop = Arc::clone(&stop);
+            let peak = Arc::clone(&peak);
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    peak.fetch_max(resident_kb(), Ordering::Relaxed);
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            })
+        };
+        validate_snapshot_privacy(&snapshot).await.unwrap();
+        stop.store(true, Ordering::Relaxed);
+        sampler.join().unwrap();
+
+        let growth_kb = peak.load(Ordering::Relaxed).saturating_sub(baseline);
+        assert!(
+            growth_kb < 16 * 1024,
+            "privacy scan grew RSS by {growth_kb} KiB for a 48 MiB receipt table; \
+             the scan must stream bounded batches instead of the whole table"
         );
     }
 }
