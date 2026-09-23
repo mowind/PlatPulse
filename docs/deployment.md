@@ -379,6 +379,13 @@ an explicit error and is never rendered as `0` or Healthy.
 
 ### Server-owned online backup schedule
 
+> **ADR 0008 retires this path.** [ADR 0008](adr/0008-offline-server-backup.md)
+> decides that the Server process no longer creates backup artifacts: creation
+> and restore are offline, stopped-Server operations, redacted at write time,
+> with the packaged timer (or a filesystem/volume snapshot) as the automation
+> path. The section below documents the current code until that removal lands;
+> treat the online schedule as deprecated.
+
 `[backup_schedule]` makes the running Server create and verify its own daily
 backup on the owning SQLite connection. It stores no Owner password or machine
 token and never opens a second connection to a live database:
@@ -413,7 +420,7 @@ isolated restore, monitor last successful backup and capacity, and retain
 protected configuration/secret recovery material separately. A second local
 disk is not an off-host backup.
 
-The optional `platpulse-backup.timer` invokes `platpulse-server backup --config
+The packaged `platpulse-backup.timer` invokes `platpulse-server backup --config
 /etc/platpulse/server.toml`. That command uses the same sanitized `VACUUM INTO`,
 redaction, fsync, atomic-rename, and metadata path as the Admin backup Operation;
 it writes restrictive artifacts to the configured `backup_dir` (the example uses
@@ -424,10 +431,11 @@ never restore by copying a live database or its WAL/SHM sidecars.
 
 ### Safe daily backups, verification, and restore rehearsal
 
-- **Prefer the online path.** `[backup_schedule]` creates and verifies on the
-  owning SQLite connection while the Server keeps ingesting. It is the only
-  schedule that needs no stop/start orchestration.
-- **If you use the independent CLI timer, orchestrate the stop.** The
+- **Use the offline path.** [ADR 0008](adr/0008-offline-server-backup.md)
+  retires the in-process online schedule, so create and verify only in a
+  maintenance window with the Server stopped, or from a filesystem/volume
+  snapshot.
+- **The packaged timer is the automation path; orchestrate the stop.** The
   `platpulse-server backup` command now refuses while a running Server owns the
   database, so a timer that fires against a live Server fails closed instead of
   opening the file. A safe wrapper stops the Server, runs the backup, and always
