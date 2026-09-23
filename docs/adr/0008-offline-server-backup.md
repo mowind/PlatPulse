@@ -44,7 +44,7 @@ No retry loop exists, so a failed attempt cannot become permanent load; the oper
 
 ### Layout guard moves to the offline command (amendment)
 
-The `required_mount` guard is not discarded with `[backup_schedule]`. The offline `backup` and `restore` commands keep the same fail-closed layout decision: the backup directory must live under the configured mount, that mount must be a real distinct filesystem, and it must not be the live database filesystem. An absent or unmounted disk must never be treated as a valid destination.
+The `required_mount` guard is not discarded with `[backup_schedule]`; the optional top-level `backup_required_mount` carries it. The offline `backup` command keeps the same fail-closed layout decision: the backup directory must live under the configured mount, that mount must be a real distinct filesystem, and it must not be the live database filesystem. An absent or unmounted disk must never be treated as a valid destination. Restore is deliberately **not** gated by it: the guard protects where an artifact is written, and a destination-layout mistake must never block recovery.
 
 ### A snapshot is not a recovery point without source integrity
 

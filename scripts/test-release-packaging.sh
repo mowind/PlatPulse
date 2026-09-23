@@ -23,8 +23,6 @@ make_fixture() {
     printf '# compose config\n' > "$root/usr/share/doc/platpulse-server/examples/compose-server.toml"
     printf '# geo\n' > "$root/usr/share/doc/platpulse-server/examples/geoipupdate.compose.yml"
     printf '[Service]\nUser=platpulse-server\nGroup=platpulse-server\nReadWritePaths=/var/lib/platpulse /var/backups/platpulse\n' > "$root/usr/lib/systemd/system/platpulse-server.service"
-    printf '[Service]\nUser=platpulse-server\nGroup=platpulse-server\nExecStart=/usr/bin/platpulse-server backup --config /etc/platpulse/server.toml\nReadWritePaths=/var/lib/platpulse /var/backups/platpulse\n' > "$root/usr/lib/systemd/system/platpulse-backup.service"
-    printf '[Timer]\n' > "$root/usr/lib/systemd/system/platpulse-backup.timer"
   else
     mkdir -p "$root/etc/platpulse-agent" "$root/usr/share/doc/platpulse-agent"
     printf '#!/bin/sh\n' > "$root/usr/bin/platpulse-agent"
@@ -141,7 +139,8 @@ test -f "$OUTPUT_DIR/staging/server/root/usr/share/doc/platpulse-server/examples
 test -f "$OUTPUT_DIR/staging/server/root/usr/share/doc/platpulse-server/examples/compose.yml"
 test -f "$OUTPUT_DIR/staging/server/root/usr/share/doc/platpulse-server/examples/compose-server.toml"
 test -f "$OUTPUT_DIR/staging/server/root/usr/share/doc/platpulse-server/examples/geoipupdate.compose.yml"
-test -f "$OUTPUT_DIR/staging/server/root/usr/lib/systemd/system/platpulse-backup.timer"
+# ADR 0008 retired the packaged backup timer; the package must not carry it.
+test ! -e "$OUTPUT_DIR/staging/server/root/usr/lib/systemd/system/platpulse-backup.timer"
 test -f "$OUTPUT_DIR/staging/agent/root/usr/share/doc/platpulse-agent/deployment.md"
 test -f "$OUTPUT_DIR/staging/agent/root/usr/share/doc/platpulse-agent/LICENSE"
 OVERLAP="$(comm -12 <(cd "$OUTPUT_DIR/staging/server/root" && find . -type f -printf '%P\n' | sort) <(cd "$OUTPUT_DIR/staging/agent/root" && find . -type f -printf '%P\n' | sort))"

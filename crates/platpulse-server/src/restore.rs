@@ -1144,7 +1144,7 @@ mod tests {
                 enabled: false,
                 listen: crate::config::DEFAULT_METRICS_LISTEN,
             },
-            backup_schedule: None,
+            backup_required_mount: None,
         }
     }
 

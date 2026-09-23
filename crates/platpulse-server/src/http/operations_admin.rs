@@ -590,6 +590,8 @@ const OPERATION_STATUSES: [&str; 6] = [
     "failed",
     "cancelled",
 ];
+// `backup_create` stays listed so historical Operation rows remain filterable
+// and readable after ADR 0008 retired in-process creation.
 const OPERATION_KINDS: [&str; 5] = [
     "retention_run",
     "backup_create",
@@ -1500,34 +1502,6 @@ pub(crate) async fn backup_artifact_detail(
     }
 }
 
-/// Queue a backup creation. Returns immediately with the Operation
-/// reference; the artifact lands in the configured backup directory.
-#[utoipa::path(
-    post,
-    path = "/api/admin/v1/backups",
-    tag = "admin",
-    responses((status = 200, body = OperationMutationResponse), (status = 503, body = crate::http::ApiErrorBody))
-)]
-pub(crate) async fn backup_create(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Extension(principal): Extension<AuthenticatedSession>,
-    Extension(request_id): Extension<RequestId>,
-) -> Response {
-    if let Some(response) = mutation_guard(&headers, &principal, state.auth(), &request_id, false) {
-        return response;
-    }
-    queue_operation(
-        &state,
-        &principal,
-        &request_id,
-        operations::KIND_BACKUP_CREATE,
-        &serde_json::json!({}),
-        "backup_started",
-    )
-    .await
-}
-
 /// Queue a backup verification (checksum, read-only integrity, schema).
 /// A failed verification never deletes the artifact or any previous one.
 #[utoipa::path(
@@ -1928,7 +1902,7 @@ pub fn router() -> Router<AppState> {
             axum::routing::put(update_retention_policy),
         )
         .route("/retention/run", axum::routing::post(retention_run))
-        .route("/backups", get(backups_list).post(backup_create))
+        .route("/backups", get(backups_list))
         .route("/backups/{artifact_id}", get(backup_artifact_detail))
         .route(
             "/backups/{artifact_id}/verify",
@@ -2317,31 +2291,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn backup_create_and_verify_produce_sanitized_metadata_only() {
+    async fn offline_created_backup_exposes_sanitized_metadata_and_verifies() {
         let (_dir, state) = test_state().await;
         seed_old_data(&state).await;
         let pool = state.db().pool();
 
-        let response = backup_create(
-            State(state.clone()),
-            mutation_headers(),
-            Extension(session()),
-            Extension(request_id()),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = body_json(response).await;
-        let create_id = body["operation"]["operation"]["operationId"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        while crate::operations::process_operations(&state).await.unwrap() > 0 {}
-
-        let summary = load_operation_summary(pool, &create_id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(summary.status, "succeeded");
+        // Creation is offline (ADR 0008); the Admin surface only lists,
+        // details and verifies the resulting artifact.
+        crate::backup::create_offline(&state).await.unwrap();
         let artifact_id = sqlx::query_scalar::<_, String>(
             "SELECT artifact_id FROM backup_artifacts ORDER BY created_at DESC LIMIT 1",
         )
@@ -2425,7 +2382,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn backup_without_configured_directory_fails_honestly() {
+    async fn offline_backup_requires_a_configured_directory() {
         let dir = tempdir().unwrap();
         let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
             dir.path().join("server.db"),
@@ -2446,37 +2403,10 @@ mod tests {
             None,
             crate::config::NotificationChannels::default(),
         );
-        sqlx::query("INSERT INTO users (user_id, username, role, password_hash, created_at, updated_at) VALUES ('owner', 'owner', 'owner', 'hash', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
-            .execute(state.db().pool()).await.unwrap();
-        let response = backup_create(
-            State(state.clone()),
-            mutation_headers(),
-            Extension(session()),
-            Extension(request_id()),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        while crate::operations::process_operations(&state).await.unwrap() > 0 {}
-        let summary = load_operation_summary(
-            state.db().pool(),
-            &sqlx::query_scalar::<_, String>("SELECT operation_id FROM operations LIMIT 1")
-                .fetch_one(state.db().pool())
-                .await
-                .unwrap(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        assert_eq!(summary.status, "failed");
-        let detail = load_operation_detail(state.db().pool(), &summary.operation_id)
-            .await
-            .unwrap()
-            .unwrap();
+        let error = crate::backup::create_offline(&state).await.unwrap_err();
         assert!(
-            detail
-                .errors
-                .iter()
-                .any(|issue| issue.code == "backup_dir_not_configured")
+            error.to_string().contains("backup_dir is not configured"),
+            "unexpected error: {error}"
         );
     }
 
@@ -2773,16 +2703,8 @@ mod tests {
         let (_dir, state) = test_state().await;
         let pool = state.db().pool();
 
-        // Produce a real backup artifact through the backup Operation.
-        let response = backup_create(
-            State(state.clone()),
-            mutation_headers(),
-            Extension(session()),
-            Extension(request_id()),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        while crate::operations::process_operations(&state).await.unwrap() > 0 {}
+        // Produce a real backup artifact through the offline creation path.
+        crate::backup::create_offline(&state).await.unwrap();
         let artifact_id = sqlx::query_scalar::<_, String>(
             "SELECT artifact_id FROM backup_artifacts ORDER BY created_at DESC LIMIT 1",
         )

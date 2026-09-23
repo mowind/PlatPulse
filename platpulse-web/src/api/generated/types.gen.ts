@@ -3433,25 +3433,6 @@ export type BackupsListResponses = {
 
 export type BackupsListResponse = BackupsListResponses[keyof BackupsListResponses];
 
-export type BackupCreateData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/admin/v1/backups';
-};
-
-export type BackupCreateErrors = {
-    503: ApiErrorBody;
-};
-
-export type BackupCreateError = BackupCreateErrors[keyof BackupCreateErrors];
-
-export type BackupCreateResponses = {
-    200: OperationMutationResponse;
-};
-
-export type BackupCreateResponse = BackupCreateResponses[keyof BackupCreateResponses];
-
 export type BackupArtifactDetailData = {
     body?: never;
     path: {

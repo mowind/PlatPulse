@@ -360,7 +360,39 @@ pub async fn process_operations(state: &AppState) -> Result<usize, OperationErro
     let kind = operation_kind(state.db().pool(), &operation_id).await?;
     match kind.as_str() {
         KIND_RETENTION_RUN => crate::retention::execute_step(state, &operation_id).await?,
-        KIND_BACKUP_CREATE => crate::backup::create(state, &operation_id).await?,
+        // ADR 0008 retired in-process creation. Cancellation still wins: an
+        // in-flight row cancelled mid-step is finalized Cancelled, never
+        // overwritten. Any other surviving row (a queued historical
+        // `backup_create`) fails loudly instead of creating an artifact inside
+        // the serving process.
+        KIND_BACKUP_CREATE => {
+            if crate::operations::is_cancel_requested(state, &operation_id).await? {
+                crate::operations::finalize(
+                    state,
+                    &operation_id,
+                    STATUS_CANCELLED,
+                    None,
+                    &["backups"],
+                )
+                .await?;
+            } else {
+                crate::operations::add_error(
+                    state,
+                    &operation_id,
+                    "backup_create_retired",
+                    "In-process backup creation was retired (ADR 0008); run `platpulse-server backup` in an offline backup window",
+                )
+                .await?;
+                crate::operations::finalize(
+                    state,
+                    &operation_id,
+                    STATUS_FAILED,
+                    None,
+                    &["backups"],
+                )
+                .await?;
+            }
+        }
         KIND_BACKUP_VERIFY => crate::backup::verify(state, &operation_id).await?,
         KIND_DOCTOR_RUN => crate::doctor::run(state, &operation_id).await?,
         KIND_RESTORE => crate::restore::execute(state, &operation_id).await?,

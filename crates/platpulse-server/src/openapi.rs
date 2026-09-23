@@ -155,7 +155,6 @@ impl Modify for AgentBearerScheme {
         crate::http::operations_admin::retention_run,
         crate::http::operations_admin::backups_list,
         crate::http::operations_admin::backup_artifact_detail,
-        crate::http::operations_admin::backup_create,
         crate::http::operations_admin::backup_verify,
         crate::http::operations_admin::restore_validate,
         crate::http::operations_admin::restore_submit,

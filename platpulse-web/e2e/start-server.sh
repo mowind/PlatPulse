@@ -800,7 +800,7 @@ with sqlite3.connect(db_path, timeout=5) as db:
         "SELECT COALESCE(MAX(version), 0) FROM _sqlx_migrations"
     ).fetchone()[0]
     # Consistent snapshot of the seeded database (same mechanism as the
-    # backup_create Operation: VACUUM INTO, then the manifest row).
+    # offline backup creation path: VACUUM INTO, then the manifest row).
     db.execute(f"VACUUM INTO '{backup_dir}/{good_name}'")
     # Portable backups omit raw network/geo data and use the same compact JSON
     # representation as the Server's sanitizer so restore privacy validation

@@ -793,12 +793,19 @@ pub async fn run_cutover_rollback(
     Ok(())
 }
 
-/// Create one sanitized backup using the same implementation as the Admin
-/// backup Operation. The configured backup_dir remains the only destination.
+/// Create one sanitized backup artifact inside an Offline Backup Window. This
+/// is the only creation path (ADR 0008): it takes the exclusive ownership
+/// guard, applies the optional `backup_required_mount` layout guard, and
+/// writes to the configured `backup_dir`.
 pub async fn run_backup(config: &ServerConfig) -> Result<String, Box<dyn std::error::Error>> {
     crate::init::restrict_umask();
     // Never open a database the running Server owns (issue #160).
     let _ownership = crate::ownership::acquire_for_deployment(&config.db_path, config.development)?;
+    crate::backup::check_layout(
+        &config.db_path,
+        config.backup_dir.as_ref(),
+        config.backup_required_mount.as_deref(),
+    )?;
     let pepper = load_pepper_file(&config.pepper_file)?;
     let auth = if config.development {
         AuthConfig::development(pepper, config.public_base_url.clone())
@@ -812,7 +819,7 @@ pub async fn run_backup(config: &ServerConfig) -> Result<String, Box<dyn std::er
     .await?;
     let state =
         crate::http::AppState::new(database, None, auth).with_backup_dir(config.backup_dir.clone());
-    Ok(crate::backup::create_scheduled(&state).await?.filename)
+    Ok(crate::backup::create_offline(&state).await?.filename)
 }
 
 /// Run the HTTP Server: validate the listen address, load the pepper and
@@ -989,17 +996,6 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
     ))];
 
     if !cutover_blocked {
-        // Server-owned online backups (design §20.1): the schedule snapshots the
-        // database on the owning connection and verifies every automatic
-        // artifact, so no Owner credential or second SQLite opener is involved.
-        if let Some(schedule) = config.backup_schedule.clone() {
-            let schedule_state = state.clone();
-            worker_handles.push(tokio::spawn(crate::backup_schedule::run(
-                schedule_state,
-                schedule,
-            )));
-        }
-
         // Geo database reload and raw-IP cache cleanup are deliberately
         // best-effort. A malformed replacement keeps the last-good reader and
         // never interrupts report ingestion or readiness. A provider that does

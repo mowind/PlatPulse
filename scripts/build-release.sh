@@ -87,9 +87,7 @@ install -Dm644 "$ROOT/release/examples/Caddyfile" "$SERVER_ROOT/usr/share/doc/pl
 install -Dm644 "$ROOT/release/compose/server.compose.yml" "$SERVER_ROOT/usr/share/doc/platpulse-server/examples/compose.yml"
 install -Dm644 "$ROOT/release/compose/server.toml" "$SERVER_ROOT/usr/share/doc/platpulse-server/examples/compose-server.toml"
 install -Dm644 "$ROOT/release/geo/geoipupdate.compose.yml" "$SERVER_ROOT/usr/share/doc/platpulse-server/examples/geoipupdate.compose.yml"
-for unit in platpulse-server.service platpulse-backup.service platpulse-backup.timer; do
-  install -Dm644 "$ROOT/release/systemd/$unit" "$SERVER_ROOT/usr/lib/systemd/system/$unit"
-done
+install -Dm644 "$ROOT/release/systemd/platpulse-server.service" "$SERVER_ROOT/usr/lib/systemd/system/platpulse-server.service"
 install -Dm644 "$ROOT/release/systemd/platpulse-agent.service" "$AGENT_ROOT/usr/lib/systemd/system/platpulse-agent.service"
 
 "$ROOT/scripts/validate-release.sh" --root "$SERVER_ROOT" --kind server
@@ -194,8 +192,6 @@ systemctl daemon-reload >/dev/null 2>&1 || true
 /usr/share/platpulse
 /usr/share/doc/platpulse-server
 /usr/lib/systemd/system/platpulse-server.service
-/usr/lib/systemd/system/platpulse-backup.service
-/usr/lib/systemd/system/platpulse-backup.timer
 EOF
   else
     cat >> "$spec" <<'EOF'

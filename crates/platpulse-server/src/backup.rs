@@ -1,17 +1,18 @@
-//! Backup artifact creation and verification (issue #50, design §20.1,
+//! Backup artifact creation and verification (issue #50, ADR 0008,
 //! webui.md §8.4).
 //!
 //! Backups are consistent SQLite snapshots produced with `VACUUM INTO`
 //! (temp + fsync + atomic rename, never a copy of live `-wal`/`-shm`),
 //! written into the explicitly configured backup directory with strict
-//! permissions. Only sanitized metadata is persisted and exposed: file base
-//! name, size, SHA-256, schema version, Server version, timestamps, and the
-//! data range. Database contents and secrets never leave the Server and are
-//! never displayed. A failed create or verify preserves every previous
-//! artifact and the last successful state.
+//! permissions. Creation is an offline Server operation: the serving process
+//! never creates backup artifacts. Only sanitized metadata is persisted and
+//! exposed: file base name, size, SHA-256, schema version, Server version,
+//! timestamps, and the data range. Database contents and secrets never leave
+//! the Server and are never displayed. A failed create or verify preserves
+//! every previous artifact and the last successful state.
 
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 use sha2::Digest;
@@ -36,144 +37,18 @@ pub enum BackupError {
     Operation(#[from] crate::operations::OperationError),
 }
 
-/// Create a consistent snapshot artifact through the `backup_create`
-/// Operation. On any failure the temp file is removed, the error is
-/// recorded on the Operation, and every previous artifact stays intact.
-pub async fn create(state: &AppState, operation_id: &str) -> Result<(), BackupError> {
-    let Some(backup_dir) = state.backup_dir().map(|path| path.to_path_buf()) else {
-        crate::operations::add_error(
-            state,
-            operation_id,
-            "backup_dir_not_configured",
-            "No backup directory is configured; set backup_dir in server.toml",
-        )
-        .await?;
-        crate::operations::finalize(
-            state,
-            operation_id,
-            crate::operations::STATUS_FAILED,
-            None,
-            &["backups"],
-        )
-        .await?;
-        return Ok(());
-    };
-    if let Err(message) = prepare_backup_dir(&backup_dir) {
-        crate::operations::add_error(state, operation_id, "backup_dir_invalid", &message).await?;
-        crate::operations::finalize(
-            state,
-            operation_id,
-            crate::operations::STATUS_FAILED,
-            None,
-            &["backups"],
-        )
-        .await?;
-        return Ok(());
-    }
-
-    if crate::operations::is_cancel_requested(state, operation_id).await? {
-        crate::operations::finalize(
-            state,
-            operation_id,
-            crate::operations::STATUS_CANCELLED,
-            None,
-            &["backups"],
-        )
-        .await?;
-        return Ok(());
-    }
-    let artifact_id = uuid::Uuid::new_v4().to_string();
-    let filename = format!("platpulse-{artifact_id}.db");
-    let final_path = backup_dir.join(&filename);
-    let temp_path = backup_dir.join(format!("{filename}.part"));
-    let now = crate::auth::format_rfc3339(crate::auth::now_utc());
-
-    let result = create_snapshot(
-        state,
-        Some(operation_id),
-        &temp_path,
-        &final_path,
-        &artifact_id,
-        &filename,
-        &now,
-    )
-    .await;
-    let snapshot = match result {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            let _ = std::fs::remove_file(&temp_path);
-            crate::operations::add_error(
-                state,
-                operation_id,
-                "backup_create_failed",
-                &crate::redaction::redact_sensitive(&error.to_string()),
-            )
-            .await?;
-            crate::operations::finalize(
-                state,
-                operation_id,
-                crate::operations::STATUS_FAILED,
-                None,
-                &["backups"],
-            )
-            .await?;
-            return Ok(());
-        }
-    };
-
-    if crate::operations::is_cancel_requested(state, operation_id).await? {
-        // The snapshot was already persisted; remove the file AND its
-        // metadata row so a cancelled backup leaves nothing behind.
-        let _ = std::fs::remove_file(&final_path);
-        let _ = sqlx::query("DELETE FROM backup_artifacts WHERE artifact_id = ?")
-            .bind(&artifact_id)
-            .execute(state.db().pool())
-            .await;
-        crate::operations::finalize(
-            state,
-            operation_id,
-            crate::operations::STATUS_CANCELLED,
-            None,
-            &["backups"],
-        )
-        .await?;
-        return Ok(());
-    }
-    let result_json = serde_json::json!({
-        "artifact": {
-            "artifactId": artifact_id,
-            "filename": filename,
-            "bytes": snapshot.bytes,
-            "sha256": snapshot.sha256,
-            "schemaVersion": snapshot.schema_version,
-            "serverVersion": snapshot.server_version,
-            "createdAt": snapshot.created_at,
-            "dataRangeMin": snapshot.data_range_min,
-            "dataRangeMax": snapshot.data_range_max,
-        }
-    });
-    crate::operations::finalize(
-        state,
-        operation_id,
-        crate::operations::STATUS_SUCCEEDED,
-        Some(&result_json),
-        &["backups"],
-    )
-    .await?;
-    Ok(())
-}
-
-/// Create one backup synchronously for the non-root systemd timer. This uses
-/// the same sanitized snapshot path as the Admin Operation surface without
-/// exposing a second raw-SQLite backup implementation.
-/// Identity of a freshly created scheduled backup artifact.
+/// Identity of a freshly created offline backup artifact.
 #[derive(Debug, Clone)]
-pub struct ScheduledArtifact {
+pub struct CreatedArtifact {
     pub artifact_id: String,
     pub filename: String,
 }
 
-pub async fn create_scheduled(state: &AppState) -> Result<ScheduledArtifact, BackupError> {
+/// Create one sanitized backup artifact in an Offline Backup Window. This is
+/// the only creation path: the serving process never creates backup artifacts
+/// (ADR 0008). The caller must already have applied the layout guard
+/// (`backup::check_layout`).
+pub async fn create_offline(state: &AppState) -> Result<CreatedArtifact, BackupError> {
     let backup_dir = state
         .backup_dir()
         .cloned()
@@ -186,7 +61,6 @@ pub async fn create_scheduled(state: &AppState) -> Result<ScheduledArtifact, Bac
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     let result = create_snapshot(
         state,
-        None,
         &temp_path,
         &final_path,
         &artifact_id,
@@ -198,31 +72,20 @@ pub async fn create_scheduled(state: &AppState) -> Result<ScheduledArtifact, Bac
         let _ = std::fs::remove_file(&temp_path);
     }
     result?;
-    Ok(ScheduledArtifact {
+    Ok(CreatedArtifact {
         artifact_id,
         filename,
     })
 }
 
-struct Snapshot {
-    bytes: i64,
-    sha256: String,
-    schema_version: i64,
-    server_version: String,
-    created_at: String,
-    data_range_min: Option<String>,
-    data_range_max: Option<String>,
-}
-
 async fn create_snapshot(
     state: &AppState,
-    operation_id: Option<&str>,
     temp_path: &Path,
     final_path: &Path,
     artifact_id: &str,
     filename: &str,
     now: &str,
-) -> Result<Snapshot, BackupError> {
+) -> Result<(), BackupError> {
     let temp_absolute = temp_path
         .to_str()
         .ok_or_else(|| std::io::Error::other("backup directory path is not valid UTF-8"))?;
@@ -300,7 +163,7 @@ async fn create_snapshot(
     .bind(now)
     .bind(&data_range.0)
     .bind(&data_range.1)
-    .bind(operation_id)
+    .bind(Option::<String>::None)
     .execute(state.db().pool())
     .await;
     if let Err(error) = inserted {
@@ -308,15 +171,7 @@ async fn create_snapshot(
         let _ = std::fs::remove_file(final_path);
         return Err(error.into());
     }
-    Ok(Snapshot {
-        bytes,
-        sha256,
-        schema_version,
-        server_version: crate::VERSION.to_owned(),
-        created_at: now.to_owned(),
-        data_range_min: data_range.0,
-        data_range_max: data_range.1,
-    })
+    Ok(())
 }
 
 fn sync_file(path: &Path) -> Result<(), BackupError> {
@@ -516,6 +371,123 @@ fn quote_identifier(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))
 }
 
+// ---------------------------------------------------------------------------
+// Offline layout guard (ADR 0008)
+// ---------------------------------------------------------------------------
+
+/// Canonical layout facts the guard decides over.
+struct LayoutFacts {
+    backup_dir: PathBuf,
+    required_mount: PathBuf,
+    backup_device: u64,
+    mount_device: u64,
+    mount_parent_device: u64,
+    db_device: u64,
+}
+
+/// Pure guard decision over canonical facts. A backup directory on the live
+/// database filesystem is refused because the artifact would grow beside the
+/// very database it exists to survive.
+fn decide_layout(facts: &LayoutFacts) -> Result<(), String> {
+    if !facts.backup_dir.starts_with(&facts.required_mount) {
+        return Err("backup directory is outside backup_required_mount".to_owned());
+    }
+    if facts.mount_device == facts.mount_parent_device {
+        return Err("backup_required_mount is not a separate mounted filesystem".to_owned());
+    }
+    if facts.backup_device != facts.mount_device {
+        return Err("backup directory is not on backup_required_mount".to_owned());
+    }
+    if facts.backup_device == facts.db_device {
+        return Err("backup directory is on the database filesystem".to_owned());
+    }
+    Ok(())
+}
+
+/// Enforce the offline backup layout guard. The mount is optional: without
+/// `backup_required_mount` the guard is inert and the operator is responsible
+/// for placing `backup_dir` on a distinct disk (ADR 0008). Only creation is
+/// gated; restore deliberately is not, so a misconfigured destination can
+/// never block recovery.
+pub(crate) fn check_layout(
+    db_path: &Path,
+    backup_dir: Option<&PathBuf>,
+    required_mount: Option<&Path>,
+) -> Result<(), String> {
+    check_layout_with_device(db_path, backup_dir, required_mount, &device_of)
+}
+
+/// Canonicalize and read the filesystem identity of each relevant path, then
+/// apply [`decide_layout`]. Split from [`check_layout`] so tests can inject
+/// device identities.
+fn check_layout_with_device<F>(
+    db_path: &Path,
+    backup_dir: Option<&PathBuf>,
+    required_mount: Option<&Path>,
+    device: &F,
+) -> Result<(), String>
+where
+    F: Fn(&Path) -> std::io::Result<u64>,
+{
+    let Some(required_mount) = required_mount else {
+        return Ok(());
+    };
+    let Some(backup_dir) = backup_dir else {
+        return Err("backup_dir is not configured".to_owned());
+    };
+    if !required_mount.is_absolute() {
+        return Err("backup_required_mount is not absolute".to_owned());
+    }
+    let canonical_mount = std::fs::canonicalize(required_mount)
+        .map_err(|_| "backup_required_mount is not accessible".to_owned())?;
+    let mount_device = device(&canonical_mount)
+        .map_err(|_| "backup_required_mount is not accessible".to_owned())?;
+    let mount_parent_device = canonical_mount
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .and_then(|parent| device(parent).ok())
+        .unwrap_or(mount_device);
+    crate::file_security::ensure_private_directory(backup_dir)
+        .map_err(|_| "backup directory is unsafe or could not be created".to_owned())?;
+    let canonical_backup = std::fs::canonicalize(backup_dir)
+        .map_err(|_| "backup directory is not accessible".to_owned())?;
+    let backup_device =
+        device(&canonical_backup).map_err(|_| "backup directory is not accessible".to_owned())?;
+    let db_device = device(db_path)
+        .or_else(|_| {
+            db_path
+                .parent()
+                .ok_or_else(|| std::io::Error::other("database path has no parent"))
+                .and_then(device)
+        })
+        .map_err(|_| "database path is not accessible".to_owned())?;
+    decide_layout(&LayoutFacts {
+        backup_dir: canonical_backup,
+        required_mount: canonical_mount,
+        backup_device,
+        mount_device,
+        mount_parent_device,
+        db_device,
+    })
+}
+
+/// Real filesystem identity. `st_dev` is stable for mounted filesystems, so a
+/// renamed or unmounted directory cannot impersonate the expected disk.
+pub(crate) fn device_of(path: &Path) -> std::io::Result<u64> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Ok(std::fs::metadata(path)?.dev())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Err(std::io::Error::other(
+            "device identity is only available on unix",
+        ))
+    }
+}
+
 /// Verify one artifact through the `backup_verify` Operation: file
 /// presence, SHA-256 recomputation, read-only SQLite integrity, and schema
 /// version. The artifact row records the outcome; a failed verification
@@ -664,70 +636,6 @@ pub async fn verify(state: &AppState, operation_id: &str) -> Result<(), BackupEr
     Ok(())
 }
 
-/// Verify one scheduled artifact through the same checksum, read-only
-/// integrity, schema, and privacy path used by the Admin backup_verify
-/// Operation, without creating an Operation row. The verification columns of
-/// the artifact record the outcome; a failed verification never deletes the
-/// artifact or any previous one.
-pub async fn verify_scheduled_artifact(
-    state: &AppState,
-    artifact_id: &str,
-) -> Result<bool, BackupError> {
-    let Some(backup_dir) = state.backup_dir().map(|path| path.to_path_buf()) else {
-        return Ok(false);
-    };
-    let artifact: Option<(String, String, i64)> = sqlx::query_as(
-        "SELECT filename, sha256, schema_version FROM backup_artifacts WHERE artifact_id = ?",
-    )
-    .bind(artifact_id)
-    .fetch_optional(state.db().pool())
-    .await?;
-    let Some((filename, expected_sha256, expected_schema)) = artifact else {
-        return Ok(false);
-    };
-    let verified_at = crate::auth::format_rfc3339(crate::auth::now_utc());
-    let outcome = if crate::file_security::validate_private_directory(&backup_dir).is_err()
-        || !crate::file_security::is_safe_basename(&filename)
-    {
-        Err(BackupError::Privacy(
-            "backup artifact path is unsafe".to_owned(),
-        ))
-    } else {
-        verify_artifact(
-            &backup_dir.join(&filename),
-            &expected_sha256,
-            expected_schema,
-        )
-        .await
-    };
-    match outcome {
-        Ok(()) => {
-            sqlx::query(
-                "UPDATE backup_artifacts SET verification = ?, verified_at = ?, verification_error = NULL WHERE artifact_id = ?",
-            )
-            .bind("ok")
-            .bind(&verified_at)
-            .bind(artifact_id)
-            .execute(state.db().pool())
-            .await?;
-            Ok(true)
-        }
-        Err(error) => {
-            let message = crate::redaction::redact_sensitive(&error.to_string());
-            sqlx::query(
-                "UPDATE backup_artifacts SET verification = ?, verified_at = ?, verification_error = ? WHERE artifact_id = ?",
-            )
-            .bind("failed")
-            .bind(&verified_at)
-            .bind(&message)
-            .bind(artifact_id)
-            .execute(state.db().pool())
-            .await?;
-            Ok(false)
-        }
-    }
-}
-
 async fn verify_artifact(
     path: &Path,
     expected_sha256: &str,
@@ -800,6 +708,41 @@ pub async fn latest_artifact(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn layout_facts(
+        backup: &str,
+        mount: &str,
+        bdev: u64,
+        mdev: u64,
+        pdev: u64,
+        ddev: u64,
+    ) -> LayoutFacts {
+        LayoutFacts {
+            backup_dir: PathBuf::from(backup),
+            required_mount: PathBuf::from(mount),
+            backup_device: bdev,
+            mount_device: mdev,
+            mount_parent_device: pdev,
+            db_device: ddev,
+        }
+    }
+
+    #[test]
+    fn decide_layout_accepts_a_separate_mounted_disk() {
+        assert!(decide_layout(&layout_facts("/data/backups", "/data", 2, 2, 1, 3)).is_ok());
+    }
+
+    #[test]
+    fn decide_layout_rejects_each_unsafe_layout() {
+        // Backup outside the required mount.
+        assert!(decide_layout(&layout_facts("/srv/backups", "/data", 2, 2, 1, 3)).is_err());
+        // backup_required_mount is a plain directory, not a real mount point.
+        assert!(decide_layout(&layout_facts("/data/backups", "/data", 2, 2, 2, 3)).is_err());
+        // Backup directory is not on the required mount device.
+        assert!(decide_layout(&layout_facts("/data/backups", "/data", 9, 2, 1, 3)).is_err());
+        // Backup shares the live database filesystem.
+        assert!(decide_layout(&layout_facts("/data/backups", "/data", 3, 3, 1, 3)).is_err());
+    }
 
     /// A portable backup must not carry a raw Peer address or any retained
     /// country result, whatever provider produced it (issue #132).
@@ -979,11 +922,35 @@ mod tests {
     /// does, every scheduled backup pins the entire snapshot's text in RSS for
     /// the length of the scan, and repeated attempts ratchet Server memory
     /// upward instead of releasing it.
+    ///
+    /// The measurement is process-wide, so the sample runs in a dedicated
+    /// child process that executes only this test on a single thread; in a
+    /// parallel suite every other test's allocations would otherwise be
+    /// attributed to the scan.
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn snapshot_privacy_scan_memory_stays_bounded() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+        const CHILD_ENV: &str = "PLATPULSE_MEMORY_SAMPLE_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let executable = std::env::current_exe().expect("test binary path");
+            let status = std::process::Command::new(executable)
+                .args([
+                    "--exact",
+                    "backup::tests::snapshot_privacy_scan_memory_stays_bounded",
+                    "--test-threads=1",
+                ])
+                .env(CHILD_ENV, "1")
+                .status()
+                .expect("spawn the isolated memory sample");
+            assert!(
+                status.success(),
+                "bounded-memory scan child failed: {status}"
+            );
+            return;
+        }
 
         fn resident_kb() -> u64 {
             let statm = std::fs::read_to_string("/proc/self/statm").unwrap_or_default();

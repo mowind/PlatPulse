@@ -96,7 +96,7 @@ forbidden="$(find "$ROOT" -type f \( \
 allowed_file() {
   if [[ "$KIND" == server ]]; then
     case "$1" in
-      usr/bin/platpulse-server|usr/share/platpulse/web/*|etc/platpulse/server.example.toml|usr/lib/systemd/system/platpulse-server.service|usr/lib/systemd/system/platpulse-backup.service|usr/lib/systemd/system/platpulse-backup.timer|usr/share/doc/platpulse-server/deployment.md|usr/share/doc/platpulse-server/LICENSE|usr/share/doc/platpulse-server/examples/Caddyfile|usr/share/doc/platpulse-server/examples/compose.yml|usr/share/doc/platpulse-server/examples/compose-server.toml|usr/share/doc/platpulse-server/examples/geoipupdate.compose.yml) return 0 ;;
+      usr/bin/platpulse-server|usr/share/platpulse/web/*|etc/platpulse/server.example.toml|usr/lib/systemd/system/platpulse-server.service|usr/share/doc/platpulse-server/deployment.md|usr/share/doc/platpulse-server/LICENSE|usr/share/doc/platpulse-server/examples/Caddyfile|usr/share/doc/platpulse-server/examples/compose.yml|usr/share/doc/platpulse-server/examples/compose-server.toml|usr/share/doc/platpulse-server/examples/geoipupdate.compose.yml) return 0 ;;
     esac
   else
     case "$1" in
@@ -164,13 +164,10 @@ case "$KIND" in
     require_file usr/share/doc/platpulse-server/LICENSE
     require_file usr/share/doc/platpulse-server/examples/compose-server.toml
     require_file usr/lib/systemd/system/platpulse-server.service
-    require_file usr/lib/systemd/system/platpulse-backup.service
-    require_file usr/lib/systemd/system/platpulse-backup.timer
     require_service_identity usr/lib/systemd/system/platpulse-server.service platpulse-server
     grep -q '^ReadWritePaths=/var/lib/platpulse /var/backups/platpulse$' "$ROOT/usr/lib/systemd/system/platpulse-server.service" || fail 'Server unit cannot write state and backup artifacts'
-    require_service_identity usr/lib/systemd/system/platpulse-backup.service platpulse-server
-    grep -q '^ExecStart=/usr/bin/platpulse-server backup --config /etc/platpulse/server.toml$' "$ROOT/usr/lib/systemd/system/platpulse-backup.service" || fail 'backup unit does not use the sanitized Server backup command'
-    grep -q '^ReadWritePaths=/var/lib/platpulse /var/backups/platpulse$' "$ROOT/usr/lib/systemd/system/platpulse-backup.service" || fail 'backup unit cannot update metadata and write artifacts'
+    # ADR 0008 retired the packaged backup timer/service; the whitelist above
+    # rejects them if they reappear.
     ;;
   agent)
     require_executable usr/bin/platpulse-agent

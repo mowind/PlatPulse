@@ -111,7 +111,6 @@ import {
   retryDelivery,
   testNotificationChannel,
   backupArtifactDetail,
-  backupCreate as backupCreateApi,
   backupVerify as backupVerifyApi,
   backupsList,
   cancelOperation as cancelOperationApi,
@@ -2381,24 +2380,6 @@ export function useAdminBackup(generation: number, artifactId: string) {
     queryFn: ({ signal }) => fetchAdminBackup(artifactId, signal),
     enabled: artifactId.length > 0,
   })
-}
-
-/** Queue a backup creation (typed confirmation happens in the page). */
-export async function createBackupEntry(csrfToken: string): Promise<OperationMutationResponse> {
-  try {
-    const response = await requestAdmin(
-      () =>
-        backupCreateApi({
-          headers: { 'X-CSRF-Token': csrfToken },
-        }),
-      'Unable to start the backup',
-    )
-    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
-    return response
-  } catch (error) {
-    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
-    throw error
-  }
 }
 
 /** Queue a backup verification (checksum, read-only integrity, schema). */

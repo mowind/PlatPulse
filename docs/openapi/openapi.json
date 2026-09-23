@@ -1776,35 +1776,6 @@
             }
           }
         }
-      },
-      "post": {
-        "tags": [
-          "admin"
-        ],
-        "summary": "Queue a backup creation. Returns immediately with the Operation\nreference; the artifact lands in the configured backup directory.",
-        "operationId": "backup_create",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/OperationMutationResponse"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorBody"
-                }
-              }
-            }
-          }
-        }
       }
     },
     "/api/admin/v1/backups/{artifact_id}": {

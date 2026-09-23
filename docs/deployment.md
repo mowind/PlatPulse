@@ -396,18 +396,22 @@ inside an Offline Backup Window, and the operator owns its schedule.
 
 `[backup_schedule]` is removed with the in-process scheduler. A `server.toml`
 that still contains the section is rejected at startup with a dedicated error;
-delete the section before upgrading. `backup_dir` remains:
+delete the section before upgrading. `backup_dir` remains, and the optional
+`backup_required_mount` re-arms the layout guard:
 
 ```toml
 backup_dir = "/data/platpulse-backups"
+backup_required_mount = "/data"   # optional; enforced when set
 ```
 
 - `platpulse-server backup` holds the exclusive ownership guard and refuses
   while a Server owns the database, so it can only run with the Server stopped.
-- The offline command keeps the layout guard: the backup directory must live
-  under the configured mount, that mount must be a distinct real filesystem,
-  and it must not be the live database filesystem. An absent or unmounted disk
-  produces no artifact instead of writing beside the database.
+- When `backup_required_mount` is set, creation fails closed unless the backup
+  directory lives under that mount, the mount is a distinct real filesystem,
+  and the directory is not on the live database filesystem. An absent or
+  unmounted disk produces no artifact instead of writing beside the database.
+  Restore is deliberately not gated by it: a destination-layout mistake must
+  never block recovery.
 - Creation runs one bounded redaction pass. Verifying an existing artifact is a
   separate read-only step (Admin `backup_verify`) and still scans it
   independently.
