@@ -2119,6 +2119,9 @@ mod delivery_tests {
 /// a real Server (production code, no mocks) is stopped while the Agent keeps
 /// collecting, then returns on the same address and database. The backlog must
 /// drain through the real HTTP transport without losing a report.
+///
+/// It also hosts the issue #177 Inventory-declaration acceptance, which needs
+/// the same real Server, transport and receipt application.
 #[cfg(test)]
 mod backlog_recovery_tests {
     use std::path::Path;
@@ -2135,10 +2138,11 @@ mod backlog_recovery_tests {
     use tokio::task::JoinHandle;
     use tokio_util::sync::CancellationToken;
 
-    use super::{HttpReportTransport, deliver_periodic, persist_immutable_report};
-    use crate::collector::SpoolPolicy;
+    use super::{AgentReport, HttpReportTransport, deliver_periodic, persist_immutable_report};
+    use crate::collector::{CollectionError, SpoolPolicy, guard_startup_inventory_declaration};
     use crate::config::{AgentConfig, BackfillConfig};
-    use crate::database::{AgentDatabaseConfig, AgentStore};
+    use crate::database::{AgentDatabaseConfig, AgentStore, AgentStoreWritePermit};
+    use crate::inventory_declaration::{InventoryDeclarationConflict, read_inventory_declaration};
 
     const REPORT_COUNT: u64 = 6;
     const BOOT_ID: &str = "0195f2a1-0012-4012-8012-000000000012";
@@ -2338,5 +2342,136 @@ mod backlog_recovery_tests {
             "the Server must hold one receipt per recovered report"
         );
         store.close().await.unwrap();
+    }
+
+    /// Issue #177 acceptance against a real Server: revision 1 is accepted and
+    /// recorded; the same revision with a changed Node set refuses the start
+    /// with the operator message; bumping to revision 2 declares the new Node
+    /// set and delivery resumes. Agent and Server agree because both hash the
+    /// published Inventory with the same `platpulse-core` function.
+    #[tokio::test]
+    async fn inventory_content_change_without_a_bump_is_refused_then_heals() {
+        let dir = TempDir::new().unwrap();
+        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = probe.local_addr().unwrap();
+        drop(probe);
+
+        let (server, token) = boot_server(addr, dir.path()).await;
+        let config = agent_config(dir.path(), &format!("http://{addr}"));
+        let enrolled = crate::enroll::enroll_agent(&config, &token).await.unwrap();
+        let agent_id = enrolled.agent_id.to_string();
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(&config.state_db))
+            .await
+            .unwrap();
+        let transport = HttpReportTransport::from_config(&config).unwrap();
+        let policy = SpoolPolicy::default();
+
+        // Revision 1 is accepted by the real Server, and the Agent records what
+        // the receipt made effective.
+        let declared: AgentReport = serde_json::from_slice(&report_body(1, &agent_id)).unwrap();
+        persist_immutable_report(
+            &mut store,
+            &report_id(1),
+            1,
+            BOOT_ID,
+            1,
+            "2026-08-12T09:00:00Z",
+            &report_body(1, &agent_id),
+        )
+        .await
+        .unwrap();
+        let outcome = deliver_periodic(&mut store, &transport, &policy)
+            .await
+            .unwrap();
+        assert_eq!(outcome.applied, 1);
+        assert!(outcome.rejections.is_empty(), "{:?}", outcome.rejections);
+        let record = read_inventory_declaration(store.connection())
+            .await
+            .unwrap()
+            .expect("an accepted Inventory must be recorded");
+        assert_eq!(record.revision, declared.inventory.revision);
+        assert_eq!(
+            record.sha256,
+            declared.inventory.content_sha256().to_string()
+        );
+
+        // The operator edits the Node set and forgets to bump the revision.
+        let mut drifted = declared.clone();
+        drifted.inventory.nodes[0].rpc_endpoint = "ws://127.0.0.1:6799".parse().unwrap();
+        assert_eq!(
+            drifted.inventory.revision, declared.inventory.revision,
+            "the drift is a content change at the accepted revision"
+        );
+
+        // The startup guard refuses it, so the Agent never declares — and
+        // therefore never reports — the conflicting Inventory.
+        let refused = guard_startup_inventory_declaration(
+            &config,
+            &drifted.inventory,
+            AgentStoreWritePermit::new(),
+        )
+        .await
+        .expect_err("changed content at the accepted revision must refuse the start");
+        let message = match &refused {
+            CollectionError::InventoryDeclaration(
+                InventoryDeclarationConflict::ContentChanged { revision, .. },
+            ) => {
+                assert_eq!(*revision, declared.inventory.revision);
+                refused.to_string()
+            }
+            other => panic!("unexpected refusal: {other:?}"),
+        };
+        assert_eq!(
+            message,
+            "inventory content changed but inventory_revision is still 1; bump inventory_revision (e.g. to 2) to declare the new Node set"
+        );
+
+        // Bumping the revision declares the new Node set: the same Server
+        // accepts it and the record moves forward.
+        let mut bumped: serde_json::Value =
+            serde_json::from_slice(&report_body(2, &agent_id)).unwrap();
+        bumped["inventory"]["revision"] = serde_json::json!(2);
+        bumped["inventory"]["nodes"][0]["rpc_endpoint"] = serde_json::json!("ws://127.0.0.1:6799");
+        let bumped_body = serde_json::to_vec(&bumped).unwrap();
+        let bumped_inventory: AgentReport = serde_json::from_slice(&bumped_body).unwrap();
+        guard_startup_inventory_declaration(
+            &config,
+            &bumped_inventory.inventory,
+            AgentStoreWritePermit::new(),
+        )
+        .await
+        .expect("a bumped revision declares the new Node set");
+        persist_immutable_report(
+            &mut store,
+            &report_id(2),
+            1,
+            BOOT_ID,
+            2,
+            "2026-08-12T09:00:00Z",
+            &bumped_body,
+        )
+        .await
+        .unwrap();
+        let outcome = deliver_periodic(&mut store, &transport, &policy)
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome.applied, 1,
+            "the bumped declaration must be accepted: {:?}",
+            outcome.rejections
+        );
+        assert!(outcome.rejections.is_empty(), "{:?}", outcome.rejections);
+        let record = read_inventory_declaration(store.connection())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.revision, 2);
+        assert_eq!(
+            record.sha256,
+            bumped_inventory.inventory.content_sha256().to_string()
+        );
+
+        store.close().await.unwrap();
+        server.stop().await;
     }
 }
