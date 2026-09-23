@@ -1102,11 +1102,16 @@ pub(crate) async fn recover_previous_boot_with_transport<A: RpcAdapter, T: Repor
     }
     if let Some(last_report) = load_last_report(&mut store).await? {
         let last_report_id = last_report.report_id.to_string();
-        let closing_receipt_exists: Option<i64> =
-            sqlx::query_scalar("SELECT 1 FROM report_receipts WHERE report_id = ?")
-                .bind(&last_report_id)
-                .fetch_optional(store.connection())
-                .await?;
+        // Only an accepted (or partially accepted) Closing receipt proves the
+        // Server closed the Boot. A rejected marker still exists locally, but
+        // the Server kept the Boot active and the Closing must be rebuilt and
+        // re-sent (issue #178).
+        let closing_receipt_exists: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM report_receipts WHERE report_id = ? AND disposition != 'rejected'",
+        )
+        .bind(&last_report_id)
+        .fetch_optional(store.connection())
+        .await?;
         if last_report.boot_id.to_string() == boot_text
             && last_report.boot_transition == BootTransition::Closing
             && closing_receipt_exists.is_some()
@@ -1132,7 +1137,7 @@ pub(crate) async fn recover_previous_boot_with_transport<A: RpcAdapter, T: Repor
                     },
                 );
                 let receipt_exists: Option<i64> = sqlx::query_scalar(
-                    "SELECT 1 FROM report_receipts WHERE report_id = ?",
+                    "SELECT 1 FROM report_receipts WHERE report_id = ? AND disposition != 'rejected'",
                 )
                 .bind(&last_report_id)
                 .fetch_optional(&mut *tx)
@@ -1208,9 +1213,9 @@ pub(crate) async fn recover_previous_boot_with_transport<A: RpcAdapter, T: Repor
     // exact bytes, so the local orphan is quarantined and the drain continues
     // instead of turning a self-healing condition into a fatal startup error.
     loop {
-        match crate::reporting::deliver_one(&mut store, transport).await {
-            Ok(Some(delivered)) => {
-                if delivered_report_closes_boot(&delivered, &boot_text)? {
+        match crate::reporting::deliver_one_with_disposition(&mut store, transport).await {
+            Ok(Some((delivered, disposition))) => {
+                if delivered_report_closes_boot(&delivered, disposition, &boot_text)? {
                     store.close().await?;
                     return Ok(());
                 }
@@ -1272,22 +1277,29 @@ pub(crate) async fn recover_previous_boot_with_transport<A: RpcAdapter, T: Repor
         "draining",
     )
     .await?;
-    let delivered = crate::reporting::deliver_one(&mut store, transport)
-        .await?
-        .ok_or(CollectionError::RecoveryRequired)?;
-    if !delivered_report_closes_boot(&delivered, &boot_text)? {
+    let (delivered, disposition) =
+        crate::reporting::deliver_one_with_disposition(&mut store, transport)
+            .await?
+            .ok_or(CollectionError::RecoveryRequired)?;
+    if !delivered_report_closes_boot(&delivered, disposition, &boot_text)? {
         return Err(CollectionError::RecoveryRequired);
     }
     store.close().await?;
     Ok(())
 }
 
+/// Whether a delivered report proves the Server applied the Closing for
+/// `boot_id`. A rejected Closing is an applied receipt, not a closed Boot
+/// (issue #178), so only a non-rejected disposition may end the recovery drain.
 fn delivered_report_closes_boot(
     delivered: &crate::reporting::StoredReport,
+    disposition: ReceiptDisposition,
     boot_id: &str,
 ) -> Result<bool, CollectionError> {
     let report: AgentReport = serde_json::from_slice(&delivered.body)?;
-    Ok(report.boot_id.to_string() == boot_id && report.boot_transition == BootTransition::Closing)
+    Ok(report.boot_id.to_string() == boot_id
+        && report.boot_transition == BootTransition::Closing
+        && disposition != ReceiptDisposition::Rejected)
 }
 
 /// Collect and persist one complete immutable report. Agent state (identity,
@@ -2616,7 +2628,14 @@ pub async fn apply_receipt(
             .execute(&mut *tx)
             .await?;
     }
-    if parsed_report.boot_transition == BootTransition::Closing {
+    if parsed_report.boot_transition == BootTransition::Closing
+        && receipt.disposition != ReceiptDisposition::Rejected
+    {
+        // Only an applied Closing may close the Boot locally (issue #178). The
+        // Server keeps the Boot active when it rejects the Closing, so a local
+        // rotation would make every later drained_previous report a permanent
+        // conflicting_boot. A rejected Closing stays on the current Boot and is
+        // rebuilt and re-sent by the next recovery drain.
         let new_boot_id =
             BootId::from_str(&Uuid::new_v4().to_string()).expect("UUID is valid");
         let closed_boot_id = parsed_report.boot_id.to_string();
@@ -2721,9 +2740,38 @@ mod tests {
             body_sha256: "unused-in-this-check".to_owned(),
         };
 
-        assert!(delivered_report_closes_boot(&stored, &report.boot_id.to_string()).unwrap());
         assert!(
-            !delivered_report_closes_boot(&stored, "0195f2a1-0099-4099-8099-000000000099").unwrap()
+            delivered_report_closes_boot(
+                &stored,
+                ReceiptDisposition::Accepted,
+                &report.boot_id.to_string(),
+            )
+            .unwrap()
+        );
+        assert!(
+            delivered_report_closes_boot(
+                &stored,
+                ReceiptDisposition::PartiallyAccepted,
+                &report.boot_id.to_string(),
+            )
+            .unwrap()
+        );
+        assert!(
+            !delivered_report_closes_boot(
+                &stored,
+                ReceiptDisposition::Rejected,
+                &report.boot_id.to_string(),
+            )
+            .unwrap(),
+            "a rejected Closing receipt must not close the Boot"
+        );
+        assert!(
+            !delivered_report_closes_boot(
+                &stored,
+                ReceiptDisposition::Accepted,
+                "0195f2a1-0099-4099-8099-000000000099",
+            )
+            .unwrap()
         );
     }
 
@@ -3792,6 +3840,191 @@ mod tests {
         store.close().await.unwrap();
     }
 
+    /// Issue #178: a Closing report the Server rejects must not close the Boot
+    /// locally. The Server keeps that Boot active, so advancing the local Boot
+    /// chain turns every later `drained_previous` report into a permanent
+    /// `conflicting_boot` with no self-healing path.
+    #[tokio::test]
+    async fn rejected_closing_receipt_keeps_the_boot_open() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("agent.db");
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(&db_path))
+            .await
+            .unwrap();
+        let boot = "0195f2a1-0040-4040-8040-000000000040";
+        sqlx::query("INSERT INTO agent_state (singleton, agent_id, agent_epoch, boot_id, report_sequence, inventory_revision, boot_state, updated_at) VALUES (1, ?, 1, ?, 1, 1, 'active', ?)")
+            .bind("0195f2a1-0011-4011-8011-000000000011")
+            .bind(boot)
+            .bind("2026-08-12T08:00:00Z")
+            .execute(store.connection())
+            .await
+            .unwrap();
+
+        let mut closing: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        closing.boot_id = boot.parse().unwrap();
+        closing.report_sequence = 1;
+        closing.report_id = "0195f2a1-0042-4042-8042-000000000042".parse().unwrap();
+        closing.boot_transition = BootTransition::Closing;
+        closing.previous_boot_id = None;
+        closing.validate().unwrap();
+        let body = serde_json::to_vec(&closing).unwrap();
+        let hash = format!("0x{}", hex::encode(sha2::Sha256::digest(&body)));
+        sqlx::query("INSERT INTO reports (report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes, created_at) VALUES (?, 1, ?, 1, ?, ?, ?, ?, ?)")
+            .bind(closing.report_id.to_string())
+            .bind(boot)
+            .bind(closing.generated_at.to_string())
+            .bind(&body)
+            .bind(&hash)
+            .bind(body.len() as i64)
+            .bind("2026-08-12T08:00:00Z")
+            .execute(store.connection())
+            .await
+            .unwrap();
+
+        let rejected = rejected_receipt(
+            &body,
+            "inventory_revision_conflict",
+            "Inventory content conflicts at the accepted revision",
+        );
+        apply_receipt(
+            &mut store,
+            &closing.report_id.to_string(),
+            &hash,
+            "rejected",
+            &rejected,
+            "2026-08-12T08:00:01Z",
+        )
+        .await
+        .unwrap();
+
+        let state: (String, String, i64, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT boot_state, boot_id, report_sequence, pending_transition, pending_previous_boot_id FROM agent_state WHERE singleton=1",
+        )
+        .fetch_one(store.connection())
+        .await
+        .unwrap();
+        assert_eq!(
+            state.0, "active",
+            "a rejected Closing must not stage the next Boot"
+        );
+        assert_eq!(
+            state.1, boot,
+            "a rejected Closing must not advance the Boot chain"
+        );
+        assert_eq!(state.2, 1);
+        assert_eq!(state.3, None);
+        assert_eq!(state.4, None);
+        store.close().await.unwrap();
+    }
+
+    /// Issue #178 acceptance: a rejected Closing must leave the Boot open so a
+    /// later recovery rebuilds and re-sends it, and the Agent heals as soon as
+    /// the Server accepts again — with no manual Agent or Server database edit.
+    #[tokio::test]
+    async fn rejected_closing_report_is_rebuilt_and_heals_when_the_server_accepts() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("agent.toml");
+        let db_path = dir.path().join("agent.db");
+        std::fs::write(
+            &config_path,
+            format!(
+                "server_url=\"https://example.com\"\ncredential_file=\"{}/credential\"\nstate_db=\"{}\"\ninventory_revision=1\nnodes=[{{node_id=\"0195f2a1-0014-4014-8014-000000000014\",network_key=\"platon-mainnet\",rpc_endpoint=\"ws://127.0.0.1:6790\"}}]\n",
+                dir.path().display(),
+                db_path.display()
+            ),
+        )
+        .unwrap();
+        let config = AgentConfig::resolve(&config_path).unwrap();
+        let boot = "0195f2a1-0040-4040-8040-000000000040";
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(&db_path))
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO agent_state (singleton, agent_id, agent_epoch, boot_id, report_sequence, inventory_revision, boot_state, updated_at) VALUES (1, ?, 1, ?, 1, 1, 'active', ?)")
+            .bind("0195f2a1-0011-4011-8011-000000000011")
+            .bind(boot)
+            .bind("2026-08-12T08:00:00Z")
+            .execute(store.connection())
+            .await
+            .unwrap();
+        store.close().await.unwrap();
+
+        // Every report is refused: the Boot must stay open and a fresh Closing
+        // must be persisted for the next attempt.
+        let refused = recover_previous_boot_with_transport(
+            &config,
+            &ScriptedRpcAdapter::new(snapshot()),
+            AgentStoreWritePermit::new(),
+            &RejectAllTransport,
+        )
+        .await;
+        assert!(
+            matches!(&refused, Err(CollectionError::RecoveryRequired)),
+            "a rejected Closing must not be treated as a closed Boot: {refused:?}"
+        );
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(&db_path))
+            .await
+            .unwrap();
+        let state: (String, String, i64) = sqlx::query_as(
+            "SELECT boot_state, boot_id, report_sequence FROM agent_state WHERE singleton=1",
+        )
+        .fetch_one(store.connection())
+        .await
+        .unwrap();
+        assert_eq!(state.0, "draining");
+        assert_eq!(state.1, boot, "the Boot chain must not advance");
+        assert_eq!(state.2, 2);
+        let last: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT last_report_body FROM agent_state WHERE singleton=1")
+                .fetch_one(store.connection())
+                .await
+                .unwrap();
+        let rebuilt: AgentReport = serde_json::from_slice(&last.unwrap()).unwrap();
+        assert_eq!(rebuilt.boot_id.to_string(), boot);
+        assert_eq!(rebuilt.boot_transition, BootTransition::Closing);
+        assert_eq!(rebuilt.report_sequence, 2, "the Closing must be re-built");
+        store.close().await.unwrap();
+
+        // The Server accepts again: the rebuilt Closing rotates the Boot and
+        // records the never-closed Boot as the pending previous one.
+        recover_previous_boot_with_transport(
+            &config,
+            &ScriptedRpcAdapter::new(snapshot()),
+            AgentStoreWritePermit::new(),
+            &AcceptAllTransport,
+        )
+        .await
+        .unwrap();
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(&db_path))
+            .await
+            .unwrap();
+        let state: (String, String, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT boot_state, boot_id, pending_transition, pending_previous_boot_id FROM agent_state WHERE singleton=1",
+        )
+        .fetch_one(store.connection())
+        .await
+        .unwrap();
+        assert_eq!(state.0, "drained_pending");
+        assert_ne!(state.1, boot);
+        assert_eq!(state.2.as_deref(), Some("drained_previous"));
+        assert_eq!(state.3.as_deref(), Some(boot));
+        // The healing must come from a freshly delivered Closing, not from a
+        // local fast path that trusts the earlier rejected marker.
+        let accepted_markers: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM report_receipts WHERE disposition != 'rejected'",
+        )
+        .fetch_one(store.connection())
+        .await
+        .unwrap();
+        assert_eq!(
+            accepted_markers, 1,
+            "the rebuilt Closing must reach the Server and be accepted"
+        );
+        store.close().await.unwrap();
+    }
+
     async fn read_spool_body(store: &mut AgentStore, digest: &str) -> Vec<u8> {
         sqlx::query_scalar("SELECT body FROM reports WHERE body_sha256=?")
             .bind(digest)
@@ -4375,19 +4608,6 @@ mod tests {
         store.close().await.unwrap();
     }
 
-    struct ClosingRejectedTransport;
-
-    impl ReportTransport for ClosingRejectedTransport {
-        fn send<'a>(
-            &'a self,
-            body: &'a [u8],
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<Vec<u8>, ReportStoreError>> + Send + 'a>,
-        > {
-            Box::pin(async move { Ok(rejected_receipt(body, "invalid_envelope", "test")) })
-        }
-    }
-
     #[tokio::test]
     async fn recovery_drain_drops_a_stale_closing_report_instead_of_failing() {
         let dir = tempdir().unwrap();
@@ -4457,7 +4677,7 @@ mod tests {
             &config,
             &ScriptedRpcAdapter::new(snapshot()),
             AgentStoreWritePermit::new(),
-            &ClosingRejectedTransport,
+            &AcceptAllTransport,
         )
         .await
         .unwrap();
@@ -4553,7 +4773,7 @@ mod tests {
             &config,
             &ScriptedRpcAdapter::new(snapshot()),
             AgentStoreWritePermit::new(),
-            &ClosingRejectedTransport,
+            &AcceptAllTransport,
         )
         .await
         .unwrap();

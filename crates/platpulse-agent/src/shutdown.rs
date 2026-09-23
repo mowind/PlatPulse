@@ -296,7 +296,7 @@ mod tests {
         }
     }
     #[tokio::test]
-    async fn closing_report_uses_fail_closed_adapter_and_stages_next_boot() {
+    async fn closing_report_uses_fail_closed_adapter_and_keeps_the_boot_open_when_rejected() {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("agent.db");
         let credential = dir.path().join("credential");
@@ -386,13 +386,17 @@ mod tests {
         let mut reopened = AgentStore::open(AgentDatabaseConfig::new(&db_path))
             .await
             .unwrap();
-        let state: (String, i64, String, Option<String>) = sqlx::query_as(
-            "SELECT boot_state, report_sequence, shutdown_state, pending_transition FROM agent_state WHERE singleton=1",
+        let state: (String, String, i64, String, Option<String>) = sqlx::query_as(
+            "SELECT boot_state, boot_id, report_sequence, shutdown_state, pending_transition FROM agent_state WHERE singleton=1",
         ).fetch_one(reopened.connection()).await.unwrap();
-        assert_eq!(state.0, "drained_pending");
-        assert_eq!(state.1, 0);
-        assert_eq!(state.2, "final_stored");
-        assert_eq!(state.3.as_deref(), Some("drained_previous"));
+        // Issue #178: the Server refused the Closing, so it kept the Boot
+        // active. The Agent must not stage the next Boot, or every later
+        // drained_previous would be a permanent conflicting_boot.
+        assert_eq!(state.0, "active");
+        assert_eq!(state.1, "0195f2a1-0012-4012-8012-000000000012");
+        assert_eq!(state.2, 1);
+        assert_eq!(state.3, "final_stored");
+        assert_eq!(state.4, None);
         let closing: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM report_receipts WHERE disposition='rejected'")
                 .fetch_one(reopened.connection())

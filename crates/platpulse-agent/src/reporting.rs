@@ -295,6 +295,18 @@ pub async fn deliver_one<T: ReportTransport>(
         .map(|step| step.report))
 }
 
+/// Send one claimed report and report the Server's top-level disposition, so
+/// callers that distinguish acceptance from refusal (Boot recovery, issue
+/// #178) never have to infer it from stored Agent state.
+pub(crate) async fn deliver_one_with_disposition<T: ReportTransport>(
+    store: &mut AgentStore,
+    transport: &T,
+) -> Result<Option<(StoredReport, ReceiptDisposition)>, ReportStoreError> {
+    Ok(deliver_one_typed(store, transport, None)
+        .await?
+        .map(|step| (step.report, step.disposition)))
+}
+
 /// Deliver one report while applying a deadline only to the HTTP send. Once
 /// the response arrives, receipt validation and its SQLite transaction are
 /// allowed to finish without cancellation.
@@ -313,6 +325,7 @@ pub async fn deliver_one_with_send_deadline<T: ReportTransport>(
 struct DeliveryStep {
     report: StoredReport,
     rejection: Option<String>,
+    disposition: ReceiptDisposition,
 }
 
 async fn deliver_one_typed<T: ReportTransport>(
@@ -396,7 +409,11 @@ async fn deliver_one_typed<T: ReportTransport>(
             ReportStoreError::StaleClosing { report_id }
         }
     })?;
-    Ok(Some(DeliveryStep { report, rejection }))
+    Ok(Some(DeliveryStep {
+        report,
+        rejection,
+        disposition: envelope.receipt.disposition,
+    }))
 }
 
 /// Claim the durable block and gap samples included in a report.
