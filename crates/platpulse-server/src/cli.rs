@@ -54,8 +54,55 @@ pub enum Command {
     /// the database. Requires an exclusive stopped-Server condition, the
     /// artifact id, and a typed confirmation phrase (or explicit `--yes`).
     Restore(RestoreArgs),
+    /// Coordinated upgrade checkpoint (design 15.10.4): create, verify, or
+    /// restore-into-isolation the exact Server/Agent checkpoint that the
+    /// Server-managed Inventory cutover must be able to reproduce.
+    #[command(subcommand)]
+    Checkpoint(CheckpointCommand),
     /// Run the HTTP Server.
     Serve(ServeArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum CheckpointCommand {
+    /// Create the coordinated checkpoint from a verified Agent half.
+    Create(CheckpointCreateArgs),
+    /// Verify every artifact, identity, Boot linkage and evidence binding.
+    Verify(CheckpointVerifyArgs),
+    /// Restore a verified checkpoint into an isolated directory and prove the
+    /// restored copy is the same closed-Boot checkpoint.
+    Restore(CheckpointRestoreArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct CheckpointCreateArgs {
+    /// `server.toml` with db_path and pepper_file.
+    #[arg(long)]
+    pub config: PathBuf,
+    /// Agent half produced by `platpulse-agent checkpoint create`.
+    #[arg(long)]
+    pub agent_checkpoint: PathBuf,
+    /// Empty or non-existent directory that receives the coordinated
+    /// checkpoint. Every artifact is written owner-only.
+    #[arg(long)]
+    pub output: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct CheckpointVerifyArgs {
+    /// The coordinated checkpoint directory to verify.
+    #[arg(long)]
+    pub checkpoint: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct CheckpointRestoreArgs {
+    /// The coordinated checkpoint directory to restore.
+    #[arg(long)]
+    pub checkpoint: PathBuf,
+    /// Empty or non-existent directory that receives the isolated restore.
+    #[arg(long)]
+    pub restore_dir: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -445,6 +492,75 @@ pub async fn run_restore(
         );
     }
     Ok(())
+}
+
+/// Create the coordinated upgrade checkpoint: verify the Agent half, snapshot
+/// the Server database exactly under the exclusive ownership guard, and bind
+/// both halves into one manifest.
+pub async fn run_checkpoint_create(
+    config: &ServerConfig,
+    args: &CheckpointCreateArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let summary =
+        crate::checkpoint::create_checkpoint(config, &args.agent_checkpoint, &args.output).await?;
+    println!(
+        "Coordinated upgrade checkpoint created at {}.",
+        args.output.display()
+    );
+    print_checkpoint_summary(&summary);
+    Ok(())
+}
+
+/// Verify a coordinated checkpoint without touching any live database.
+pub async fn run_checkpoint_verify(
+    args: &CheckpointVerifyArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let summary = crate::checkpoint::verify_checkpoint(&args.checkpoint)
+        .await
+        .map_err(|error| format!("checkpoint verification failed: {error}"))?;
+    println!(
+        "Coordinated upgrade checkpoint verified: {}",
+        args.checkpoint.display()
+    );
+    print_checkpoint_summary(&summary);
+    Ok(())
+}
+
+/// Restore a verified checkpoint into an isolated directory and prove the
+/// restored copy is the same closed-Boot checkpoint. No Server starts, no
+/// collector runs, and no external notification is sent.
+pub async fn run_checkpoint_restore(
+    args: &CheckpointRestoreArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let summary = crate::checkpoint::restore_checkpoint(&args.checkpoint, &args.restore_dir)
+        .await
+        .map_err(|error| format!("checkpoint restore failed: {error}"))?;
+    println!(
+        "Coordinated upgrade checkpoint restored in isolation to {}.",
+        args.restore_dir.display()
+    );
+    print_checkpoint_summary(&summary);
+    println!("No collector, ingestion, Admin write or external notification worker was started.");
+    Ok(())
+}
+
+fn print_checkpoint_summary(summary: &crate::checkpoint::CheckpointSummary) {
+    println!(
+        "  Agent: {} (Epoch {})",
+        summary.agent_id, summary.agent_epoch
+    );
+    println!("  Closed Boot: {}", summary.closed_boot_id);
+    println!("  Pending Boot: {}", summary.next_boot_id);
+    println!(
+        "  Frozen v1 Inventory: revision {} sha256 {}",
+        summary.inventory_revision, summary.inventory_sha256
+    );
+    println!("  Closing report: {}", summary.closing_report_id);
+    println!("  Preserved deletion identities: {}", summary.deleted_nodes);
+    println!(
+        "  Preserved artifacts: agent {} / server {}",
+        summary.agent_artifacts, summary.server_artifacts
+    );
 }
 
 /// Create one sanitized backup using the same implementation as the Admin

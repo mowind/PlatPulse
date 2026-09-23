@@ -62,6 +62,12 @@ pub enum Command {
     /// Server's last accepted revision and hash. Does not start v2 ingestion or
     /// resume collection.
     PrepareUpgrade(PrepareUpgradeArgs),
+    /// Coordinated-checkpoint administration for the Server-managed v2
+    /// cutover. The Agent half preserves the exact Agent Store, the original
+    /// configuration, the credential, and the verified frozen-v1 declaration
+    /// evidence; it never starts collection.
+    #[command(subcommand)]
+    Checkpoint(CheckpointCommand),
 }
 
 #[derive(Debug, Args)]
@@ -116,6 +122,22 @@ pub struct PrepareUpgradeArgs {
     pub deadline_ms: u64,
 }
 
+#[derive(Debug, Subcommand)]
+pub enum CheckpointCommand {
+    /// Preserve the Agent half of the coordinated upgrade checkpoint.
+    Create(CheckpointCreateArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct CheckpointCreateArgs {
+    #[arg(long)]
+    pub config: PathBuf,
+    /// Empty or non-existent directory that receives the Agent checkpoint.
+    /// Every artifact is written owner-only (0600) inside a 0700 directory.
+    #[arg(long)]
+    pub output: PathBuf,
+}
+
 #[derive(Debug, Args)]
 pub struct RecoverArgs {
     #[arg(long)]
@@ -136,6 +158,8 @@ pub enum AgentCliError {
     TokenInput(std::io::Error),
     #[error("collection failed: {0}")]
     Collection(String),
+    #[error("{0}")]
+    Checkpoint(String),
 }
 
 impl From<crate::config::AgentConfigError> for AgentCliError {
@@ -239,6 +263,31 @@ pub async fn run_prepare_upgrade(args: &PrepareUpgradeArgs) -> Result<(), AgentC
     println!("  Verified at: {}", outcome.verified_at);
     println!(
         "Normal collection stays stopped: do not start 'run' until the coordinated cutover is authorized."
+    );
+    Ok(())
+}
+
+/// Preserve the Agent half of the coordinated upgrade checkpoint. This is a
+/// read-only operator command over the stopped Agent Store: it never writes to
+/// the live Store and never resumes collection.
+pub async fn run_checkpoint_create(args: &CheckpointCreateArgs) -> Result<(), AgentCliError> {
+    let config = AgentConfig::resolve(&args.config)?;
+    let outcome = crate::checkpoint::create_agent_checkpoint(&config, &args.output)
+        .await
+        .map_err(|error| AgentCliError::Checkpoint(error.to_string()))?;
+    println!("Agent upgrade checkpoint written.");
+    println!("  Directory: {}", outcome.directory.display());
+    println!("  Manifest: {}", outcome.manifest_path.display());
+    println!("  Agent: {}", outcome.agent_id);
+    println!("  Closed Boot: {}", outcome.closed_boot_id);
+    println!("  Pending Boot: {}", outcome.next_boot_id);
+    println!(
+        "  Frozen v1 Inventory: revision {} sha256 {}",
+        outcome.inventory_revision, outcome.inventory_sha256
+    );
+    println!("  Preserved artifacts: {}", outcome.artifacts);
+    println!(
+        "The Server half must be created from this directory with 'platpulse-server checkpoint create --agent-checkpoint <directory>'."
     );
     Ok(())
 }
