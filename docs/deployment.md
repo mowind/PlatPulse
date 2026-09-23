@@ -424,6 +424,11 @@ backup_required_mount = "/data"   # optional; enforced when set
 - Place `backup_dir` on a distinct disk where possible, keep the directory
   private (`0700`), and never let a missing mount fall back to the database
   disk. A second local disk is not an off-host backup.
+- The `report_receipt_body` retention family slims receipt bodies older than a
+  fixed 30 days — never the identity rows — so a whole-database backup stops
+  scaling with total receipt history. It runs only when a retention run is
+  triggered, so schedule one periodically rather than only when reclaiming
+  disk.
 
 The offline command writes restrictive artifacts to the configured `backup_dir`
 (the example uses `/var/backups/platpulse`), separate from Server state. If

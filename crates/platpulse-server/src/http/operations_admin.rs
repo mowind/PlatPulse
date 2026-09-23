@@ -2692,6 +2692,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retention_run_slims_old_receipt_bodies_without_touching_identity_or_recent_rows() {
+        let (_dir, state) = test_state().await;
+        let pool = state.db().pool();
+        let now = crate::auth::now_utc();
+        let old = crate::auth::format_rfc3339(now - time::Duration::days(31));
+        let fresh = crate::auth::format_rfc3339(now - time::Duration::days(1));
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('slim-agent', 1, ?, ?)")
+            .bind(&fresh)
+            .bind(&fresh)
+            .execute(pool)
+            .await
+            .unwrap();
+        let body = |tag: &str| {
+            serde_json::to_vec(&json!({
+                "report_id": tag,
+                "disposition": "accepted",
+                "report_body_sha256": "a".repeat(64),
+                "server_version": "x",
+                "supported_protocol_majors": [1, 2],
+                "server_time": "2026-01-01T00:00:00Z",
+                "rotation_hint": null,
+                "inventory": "accepted",
+                "rejections": [],
+                "nodes": [{"node_id": "node-a"}],
+                "samples": [{"kind": "block"}],
+            }))
+            .unwrap()
+        };
+        let insert = "INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at) VALUES (?, 'slim-agent', 1, 'boot-a', ?, ?, 'accepted', ?, ?)";
+        for (report_id, sequence, received_at) in
+            [("slim-old", 1_i64, &old), ("slim-fresh", 2_i64, &fresh)]
+        {
+            sqlx::query(insert)
+                .bind(report_id)
+                .bind(sequence)
+                .bind("a".repeat(64))
+                .bind(body(report_id))
+                .bind(received_at)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+
+        let response = retention_run(
+            State(state.clone()),
+            mutation_headers(),
+            Extension(session()),
+            Extension(request_id()),
+            Json(RetentionRunRequest {
+                families: Some(vec!["report_receipt_body".to_owned()]),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        while crate::operations::process_operations(&state).await.unwrap() > 0 {}
+
+        let (slimmed, disposition, hash, body_text): (Option<String>, String, String, String) =
+            sqlx::query_as("SELECT receipt_slimmed_at, disposition, report_body_sha256, CAST(receipt_body AS TEXT) FROM agent_report_receipts WHERE report_id = 'slim-old'")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert!(slimmed.is_some(), "the old receipt body was not slimmed");
+        assert_eq!(disposition, "accepted");
+        assert_eq!(hash, "a".repeat(64));
+        let value: Value = serde_json::from_str(&body_text).unwrap();
+        assert_eq!(value["nodes"], json!([]));
+        assert_eq!(value["samples"], json!([]));
+
+        let (fresh_slimmed, fresh_body): (Option<String>, String) = sqlx::query_as(
+            "SELECT receipt_slimmed_at, CAST(receipt_body AS TEXT) FROM agent_report_receipts WHERE report_id = 'slim-fresh'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert!(fresh_slimmed.is_none());
+        assert!(
+            !serde_json::from_str::<Value>(&fresh_body).unwrap()["nodes"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
     async fn running_backup_and_doctor_cancellations_are_honoured() {
         let (_dir, state) = test_state().await;
         let pool = state.db().pool();

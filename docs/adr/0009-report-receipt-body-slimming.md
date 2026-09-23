@@ -15,8 +15,9 @@
 ## Decision
 
 - **The identity row is permanent.** `report_id`, `agent_id`, `agent_epoch`, `boot_id`, `report_sequence`, its `UNIQUE` fence, `report_body_sha256`, `disposition`, the rejection/Inventory evidence columns and `received_at` are never deleted. No row retention is added; design §15.9 item 5 stays true.
-- **The body is slimmed after a fixed 30-day window.** `receipt_body` is reduced to a compact receipt carrying the top-level disposition and the Inventory disposition; per-Node and per-sample/range detail is cleared. The window is a safety invariant derived from the two retry bounds above, not a capacity policy, and is not operator-configurable.
+- **The body is slimmed after a fixed 30-day window.** The stored protocol-shaped receipt keeps every field — disposition, hashes, Server version, Inventory disposition and rejections — and only its per-Node and per-sample/range arrays are cleared, so the stored bytes still decode through the protocol shape that produced them. The window is a safety invariant derived from the two retry bounds above, not a capacity policy, and is not operator-configurable (the retention family pins `min_days == max_days == 30`).
 - **A replay of a slimmed `report_id` returns the compact receipt** when the body hash matches, and keeps the existing conflict response when it does not. A replay never recreates a row and never re-runs ingestion.
+- **A Closing Receipt stays verbatim.** A row an Agent currently references as its Closing Receipt (`agents.close_report_id`) is never slimmed: the coordinated-upgrade checkpoint and the conversion verification compare that receipt body byte-for-byte, so a slimmed body would fail an upgrade validation. The reference exists before the window elapses, so a row cannot be slimmed while it is still authoritative.
 - **Slimming runs as a retention family with non-deleting semantics**, executed by the operator-triggered retention run. It touches only rows past the window and never an unconfirmed or in-flight report.
 - **Acceptance is measured as reduced backup and scan volume, not a smaller `platpulse.db`.** The update frees pages but does not shrink the file; `VACUUM INTO` writes the compacted copy, so the next Backup Artifact and the offline window get smaller.
 
@@ -34,4 +35,4 @@
 
 ## Amendment history
 
-- 2026-09-23: accepted, replacing the unresolved retention question in issue #184.
+- 2026-09-23: implemented as the `report_receipt_body` retention family (fixed 30 days, no row deletion) with a `receipt_slimmed_at` marker and a partial index; added the Closing Receipt exclusion after finding the byte-for-byte comparison in the checkpoint and conversion verification.

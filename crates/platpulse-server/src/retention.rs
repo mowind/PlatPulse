@@ -36,6 +36,13 @@ pub const FAMILY_PEER_AGGREGATE_5M: &str = "peer_aggregate_5m";
 pub const FAMILY_PEER_AGGREGATE_1H: &str = "peer_aggregate_1h";
 pub const FAMILY_VALIDATOR_DAILY_SNAPSHOT: &str = "validator_daily_snapshot";
 pub const FAMILY_VALIDATOR_MONTHLY_AGGREGATE: &str = "validator_monthly_aggregate";
+/// ADR 0009: the Report Receipt body is slimmed after this fixed window. It is
+/// a safety invariant — longer than the Agent Durable Spool bound (2 MiB /
+/// 24 h) and the coordinated-upgrade backlog — not a capacity policy, and
+/// nothing is deleted: only `receipt_body` loses its per-Node/per-sample
+/// detail.
+pub const FAMILY_REPORT_RECEIPT_BODY: &str = "report_receipt_body";
+pub const RECEIPT_BODY_SLIMMING_DAYS: i64 = 30;
 
 /// Policy defaults and safety bounds (design §11.3). `max_days = 0` means
 /// no upper bound (long-term family); `retention_days = 0` keeps forever.
@@ -48,7 +55,7 @@ pub struct PolicyDefaults {
     pub supported: bool,
 }
 
-pub const POLICY_CATALOG: [PolicyDefaults; 12] = [
+pub const POLICY_CATALOG: [PolicyDefaults; 13] = [
     PolicyDefaults {
         family: FAMILY_RAW_BLOCK_SUMMARY,
         label: "Raw Block Summaries",
@@ -150,10 +157,82 @@ pub const POLICY_CATALOG: [PolicyDefaults; 12] = [
         max_days: 0,
         supported: true,
     },
+    PolicyDefaults {
+        family: FAMILY_REPORT_RECEIPT_BODY,
+        label: "Report Receipt Bodies",
+        // ADR 0009: fixed window. min == max so the Admin can never shorten it
+        // into the legitimate retry window; no row is deleted, only the body.
+        default_days: RECEIPT_BODY_SLIMMING_DAYS,
+        min_days: RECEIPT_BODY_SLIMMING_DAYS,
+        max_days: RECEIPT_BODY_SLIMMING_DAYS,
+        supported: true,
+    },
 ];
 
 pub fn catalog_family(family: &str) -> Option<&'static PolicyDefaults> {
     POLICY_CATALOG.iter().find(|entry| entry.family == family)
+}
+
+/// One row's slimmed Report Receipt body (ADR 0009): the protocol-shaped
+/// receipt with its per-Node and per-sample/range detail cleared. Returns
+/// `None` when the stored body is not a JSON object; the caller still marks
+/// that row, so a bounded run always makes progress.
+fn slim_receipt_body(body: &[u8]) -> Option<Vec<u8>> {
+    let mut value: Value = serde_json::from_slice(body).ok()?;
+    let object = value.as_object_mut()?;
+    object.insert("nodes".to_owned(), Value::Array(Vec::new()));
+    object.insert("samples".to_owned(), Value::Array(Vec::new()));
+    serde_json::to_vec(&value).ok()
+}
+
+/// One bounded slimming batch. Rows past the frozen cutoff that still hold a
+/// full body are rewritten in place; report identity, content hash,
+/// disposition and the rejection/Inventory evidence columns are untouched.
+///
+/// A row an Agent currently references as its Closing Receipt is excluded: the
+/// coordinated checkpoint and the conversion verification compare that body
+/// byte-for-byte, so it must stay verbatim (ADR 0009).
+async fn slim_receipt_body_batch(
+    pool: &SqlitePool,
+    cutoff: &str,
+    now: &str,
+) -> Result<u64, sqlx::Error> {
+    let rows: Vec<(i64, Vec<u8>)> = sqlx::query_as(
+        "SELECT rowid, receipt_body FROM agent_report_receipts \
+         WHERE received_at < ? AND receipt_slimmed_at IS NULL \
+           AND report_id NOT IN (SELECT close_report_id FROM agents WHERE close_report_id IS NOT NULL) \
+         ORDER BY received_at LIMIT ?",
+    )
+    .bind(cutoff)
+    .bind(RETENTION_BATCH)
+    .fetch_all(pool)
+    .await?;
+    let mut slimmed = 0u64;
+    for (rowid, body) in rows {
+        match slim_receipt_body(&body) {
+            Some(slimmed_body) => {
+                sqlx::query(
+                    "UPDATE agent_report_receipts SET receipt_body = ?, receipt_slimmed_at = ? WHERE rowid = ?",
+                )
+                .bind(slimmed_body)
+                .bind(now)
+                .bind(rowid)
+                .execute(pool)
+                .await?;
+            }
+            None => {
+                sqlx::query(
+                    "UPDATE agent_report_receipts SET receipt_slimmed_at = ? WHERE rowid = ?",
+                )
+                .bind(now)
+                .bind(rowid)
+                .execute(pool)
+                .await?;
+            }
+        }
+        slimmed += 1;
+    }
+    Ok(slimmed)
 }
 
 #[derive(Debug, Clone)]
@@ -410,6 +489,12 @@ pub async fn estimate_impact(
                 .fetch_one(pool)
                 .await?
         }
+        FAMILY_REPORT_RECEIPT_BODY => {
+            sqlx::query_scalar("SELECT COUNT(*) FROM agent_report_receipts WHERE received_at < ? AND receipt_slimmed_at IS NULL AND report_id NOT IN (SELECT close_report_id FROM agents WHERE close_report_id IS NOT NULL)")
+                .bind(&cutoff)
+                .fetch_one(pool)
+                .await?
+        }
         _ => 0,
     };
     Ok((count, false))
@@ -428,6 +513,7 @@ pub fn protected_state_notes() -> Vec<&'static str> {
         "Rule versions and policy rows",
         "open Peer presence intervals",
         "Validator daily snapshots and monthly aggregates",
+        "Report Receipt identity rows (only the receipt body is slimmed)",
     ]
 }
 
@@ -493,11 +579,20 @@ pub async fn execute_step(
     }
 
     let entry = &plan[index];
-    let sql = batch_sql(&entry.table);
-    let result = sqlx::query(sql).bind(&entry.cutoff).execute(pool).await;
+    let result: Result<u64, sqlx::Error> = if entry.family == FAMILY_REPORT_RECEIPT_BODY {
+        // ADR 0009: slimming rewrites the body in place instead of deleting the
+        // row, so it cannot use the fixed DELETE statements below.
+        slim_receipt_body_batch(pool, &entry.cutoff, &crate::auth::format_rfc3339(now)).await
+    } else {
+        let sql = batch_sql(&entry.table);
+        sqlx::query(sql)
+            .bind(&entry.cutoff)
+            .execute(pool)
+            .await
+            .map(|result| result.rows_affected())
+    };
     match result {
-        Ok(result) => {
-            let rows = result.rows_affected();
+        Ok(rows) => {
             plan[index].deleted += rows as i64;
         }
         Err(error) => {
@@ -713,6 +808,13 @@ async fn build_plan(
                     .fetch_one(pool)
                     .await?,
             )],
+            FAMILY_REPORT_RECEIPT_BODY => vec![(
+                "agent_report_receipts".to_owned(),
+                sqlx::query_scalar("SELECT COUNT(*) FROM agent_report_receipts WHERE received_at < ? AND receipt_slimmed_at IS NULL AND report_id NOT IN (SELECT close_report_id FROM agents WHERE close_report_id IS NOT NULL)")
+                    .bind(&cutoff)
+                    .fetch_one(pool)
+                    .await?,
+            )],
             _ => Vec::new(),
         };
         for (table, total) in entries {
@@ -788,6 +890,147 @@ async fn finish_run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn receipt_body_slimming_window_is_fixed_and_catalogued() {
+        let catalog = catalog_family(FAMILY_REPORT_RECEIPT_BODY).expect("catalogued");
+        assert!(catalog.supported);
+        assert_eq!(catalog.default_days, RECEIPT_BODY_SLIMMING_DAYS);
+        assert_eq!((catalog.min_days, catalog.max_days), (30, 30));
+        assert_eq!(validate_policy_days(FAMILY_REPORT_RECEIPT_BODY, 30), Ok(()));
+        assert!(validate_policy_days(FAMILY_REPORT_RECEIPT_BODY, 7).is_err());
+        assert!(validate_policy_days(FAMILY_REPORT_RECEIPT_BODY, 0).is_err());
+        assert!(validate_policy_days(FAMILY_REPORT_RECEIPT_BODY, 365).is_err());
+    }
+
+    #[tokio::test]
+    async fn receipt_body_slimming_clears_detail_but_keeps_identity_and_closing_receipts() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let pool = database.pool();
+        let now = time::OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
+        let old = crate::auth::format_rfc3339(now - time::Duration::days(31));
+        let fresh = crate::auth::format_rfc3339(now - time::Duration::days(1));
+        let cutoff = crate::auth::format_rfc3339(family_cutoff(now, RECEIPT_BODY_SLIMMING_DAYS));
+        let slimmed_at = crate::auth::format_rfc3339(now);
+
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('agent-a', 1, ?, ?)")
+            .bind(&fresh)
+            .bind(&fresh)
+            .execute(pool)
+            .await
+            .unwrap();
+        let body = |tag: &str| {
+            serde_json::to_vec(&serde_json::json!({
+                "report_id": tag,
+                "disposition": "accepted",
+                "report_body_sha256": "a".repeat(64),
+                "server_version": "x",
+                "supported_protocol_majors": [1, 2],
+                "server_time": "2026-01-01T00:00:00Z",
+                "rotation_hint": null,
+                "inventory": "accepted",
+                "rejections": [],
+                "nodes": [{"node_id": "node-a", "current": "accepted"}],
+                "samples": [{"kind": "block", "disposition": "accepted"}],
+            }))
+            .unwrap()
+        };
+        let insert = "INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at) VALUES (?, 'agent-a', 1, 'boot-a', ?, ?, 'accepted', ?, ?)";
+        sqlx::query(insert)
+            .bind("old-1")
+            .bind(1_i64)
+            .bind("a".repeat(64))
+            .bind(body("old-1"))
+            .bind(&old)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(insert)
+            .bind("recent-1")
+            .bind(2_i64)
+            .bind("b".repeat(64))
+            .bind(body("recent-1"))
+            .bind(&fresh)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(insert)
+            .bind("closing-1")
+            .bind(3_i64)
+            .bind("c".repeat(64))
+            .bind(body("closing-1"))
+            .bind(&old)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE agents SET close_report_id = 'closing-1' WHERE agent_id = 'agent-a'")
+            .execute(pool)
+            .await
+            .unwrap();
+
+        let (estimated, unsupported) = estimate_impact(
+            pool,
+            FAMILY_REPORT_RECEIPT_BODY,
+            RECEIPT_BODY_SLIMMING_DAYS,
+            now,
+        )
+        .await
+        .unwrap();
+        assert!(!unsupported);
+        assert_eq!(
+            estimated, 1,
+            "only the unreferenced old receipt is eligible for slimming"
+        );
+
+        assert_eq!(
+            slim_receipt_body_batch(pool, &cutoff, &slimmed_at)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            slim_receipt_body_batch(pool, &cutoff, &slimmed_at)
+                .await
+                .unwrap(),
+            0
+        );
+
+        // The old unreferenced row keeps its identity columns and loses detail.
+        let (disposition, hash, slimmed, body_text): (String, String, Option<String>, String) =
+            sqlx::query_as("SELECT disposition, report_body_sha256, receipt_slimmed_at, CAST(receipt_body AS TEXT) FROM agent_report_receipts WHERE report_id = 'old-1'")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(disposition, "accepted");
+        assert_eq!(hash, "a".repeat(64));
+        assert!(slimmed.is_some());
+        let value: Value = serde_json::from_str(&body_text).unwrap();
+        assert_eq!(value["nodes"], serde_json::json!([]));
+        assert_eq!(value["samples"], serde_json::json!([]));
+        assert_eq!(value["inventory"], "accepted");
+
+        // The recent row and the Agent's Closing Receipt stay verbatim.
+        for report_id in ["recent-1", "closing-1"] {
+            let (slimmed, body_text): (Option<String>, String) = sqlx::query_as(
+                "SELECT receipt_slimmed_at, CAST(receipt_body AS TEXT) FROM agent_report_receipts WHERE report_id = ?",
+            )
+            .bind(report_id)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            assert!(slimmed.is_none(), "{report_id} was slimmed");
+            let value: Value = serde_json::from_str(&body_text).unwrap();
+            assert!(
+                !value["nodes"].as_array().unwrap().is_empty(),
+                "{report_id} lost its per-Node detail"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn cleanup_is_bounded_and_preserves_dedup_state_in_temp_sqlite() {
