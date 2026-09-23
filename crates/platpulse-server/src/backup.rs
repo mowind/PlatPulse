@@ -231,10 +231,29 @@ pub(crate) async fn validate_snapshot_privacy(path: &Path) -> Result<(), BackupE
     result
 }
 
-/// Upper bound on the rows one snapshot scan keeps resident. The receipts
-/// table alone can hold gigabytes, so materialising a whole table pins the
-/// Server's resident set for the length of every backup attempt.
-const SNAPSHOT_SCAN_BATCH: i64 = 512;
+/// Byte budget for one snapshot scan batch. A row cap alone cannot bound
+/// memory: the field's largest `receipt_body` is ~175 KB, so 512 rows could
+/// pin ~90 MB before a single row was redacted. The row limit is recomputed
+/// from the previous batch's average row width instead.
+const SNAPSHOT_SCAN_BYTE_BUDGET: usize = 4 * 1024 * 1024;
+/// Smallest batch, safe even when every row is at the observed maximum width.
+const SNAPSHOT_SCAN_MIN_ROWS: i64 = 8;
+/// Largest batch, so a table of tiny rows still amortises round trips.
+const SNAPSHOT_SCAN_MAX_ROWS: i64 = 4096;
+
+/// Row limit for the next batch, targeting [`SNAPSHOT_SCAN_BYTE_BUDGET`] from
+/// the average row width of the batch just processed. Bounded so a batch is
+/// never empty and a table of tiny rows never degenerates into one statement
+/// per row.
+fn next_scan_limit(bytes: usize, fetched: usize) -> i64 {
+    if fetched == 0 {
+        return SNAPSHOT_SCAN_MIN_ROWS;
+    }
+    let average = (bytes / fetched).max(1);
+    i64::try_from(SNAPSHOT_SCAN_BYTE_BUDGET / average)
+        .unwrap_or(SNAPSHOT_SCAN_MAX_ROWS)
+        .clamp(SNAPSHOT_SCAN_MIN_ROWS, SNAPSHOT_SCAN_MAX_ROWS)
+}
 
 async fn redact_snapshot_text_columns(
     pool: &SqlitePool,
@@ -264,25 +283,28 @@ async fn process_snapshot_text_columns(
                 continue;
             }
             let quoted_column = quote_identifier(&name);
-            // Keyset pagination over rowid keeps the working set bounded: at
-            // most SNAPSHOT_SCAN_BATCH rows are resident at any moment.
+            // Keyset pagination over rowid plus a byte-budgeted row limit
+            // keeps the working set bounded regardless of table size.
             let select = format!(
                 "SELECT rowid AS __rowid, {quoted_column} FROM {quoted_table} \
                  WHERE typeof({quoted_column})='text' AND rowid > ? ORDER BY rowid LIMIT ?"
             );
             let update = format!("UPDATE {quoted_table} SET {quoted_column}=? WHERE rowid=?");
             let mut after: i64 = 0;
+            let mut limit = SNAPSHOT_SCAN_MIN_ROWS;
             loop {
                 let rows = sqlx::query(&select)
                     .bind(after)
-                    .bind(SNAPSHOT_SCAN_BATCH)
+                    .bind(limit)
                     .fetch_all(pool)
                     .await?;
                 let fetched = rows.len();
+                let mut batch_bytes = 0usize;
                 for row in &rows {
                     let row_id: i64 = row.try_get("__rowid")?;
                     after = row_id;
                     let value: String = row.try_get(1)?;
+                    batch_bytes = batch_bytes.saturating_add(value.len());
                     let redacted = redact_stored_text(&value);
                     if redacted == value {
                         continue;
@@ -298,9 +320,10 @@ async fn process_snapshot_text_columns(
                         .execute(pool)
                         .await?;
                 }
-                if fetched < SNAPSHOT_SCAN_BATCH as usize {
+                if fetched < limit as usize {
                     break;
                 }
+                limit = next_scan_limit(batch_bytes, fetched);
             }
         }
     }
@@ -321,20 +344,23 @@ async fn process_snapshot_receipts(pool: &SqlitePool, sanitize: bool) -> Result<
         return Ok(());
     }
     let mut after: i64 = 0;
+    let mut limit = SNAPSHOT_SCAN_MIN_ROWS;
     loop {
         let rows = sqlx::query(
             "SELECT rowid AS __rowid, receipt_body FROM agent_report_receipts \
              WHERE rowid > ? ORDER BY rowid LIMIT ?",
         )
         .bind(after)
-        .bind(SNAPSHOT_SCAN_BATCH)
+        .bind(limit)
         .fetch_all(pool)
         .await?;
         let fetched = rows.len();
+        let mut batch_bytes = 0usize;
         for row in &rows {
             let row_id: i64 = row.try_get("__rowid")?;
             after = row_id;
             let bytes: Vec<u8> = row.try_get("receipt_body")?;
+            batch_bytes = batch_bytes.saturating_add(bytes.len());
             let value = String::from_utf8(bytes)
                 .map_err(|_| BackupError::Privacy("receipt body is not valid UTF-8".to_owned()))?;
             let redacted = redact_stored_text(&value);
@@ -352,9 +378,10 @@ async fn process_snapshot_receipts(pool: &SqlitePool, sanitize: bool) -> Result<
                 .execute(pool)
                 .await?;
         }
-        if fetched < SNAPSHOT_SCAN_BATCH as usize {
+        if fetched < limit as usize {
             break;
         }
+        limit = next_scan_limit(batch_bytes, fetched);
     }
     Ok(())
 }
@@ -744,6 +771,19 @@ mod tests {
         assert!(decide_layout(&layout_facts("/data/backups", "/data", 3, 3, 1, 3)).is_err());
     }
 
+    #[test]
+    fn next_scan_limit_targets_the_byte_budget_within_bounds() {
+        // Tiny rows grow to the cap; wide rows shrink toward the budget.
+        assert_eq!(next_scan_limit(512 * 1024, 512), SNAPSHOT_SCAN_MAX_ROWS);
+        assert_eq!(
+            next_scan_limit(175 * 1024 * 8, 8),
+            (SNAPSHOT_SCAN_BYTE_BUDGET / (175 * 1024)) as i64
+        );
+        // A row wider than the whole budget still yields a non-empty batch.
+        assert_eq!(next_scan_limit(16 * 1024 * 1024, 1), SNAPSHOT_SCAN_MIN_ROWS);
+        assert_eq!(next_scan_limit(0, 0), SNAPSHOT_SCAN_MIN_ROWS);
+    }
+
     /// A portable backup must not carry a raw Peer address or any retained
     /// country result, whatever provider produced it (issue #132).
     #[tokio::test]
@@ -918,39 +958,38 @@ mod tests {
         );
     }
 
-    /// The snapshot privacy scan must never materialise a whole table. When it
-    /// does, every scheduled backup pins the entire snapshot's text in RSS for
-    /// the length of the scan, and repeated attempts ratchet Server memory
-    /// upward instead of releasing it.
-    ///
-    /// The measurement is process-wide, so the sample runs in a dedicated
-    /// child process that executes only this test on a single thread; in a
-    /// parallel suite every other test's allocations would otherwise be
-    /// attributed to the scan.
+    /// Process-wide RSS is only meaningful when no other test allocates
+    /// concurrently, so every memory sample runs in a dedicated single-threaded
+    /// child process. Returns true when the caller is the parent that already
+    /// ran the child and must therefore return without measuring.
     #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn snapshot_privacy_scan_memory_stays_bounded() {
+    fn isolate_memory_sample(test_name: &str) -> bool {
+        const CHILD_ENV: &str = "PLATPULSE_MEMORY_SAMPLE_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            return false;
+        }
+        let executable = std::env::current_exe().expect("test binary path");
+        let status = std::process::Command::new(executable)
+            .args(["--exact", test_name, "--test-threads=1"])
+            .env(CHILD_ENV, "1")
+            .status()
+            .expect("spawn the isolated memory sample");
+        assert!(
+            status.success(),
+            "isolated memory sample {test_name} failed: {status}"
+        );
+        true
+    }
+
+    /// Run `scan` while sampling process RSS, returning the peak growth in KiB.
+    #[cfg(target_os = "linux")]
+    async fn peak_growth_kb<F, Fut>(scan: F) -> u64
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-
-        const CHILD_ENV: &str = "PLATPULSE_MEMORY_SAMPLE_CHILD";
-        if std::env::var_os(CHILD_ENV).is_none() {
-            let executable = std::env::current_exe().expect("test binary path");
-            let status = std::process::Command::new(executable)
-                .args([
-                    "--exact",
-                    "backup::tests::snapshot_privacy_scan_memory_stays_bounded",
-                    "--test-threads=1",
-                ])
-                .env(CHILD_ENV, "1")
-                .status()
-                .expect("spawn the isolated memory sample");
-            assert!(
-                status.success(),
-                "bounded-memory scan child failed: {status}"
-            );
-            return;
-        }
 
         fn resident_kb() -> u64 {
             let statm = std::fs::read_to_string("/proc/self/statm").unwrap_or_default();
@@ -960,6 +999,37 @@ mod tests {
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(0);
             pages.saturating_mul(4)
+        }
+
+        let baseline = resident_kb();
+        let stop = Arc::new(AtomicBool::new(false));
+        let peak = Arc::new(AtomicU64::new(baseline));
+        let sampler = {
+            let stop = Arc::clone(&stop);
+            let peak = Arc::clone(&peak);
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    peak.fetch_max(resident_kb(), Ordering::Relaxed);
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            })
+        };
+        scan().await;
+        stop.store(true, Ordering::Relaxed);
+        sampler.join().unwrap();
+        peak.load(Ordering::Relaxed).saturating_sub(baseline)
+    }
+
+    /// The snapshot privacy scan must never materialise a whole table. When it
+    /// does, every backup attempt pins the entire snapshot's text in RSS for
+    /// the length of the scan, and repeated attempts ratchet Server memory
+    /// upward instead of releasing it.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn snapshot_privacy_scan_memory_stays_bounded() {
+        const NAME: &str = "backup::tests::snapshot_privacy_scan_memory_stays_bounded";
+        if isolate_memory_sample(NAME) {
+            return;
         }
 
         let dir = tempfile::TempDir::new().unwrap();
@@ -995,28 +1065,85 @@ mod tests {
             std::fs::set_permissions(&snapshot, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
 
-        let baseline = resident_kb();
-        let stop = Arc::new(AtomicBool::new(false));
-        let peak = Arc::new(AtomicU64::new(baseline));
-        let sampler = {
-            let stop = Arc::clone(&stop);
-            let peak = Arc::clone(&peak);
-            std::thread::spawn(move || {
-                while !stop.load(Ordering::Relaxed) {
-                    peak.fetch_max(resident_kb(), Ordering::Relaxed);
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
-            })
-        };
-        validate_snapshot_privacy(&snapshot).await.unwrap();
-        stop.store(true, Ordering::Relaxed);
-        sampler.join().unwrap();
-
-        let growth_kb = peak.load(Ordering::Relaxed).saturating_sub(baseline);
+        let growth_kb = peak_growth_kb(|| async {
+            validate_snapshot_privacy(&snapshot).await.unwrap();
+        })
+        .await;
         assert!(
             growth_kb < 16 * 1024,
             "privacy scan grew RSS by {growth_kb} KiB for a 48 MiB receipt table; \
              the scan must stream bounded batches instead of the whole table"
         );
+    }
+
+    /// A single wide `receipt_body` must not force a whole-table scan to be
+    /// resident. 400 rows of ~175 KB (the observed field maximum) are ~70 MiB;
+    /// both the write (sanitize) and read-only validation paths must stay
+    /// bounded well below that.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn snapshot_scan_memory_is_bounded_for_wide_receipts() {
+        const NAME: &str = "backup::tests::snapshot_scan_memory_is_bounded_for_wide_receipts";
+        if isolate_memory_sample(NAME) {
+            return;
+        }
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let snapshot = dir.path().join("wide-receipts.db");
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(&snapshot)
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE agent_report_receipts (receipt_body BLOB NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Write path: every row carries an IP literal so sanitize rewrites it.
+        let redactable = format!("{}10.0.0.1", "x".repeat(175 * 1024)).into_bytes();
+        for _ in 0..400 {
+            sqlx::query("INSERT INTO agent_report_receipts (receipt_body) VALUES (?)")
+                .bind(&redactable)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let write_growth = peak_growth_kb(|| async {
+            process_snapshot_receipts(&pool, true).await.unwrap();
+        })
+        .await;
+        assert!(
+            write_growth < 48 * 1024,
+            "sanitize scan grew RSS by {write_growth} KiB for 400 wide receipts"
+        );
+
+        // Read path: already-clean wide rows, so validation does not depend on
+        // redaction idempotency.
+        sqlx::query("DELETE FROM agent_report_receipts")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let clean = "x".repeat(175 * 1024 + 9).into_bytes();
+        for _ in 0..400 {
+            sqlx::query("INSERT INTO agent_report_receipts (receipt_body) VALUES (?)")
+                .bind(&clean)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let read_growth = peak_growth_kb(|| async {
+            process_snapshot_receipts(&pool, false).await.unwrap();
+        })
+        .await;
+        assert!(
+            read_growth < 48 * 1024,
+            "validation scan grew RSS by {read_growth} KiB for 400 wide receipts"
+        );
+        pool.close().await;
     }
 }
