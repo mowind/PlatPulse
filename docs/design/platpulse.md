@@ -3,6 +3,7 @@
 ## 1. 文档状态
 
 - 状态：§1–§14 保留当前实现与边界基线；[§15](#accepted-management-target)记录已确认、部分实现的演进——已实现部分以对应 GitHub Issue 为准，未实现部分不能据此宣称新 API、页面或迁移已交付。实现、迁移、运行时路由和本文件应相互校验。
+- §15.10 记录 issue #182 已接受的 Server 托管 Inventory Revision 目标。v2 协议、Server 分配与 Agent 确认已由 issue #186 在隔离的新部署链路上实现；存量迁移与协调切换工具仍未实现。v1 手工 revision 与 §15.9 守卫继续服务于显式 opt-in 的 v1 入口。
 - 适用范围：`platpulse-core`、`platpulse-agent`、`platpulse-server`、`platpulse-web`。
 - 领域术语：以仓库根目录 [CONTEXT.md](../../CONTEXT.md) 为准；词汇表已纳入本次确认的目标语义。§1–§14 中旧的 Inventory 生命周期、手工 Validator Link 和未确认提示描述是实现基线；涉及本次变化时以 §15 的目标契约为准，不把两种状态混写。
 - 规范性用词：
@@ -123,7 +124,7 @@ Agent 不拥有 Network Registry、Site Access Mode 或用户权限。
 
 ### 4.6 Node Inventory 与生命周期
 
-以下为当前实现；已确认的 Agent Removal / Node Purge 及删除后的接收边界见 §15.2–§15.3。Retired 与 Purged 不可混用。
+以下为当前实现；已确认的 Agent Removal / Node Purge 及删除后的接收边界见 §15.2–§15.3。Retired 与 Purged 不可混用。Server 托管声明版本见 [§15.10](#server-managed-inventory-revision-target)，不改变本地配置所有权。
 
 - Node Inventory 是 Agent 本地配置声明的完整 Node 集合，整体校验通过才生效，不允许提交半份 Node Inventory。
 - 仍在新 Node Inventory 中的 Node 是 Active；从最新有效 Node Inventory 消失的是 Retired；Agent 停止上报（失联）不等于 Retired。
@@ -333,6 +334,8 @@ AgentReport (protocol major = 1)
 - Host 只出现一次，Node current view 与 block/gap sample 都按 Node 隔离。
 
 ### 7.4 Report Receipt
+
+本节及上节 wire 示意为当前 v1 基线；v2 移除 Agent 声明中的 revision、在 Receipt 返回接受版本，见 [§15.10](#server-managed-inventory-revision-target)。v2 已实现为独立协议 major 与独立路由，向冻结 v1 直接增添字段仍被禁止。
 
 Receipt 是精确的、可幂等重放的报告确认，不是归档。它同时保留报告级、Inventory、Node current 和 sample/range 结果：
 
@@ -787,4 +790,89 @@ Incident 保留证据不等于继续把它当作当前待处理故障；删除�
 6. **Admin 可观测**：新增 Agent Attention kind `agent_inventory_rejected`（critical，可按 §15.6 确认），条件是「该 Agent 最新一行 receipt 是整份 Inventory 拒收」；evidence 边界取「原因 + 已接受 revision/哈希 + 上报 revision/哈希」，因此内容不变而每周期重报不会让确认失效，只有内容或已接受状态变化才重新提示。Admin Agent DTO 增加嵌套的 Inventory 诊断（已接受 revision/哈希 + 最近一次拒收证据），WebUI 在 Inventory 与 Diagnostics 面板展示；拒收提交后向 Admin realtime 发 `agent` invalidation。
 7. **不改**：wire 契约、接受路径的同 revision 哈希判定、以及「整份 Inventory 才生效」的语义都不放宽。
 
-实现状态：已实现（issue #181），§8.4.2 的 kind 与 severity 清单已同步。方向 3（Server 托管 revision）会改动 wire 契约与幂等/重放模型，需要单独 ADR 与迁移方案，见 issue #182。
+实现状态：已实现（issue #181），§8.4.2 的 kind 与 severity 清单已同步。本节保留当前 v1 的哈希、配置、自检与诊断规则，不随词汇表的目标语义更新而自动改变。方向 3（Server 托管 revision）的设计已由 issue #182 访谈确认，见 [ADR 0007](../adr/0007-server-managed-inventory-revision.md) 与下节；协议、Server 分配与新确认记录语义已由 issue #186 实现（仅限隔离的新部署链路）；存量迁移与协调切换工具仍未实现。
+
+<a id="server-managed-inventory-revision-target"></a>
+
+### 15.10 Server 托管 Inventory Revision（已确认，协议与分配已实现；迁移未实现）
+
+#### 15.10.1 状态与边界
+
+本节记录 [issue #182](https://github.com/mowind/PlatPulse/issues/182) 的 Q1–Q12 访谈及最终确认，以及 [issue #186](https://github.com/mowind/PlatPulse/issues/186) 的首个实现切片。长期取舍见 [ADR 0007](../adr/0007-server-managed-inventory-revision.md)。v2 协议 major、Server 端事务内版本分配、v2 Receipt 与 Agent 确认记录已实现；省略 `inventory_revision` 的新 Agent 配置选择 Server 托管路径。存量迁移、协调停机与升级准备工具仍未实现，也不授权生产切换。
+
+Agent 继续拥有完整 Node Inventory 和连接配置；Server 只接管接受版本的编号，不下发 Endpoint 或其他采集配置。不可变 Agent Report、事务性 Receipt、Network Registry 校验、last-good、每 Node 隔离及 §15.3 永久删除屏障保持不变。
+
+#### 15.10.2 声明内容、编号与顺序
+
+- v2 声明只提供内容，不提供 Agent 分配的 Inventory revision。对校验后的完整声明计算独立、明确版本的规范化指纹：排除 revision，按 Node ID 排序，保留所有声明字段（含 bootstrap display_name、network_key、rpc_endpoint、process），不包含 Agent-only 配置。不推断额外 URL、路径或字符串等价关系；可选字段按冻结的新协议表示规范确定性编码。
+- 此指纹不是 Report 原始字节哈希，也不是准入后的 Node 投影哈希。v1 含 revision、依赖 Node 数组顺序的旧哈希规则不变。
+- Inventory Revision 是每个 Agent 的已接受声明变更序号。连续内容相同沿用编号；A → B → A 得到连续的新版本而不复用历史编号。整体 Inventory 拒绝不分配新编号；Node Purge 本身不递增。
+- 复用既有 Epoch、Boot lifecycle 和 Report Sequence 防回退约束，不新增声明 CAS。不以网络到达顺序替代合法报告顺序；较新声明接受后，迟到的旧报告不得仅凭不同内容获得新版本。合法的新报告主动恢复旧内容则是新变更。
+- 编号属于 Agent 身份，不属于 Boot、Epoch 或协议版本。普通重启与 Agent Recovery 不重置；Recovery 后内容确实改变才递增。新 Agent 身份独立编号。从未接受 Inventory 时无有效版本，首次接受为 1；实现须区分未初始化状态与已接受的空 Inventory。
+- 编号限定在正的 signed 64-bit 存储范围内，检查递增。耗尽时拒绝需要递增的变更并保留既有状态，不回绕、不归零；相同内容不需要虚增。
+
+#### 15.10.3 Receipt、Agent 确认与准入
+
+v2 Receipt 的 Inventory 接受结果绑定该报告声明的 revision 与规范化指纹；unchanged 返回原编号，整体拒绝不携带表示该声明已接受的编号。Report 顶层 partially_accepted 不能代替 Inventory 自己的接受结果。编号、指纹、适用的投影变化与精确 Receipt 必须同事务提交；回滚不得留下已分配版本。重放返回原 Receipt，不能换成 Server 此刻最新编号。
+
+Agent 的 Inventory Declaration Record 保留为有界单条确认状态，不再分配编号或作为上报前置守卫。应用 Receipt 时，先验证它与原始不可变 Report 及声明指纹相符，再按下表处理；所有结果与原 Report 出队、其他 Receipt effects 同事务提交，保持 ADR 0001 的 Applied Receipt Record 边界。
+
+| 已验证的确认 | 本地记录处理 |
+|---|---|
+| 无记录，或确认 revision 更大 | 采用接受的 revision 与指纹 |
+| revision 相同且指纹相同 | 幂等，不变 |
+| 确认 revision 更小 | 可完成旧 Report 的确认，但不回退记录 |
+| revision 相同但指纹不同 | 冲突，失败关闭并保留待调查证据，不覆盖、不悄悄出队 |
+| Inventory 整体拒绝 | 不推进声明确认；其他终态处理依合法 Receipt 执行 |
+
+缺失确认、延迟 Receipt 或 Server 离线均不阻止生成新的不可变 Report；不把确认编号填回下一份声明，也不在 Agent 自增。
+
+内容指纹覆盖完整声明，包括仍被 Agent 声明的 Purged Node ID。每份适用的新报告仍独立执行归属、Transfer、Network 与 Purge 准入校验，不能以内容未变跳过。有效声明即使全部 Node 已被 Purge，也可以是 Inventory accepted/unchanged、per-Node 全拒绝；合法兄弟 Node 不被阻断。最新有效完整声明仍决定退休关系，但永不绕过永久删除身份。不得修改旧 Receipt、删除去重证据或远程修改配置。
+
+#### 15.10.4 协调停机、可验证基线与配置迁移
+
+**不支持新旧协议混用运行，不承诺新 Agent 自动降级连接旧 Server。** 冻结 v1 不以可选字段扩展；使用新协议 major 与新 fixtures。以下是后续必须实现的升级准备契约，不是当前可直接执行的命令：
+
+1. 在旧 Agent/Server 下停止普通新 Report 生成，继续交付已有不可变 Report，直至完成所有待交付结果的事务性确认。不得改写旧字节、清空 Spool 或重新 Enrollment 绕过。
+2. 完成最终 Closing Report 并应用其 accepted/partially_accepted Receipt；Rejected Closing 不能过关，队列为空本身也不足以升级。捕获该 Closing 对应的完整 Inventory 声明作为有限迁移证据，而非新增永久报告归档。
+3. 在改排序或规范化之前，用原 v1 表示验证该声明的旧哈希及 revision 与 Server 最后接受的值一致。当前本地配置、Node 投影、哈希本身均不能代替证据：Server-managed 名称、已 Purge 的 Node 和未保存的完整报告使投影不可逆。缺证据、不匹配或关闭失败，停止升级并在旧版本排障；不静默采用首次 v2 声明作为不可验证的新基线。
+4. 在相关写入及有外部副作用的工作器均暂停后，于旧协议关闭完成的检查点备份 Server、Agent 状态与旧配置。离线验证不得启动正常 collectors、ingestion、管理写入或通知等外部交付工作器。
+5. 从验证通过的声明计算新指纹，同步转换 Server 基线与 Agent 确认记录。保留 agents.last_inventory_revision 的数值，例如 57 保持 57，下一次实际变化才是 58。agents.inventory_sha256 的旧摘要不能直接转换或从当前 Node 行重算，必须由验证后的声明重建新指纹并明确算法/协议解释；无历史接受记录的 Agent 保持未初始化。
+6. 保留 Closing 应用后产生的新 Boot、sequence 状态、previous_boot_id 与 drained_pending 衔接。首份 v2 Report 完成既有 DrainedPrevious，不重置身份、不伪造独立 Continuing。Server 与 Agent 的任一侧转换不一致都不能恢复正常运行。
+7. v2 移除本地 inventory_revision 配置项；残留时在恢复采集前明确报“Server 已分配版本，请移除此项”的迁移错误，不静默忽略。旧配置保留于回退检查点。离线验证通过后再恢复业务写入。
+
+迁移命令、物理列、版本标记、fixture 编码与 schema 编号由实现规格确定，但必须实现上述已确定的语义，不把这些落地细节当作允许重置身份或放宽检查的空间。
+
+#### 15.10.5 回退与旧 Receipt 重放
+
+- 仅在恢复业务写入之前承诺从协调检查点整体回退旧二进制、Server/Agent 状态与配置；不是只替换二进制继续使用新数据库。
+- 恢复业务写入后不承诺无损降级，优先前向修复。恢复旧备份是单独灾难恢复操作，可能丢失升级后的声明、Purge 屏障或其他写入，不能包装为安全的软件回滚。
+- 切换后保留正常鉴权、Agent 归属与输入安全限制下的 v1 **仅重放**路径：已保留 Report 身份且原始字节哈希一致，原样返回原 v1 Receipt；同身份异字节冲突。不能将旧 Receipt 改成 v2 或填入最新版本。
+- 未见过或已不在保留边界内的 v1 Report 均不能进入新接收流程：明确不支持，不创建新接受 Receipt、不推进 Boot、不分配 revision、不更新投影。凭证无效依然拒绝，重放不绕过 Agent Removal。
+- 沿用既有 Receipt retention，不引入无限期 v1 档案。仅重放不是混用运行支持，更不能替代升级前的 drain/Closing 门槛。
+
+#### 15.10.6 后续实现验收矩阵
+
+以下为验收矩阵。首次、相同内容、仅重排、字段变化、A → B → A、空 Inventory 与拒绝路径已由 issue #186 的 core 契约测试与 `backlog_recovery_tests` 端到端测试覆盖；迁移、协调停机、预检与离线回退相关行仍待实现：
+
+| 场景 | 必须验证的结果 |
+|---|---|
+| 仅重排 Node / 改 Agent-only 设置 | v2 声明指纹及编号不变；Report bytes hash 仍按各自原始内容验证 |
+| 声明字段变更 / A → B → A | 覆盖 name/Endpoint/process/Network/成员变化；每次合法内容变更递增，返回 A 不复用旧版本 |
+| 冻结 v1 与新 canonical fixtures | v1 原哈希及严格解码不变；新表示跨 Agent/Server 一致，不擅自归一化字符串 |
+| 旧报告晚到 / 竞争 Boot / 旧 Epoch | 原顺序屏障有效，不以到达顺序分配版本；合法新报告恢复旧内容仍可推进 |
+| 并发接收 / 事务失败 | 指纹比较与分配串行化于权威事务；无重复分配、无部分投影、无回滚残留或 invalidation |
+| Receipt 丢失与重复发送 | 相同身份/字节得到精确原 Receipt，不重复递增；同身份异字节冲突 |
+| Receipt 延迟或矛盾 | 较小版本可完成确认但不回退；同版本异指纹失败关闭，出队与记录不能半提交 |
+| Inventory 与 per-Node 结果不同 | 以 Inventory disposition 决定编号/确认；partial report 不是半份 Inventory 接受 |
+| Purge 后同内容、全 Purged、合法兄弟 | 指纹包含全部声明；已删 ID 不复活、兄弟可接收、全 Purged 不伪装成结构拒绝 |
+| 从声明移除 Node / Transfer / Recovery | 生命周期与归属检查不跳过；恢复不重置编号，也不解除 Purge/Removal 屏障 |
+| 首次 / 空 Inventory / 编号上限 | 未初始化不同于已接受空集合；首次为 1；上限处只拒绝需要递增的变化，不回绕 |
+| 旧积压与 Closing 失败 | 不允许升级，不改 Report、不丢积压；恢复旧版本完成确认后才能继续 |
+| 快照缺失、错误顺序或 hash/revision 不匹配 | 预检停止；禁止用当前投影、未经核验配置或新首报猜基线 |
+| 迁移基线与 Boot | 旧数值保留、两端指纹同步转换；DrainedPrevious 延续，旧 Receipt/去重不变 |
+| 配置残留 / 任一转换失败 | 在采集和业务写入恢复前报可操作错误，不能以半迁移状态运行 |
+| 离线回退 / 已恢复写入 | 前者恢复协调检查点；后者不宣称无损降级，不自动倒退删除屏障 |
+| v1 仅重放与鉴权/保留边界 | 精确重放已有 Receipt；异字节冲突、无权限拒绝、未知/已过期 v1 不进入新接收 |
+
+后续实现需同时更新相关 Inventory 诊断及 Attention 的版本/指纹解释，使其适配“声明不再携带 Agent revision”的新协议；不得伪造一个 Agent 上报编号或删除拒收证据来适配界面。§15.9 的现有 v1 行为在本次文档变更后仍保持原样。

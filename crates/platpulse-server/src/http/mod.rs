@@ -173,7 +173,7 @@ async fn request_metrics_middleware(
     let response = next.run(request).await;
     let status = response.status().as_u16();
     state.metrics.observe_http_response(&path, status);
-    if path == "/api/agent/v1/reports" {
+    if path == "/api/agent/v1/reports" || path == "/api/agent/v2/reports" {
         let outcome = response
             .extensions()
             .get::<platpulse_core::ReceiptDisposition>()
@@ -860,11 +860,15 @@ pub fn build_app_with_native_tls(state: AppState, native_tls: bool) -> Router {
             agent_group_guard,
         ))
     };
+    let agent_group_v2 = crate::http::report_ingestion::router_v2().layer(
+        axum::middleware::from_fn_with_state(state.clone(), agent_group_guard),
+    );
 
     let api = Router::<AppState>::new()
         .nest("/public/v1", public_group)
         .nest("/admin/v1", admin_group)
         .nest("/agent/v1", agent_group)
+        .nest("/agent/v2", agent_group_v2)
         .fallback(api_not_found);
 
     // Vite emits hashed assets under `assets/`; they are immutable by name

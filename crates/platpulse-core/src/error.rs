@@ -102,6 +102,9 @@ pub enum WireError {
     /// `accepted`/`partially_accepted` receipts cannot carry a `rejected`
     /// Inventory disposition.
     ReceiptWithRejectedInventory { disposition: ReceiptDisposition },
+    /// A v2 `accepted`/`partially_accepted` receipt must carry the accepted
+    /// Inventory revision and canonical fingerprint.
+    ReceiptInventoryAcceptanceMissing { disposition: ReceiptDisposition },
     /// A `rejected` receipt must explain itself with at least one rejection.
     ReceiptRejectedWithoutRejection,
     /// A `rejected` receipt cannot carry Node entries.
@@ -283,6 +286,10 @@ impl fmt::Display for WireError {
             Self::ReceiptWithRejectedInventory { disposition } => write!(
                 f,
                 "a {disposition:?} receipt cannot carry a rejected inventory disposition"
+            ),
+            Self::ReceiptInventoryAcceptanceMissing { disposition } => write!(
+                f,
+                "a {disposition:?} receipt must carry the accepted inventory revision and fingerprint"
             ),
             Self::ReceiptRejectedWithoutRejection => {
                 write!(f, "a rejected receipt must carry at least one rejection")

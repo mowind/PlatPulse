@@ -4,7 +4,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use platpulse_core::identity::NodeId;
-use platpulse_core::inventory::{InventoryNode, NodeInventory, ProcessSelector};
+use platpulse_core::inventory::{
+    InventoryDeclaration, InventoryNode, NodeInventory, ProcessSelector,
+};
 use platpulse_core::network::{NetworkKey, RpcEndpoint};
 use serde::Deserialize;
 use thiserror::Error;
@@ -17,8 +19,11 @@ pub struct AgentConfigFile {
     pub state_db: PathBuf,
     #[serde(default = "default_collection_interval_seconds")]
     pub collection_interval_seconds: u64,
-    #[serde(default = "default_inventory_revision")]
-    pub inventory_revision: u64,
+    /// Accepted Inventory revision. Omitted means the Server owns the revision
+    /// (the v2 protocol); a value selects the frozen v1 declaration path for the
+    /// v1 entry points and their control scenarios.
+    #[serde(default)]
+    pub inventory_revision: Option<u64>,
     /// Conservative bounded recovery point-query policy. These defaults are
     /// intentionally finite: realtime collection never falls back to polling.
     #[serde(default)]
@@ -32,10 +37,6 @@ pub const MAX_COLLECTION_INTERVAL_SECONDS: u64 = 300;
 
 fn default_collection_interval_seconds() -> u64 {
     5
-}
-
-fn default_inventory_revision() -> u64 {
-    1
 }
 
 /// Deterministic limits for one bounded Gap Backfill operation.
@@ -122,6 +123,11 @@ pub struct AgentNodeConfig {
 #[derive(Debug, Clone)]
 pub struct ValidatedAgentConfig {
     pub inventory: NodeInventory,
+    /// The same declared Node set as a revision-excluded v2 declaration.
+    pub declaration: InventoryDeclaration,
+    /// Whether the Server owns the accepted revision (v2). A v1 configuration
+    /// declares its own revision and keeps the local declaration guard.
+    pub server_managed_inventory: bool,
     pub data_directories: HashMap<NodeId, PathBuf>,
 }
 
@@ -187,7 +193,7 @@ impl AgentConfigFile {
         {
             return Err(AgentConfigError::InvalidCollectionInterval);
         }
-        if self.inventory_revision == 0 {
+        if self.inventory_revision == Some(0) {
             return Err(AgentConfigError::InvalidInventoryRevision);
         }
         self.backfill.validate()?;
@@ -268,11 +274,19 @@ impl AgentConfigFile {
                 process: node.process.clone(),
             });
         }
+        let declaration = InventoryDeclaration {
+            nodes: nodes.clone(),
+        };
         Ok(ValidatedAgentConfig {
+            // The v1 shape is retained for the frozen v1 entry points and their
+            // control scenarios; a Server-managed configuration converts the
+            // built report to its v2 declaration form before it is persisted.
             inventory: NodeInventory {
-                revision: self.inventory_revision,
+                revision: self.inventory_revision.unwrap_or(1),
                 nodes,
             },
+            declaration,
+            server_managed_inventory: self.inventory_revision.is_none(),
             data_directories,
         })
     }
@@ -507,6 +521,35 @@ mod tests {
                 "{selector}"
             );
         }
+    }
+
+    #[test]
+    fn omitting_inventory_revision_selects_the_server_managed_declaration() {
+        let id = "0195f2a1-2b3c-4d5e-8f90-123456789abc";
+        let base = format!(
+            "server_url=\"https://example.com\"\ncredential_file=\"/tmp/c\"\nstate_db=\"/tmp/d\"\nnodes=[{{node_id=\"{id}\",network_key=\"platon-mainnet\",rpc_endpoint=\"ws://127.0.0.1:1\"}}]\n"
+        );
+        // A new Agent configuration omits inventory_revision: the Server owns
+        // the accepted revision and the declaration carries content only.
+        let omitted: AgentConfigFile = toml::from_str(&base).unwrap();
+        let validated = omitted.validate().unwrap();
+        assert!(validated.server_managed_inventory);
+        assert_eq!(validated.declaration.nodes.len(), 1);
+
+        // The frozen v1 declaration path is explicitly opt-in.
+        let explicit: AgentConfigFile =
+            toml::from_str(&format!("{base}inventory_revision=1\n")).unwrap();
+        let validated = explicit.validate().unwrap();
+        assert!(!validated.server_managed_inventory);
+        assert_eq!(validated.inventory.revision, 1);
+
+        // A declared zero revision is still rejected.
+        let zero: AgentConfigFile =
+            toml::from_str(&format!("{base}inventory_revision=0\n")).unwrap();
+        assert!(matches!(
+            zero.validate(),
+            Err(AgentConfigError::InvalidInventoryRevision)
+        ));
     }
 
     #[test]

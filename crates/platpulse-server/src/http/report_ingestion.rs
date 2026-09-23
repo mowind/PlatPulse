@@ -19,15 +19,112 @@ use platpulse_core::component::{ComponentKey, ComponentObservation, ComponentSta
 use platpulse_core::observation::{PeerDirection, PeerSnapshot};
 use platpulse_core::protocol::SUPPORTED_PROTOCOL_MAJORS;
 use platpulse_core::{
-    AgentReport, ComponentRevision, InventoryDisposition, NodeCurrentDisposition, NodeReceipt,
-    ReceiptDisposition, ReportId, ReportReceipt, Rfc3339, SampleDisposition, SampleDispositionKind,
-    SampleRef, Sha256Hex,
+    AgentReport, ComponentRevision, InventoryAcceptance, InventoryDeclaration,
+    InventoryDisposition, InventoryReceiptV2, NodeCurrentDisposition, NodeReceipt,
+    ReceiptDisposition, ReportId, ReportInventory, ReportReceipt, ReportReceiptV2, Rfc3339,
+    SampleDisposition, SampleDispositionKind, SampleRef, Sha256Hex,
 };
 
 #[derive(Debug, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ReportResponse {
     pub receipt: ReportReceipt,
+}
+
+/// Success payload of one v2 AgentReport ingestion.
+#[derive(Debug, Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ReportResponseV2 {
+    pub receipt: ReportReceiptV2,
+}
+
+/// Protocol-discriminated exact receipt of one ingestion attempt.
+///
+/// v1 and v2 receipts must never share a serialized form: a v2 receipt binds the
+/// Server-assigned Inventory revision and canonical fingerprint, while a v1
+/// receipt echoes the Agent-declared disposition. A stored receipt is replayed
+/// only through the shape that produced it.
+enum IngestReceipt {
+    V1(Box<ReportReceipt>),
+    V2(Box<ReportReceiptV2>),
+}
+
+impl IngestReceipt {
+    fn disposition(&self) -> ReceiptDisposition {
+        match self {
+            Self::V1(receipt) => receipt.disposition,
+            Self::V2(receipt) => receipt.disposition,
+        }
+    }
+
+    fn rejections(&self) -> &[platpulse_core::Rejection] {
+        match self {
+            Self::V1(receipt) => &receipt.rejections,
+            Self::V2(receipt) => &receipt.rejections,
+        }
+    }
+
+    fn to_bytes(&self) -> Vec<u8> {
+        match self {
+            Self::V1(receipt) => serde_json::to_vec(receipt),
+            Self::V2(receipt) => serde_json::to_vec(receipt),
+        }
+        .expect("receipt serializes")
+    }
+
+    fn into_response(self) -> Response {
+        let disposition = self.disposition();
+        let mut response = match self {
+            Self::V1(receipt) => {
+                (StatusCode::OK, Json(ReportResponse { receipt: *receipt })).into_response()
+            }
+            Self::V2(receipt) => {
+                (StatusCode::OK, Json(ReportResponseV2 { receipt: *receipt })).into_response()
+            }
+        };
+        response.extensions_mut().insert(disposition);
+        response
+    }
+}
+
+/// Re-materialize a stored receipt under the request's protocol major. A stored
+/// body that does not decode as that major is not replayable to this Agent.
+fn replay_receipt<I: ReportInventory>(body: &[u8]) -> Result<IngestReceipt, ()> {
+    if I::protocol_version() == platpulse_core::protocol::PROTOCOL_VERSION_V2 {
+        serde_json::from_slice::<ReportReceiptV2>(body)
+            .map(|receipt| IngestReceipt::V2(Box::new(receipt)))
+            .map_err(|_| ())
+    } else {
+        serde_json::from_slice::<ReportReceipt>(body)
+            .map(|receipt| IngestReceipt::V1(Box::new(receipt)))
+            .map_err(|_| ())
+    }
+}
+
+/// A whole-Inventory rejection is protocol-shape-independent apart from the
+/// Inventory outcome, so the v1 rejection receipt is mapped to the v2 wire form
+/// (which carries no accepted revision/fingerprint).
+fn into_ingest_receipt<I: ReportInventory>(receipt: ReportReceipt) -> IngestReceipt {
+    if I::protocol_version() == platpulse_core::protocol::PROTOCOL_VERSION_V2 {
+        IngestReceipt::V2(Box::new(ReportReceiptV2 {
+            report_id: receipt.report_id,
+            disposition: receipt.disposition,
+            report_body_sha256: receipt.report_body_sha256,
+            server_version: receipt.server_version,
+            supported_protocol_majors: receipt.supported_protocol_majors,
+            server_time: receipt.server_time,
+            rotation_hint: receipt.rotation_hint,
+            inventory: receipt.inventory.map(|disposition| InventoryReceiptV2 {
+                disposition,
+                acceptance: None,
+            }),
+            rejections: receipt.rejections,
+            nodes: receipt.nodes,
+            samples: receipt.samples,
+        }))
+    } else {
+        IngestReceipt::V1(Box::new(receipt))
+    }
 }
 
 #[derive(Debug, FromRow)]
@@ -158,40 +255,39 @@ fn storage_error(request_id: &str, operation: &str, failure: &sqlx::Error) -> Re
     )
 }
 
-fn receipt_response(receipt: ReportReceipt) -> Response {
-    let disposition = receipt.disposition;
-    let mut response = (StatusCode::OK, Json(ReportResponse { receipt })).into_response();
-    response.extensions_mut().insert(disposition);
-    response
+fn receipt_response(receipt: IngestReceipt) -> Response {
+    receipt.into_response()
 }
 
-async fn store_rejected(
+async fn store_rejected<I: ReportInventory>(
     state: &AppState,
     mut tx: Transaction<'_, Sqlite>,
-    report: &AgentReport,
+    report: &AgentReport<I>,
     hash: Sha256Hex,
     receipt: ReportReceipt,
     request_id: &str,
 ) -> Response {
-    let stored = serde_json::to_vec(&receipt).expect("receipt serializes");
+    let receipt = into_ingest_receipt::<I>(receipt);
+    let stored = receipt.to_bytes();
+    let disposition = receipt.disposition();
     // Durable Inventory evidence (issue #181): which code refused the report
     // and what Inventory the Agent declared. Admin must never have to decode
     // the receipt body, nor trust an Agent-reported diagnostic, to answer "is
     // this Agent's latest ingestion attempt an Inventory rejection?". A
     // whole-report rejection decides by its first rejection.
     let rejection_code = receipt
-        .rejections
+        .rejections()
         .first()
         .map(|rejection| rejection.code.as_str());
     let result = sqlx::query("INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at, rejection_code, inventory_revision, inventory_sha256) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .bind(report.report_id.to_string()).bind(report.agent_id.to_string())
         .bind(report.agent_epoch as i64).bind(report.boot_id.to_string())
         .bind(report.report_sequence as i64).bind(hash.to_string())
-        .bind(disposition_name(receipt.disposition)).bind(&stored)
+        .bind(disposition_name(disposition)).bind(&stored)
         .bind(now().to_string())
         .bind(rejection_code)
-        .bind(report.inventory.revision as i64)
-        .bind(report.inventory.content_sha256().to_string())
+        .bind(report.inventory.declared_revision().map(|revision| revision as i64))
+        .bind(report.inventory.accepted_sha256().to_string())
         .execute(&mut *tx).await;
     if result.is_err() || tx.commit().await.is_err() {
         return error(
@@ -581,9 +677,9 @@ async fn update_network_references(
     Ok(())
 }
 
-async fn block_network_identity_mismatches(
+async fn block_network_identity_mismatches<I: ReportInventory>(
     tx: &mut Transaction<'_, Sqlite>,
-    report: &AgentReport,
+    report: &AgentReport<I>,
     purged_nodes: &std::collections::HashSet<platpulse_core::identity::NodeId>,
 ) -> Result<std::collections::HashSet<platpulse_core::identity::NodeId>, sqlx::Error> {
     let mut mismatches = std::collections::HashSet::new();
@@ -595,7 +691,7 @@ async fn block_network_identity_mismatches(
         }
         let Some(node) = report
             .inventory
-            .nodes
+            .nodes()
             .iter()
             .find(|node| node.node_id == sample.node_id)
         else {
@@ -743,9 +839,9 @@ async fn save_host_metric(
     Ok(())
 }
 
-async fn save_current(
+async fn save_current<I: ReportInventory>(
     tx: &mut Transaction<'_, Sqlite>,
-    report: &AgentReport,
+    report: &AgentReport<I>,
     received_at: &str,
     geo_provider: crate::geo::GeoProvider,
 ) -> Result<(), sqlx::Error> {
@@ -1344,9 +1440,9 @@ enum TransferResolution {
 /// state, inside the ingestion transaction. A successful resolution switches
 /// `nodes.agent_id` in the same transaction that accepts the report, so the
 /// source stays authoritative until the switch is atomic (issue #46).
-async fn resolve_node_transfer(
+async fn resolve_node_transfer<I: ReportInventory>(
     tx: &mut Transaction<'_, Sqlite>,
-    report: &AgentReport,
+    report: &AgentReport<I>,
     node: &platpulse_core::inventory::InventoryNode,
     reporting_agent: &str,
     now_text: &str,
@@ -1522,6 +1618,49 @@ async fn handler(
     Extension(request_id): Extension<RequestId>,
     body: Bytes,
 ) -> Response {
+    let parsed: AgentReport = match serde_json::from_slice(&body) {
+        Ok(report) => report,
+        Err(_) => {
+            return error(
+                &request_id.0,
+                StatusCode::BAD_REQUEST,
+                "invalid_report",
+                "Agent report is invalid",
+            );
+        }
+    };
+    ingest_report(state, auth, request_id, body, parsed).await
+}
+
+/// v2 ingestion entry point: the report declares Inventory content only and the
+/// Server allocates the accepted revision and canonical fingerprint.
+async fn handler_v2(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AgentAuthInfo>,
+    Extension(request_id): Extension<RequestId>,
+    body: Bytes,
+) -> Response {
+    let parsed: AgentReport<InventoryDeclaration> = match serde_json::from_slice(&body) {
+        Ok(report) => report,
+        Err(_) => {
+            return error(
+                &request_id.0,
+                StatusCode::BAD_REQUEST,
+                "invalid_report",
+                "Agent report is invalid",
+            );
+        }
+    };
+    ingest_report(state, auth, request_id, body, parsed).await
+}
+
+async fn ingest_report<I: ReportInventory>(
+    state: AppState,
+    auth: AgentAuthInfo,
+    request_id: RequestId,
+    body: Bytes,
+    parsed: AgentReport<I>,
+) -> Response {
     if state.is_shutting_down() {
         return error(
             &request_id.0,
@@ -1551,17 +1690,6 @@ async fn handler(
     }
     let digest = Sha256::digest(&body);
     let hash = Sha256Hex::from_str(&format!("0x{digest:x}")).expect("SHA-256 output is valid");
-    let parsed: AgentReport = match serde_json::from_slice(&body) {
-        Ok(report) => report,
-        Err(_) => {
-            return error(
-                &request_id.0,
-                StatusCode::BAD_REQUEST,
-                "invalid_report",
-                "Agent report is invalid",
-            );
-        }
-    };
     if parsed.validate().is_err() {
         return error(
             &request_id.0,
@@ -1616,9 +1744,9 @@ async fn handler(
                 "Report identity conflicts with a stored report",
             );
         }
-        let receipt: ReportReceipt = match serde_json::from_slice(&existing.receipt_body) {
-            Ok(v) => v,
-            Err(_) => {
+        let receipt = match replay_receipt::<I>(&existing.receipt_body) {
+            Ok(receipt) => receipt,
+            Err(()) => {
                 return error(
                     &request_id.0,
                     StatusCode::SERVICE_UNAVAILABLE,
@@ -1687,24 +1815,28 @@ async fn handler(
     .ok()
     .flatten();
     let _boot_markers = (&agent.previous_boot_id, &agent.close_report_id);
-    if parsed.inventory.revision < agent.last_inventory_revision as u64 {
-        return store_rejected(
-            &state,
-            tx,
-            &parsed,
-            hash.clone(),
-            rejected(
-                parsed.report_id,
-                hash,
-                platpulse_core::RejectionCode::InventoryRevisionConflict,
-                "Inventory revision is older than the accepted revision",
-            ),
-            &request_id.0,
-        )
-        .await;
+    let declared_revision = parsed.inventory.declared_revision();
+    // Frozen v1: the Agent declares its own monotonically increasing revision.
+    if let Some(declared) = declared_revision {
+        if declared < agent.last_inventory_revision as u64 {
+            return store_rejected(
+                &state,
+                tx,
+                &parsed,
+                hash.clone(),
+                rejected(
+                    parsed.report_id,
+                    hash,
+                    platpulse_core::RejectionCode::InventoryRevisionConflict,
+                    "Inventory revision is older than the accepted revision",
+                ),
+                &request_id.0,
+            )
+            .await;
+        }
     }
 
-    let inventory_hash = parsed.inventory.content_sha256();
+    let inventory_hash = parsed.inventory.accepted_sha256();
     let prior_inventory_hash: Option<String> =
         match sqlx::query_scalar("SELECT inventory_sha256 FROM agents WHERE agent_id=?")
             .bind(&auth.agent_id)
@@ -1721,25 +1853,58 @@ async fn handler(
                 );
             }
         };
-    if parsed.inventory.revision == agent.last_inventory_revision as u64
-        && prior_inventory_hash.is_some()
-        && prior_inventory_hash.as_deref() != Some(inventory_hash.as_str())
-    {
-        return store_rejected(
-            &state,
-            tx,
-            &parsed,
-            hash.clone(),
-            rejected(
-                parsed.report_id,
-                hash,
-                platpulse_core::RejectionCode::InventoryRevisionConflict,
-                "Inventory content conflicts at the accepted revision",
-            ),
-            &request_id.0,
-        )
-        .await;
+    if let Some(declared) = declared_revision {
+        if declared == agent.last_inventory_revision as u64
+            && prior_inventory_hash.is_some()
+            && prior_inventory_hash.as_deref() != Some(inventory_hash.as_str())
+        {
+            return store_rejected(
+                &state,
+                tx,
+                &parsed,
+                hash.clone(),
+                rejected(
+                    parsed.report_id,
+                    hash,
+                    platpulse_core::RejectionCode::InventoryRevisionConflict,
+                    "Inventory content conflicts at the accepted revision",
+                ),
+                &request_id.0,
+            )
+            .await;
+        }
     }
+
+    // v2 declares content only: the Server allocates the accepted revision inside
+    // this authoritative transaction. Identical content keeps the accepted
+    // revision; any content change (including A -> B -> A) advances it. The
+    // comparison and allocation commit with the receipt, so concurrent reports
+    // can never allocate the same revision twice.
+    let inventory_unchanged = prior_inventory_hash.as_deref() == Some(inventory_hash.as_str());
+    let effective_inventory_revision: u64 = match declared_revision {
+        Some(declared) => declared,
+        None if inventory_unchanged => agent.last_inventory_revision.max(0) as u64,
+        None => {
+            let last = agent.last_inventory_revision.max(0) as u64;
+            if last >= i64::MAX as u64 {
+                return store_rejected(
+                    &state,
+                    tx,
+                    &parsed,
+                    hash.clone(),
+                    rejected(
+                        parsed.report_id,
+                        hash,
+                        platpulse_core::RejectionCode::InventoryRevisionConflict,
+                        "Inventory revision range is exhausted",
+                    ),
+                    &request_id.0,
+                )
+                .await;
+            }
+            last + 1
+        }
+    };
 
     // A sequence is unique within one boot. Never silently accept a competing body.
     let sequence_conflict = match sqlx::query_scalar::<_, String>("SELECT report_id FROM agent_report_receipts WHERE agent_id = ? AND agent_epoch = ? AND boot_id = ? AND report_sequence = ?")
@@ -1868,7 +2033,7 @@ async fn handler(
     let mut ownership_mismatches = std::collections::HashSet::new();
     let mut purged_nodes = std::collections::HashSet::new();
     let mut ownership_contradiction = false;
-    for node in &parsed.inventory.nodes {
+    for node in parsed.inventory.nodes() {
         // A purged Node ID is a permanent admission boundary (design §15.3,
         // ADR 0004, issue #170): the Owner already erased this Node's
         // projection, monitoring history, and Validator Links, and no later
@@ -1990,26 +2155,15 @@ async fn handler(
     rejected_nodes.extend(purged_nodes.iter().copied());
     let accepted_inventory_ids = parsed
         .inventory
-        .nodes
+        .nodes()
         .iter()
         .filter(|node| !rejected_nodes.contains(&node.node_id))
         .map(|node| node.node_id.to_string())
         .collect::<Vec<_>>();
 
-    let inventory_hash = parsed.inventory.content_sha256();
-    let prior_inventory_hash: Option<String> =
-        sqlx::query_scalar("SELECT inventory_sha256 FROM agents WHERE agent_id=?")
-            .bind(&auth.agent_id)
-            .fetch_optional(&mut *tx)
-            .await
-            .unwrap_or(None);
-    let inventory_revision_unchanged = parsed.inventory.revision
-        == agent.last_inventory_revision as u64
-        && prior_inventory_hash.as_deref() == Some(inventory_hash.as_str());
-
-    // Equal-revision content is unchanged; do not retire siblings or rewrite
-    // inventory ownership on a replay. A new revision remains authoritative.
-    if !inventory_revision_unchanged && parsed.inventory.nodes.is_empty() {
+    // Equal content is unchanged; do not retire siblings or rewrite inventory
+    // ownership on a replay. A newly accepted declaration remains authoritative.
+    if !inventory_unchanged && parsed.inventory.nodes().is_empty() {
         if sqlx::query("UPDATE nodes SET lifecycle='retired', updated_at=? WHERE agent_id=?")
             .bind(&now_text)
             .bind(&auth.agent_id)
@@ -2024,7 +2178,7 @@ async fn handler(
                 "Server database is unavailable",
             );
         }
-    } else if !inventory_revision_unchanged && !accepted_inventory_ids.is_empty() {
+    } else if !inventory_unchanged && !accepted_inventory_ids.is_empty() {
         let placeholders = std::iter::repeat_n("?", accepted_inventory_ids.len())
             .collect::<Vec<_>>()
             .join(",");
@@ -2044,12 +2198,12 @@ async fn handler(
             );
         }
     }
-    for node in &parsed.inventory.nodes {
+    for node in parsed.inventory.nodes() {
         if rejected_nodes.contains(&node.node_id) {
             continue;
         }
         let result = sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', 'private', ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET network_key=excluded.network_key, display_name=COALESCE(nodes.display_name, excluded.display_name), rpc_endpoint=excluded.rpc_endpoint, lifecycle='active', inventory_revision=excluded.inventory_revision, updated_at=excluded.updated_at")
-            .bind(node.node_id.to_string()).bind(&auth.agent_id).bind(node.network_key.as_str()).bind(&node.display_name).bind(node.rpc_endpoint.as_str()).bind(parsed.inventory.revision as i64).bind(&now_text).bind(&now_text).execute(&mut *tx).await;
+            .bind(node.node_id.to_string()).bind(&auth.agent_id).bind(node.network_key.as_str()).bind(&node.display_name).bind(node.rpc_endpoint.as_str()).bind(effective_inventory_revision as i64).bind(&now_text).bind(&now_text).execute(&mut *tx).await;
         if result.is_err() {
             return error(
                 &request_id.0,
@@ -2208,7 +2362,7 @@ async fn handler(
     // Node's unvalidated Network key must not reach shared Network state.
     let network_keys = projection_report
         .inventory
-        .nodes
+        .nodes()
         .iter()
         .filter(|node| !rejected_nodes.contains(&node.node_id))
         .map(|node| node.network_key.to_string())
@@ -2290,7 +2444,7 @@ async fn handler(
     }
     let nodes: Vec<NodeReceipt> = parsed
         .inventory
-        .nodes
+        .nodes()
         .iter()
         .map(|node| {
             let rejected = rejected_nodes.contains(&node.node_id);
@@ -2449,8 +2603,6 @@ async fn handler(
             }
         }))
         .collect::<Vec<_>>();
-    let inventory_unchanged = parsed.inventory.revision == agent.last_inventory_revision as u64
-        && prior_inventory_hash.as_deref() == Some(inventory_hash.as_str());
     let inventory_changed = !inventory_unchanged;
     let inventory_disposition = if inventory_unchanged {
         InventoryDisposition::Unchanged
@@ -2468,21 +2620,48 @@ async fn handler(
     } else {
         ReceiptDisposition::Accepted
     };
-    let receipt = ReportReceipt {
-        report_id: parsed.report_id,
-        disposition,
-        report_body_sha256: hash.clone(),
-        server_version: crate::VERSION.to_owned(),
-        supported_protocol_majors: SUPPORTED_PROTOCOL_MAJORS.to_vec(),
-        server_time: now(),
-        rotation_hint: None,
-        inventory: Some(inventory_disposition),
-        rejections: vec![],
-        nodes,
-        samples,
+    let acceptance = if declared_revision.is_none() {
+        Some(InventoryAcceptance {
+            revision: effective_inventory_revision,
+            fingerprint: inventory_hash.clone(),
+        })
+    } else {
+        None
     };
-    let stored = serde_json::to_vec(&receipt).expect("receipt serializes");
-    let inserted = sqlx::query("INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(parsed.report_id.to_string()).bind(&auth.agent_id).bind(parsed.agent_epoch as i64).bind(parsed.boot_id.to_string()).bind(parsed.report_sequence as i64).bind(hash.to_string()).bind(disposition_name(receipt.disposition)).bind(&stored).bind(&now_text).execute(&mut *tx).await;
+    let receipt = if declared_revision.is_none() {
+        IngestReceipt::V2(Box::new(ReportReceiptV2 {
+            report_id: parsed.report_id,
+            disposition,
+            report_body_sha256: hash.clone(),
+            server_version: crate::VERSION.to_owned(),
+            supported_protocol_majors: SUPPORTED_PROTOCOL_MAJORS.to_vec(),
+            server_time: now(),
+            rotation_hint: None,
+            inventory: Some(InventoryReceiptV2 {
+                disposition: inventory_disposition,
+                acceptance,
+            }),
+            rejections: vec![],
+            nodes,
+            samples,
+        }))
+    } else {
+        IngestReceipt::V1(Box::new(ReportReceipt {
+            report_id: parsed.report_id,
+            disposition,
+            report_body_sha256: hash.clone(),
+            server_version: crate::VERSION.to_owned(),
+            supported_protocol_majors: SUPPORTED_PROTOCOL_MAJORS.to_vec(),
+            server_time: now(),
+            rotation_hint: None,
+            inventory: Some(inventory_disposition),
+            rejections: vec![],
+            nodes,
+            samples,
+        }))
+    };
+    let stored = receipt.to_bytes();
+    let inserted = sqlx::query("INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(parsed.report_id.to_string()).bind(&auth.agent_id).bind(parsed.agent_epoch as i64).bind(parsed.boot_id.to_string()).bind(parsed.report_sequence as i64).bind(hash.to_string()).bind(disposition_name(disposition)).bind(&stored).bind(&now_text).execute(&mut *tx).await;
     if let Err(insert_failure) = inserted {
         let concurrent = sqlx::query_as::<_, ReceiptRow>(
             "SELECT report_body_sha256, receipt_body FROM agent_report_receipts WHERE report_id=?",
@@ -2494,9 +2673,7 @@ async fn handler(
         .flatten();
         if let Some(concurrent) = concurrent {
             if concurrent.report_body_sha256 == hash.to_string() {
-                if let Ok(receipt) =
-                    serde_json::from_slice::<ReportReceipt>(&concurrent.receipt_body)
-                {
+                if let Ok(receipt) = replay_receipt::<I>(&concurrent.receipt_body) {
                     let _ = tx.rollback().await;
                     return receipt_response(receipt);
                 }
@@ -2578,7 +2755,7 @@ async fn handler(
         .bind(parsed.boot_id.to_string()).bind(lifecycle_status)
         .bind(parsed.previous_boot_id.map(|v| v.to_string()))
         .bind(lifecycle_status).bind(parsed.report_id.to_string())
-        .bind(parsed.report_sequence as i64).bind(parsed.inventory.revision as i64)
+        .bind(parsed.report_sequence as i64).bind(effective_inventory_revision as i64)
         .bind(inventory_hash.as_str()).bind(&now_text).bind(clock_skew_ms).bind(clock_status)
         .bind(capabilities)
         .bind(shutdown_state)
@@ -2664,7 +2841,7 @@ async fn handler(
         .collect::<Vec<_>>();
     let public_network_keys = projection_report
         .inventory
-        .nodes
+        .nodes()
         .iter()
         .map(|node| node.network_key.to_string())
         .collect::<HashSet<_>>();
@@ -2686,7 +2863,7 @@ async fn handler(
     state
         .admin_realtime()
         .publish("node", None::<String>, parsed.report_sequence);
-    if inventory_changed || parsed.inventory.nodes.is_empty() {
+    if inventory_changed || parsed.inventory.nodes().is_empty() {
         state
             .public_realtime()
             .publish("node", None::<String>, parsed.report_sequence);
@@ -2815,9 +2992,8 @@ fn error_from_request(
     error(request_id, status, code, message)
 }
 
-pub(crate) fn router() -> Router<AppState> {
-    Router::<AppState>::new()
-        .route("/reports", axum::routing::post(handler))
+fn report_layers(router: Router<AppState>) -> Router<AppState> {
+    router
         .layer(from_fn(body_size_boundary))
         .layer(from_fn(report_request_boundary))
         .layer(from_fn(
@@ -2830,6 +3006,15 @@ pub(crate) fn router() -> Router<AppState> {
                 response
             },
         ))
+}
+
+pub(crate) fn router() -> Router<AppState> {
+    report_layers(Router::<AppState>::new().route("/reports", axum::routing::post(handler)))
+}
+
+/// v2 report ingestion router, nested at `/api/agent/v2`.
+pub(crate) fn router_v2() -> Router<AppState> {
+    report_layers(Router::<AppState>::new().route("/reports", axum::routing::post(handler_v2)))
 }
 
 #[cfg(test)]

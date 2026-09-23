@@ -1,0 +1,23 @@
+{
+  "report_id": "0195f2a1-0003-4003-8003-000000000003",
+  "disposition": "rejected",
+  "report_body_sha256": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "server_version": "0.1.0",
+  "supported_protocol_majors": [
+    1,
+    2
+  ],
+  "server_time": "2026-08-12T10:00:01Z",
+  "inventory": {
+    "disposition": "rejected"
+  },
+  "rejections": [
+    {
+      "code": "inventory_invalid",
+      "retryable": false,
+      "reason": "Inventory is not a valid complete declaration"
+    }
+  ],
+  "nodes": [],
+  "samples": []
+}

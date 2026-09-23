@@ -8,10 +8,12 @@
 //! Local config is the source of truth for connection details; the Server
 //! never pushes endpoints.
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::envelope::AgentCapability;
+use crate::error::WireError;
 use crate::hex::Sha256Hex;
 use crate::identity::NodeId;
 use crate::network::{NetworkKey, RpcEndpoint};
@@ -42,6 +44,129 @@ impl NodeInventory {
         format!("0x{:x}", Sha256::digest(&bytes))
             .parse()
             .expect("a sha256 digest is canonical lowercase hex")
+    }
+}
+
+/// The Inventory shape carried by one report major.
+///
+/// v1 (`NodeInventory`) declares an Agent-assigned revision; v2
+/// (`InventoryDeclaration`) declares content only and lets the Server allocate.
+/// The two shapes never share a wire version: the canonical fingerprint excludes
+/// the revision while the frozen v1 content hash includes it.
+pub trait ReportInventory:
+    Clone + PartialEq + std::fmt::Debug + Serialize + DeserializeOwned
+{
+    /// Protocol major whose reports carry this Inventory shape.
+    fn protocol_version() -> u64;
+    /// The complete declared Node set.
+    fn nodes(&self) -> &[InventoryNode];
+    /// Shape-specific validation beyond the shared Node-set checks.
+    fn validate_shape(&self) -> Result<(), WireError>;
+    /// The declared revision when the shape carries one; `None` for v2.
+    fn declared_revision(&self) -> Option<u64>;
+    /// The digest the Server persists and compares as the accepted Inventory
+    /// (frozen v1 revision-inclusive content hash, or v2 canonical fingerprint).
+    fn accepted_sha256(&self) -> Sha256Hex;
+}
+
+impl ReportInventory for NodeInventory {
+    fn protocol_version() -> u64 {
+        crate::protocol::PROTOCOL_VERSION
+    }
+
+    fn nodes(&self) -> &[InventoryNode] {
+        &self.nodes
+    }
+
+    fn validate_shape(&self) -> Result<(), WireError> {
+        if self.revision == 0 {
+            return Err(WireError::InventoryRevisionZero);
+        }
+        Ok(())
+    }
+
+    fn declared_revision(&self) -> Option<u64> {
+        Some(self.revision)
+    }
+
+    fn accepted_sha256(&self) -> Sha256Hex {
+        self.content_sha256()
+    }
+}
+
+/// The version tag of the v2 canonical Inventory declaration fingerprint.
+///
+/// The tag is part of the hashed representation, so a future change to the
+/// canonical form cannot collide with a v2 fingerprint by accident.
+pub const INVENTORY_DECLARATION_VERSION: u64 = 2;
+
+/// A v2 Inventory declaration: the complete Node set an Agent declares, with no
+/// Agent-assigned revision.
+///
+/// The Server owns the accepted revision; it is returned in the Report Receipt
+/// and never appears in the declaration. Two declarations with the same
+/// canonical fingerprint are the same accepted content regardless of Node array
+/// order or Agent-only configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InventoryDeclaration {
+    /// The complete set of Nodes. May be empty (authoritative empty set), but
+    /// must not list a Node twice.
+    pub nodes: Vec<InventoryNode>,
+}
+
+/// The canonical JSON input of an Inventory declaration fingerprint: the
+/// declaration-version tag plus the Node array sorted by Node ID.
+#[derive(Serialize)]
+struct CanonicalDeclaration<'a> {
+    declaration_version: u64,
+    nodes: Vec<&'a InventoryNode>,
+}
+
+impl InventoryDeclaration {
+    /// The versioned canonical bytes used to compute the declaration
+    /// fingerprint: revision-excluded, Node-ID-sorted, all declared fields
+    /// present. Optional fields are omitted exactly as the frozen wire
+    /// representation omits them, so the encoding is deterministic. No URL,
+    /// path, or string equivalence is inferred.
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut nodes: Vec<&InventoryNode> = self.nodes.iter().collect();
+        nodes.sort_by_key(|node| *node.node_id.as_uuid());
+        serde_json::to_vec(&CanonicalDeclaration {
+            declaration_version: INVENTORY_DECLARATION_VERSION,
+            nodes,
+        })
+        .expect("declaration serializes")
+    }
+
+    /// The canonical declaration fingerprint the Server persists and returns in
+    /// the v2 Report Receipt. It is not the immutable Report body hash.
+    pub fn fingerprint(&self) -> Sha256Hex {
+        format!("0x{:x}", Sha256::digest(self.canonical_bytes()))
+            .parse()
+            .expect("a sha256 digest is canonical lowercase hex")
+    }
+}
+
+impl ReportInventory for InventoryDeclaration {
+    fn protocol_version() -> u64 {
+        crate::protocol::PROTOCOL_VERSION_V2
+    }
+
+    fn nodes(&self) -> &[InventoryNode] {
+        &self.nodes
+    }
+
+    fn validate_shape(&self) -> Result<(), WireError> {
+        Ok(())
+    }
+
+    fn declared_revision(&self) -> Option<u64> {
+        None
+    }
+
+    fn accepted_sha256(&self) -> Sha256Hex {
+        self.fingerprint()
     }
 }
 

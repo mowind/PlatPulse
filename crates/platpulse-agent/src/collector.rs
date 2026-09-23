@@ -19,9 +19,9 @@ use platpulse_core::observation::{
     SpoolDiagnostics, SyncCurrent,
 };
 use platpulse_core::{
-    AgentCapability, AgentReport, BootTransition, FingerprintHex, InventoryDisposition,
-    NodeCurrentDisposition, ReceiptDisposition, ReportReceipt, Rfc3339, SampleDispositionKind,
-    SampleRef,
+    AgentCapability, AgentReport, BootTransition, FingerprintHex, InventoryAcceptance,
+    InventoryDeclaration, InventoryDisposition, NodeCurrentDisposition, ReceiptDisposition,
+    ReportInventory, ReportReceipt, Rfc3339, SampleDispositionKind, SampleRef,
 };
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
@@ -580,6 +580,24 @@ fn add_sample_capabilities(report: &mut AgentReport) {
     }
 }
 
+/// Serialize a built report under the Agent's configured protocol. A
+/// Server-managed (v2) Agent persists the revision-excluded declaration form;
+/// the transient v1 shape never reaches the wire.
+fn report_body_bytes(
+    report: &AgentReport,
+    server_managed_inventory: bool,
+) -> Result<Vec<u8>, CollectionError> {
+    if server_managed_inventory {
+        let declaration = crate::reporting::into_v2_report(report);
+        declaration
+            .validate()
+            .map_err(|error| CollectionError::Identity(error.to_string()))?;
+        Ok(serde_json::to_vec(&declaration)?)
+    } else {
+        Ok(serde_json::to_vec(report)?)
+    }
+}
+
 pub(crate) async fn load_last_report(
     store: &mut AgentStore,
 ) -> Result<Option<AgentReport>, sqlx::Error> {
@@ -591,12 +609,26 @@ pub(crate) async fn load_last_report(
     let Some(body) = body.flatten() else {
         return Ok(None);
     };
-    let report = serde_json::from_slice::<AgentReport>(&body).map_err(|error| {
-        sqlx::Error::Protocol(format!("last report snapshot is invalid: {error}"))
-    })?;
-    report.validate().map_err(|error| {
-        sqlx::Error::Protocol(format!("last report snapshot failed validation: {error}"))
-    })?;
+    let report = if crate::reporting::report_protocol_major(&body)
+        == platpulse_core::protocol::PROTOCOL_VERSION_V2
+    {
+        let stored: AgentReport<InventoryDeclaration> =
+            serde_json::from_slice(&body).map_err(|error| {
+                sqlx::Error::Protocol(format!("last report snapshot is invalid: {error}"))
+            })?;
+        stored.validate().map_err(|error| {
+            sqlx::Error::Protocol(format!("last report snapshot failed validation: {error}"))
+        })?;
+        crate::reporting::into_v1_snapshot(stored)
+    } else {
+        let stored: AgentReport = serde_json::from_slice(&body).map_err(|error| {
+            sqlx::Error::Protocol(format!("last report snapshot is invalid: {error}"))
+        })?;
+        stored.validate().map_err(|error| {
+            sqlx::Error::Protocol(format!("last report snapshot failed validation: {error}"))
+        })?;
+        stored
+    };
     Ok(Some(report))
 }
 
@@ -1264,7 +1296,7 @@ pub(crate) async fn recover_previous_boot_with_transport<A: RpcAdapter, T: Repor
     closing
         .validate()
         .map_err(|error| CollectionError::Identity(error.to_string()))?;
-    let body = serde_json::to_vec(&closing)?;
+    let body = report_body_bytes(&closing, validated.server_managed_inventory)?;
     crate::reporting::persist_closing_report(
         &mut store,
         &closing.report_id.to_string(),
@@ -1296,9 +1328,10 @@ fn delivered_report_closes_boot(
     disposition: ReceiptDisposition,
     boot_id: &str,
 ) -> Result<bool, CollectionError> {
-    let report: AgentReport = serde_json::from_slice(&delivered.body)?;
-    Ok(report.boot_id.to_string() == boot_id
-        && report.boot_transition == BootTransition::Closing
+    let (report_boot_id, boot_transition) =
+        crate::reporting::report_boot_identity(&delivered.body)?;
+    Ok(report_boot_id.to_string() == boot_id
+        && boot_transition == BootTransition::Closing
         && disposition != ReceiptDisposition::Rejected)
 }
 
@@ -1384,8 +1417,12 @@ async fn collect_and_persist_in_store_with_data_directories<A: RpcAdapter>(
     let validated = config
         .validated_inventory()
         .map_err(|error| CollectionError::Identity(error.to_string()))?;
-    // Refuse to declare an Inventory the Server would refuse (issue #181).
-    guard_inventory_declaration(store, &validated.inventory).await?;
+    // Refuse to declare an Inventory the Server would refuse (issue #181). A
+    // Server-managed (v2) Agent declares content only and has no local revision
+    // to guard.
+    if !validated.server_managed_inventory {
+        guard_inventory_declaration(store, &validated.inventory).await?;
+    }
     let previous = load_last_report(store).await?;
     let clock_at = timestamp();
     let clock_skew = match crate::time_exchange::exchange_server_time(config).await {
@@ -1440,7 +1477,7 @@ async fn collect_and_persist_in_store_with_data_directories<A: RpcAdapter>(
     report
         .validate()
         .map_err(|error| CollectionError::Identity(error.to_string()))?;
-    let body = serde_json::to_vec(&report)?;
+    let body = report_body_bytes(&report, validated.server_managed_inventory)?;
     let digest = format!("0x{}", hex::encode(sha2::Sha256::digest(&body)));
     let now = report.generated_at.to_string();
     let _write_permit = store.acquire_write().await;
@@ -1979,8 +2016,12 @@ pub(crate) async fn collect_and_persist_with_blocks_with_permit<A: RpcAdapter>(
     let validated = config
         .validated_inventory()
         .map_err(|error| CollectionError::Identity(error.to_string()))?;
-    // Refuse to declare an Inventory the Server would refuse (issue #181).
-    guard_inventory_declaration(&mut store, &validated.inventory).await?;
+    // Refuse to declare an Inventory the Server would refuse (issue #181). A
+    // Server-managed (v2) Agent declares content only and has no local revision
+    // to guard.
+    if !validated.server_managed_inventory {
+        guard_inventory_declaration(&mut store, &validated.inventory).await?;
+    }
     let clock_at = timestamp();
     let clock_skew = match crate::time_exchange::exchange_server_time(config).await {
         Ok(estimate) => ok(estimate.offset_ms, clock_at),
@@ -2099,7 +2140,7 @@ pub(crate) async fn collect_and_persist_with_blocks_with_permit<A: RpcAdapter>(
     report
         .validate()
         .map_err(|error| CollectionError::Identity(error.to_string()))?;
-    let body = serde_json::to_vec(&report)?;
+    let body = report_body_bytes(&report, validated.server_managed_inventory)?;
     let digest = format!("0x{}", hex::encode(sha2::Sha256::digest(&body)));
     let now = report.generated_at.to_string();
     let _write_permit = store.acquire_write().await;
@@ -2328,14 +2369,10 @@ pub(crate) async fn current_spool_diagnostics(
     })
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ReceiptEnvelope {
-    receipt: ReportReceipt,
-}
-
-/// Apply a stored receipt and delete its report only after all receipt
-/// dispositions have been durably processed, in one Agent Store transaction.
+/// Apply a stored v1 receipt from its raw envelope. Retained for the v1 entry
+/// points and their tests; v2 delivery uses [`apply_receipt_typed`] with the
+/// Server-assigned acceptance.
+#[cfg(test)]
 pub async fn apply_receipt(
     store: &mut AgentStore,
     report_id: &str,
@@ -2344,9 +2381,37 @@ pub async fn apply_receipt(
     receipt_body: &[u8],
     applied_at: &str,
 ) -> Result<(), ApplyReceiptError> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ReceiptEnvelope {
+        receipt: ReportReceipt,
+    }
     let receipt = serde_json::from_slice::<ReceiptEnvelope>(receipt_body)
         .map_err(|error| sqlx::Error::Protocol(error.to_string()))?
         .receipt;
+    apply_receipt_typed::<NodeInventory>(
+        store,
+        report_id,
+        body_sha256,
+        disposition,
+        receipt,
+        None,
+        applied_at,
+    )
+    .await
+}
+
+/// Apply a stored receipt and delete its report only after all receipt
+/// dispositions have been durably processed, in one Agent Store transaction.
+pub async fn apply_receipt_typed<I: ReportInventory>(
+    store: &mut AgentStore,
+    report_id: &str,
+    body_sha256: &str,
+    disposition: &str,
+    receipt: ReportReceipt,
+    acceptance: Option<InventoryAcceptance>,
+    applied_at: &str,
+) -> Result<(), ApplyReceiptError> {
     receipt
         .validate()
         .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
@@ -2407,7 +2472,7 @@ pub async fn apply_receipt(
                 "stored report failed integrity validation".to_owned(),
             ));
         }
-        let parsed_report: AgentReport = serde_json::from_slice(&raw_report).map_err(|error| {
+        let parsed_report: AgentReport<I> = serde_json::from_slice(&raw_report).map_err(|error| {
             sqlx::Error::Protocol(format!("stored report is invalid: {error}"))
         })?;
         parsed_report.validate().map_err(|error| {
@@ -2419,7 +2484,7 @@ pub async fn apply_receipt(
             ));
         }
     let mut expected_nodes = std::collections::HashSet::new();
-    for node in &parsed_report.inventory.nodes {
+    for node in parsed_report.inventory.nodes() {
         expected_nodes.insert(node.node_id);
     }
     let mut seen_nodes = std::collections::HashSet::new();
@@ -2583,9 +2648,41 @@ pub async fn apply_receipt(
             Some(InventoryDisposition::Accepted | InventoryDisposition::Unchanged)
         )
     {
-        crate::inventory_declaration::record_inventory_declaration(
+        // v2 accepts the Server-owned revision and canonical declaration
+        // fingerprint; v1 keeps its Agent-declared revision and content hash.
+        // The Agent never invents a revision, never writes it back into a
+        // declaration, and never treats it as permission to generate a report.
+        let (revision, fingerprint) = match &acceptance {
+            Some(acceptance) => {
+                if acceptance.fingerprint != parsed_report.inventory.accepted_sha256() {
+                    return Err(sqlx::Error::Protocol(
+                        "receipt inventory fingerprint does not match the stored declaration"
+                            .to_owned(),
+                    ));
+                }
+                (acceptance.revision, acceptance.fingerprint.clone())
+            }
+            None => (
+                parsed_report.inventory.declared_revision().unwrap_or(0),
+                parsed_report.inventory.accepted_sha256(),
+            ),
+        };
+        if let Some(record) =
+            crate::inventory_declaration::read_inventory_declaration(&mut tx).await?
+        {
+            // Equal revision with a different fingerprint fails closed and keeps
+            // the report for investigation; a lower revision may complete its
+            // acknowledgement but never moves the record backward.
+            if record.revision == revision && record.sha256 != fingerprint.as_str() {
+                return Err(sqlx::Error::Protocol(
+                    "inventory acceptance conflicts with the local confirmation record".to_owned(),
+                ));
+            }
+        }
+        crate::inventory_declaration::record_inventory_acceptance(
             &mut tx,
-            &parsed_report.inventory,
+            revision,
+            fingerprint.as_str(),
             report_id,
             applied_at,
         )

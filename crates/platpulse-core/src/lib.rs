@@ -44,7 +44,10 @@ pub use error::WireError;
 pub use gap::{GapKind, HistoryGap};
 pub use hex::{Address, FingerprintHex, Hash32, Sha256Hex};
 pub use identity::{AgentId, BootId, NodeId, ReportId};
-pub use inventory::{InventoryNode, NodeInventory, ProcessSelector};
+pub use inventory::{
+    INVENTORY_DECLARATION_VERSION, InventoryDeclaration, InventoryNode, NodeInventory,
+    ProcessSelector, ReportInventory,
+};
 pub use network::{NetworkIdentity, NetworkKey, RpcEndpoint, RpcScheme};
 pub use observation::{
     ConsensusCurrent, DiskCurrent, HostObservation, LoadCurrent, MemoryCurrent, MountUsage,
@@ -52,9 +55,9 @@ pub use observation::{
     RpcCurrent, SpoolDiagnostics, SyncCurrent,
 };
 pub use receipt::{
-    ComponentRevision, InventoryDisposition, NodeCurrentDisposition, NodeReceipt,
-    ReceiptDisposition, Rejection, RejectionCode, ReportReceipt, SampleDisposition,
-    SampleDispositionKind, SampleRef,
+    ComponentRevision, InventoryAcceptance, InventoryDisposition, InventoryReceiptV2,
+    NodeCurrentDisposition, NodeReceipt, ReceiptDisposition, Rejection, RejectionCode,
+    ReportReceipt, ReportReceiptV2, SampleDisposition, SampleDispositionKind, SampleRef,
 };
 pub use time::Rfc3339;
 
@@ -68,6 +71,7 @@ mod tests {
     #[test]
     fn protocol_version_is_v1() {
         assert_eq!(PROTOCOL_VERSION, 1);
-        assert_eq!(protocol::SUPPORTED_PROTOCOL_MAJORS, &[1]);
+        assert_eq!(protocol::PROTOCOL_VERSION_V2, 2);
+        assert_eq!(protocol::SUPPORTED_PROTOCOL_MAJORS, &[1, 2]);
     }
 }

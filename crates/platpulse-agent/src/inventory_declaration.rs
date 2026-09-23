@@ -109,9 +109,16 @@ pub(crate) async fn read_inventory_declaration(
 /// backwards cannot come from a Server that accepted a newer declaration, and
 /// keeping the high-water mark makes the record immune to any future
 /// out-of-order receipt application.
-pub(crate) async fn record_inventory_declaration(
+/// Record a confirmed revision and fingerprint.
+///
+/// v2 confirms the Server-assigned revision and canonical declaration
+/// fingerprint; v1 confirms the Agent-declared revision and content hash. The
+/// record is bounded single-row confirmation state, never an allocator or a
+/// declaration guard, and it never moves backwards.
+pub(crate) async fn record_inventory_acceptance(
     tx: &mut Transaction<'_, Sqlite>,
-    inventory: &NodeInventory,
+    revision: u64,
+    fingerprint: &str,
     report_id: &str,
     adopted_at: &str,
 ) -> Result<(), sqlx::Error> {
@@ -120,8 +127,8 @@ pub(crate) async fn record_inventory_declaration(
          ON CONFLICT(singleton) DO UPDATE SET revision=excluded.revision, sha256=excluded.sha256, report_id=excluded.report_id, adopted_at=excluded.adopted_at \
          WHERE excluded.revision >= inventory_declaration.revision",
     )
-    .bind(inventory.revision as i64)
-    .bind(inventory.content_sha256().to_string())
+    .bind(revision as i64)
+    .bind(fingerprint)
     .bind(report_id)
     .bind(adopted_at)
     .execute(&mut **tx)
@@ -220,9 +227,15 @@ mod tests {
         adopted_at: &str,
     ) -> Option<InventoryDeclaration> {
         let mut tx = store.connection().begin().await.unwrap();
-        record_inventory_declaration(&mut tx, inventory, report_id, adopted_at)
-            .await
-            .unwrap();
+        record_inventory_acceptance(
+            &mut tx,
+            inventory.revision,
+            inventory.content_sha256().as_str(),
+            report_id,
+            adopted_at,
+        )
+        .await
+        .unwrap();
         tx.commit().await.unwrap();
         read_inventory_declaration(store.connection())
             .await

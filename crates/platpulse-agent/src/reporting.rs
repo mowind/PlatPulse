@@ -9,11 +9,14 @@ use thiserror::Error;
 
 use platpulse_core::hex::Sha256Hex;
 use platpulse_core::identity::ReportId;
-use platpulse_core::{AgentReport, BootTransition, ReceiptDisposition, ReportReceipt, Rfc3339};
+use platpulse_core::{
+    AgentReport, BootTransition, InventoryDeclaration, ReceiptDisposition, ReportReceipt,
+    ReportReceiptV2, Rfc3339,
+};
 
 use serde::Deserialize;
 
-use crate::collector::{ApplyReceiptError, SpoolCleanupSummary, SpoolPolicy, apply_receipt};
+use crate::collector::{ApplyReceiptError, SpoolCleanupSummary, SpoolPolicy, apply_receipt_typed};
 use crate::config::{AgentConfig, AgentConfigError};
 use crate::credential::{CredentialError, load_credential_file};
 use crate::database::{
@@ -100,6 +103,7 @@ pub struct StoredReport {
 pub struct HttpReportTransport {
     client: reqwest::Client,
     url: String,
+    url_v2: String,
     credential: String,
 }
 
@@ -111,6 +115,7 @@ impl HttpReportTransport {
                 .build()
                 .map_err(|error| ReportStoreError::Delivery(error.to_string()))?,
             url: format!("{}/api/agent/v1/reports", config.server_url),
+            url_v2: format!("{}/api/agent/v2/reports", config.server_url),
             credential: load_credential_file(&config.credential_file)?,
         })
     }
@@ -122,9 +127,17 @@ impl ReportTransport for HttpReportTransport {
         body: &'a [u8],
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, ReportStoreError>> + Send + 'a>> {
         Box::pin(async move {
+            // The protocol major selects the route group; the immutable report
+            // bytes are never rewritten to fit a version.
+            let url =
+                if report_protocol_major(body) == platpulse_core::protocol::PROTOCOL_VERSION_V2 {
+                    &self.url_v2
+                } else {
+                    &self.url
+                };
             let response = self
                 .client
-                .post(&self.url)
+                .post(url)
                 .bearer_auth(&self.credential)
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
                 .body(body.to_vec())
@@ -284,6 +297,138 @@ struct WireReportResponse {
     receipt: ReportReceipt,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireReportResponseV2 {
+    receipt: ReportReceiptV2,
+}
+
+/// The protocol major declared in a report body, read without fully decoding it.
+pub(crate) fn report_protocol_major(body: &[u8]) -> u64 {
+    #[derive(Deserialize)]
+    struct ProtocolMajor {
+        protocol_version: u64,
+    }
+    serde_json::from_slice::<ProtocolMajor>(body)
+        .map(|major| major.protocol_version)
+        .unwrap_or(0)
+}
+
+/// The common v2 receipt fields in the frozen v1 shape. The v2 Inventory
+/// acceptance is carried separately so the confirmation record can bind the
+/// Server-assigned revision and canonical fingerprint.
+fn normalize_v2_receipt(receipt: ReportReceiptV2) -> ReportReceipt {
+    ReportReceipt {
+        report_id: receipt.report_id,
+        disposition: receipt.disposition,
+        report_body_sha256: receipt.report_body_sha256,
+        server_version: receipt.server_version,
+        supported_protocol_majors: receipt.supported_protocol_majors,
+        server_time: receipt.server_time,
+        rotation_hint: receipt.rotation_hint,
+        inventory: receipt.inventory.map(|inventory| inventory.disposition),
+        rejections: receipt.rejections,
+        nodes: receipt.nodes,
+        samples: receipt.samples,
+    }
+}
+
+/// Convert a fully built v1 report into its v2 declaration form. Used only for
+/// a Server-managed (v2) Agent configuration; the transient v1 shape never
+/// reaches the wire.
+pub(crate) fn into_v2_report(report: &AgentReport) -> AgentReport<InventoryDeclaration> {
+    AgentReport {
+        protocol_version: platpulse_core::protocol::PROTOCOL_VERSION_V2,
+        agent_id: report.agent_id,
+        agent_epoch: report.agent_epoch,
+        boot_id: report.boot_id,
+        previous_boot_id: report.previous_boot_id,
+        boot_transition: report.boot_transition,
+        report_sequence: report.report_sequence,
+        report_id: report.report_id,
+        generated_at: report.generated_at,
+        agent_version: report.agent_version.clone(),
+        agent_capabilities: report.agent_capabilities.clone(),
+        inventory: InventoryDeclaration {
+            nodes: report.inventory.nodes.clone(),
+        },
+        host: report.host.clone(),
+        nodes: report.nodes.clone(),
+        block_summaries: report.block_summaries.clone(),
+        history_gaps: report.history_gaps.clone(),
+    }
+}
+
+/// Re-shape a stored v2 snapshot as the transient local v1 view used for
+/// last-good preservation and boot checks. It is never sent.
+pub(crate) fn into_v1_snapshot(report: AgentReport<InventoryDeclaration>) -> AgentReport {
+    AgentReport {
+        protocol_version: platpulse_core::protocol::PROTOCOL_VERSION,
+        agent_id: report.agent_id,
+        agent_epoch: report.agent_epoch,
+        boot_id: report.boot_id,
+        previous_boot_id: report.previous_boot_id,
+        boot_transition: report.boot_transition,
+        report_sequence: report.report_sequence,
+        report_id: report.report_id,
+        generated_at: report.generated_at,
+        agent_version: report.agent_version,
+        agent_capabilities: report.agent_capabilities,
+        inventory: platpulse_core::inventory::NodeInventory {
+            revision: 1,
+            nodes: report.inventory.nodes,
+        },
+        host: report.host,
+        nodes: report.nodes,
+        block_summaries: report.block_summaries,
+        history_gaps: report.history_gaps,
+    }
+}
+
+/// The boot identity a delivered report proves, under either protocol major.
+pub(crate) fn report_boot_identity(
+    body: &[u8],
+) -> Result<(platpulse_core::BootId, BootTransition), serde_json::Error> {
+    if report_protocol_major(body) == platpulse_core::protocol::PROTOCOL_VERSION_V2 {
+        let report: AgentReport<InventoryDeclaration> = serde_json::from_slice(body)?;
+        Ok((report.boot_id, report.boot_transition))
+    } else {
+        let report: AgentReport = serde_json::from_slice(body)?;
+        Ok((report.boot_id, report.boot_transition))
+    }
+}
+
+/// Decode a spooled report body under its declared major, returning the fields
+/// the immutable spool needs. Each major keeps its own strict decoding.
+fn parse_spooled_report(
+    body: &[u8],
+) -> Result<
+    (
+        String,
+        Vec<platpulse_core::block::BlockSummary>,
+        Vec<platpulse_core::gap::HistoryGap>,
+    ),
+    ReportStoreError,
+> {
+    if report_protocol_major(body) == platpulse_core::protocol::PROTOCOL_VERSION_V2 {
+        let report: AgentReport<InventoryDeclaration> = serde_json::from_slice(body)
+            .map_err(|error| ReportStoreError::InvalidReport(error.to_string()))?;
+        Ok((
+            report.agent_id.to_string(),
+            report.block_summaries,
+            report.history_gaps,
+        ))
+    } else {
+        let report: AgentReport = serde_json::from_slice(body)
+            .map_err(|error| ReportStoreError::InvalidReport(error.to_string()))?;
+        Ok((
+            report.agent_id.to_string(),
+            report.block_summaries,
+            report.history_gaps,
+        ))
+    }
+}
+
 /// Send one claimed report. No transport error is an acknowledgement; the
 /// in-flight row and exact bytes remain available for the next attempt.
 pub async fn deliver_one<T: ReportTransport>(
@@ -364,22 +509,40 @@ async fn deliver_one_typed<T: ReportTransport>(
             }
         },
     };
-    let envelope: WireReportResponse = serde_json::from_slice(&response)
-        .map_err(|error| ReportStoreError::InvalidReceipt(error.to_string()))?;
-    envelope
-        .receipt
-        .validate()
-        .map_err(|error| ReportStoreError::InvalidReceipt(error.to_string()))?;
+    let major = report_protocol_major(&report.body);
+    let (envelope_receipt, acceptance) = if major == platpulse_core::protocol::PROTOCOL_VERSION_V2 {
+        let envelope: WireReportResponseV2 = serde_json::from_slice(&response)
+            .map_err(|error| ReportStoreError::InvalidReceipt(error.to_string()))?;
+        envelope
+            .receipt
+            .validate()
+            .map_err(|error| ReportStoreError::InvalidReceipt(error.to_string()))?;
+        let acceptance = envelope
+            .receipt
+            .inventory
+            .as_ref()
+            .and_then(|inventory| inventory.acceptance.clone());
+        (normalize_v2_receipt(envelope.receipt), acceptance)
+    } else {
+        let envelope: WireReportResponse = serde_json::from_slice(&response)
+            .map_err(|error| ReportStoreError::InvalidReceipt(error.to_string()))?;
+        envelope
+            .receipt
+            .validate()
+            .map_err(|error| ReportStoreError::InvalidReceipt(error.to_string()))?;
+        (envelope.receipt, None)
+    };
     let actual_hash = format!("0x{}", hex::encode(Sha256::digest(&report.body)));
     if actual_hash != report.body_sha256 {
         return Err(ReportStoreError::ReceiptMismatch);
     }
-    if envelope.receipt.report_id.to_string() != report.report_id
-        || envelope.receipt.report_body_sha256.to_string() != actual_hash
+    if envelope_receipt.report_id.to_string() != report.report_id
+        || envelope_receipt.report_body_sha256.to_string() != actual_hash
     {
         return Err(ReportStoreError::ReceiptMismatch);
     }
-    let disposition = match envelope.receipt.disposition {
+    let receipt_disposition = envelope_receipt.disposition;
+    let disposition = match receipt_disposition {
         ReceiptDisposition::Accepted => "accepted",
         ReceiptDisposition::PartiallyAccepted => "partially_accepted",
         ReceiptDisposition::Rejected => "rejected",
@@ -387,33 +550,53 @@ async fn deliver_one_typed<T: ReportTransport>(
     // A whole-report rejection is an applied receipt, not a transport failure:
     // it must reach the caller as data so the delivery loop can tell the
     // operator why every report is being refused (issue #181).
-    let rejection = (envelope.receipt.disposition == ReceiptDisposition::Rejected).then(|| {
+    let rejection = (receipt_disposition == ReceiptDisposition::Rejected).then(|| {
         format!(
             "report {} rejected by Server: {}",
             report.report_id,
-            rejection_summary(&envelope.receipt)
+            rejection_summary(&envelope_receipt)
         )
     });
-    apply_receipt(
-        store,
-        &report.report_id,
-        &report.body_sha256,
-        disposition,
-        &response,
-        &now_rfc3339(),
-    )
-    .await
-    .map_err(|error| match error {
+    if major == platpulse_core::protocol::PROTOCOL_VERSION_V2 {
+        apply_receipt_typed::<InventoryDeclaration>(
+            store,
+            &report.report_id,
+            &report.body_sha256,
+            disposition,
+            envelope_receipt,
+            acceptance,
+            &now_rfc3339(),
+        )
+        .await
+        .map_err(map_apply_receipt_error)?;
+    } else {
+        apply_receipt_typed::<platpulse_core::inventory::NodeInventory>(
+            store,
+            &report.report_id,
+            &report.body_sha256,
+            disposition,
+            envelope_receipt,
+            acceptance,
+            &now_rfc3339(),
+        )
+        .await
+        .map_err(map_apply_receipt_error)?;
+    }
+    Ok(Some(DeliveryStep {
+        report,
+        rejection,
+        disposition: receipt_disposition,
+    }))
+}
+
+/// Map a receipt-application failure onto the delivery error type.
+fn map_apply_receipt_error(error: ApplyReceiptError) -> ReportStoreError {
+    match error {
         ApplyReceiptError::Database(error) => ReportStoreError::Database(error),
         ApplyReceiptError::StaleClosing { report_id } => {
             ReportStoreError::StaleClosing { report_id }
         }
-    })?;
-    Ok(Some(DeliveryStep {
-        report,
-        rejection,
-        disposition: envelope.receipt.disposition,
-    }))
+    }
 }
 
 /// Claim the durable block and gap samples included in a report.
@@ -562,9 +745,7 @@ async fn persist_immutable_report_inner(
     if let Some(reason) = validate_spool_report(&candidate) {
         return Err(ReportStoreError::InvalidReport(reason));
     }
-    let report = serde_json::from_slice::<AgentReport>(body)
-        .map_err(|error| ReportStoreError::InvalidReport(error.to_string()))?;
-    let agent_id = report.agent_id.to_string();
+    let (agent_id, block_summaries, history_gaps) = parse_spooled_report(body)?;
     let _write_permit = store.acquire_write().await;
     let mut tx = store.connection().begin().await?;
     let transaction_result: Result<(), sqlx::Error> = async {
@@ -616,8 +797,8 @@ async fn persist_immutable_report_inner(
         if !claim_report_samples(
             &mut tx,
             report_id,
-            &report.block_summaries,
-            &report.history_gaps,
+            &block_summaries,
+            &history_gaps,
         )
         .await?
         {
@@ -885,12 +1066,10 @@ pub async fn enforce_spool_policy(
             mark_spool_fatal_store(store, now, &reason).await?;
             return Err(ReportStoreError::StoreFatal(reason));
         }
-        let report: AgentReport = serde_json::from_slice(&row.body).map_err(|error| {
-            ReportStoreError::InvalidReport(format!("stored report is invalid: {error}"))
-        })?;
+        let (_, block_summaries, history_gaps) = parse_spooled_report(&row.body)?;
         let mut sample_count = 0u64;
         let mut height_range: Option<(u64, u64)> = None;
-        for sample in &report.block_summaries {
+        for sample in &block_summaries {
             sample_count += 1;
             height_range = Some(
                 height_range.map_or((sample.block_number, sample.block_number), |(from, to)| {
@@ -898,7 +1077,7 @@ pub async fn enforce_spool_policy(
                 }),
             );
         }
-        for gap in &report.history_gaps {
+        for gap in &history_gaps {
             sample_count += 1;
             height_range = Some(
                 height_range.map_or((gap.from_height, gap.to_height), |(from, to)| {
@@ -1026,26 +1205,53 @@ fn validate_spool_report(row: &SpoolReportRow) -> Option<String> {
             row.report_id
         ));
     }
-    let report: AgentReport = match serde_json::from_slice(&row.body) {
-        Ok(report) => report,
-        Err(error) => {
-            return Some(format!(
-                "immutable spool report {} is not a valid AgentReport: {error}",
-                row.report_id
-            ));
-        }
-    };
-    if let Err(error) = report.validate() {
+    let (validation, report_id, agent_epoch, boot_id, report_sequence, generated_at) =
+        if report_protocol_major(&row.body) == platpulse_core::protocol::PROTOCOL_VERSION_V2 {
+            match serde_json::from_slice::<AgentReport<InventoryDeclaration>>(&row.body) {
+                Ok(report) => (
+                    report.validate(),
+                    report.report_id.to_string(),
+                    report.agent_epoch,
+                    report.boot_id.to_string(),
+                    report.report_sequence,
+                    report.generated_at.to_string(),
+                ),
+                Err(error) => {
+                    return Some(format!(
+                        "immutable spool report {} is not a valid v2 AgentReport: {error}",
+                        row.report_id
+                    ));
+                }
+            }
+        } else {
+            match serde_json::from_slice::<AgentReport>(&row.body) {
+                Ok(report) => (
+                    report.validate(),
+                    report.report_id.to_string(),
+                    report.agent_epoch,
+                    report.boot_id.to_string(),
+                    report.report_sequence,
+                    report.generated_at.to_string(),
+                ),
+                Err(error) => {
+                    return Some(format!(
+                        "immutable spool report {} is not a valid AgentReport: {error}",
+                        row.report_id
+                    ));
+                }
+            }
+        };
+    if let Err(error) = validation {
         return Some(format!(
             "immutable spool report {} failed protocol validation: {error}",
             row.report_id
         ));
     }
-    if report.report_id.to_string() != row.report_id
-        || report.agent_epoch != row.agent_epoch.max(0) as u64
-        || report.boot_id.to_string() != row.boot_id
-        || report.report_sequence != row.report_sequence.max(0) as u64
-        || report.generated_at.to_string() != row.generated_at
+    if report_id != row.report_id
+        || agent_epoch != row.agent_epoch.max(0) as u64
+        || boot_id != row.boot_id
+        || report_sequence != row.report_sequence.max(0) as u64
+        || generated_at != row.generated_at
     {
         return Some(format!(
             "immutable spool report {} metadata does not match its stored identity",
@@ -1115,6 +1321,37 @@ pub(crate) async fn persist_report_from_config_with_permit(
         path: report_path.to_owned(),
         source,
     })?;
+    // A Server-managed (v2) Agent persists the declaration form and has no local
+    // revision to guard; the report is already the revision-excluded shape.
+    if validated.server_managed_inventory {
+        let report: platpulse_core::AgentReport<InventoryDeclaration> =
+            serde_json::from_slice(&body)
+                .map_err(|error| ReportStoreError::InvalidReport(error.to_string()))?;
+        report
+            .validate()
+            .map_err(|error| ReportStoreError::InvalidReport(error.to_string()))?;
+        if report.inventory != validated.declaration {
+            return Err(ReportStoreError::InventoryMismatch);
+        }
+        let mut store = AgentStore::open_with_write_permit(
+            AgentDatabaseConfig::new(&config.state_db),
+            write_permit,
+        )
+        .await?;
+        validate_receipt_history(&mut store).await?;
+        let digest = persist_immutable_report(
+            &mut store,
+            &report.report_id.to_string(),
+            report.agent_epoch,
+            &report.boot_id.to_string(),
+            report.report_sequence,
+            &report.generated_at.to_string(),
+            &body,
+        )
+        .await?;
+        store.close().await?;
+        return Ok(digest);
+    }
     let report: platpulse_core::AgentReport = serde_json::from_slice(&body)
         .map_err(|error| ReportStoreError::InvalidReport(error.to_string()))?;
     report
@@ -1131,7 +1368,7 @@ pub(crate) async fn persist_report_from_config_with_permit(
     validate_receipt_history(&mut store).await?;
     // Refuse to spool a report whose Inventory the Server would refuse
     // (issue #181): the report is immutable, so a conflict cannot be fixed
-    // after the fact.
+    // after the fact. This frozen v1 guard applies only to a v1 configuration.
     crate::collector::guard_inventory_declaration(&mut store, &validated.inventory).await?;
     let digest = persist_immutable_report(
         &mut store,
@@ -2486,6 +2723,270 @@ mod backlog_recovery_tests {
         assert_eq!(
             record.sha256,
             bumped_inventory.inventory.content_sha256().to_string()
+        );
+
+        store.close().await.unwrap();
+        server.stop().await;
+    }
+
+    const V2_NODE_A: &str = "0195f2a1-0014-4014-8014-000000000014";
+    const V2_NODE_B: &str = "0195f2a1-0015-4015-8015-000000000015";
+
+    /// A v2 report body built from the frozen v2 fixture. The declaration lists
+    /// the Nodes as (node_id, rpc_endpoint, display_name); the observation view
+    /// is generated to match, so the report is a complete current view.
+    fn v2_report_body(
+        sequence: u64,
+        agent_id: &str,
+        agent_epoch: u64,
+        nodes: &[(&str, &str, Option<&str>)],
+    ) -> Vec<u8> {
+        let mut report: serde_json::Value = serde_json::from_str(include_str!(
+            "../../platpulse-core/tests/fixtures/report_v2_minimal.json"
+        ))
+        .unwrap();
+        let template_node = report["inventory"]["nodes"][0].clone();
+        let template_observation = report["nodes"][0].clone();
+        let mut inventory_nodes = Vec::new();
+        let mut observations = Vec::new();
+        for (node_id, endpoint, display_name) in nodes {
+            let mut node = template_node.clone();
+            node["node_id"] = serde_json::json!(node_id);
+            node["rpc_endpoint"] = serde_json::json!(endpoint);
+            match display_name {
+                Some(name) => node["display_name"] = serde_json::json!(name),
+                None => {
+                    node.as_object_mut().unwrap().remove("display_name");
+                }
+            }
+            inventory_nodes.push(node);
+            let mut observation = template_observation.clone();
+            observation["node_id"] = serde_json::json!(node_id);
+            observations.push(observation);
+        }
+        report["agent_id"] = serde_json::json!(agent_id);
+        report["agent_epoch"] = serde_json::json!(agent_epoch);
+        report["report_sequence"] = serde_json::json!(sequence);
+        report["report_id"] = serde_json::json!(format!("0195f2a1-0100-4000-8000-{sequence:012}"));
+        report["inventory"]["nodes"] = serde_json::Value::Array(inventory_nodes);
+        report["nodes"] = serde_json::Value::Array(observations);
+        serde_json::to_vec(&report).unwrap()
+    }
+
+    async fn server_inventory_revision(server: &RunningServer, agent_id: &str) -> i64 {
+        sqlx::query_scalar("SELECT last_inventory_revision FROM agents WHERE agent_id = ?")
+            .bind(agent_id)
+            .fetch_one(server.state.db().pool())
+            .await
+            .unwrap()
+    }
+
+    /// The v2 closed loop across the real Server, production enrollment, HTTP
+    /// transport, and Agent receipt application: first acceptance, identical
+    /// content, Node reorder, field change, A -> B -> A, empty Inventory, and a
+    /// rejected report that allocates nothing.
+    #[tokio::test]
+    async fn v2_server_managed_inventory_revisions_follow_content_and_never_regress() {
+        let dir = TempDir::new().unwrap();
+        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = probe.local_addr().unwrap();
+        drop(probe);
+        let (server, token) = boot_server(addr, dir.path()).await;
+        let config = agent_config(dir.path(), &format!("http://{addr}"));
+        let enrolled = crate::enroll::enroll_agent(&config, &token).await.unwrap();
+        let agent_id = enrolled.agent_id.to_string();
+
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(&config.state_db))
+            .await
+            .unwrap();
+        let transport = HttpReportTransport::from_config(&config).unwrap();
+        let policy = SpoolPolicy::default();
+
+        let validator_a = (V2_NODE_A, "ws://127.0.0.1:6790", Some("Validator A"));
+        let validator_b = (V2_NODE_B, "ws://127.0.0.1:6791", None);
+
+        // First acceptance: the Server assigns revision 1.
+        let body = v2_report_body(1, &agent_id, 1, &[validator_a]);
+        persist_immutable_report(
+            &mut store,
+            &report_id(1),
+            1,
+            BOOT_ID,
+            1,
+            "2026-08-12T09:00:00Z",
+            &body,
+        )
+        .await
+        .unwrap();
+        let outcome = deliver_periodic(&mut store, &transport, &policy)
+            .await
+            .unwrap();
+        assert_eq!(outcome.applied, 1, "{:?}", outcome.rejections);
+        assert!(outcome.rejections.is_empty(), "{:?}", outcome.rejections);
+        let record = read_inventory_declaration(store.connection())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.revision, 1);
+        assert_eq!(server_inventory_revision(&server, &agent_id).await, 1);
+        let server_hash: Option<String> =
+            sqlx::query_scalar("SELECT inventory_sha256 FROM agents WHERE agent_id = ?")
+                .bind(&agent_id)
+                .fetch_one(server.state.db().pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            record.sha256,
+            server_hash.expect("the accepted declaration fingerprint is stored"),
+            "the Agent confirmation record must match the Server's accepted fingerprint"
+        );
+
+        // Identical content keeps the accepted revision.
+        let body = v2_report_body(2, &agent_id, 1, &[validator_a]);
+        persist_immutable_report(
+            &mut store,
+            &report_id(2),
+            1,
+            BOOT_ID,
+            2,
+            "2026-08-12T09:00:00Z",
+            &body,
+        )
+        .await
+        .unwrap();
+        let outcome = deliver_periodic(&mut store, &transport, &policy)
+            .await
+            .unwrap();
+        assert_eq!(outcome.applied, 1, "{:?}", outcome.rejections);
+        assert_eq!(server_inventory_revision(&server, &agent_id).await, 1);
+
+        // A new member is a content change: revision 2.
+        let body = v2_report_body(3, &agent_id, 1, &[validator_a, validator_b]);
+        persist_immutable_report(
+            &mut store,
+            &report_id(3),
+            1,
+            BOOT_ID,
+            3,
+            "2026-08-12T09:00:00Z",
+            &body,
+        )
+        .await
+        .unwrap();
+        deliver_periodic(&mut store, &transport, &policy)
+            .await
+            .unwrap();
+        assert_eq!(server_inventory_revision(&server, &agent_id).await, 2);
+
+        // Node order alone is not a declaration change: unchanged, revision 2.
+        let body = v2_report_body(4, &agent_id, 1, &[validator_b, validator_a]);
+        persist_immutable_report(
+            &mut store,
+            &report_id(4),
+            1,
+            BOOT_ID,
+            4,
+            "2026-08-12T09:00:00Z",
+            &body,
+        )
+        .await
+        .unwrap();
+        deliver_periodic(&mut store, &transport, &policy)
+            .await
+            .unwrap();
+        assert_eq!(server_inventory_revision(&server, &agent_id).await, 2);
+
+        // A declared field change advances the revision.
+        let changed_a = (V2_NODE_A, "ws://127.0.0.1:6799", Some("Validator A"));
+        let body = v2_report_body(5, &agent_id, 1, &[changed_a, validator_b]);
+        persist_immutable_report(
+            &mut store,
+            &report_id(5),
+            1,
+            BOOT_ID,
+            5,
+            "2026-08-12T09:00:00Z",
+            &body,
+        )
+        .await
+        .unwrap();
+        deliver_periodic(&mut store, &transport, &policy)
+            .await
+            .unwrap();
+        assert_eq!(server_inventory_revision(&server, &agent_id).await, 3);
+
+        // A -> B -> A allocates a fresh revision; it never reuses the old number.
+        let body = v2_report_body(6, &agent_id, 1, &[validator_a, validator_b]);
+        persist_immutable_report(
+            &mut store,
+            &report_id(6),
+            1,
+            BOOT_ID,
+            6,
+            "2026-08-12T09:00:00Z",
+            &body,
+        )
+        .await
+        .unwrap();
+        deliver_periodic(&mut store, &transport, &policy)
+            .await
+            .unwrap();
+        assert_eq!(server_inventory_revision(&server, &agent_id).await, 4);
+
+        // An accepted empty Inventory is distinct from an uninitialized Agent.
+        let body = v2_report_body(7, &agent_id, 1, &[]);
+        persist_immutable_report(
+            &mut store,
+            &report_id(7),
+            1,
+            BOOT_ID,
+            7,
+            "2026-08-12T09:00:00Z",
+            &body,
+        )
+        .await
+        .unwrap();
+        deliver_periodic(&mut store, &transport, &policy)
+            .await
+            .unwrap();
+        assert_eq!(server_inventory_revision(&server, &agent_id).await, 5);
+        let record = read_inventory_declaration(store.connection())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.revision, 5);
+
+        // A rejected report allocates nothing and never advances the record.
+        let body = v2_report_body(8, &agent_id, 0, &[validator_a]);
+        persist_immutable_report(
+            &mut store,
+            &report_id(8),
+            0,
+            BOOT_ID,
+            8,
+            "2026-08-12T09:00:00Z",
+            &body,
+        )
+        .await
+        .unwrap();
+        let outcome = deliver_periodic(&mut store, &transport, &policy)
+            .await
+            .unwrap();
+        assert_eq!(outcome.applied, 1);
+        assert_eq!(outcome.rejections.len(), 1, "{:?}", outcome.rejections);
+        assert_eq!(server_inventory_revision(&server, &agent_id).await, 5);
+        let record = read_inventory_declaration(store.connection())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.revision, 5);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            0,
+            "an applied rejection still removes the acknowledged report"
         );
 
         store.close().await.unwrap();

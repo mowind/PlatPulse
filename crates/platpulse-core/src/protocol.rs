@@ -10,8 +10,16 @@
 /// majors listed in `SUPPORTED_PROTOCOL_MAJORS` are accepted.
 pub const PROTOCOL_VERSION: u64 = 1;
 
-/// Protocol majors the v1 Server accepts on the Agent API.
-pub const SUPPORTED_PROTOCOL_MAJORS: &[u64] = &[PROTOCOL_VERSION];
+/// Major version of the Server-managed Inventory Revision protocol (v2).
+///
+/// A v2 report declares its complete Inventory content without an Agent-assigned
+/// revision; the Server allocates the accepted revision and returns it with the
+/// canonical declaration fingerprint. v1 types, hashes, and strict decoding stay
+/// frozen and are never extended with optional fields.
+pub const PROTOCOL_VERSION_V2: u64 = 2;
+
+/// Protocol majors the Server accepts on the Agent API.
+pub const SUPPORTED_PROTOCOL_MAJORS: &[u64] = &[PROTOCOL_VERSION, PROTOCOL_VERSION_V2];
 
 /// Hard upper bound on a single AgentReport body, enforced by the Server
 /// before deserialization. Agents flush early when approaching 2 MiB or the
@@ -60,3 +68,6 @@ pub const MAX_DIAGNOSTIC_TEXT_BYTES: usize = 1024;
 
 /// HTTP path of the v1 AgentReport endpoint.
 pub const AGENT_API_REPORTS_PATH: &str = "/api/agent/v1/reports";
+
+/// HTTP path of the v2 AgentReport endpoint (Server-managed Inventory Revision).
+pub const AGENT_API_REPORTS_PATH_V2: &str = "/api/agent/v2/reports";

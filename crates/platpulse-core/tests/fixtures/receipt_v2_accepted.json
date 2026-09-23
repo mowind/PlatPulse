@@ -1,0 +1,21 @@
+{
+  "report_id": "0195f2a1-0003-4003-8003-000000000003",
+  "disposition": "accepted",
+  "report_body_sha256": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "server_version": "0.1.0",
+  "supported_protocol_majors": [
+    1,
+    2
+  ],
+  "server_time": "2026-08-12T10:00:01Z",
+  "inventory": {
+    "disposition": "accepted",
+    "acceptance": {
+      "revision": 1,
+      "fingerprint": "0xd27190dc94800a57f196427b996857ad7582414b535ffe51853d580c8917b0c4"
+    }
+  },
+  "rejections": [],
+  "nodes": [],
+  "samples": []
+}

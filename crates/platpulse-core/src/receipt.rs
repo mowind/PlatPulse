@@ -117,6 +117,81 @@ pub struct ReportReceipt {
     pub samples: Vec<SampleDisposition>,
 }
 
+/// The Server-assigned acceptance of one v2 Inventory declaration.
+///
+/// `revision` is the accepted Inventory Revision within the Agent identity and
+/// `fingerprint` is the canonical declaration fingerprint the Server stored and
+/// compared. Both belong to the exact receipt: a rejected whole Inventory never
+/// carries this pair.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InventoryAcceptance {
+    /// The accepted Inventory Revision (first acceptance is 1).
+    pub revision: u64,
+    /// The canonical declaration fingerprint of the accepted content.
+    pub fingerprint: Sha256Hex,
+}
+
+/// The v2 whole-Inventory outcome. `acceptance` is present iff the Inventory was
+/// accepted or unchanged; a whole-Inventory rejection carries no accepted pair.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InventoryReceiptV2 {
+    /// Accepted, unchanged, or rejected as a whole.
+    pub disposition: InventoryDisposition,
+    /// The accepted revision and fingerprint; present for accepted/unchanged.
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub acceptance: Option<InventoryAcceptance>,
+}
+
+/// The exact Report Receipt for one v2 AgentReport.
+///
+/// It mirrors the frozen v1 receipt for the report body, Server identity, time,
+/// per-Node, and per-sample fields, but its Inventory outcome binds the
+/// declaration's Server-assigned revision and canonical fingerprint instead of
+/// echoing an Agent-declared disposition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReportReceiptV2 {
+    /// The report this receipt acknowledges.
+    pub report_id: ReportId,
+    /// Whole-report disposition.
+    pub disposition: ReceiptDisposition,
+    /// SHA-256 of the exact report body bytes.
+    pub report_body_sha256: Sha256Hex,
+    /// Server software version.
+    pub server_version: String,
+    /// Protocol majors the Server accepts.
+    pub supported_protocol_majors: Vec<u64>,
+    /// Server UTC time of the commit.
+    pub server_time: Rfc3339,
+    /// Optional credential-rotation hint (opaque to Agents).
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub rotation_hint: Option<String>,
+    /// Whole-Inventory outcome; omitted when the report failed at envelope
+    /// level (before Inventory validation).
+    #[serde(
+        default = "crate::component::default_none",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::component::strict_optional"
+    )]
+    pub inventory: Option<InventoryReceiptV2>,
+    /// Envelope/Inventory-level rejections.
+    pub rejections: Vec<Rejection>,
+    /// Per-Node current observation dispositions.
+    pub nodes: Vec<NodeReceipt>,
+    /// Per-sample/range dispositions for Block Summaries and History Gaps.
+    pub samples: Vec<SampleDisposition>,
+}
+
 /// One Node's receipt entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -419,6 +494,146 @@ impl ReportReceipt {
                     }
                 }
             }
+        }
+        Ok(())
+    }
+}
+
+impl ReportReceiptV2 {
+    /// Validates the v2 receipt's internal consistency so the Agent can apply it
+    /// deterministically. Entry rules mirror v1; the Inventory outcome must bind
+    /// the Server-assigned revision and canonical fingerprint.
+    pub fn validate(&self) -> Result<(), WireError> {
+        for rejection in &self.rejections {
+            check_retryable(rejection)?;
+        }
+        for node in &self.nodes {
+            for rejection in &node.rejections {
+                check_retryable(rejection)?;
+            }
+            if node.current == NodeCurrentDisposition::Rejected && node.rejections.is_empty() {
+                return Err(WireError::NodeRejectedWithoutRejection);
+            }
+            if node.current == NodeCurrentDisposition::Accepted && !node.rejections.is_empty() {
+                return Err(WireError::NodeAcceptedWithRejections);
+            }
+            if node.current == NodeCurrentDisposition::Rejected
+                && !node.accepted_component_revisions.is_empty()
+            {
+                return Err(WireError::NodeRejectedWithAcceptedRevisions);
+            }
+            if node.current == NodeCurrentDisposition::Rejected
+                && node.rejections.iter().any(|rejection| rejection.retryable)
+            {
+                return Err(WireError::NodeRejectedWithRetryableRejection);
+            }
+        }
+        for sample in &self.samples {
+            if let Some(rejection) = &sample.rejection {
+                check_retryable(rejection)?;
+            }
+            match sample.disposition {
+                SampleDispositionKind::Accepted => {
+                    if sample.rejection.is_some() {
+                        return Err(WireError::SampleAcceptedWithRejection);
+                    }
+                }
+                SampleDispositionKind::RetryableRejected
+                | SampleDispositionKind::TerminalRejected => {
+                    let rejection = sample
+                        .rejection
+                        .as_ref()
+                        .ok_or(WireError::SampleRejectedWithoutRejection)?;
+                    let expected_retryable =
+                        sample.disposition == SampleDispositionKind::RetryableRejected;
+                    if rejection.retryable != expected_retryable {
+                        return Err(WireError::SampleDispositionRetryableMismatch {
+                            disposition: sample.disposition,
+                            retryable: rejection.retryable,
+                        });
+                    }
+                }
+            }
+        }
+        match self.disposition {
+            ReceiptDisposition::Accepted => {
+                if !self.rejections.is_empty() {
+                    return Err(WireError::ReceiptAcceptedWithRejections);
+                }
+                if self.nodes.iter().any(|n| {
+                    n.current == NodeCurrentDisposition::Rejected || !n.rejections.is_empty()
+                }) {
+                    return Err(WireError::ReceiptAcceptedWithRejectedNode);
+                }
+                if self
+                    .samples
+                    .iter()
+                    .any(|s| s.disposition != SampleDispositionKind::Accepted)
+                {
+                    return Err(WireError::ReceiptAcceptedWithRejectedSample);
+                }
+                self.validate_inventory_acceptance()?;
+            }
+            ReceiptDisposition::PartiallyAccepted => {
+                self.validate_inventory_acceptance()?;
+                let nothing_rejected = self
+                    .samples
+                    .iter()
+                    .all(|s| s.disposition == SampleDispositionKind::Accepted)
+                    && self.nodes.iter().all(|n| {
+                        n.current == NodeCurrentDisposition::Accepted && n.rejections.is_empty()
+                    });
+                if nothing_rejected {
+                    return Err(WireError::ReceiptPartialWithoutRejection);
+                }
+            }
+            ReceiptDisposition::Rejected => {
+                if self.rejections.is_empty() {
+                    return Err(WireError::ReceiptRejectedWithoutRejection);
+                }
+                if !self.nodes.is_empty() {
+                    return Err(WireError::ReceiptRejectedWithNodeEntries);
+                }
+                if !self.samples.is_empty() {
+                    return Err(WireError::ReceiptRejectedWithSampleEntries);
+                }
+                if let Some(inventory) = &self.inventory {
+                    if inventory.disposition != InventoryDisposition::Rejected
+                        || inventory.acceptance.is_some()
+                    {
+                        return Err(WireError::ReceiptRejectedWithAcceptedInventory);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// An appliable v2 receipt binds the accepted revision and fingerprint; a
+    /// whole-Inventory rejection is not appliable and carries no pair.
+    fn validate_inventory_acceptance(&self) -> Result<(), WireError> {
+        let inventory = self
+            .inventory
+            .as_ref()
+            .ok_or(WireError::ReceiptRequiresInventory {
+                disposition: self.disposition,
+            })?;
+        if inventory.disposition == InventoryDisposition::Rejected {
+            return Err(WireError::ReceiptWithRejectedInventory {
+                disposition: self.disposition,
+            });
+        }
+        let acceptance =
+            inventory
+                .acceptance
+                .as_ref()
+                .ok_or(WireError::ReceiptInventoryAcceptanceMissing {
+                    disposition: self.disposition,
+                })?;
+        if acceptance.revision == 0 {
+            return Err(WireError::ValueOutOfRange {
+                field: "inventory.acceptance.revision",
+            });
         }
         Ok(())
     }

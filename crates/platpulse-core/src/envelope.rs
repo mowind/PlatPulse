@@ -15,9 +15,8 @@ use crate::component::validate_component;
 use crate::error::WireError;
 use crate::gap::HistoryGap;
 use crate::identity::{AgentId, BootId, NodeId, ReportId};
-use crate::inventory::NodeInventory;
+use crate::inventory::{NodeInventory, ReportInventory};
 use crate::observation::{HostObservation, NodeChainObservation, NodeObservation, PeerSnapshot};
-use crate::protocol::PROTOCOL_VERSION;
 use crate::time::Rfc3339;
 
 /// How this report relates to the Agent's boot lifecycle.
@@ -62,10 +61,15 @@ pub enum AgentCapability {
     PeerSnapshot,
 }
 
-/// The immutable AgentReport envelope (protocol v1).
+/// The immutable AgentReport envelope.
+///
+/// The default type parameter is the frozen v1 Inventory shape; v2 reports use
+/// `AgentReport<InventoryDeclaration>`, which carries no Agent-assigned
+/// revision. Both shapes share one envelope so validation, boot fences, and
+/// projections cannot drift between protocol majors.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AgentReport {
+pub struct AgentReport<I = NodeInventory> {
     /// Wire protocol major; must equal `PROTOCOL_VERSION` (1).
     pub protocol_version: u64,
     /// Agent identity, issued by the Server at Enrollment.
@@ -97,8 +101,8 @@ pub struct AgentReport {
     pub agent_version: String,
     /// Agent-declared capabilities (may be `[]`).
     pub agent_capabilities: Vec<AgentCapability>,
-    /// The complete Node Inventory and its revision.
-    pub inventory: NodeInventory,
+    /// The complete Node Inventory (v1 revision-inclusive, or v2 declaration).
+    pub inventory: I,
     /// Host-level observation, collected once per Agent.
     pub host: HostObservation,
     /// Per-Node current component observations.
@@ -109,17 +113,17 @@ pub struct AgentReport {
     pub history_gaps: Vec<HistoryGap>,
 }
 
-impl AgentReport {
+impl<I: ReportInventory> AgentReport<I> {
     /// Validates the structural wire invariants of this report.
     ///
     /// The Server revalidates every field after deserialization (it is the
     /// trust boundary); this is the shared contract check used by both
     /// sides.
     pub fn validate(&self) -> Result<(), WireError> {
-        if self.protocol_version != PROTOCOL_VERSION {
+        if self.protocol_version != I::protocol_version() {
             return Err(WireError::UnsupportedProtocolVersion {
                 got: self.protocol_version,
-                supported: PROTOCOL_VERSION,
+                supported: I::protocol_version(),
             });
         }
         if self.report_sequence == 0 {
@@ -155,13 +159,11 @@ impl AgentReport {
     }
 
     fn validate_inventory(&self) -> Result<(), WireError> {
-        if self.inventory.revision == 0 {
-            return Err(WireError::InventoryRevisionZero);
-        }
-        if self.inventory.nodes.len() > crate::protocol::MAX_INVENTORY_NODES {
+        self.inventory.validate_shape()?;
+        if self.inventory.nodes().len() > crate::protocol::MAX_INVENTORY_NODES {
             return Err(WireError::TooManyEntries {
                 field: "inventory.nodes",
-                len: self.inventory.nodes.len(),
+                len: self.inventory.nodes().len(),
                 max: crate::protocol::MAX_INVENTORY_NODES,
             });
         }
@@ -172,8 +174,8 @@ impl AgentReport {
                 max: crate::protocol::MAX_AGENT_CAPABILITIES,
             });
         }
-        let mut seen = HashSet::with_capacity(self.inventory.nodes.len());
-        for node in &self.inventory.nodes {
+        let mut seen = HashSet::with_capacity(self.inventory.nodes().len());
+        for node in self.inventory.nodes() {
             if !seen.insert(node.node_id) {
                 return Err(WireError::DuplicateInventoryNode {
                     node_id: node.node_id,
@@ -217,7 +219,7 @@ impl AgentReport {
         }
         let known: HashSet<NodeId> = self
             .inventory
-            .nodes
+            .nodes()
             .iter()
             .map(|node| node.node_id)
             .collect();
@@ -258,7 +260,7 @@ impl AgentReport {
                 });
             }
         }
-        for node in &self.inventory.nodes {
+        for node in self.inventory.nodes() {
             if !observed.contains(&node.node_id) {
                 return Err(WireError::MissingNodeObservation {
                     node_id: node.node_id,
@@ -338,7 +340,7 @@ impl AgentReport {
     fn validate_blocks(&self) -> Result<(), WireError> {
         let known: HashSet<NodeId> = self
             .inventory
-            .nodes
+            .nodes()
             .iter()
             .map(|node| node.node_id)
             .collect();
@@ -405,7 +407,7 @@ impl AgentReport {
     fn validate_gaps(&self) -> Result<(), WireError> {
         let known: HashSet<NodeId> = self
             .inventory
-            .nodes
+            .nodes()
             .iter()
             .map(|node| node.node_id)
             .collect();

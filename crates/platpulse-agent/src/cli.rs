@@ -148,18 +148,29 @@ pub async fn run_validate_config(args: &ValidateConfigArgs) -> Result<(), Box<Ag
     // effectively accepted, and `validate-config` is where an operator checks a
     // configuration edit before restarting. The check is read-only: this command
     // must not create or migrate the Agent Store (issue #181).
-    crate::inventory_declaration::check_declaration_read_only(&file.state_db, &validated.inventory)
+    if validated.server_managed_inventory {
+        println!(
+            "Validated {} Node(s), Server-managed inventory revision.",
+            validated.inventory.nodes.len()
+        );
+    } else {
+        // A v1 configuration still compares against the last accepted Inventory.
+        crate::inventory_declaration::check_declaration_read_only(
+            &file.state_db,
+            &validated.inventory,
+        )
         .await
         .map_err(|conflict| {
             Box::new(AgentCliError::from(
                 crate::config::AgentConfigError::InventoryDeclaration(conflict.to_string()),
             ))
         })?;
-    println!(
-        "Validated {} Node(s), inventory revision {}.",
-        validated.inventory.nodes.len(),
-        validated.inventory.revision
-    );
+        println!(
+            "Validated {} Node(s), inventory revision {}.",
+            validated.inventory.nodes.len(),
+            validated.inventory.revision
+        );
+    }
     Ok(())
 }
 
@@ -199,13 +210,15 @@ pub async fn run_collect_report(args: &CollectReportArgs) -> Result<(), AgentCli
     // Same startup refusal as `run`, and for the same reason: this command
     // would otherwise recover the previous boot with a Closing report the
     // Server refuses (issue #181).
-    crate::collector::guard_startup_inventory_declaration(
-        &config,
-        &validated.inventory,
-        write_permit.clone(),
-    )
-    .await
-    .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    if !validated.server_managed_inventory {
+        crate::collector::guard_startup_inventory_declaration(
+            &config,
+            &validated.inventory,
+            write_permit.clone(),
+        )
+        .await
+        .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    }
     crate::collector::recover_previous_boot_with_permit(&config, &adapter, write_permit.clone())
         .await
         .map_err(|error| AgentCliError::Collection(error.to_string()))?;
@@ -570,13 +583,15 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
     // The signature reads the same for a startup refusal and a runtime drift;
     // only the duration differs — the Agent refuses to start here, and the
     // collection loop refuses to declare while staying alive.
-    crate::collector::guard_startup_inventory_declaration(
-        &config,
-        &validated.inventory,
-        write_permit.clone(),
-    )
-    .await
-    .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    if !validated.server_managed_inventory {
+        crate::collector::guard_startup_inventory_declaration(
+            &config,
+            &validated.inventory,
+            write_permit.clone(),
+        )
+        .await
+        .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    }
     let adapter = AlloyRpcAdapter;
     crate::collector::recover_previous_boot_with_permit(&config, &adapter, write_permit.clone())
         .await
