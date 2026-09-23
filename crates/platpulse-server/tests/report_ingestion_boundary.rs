@@ -121,6 +121,17 @@ fn bearer_post(uri: &str, token: &str, body: Vec<u8>) -> Request<Body> {
         .unwrap()
 }
 
+/// An authenticated Agent GET. A None credential exercises the missing
+/// credential path.
+fn bearer_get(uri: &str, credential: Option<&str>) -> Request<Body> {
+    let builder = Request::builder().method("GET").uri(uri);
+    let builder = match credential {
+        Some(token) => builder.header(header::AUTHORIZATION, format!("Bearer {token}")),
+        None => builder,
+    };
+    builder.body(Body::empty()).unwrap()
+}
+
 /// Log in through the real login route and return the authenticated Owner
 /// session the Admin mutations require.
 async fn owner_session(harness: &Harness) -> Session {
@@ -471,4 +482,66 @@ async fn pending_transfer_race_is_settled_at_the_router_boundary() {
             .await
             .unwrap();
     assert_eq!(events, 1);
+}
+
+/// The Agent upgrade-preparation baseline is authenticated and read-only: it
+/// returns what the Server last accepted together with the Boot linkage, and it
+/// never advances a Boot or allocates a revision (issue #189).
+#[tokio::test]
+async fn agent_preparation_baseline_is_authenticated_and_read_only() {
+    let harness = Harness::boot().await;
+    let session = owner_session(&harness).await;
+    let (agent_id, credential) = enroll_agent(&harness, &session).await;
+
+    // Missing and unknown credentials are refused before the handler runs.
+    let response = harness
+        .send(bearer_get("/api/agent/v1/preparation", None))
+        .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let response = harness
+        .send(bearer_get(
+            "/api/agent/v1/preparation",
+            Some("pp_agent_unknown_secret"),
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // A freshly enrolled Agent has accepted nothing and has no active Boot.
+    let response = harness
+        .send(bearer_get("/api/agent/v1/preparation", Some(&credential)))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["agent_id"], agent_id);
+    assert_eq!(body["accepted_inventory_revision"], 0);
+    assert_eq!(body["accepted_inventory_sha256"], Value::Null);
+    assert_eq!(body["active_boot_status"], "active");
+    assert_eq!(body["active_boot_id"], Value::Null);
+    assert_eq!(body["close_report_disposition"], Value::Null);
+
+    // An accepted report moves the baseline; reading it changes nothing.
+    let report = fixture_report(&agent_id, 1);
+    let (status, _) = submit(
+        &harness,
+        Some(&credential),
+        serde_json::to_vec(&report).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let response = harness
+        .send(bearer_get("/api/agent/v1/preparation", Some(&credential)))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["accepted_inventory_revision"], 1);
+    assert_eq!(body["accepted_inventory_protocol_major"], 1);
+    assert!(
+        body["accepted_inventory_sha256"]
+            .as_str()
+            .unwrap()
+            .starts_with("0x")
+    );
+    assert_eq!(body["active_boot_id"], report.boot_id.to_string());
+    assert_eq!(body["active_boot_status"], "active");
+    assert_eq!(body["last_report_sequence"], 1);
 }

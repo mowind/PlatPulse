@@ -2,7 +2,7 @@ use clap::{CommandFactory, Parser};
 
 use platpulse_agent::cli::{
     Cli, Command, run_agent, run_collect_report, run_enroll, run_generate_node_id,
-    run_persist_report, run_recover, run_shutdown, run_validate_config,
+    run_persist_report, run_prepare_upgrade, run_recover, run_shutdown, run_validate_config,
 };
 
 #[tokio::main]
@@ -24,6 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Shutdown(args) => run_shutdown(&args).await?,
         Command::PersistReport(args) => run_persist_report(&args).await?,
         Command::Recover(args) => run_recover(&args).await?,
+        Command::PrepareUpgrade(args) => run_prepare_upgrade(&args).await?,
     }
     Ok(())
 }

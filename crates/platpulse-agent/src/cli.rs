@@ -56,6 +56,12 @@ pub enum Command {
     /// Closing reports. Refuses to run while another Agent runtime owns the
     /// Store.
     Recover(RecoverArgs),
+    /// Prepare a frozen-v1 Agent for the coordinated Server-managed v2
+    /// cutover: stop ordinary collection, drain the immutable backlog, complete
+    /// the final Closing, and verify its original v1 declaration against the
+    /// Server's last accepted revision and hash. Does not start v2 ingestion or
+    /// resume collection.
+    PrepareUpgrade(PrepareUpgradeArgs),
 }
 
 #[derive(Debug, Args)]
@@ -99,6 +105,15 @@ pub struct PersistReportArgs {
     pub config: PathBuf,
     #[arg(long)]
     pub report: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct PrepareUpgradeArgs {
+    #[arg(long)]
+    pub config: PathBuf,
+    /// Total sender deadline for the backlog and final Closing delivery.
+    #[arg(long, default_value_t = 5000)]
+    pub deadline_ms: u64,
 }
 
 #[derive(Debug, Args)]
@@ -195,6 +210,36 @@ pub async fn run_recover(args: &RecoverArgs) -> Result<(), AgentCliError> {
     } else if !outcome.stale.is_empty() {
         println!("Re-run with --drop-stale-closing to quarantine these reports.");
     }
+    Ok(())
+}
+
+pub async fn run_prepare_upgrade(args: &PrepareUpgradeArgs) -> Result<(), AgentCliError> {
+    let config = AgentConfig::resolve(&args.config)?;
+    let outcome = crate::preparation::prepare_v1_upgrade(
+        &config,
+        std::time::Duration::from_millis(args.deadline_ms),
+    )
+    .await
+    .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    println!("Upgrade preparation verified.");
+    println!("  Closing report: {}", outcome.closing_report_id);
+    println!(
+        "  Frozen v1 Inventory: revision {} sha256 {}",
+        outcome.inventory_revision, outcome.inventory_sha256
+    );
+    println!(
+        "  Closing receipt: {} (Inventory accepted)",
+        outcome.closing_receipt_disposition
+    );
+    println!("  Closed Boot: {}", outcome.closed_boot_id);
+    println!(
+        "  Next Boot: {} (pending {})",
+        outcome.next_boot_id, outcome.pending_transition
+    );
+    println!("  Verified at: {}", outcome.verified_at);
+    println!(
+        "Normal collection stays stopped: do not start 'run' until the coordinated cutover is authorized."
+    );
     Ok(())
 }
 

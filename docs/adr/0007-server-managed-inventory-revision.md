@@ -1,6 +1,6 @@
 # ADR 0007: Server assigns Inventory Revisions without owning Agent configuration
 
-**Status:** Accepted; partially implemented. The v2 protocol major, Server-side allocation, v2 Receipt, Agent confirmation record, the retry/out-of-order/transaction-failure semantics (issues #186 and #187), and the Node-lifecycle admission plus v2-aware Inventory rejection diagnostics (issue #188) are implemented; the coordinated migration, offline preparation and cutover tooling described below remain unimplemented and do not authorize a production switch. Approved through the Q1–Q12 design interview for [issue #182](https://github.com/mowind/PlatPulse/issues/182).
+**Status:** Accepted; partially implemented. The v2 protocol major, Server-side allocation, v2 Receipt, Agent confirmation record, the retry/out-of-order/transaction-failure semantics (issues #186 and #187), the Node-lifecycle admission plus v2-aware Inventory rejection diagnostics (issue #188), and the v1 upgrade-preparation bridge — stop ordinary Reports, drain the immutable backlog, complete the final Closing, capture its full declaration, and verify the original revision-inclusive/order-sensitive hash against the Server's last accepted baseline — (issue #189) are implemented; the coordinated checkpoint, Server/Agent baseline conversion, offline validation and cutover tooling described below remain unimplemented and do not authorize a production switch. Approved through the Q1–Q12 design interview for [issue #182](https://github.com/mowind/PlatPulse/issues/182).
 
 ## Context
 

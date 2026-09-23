@@ -545,7 +545,7 @@ struct TransportResolver<'a> {
 /// able to complete when the RPC adapter is unavailable; the most recent
 /// durable report supplies the last-good Node observations, while the
 /// fail-closed skeleton supplies complete entries for newly configured Nodes.
-fn build_shutdown_report(
+pub(crate) fn build_shutdown_report(
     config: &crate::config::AgentConfig,
     agent_id: AgentId,
     agent_epoch: u64,
@@ -828,7 +828,7 @@ pub(crate) async fn graceful_shutdown_with_subscriptions_with_permit<
     })
 }
 
-fn started_at_plus(started: Rfc3339, duration: Duration) -> Rfc3339 {
+pub(crate) fn started_at_plus(started: Rfc3339, duration: Duration) -> Rfc3339 {
     let parsed = time::OffsetDateTime::parse(
         &started.to_string(),
         &time::format_description::well_known::Rfc3339,

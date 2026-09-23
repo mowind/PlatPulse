@@ -46,7 +46,7 @@ pub(crate) async fn server_time(
 
 use super::{AppState, ClientIp, ROUTE_GROUP_HEADER, RequestId, api_not_found};
 use crate::auth::format_rfc3339;
-use crate::enrollment::EnrollmentError;
+use crate::enrollment::{AgentAuthInfo, EnrollmentError};
 
 async fn group_middleware(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
@@ -295,6 +295,104 @@ pub(crate) async fn recover_handler(
     }
 }
 
+/// Server-owned v1 baseline evidence for the Agent-side upgrade preparation
+/// bridge (issue #189).
+///
+/// Migration under [ADR 0007](docs/adr/0007-server-managed-inventory-revision.md)
+/// is only safe when the v1 Agent can prove that its last successfully applied
+/// Closing declaration is exactly what the Server most recently accepted. The
+/// v1 Report Receipt carries no accepted revision or hash, so the Agent cannot
+/// derive that fact from its own local state: this authenticated Agent route is
+/// the authoritative read of the Server's accepted values.
+///
+/// It is a read-only diagnostic, not a new ingestion path. It never advances a
+/// Boot, allocates a revision, or accepts anything, and it is not part of the
+/// frozen v1 report wire contract.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct PreparationBaselineResponse {
+    /// The authenticated Agent identity.
+    pub agent_id: String,
+    /// The Agent Epoch the Server currently requires.
+    pub agent_epoch: i64,
+    /// The last accepted Inventory revision; 0 means none was ever accepted.
+    pub accepted_inventory_revision: i64,
+    /// Content hash of the last accepted Inventory; absent means none.
+    pub accepted_inventory_sha256: Option<String>,
+    /// Protocol major that produced the accepted declaration; absent is unknown.
+    pub accepted_inventory_protocol_major: Option<i64>,
+    /// Server-observed active/closed Boot identity.
+    pub active_boot_id: Option<String>,
+    pub active_boot_status: String,
+    pub previous_boot_id: Option<String>,
+    /// The Closing report whose accepted receipt closed the active Boot.
+    pub close_report_id: Option<String>,
+    /// The Server-recorded disposition of that Closing receipt; the Agent binds
+    /// it into the migration evidence instead of trusting its own bounded
+    /// Applied Receipt Record (issue #189).
+    pub close_report_disposition: Option<String>,
+    pub last_report_sequence: Option<i64>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct PreparationBaselineRow {
+    agent_epoch: i64,
+    last_inventory_revision: i64,
+    inventory_sha256: Option<String>,
+    inventory_protocol_major: Option<i64>,
+    active_boot_id: Option<String>,
+    active_boot_status: String,
+    previous_boot_id: Option<String>,
+    close_report_id: Option<String>,
+    close_report_disposition: Option<String>,
+    last_report_sequence: Option<i64>,
+}
+
+/// Read the Server's accepted Inventory baseline for the calling Agent.
+pub(crate) async fn preparation_baseline(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AgentAuthInfo>,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    let row = sqlx::query_as::<_, PreparationBaselineRow>(
+        "SELECT a.agent_epoch, a.last_inventory_revision, a.inventory_sha256, a.inventory_protocol_major, a.active_boot_id, a.active_boot_status, a.previous_boot_id, a.close_report_id, a.last_report_sequence, r.disposition AS close_report_disposition FROM agents a LEFT JOIN agent_report_receipts r ON r.report_id = a.close_report_id WHERE a.agent_id = ? AND a.deleted_at IS NULL",
+    )
+    .bind(&auth.agent_id)
+    .fetch_optional(state.db().pool())
+    .await;
+    match row {
+        Ok(Some(row)) => (
+            StatusCode::OK,
+            Json(PreparationBaselineResponse {
+                agent_id: auth.agent_id,
+                agent_epoch: row.agent_epoch,
+                accepted_inventory_revision: row.last_inventory_revision,
+                accepted_inventory_sha256: row.inventory_sha256,
+                accepted_inventory_protocol_major: row.inventory_protocol_major,
+                active_boot_id: row.active_boot_id,
+                active_boot_status: row.active_boot_status,
+                previous_boot_id: row.previous_boot_id,
+                close_report_id: row.close_report_id,
+                close_report_disposition: row.close_report_disposition,
+                last_report_sequence: row.last_report_sequence,
+            }),
+        )
+            .into_response(),
+        Ok(None) => error_response(
+            &request_id.0,
+            StatusCode::UNAUTHORIZED,
+            "agent_auth_required",
+            "Agent credential is invalid",
+        ),
+        Err(_) => error_response(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "Server database is unavailable",
+        ),
+    }
+}
+
 fn error_response(
     request_id: &str,
     status: StatusCode,
@@ -311,6 +409,7 @@ fn error_response(
 pub fn router() -> Router<AppState> {
     Router::<AppState>::new()
         .route("/time", get(server_time))
+        .route("/preparation", get(preparation_baseline))
         .route("/enroll", post(enroll_handler))
         .route("/recover", post(recover_handler))
         .fallback(api_not_found)

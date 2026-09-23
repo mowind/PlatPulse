@@ -10,8 +10,8 @@ use thiserror::Error;
 use platpulse_core::hex::Sha256Hex;
 use platpulse_core::identity::ReportId;
 use platpulse_core::{
-    AgentReport, BootTransition, InventoryDeclaration, ReceiptDisposition, ReportReceipt,
-    ReportReceiptV2, Rfc3339,
+    AgentReport, BootTransition, InventoryDeclaration, InventoryDisposition, ReceiptDisposition,
+    ReportReceipt, ReportReceiptV2, Rfc3339,
 };
 
 use serde::Deserialize;
@@ -473,12 +473,37 @@ pub async fn deliver_one_with_send_deadline<T: ReportTransport>(
         .map(|step| step.report))
 }
 
+/// Send one claimed report under a deadline and report both the immutable
+/// report and the Server's top-level disposition. The upgrade-preparation
+/// bridge (issue #189) must distinguish an accepted/partially accepted Closing
+/// from a rejected one without inferring it from later Agent state.
+pub(crate) async fn deliver_one_with_disposition_and_send_deadline<T: ReportTransport>(
+    store: &mut AgentStore,
+    transport: &T,
+    send_deadline: tokio::time::Instant,
+) -> Result<
+    Option<(
+        StoredReport,
+        ReceiptDisposition,
+        Option<InventoryDisposition>,
+    )>,
+    ReportStoreError,
+> {
+    Ok(deliver_one_typed(store, transport, Some(send_deadline))
+        .await?
+        .map(|step| (step.report, step.disposition, step.inventory)))
+}
+
 /// One applied report, with the operator-facing rejection summary when the
 /// Server refused it whole.
 struct DeliveryStep {
     report: StoredReport,
     rejection: Option<String>,
     disposition: ReceiptDisposition,
+    /// The Server's Inventory outcome for this report, kept so a caller that
+    /// must prove the declaration was accepted (the upgrade-preparation
+    /// bridge, issue #189) does not have to infer it from later state.
+    inventory: Option<InventoryDisposition>,
 }
 
 async fn deliver_one_typed<T: ReportTransport>(
@@ -550,6 +575,9 @@ async fn deliver_one_typed<T: ReportTransport>(
         return Err(ReportStoreError::ReceiptMismatch);
     }
     let receipt_disposition = envelope_receipt.disposition;
+    // Copy the Inventory outcome before the receipt is consumed by the
+    // receipt-application transaction below.
+    let inventory_disposition = envelope_receipt.inventory;
     let disposition = match receipt_disposition {
         ReceiptDisposition::Accepted => "accepted",
         ReceiptDisposition::PartiallyAccepted => "partially_accepted",
@@ -594,6 +622,7 @@ async fn deliver_one_typed<T: ReportTransport>(
         report,
         rejection,
         disposition: receipt_disposition,
+        inventory: inventory_disposition,
     }))
 }
 
