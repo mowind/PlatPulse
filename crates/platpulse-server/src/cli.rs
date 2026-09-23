@@ -72,6 +72,13 @@ pub enum CheckpointCommand {
     /// Restore a verified checkpoint into an isolated directory and prove the
     /// restored copy is the same closed-Boot checkpoint.
     Restore(CheckpointRestoreArgs),
+    /// Offline baseline conversion (issue #191): re-verify the checkpoint and
+    /// write an isolated v2 deployment with the converted Server baseline and
+    /// Agent Inventory Declaration Record. Starts no Server worker.
+    Convert(CheckpointConvertArgs),
+    /// Offline validation of a converted deployment against its source
+    /// checkpoint. Starts no Server worker.
+    VerifyConversion(CheckpointVerifyConversionArgs),
 }
 
 #[derive(Debug, Args)]
@@ -103,6 +110,27 @@ pub struct CheckpointRestoreArgs {
     /// Empty or non-existent directory that receives the isolated restore.
     #[arg(long)]
     pub restore_dir: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct CheckpointConvertArgs {
+    /// The verified coordinated checkpoint to convert.
+    #[arg(long)]
+    pub checkpoint: PathBuf,
+    /// Empty or non-existent directory that receives the converted deployment.
+    /// Every artifact is written owner-only.
+    #[arg(long)]
+    pub output: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct CheckpointVerifyConversionArgs {
+    /// The source coordinated checkpoint the conversion was derived from.
+    #[arg(long)]
+    pub checkpoint: PathBuf,
+    /// The converted deployment produced by `checkpoint convert`.
+    #[arg(long)]
+    pub converted: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -561,6 +589,64 @@ fn print_checkpoint_summary(summary: &crate::checkpoint::CheckpointSummary) {
         "  Preserved artifacts: agent {} / server {}",
         summary.agent_artifacts, summary.server_artifacts
     );
+}
+
+/// Offline baseline conversion (issue #191): re-verify the coordinated
+/// checkpoint, derive the v2 canonical fingerprint from the verified frozen-v1
+/// declaration, and write an isolated converted deployment. It starts no
+/// collector, ingestion path, Admin mutation or external-effect worker, and it
+/// does not authorize a production switch.
+pub async fn run_checkpoint_convert(
+    args: &CheckpointConvertArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let summary = crate::migration::convert_checkpoint(&args.checkpoint, &args.output).await?;
+    println!(
+        "Offline Inventory baseline conversion written to {}.",
+        args.output.display()
+    );
+    print_conversion_summary(&summary);
+    println!(
+        "This converted deployment is not authorized for production cutover; run 'platpulse-server checkpoint verify-conversion' before any switch."
+    );
+    Ok(())
+}
+
+/// Offline validation of a converted deployment against its source checkpoint.
+pub async fn run_checkpoint_verify_conversion(
+    args: &CheckpointVerifyConversionArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let summary = crate::migration::verify_conversion(&args.checkpoint, &args.converted)
+        .await
+        .map_err(|error| format!("conversion verification failed: {error}"))?;
+    println!(
+        "Offline Inventory baseline conversion verified: {}",
+        args.converted.display()
+    );
+    print_conversion_summary(&summary);
+    println!("No collector, ingestion, Admin write or external notification worker was started.");
+    Ok(())
+}
+
+fn print_conversion_summary(summary: &crate::migration::ConversionSummary) {
+    println!("  Agent: {}", summary.agent_id);
+    println!("  Closed Boot: {}", summary.closed_boot_id);
+    println!("  Pending Boot: {}", summary.next_boot_id);
+    if summary.uninitialized {
+        println!(
+            "  Inventory: never accepted (still uninitialized; the first v2 acceptance assigns revision 1)"
+        );
+    } else {
+        println!("  Preserved revision: {}", summary.inventory_revision);
+        println!(
+            "  Frozen v1 hash: {}",
+            summary.previous_sha256.as_deref().unwrap_or("unset")
+        );
+        println!(
+            "  v2 fingerprint: {}",
+            summary.fingerprint_sha256.as_deref().unwrap_or("unset")
+        );
+    }
+    println!("  Preserved deletion identities: {}", summary.deleted_nodes);
 }
 
 /// Create one sanitized backup using the same implementation as the Admin

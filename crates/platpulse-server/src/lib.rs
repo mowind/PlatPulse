@@ -31,6 +31,7 @@ pub mod geo_refresh;
 pub mod http;
 pub mod init;
 pub mod metrics;
+pub mod migration;
 pub mod network;
 pub mod node_purge;
 pub mod notifications;

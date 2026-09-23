@@ -197,6 +197,102 @@ pub async fn check_declaration_read_only(
     guard_declaration(recorded.as_ref(), declared)
 }
 
+/// The Server-managed Inventory conversion marker written by issue #191.
+///
+/// One bounded row records that this Agent Store was converted from a verified
+/// frozen-v1 coordinated checkpoint to the v2 canonical declaration
+/// fingerprint. It is the only local evidence that a still-present
+/// `inventory_revision` in agent.toml is migration residue rather than a
+/// deliberate frozen-v1 configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InventoryMigrationRecord {
+    pub protocol_major: i64,
+    pub preserved_revision: i64,
+    pub previous_sha256: Option<String>,
+    pub fingerprint_sha256: Option<String>,
+    pub converted_at: String,
+}
+
+/// Why the Agent refuses to start on a converted Store.
+#[derive(Debug, thiserror::Error)]
+pub enum InventoryMigrationError {
+    /// The Store is v2 but agent.toml still declares a local revision.
+    #[error(
+        "this Agent was already migrated to Server-managed Inventory (v2), but agent.toml still declares inventory_revision = {revision}; under v2 the Server assigns the accepted revision, so remove inventory_revision from agent.toml. The original configuration is preserved in the rollback checkpoint until business writes resume"
+    )]
+    RevisionMustBeRemoved { revision: u64 },
+    #[error("database error: {0}")]
+    Database(#[from] sqlx::Error),
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct InventoryMigrationRow {
+    protocol_major: i64,
+    preserved_revision: i64,
+    previous_sha256: Option<String>,
+    fingerprint_sha256: Option<String>,
+    converted_at: String,
+}
+
+/// Read the conversion marker, if this Store was converted offline.
+pub(crate) async fn read_inventory_migration(
+    connection: &mut SqliteConnection,
+) -> Result<Option<InventoryMigrationRecord>, sqlx::Error> {
+    let row: Option<InventoryMigrationRow> = sqlx::query_as(
+        "SELECT protocol_major, preserved_revision, previous_sha256, fingerprint_sha256, converted_at FROM inventory_migration WHERE singleton = 1",
+    )
+    .fetch_optional(connection)
+    .await?;
+    Ok(row.map(|row| InventoryMigrationRecord {
+        protocol_major: row.protocol_major,
+        preserved_revision: row.preserved_revision,
+        previous_sha256: row.previous_sha256,
+        fingerprint_sha256: row.fingerprint_sha256,
+        converted_at: row.converted_at,
+    }))
+}
+
+/// Refuse a leftover v1 `inventory_revision` once the Store is v2.
+///
+/// A converted Store with an omitted `inventory_revision` is the intended v2
+/// configuration and stays allowed. A never-converted Store (no marker) keeps
+/// the frozen-v1 configuration. The check is pure so the startup gate and the
+/// read-only `validate-config` check share one rule.
+pub(crate) fn guard_inventory_migration(
+    record: Option<&InventoryMigrationRecord>,
+    config_revision: Option<u64>,
+) -> Result<(), InventoryMigrationError> {
+    if let (Some(record), Some(revision)) = (record, config_revision)
+        && record.protocol_major >= 2
+    {
+        return Err(InventoryMigrationError::RevisionMustBeRemoved { revision });
+    }
+    Ok(())
+}
+
+/// The `validate-config` and startup form: strictly read-only, never creating or migrating
+/// the Store. A missing file, an older Store without the marker table, and an
+/// unreadable Store all mean the same thing here — no evidence of a conversion.
+pub async fn check_migration_config_read_only(
+    state_db: &Path,
+    config_revision: Option<u64>,
+) -> Result<(), InventoryMigrationError> {
+    if !state_db.exists() {
+        return Ok(());
+    }
+    let options = SqliteConnectOptions::new()
+        .filename(state_db)
+        .read_only(true);
+    let Ok(mut connection) = SqliteConnection::connect_with(&options).await else {
+        return Ok(());
+    };
+    let record = read_inventory_migration(&mut connection)
+        .await
+        .ok()
+        .flatten();
+    guard_inventory_migration(record.as_ref(), config_revision)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -378,6 +474,55 @@ mod tests {
             check_declaration_read_only(&path, &inventory(3, "ws://127.0.0.1:6790"))
                 .await
                 .is_err()
+        );
+    }
+
+    /// Issue #191: after an offline conversion a leftover inventory_revision is
+    /// migration residue, not a deliberate frozen-v1 configuration.
+    #[tokio::test]
+    async fn a_converted_store_refuses_a_leftover_revision_but_accepts_v2() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("agent.db");
+        let mut store = open_store(&path).await;
+
+        // A fresh Store has an empty marker table: both v1 and v2 are allowed.
+        assert_eq!(
+            read_inventory_migration(store.connection()).await.unwrap(),
+            None
+        );
+        assert!(guard_inventory_migration(None, Some(4)).is_ok());
+        assert!(guard_inventory_migration(None, None).is_ok());
+
+        sqlx::query(
+            "INSERT INTO inventory_migration (singleton, protocol_major, preserved_revision, previous_sha256, fingerprint_sha256, converted_at) VALUES (1, 2, 57, '0xaa', '0xbb', '2026-09-23T00:00:00Z')",
+        )
+        .execute(store.connection())
+        .await
+        .unwrap();
+        let record = read_inventory_migration(store.connection()).await.unwrap();
+        assert_eq!(record.as_ref().unwrap().preserved_revision, 57);
+
+        let error = guard_inventory_migration(record.as_ref(), Some(57))
+            .expect_err("a converted Store must refuse a leftover revision");
+        assert!(matches!(
+            error,
+            InventoryMigrationError::RevisionMustBeRemoved { revision: 57 }
+        ));
+        assert!(error.to_string().contains("remove inventory_revision"));
+        assert!(guard_inventory_migration(record.as_ref(), None).is_ok());
+        store.close().await.unwrap();
+
+        // The startup form sees the same marker without writing.
+        assert!(
+            check_migration_config_read_only(&path, Some(57))
+                .await
+                .is_err()
+        );
+        assert!(check_migration_config_read_only(&path, None).await.is_ok());
+        assert!(
+            check_migration_config_read_only(&dir.path().join("missing.db"), Some(57))
+                .await
+                .is_ok()
         );
     }
 }

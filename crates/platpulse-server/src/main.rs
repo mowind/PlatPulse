@@ -2,9 +2,10 @@ use clap::{CommandFactory, Parser};
 
 use platpulse_server::cli::{
     AgentCommand, CheckpointCommand, Cli, Command, NetworkCommand, OwnerCommand, ViewerCommand,
-    resolve_serve_config, run_backup, run_checkpoint_create, run_checkpoint_restore,
-    run_checkpoint_verify, run_create_enrollment_token, run_network_create, run_owner_create,
-    run_restore, run_serve, run_viewer_create,
+    resolve_serve_config, run_backup, run_checkpoint_convert, run_checkpoint_create,
+    run_checkpoint_restore, run_checkpoint_verify, run_checkpoint_verify_conversion,
+    run_create_enrollment_token, run_network_create, run_owner_create, run_restore, run_serve,
+    run_viewer_create,
 };
 use platpulse_server::config::ServerConfig;
 use platpulse_server::init::run_init;
@@ -98,6 +99,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::Checkpoint(CheckpointCommand::Restore(args)) => {
             run_checkpoint_restore(&args).await?;
+        }
+        Command::Checkpoint(CheckpointCommand::Convert(args)) => {
+            run_checkpoint_convert(&args).await?;
+        }
+        Command::Checkpoint(CheckpointCommand::VerifyConversion(args)) => {
+            run_checkpoint_verify_conversion(&args).await?;
         }
         Command::Serve(args) => {
             let config = resolve_serve_config(&args)?;

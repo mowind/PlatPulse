@@ -32,7 +32,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 pub static AGENT_MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 /// The latest migration version compiled into the Agent binary.
-pub const AGENT_SCHEMA_VERSION: i64 = 15;
+pub const AGENT_SCHEMA_VERSION: i64 = 16;
 
 /// Applied Receipt Records are retained for a recent duplicate/conflict window.
 pub(crate) const APPLIED_RECEIPT_RETENTION: time::Duration = time::Duration::hours(24);

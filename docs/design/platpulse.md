@@ -3,7 +3,7 @@
 ## 1. 文档状态
 
 - 状态：§1–§14 保留当前实现与边界基线；[§15](#accepted-management-target)记录已确认、部分实现的演进——已实现部分以对应 GitHub Issue 为准，未实现部分不能据此宣称新 API、页面或迁移已交付。实现、迁移、运行时路由和本文件应相互校验。
-- §15.10 记录 issue #182 已接受的 Server 托管 Inventory Revision 目标。v2 协议、Server 分配与 Agent 确认已由 issue #186 在隔离的新部署链路上实现；存量迁移与协调切换工具仍未实现。v1 手工 revision 与 §15.9 守卫继续服务于显式 opt-in 的 v1 入口。
+- §15.10 记录 issue #182 已接受的 Server 托管 Inventory Revision 目标。v2 协议、Server 分配与 Agent 确认已由 issue #186 在隔离的新部署链路上实现；存量迁移的准备、协调检查点（issue #189、#190）与离线基线转换/配置迁移/离线校验（issue #191）已实现，但协调生产切换与写入恢复后的回退仍未实现。v1 手工 revision 与 §15.9 守卫继续服务于显式 opt-in 的 v1 入口。
 - 适用范围：`platpulse-core`、`platpulse-agent`、`platpulse-server`、`platpulse-web`。
 - 领域术语：以仓库根目录 [CONTEXT.md](../../CONTEXT.md) 为准；词汇表已纳入本次确认的目标语义。§1–§14 中旧的 Inventory 生命周期、手工 Validator Link 和未确认提示描述是实现基线；涉及本次变化时以 §15 的目标契约为准，不把两种状态混写。
 - 规范性用词：
@@ -792,15 +792,15 @@ Incident 保留证据不等于继续把它当作当前待处理故障；删除�
 6. **Admin 可观测**：新增 Agent Attention kind `agent_inventory_rejected`（critical，可按 §15.6 确认），条件是「该 Agent 最新一行 receipt 是整份 Inventory 拒收」；evidence 边界取「原因 + 已接受 revision/哈希 + 上报 revision/哈希」，因此内容不变而每周期重报不会让确认失效，只有内容或已接受状态变化才重新提示。Admin Agent DTO 增加嵌套的 Inventory 诊断（已接受 revision/哈希 + 最近一次拒收证据），WebUI 在 Inventory 与 Diagnostics 面板展示；拒收提交后向 Admin realtime 发 `agent` invalidation。
 7. **不改**：wire 契约、接受路径的同 revision 哈希判定、以及「整份 Inventory 才生效」的语义都不放宽。
 
-实现状态：已实现（issue #181），§8.4.2 的 kind 与 severity 清单已同步。本节保留当前 v1 的哈希、配置、自检与诊断规则，不随词汇表的目标语义更新而自动改变。方向 3（Server 托管 revision）的设计已由 issue #182 访谈确认，见 [ADR 0007](../adr/0007-server-managed-inventory-revision.md) 与下节；协议、Server 分配与新确认记录语义已由 issue #186 实现（仅限隔离的新部署链路）；存量迁移与协调切换工具仍未实现。
+实现状态：已实现（issue #181），§8.4.2 的 kind 与 severity 清单已同步。本节保留当前 v1 的哈希、配置、自检与诊断规则，不随词汇表的目标语义更新而自动改变。方向 3（Server 托管 revision）的设计已由 issue #182 访谈确认，见 [ADR 0007](../adr/0007-server-managed-inventory-revision.md) 与下节；协议、Server 分配与新确认记录语义已由 issue #186 实现（仅限隔离的新部署链路）；存量迁移的准备、协调检查点（issue #189、#190）与离线基线转换（issue #191）已实现；协调生产切换工具仍未实现。
 
 <a id="server-managed-inventory-revision-target"></a>
 
-### 15.10 Server 托管 Inventory Revision（已确认，协议、分配与故障语义已实现；迁移未实现）
+### 15.10 Server 托管 Inventory Revision（已确认，协议、分配、故障语义与离线基线转换已实现；生产切换未实现）
 
 #### 15.10.1 状态与边界
 
-本节记录 [issue #182](https://github.com/mowind/PlatPulse/issues/182) 的 Q1–Q12 访谈及最终确认，以及 [issue #186](https://github.com/mowind/PlatPulse/issues/186) 的首个实现切片。长期取舍见 [ADR 0007](../adr/0007-server-managed-inventory-revision.md)。v2 协议 major、Server 端事务内版本分配、v2 Receipt 与 Agent 确认记录已实现；省略 `inventory_revision` 的新 Agent 配置选择 Server 托管路径。issue #187 补齐了重试、乱序、并发与事务失败下的确认一致性：真实 Agent→Server→Agent 链路上的离线积压、精确 Receipt 重放、身份冲突、顺序屏障、编号耗尽、Boot 轮换与 Agent Recovery 连续性，以及受控 SQLite 故障注入下的整事务回滚，见 §15.10.6。issue #188 将 v2 准入贯通 Node 生命周期：规范化指纹覆盖仍被声明的已 Purge Node ID，准入判断独立于内容比较，内容不变时每份新报告仍逐 Node 重新执行 Purge、归属、Transfer 与 Network 校验；Admin Inventory 诊断与 `agent_inventory_rejected` Attention 改用 Server 记录的协议、接受版本/指纹与实际拒收证据解释 v2，不再伪造已移除的 Agent 版本号，且从未接受过声明时保持 Unknown 而非 revision 0。issue #189 已交付 v1 升级准备桥接：由 Operator 入口停止普通采集、继续投递既有不可变积压、完成最终 Closing，并在任何排序或规范化之前按原 v1 表示核对最终声明与 Server 最后接受的 revision/hash；成功结果写入有界单行迁移证据，并保留 Closing 后的新 Boot、sequence 与 drained_pending 衔接，不自动恢复采集。issue #190 已交付协调检查点与隔离恢复/验证：分别以既有进程所有权/离线互斥保护 Server 与 Agent 两侧，用精确 SQLite 快照（含有效 WAL 内容、不脱敏）保留 Server 数据库、Agent Store、原配置、身份/凭证、删除身份与迁移声明证据，并在隔离目录复验恢复后仍是同一个已关闭旧 Boot、待新 Boot 衔接的检查点，且不启动采集、接收、管理写入或外部通知工作器。Server/Agent 基线转换、配置迁移、切换与恢复业务写入后的回退仍未实现，也不授权生产切换。
+本节记录 [issue #182](https://github.com/mowind/PlatPulse/issues/182) 的 Q1–Q12 访谈及最终确认，以及 [issue #186](https://github.com/mowind/PlatPulse/issues/186) 的首个实现切片。长期取舍见 [ADR 0007](../adr/0007-server-managed-inventory-revision.md)。v2 协议 major、Server 端事务内版本分配、v2 Receipt 与 Agent 确认记录已实现；省略 `inventory_revision` 的新 Agent 配置选择 Server 托管路径。issue #187 补齐了重试、乱序、并发与事务失败下的确认一致性：真实 Agent→Server→Agent 链路上的离线积压、精确 Receipt 重放、身份冲突、顺序屏障、编号耗尽、Boot 轮换与 Agent Recovery 连续性，以及受控 SQLite 故障注入下的整事务回滚，见 §15.10.6。issue #188 将 v2 准入贯通 Node 生命周期：规范化指纹覆盖仍被声明的已 Purge Node ID，准入判断独立于内容比较，内容不变时每份新报告仍逐 Node 重新执行 Purge、归属、Transfer 与 Network 校验；Admin Inventory 诊断与 `agent_inventory_rejected` Attention 改用 Server 记录的协议、接受版本/指纹与实际拒收证据解释 v2，不再伪造已移除的 Agent 版本号，且从未接受过声明时保持 Unknown 而非 revision 0。issue #189 已交付 v1 升级准备桥接：由 Operator 入口停止普通采集、继续投递既有不可变积压、完成最终 Closing，并在任何排序或规范化之前按原 v1 表示核对最终声明与 Server 最后接受的 revision/hash；成功结果写入有界单行迁移证据，并保留 Closing 后的新 Boot、sequence 与 drained_pending 衔接，不自动恢复采集。issue #190 已交付协调检查点与隔离恢复/验证：分别以既有进程所有权/离线互斥保护 Server 与 Agent 两侧，用精确 SQLite 快照（含有效 WAL 内容、不脱敏）保留 Server 数据库、Agent Store、原配置、身份/凭证、删除身份与迁移声明证据，并在隔离目录复验恢复后仍是同一个已关闭旧 Boot、待新 Boot 衔接的检查点，且不启动采集、接收、管理写入或外部通知工作器。issue #191 已交付离线基线转换、配置迁移与离线校验：`platpulse-server checkpoint convert` 从已核验的协调检查点重新计算 v2 规范化指纹、保留原接受 revision、转换 Server 基线与 Agent Inventory Declaration Record 并写出 v2 agent.toml，`checkpoint verify-conversion` 在不启动任何 worker 的情况下复验转换结果；Agent 在采集或业务写入前拒绝转换后残留的 `inventory_revision`。协调生产切换与恢复业务写入后的回退仍未实现，也不授权生产切换。
 
 Agent 继续拥有完整 Node Inventory 和连接配置；Server 只接管接受版本的编号，不下发 Endpoint 或其他采集配置。不可变 Agent Report、事务性 Receipt、Network Registry 校验、last-good、每 Node 隔离及 §15.3 永久删除屏障保持不变。
 
@@ -845,7 +845,7 @@ Agent 的 Inventory Declaration Record 保留为有界单条确认状态，不�
 
 迁移命令、物理列、版本标记、fixture 编码与 schema 编号由实现规格确定，但必须实现上述已确定的语义，不把这些落地细节当作允许重置身份或放宽检查的空间。
 
-实现状态（issue #189）：第 1、2、3 条的准备与核验已经交付为 Agent 操作者入口（`prepare-upgrade`）——停止普通报告生成、投递全部待交付 Report 并完成最终 Closing（Rejected Closing 不推进 Boot）、捕获最终 Closing 的完整 v1 声明，并通过 Server 托管的只读基线核对 revision 与原 v1 哈希；证据缺失、不匹配、Closing 未成功、状态改变或归属不符时给出可操作失败且不写入可迁移结果。第 4 条的协调检查点与隔离恢复/验证由 issue #190 交付：`platpulse-agent checkpoint create` 与 `platpulse-server checkpoint create` 各自在打开 SQLite 前取得既有进程所有权/离线互斥，Server 侧复核 Agent 证据与其自身已接受的基线及 Closing Report Receipt 一致后，用精确 SQLite 快照（含有效 WAL 内容、不脱敏）保留 Server 数据库、Agent Store、原配置、身份/凭证、删除身份与迁移声明证据；`checkpoint verify` 与 `checkpoint restore` 在隔离目录证明恢复后仍是同一个已关闭旧 Boot、待新 Boot 衔接的检查点，不使用会脱敏改写的 Server Backup，也不启动采集、接收、管理写入或外部通知工作器。第 5–7 条的基线转换、配置迁移与业务写入后的回退仍未实现。
+实现状态（issue #189）：第 1、2、3 条的准备与核验已经交付为 Agent 操作者入口（`prepare-upgrade`）——停止普通报告生成、投递全部待交付 Report 并完成最终 Closing（Rejected Closing 不推进 Boot）、捕获最终 Closing 的完整 v1 声明，并通过 Server 托管的只读基线核对 revision 与原 v1 哈希；证据缺失、不匹配、Closing 未成功、状态改变或归属不符时给出可操作失败且不写入可迁移结果。第 4 条的协调检查点与隔离恢复/验证由 issue #190 交付：`platpulse-agent checkpoint create` 与 `platpulse-server checkpoint create` 各自在打开 SQLite 前取得既有进程所有权/离线互斥，Server 侧复核 Agent 证据与其自身已接受的基线及 Closing Report Receipt 一致后，用精确 SQLite 快照（含有效 WAL 内容、不脱敏）保留 Server 数据库、Agent Store、原配置、身份/凭证、删除身份与迁移声明证据；`checkpoint verify` 与 `checkpoint restore` 在隔离目录证明恢复后仍是同一个已关闭旧 Boot、待新 Boot 衔接的检查点，不使用会脱敏改写的 Server Backup，也不启动采集、接收、管理写入或外部通知工作器。第 5、6 条的基线转换与配置迁移由 issue #191 交付：`platpulse-server checkpoint convert` 在重新核验协调检查点后，从已验证的完整声明计算 v2 规范化指纹，保留 `agents.last_inventory_revision` 的数值（例如 57 保持 57），同步转换 Server 基线与 Agent Inventory Declaration Record，并写出移除 `inventory_revision` 的 v2 agent.toml；`checkpoint verify-conversion` 以只读方式离线复验两侧基线与 Boot 衔接，不启动采集、接收、管理写入或外部通知工作器；隔离 E2E 证明首份 v2 Report 延续既有 DrainedPrevious 而非重置身份。生产切换与恢复业务写入后的回退仍未实现。
 
 #### 15.10.5 回退与旧 Receipt 重放
 
@@ -857,7 +857,7 @@ Agent 的 Inventory Declaration Record 保留为有界单条确认状态，不�
 
 #### 15.10.6 后续实现验收矩阵
 
-以下为验收矩阵。首次、相同内容、仅重排、字段变化、A → B → A、空 Inventory 与拒绝路径已由 issue #186 的 core 契约测试与 `backlog_recovery_tests` 端到端测试覆盖。issue #187 已交付：晚到/旧 Epoch/竞争 Boot 的顺序屏障、并发接收的单事务比较与分配、编号上限的 checked 递增、精确 Receipt 重放与同身份异字节冲突、Server 分配/指纹/投影/Receipt 失败的全量回滚与无 post-commit invalidation、Agent Receipt effects 与确认记录出队的原子性、同版本异指纹的失败关闭、较小确认不回溯、无确认下的离线继续声明，以及重启、Boot 轮换与 Agent Recovery 不重置编号。issue #188 已交付：内容指纹不变时仍逐报告执行 Purge/归属/Transfer/Network 准入、全部 Node 已被 Purge 仍返回 Inventory accepted/unchanged 加逐 Node 全拒绝、从最新合法声明移除的 Node 按既有 Retired 语义处理、Server 重启与迟到写入不重建已 Purge Node，以及 v2 的 Admin Inventory 诊断与拒收 Attention（见 `crates/platpulse-server/tests/node_purge.rs` 的 v2 场景）。issue #189 已交付 v1 升级准备桥接：停止普通采集、投递既有不可变积压、完成最终 Closing 并应用其 accepted/partially_accepted Receipt、捕获完整 v1 声明并在规范化前核对 Server 最后接受的 revision 与 inventory hash，以及证据缺失/不匹配/Rejected Closing/状态改变时的可操作失败与安全重试（见 `crates/platpulse-agent/src/preparation.rs`）。issue #190 已交付协调检查点与隔离恢复/验证：两侧进程所有权/离线互斥、精确 SQLite 快照（含有效 WAL、不脱敏）、Agent 证据与 Server 已接受基线及 Closing Report Receipt 的一致绑定、缺失/损坏产物的拒绝，以及隔离恢复后仍是同一个已关闭旧 Boot、待新 Boot 衔接的检查点（见 `crates/platpulse-server/src/checkpoint.rs` 与 `crates/platpulse-server/tests/checkpoint.rs`）。基线转换、配置迁移与业务写入后的回退相关行仍待实现：
+以下为验收矩阵。首次、相同内容、仅重排、字段变化、A → B → A、空 Inventory 与拒绝路径已由 issue #186 的 core 契约测试与 `backlog_recovery_tests` 端到端测试覆盖。issue #187 已交付：晚到/旧 Epoch/竞争 Boot 的顺序屏障、并发接收的单事务比较与分配、编号上限的 checked 递增、精确 Receipt 重放与同身份异字节冲突、Server 分配/指纹/投影/Receipt 失败的全量回滚与无 post-commit invalidation、Agent Receipt effects 与确认记录出队的原子性、同版本异指纹的失败关闭、较小确认不回溯、无确认下的离线继续声明，以及重启、Boot 轮换与 Agent Recovery 不重置编号。issue #188 已交付：内容指纹不变时仍逐报告执行 Purge/归属/Transfer/Network 准入、全部 Node 已被 Purge 仍返回 Inventory accepted/unchanged 加逐 Node 全拒绝、从最新合法声明移除的 Node 按既有 Retired 语义处理、Server 重启与迟到写入不重建已 Purge Node，以及 v2 的 Admin Inventory 诊断与拒收 Attention（见 `crates/platpulse-server/tests/node_purge.rs` 的 v2 场景）。issue #189 已交付 v1 升级准备桥接：停止普通采集、投递既有不可变积压、完成最终 Closing 并应用其 accepted/partially_accepted Receipt、捕获完整 v1 声明并在规范化前核对 Server 最后接受的 revision 与 inventory hash，以及证据缺失/不匹配/Rejected Closing/状态改变时的可操作失败与安全重试（见 `crates/platpulse-agent/src/preparation.rs`）。issue #190 已交付协调检查点与隔离恢复/验证：两侧进程所有权/离线互斥、精确 SQLite 快照（含有效 WAL、不脱敏）、Agent 证据与 Server 已接受基线及 Closing Report Receipt 的一致绑定、缺失/损坏产物的拒绝，以及隔离恢复后仍是同一个已关闭旧 Boot、待新 Boot 衔接的检查点（见 `crates/platpulse-server/src/checkpoint.rs` 与 `crates/platpulse-server/tests/checkpoint.rs`）。基线转换、配置迁移与离线校验相关行已由 issue #191 交付（见 `crates/platpulse-server/src/migration.rs` 与 `crates/platpulse-server/tests/migration.rs`）：协调检查点重新核验、规范指纹转换、revision 保留、未初始化与已接受空声明区分、配置迁移与残留拒绝、两端不一致停止、57→57→58 与首报 DrainedPrevious 衔接；生产切换与恢复业务写入后的回退相关行仍待实现：
 
 | 场景 | 必须验证的结果 |
 |---|---|
@@ -874,8 +874,8 @@ Agent 的 Inventory Declaration Record 保留为有界单条确认状态，不�
 | 首次 / 空 Inventory / 编号上限 | 未初始化不同于已接受空集合；首次为 1；上限处只拒绝需要递增的变化，不回绕 |
 | 旧积压与 Closing 失败 | 不允许升级，不改 Report、不丢积压；恢复旧版本完成确认后才能继续（issue #189：全部待交付 Report 完成事务性确认、最终 Closing 必须 accepted/partially_accepted，Rejected Closing 与发送超时均阻止准备并保留原字节） |
 | 快照缺失、错误顺序或 hash/revision 不匹配 | 预检停止；禁止用当前投影、未经核验配置或新首报猜基线（issue #189：最终声明缺失/不符、Server 基线 hash、revision、协议、Boot 或 Closing 归属不一致时拒绝颁发可迁移结果） |
-| 迁移基线与 Boot | 旧数值保留、两端指纹同步转换；DrainedPrevious 延续，旧 Receipt/去重不变 |
-| 配置残留 / 任一转换失败 | 在采集和业务写入恢复前报可操作错误，不能以半迁移状态运行 |
+| 迁移基线与 Boot | 旧数值保留、两端指纹同步转换；DrainedPrevious 延续，旧 Receipt/去重不变（issue #191：`checkpoint convert` 保留 57→57，隔离首份 v2 Report 执行 DrainedPrevious） |
+| 配置残留 / 任一转换失败 | 在采集和业务写入恢复前报可操作错误，不能以半迁移状态运行（issue #191：转换后 Agent 拒绝残留 `inventory_revision`；失败转换不留下半份产物，隔离校验覆盖两端不一致） |
 | 离线回退 / 已恢复写入 | 前者恢复协调检查点（issue #190 已交付检查点创建/核验/隔离恢复证明；生产回退仍待切换票）；后者不宣称无损降级，不自动倒退删除屏障 |
 | v1 仅重放与鉴权/保留边界 | 精确重放已有 Receipt；异字节冲突、无权限拒绝、未知/已过期 v1 不进入新接收 |
 

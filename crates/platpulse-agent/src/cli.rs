@@ -178,11 +178,31 @@ pub fn run_generate_node_id() {
     println!("{}", generate_node_id());
 }
 
+/// Refuse to start collection after an offline v1 -> v2 conversion when
+/// agent.toml still declares a local `inventory_revision`.
+///
+/// The check runs before boot recovery and before any business write, so a
+/// leftover field produces the actionable "the Server assigns it now, remove
+/// it" message instead of a generic declaration conflict. It is strictly
+/// read-only: it never creates or migrates the Agent Store.
+async fn guard_migration_configuration(
+    state_db: &std::path::Path,
+    validated: &crate::config::ValidatedAgentConfig,
+) -> Result<(), AgentCliError> {
+    let config_revision =
+        (!validated.server_managed_inventory).then_some(validated.inventory.revision);
+    crate::inventory_declaration::check_migration_config_read_only(state_db, config_revision)
+        .await
+        .map_err(|error| AgentCliError::Collection(error.to_string()))
+}
+
 pub async fn run_validate_config(args: &ValidateConfigArgs) -> Result<(), Box<AgentCliError>> {
     let file = AgentConfigFile::load(&args.config).map_err(|e| Box::new(AgentCliError::from(e)))?;
     let validated = file
         .validate()
         .map_err(|e| Box::new(AgentCliError::from(e)))?;
+    // A converted (v2) Store must not be started with a leftover v1 revision.
+    guard_migration_configuration(&file.state_db, &validated).await?;
     // The Agent Store holds the only local record of the Inventory the Server
     // effectively accepted, and `validate-config` is where an operator checks a
     // configuration edit before restarting. The check is read-only: this command
@@ -301,6 +321,8 @@ pub async fn run_collect_report(args: &CollectReportArgs) -> Result<(), AgentCli
     let validated = config
         .validated_inventory()
         .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    // A converted Store must not collect with a leftover v1 revision.
+    guard_migration_configuration(&config.state_db, &validated).await?;
     // Same startup refusal as `run`, and for the same reason: this command
     // would otherwise recover the previous boot with a Closing report the
     // Server refuses (issue #181).
@@ -670,6 +692,9 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
     let validated = config
         .validated_inventory()
         .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    // A converted Store must not start with a leftover v1 revision: report the
+    // migration residue before boot recovery writes anything.
+    guard_migration_configuration(&config.state_db, &validated).await?;
     // Refuse to start on an Inventory the Server would refuse, *before* boot
     // recovery (issue #181): recovering first would emit a Closing report for
     // the previous boot that is doomed to the same refusal, leaving the
@@ -1092,6 +1117,10 @@ pub async fn run_shutdown(args: &ShutdownArgs) -> Result<(), AgentCliError> {
     let config = AgentConfig::resolve(&args.config)?;
     let _runtime_lock = crate::database::AgentRuntimeLock::acquire(&config.state_db)
         .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    let validated = config
+        .validated_inventory()
+        .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    guard_migration_configuration(&config.state_db, &validated).await?;
     let outcome = crate::shutdown::graceful_shutdown_with_permit(
         &config,
         &FailClosedRpcAdapter,
@@ -1111,6 +1140,10 @@ pub async fn run_persist_report(args: &PersistReportArgs) -> Result<(), AgentCli
     let config = AgentConfig::resolve(&args.config)?;
     let _runtime_lock = crate::database::AgentRuntimeLock::acquire(&config.state_db)
         .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    let validated = config
+        .validated_inventory()
+        .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    guard_migration_configuration(&config.state_db, &validated).await?;
     let digest = crate::reporting::persist_report_from_config_with_permit(
         &config,
         &args.report,
