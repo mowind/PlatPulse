@@ -24,7 +24,10 @@ CREATE TABLE upgrade_preparation (
     -- Frozen v1 declaration: revision-inclusive and Node-order preserving.
     inventory_revision INTEGER NOT NULL CHECK (inventory_revision >= 1),
     inventory_sha256 TEXT NOT NULL,
-    declaration_nodes TEXT NOT NULL,
+    -- The verified frozen-v1 declaration exactly as hashed: the full
+    -- NodeInventory JSON (revision + declared Node order), so a checkpoint can
+    -- recompute inventory_sha256 independently.
+    declaration_json TEXT NOT NULL,
     -- Boot linkage after the accepted Closing: the new Boot is pending its
     -- DrainedPrevious transition, and the closed Boot is its previous.
     closed_boot_id TEXT NOT NULL,

@@ -373,7 +373,7 @@ Server 不连接 Node RPC、不远程控制、不根据 Agent 输入自动创建
 
 ### 8.2 最小数据模型
 
-Server schema 当前为 42（Agent schema 独立为 13）。物理 SQLite schema 是规范化表族，而不是一个 `node_current_state` 或单一 `block_history` 表；逻辑上至少包括：
+Server schema 当前为 56（Agent schema 独立为 15）。物理 SQLite schema 是规范化表族，而不是一个 `node_current_state` 或单一 `block_history` 表；逻辑上至少包括：
 
 ~~~text
 身份与访问       users / sessions / enrollment_tokens / recovery_tokens / audit_events
@@ -414,12 +414,14 @@ Validator         validators / links / current insight / ranking-counter history
 
 ~~~text
 GET  /api/agent/v1/time
+GET  /api/agent/v1/preparation
 POST /api/agent/v1/enroll
 POST /api/agent/v1/recover
 POST /api/agent/v1/reports
+POST /api/agent/v2/reports
 ~~~
 
-`/time` 与 `/reports` 是运行时 Agent 路由；当前 OpenAPI path 注册覆盖 enrollment/recovery，但这两个 handler 尚未完整纳入生成 spec，Agent 集成应以运行时路由和 wire types 为准。
+`/time`、`/reports`、`/api/agent/v2/reports` 与 `/preparation`（issue #189 的只读 v1 升级准备基线）是运行时 Agent 路由；当前 OpenAPI path 注册覆盖 enrollment/recovery，但这些 handler 尚未完整纳入生成 spec，Agent 集成应以运行时路由和 wire types 为准。
 
 **Public group（Guest 只在 Public Site Access Mode 下进入允许匿名的读路径；Owner/Viewer Session 可读 Private Home）：**
 

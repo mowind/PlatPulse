@@ -39,6 +39,12 @@ use crate::database::{
 /// Agent API path of the Server-owned preparation baseline.
 pub const AGENT_PREPARATION_PATH: &str = "/api/agent/v1/preparation";
 
+/// Bound the read of the Server baseline so a hung or unreachable Server fails
+/// with an actionable retry instead of blocking the operator indefinitely. The
+/// baseline is a read of already-committed state, so a short bound is safe; a
+/// timeout never invalidates the completed Closing or the pending Reports.
+const PREPARATION_BASELINE_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// The verified result of one successful v1 preparation, for the later
 /// coordinated checkpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -252,14 +258,35 @@ pub(crate) async fn prepare_v1_upgrade_with_transport<T: crate::reporting::Repor
     //    accepted values. The local record, the current configuration and the
     //    Server's Node projections cannot substitute for this evidence.
     let baseline = fetch_baseline(config).await?;
-    verify_baseline(&baseline, &agent_id, agent_epoch, &evidence)?;
+    if let Err(error) = verify_baseline(&baseline, &agent_id, agent_epoch, &evidence) {
+        // A definitive mismatch invalidates any earlier verified result: it can
+        // no longer match the Server, so it must not remain a consumable
+        // migratable result. Closing failures and transient read failures never
+        // reach this arm and therefore leave existing evidence untouched.
+        clear_preparation(&mut store).await?;
+        return Err(error);
+    }
     // The Server owns the accepted result: bind its recorded disposition rather
     // than an Agent-local derivation, and never accept a rejected Closing.
-    let disposition = baseline_disposition(&baseline)?;
+    let disposition = match baseline_disposition(&baseline) {
+        Ok(disposition) => disposition,
+        Err(error) => {
+            if matches!(
+                error,
+                PreparationError::BaselineMismatch(_) | PreparationError::ClosingRejected(_)
+            ) {
+                clear_preparation(&mut store).await?;
+            }
+            return Err(error);
+        }
+    };
 
     // 4. Record the bounded, verified preparation result.
     let verified_at = now_rfc3339();
-    let declaration_nodes = serde_json::to_string(&evidence.inventory.nodes)?;
+    // Store the exact frozen-v1 serialization the hash covers (revision plus
+    // declared Node order), not just the Node array, so a checkpoint can
+    // recompute the hash independently.
+    let declaration_json = serde_json::to_string(&evidence.inventory)?;
     write_preparation(
         &mut store,
         PreparedRow {
@@ -269,7 +296,7 @@ pub(crate) async fn prepare_v1_upgrade_with_transport<T: crate::reporting::Repor
             disposition,
             next_boot_id: &closing.next_boot_id,
             baseline: &baseline,
-            declaration_nodes: &declaration_nodes,
+            declaration_json: &declaration_json,
             verified_at: &verified_at,
         },
     )
@@ -280,20 +307,12 @@ pub(crate) async fn prepare_v1_upgrade_with_transport<T: crate::reporting::Repor
         closing_report_id: evidence.report_id,
         inventory_revision: evidence.inventory.revision,
         inventory_sha256: evidence.content_sha256,
-        closing_receipt_disposition: disposition_name(disposition),
+        closing_receipt_disposition: crate::collector::receipt_disposition_name(disposition),
         closed_boot_id: evidence.closed_boot_id,
         next_boot_id: closing.next_boot_id,
         pending_transition: "drained_previous",
         verified_at,
     })
-}
-
-fn disposition_name(disposition: ReceiptDisposition) -> &'static str {
-    match disposition {
-        ReceiptDisposition::Accepted => "accepted",
-        ReceiptDisposition::PartiallyAccepted => "partially_accepted",
-        ReceiptDisposition::Rejected => "rejected",
-    }
 }
 
 /// The Server-recorded acceptance result of the Closing receipt.
@@ -595,6 +614,7 @@ async fn fetch_baseline(
         .map_err(|error| PreparationError::ServerUnavailable(error.to_string()))?;
     let client = reqwest::Client::builder()
         .user_agent(format!("platpulse-agent/{}", crate::VERSION))
+        .timeout(PREPARATION_BASELINE_TIMEOUT)
         .build()
         .map_err(|error| PreparationError::ServerUnavailable(error.to_string()))?;
     let url = format!("{}{AGENT_PREPARATION_PATH}", config.server_url);
@@ -700,6 +720,18 @@ fn verify_baseline(
     Ok(())
 }
 
+/// Remove the bounded evidence row when a completed preparation can no longer
+/// be re-verified against the Server. The row is a derived, regenerable result,
+/// so clearing it prevents a stale result from being consumed while leaving
+/// every pending Report, receipt, and Boot linkage untouched.
+async fn clear_preparation(store: &mut AgentStore) -> Result<(), PreparationError> {
+    let _write_permit = store.acquire_write().await;
+    sqlx::query("DELETE FROM upgrade_preparation WHERE singleton=1")
+        .execute(store.connection())
+        .await?;
+    Ok(())
+}
+
 struct PreparedRow<'a> {
     agent_id: &'a str,
     agent_epoch: u64,
@@ -707,7 +739,7 @@ struct PreparedRow<'a> {
     disposition: ReceiptDisposition,
     next_boot_id: &'a str,
     baseline: &'a ServerPreparationBaseline,
-    declaration_nodes: &'a str,
+    declaration_json: &'a str,
     verified_at: &'a str,
 }
 
@@ -719,16 +751,16 @@ async fn write_preparation(
     let _write_permit = store.acquire_write().await;
     let mut tx = store.connection().begin().await?;
     sqlx::query(
-        "INSERT INTO upgrade_preparation (singleton, agent_id, agent_epoch, closing_report_id, closing_report_sequence, closing_receipt_disposition, inventory_revision, inventory_sha256, declaration_nodes, closed_boot_id, next_boot_id, pending_transition, accepted_inventory_revision, accepted_inventory_sha256, accepted_inventory_protocol_major, server_active_boot_id, server_active_boot_status, server_close_report_id, verified_at) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'drained_previous', ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(singleton) DO UPDATE SET agent_id=excluded.agent_id, agent_epoch=excluded.agent_epoch, closing_report_id=excluded.closing_report_id, closing_report_sequence=excluded.closing_report_sequence, closing_receipt_disposition=excluded.closing_receipt_disposition, inventory_revision=excluded.inventory_revision, inventory_sha256=excluded.inventory_sha256, declaration_nodes=excluded.declaration_nodes, closed_boot_id=excluded.closed_boot_id, next_boot_id=excluded.next_boot_id, pending_transition=excluded.pending_transition, accepted_inventory_revision=excluded.accepted_inventory_revision, accepted_inventory_sha256=excluded.accepted_inventory_sha256, accepted_inventory_protocol_major=excluded.accepted_inventory_protocol_major, server_active_boot_id=excluded.server_active_boot_id, server_active_boot_status=excluded.server_active_boot_status, server_close_report_id=excluded.server_close_report_id, verified_at=excluded.verified_at",
+        "INSERT INTO upgrade_preparation (singleton, agent_id, agent_epoch, closing_report_id, closing_report_sequence, closing_receipt_disposition, inventory_revision, inventory_sha256, declaration_json, closed_boot_id, next_boot_id, pending_transition, accepted_inventory_revision, accepted_inventory_sha256, accepted_inventory_protocol_major, server_active_boot_id, server_active_boot_status, server_close_report_id, verified_at) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'drained_previous', ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(singleton) DO UPDATE SET agent_id=excluded.agent_id, agent_epoch=excluded.agent_epoch, closing_report_id=excluded.closing_report_id, closing_report_sequence=excluded.closing_report_sequence, closing_receipt_disposition=excluded.closing_receipt_disposition, inventory_revision=excluded.inventory_revision, inventory_sha256=excluded.inventory_sha256, declaration_json=excluded.declaration_json, closed_boot_id=excluded.closed_boot_id, next_boot_id=excluded.next_boot_id, pending_transition=excluded.pending_transition, accepted_inventory_revision=excluded.accepted_inventory_revision, accepted_inventory_sha256=excluded.accepted_inventory_sha256, accepted_inventory_protocol_major=excluded.accepted_inventory_protocol_major, server_active_boot_id=excluded.server_active_boot_id, server_active_boot_status=excluded.server_active_boot_status, server_close_report_id=excluded.server_close_report_id, verified_at=excluded.verified_at",
     )
     .bind(row.agent_id)
     .bind(row.agent_epoch as i64)
     .bind(&row.evidence.report_id)
     .bind(row.evidence.report_sequence as i64)
-    .bind(disposition_name(row.disposition))
+    .bind(crate::collector::receipt_disposition_name(row.disposition))
     .bind(row.evidence.inventory.revision as i64)
     .bind(&row.evidence.content_sha256)
-    .bind(row.declaration_nodes)
+    .bind(row.declaration_json)
     .bind(&row.evidence.closed_boot_id)
     .bind(row.next_boot_id)
     .bind(row.baseline.accepted_inventory_revision)
@@ -954,7 +986,7 @@ mod tests {
         disposition: String,
         accepted_inventory_revision: i64,
         accepted_inventory_sha256: Option<String>,
-        declaration_nodes: String,
+        declaration_json: String,
         closed_boot_id: String,
         next_boot_id: String,
     }
@@ -962,7 +994,7 @@ mod tests {
     async fn evidence_row(config: &AgentConfig) -> Option<EvidenceRow> {
         let mut store = open_store(config).await;
         let row = sqlx::query_as::<_, EvidenceRow>(
-            "SELECT closing_report_id, inventory_revision, inventory_sha256, closing_receipt_disposition AS disposition, accepted_inventory_revision, accepted_inventory_sha256, declaration_nodes, closed_boot_id, next_boot_id FROM upgrade_preparation WHERE singleton=1",
+            "SELECT closing_report_id, inventory_revision, inventory_sha256, closing_receipt_disposition AS disposition, accepted_inventory_revision, accepted_inventory_sha256, declaration_json, closed_boot_id, next_boot_id FROM upgrade_preparation WHERE singleton=1",
         )
         .fetch_optional(store.connection())
         .await
@@ -1084,7 +1116,14 @@ mod tests {
         );
         assert_eq!(evidence.closed_boot_id, BOOT_ID);
         assert_eq!(evidence.next_boot_id, outcome.next_boot_id);
-        assert!(evidence.declaration_nodes.contains(NODE_ID));
+        assert!(evidence.declaration_json.contains(NODE_ID));
+        // The stored declaration is exactly what the hash covers, so a later
+        // checkpoint can recompute it.
+        let declared: NodeInventory = serde_json::from_str(&evidence.declaration_json).unwrap();
+        assert_eq!(
+            declared.content_sha256().to_string(),
+            evidence.inventory_sha256
+        );
         assert!(matches!(
             evidence.disposition.as_str(),
             "accepted" | "partially_accepted"
@@ -1239,7 +1278,7 @@ mod tests {
         let agent_id = enrolled.agent_id.to_string();
         seed_boot(&config, BOOT_ID).await;
 
-        let first = prepare(&config).await.unwrap();
+        prepare(&config).await.unwrap();
 
         // The Server's accepted declaration changed after the Closing was
         // accepted. The original Closing bytes no longer prove the accepted
@@ -1259,12 +1298,13 @@ mod tests {
             }
             other => panic!("unexpected result: {other:?}"),
         }
-        let evidence = evidence_row(&config).await.expect("earlier evidence kept");
-        assert_eq!(evidence.closing_report_id, first.closing_report_id);
-        assert_eq!(
-            evidence.accepted_inventory_sha256.as_deref(),
-            Some(evidence.inventory_sha256.as_str())
-        );
+        // A definitive mismatch clears the earlier verified result so no stale
+        // migratable result can be consumed, while the completed Boot linkage
+        // and the Closing itself are left intact.
+        assert!(evidence_row(&config).await.is_none());
+        let snapshot = boot_snapshot(&config).await;
+        assert_eq!(snapshot.boot_state, "drained_pending");
+        assert!(snapshot.close_report_id.is_some());
         server.stop().await;
     }
 
