@@ -100,6 +100,70 @@ pub fn checks_from_result(result: Option<&str>) -> Vec<Value> {
         .unwrap_or_default()
 }
 
+/// Human-readable age for Doctor detail. A future timestamp (clock skew) is
+/// named instead of rendered as a large positive age.
+fn humanize_age(seconds: i64) -> String {
+    if seconds < 0 {
+        return "in the future (check the system clock)".to_owned();
+    }
+    let days = seconds / 86_400;
+    let hours = (seconds % 86_400) / 3_600;
+    let minutes = (seconds % 3_600) / 60;
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else if minutes > 0 {
+        format!("{minutes}m")
+    } else {
+        format!("{seconds}s")
+    }
+}
+
+/// Human-readable size for Doctor detail.
+fn human_bytes(bytes: u64) -> String {
+    const MIB: u64 = 1024 * 1024;
+    const GIB: u64 = 1024 * MIB;
+    if bytes >= GIB {
+        format!("{:.1} GiB", bytes as f64 / GIB as f64)
+    } else if bytes >= MIB {
+        format!("{:.1} MiB", bytes as f64 / MIB as f64)
+    } else if bytes >= 1024 {
+        format!("{:.1} KiB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+/// Count and total size of `platpulse-*.db.part` residue (including the
+/// `.part-journal` sidecar) in the configured backup directory. Read-only:
+/// nothing is deleted, and directory entries are never followed as symlinks
+/// (ADR 0008).
+fn backup_residue(dir: &std::path::Path) -> std::io::Result<(u64, u64)> {
+    let mut count = 0u64;
+    let mut bytes = 0u64;
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !name.starts_with("platpulse-")
+            || !(name.ends_with(".db.part") || name.ends_with(".db.part-journal"))
+        {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        count += 1;
+        bytes = bytes.saturating_add(metadata.len());
+    }
+    Ok((count, bytes))
+}
+
 async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Error> {
     let mut checks = Vec::new();
     let pool = state.db().pool();
@@ -242,7 +306,7 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
     // 7. Latest backup artifact integrity (skipped when nothing exists).
     let latest = crate::backup::latest_artifact(pool).await?;
     checks.push(match latest {
-        Some((artifact_id, _filename, _bytes, verification)) => DoctorCheck {
+        Some((artifact_id, _filename, _bytes, verification, _created_at)) => DoctorCheck {
             check_id: "latest_backup".to_owned(),
             label: "Latest backup".to_owned(),
             status: match verification.as_str() {
@@ -264,7 +328,80 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
         },
     });
 
-    // 8. Notification channel configuration (never token contents).
+    // 8. Age of the last successful Backup Artifact. ADR 0008 makes RPO
+    //    operator-defined, so Doctor reports the age instead of judging it.
+    checks.push(match crate::backup::latest_artifact(pool).await? {
+        Some((artifact_id, _filename, _bytes, _verification, created_at)) => {
+            match crate::auth::parse_rfc3339(&created_at) {
+                Some(created_at) => DoctorCheck {
+                    check_id: "backup_age".to_owned(),
+                    label: "Backup age".to_owned(),
+                    status: STATUS_PASS,
+                    detail: format!(
+                        "last successful backup artifact {artifact_id} was created {} ago",
+                        humanize_age((crate::auth::now_utc() - created_at).whole_seconds())
+                    ),
+                },
+                None => DoctorCheck {
+                    check_id: "backup_age".to_owned(),
+                    label: "Backup age".to_owned(),
+                    status: STATUS_WARNING,
+                    detail: format!(
+                        "backup artifact {artifact_id} has an unreadable creation timestamp"
+                    ),
+                },
+            }
+        }
+        None => DoctorCheck {
+            check_id: "backup_age".to_owned(),
+            label: "Backup age".to_owned(),
+            status: STATUS_WARNING,
+            detail: "no backup artifact has ever been created; run `platpulse-server backup` in an Offline Backup Window".to_owned(),
+        },
+    });
+
+    // 9. Residue in the backup directory: a killed or disk-full attempt can
+    //    leave a half-written `.part` and its `.part-journal`, and ADR 0008
+    //    reclaims nothing automatically.
+    checks.push(match state.backup_dir() {
+        None => DoctorCheck {
+            check_id: "backup_residue".to_owned(),
+            label: "Backup residue".to_owned(),
+            status: STATUS_SKIPPED,
+            detail: "no backup directory configured".to_owned(),
+        },
+        Some(dir) => match backup_residue(dir) {
+            Ok((0, _bytes)) => DoctorCheck {
+                check_id: "backup_residue".to_owned(),
+                label: "Backup residue".to_owned(),
+                status: STATUS_PASS,
+                detail: "no partial backup files are present".to_owned(),
+            },
+            Ok((count, bytes)) => DoctorCheck {
+                check_id: "backup_residue".to_owned(),
+                label: "Backup residue".to_owned(),
+                status: STATUS_WARNING,
+                detail: format!(
+                    "{count} partial backup file(s) totalling {}; remove them manually after confirming no backup is running",
+                    human_bytes(bytes)
+                ),
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => DoctorCheck {
+                check_id: "backup_residue".to_owned(),
+                label: "Backup residue".to_owned(),
+                status: STATUS_SKIPPED,
+                detail: "backup directory does not exist yet; nothing to clean up".to_owned(),
+            },
+            Err(_) => DoctorCheck {
+                check_id: "backup_residue".to_owned(),
+                label: "Backup residue".to_owned(),
+                status: STATUS_WARNING,
+                detail: "cannot read the backup directory to check for partial files".to_owned(),
+            },
+        },
+    });
+
+    // 10. Notification channel configuration (never token contents).
     let telegram = state.channels().telegram.as_ref();
     checks.push(DoctorCheck {
         check_id: "notification_channels".to_owned(),
@@ -286,7 +423,7 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
         },
     });
 
-    // 9. Sensitive state files and optional Geo database are checked through
+    // 11. Sensitive state files and optional Geo database are checked through
     // descriptor-based no-follow validation; failures are actionable but do
     // not include filesystem paths in the Admin response.
     let database_safe = crate::file_security::validate_file(state.db().path()).is_ok();
@@ -325,7 +462,7 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
         },
     });
 
-    // 10. Sensitive file discipline is a unix property; elsewhere skipped.
+    // 12. Sensitive file discipline is a unix property; elsewhere skipped.
     #[cfg(unix)]
     {
         checks.push(DoctorCheck {
@@ -345,4 +482,43 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
     });
 
     Ok(checks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn humanize_age_names_days_hours_minutes_and_seconds() {
+        assert_eq!(humanize_age(0), "0s");
+        assert_eq!(humanize_age(45), "45s");
+        assert_eq!(humanize_age(90), "1m");
+        assert_eq!(humanize_age(3 * 3_600 + 5 * 60), "3h 5m");
+        assert_eq!(humanize_age(2 * 86_400 + 4 * 3_600), "2d 4h");
+        assert_eq!(humanize_age(-5), "in the future (check the system clock)");
+    }
+
+    #[test]
+    fn human_bytes_scales_units() {
+        assert_eq!(human_bytes(512), "512 B");
+        assert_eq!(human_bytes(2048), "2.0 KiB");
+        assert_eq!(human_bytes(5 * 1024 * 1024), "5.0 MiB");
+        assert_eq!(human_bytes(3 * 1024 * 1024 * 1024), "3.0 GiB");
+    }
+
+    #[test]
+    fn backup_residue_counts_only_partial_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("platpulse-a.db.part"), vec![0u8; 1000]).unwrap();
+        std::fs::write(
+            dir.path().join("platpulse-a.db.part-journal"),
+            vec![0u8; 24],
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("platpulse-a.db"), vec![0u8; 9999]).unwrap();
+        std::fs::write(dir.path().join("notes.part"), vec![0u8; 9999]).unwrap();
+        std::fs::create_dir(dir.path().join("platpulse-dir.db.part")).unwrap();
+
+        assert_eq!(backup_residue(dir.path()).unwrap(), (2, 1024));
+    }
 }

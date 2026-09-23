@@ -2411,6 +2411,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn doctor_reports_backup_age_and_partial_residue_without_touching_readiness() {
+        let (dir, state) = test_state().await;
+        let backups = dir.path().join("backups");
+        std::fs::create_dir_all(&backups).unwrap();
+        std::fs::write(backups.join("platpulse-stale.db.part"), vec![0u8; 2048]).unwrap();
+        let created_at =
+            crate::auth::format_rfc3339(crate::auth::now_utc() - time::Duration::days(2));
+        sqlx::query(
+            "INSERT INTO backup_artifacts (artifact_id, filename, bytes, sha256, schema_version, server_version, created_at, verification, verified_at) VALUES ('b-old', 'platpulse-b-old.db', 10, ?, ?, ?, ?, 'ok', ?)",
+        )
+        .bind("a".repeat(64))
+        .bind(crate::database::SERVER_SCHEMA_VERSION)
+        .bind(crate::VERSION)
+        .bind(&created_at)
+        .bind(&created_at)
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+
+        let response = doctor_run(
+            State(state.clone()),
+            mutation_headers(),
+            Extension(session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        while crate::operations::process_operations(&state).await.unwrap() > 0 {}
+
+        let (_, _, result) = crate::doctor::last_run(&state).await.unwrap().unwrap();
+        let checks = crate::doctor::checks_from_result(result.as_deref());
+        let age = checks
+            .iter()
+            .find(|check| check["checkId"] == "backup_age")
+            .expect("backup_age check");
+        assert_eq!(age["status"], "pass");
+        assert!(
+            age["detail"].as_str().unwrap().contains("2d"),
+            "unexpected age detail: {age}"
+        );
+        let residue = checks
+            .iter()
+            .find(|check| check["checkId"] == "backup_residue")
+            .expect("backup_residue check");
+        assert_eq!(residue["status"], "warning");
+        let detail = residue["detail"].as_str().unwrap();
+        assert!(
+            detail.contains("1 partial"),
+            "unexpected residue detail: {detail}"
+        );
+        assert!(
+            detail.contains("2.0 KiB"),
+            "unexpected residue detail: {detail}"
+        );
+        // Doctor is read-only: it never changes a readiness-affecting flag.
+        assert!(!state.is_corrupt());
+    }
+
+    #[tokio::test]
     async fn doctor_run_reports_distinct_statuses_without_mutating() {
         let (_dir, state) = test_state().await;
         let pool = state.db().pool();

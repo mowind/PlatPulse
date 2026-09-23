@@ -696,9 +696,9 @@ fn prepare_backup_dir(path: &Path) -> Result<(), String> {
 /// summary used by the Data overview (sanitized; never file contents).
 pub async fn latest_artifact(
     pool: &SqlitePool,
-) -> Result<Option<(String, String, i64, String)>, sqlx::Error> {
-    let row = sqlx::query_as::<_, (String, String, i64, String)>(
-        "SELECT artifact_id, filename, bytes, verification FROM backup_artifacts ORDER BY created_at DESC LIMIT 1",
+) -> Result<Option<(String, String, i64, String, String)>, sqlx::Error> {
+    let row = sqlx::query_as::<_, (String, String, i64, String, String)>(
+        "SELECT artifact_id, filename, bytes, verification, created_at FROM backup_artifacts ORDER BY created_at DESC LIMIT 1",
     )
     .fetch_optional(pool)
     .await?;
