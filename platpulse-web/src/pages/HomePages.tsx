@@ -19,14 +19,16 @@ import { formatNodeDataBytes } from '../formatBytes'
 import { formatDuration } from '../formatDuration'
 import { nodeDataProgress } from '../nodeData'
 import { MetricRow } from '../components/MetricRow'
+import { ValidatorActivityBadge } from '../components/ValidatorActivityBadge'
+import { ConsensusHeights, HeadDelta, LastReportAge } from '../components/NodeDetailObservations'
 import { CardX } from '../components/ui/card-x'
 import { Alert, AlertDescription } from '../components/ui/alert'
 import { Spinner } from '../components/ui/spinner'
-import { SURFACE_CARD } from '../lib/surface'
+import { SURFACE_CARD_STATIC } from '../lib/surface'
 import { cn } from '../lib/utils'
 
 const PAGE = 'min-w-0 p-4'
-const CARD = cn('min-w-0 rounded-md border-none', SURFACE_CARD)
+const CARD = cn('min-w-0 rounded-md border-none', SURFACE_CARD_STATIC)
 
 export function NodePage() {
   const { nodeId = '' } = useParams()
@@ -70,14 +72,17 @@ export function NodePage() {
       <div data-slot="node-identity-main" className="flex min-w-0 flex-1 items-start gap-2">
         <NodeHealthMarker health={node.health} />
         <div className="min-w-0">
-          <h1 id="node-detail-title" className="m-0 break-words text-lg font-semibold leading-tight md:text-2xl">{nodeDisplayName(node)}</h1>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 id="node-detail-title" className="m-0 min-w-0 max-w-full break-words text-lg font-semibold leading-tight md:text-2xl">{nodeDisplayName(node)}</h1>
+            <span className="inline-flex min-w-0"><ValidatorActivityBadge validator={node.validator} identityReason={node.validatorIdentityReason} /></span>
+          </div>
           <p className="m-0 mt-1 break-words text-[11px] text-muted-foreground">Node ID <code className="font-mono font-semibold text-foreground">{node.nodeId}</code></p>
         </div>
       </div>
       <dl className="m-0 flex flex-wrap gap-x-5 gap-y-2" aria-label="Node identity facts">
         <div className="min-w-0">
           <dt className="text-xs font-medium tracking-wider text-muted-foreground">Last report</dt>
-          <dd className="m-0 text-sm tabular-nums">{formatUtcDateTime(node.lastReportAt)}</dd>
+          <dd className="m-0 text-sm tabular-nums"><LastReportAge timestamp={node.lastReportAt} /></dd>
         </div>
       </dl>
     </header>
@@ -85,7 +90,7 @@ export function NodePage() {
     {health.tone !== 'ok' && <p className="m-0 mt-2 break-words text-sm text-warning-foreground dark:text-warning">{node.healthReason}</p>}
 
     <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4" role="group" aria-label="Node key summary">
-      <SummaryTile label="Head" value={formatNumber(node.currentHead)} />
+      <SummaryTile label="Head" value={formatNumber(node.currentHead)} detail={<HeadDelta node={node} />} />
       <SummaryTile label="Sync" value={nodeComponentStateLabel(node.syncState)} detail={formatSyncDetail(node)} />
       <SummaryTile label="Peers" value={peerCount(node.peers)} detail={peerBreakdown(node.peers)} />
       <SummaryTile label="Process uptime" value={formatDuration(node.processUptimeMs)} />
@@ -93,9 +98,7 @@ export function NodePage() {
 
     <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-3">
       <NodeInfoGroup title="Chain & consensus" label="Node chain and consensus observations">
-        <MetricRow label="QC" value={formatConsensusValue(node.consensus?.highestQcBlock, node.consensus)} />
-        <MetricRow label="Locked" value={formatConsensusValue(node.consensus?.highestLockBlock, node.consensus)} />
-        <MetricRow label="Committed" value={formatConsensusValue(node.consensus?.highestCommitBlock, node.consensus)} />
+        <ConsensusHeights node={node} />
         <MetricRow label="Validator" value={formatValidatorMembership(node)} />
         <MetricRow label="Resync" value={nodeComponentStateLabel(node.resyncState)} detail={formatResyncDetail(node)} />
         <MetricRow label="Network reference" value={formatReferenceHead(node)} detail={formatReferenceDetail(node)} />
@@ -407,13 +410,13 @@ function MetricChart({ label, series, from, to, fixedMax, axisFormat, message, k
   const chartMessage = message ?? (hasPoints ? undefined : 'No samples in the last minute')
   const windowLabel = 'over the last ' + seconds + ' seconds'
 
-  return <div className="mt-auto grid min-w-0 grid-cols-[3rem_minmax(0,1fr)] grid-rows-[7.25rem_auto] gap-x-2">
+  return <div className="mt-auto grid min-w-0 grid-cols-[3rem_minmax(0,1fr)] grid-rows-[7.25rem_auto] lg:grid-rows-[6.25rem_auto] gap-x-2">
     <div className="flex flex-col justify-between pr-1 text-right text-[11px] tabular-nums text-muted-foreground" aria-hidden="true">
       <span>{axisFormat(max)}</span>
       <span>{axisFormat(max / 2)}</span>
       <span>{axisFormat(0)}</span>
     </div>
-    <svg viewBox="0 0 600 150" preserveAspectRatio="none" role="img" aria-label={label + ' ' + kind + ' chart ' + windowLabel} className={cn('col-start-2 row-start-1 h-[7.25rem] w-full overflow-visible', toneClass)}>
+    <svg viewBox="0 0 600 150" preserveAspectRatio="none" role="img" aria-label={label + ' ' + kind + ' chart ' + windowLabel} className={cn('col-start-2 row-start-1 h-[7.25rem] lg:h-[6.25rem] w-full overflow-visible', toneClass)}>
       <title>{label} {kind} chart {windowLabel}</title>
       <desc>{chartMessage ? label + ': ' + chartMessage : series.map((item) => item.label).join(' and ') + ' values from ' + seconds + ' seconds ago to now'}</desc>
       <defs>
@@ -500,11 +503,6 @@ function niceChartMax(value: number): number {
   const normalized = value / magnitude
   const step = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10
   return step * magnitude
-}
-
-function formatConsensusValue(value: number | null | undefined, consensus: PublicNode['consensus'] | undefined): string {
-  if (!consensus || value == null || consensus.freshness === 'unknown' || ['starting', 'disabled', 'unsupported'].includes(consensus.state)) return 'Unknown'
-  return value.toLocaleString()
 }
 
 function formatValidatorMembership(node: PublicNode): string {

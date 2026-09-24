@@ -6,7 +6,7 @@ import { adminQueryClient, resetAdminCache } from './api/admin'
 import { applySiteAccessSettings, resetPublicCache } from './api/public'
 import { resetRealtimeCursors } from './api/transport'
 import { client } from './api/generated/client.gen'
-import type { PublicNode } from './api/generated/types.gen'
+import type { PublicNode, PublicValidatorInsight } from './api/generated/types.gen'
 
 const OWNER_SESSION = {
   session: {
@@ -263,9 +263,21 @@ describe('App shell with private Home', () => {
           validator: true,
         },
         validator: {
+          validatorId: 'validator-1',
+          validatorNodeId: '0x' + 'a'.repeat(128),
+          nodeId: 'node-1',
+          state: 'fresh',
+          freshness: 'fresh',
+          source: 'platscan',
           activity: 'producing',
           activityState: 'current',
-        },
+          currentValidatorStatus: 'validator',
+          currentValidatorStatusState: 'current',
+          blockRateState: 'unknown',
+          counterState: 'normal',
+          rankState: 'unknown',
+          rankFreshness: 'unknown',
+        } satisfies PublicValidatorInsight,
         peers: {
           state: 'error',
           freshness: 'stale',
@@ -341,17 +353,19 @@ describe('App shell with private Home', () => {
 
     expect(await screen.findByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
     expect(screen.getByRole('img', { name: 'Unhealthy' })).toBeTruthy()
-    // Node Validator Activity is not rendered by the current SPA, so the
-    // identity block carries no Node-status label and no activity wording.
+    // Provider Activity remains independent of the unhealthy Node: the title
+    // must not rename Producing to an inferred offline/observer role.
     expect(screen.queryByText('Node status')).toBeNull()
-    expect(screen.queryByText('Producing')).toBeNull()
+    const identity = screen.getByRole('heading', { level: 1, name: 'Validator A' }).closest('header')!
+    expect(within(identity).getByText('Producing')).toBeTruthy()
+    expect(within(identity).getByLabelText(/PlatScan status: Producing/)).toBeTruthy()
     expect(screen.getByText('Process uptime')).toBeTruthy()
     expect(screen.getByText('1h 2m')).toBeTruthy()
     expect(screen.getByText('Head')).toBeTruthy()
     expect(screen.getByText('QC')).toBeTruthy()
     expect(screen.getByText('Locked')).toBeTruthy()
     expect(screen.getByText('Committed')).toBeTruthy()
-    expect(screen.getByText('Validator')).toBeTruthy()
+    expect(within(screen.getByLabelText('Node chain and consensus observations')).getByText('Validator')).toBeTruthy()
     expect(screen.getByText('True')).toBeTruthy()
     expect(screen.queryByText('False')).toBeNull()
     expect(screen.getByText('RPC observation failed')).toBeTruthy()

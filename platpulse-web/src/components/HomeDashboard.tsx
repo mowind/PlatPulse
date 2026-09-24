@@ -23,6 +23,7 @@ import { cn } from '../lib/utils'
 import { LinkedValidatorSection, validatorDataStatus, type ValidatorDataStatus } from './LinkedValidator'
 import { ValidatorTotalCard } from './ValidatorTotals'
 import { ValidatorActivityBadge } from './ValidatorActivityBadge'
+import { SURFACE_CARD_INTERACTIVE } from '../lib/surface'
 import { HomeSummaryCard } from './HomeSummaryCard'
 import { Button } from './ui/button'
 import { Dialog, DialogTrigger, DialogContent, DialogTitle, DialogDescription } from './ui/dialog'
@@ -263,8 +264,9 @@ function HomeNodeCard({ network, node }: NodeRecord) {
         // Borderless by design (the surface and its hover ring carry the
         // card): Tailwind's preflight leaves border-style: solid behind, so
         // this has to be stated explicitly.
-        'group/node-card relative h-full w-full rounded-md border-none bg-background/60 transition-all duration-200',
-        'hover:z-1 hover:-translate-y-0.5 hover:bg-background hover:shadow-[0_0_20px,0_0_0_1px] hover:shadow-emerald-600/10',
+        'group/node-card relative h-full w-full rounded-md border-none transition-all duration-200',
+        SURFACE_CARD_INTERACTIVE,
+        'hover:z-1 hover:-translate-y-0.5 hover:shadow-[0_0_20px,0_0_0_1px] hover:shadow-emerald-600/10',
         tone === 'bad' && 'shadow-[0_0_0_1px] shadow-red-600/20',
         tone === 'warn' && 'shadow-[0_0_0_1px] shadow-amber-500/20',
       )}

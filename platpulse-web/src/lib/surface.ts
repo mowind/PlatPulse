@@ -9,5 +9,8 @@
  * setting — the Emerald gradient is the default surface — so the plain recipe
  * is the one that matches upstream's rendered default.
  */
-export const SURFACE_CARD = 'bg-background/60 hover:bg-background'
+export const SURFACE_CARD_STATIC = 'bg-background/60'
+export const SURFACE_CARD_INTERACTIVE = 'bg-background/60 hover:bg-background'
+// Legacy recipe retained for pages outside the Node-detail migration.
+export const SURFACE_CARD = SURFACE_CARD_INTERACTIVE
 export const SURFACE_TOOLBAR = 'bg-background/60'

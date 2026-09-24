@@ -6,12 +6,12 @@ import { formatObservedAt } from './StatusBadge'
 import { DataTooltip } from './ui/data-tooltip'
 
 /**
- * The PlatScan Validator Activity Home presents in a Node card's top-right
- * corner. `activity` is the Server-owned canonical projection of PlatScan's
+ * The PlatScan Validator Activity presented on Home cards and Node detail.
+ * `activity` is the Server-owned canonical projection of PlatScan's
  * numeric `data.status`: 1|2 active, 3 producing, 4 exiting, 5 exited,
  * 6 verifying, 7 locked, plus the Public-only `observing` label for an
  * authoritative empty identity and `unknown` for unavailable evidence.
- * Home only renders this value: it never infers a status from Node Health,
+ * The UI only renders this value: it never infers a status from Node Health,
  * consensus membership, rank, rewards, or the local Node role.
  */
 type ActivityTone = 'verifying' | 'producing' | 'active' | 'muted'
@@ -34,7 +34,7 @@ const PRESENTATION: Record<string, ActivityPresentation> = {
 }
 
 /**
- * Every label Home can render, each measured through an `::after` pseudo-element
+ * Every label the badge can render, measured through an `::after` pseudo-element
  * in the same grid cell. The widest one holds the badge width steady, so
  * switching status never re-flows the Node name. The measurement text lives in
  * generated content rather than a text node: it still sizes the cell, but it
@@ -134,10 +134,10 @@ function activityReason(
 }
 
 /**
- * A compact PlatScan Validator Activity badge for the Node card header. It
- * replaces the former local Node-role chip: the local role stays in Node
- * detail, and the Node Health marker beside the name stays an independent
- * dimension. The badge is a non-interactive status with a keyboard-focusable
+ * A compact PlatScan Validator Activity badge for Home and Node detail.
+ * Node Health and consensus membership stay independent dimensions; neither
+ * determines this Provider-owned value.
+ * The badge is a non-interactive status with a keyboard-focusable
  * explanation; the SVG is decorative so the accessible name is not doubled.
  */
 export function ValidatorActivityBadge({

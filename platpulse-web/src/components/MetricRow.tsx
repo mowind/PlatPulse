@@ -83,7 +83,7 @@ export function MetricRow({ label, shortLabel, value, wideValue, detail, progres
         <small
           data-slot="metric-row-detail"
           data-hide-wide={wideValue == null ? undefined : 'true'}
-          className="col-span-2 truncate text-[11px] text-muted-foreground"
+          className={cn('col-span-2 text-[11px] text-muted-foreground', compact ? 'truncate' : 'whitespace-normal [overflow-wrap:anywhere]')}
         >
           {detail}
         </small>

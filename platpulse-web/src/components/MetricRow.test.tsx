@@ -13,6 +13,15 @@ afterEach(cleanup)
 const childSlots = (element: HTMLElement) => [...element.children].map((child) => child.getAttribute('data-slot'))
 
 describe('MetricRow', () => {
+  it('wraps noncompact captions naturally but retains compact truncation', () => {
+    const { container, rerender } = render(<MetricRow label="Directory" value="Unknown" detail="A long explanation" />)
+    const caption = () => container.querySelector('[data-slot="metric-row-detail"]')!
+    expect(caption().className).toContain('whitespace-normal')
+    expect(caption().className).not.toContain('truncate')
+    expect(caption().className).not.toContain('line-clamp')
+    rerender(<MetricRow layout="compact" label="Directory" value="Unknown" detail="A long explanation" />)
+    expect(caption().className).toContain('truncate')
+  })
   it('renders the data item then the value on one row', () => {
     const { container } = render(<MetricRow label="Head" value="120" />)
     const row = container.querySelector('[data-slot="metric-row"]') as HTMLElement

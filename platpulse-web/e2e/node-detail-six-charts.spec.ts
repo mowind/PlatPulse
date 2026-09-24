@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { expectNoHorizontalOverflow, expectVisibleInteractiveTargets, loginAs, expectComputedColor } from './helpers'
+import { expectNoHorizontalOverflow, expectVisibleInteractiveTargets, loginAs } from './helpers'
 
 /**
  * Issue #150 final Node Detail acceptance: the fixed four Playwright projects
@@ -126,7 +126,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
 
           // The accepted A container (issue #151): an uncarded identity block,
           // four summary tiles, and three parallel observation panels that sit
-          // on one row at desktop width and stack to one column at <=48rem.
+          // on one row at lg and stack to one column below 1024px.
           await expect(page.locator('[data-slot="node-hero-card"]')).toHaveCount(0)
           await expect(page.getByLabel('Node key summary').locator('[data-slot="node-summary-tile"]')).toHaveCount(4)
           await expect(page.locator('[data-slot="node-info-group"]')).toHaveCount(3)
@@ -144,6 +144,12 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
           await expect(metrics.getByRole('img', { name: /line chart over the last 60 seconds/ })).toHaveCount(4)
           await expect(metrics.getByRole('img', { name: /bar chart over the last 60 seconds/ })).toHaveCount(2)
           expect(await metrics.locator('[data-slot="node-metric-card"] h3').allTextContents()).toEqual([...CHART_HEADINGS])
+          const expectedPlotHeight = (page.viewportSize()?.width ?? 0) >= 1024 ? 100 : 116
+          for (const svg of await metrics.locator('svg[role="img"]').all()) {
+            await expect(svg).toHaveCSS('height', expectedPlotHeight + 'px')
+            const plotRow = await svg.evaluate((element) => getComputedStyle(element.parentElement!).gridTemplateRows.split(' ')[0])
+            expect(plotRow).toBe(expectedPlotHeight + 'px')
+          }
 
           if (scenario === 'normal') {
             await expect(metrics.locator('[data-slot="node-metric-chart-empty"]')).toHaveCount(0)
@@ -176,6 +182,13 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
           await peerSummary.focus()
           await page.keyboard.press('Enter')
           await expect(peerDisclosure).toHaveAttribute('open', '')
+          for (const card of await peerDisclosure.locator('[data-slot="peer-insight"], [data-slot="peer-history-insight"]').all()) {
+            await page.mouse.move(2, 2)
+            const background = await card.evaluate(element => getComputedStyle(element).backgroundColor)
+            await card.hover()
+            await expect(card).toHaveCSS('background-color', background)
+          }
+          await peerSummary.focus()
           await page.keyboard.press('Enter')
           await expect(peerDisclosure).not.toHaveAttribute('open', '')
 
@@ -191,13 +204,11 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             await page.screenshot({ path: testInfo.outputPath('node-detail-six-charts.png'), fullPage: true })
           }
 
-          // Emerald detail cards become opaque without a glow or lift.
-          const hoverCapable = await page.evaluate(
-            () => matchMedia('(hover: hover) and (pointer: fine)').matches,
-          )
+          // Read-only cards retain their translucent surface on pointer hover.
           const chartCard = metrics.locator('[data-slot="node-metric-card"]').first()
           await page.mouse.move(2, 2)
           const restingShadow = await chartCard.evaluate((card) => getComputedStyle(card).boxShadow)
+          const restingBackground = await chartCard.evaluate((card) => getComputedStyle(card).backgroundColor)
           await chartCard.hover()
           await page.waitForTimeout(220)
           const hovered = await chartCard.evaluate((card) => ({
@@ -210,13 +221,16 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
           ).toBe(true)
           expect(hovered.shadow, 'chart cards stay shadow-free').toBe(restingShadow)
           await expect(chartCard).toHaveCSS('box-shadow', 'none')
-          if (hoverCapable) {
-            await expectComputedColor(chartCard, 'background-color', theme === 'light'
-              ? 'rgb(255, 255, 255)' : 'oklch(0.141 0.005 285.823)')
+          await expect(chartCard).toHaveCSS('background-color', restingBackground)
+          for (const card of await page.locator('[data-slot="node-summary-tile"], [data-slot="node-info-group"], [data-slot="node-disclosure"], [data-slot="linked-validator"]').all()) {
+            await page.mouse.move(2, 2)
+            const background = await card.evaluate((element) => getComputedStyle(element).backgroundColor)
+            await card.hover()
+            await expect(card).toHaveCSS('background-color', background)
           }
 
           // The observation panels and the diagnostic disclosures are the
-          // other card classes on this page; they react in both themes too.
+          // other card classes on this page; they stay static in both themes.
           const observationPanel = page.locator('[data-slot="node-info-group"]').first()
           await page.mouse.move(2, 2)
           const panelResting = await observationPanel.evaluate((card) => getComputedStyle(card).boxShadow)
@@ -238,7 +252,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
 
           // Desktop 1280 lays the six charts out three columns by two rows.
           const viewportWidth = page.viewportSize()?.width ?? 0
-          if (viewportWidth >= 1024) {
+          if (viewportWidth >= 1280) {
             const rows = await metrics.locator('[data-slot="node-metric-card"]').evaluateAll((cards) => cards.map((card) => {
               const box = card.getBoundingClientRect()
               return { top: Math.round(box.top), left: Math.round(box.left) }
@@ -251,6 +265,39 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
         })
       }
     }
+  })
+
+  test('uses timestamp-shaped Public freshness and Server evidence for independent height deltas', async ({ page }) => {
+    let mode: 'current' | 'unconfirmed' | 'low-confidence' = 'current'
+    await page.route(nodeRoute, async route => {
+      const response = await route.fetch()
+      const body = await response.json()
+      await route.fulfill({ response, json: { ...body,
+        freshness: new Date().toISOString(), health: mode === 'unconfirmed' ? 'unknown' : 'healthy',
+        rpcState: 'ok', currentHead: 100, networkReferenceHead: 98,
+        networkReferenceConfidence: mode === 'low-confidence' ? 'low' : 'high',
+        consensus: { ...body.consensus, state: 'ok', freshness: 'current',
+          highestQcBlock: 102, highestLockBlock: 101, highestCommitBlock: 100 },
+      } })
+    })
+    await loginAs(page)
+    await openNodeDetail(page)
+    const headDelta = page.locator('[data-slot="head-delta"]')
+    await expect(headDelta).toHaveText('+2 vs network reference')
+    await expect(page.getByRole('group', { name: 'QC height' })).toContainText('+2 vs node head')
+    await expect(page.getByRole('group', { name: 'Locked height' })).toContainText('+1 vs node head')
+    await expect(page.getByRole('group', { name: 'Committed height' })).toContainText('0 vs node head')
+    mode = 'unconfirmed'
+    await page.reload()
+    await expect(headDelta).toContainText('— vs network reference')
+    await expect(headDelta).toContainText('Current Node Head not confirmed by Server')
+    await expect(page.getByRole('group', { name: 'QC height' })).toContainText('102')
+    await expect(page.getByRole('group', { name: 'QC height' })).toContainText('— vs node head')
+    mode = 'low-confidence'
+    await page.reload()
+    await expect(headDelta).toContainText('Network reference confidence low')
+    await expect(page.getByRole('group', { name: 'QC height' })).toContainText('+2 vs node head')
+    await expectNoHorizontalOverflow(page)
   })
 
   test('reduced motion removes the disclosure and chart transitions', async ({ page }) => {

@@ -279,20 +279,82 @@ describe('LinkedValidatorSection Node detail', () => {
     const region = detailRegion()
     expect(within(region).getByText('Linked Validator')).toBeTruthy()
     expect(within(region).getByText('Validator One')).toBeTruthy()
+    expect(within(region).queryByText(identifier, { exact: true })).toBeNull()
+    fireEvent.click(within(region).getByRole('button', { name: 'Show full ID' }))
     expect(within(region).getByText(identifier, { exact: true })).toBeTruthy()
+    expect(region.querySelector('details')?.open).toBe(false)
     expect(region.querySelectorAll('[data-slot="metric-row"]')).toHaveLength(6)
     fireEvent.click(within(region).getByRole('button', { name: 'Copy full Validator identifier' }))
     await waitFor(() => expect(within(region).getByRole('status', { name: 'Identifier copy status' }).textContent).toBe('Validator identifier copied.'))
     expect(writeText).toHaveBeenCalledExactlyOnceWith(identifier)
   })
 
-  it('announces clipboard failure and keeps the full identifier selectable', async () => {
+  it.each(['unavailable', 'rejected'])('reveals the selectable full identifier when clipboard is %s', async failure => {
     const identifier = '0x' + 'aBcD'.repeat(32)
-    vi.stubGlobal('navigator', {})
+    vi.stubGlobal('navigator', failure === 'unavailable' ? {} : { clipboard: { writeText: vi.fn().mockRejectedValue(new Error('Denied')) } })
     renderDetail({ validator: { ...insight, validatorNodeId: identifier } })
     fireEvent.click(screen.getByRole('button', { name: 'Copy full Validator identifier' }))
     await waitFor(() => expect(screen.getByRole('status', { name: 'Identifier copy status' }).textContent).toMatch(/Copy failed.*manually/))
     expect(screen.getByText(identifier, { exact: true })).toBeTruthy()
+  })
+
+  it('keeps independent staking and Activity badges and a static responsive metric surface', () => {
+    renderDetail({ validator: { ...insight, currentValidatorStatusQualifier: 'locked', activity: 'verifying' } })
+    const header = detailRegion().querySelector('header')!
+    expect(within(header).getByText('Validator', { exact: true })).toBeTruthy()
+    expect(within(header).getByLabelText('Validator Provider state: Current')).toBeTruthy()
+    expect(within(header).getByText('Locked', { exact: true })).toBeTruthy()
+    expect(within(header).getByLabelText(/PlatScan status: Verifying/)).toBeTruthy()
+    expect(detailRegion().className).not.toMatch(/hover:|transition/)
+    expect(screen.getByRole('group', { name: 'Linked Validator metrics' }).className).toContain('lg:grid-cols-3')
+  })
+
+  it('defaults diagnostics closed and toggles the full ID independently', () => {
+    renderDetail({ validator: { ...insight, validatorNodeId: '0x' + 'a'.repeat(128) } })
+    const diagnostics = detailRegion().querySelector('details')!
+    expect(diagnostics.open).toBe(false)
+    expect(diagnostics.querySelector('summary')?.textContent).toBe('Validator diagnostics')
+    expect(within(diagnostics).getByLabelText('Public Validator states')).toBeTruthy()
+    expect(within(diagnostics).getByText('Last success')).toBeTruthy()
+    const show = screen.getByRole('button', { name: 'Show full ID' })
+    expect(show.getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(show)
+    const hide = screen.getByRole('button', { name: 'Hide full ID' })
+    expect(hide.getAttribute('aria-expanded')).toBe('true')
+    expect(document.getElementById(hide.getAttribute('aria-controls')!)?.className).toContain('select-text')
+    expect(diagnostics.open).toBe(false)
+    fireEvent.click(hide)
+    expect(screen.queryByLabelText(/Validator identifier:/)).toBeNull()
+  })
+
+  it('keeps simultaneous Provider, staking, identity, ranking, rate and counter warnings outside diagnostics', () => {
+    renderDetail({ validatorIdentityReason: 'Identity discovery failed.', validator: { ...insight,
+      state: 'error', freshness: 'stale', currentValidatorStatus: 'unknown', currentValidatorStatusState: 'stale',
+      rankState: 'error', rankFreshness: 'stale', blockRateState: 'unknown', blockRate: null, counterState: 'counter_reset' } })
+    const reasons = [/source could not be read.*retained and stale/, /last established association/,
+      /not a negative conclusion/, /last confirmed Validator status/, /last successful rank is retained/,
+      /complete cumulative produced.*scheduled block pair/, /prior value was not treated as normal growth/]
+    for (const reason of reasons) {
+      const note = screen.getByText(reason)
+      expect(note.closest('details')).toBeNull()
+    }
+    expect(screen.getByText(/last successful rank is retained/).closest('[data-slot=metric-row]')?.textContent).toContain('Network rank')
+    expect(screen.getByText(/production rate is unknown/).closest('[data-slot=metric-row]')?.textContent).toContain('Production rate')
+    expect(screen.getByText(/prior value was not treated as normal growth/).closest('[data-slot=metric-row]')?.textContent).toContain('Cumulative blocks')
+    expect(detailRegion().querySelector('details')?.open).toBe(false)
+  })
+
+  it.each(['not_configured', 'unsupported', 'not_found', 'empty'])('labels retained metrics with unavailable Provider state %s outside diagnostics', state => {
+    renderDetail({ validator: { ...insight, state, freshness: 'unknown' } })
+    const note = screen.getByText(/Showing the last successful metrics; the current source state is unavailable/)
+    expect(note.closest('details')).toBeNull()
+    expect(metricValue('Cumulative blocks')).toBe('4,321')
+    expect(metricValue('Cumulative rewards')).toBe('1,234.123456789012')
+  })
+
+  it('does not repeat the same unconfigured Provider reason for ranking', () => {
+    renderDetail({ validator: { ...insight, state: 'not_configured', rankState: 'not_configured' } })
+    expect(screen.getAllByText(/No Validator source is configured/)).toHaveLength(1)
   })
 
   it('shows the full available precision only in Node detail', () => {
@@ -333,7 +395,7 @@ describe('LinkedValidatorSection Node detail', () => {
     renderDetail({ validator: { ...insight, state: 'error', freshness: 'stale', blockRate: null, blockRateState: 'not_applicable', counterState: 'counter_reset' } })
     expect(screen.getByText(/zero scheduled-block denominator/)).toBeTruthy()
     expect(screen.getByText(/prior value was not treated as normal growth/)).toBeTruthy()
-    expect(screen.getByText(/Showing the last successful value/)).toBeTruthy()
+    expect(screen.getByText(/source could not be read; the last successful values are retained/)).toBeTruthy()
   })
 
   it('keeps the locked qualifier and the unknown-staking explanation', () => {

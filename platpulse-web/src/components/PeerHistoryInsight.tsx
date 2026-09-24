@@ -1,7 +1,7 @@
 import type { AdminPeerHistory, PublicPeerHistory } from '../api/generated'
 import { StatusBadge, formatObservedAt } from './StatusBadge'
 import { CardX } from './ui/card-x'
-import { SURFACE_CARD } from '../lib/surface'
+import { SURFACE_CARD_STATIC } from '../lib/surface'
 import { cn } from '../lib/utils'
 
 export type PeerHistoryCountry = {
@@ -147,7 +147,7 @@ export function PeerHistoryInsight({
     <CardX
       bordered={false}
       data-slot="peer-history-insight"
-      className={cn('mt-3 min-w-0 rounded-md border-none', SURFACE_CARD)}
+      className={cn('mt-3 min-w-0 rounded-md border-none', SURFACE_CARD_STATIC)}
       contentClassName="flex min-w-0 flex-col gap-2"
     >
       <section className="min-w-0" aria-labelledby={admin ? 'admin-peer-history' : 'public-peer-history'}>

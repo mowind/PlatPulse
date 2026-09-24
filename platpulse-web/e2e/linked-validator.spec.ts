@@ -63,32 +63,45 @@ async function expectCardMetrics(scope: Locator) {
   expect(overflowing, 'metric labels and values must wrap within their cells').toEqual([])
 }
 
-/** The Node-detail Linked Validator region keeps six two-column rows. */
-async function expectTwoColumnMetrics(scope: Locator) {
+/** Detail metrics use two columns below lg and three at desktop widths. */
+async function expectDetailMetrics(scope: Locator) {
   const metrics = scope.getByRole('group', { name: 'Linked Validator metrics' })
   const cells = metrics.locator(':scope > [data-slot="metric-row"]')
   await expect(cells).toHaveCount(6)
+  for (const value of await cells.locator('[data-slot="metric-row-value"]').all()) {
+    await expect(value).toHaveCSS('justify-content', 'flex-start')
+    expect(await value.evaluate(element => getComputedStyle(element, '::before').display)).toBe('none')
+  }
+  for (const cell of await cells.all()) {
+    const gap = await cell.evaluate(element => {
+      const label = element.querySelector('[data-slot="metric-row-label"]')!.getBoundingClientRect()
+      const value = element.querySelector('[data-slot="metric-row-value"]')!.getBoundingClientRect()
+      return value.top - label.bottom
+    })
+    expect(gap, 'each value sits directly beneath its own label, even beside a warning').toBeGreaterThanOrEqual(0)
+    expect(gap).toBeLessThanOrEqual(8)
+  }
+  const columns = await metrics.evaluate(() => window.innerWidth >= 1024 ? 3 : 2)
   const boxes = await cells.evaluateAll(elements => elements.map(element => {
     const box = element.getBoundingClientRect()
     return { x: box.x, y: box.y, right: box.right, bottom: box.bottom, width: box.width }
   }))
-  for (let index = 0; index < boxes.length; index += 2) {
-    const left = boxes[index]
-    const right = boxes[index + 1]
-    expect(left.width).toBeGreaterThan(0)
-    expect(right.width).toBeCloseTo(left.width, 0)
-    expect(right.x).toBeGreaterThan(left.right)
-    expect(right.y).toBeCloseTo(left.y, 0)
-    expect(left.x).toBeCloseTo(boxes[0].x, 0)
-    expect(right.x).toBeCloseTo(boxes[1].x, 0)
-    if (index > 0) {
-      expect(left.y).toBeGreaterThanOrEqual(Math.max(boxes[index - 2].bottom, boxes[index - 1].bottom))
+  for (let index = 0; index < boxes.length; index++) {
+    const box = boxes[index]
+    expect(box.width).toBeGreaterThan(0)
+    expect(box.width).toBeCloseTo(boxes[0].width, 0)
+    expect(box.x).toBeCloseTo(boxes[index % columns].x, 0)
+    if (index % columns !== 0) {
+      expect(box.x).toBeGreaterThan(boxes[index - 1].right)
+      expect(box.y).toBeCloseTo(boxes[index - 1].y, 0)
+    } else if (index > 0) {
+      expect(box.y).toBeGreaterThanOrEqual(Math.max(...boxes.slice(index - columns, index).map(previous => previous.bottom)))
     }
   }
   const overflowing = await metrics.locator('*').evaluateAll(elements => elements
     .filter(element => element.scrollWidth > element.clientWidth + 1)
     .map(element => element.textContent))
-  expect(overflowing, 'metric labels and values must wrap within their cells').toEqual([])
+  expect(overflowing, 'metric labels and exact values must wrap within their cells').toEqual([])
 }
 
 test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
@@ -121,8 +134,14 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
     await expect(detail).toBeVisible()
     await expect(detail.getByText('E2E Validator')).toBeVisible()
     await expect(detail.getByRole('button', { name: 'Copy full Validator identifier' })).toBeVisible()
+    await expect(detail.getByLabel(/Validator identifier: 0x/)).toHaveCount(0)
+    await detail.getByRole('button', { name: 'Show full ID' }).click()
     await expect(detail.getByLabel(/Validator identifier: 0x/)).toBeVisible()
-    // The public state vocabulary and provenance moved here with the identity.
+    // Diagnostics starts closed and is independent of the identity disclosure.
+    await expect(detail.locator('details')).not.toHaveAttribute('open')
+    await expect(detail.getByLabel('Public Validator states')).toBeHidden()
+    await detail.locator('summary').click()
+    // The public state vocabulary and provenance remain available on demand.
     await expect(detail.getByLabel('Public Validator states')).toBeVisible()
     await expect(detail.getByText('Data freshness', { exact: true })).toBeVisible()
     await expect(detail.getByText('Cumulative blocks')).toBeVisible()
@@ -134,7 +153,7 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
     await expect(metricValue(detail, 'Production rate')).toHaveText(LINKED_BLOCK_RATE_DETAIL)
     await expect(metricValue(detail, 'PlatScan 24h rate')).toHaveText(LINKED_GEN_BLOCKS_RATE_DETAIL)
     await expect(metricValue(detail, 'Delegation reward share')).toHaveText(LINKED_DELEGATION_SHARE_DETAIL)
-    await expectTwoColumnMetrics(detail)
+    await expectDetailMetrics(detail)
 
     await expectNoHorizontalOverflow(page)
   })
@@ -175,9 +194,61 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
 
     await page.goto('/nodes/' + PUBLIC_NODE_ID)
     const detail = page.getByRole('region', { name: 'Linked Validator' })
+    await detail.getByRole('button', { name: 'Show full ID' }).click()
     await expect(detail.getByText(identity, { exact: true })).toBeVisible()
     await expect(detail.getByText(exactReward, { exact: true })).toBeVisible()
-    await expectTwoColumnMetrics(detail)
+    await expectDetailMetrics(detail)
+    await expectNoHorizontalOverflow(page)
+  })
+
+  test('supports keyboard and touch disclosures and reveals the full ID on clipboard failure', async ({ page, isMobile }, testInfo) => {
+    const identity = '0X' + 'AbCd'.repeat(32)
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+        writeText: () => Promise.reject(new Error('Clipboard permission denied')),
+      } })
+    })
+    await page.route('**/api/public/v1/nodes/' + PUBLIC_NODE_ID, async route => {
+      const response = await route.fetch()
+      const node: PublicNode = await response.json()
+      await route.fulfill({ response, json: { ...node, validatorIdentityReason: 'Identity discovery failed.', validator: { ...node.validator,
+        validatorNodeId: identity, state: 'error', freshness: 'stale', currentValidatorStatus: 'unknown',
+        rankState: 'error', blockRateState: 'not_applicable', blockRate: null, counterState: 'counter_reset',
+      } } })
+    })
+    await loginAs(page)
+    await page.goto('/nodes/' + PUBLIC_NODE_ID)
+    const detail = page.getByRole('region', { name: 'Linked Validator' })
+    const summary = detail.locator('summary')
+    const touch = Boolean(testInfo.project.use.hasTouch || isMobile)
+    await expect(detail.getByText(identity, { exact: true })).toHaveCount(0)
+    const show = detail.getByRole('button', { name: 'Show full ID' })
+    if (touch) await show.tap()
+    else { await show.focus(); await page.keyboard.press('Enter') }
+    await expect(detail.getByText(identity, { exact: true })).toBeVisible()
+    await expect(detail.locator('details')).not.toHaveAttribute('open')
+    const hide = detail.getByRole('button', { name: 'Hide full ID' })
+    if (touch) await hide.tap()
+    else { await hide.focus(); await page.keyboard.press('Space') }
+    await expect(detail.getByText(identity, { exact: true })).toHaveCount(0)
+    await detail.getByRole('button', { name: 'Copy full Validator identifier' }).click()
+    await expect(detail.getByRole('status', { name: 'Identifier copy status' })).toHaveText(/Copy failed.*manually/)
+    await expect(detail.getByText(identity, { exact: true })).toBeVisible()
+    await expect(detail.getByText(identity, { exact: true })).toHaveCSS('user-select', 'text')
+    for (const reason of [/source could not be read.*retained and stale/, /last established association/,
+      /not a negative conclusion/, /last successful rank is retained/, /zero scheduled-block denominator/, /prior value was not treated as normal growth/]) {
+      await expect(detail.getByText(reason)).toBeVisible()
+    }
+    await expect(detail.getByLabel('Public Validator states')).toBeHidden()
+    if (touch) await summary.tap()
+    else { await summary.focus(); await page.keyboard.press('Enter') }
+    await expect(detail.getByLabel('Public Validator states')).toBeVisible()
+    await expect(detail.getByText('Last success', { exact: true })).toBeVisible()
+    if (touch) await summary.tap()
+    else await page.keyboard.press('Space')
+    await expect(detail.getByLabel('Public Validator states')).toBeHidden()
+    await expect(detail.getByText(identity, { exact: true })).toBeVisible()
+    await expectDetailMetrics(detail)
     await expectNoHorizontalOverflow(page)
   })
 

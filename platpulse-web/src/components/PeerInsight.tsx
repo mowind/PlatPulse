@@ -2,7 +2,7 @@ import { useId } from 'react'
 import type { PublicPeerInsight } from '../api/generated'
 import { componentStateLabel, formatObservedAt, freshnessLabel, StatusBadge } from './StatusBadge'
 import { CardX } from './ui/card-x'
-import { SURFACE_CARD } from '../lib/surface'
+import { SURFACE_CARD_STATIC } from '../lib/surface'
 import { cn } from '../lib/utils'
 
 /**
@@ -232,7 +232,7 @@ export function PeerInsight({
     <CardX
       bordered={false}
       data-slot="peer-insight"
-      className={cn('min-w-0 rounded-md border-none', SURFACE_CARD)}
+      className={cn('min-w-0 rounded-md border-none', SURFACE_CARD_STATIC)}
       contentClassName="!p-0"
     >
       <section className={cn('min-w-0', compact ? 'p-3' : 'p-4')} aria-labelledby={headingId}>
