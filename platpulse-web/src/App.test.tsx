@@ -408,9 +408,24 @@ describe('App shell with private Home', () => {
     // The final six-chart order is process CPU %, process memory %, shared
     // Host upload/download, Peer inbound/outbound, block interval, then
     // transactions per block; the first four are lines and the last two bars.
+    // Card density rule: the current value is the header's right-hand side
+    // and shares one row with the title, leaving at most one weak note.
+    const metricsSection = screen.getByRole('heading', { level: 2, name: 'Latest 60 seconds' }).closest('section')
+    if (!metricsSection) throw new Error('Latest 60 seconds section is missing')
     for (const heading of ['Process CPU', 'Process memory', 'Host network', 'Peer connections', 'Block interval', 'Transactions per block']) {
-      expect(screen.getByRole('heading', { level: 3, name: heading })).toBeTruthy()
+      const card = within(metricsSection).getByRole('heading', { level: 3, name: heading }).closest('[data-slot="node-metric-card"]')
+      if (!card) throw new Error(heading + ' card is missing')
+      const value = card.querySelector('[data-slot="node-metric-header"] [data-slot="node-metric-value"]')
+      expect(value?.textContent?.trim(), heading).toBeTruthy()
     }
+    // Copy is cut to the unit and the necessary legends: the repeated
+    // explanation sentences and the redundant unit words are gone.
+    expect(within(metricsSection).getAllByText('%', { exact: true })).toHaveLength(2)
+    expect(within(metricsSection).queryByText('PlatON process · current observation')).toBeNull()
+    expect(within(metricsSection).queryByText('Transactions in each Block Summary')).toBeNull()
+    expect(within(metricsSection).queryByText(/Host upload · download/)).toBeNull()
+    expect(within(metricsSection).queryByText('count')).toBeNull()
+    expect(within(metricsSection).queryByText('tx/block')).toBeNull()
     expect(screen.getAllByText('2.00 KiB/s').length).toBeGreaterThan(0)
     expect(screen.getAllByText('4.00 KiB/s').length).toBeGreaterThan(0)
     const networkLegend = screen.getByLabelText('Host network chart legend')

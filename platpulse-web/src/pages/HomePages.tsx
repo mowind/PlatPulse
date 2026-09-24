@@ -169,9 +169,7 @@ export function NodePage() {
         />
         <NodeMetricCard
           label="Host network"
-          unit="bytes/s"
           value={formatRate(node.hostNetworkTxBytesPerSec)}
-          detail={'Host upload · download ' + formatRate(node.hostNetworkRxBytesPerSec)}
           tone="blue"
           series={[
             { label: 'Upload', points: metricHistory?.networkTxBytesPerSec ?? [] },
@@ -186,7 +184,6 @@ export function NodePage() {
         />
         <NodeMetricCard
           label="Peer connections"
-          unit="count"
           value={peerCount(node.peers)}
           detail={peerBreakdown(node.peers)}
           tone="blue"
@@ -203,7 +200,6 @@ export function NodePage() {
         />
         <NodeMetricCard
           label="Block interval"
-          unit="ms"
           value={blockInterval.value}
           detail={historyQuery.error ? 'History unavailable' : blockInterval.detail}
           tone="amber"
@@ -217,9 +213,7 @@ export function NodePage() {
         />
         <NodeMetricCard
           label="Transactions per block"
-          unit="tx/block"
           value={formatNumber(node.latestBlockTransactionCount)}
-          detail="Transactions in each Block Summary"
           tone="violet"
           series={[{ label: 'Transactions per block', points: metricHistory?.transactionCount ?? [] }]}
           from={metricHistory?.from}
@@ -298,10 +292,6 @@ function NodeInfoGroup({ title, label, note, children }: { title: string; label:
 
 
 
-function MetricCardHeading({ label, hint }: { label: string; hint?: string }) {
-  return <header className="min-w-0"><h3 className="m-0 text-sm font-medium">{label}</h3>{hint && <span className="text-[11px] text-muted-foreground">{hint}</span>}</header>
-}
-
 type MetricSeries = {
   label: string
   points: PublicMetricPoint[]
@@ -357,12 +347,18 @@ function NodeMetricCard({ label, unit, value, detail, tone, series, showLegend =
   const toneClass = TONE_TEXT[tone]
   return (
     <CardX bordered={false} role="article" data-slot="node-metric-card" className={cn('min-w-0', CARD, className)} contentClassName="flex h-full min-w-0 flex-col gap-2">
-      <div className="flex min-w-0 items-start justify-between gap-3">
-        <MetricCardHeading label={label} hint={unit} />
-        <strong data-slot="node-metric-value" className="min-w-0 break-words text-right text-lg font-bold leading-none tracking-tight tabular-nums">{value}</strong>
+      <div data-slot="node-metric-header" className="flex min-w-0 items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="m-0 text-sm font-medium">{label}</h3>
+          <div className="mt-0.5 flex min-h-4 min-w-0 items-center">
+            {showLegend
+              ? <MetricSeriesLegend label={label} series={series} toneClass={toneClass} />
+              : unit && <p className="m-0 text-[11px] leading-4 text-muted-foreground">{unit}</p>}
+          </div>
+        </div>
+        <strong data-slot="node-metric-value" className="shrink-0 text-right text-xl font-bold leading-none tracking-tight tabular-nums">{value}</strong>
       </div>
-      {detail && <p className="m-0 min-h-4 break-words text-[11px] text-muted-foreground">{detail}</p>}
-      {showLegend && <MetricSeriesLegend label={label} series={series} toneClass={toneClass} />}
+      {detail && <p className="m-0 break-words text-[11px] leading-4 text-muted-foreground">{detail}</p>}
       {missingDirections.length > 0 && <p className="m-0 text-[11px] italic text-muted-foreground">{missingDirections.join(' and ')} unavailable in this window</p>}
       <MetricChart label={label} series={series} from={from} to={to} fixedMax={fixedMax} axisFormat={axisFormat} message={historyMessage} kind={chartKind} windowSeconds={windowSeconds} toneClass={toneClass} />
     </CardX>
@@ -371,7 +367,7 @@ function NodeMetricCard({ label, unit, value, detail, tone, series, showLegend =
 
 function MetricSeriesLegend({ label, series, toneClass }: { label: string; series: MetricSeries[]; toneClass: string }) {
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-3" aria-label={label + ' chart legend'}>
+    <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1" aria-label={label + ' chart legend'}>
       {series.map((item) => (
         <span key={item.label} className="inline-flex min-w-0 items-center gap-1 text-[11px] text-muted-foreground">
           <i className={cn('inline-block size-2 shrink-0 rounded-full', item.secondary ? 'bg-cyan-500' : cn('bg-current', toneClass))} aria-hidden="true" />
@@ -561,11 +557,10 @@ function latestBlockInterval(history: ReturnType<typeof usePublicNodeHistory>['d
 
 /** A process value is the retained current Public Projection value; when the
  *  process component is not Current it is explicitly marked as last-good. */
-function processStatusDetail(state: string | null | undefined): string {
+function processStatusDetail(state: string | null | undefined): string | undefined {
   const label = nodeComponentStateLabel(state)
-  return label === 'Current'
-    ? 'PlatON process · current observation'
-    : 'PlatON process · last-good value retained; collection ' + label
+  if (label === 'Current') return undefined
+  return 'last-good value retained · collection ' + label
 }
 
 function formatResyncDetail(node: PublicNode): string {
