@@ -51,8 +51,10 @@ const UNKNOWN_STAKING_TOOLTIP = 'This does not indicate a negative validator sta
  * wrapping rather than reserving a compact one-line slot. Held as one named
  * recipe because all six cells need the identical override set, and kept off
  * the card component so the Home card's container-query anatomy is untouched.
+ * The 10px row gap keeps the two desktop rows visually grouped instead of the
+ * 16px whitespace the grid used to reserve between them.
  */
-const DETAIL_METRICS_GRID = 'grid grid-cols-1 items-start gap-x-10 gap-y-4 sm:grid-cols-2 lg:grid-cols-3 [&>[data-slot=metric-row]]:grid-cols-1 [&_[data-slot=metric-row-label]]:min-w-0 [&_[data-slot=metric-row-label]]:whitespace-normal [&_[data-slot=metric-row-label]]:[overflow-wrap:anywhere] [&_[data-slot=metric-row-value]]:text-left [&_[data-slot=metric-row-value]]:text-sm [&_[data-slot=metric-row-value]]:font-semibold [&_[data-slot=metric-row-value]]:justify-start [&_[data-slot=metric-row-value]]:before:hidden [&_[data-slot=metric-row-detail]]:col-span-1 [&_[data-slot=metric-row-detail]]:whitespace-normal [&_[data-slot=metric-row-detail]]:overflow-visible [&_[data-slot=metric-row-detail]]:[overflow-wrap:anywhere]'
+const DETAIL_METRICS_GRID = 'grid grid-cols-1 items-start gap-x-10 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-3 [&>[data-slot=metric-row]]:grid-cols-1 [&_[data-slot=metric-row-label]]:min-w-0 [&_[data-slot=metric-row-label]]:whitespace-normal [&_[data-slot=metric-row-label]]:[overflow-wrap:anywhere] [&_[data-slot=metric-row-value]]:text-left [&_[data-slot=metric-row-value]]:text-sm [&_[data-slot=metric-row-value]]:font-semibold [&_[data-slot=metric-row-value]]:justify-start [&_[data-slot=metric-row-value]]:before:hidden [&_[data-slot=metric-row-detail]]:col-span-1 [&_[data-slot=metric-row-detail]]:whitespace-normal [&_[data-slot=metric-row-detail]]:overflow-visible [&_[data-slot=metric-row-detail]]:[overflow-wrap:anywhere]'
 
 /** The explicit special state of a confirmed-valid identity. */
 export function currentValidatorStatusQualifierLabel(qualifier: string | null | undefined): string | null {
@@ -437,6 +439,9 @@ function ValidatorDetail({ node, validator }: { node: PublicNode; validator: Pub
       <p role="status" aria-label="Identifier copy status" className={cn('m-0 text-xs text-muted-foreground', !copyStatus && 'sr-only')}>{copyStatus}</p>
     </div>
     {validator.rewardAmount != null && <p className="m-0 text-[11px] text-muted-foreground">Amounts use the Network native unit; full reward precision is available in Validator diagnostics.</p>}
+    {/* Diagnostics stays collapsed on first load and keeps the shared
+        disclosure presentation. Only its own state/provenance rows and group
+        padding tighten; the primitive stays unaware of the Validator variant. */}
     <Disclosure
       surface="none"
       className="-mx-4 border-none"
@@ -536,7 +541,7 @@ function ValidatorPublicStates({ node, validator }: { node: PublicNode; validato
     ['Activity', validator.activity], ['Activity state', validator.activityState],
     ['Identity state', node.validatorIdentityState],
   ]
-  return <dl className="m-0 grid grid-cols-2 gap-3 border-t border-border pt-3" aria-label="Public Validator states">
+  return <dl className="m-0 grid grid-cols-2 gap-x-3 gap-y-2 border-t border-border pt-2" aria-label="Public Validator states">
     {states.map(([label, value]) => <div key={label} className="min-w-0">
       <dt className="text-xs text-muted-foreground">{label}</dt>
       <dd className="m-0 break-words text-xs">{value ?? 'Not provided'}</dd>
@@ -549,7 +554,7 @@ function Provenance({ validator }: { validator: PublicValidatorInsight }) {
     <dt className="text-[11px] font-medium tracking-wider text-muted-foreground">{label}</dt>
     <dd className="m-0 break-words text-xs">{value}</dd>
   </div>
-  return <dl className="m-0 grid grid-cols-[repeat(auto-fit,minmax(9rem,1fr))] gap-x-4 gap-y-2 border-t border-dashed border-border/60 pt-2">
+  return <dl className="m-0 grid grid-cols-[repeat(auto-fit,minmax(9rem,1fr))] gap-x-4 gap-y-1.5 border-t border-dashed border-border/60 pt-2">
     {fact('Last success', validator.receivedAt ? formatUtcDateTime(validator.receivedAt) : 'Never observed')}
     {/* The ranking list is fetched independently, so it has its own success time. */}
     {fact('Rank last success', validator.rankReceivedAt ? formatUtcDateTime(validator.rankReceivedAt) : 'Never observed')}
