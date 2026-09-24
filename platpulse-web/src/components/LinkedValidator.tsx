@@ -46,17 +46,13 @@ const UNKNOWN_STATUS_LABEL = 'Validator status unknown'
 const UNKNOWN_STAKING_TOOLTIP = 'This does not indicate a negative validator state.'
 
 /**
- * The Node Detail metric grid: two shrinkable columns below lg and three at lg
- * and above, every cell stacking its caption above the value, left aligned and
+ * The Node Detail metric grid: one column on mobile, two at sm and three at lg,
+ * with every cell stacking its caption above the value, left aligned and
  * wrapping rather than reserving a compact one-line slot. Held as one named
  * recipe because all six cells need the identical override set, and kept off
  * the card component so the Home card's container-query anatomy is untouched.
  */
-const DETAIL_METRICS_GRID = 'grid grid-cols-2 items-start gap-x-4 gap-y-4 lg:grid-cols-3 [&>[data-slot=metric-row]]:grid-cols-1 [&_[data-slot=metric-row-label]]:min-w-0 [&_[data-slot=metric-row-label]]:whitespace-normal [&_[data-slot=metric-row-label]]:[overflow-wrap:anywhere] [&_[data-slot=metric-row-value]]:text-left [&_[data-slot=metric-row-value]]:text-sm [&_[data-slot=metric-row-value]]:font-semibold [&_[data-slot=metric-row-value]]:justify-start [&_[data-slot=metric-row-value]]:before:hidden [&_[data-slot=metric-row-detail]]:col-span-1 [&_[data-slot=metric-row-detail]]:whitespace-normal [&_[data-slot=metric-row-detail]]:overflow-visible [&_[data-slot=metric-row-detail]]:[overflow-wrap:anywhere]'
-
-/** A value too long for one column takes the whole row instead of being folded
- *  into a narrow cell. The threshold matches the Home card's cumulative cells. */
-const LONG_VALUE = 'col-span-2 lg:col-span-3'
+const DETAIL_METRICS_GRID = 'grid grid-cols-1 items-start gap-x-10 gap-y-4 sm:grid-cols-2 lg:grid-cols-3 [&>[data-slot=metric-row]]:grid-cols-1 [&_[data-slot=metric-row-label]]:min-w-0 [&_[data-slot=metric-row-label]]:whitespace-normal [&_[data-slot=metric-row-label]]:[overflow-wrap:anywhere] [&_[data-slot=metric-row-value]]:text-left [&_[data-slot=metric-row-value]]:text-sm [&_[data-slot=metric-row-value]]:font-semibold [&_[data-slot=metric-row-value]]:justify-start [&_[data-slot=metric-row-value]]:before:hidden [&_[data-slot=metric-row-detail]]:col-span-1 [&_[data-slot=metric-row-detail]]:whitespace-normal [&_[data-slot=metric-row-detail]]:overflow-visible [&_[data-slot=metric-row-detail]]:[overflow-wrap:anywhere]'
 
 /** The explicit special state of a confirmed-valid identity. */
 export function currentValidatorStatusQualifierLabel(qualifier: string | null | undefined): string | null {
@@ -330,7 +326,7 @@ function ValidatorIdentityAbsent({ node, variant }: { node: PublicNode; variant:
 /**
  * Node detail keeps every fact the Home card no longer carries: the identity
  * name, the full identifier with an explicit copy control, the six metrics with
- * the source's full precision, the two independent Provider/ranking freshness
+ * full reward precision available in diagnostics, independent Provider/ranking freshness
  * dimensions, the sanitized state strings and the provenance facts.
  */
 function ValidatorDetail({ node, validator }: { node: PublicNode; validator: PublicValidatorInsight }) {
@@ -396,7 +392,7 @@ function ValidatorDetail({ node, validator }: { node: PublicNode; validator: Pub
     <header className="flex min-w-0 flex-wrap items-center justify-between gap-2">
       <h3 className="m-0 text-xs font-medium tracking-wider text-muted-foreground">Linked Validator</h3>
       <div className="flex min-w-0 flex-wrap items-center gap-2">
-        {!stakingUnknown && <span className="rounded-full border border-border px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">{statusLabel}</span>}
+        {!stakingUnknown && <span className="rounded-full border border-border/60 px-2 py-0.5 text-[10px] font-normal text-muted-foreground">{statusLabel}</span>}
         {qualifierLabel && <span className="rounded-full border border-amber-500/50 px-2 py-0.5 text-[10px] font-semibold text-amber-600">{qualifierLabel}</span>}
         <span className="text-xs text-muted-foreground" aria-label={'Validator Provider state: ' + validatorStateLabel(validator.state, validator.freshness)}>{validatorStateLabel(validator.state, validator.freshness)}</span>
         <ValidatorActivityBadge validator={validator} identityReason={node.validatorIdentityReason} />
@@ -414,20 +410,18 @@ function ValidatorDetail({ node, validator }: { node: PublicNode; validator: Pub
     </p>}
     <div className={DETAIL_METRICS_GRID} role="group" aria-label="Linked Validator metrics">
       <MetricRow label="Cumulative blocks" value={blockCountLabel(validator.blockCount)} detail={metricNote(counterWarning)} />
-      {/* The source's exact rewards are never rounded, so a long amount takes the
-          whole row instead of being folded into one narrow column. Only the
-          fractional digits are de-emphasised: the magnitude reads first. */}
-      <MetricRow label="Cumulative rewards" value={<ExactAmount value={rewards} muteFraction />} className={rewards.length > 15 ? LONG_VALUE : undefined} />
+      {/* Truncate only the overview, using source digits rather than floating point. */}
+      <MetricRow label="Cumulative rewards" value={<span title={rewards}><ExactAmount value={rewards.replace(/([.][0-9]{4})[0-9]+$/, '$1')} muteFraction /></span>} />
       <MetricRow label="Network rank" value={rankLabel(validator)} detail={metricNote(rankWarning)} />
       <MetricRow label="Production rate" value={blockRateLabel(validator, 'detail')} detail={metricNote(rateWarning)} />
       <MetricRow label="PlatScan 24h rate" value={genBlocksRateLabel(validator, 'detail')} />
       <MetricRow label="Delegation reward share" value={delegationRewardShareLabel(validator, 'detail')} />
     </div>
     {emptyNote && <p className="m-0 text-xs text-muted-foreground" role="status">{emptyNote}</p>}
-    <div className="flex min-w-0 flex-col gap-1">
-      <div className="flex min-w-0 items-center gap-1">
+    <div className="mt-2 flex min-w-0 flex-col gap-1">
+      <div className="flex min-w-0 items-center gap-2">
         <span className="shrink-0 text-xs text-muted-foreground">Validator ID</span>
-        <code className="min-w-0 flex-1 font-mono text-xs [overflow-wrap:anywhere]">{identifier.length > 24 ? identifier.slice(0, 12) + '…' + identifier.slice(-8) : identifier}</code>
+        <code className="min-w-0 font-mono text-xs [overflow-wrap:anywhere]">{identifier.length > 24 ? identifier.slice(0, 12) + '…' + identifier.slice(-8) : identifier}</code>
         <DataTooltip as="span" content="Copy full Validator identifier">
           <Button variant="ghost" size="icon-sm" aria-label="Copy full Validator identifier" onClick={() => { void copyIdentifier() }}>
             <Copy className="size-3.5" aria-hidden="true" />
@@ -442,15 +436,19 @@ function ValidatorDetail({ node, validator }: { node: PublicNode; validator: Pub
       {identifierOpen && <code id={identifierId} className="min-w-0 select-text rounded-md border border-border bg-background p-2 font-mono text-xs [overflow-wrap:anywhere]" aria-label={'Validator identifier: ' + identifier}>{identifier}</code>}
       <p role="status" aria-label="Identifier copy status" className={cn('m-0 text-xs text-muted-foreground', !copyStatus && 'sr-only')}>{copyStatus}</p>
     </div>
-    {validator.rewardAmount != null && <p className="m-0 text-[11px] text-muted-foreground">Amounts use the Network native unit; detail shows all precision the source provides.</p>}
+    {validator.rewardAmount != null && <p className="m-0 text-[11px] text-muted-foreground">Amounts use the Network native unit; full reward precision is available in Validator diagnostics.</p>}
     <Disclosure
       surface="none"
-      className="border-t border-border"
+      className="-mx-4 border-none"
       title="Validator diagnostics"
       description="Provider, freshness, ranking and source details"
     >
       <ValidatorPublicStates node={node} validator={validator} />
       <Provenance validator={validator} />
+      <dl className="m-0 min-w-0 text-xs">
+        <dt className="text-muted-foreground">Cumulative rewards (full precision)</dt>
+        <dd className="m-0 select-text tabular-nums [overflow-wrap:anywhere]"><ExactAmount value={rewards} /></dd>
+      </dl>
     </Disclosure>
   </CardX>
 }

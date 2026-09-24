@@ -63,7 +63,7 @@ async function expectCardMetrics(scope: Locator) {
   expect(overflowing, 'metric labels and values must wrap within their cells').toEqual([])
 }
 
-/** Detail metrics use two columns below lg and three at desktop widths. */
+/** Six independent metrics: one mobile column, two tablet columns, strict desktop 3×2. */
 async function expectDetailMetrics(scope: Locator) {
   const metrics = scope.getByRole('group', { name: 'Linked Validator metrics' })
   const cells = metrics.locator(':scope > [data-slot="metric-row"]')
@@ -81,35 +81,26 @@ async function expectDetailMetrics(scope: Locator) {
     expect(gap, 'each value sits directly beneath its own label, even beside a warning').toBeGreaterThanOrEqual(0)
     expect(gap).toBeLessThanOrEqual(8)
   }
-  const columns = await metrics.evaluate(() => window.innerWidth >= 1024 ? 3 : 2)
+  const columns = await metrics.evaluate(() => window.innerWidth >= 1024 ? 3 : window.innerWidth >= 640 ? 2 : 1)
+  await expect(cells.locator('[data-slot="metric-row-label"]')).toHaveText([
+    'Cumulative blocks', 'Cumulative rewards', 'Network rank',
+    'Production rate', 'PlatScan 24h rate', 'Delegation reward share',
+  ])
+  await expect(metrics).toHaveCSS('column-gap', '40px')
   const metricsBox = (await metrics.boundingBox())!
-  // gap-x-4 between columns, so one column is the row minus its gutters.
-  const columnWidth = (metricsBox.width - 16 * (columns - 1)) / columns
+  const columnWidth = (metricsBox.width - 40 * (columns - 1)) / columns
   const boxes = await cells.evaluateAll(elements => elements.map(element => {
     const box = element.getBoundingClientRect()
-    return { x: box.x, y: box.y, right: box.right, bottom: box.bottom, width: box.width }
+    return { x: box.x, y: box.y, bottom: box.bottom, width: box.width }
   }))
   for (let index = 0; index < boxes.length; index++) {
     const box = boxes[index]
-    expect(box.width).toBeGreaterThan(0)
-    if (box.width > columnWidth * 1.5) {
-      // The documented escape hatch for an exceptionally long exact value: it
-      // takes the whole row rather than being folded into a narrow column.
-      expect(box.width, 'a spanning value uses the full group width').toBeCloseTo(metricsBox.width, 0)
-      expect(box.x, 'a spanning value starts its own row').toBeCloseTo(metricsBox.x, 0)
-    } else {
-      expect(box.width).toBeCloseTo(columnWidth, 0)
-      expect(box.x, 'an ordinary cell sits on a column edge').toBeGreaterThanOrEqual(metricsBox.x - 1)
-      expect(box.x).toBeLessThanOrEqual(metricsBox.x + metricsBox.width - box.width + 1)
-    }
-    expect(box.right).toBeLessThanOrEqual(metricsBox.x + metricsBox.width + 1)
-    const previous = boxes[index - 1]
-    if (previous && box.y < previous.bottom - 1) {
-      expect(box.x, 'cells on one row never overlap').toBeGreaterThanOrEqual(previous.right - 1)
-    } else if (previous) {
-      expect(box.x, 'every row starts at the first column').toBeCloseTo(metricsBox.x, 0)
-      expect(box.y).toBeGreaterThanOrEqual(previous.bottom - 1)
-    }
+    const column = index % columns
+    const rowStart = index - column
+    expect(box.width, 'every metric occupies exactly one column, even for long rewards').toBeCloseTo(columnWidth, 0)
+    expect(box.x).toBeCloseTo(metricsBox.x + column * (columnWidth + 40), 0)
+    expect(box.y, 'metrics preserve the prescribed row-major order').toBeCloseTo(boxes[rowStart].y, 0)
+    if (rowStart >= columns) expect(box.y).toBeGreaterThanOrEqual(Math.max(...boxes.slice(rowStart - columns, rowStart).map(previous => previous.bottom)))
   }
   const overflowing = await metrics.locator('*').evaluateAll(elements => elements
     .filter(element => element.scrollWidth > element.clientWidth + 1)
@@ -209,10 +200,122 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
     const detail = page.getByRole('region', { name: 'Linked Validator' })
     await detail.getByRole('button', { name: 'Show full ID' }).click()
     await expect(detail.getByText(identity, { exact: true })).toBeVisible()
-    await expect(detail.getByText(exactReward, { exact: true })).toBeVisible()
+    await expect(metricValue(detail, 'Cumulative rewards')).toHaveText('123,456,789,012,345,678,901,234,567,890.1234')
+    await expect(detail.getByTitle(exactReward, { exact: true })).toBeVisible()
     await expectDetailMetrics(detail)
     await expectNoHorizontalOverflow(page)
   })
+
+  for (const reward of ['10', '305614.775625389856']) {
+    test('keeps the ' + reward + ' reward overview compact and disclosures consistently collapsed', async ({ page }, testInfo) => {
+      await page.route('**/api/public/v1/nodes/' + PUBLIC_NODE_ID, async route => {
+        const response = await route.fetch()
+        const node: PublicNode = await response.json()
+        const receivedAt = new Date().toISOString()
+        await route.fulfill({ response, json: { ...node, validatorIdentityReason: null, validator: { ...node.validator,
+          displayName: null, state: 'fresh', freshness: 'fresh', receivedAt,
+          currentValidatorStatus: 'validator', currentValidatorStatusState: 'current', currentValidatorStatusQualifier: null,
+          activity: 'active', activityState: 'current', counterState: 'normal',
+          blockCount: 32949, rewardAmount: reward, rank: 191, rankState: 'ranked', rankFreshness: 'fresh', rankReceivedAt: receivedAt,
+          blockRate: '100.027322', blockRateState: 'ok', genBlocksRate: '100', delegationRewardPercentage: '0',
+        } } })
+      })
+      await loginAs(page)
+      await page.goto('/nodes/' + PUBLIC_NODE_ID)
+      const detail = page.getByRole('region', { name: 'Linked Validator' })
+      await expect(detail).toBeVisible()
+      const summaries = page.locator('summary').filter({ hasText: /Validator diagnostics|Peer diagnostics|Identifiers and technical details/ })
+      await expect(summaries).toHaveCount(3)
+      const disclosures = summaries.locator('..')
+      const fullReward = detail.locator('details').getByText('Cumulative rewards (full precision)', { exact: true }).locator('xpath=following-sibling::dd')
+      await expect(fullReward).toHaveText(reward === '10' ? '10' : '305,614.775625389856')
+      const expectClosed = async () => {
+        for (const disclosure of await disclosures.all()) {
+          await expect(disclosure).not.toHaveAttribute('open')
+          await expect(disclosure.locator(':scope > div')).toBeHidden()
+        }
+        await expect(detail.getByLabel(/Validator identifier:/)).toHaveCount(0)
+        await expect(fullReward).toBeHidden()
+      }
+      await expectClosed()
+      const historyHeading = page.getByRole('heading', { name: 'Latest 60 seconds', exact: true })
+      const documentY = () => historyHeading.evaluate(element => element.getBoundingClientRect().y + window.scrollY)
+      const collapsedHistoryY = await documentY()
+      const collapsedHeight = (await detail.boundingBox())!.height
+      if (reward !== '10') {
+        const path = testInfo.outputPath('linked-validator-overview.png')
+        await detail.screenshot({ path })
+        await testInfo.attach('Linked Validator overview — ' + testInfo.project.name, { path, contentType: 'image/png' })
+        if (testInfo.project.name === 'desktop-1280') {
+          const pagePath = testInfo.outputPath('node-detail-collapsed.png')
+          await page.evaluate(() => window.scrollTo(0, 0))
+          await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0)
+          await page.screenshot({ path: pagePath, fullPage: true })
+          await testInfo.attach('Node detail with collapsed disclosures', { path: pagePath, contentType: 'image/png' })
+        }
+      }
+      await expect(metricValue(detail, 'Cumulative rewards')).toHaveText(reward === '10' ? '10' : '305,614.7756')
+      await expect(detail.getByTitle(reward === '10' ? '10' : '305,614.775625389856', { exact: true })).toBeVisible()
+      await expectDetailMetrics(detail)
+      const width = page.viewportSize()!.width
+      expect((await detail.boundingBox())!.height, 'closed overview stays compact').toBeLessThanOrEqual(width >= 1024 ? 360 : width >= 640 ? 440 : 640)
+      const identity = detail.locator('code').first()
+      const copy = detail.getByRole('button', { name: 'Copy full Validator identifier' })
+      const show = detail.getByRole('button', { name: 'Show full ID' })
+      const textBox = await identity.evaluate(element => {
+        const range = document.createRange()
+        range.selectNodeContents(element)
+        const rect = range.getBoundingClientRect()
+        // Wrapped ID lines leave natural whitespace before the adjacent controls.
+        // For a single line, measure the text itself to reject a stretched desktop ID.
+        const wrapped = rect.height > parseFloat(getComputedStyle(element).lineHeight) + 1
+        return { right: wrapped ? element.getBoundingClientRect().right : rect.right, y: rect.y, bottom: rect.bottom }
+      })
+      const copyBox = (await copy.boundingBox())!
+      const showBox = (await show.boundingBox())!
+      expect(copyBox.x - textBox.right, 'copy stays adjacent to the shortened ID, not at the far edge').toBeGreaterThanOrEqual(0)
+      expect(copyBox.x - textBox.right).toBeLessThanOrEqual(12)
+      expect(copyBox.y).toBeLessThanOrEqual(textBox.bottom)
+      expect(copyBox.y + copyBox.height).toBeGreaterThanOrEqual(textBox.y)
+      expect(showBox.x - copyBox.x - copyBox.width).toBeGreaterThanOrEqual(0)
+      expect(showBox.x - copyBox.x - copyBox.width).toBeLessThanOrEqual(12)
+      expect(showBox.y).toBeCloseTo(copyBox.y, 0)
+      const styles = await summaries.evaluateAll(elements => elements.map(element => {
+        const properties = ['display', 'min-height', 'cursor', 'align-items', 'flex-wrap', 'column-gap',
+          'padding-top', 'padding-right', 'padding-bottom', 'padding-left', 'font-size', 'font-weight', 'line-height', 'color']
+        const read = (target: Element) => properties.map(property => getComputedStyle(target).getPropertyValue(property))
+        return { summary: read(element), title: read(element.querySelector('span')!),
+          description: read(element.querySelector('span:last-child')!), marker: read(element.querySelector('svg')!) }
+      }))
+      expect(styles[0], 'nested and page-level disclosures share computed presentation, including padding').toEqual(styles[1])
+      expect(styles[0]).toEqual(styles[2])
+      await show.click()
+      for (const summary of await summaries.all()) await summary.click()
+      for (const disclosure of await disclosures.all()) {
+        await expect(disclosure).toHaveAttribute('open', '')
+        await expect(disclosure.locator(':scope > div')).toBeVisible()
+      }
+      await expect(detail.getByLabel(/Validator identifier:/)).toBeVisible()
+      await expect(detail.getByText('Cumulative rewards (full precision)', { exact: true })).toBeVisible()
+      await expect(fullReward).toBeVisible()
+      await testInfo.attach('Overview layout measurements', {
+        body: JSON.stringify({ viewport: page.viewportSize(), collapsedHeight, collapsedHistoryY, expandedHistoryY: await documentY() }),
+        contentType: 'application/json',
+      })
+      await page.reload()
+      await expect(detail).toBeVisible()
+      await expectClosed()
+      await expectNoHorizontalOverflow(page)
+      if (reward !== '10' && testInfo.project.name === 'desktop-1280') {
+        // Exercise both sides of each breakpoint, not only the fixed project sizes.
+        for (const width of [639, 640, 1023, 1024]) {
+          await page.setViewportSize({ width, height: 900 })
+          await expectDetailMetrics(detail)
+          await expectNoHorizontalOverflow(page)
+        }
+      }
+    })
+  }
 
   test('supports keyboard and touch disclosures and reveals the full ID on clipboard failure', async ({ page, isMobile }, testInfo) => {
     const identity = '0X' + 'AbCd'.repeat(32)

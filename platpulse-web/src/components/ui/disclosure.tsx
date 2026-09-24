@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { ChevronRight } from 'lucide-react'
 
 import { cn } from '../../lib/utils'
@@ -33,9 +33,13 @@ export function Disclosure({
   className?: string
   children: ReactNode
 }) {
+  // No data-driven or persisted expansion: each page mount starts collapsed.
+  const [open, setOpen] = useState(false)
   const card = surface === 'card'
   return <details
     data-slot="disclosure"
+    open={open}
+    onToggle={event => setOpen(event.currentTarget.open)}
     // Marks which presentation was requested, so a caller (or a test) can tell
     // the page-level card from the one nested inside an existing card.
     data-surface={surface}
@@ -46,13 +50,12 @@ export function Disclosure({
     )}
   >
     <summary className={cn(
-      'flex min-h-11 cursor-pointer list-none flex-wrap items-baseline gap-x-3 py-2 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden',
-      card && 'px-4',
+      'flex min-h-11 cursor-pointer list-none flex-wrap items-baseline gap-x-3 px-4 py-2 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden',
     )}>
       <ChevronRight data-slot="disclosure-marker" size={16} aria-hidden="true" className="shrink-0 self-center text-muted-foreground transition-transform group-open:rotate-90" />
       <span className="font-semibold">{title}</span>
       {description && <span className="basis-full pl-7 text-[11px] leading-4 text-muted-foreground">{description}</span>}
     </summary>
-    <div className={cn('grid min-w-0 gap-3', card ? 'px-4 pb-4' : 'pb-2')}>{children}</div>
+    <div className={cn('grid min-w-0 gap-3', card ? 'px-4 pb-4' : 'px-4 pb-2')}>{children}</div>
   </details>
 }

@@ -350,7 +350,7 @@ describe('LinkedValidatorSection Node detail', () => {
     const note = screen.getByText(/Showing the last successful metrics; the current source state is unavailable/)
     expect(note.closest('details')).toBeNull()
     expect(metricValue('Cumulative blocks')).toBe('4,321')
-    expect(metricValue('Cumulative rewards')).toBe('1,234.123456789012')
+    expect(metricValue('Cumulative rewards')).toBe('1,234.1234')
   })
 
   it('does not repeat the same unconfigured Provider reason for ranking', () => {
@@ -358,9 +358,13 @@ describe('LinkedValidatorSection Node detail', () => {
     expect(screen.getAllByText(/No Validator source is configured/)).toHaveLength(1)
   })
 
-  it('shows the full available precision only in Node detail', () => {
+  it('limits overview rewards to four decimals and preserves exact source digits in the title', () => {
     renderDetail({ validator: { ...insight, rewardAmount: '1234567.890123456789', blockRate: '125.123456', genBlocksRate: '135.987654', delegationRewardPercentage: '20.123456' } })
-    expect(metricValue('Cumulative rewards')).toBe('1,234,567.890123456789')
+    expect(metricValue('Cumulative rewards')).toBe('1,234,567.8901')
+    expect(screen.getByTitle('1,234,567.890123456789')).toBeTruthy()
+    const exactReward = screen.getByText('Cumulative rewards (full precision)').nextElementSibling
+    expect(exactReward?.textContent).toBe('1,234,567.890123456789')
+    expect(exactReward?.closest('details')).toBe(detailRegion().querySelector('details'))
     expect(metricValue('Production rate')).toBe('125.123456%')
     expect(metricValue('PlatScan 24h rate')).toBe('135.987654%')
     expect(metricValue('Delegation reward share')).toBe('20.123456%')
