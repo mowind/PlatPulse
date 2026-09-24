@@ -1,4 +1,4 @@
-import { ArrowLeft, ChevronRight } from 'lucide-react'
+import { ArrowLeft } from 'lucide-react'
 import { useId } from 'react'
 import type { ReactNode } from 'react'
 import { Link, useParams } from 'react-router'
@@ -20,15 +20,18 @@ import { formatDuration } from '../formatDuration'
 import { nodeDataProgress } from '../nodeData'
 import { MetricRow } from '../components/MetricRow'
 import { ValidatorActivityBadge } from '../components/ValidatorActivityBadge'
-import { ConsensusHeights, HeadDelta, LastReportAge } from '../components/NodeDetailObservations'
+import { ConsensusHeights, HeadDelta, LastReportAge, syncOffsetLabel } from '../components/NodeDetailObservations'
 import { CardX } from '../components/ui/card-x'
 import { Alert, AlertDescription } from '../components/ui/alert'
 import { Spinner } from '../components/ui/spinner'
-import { SURFACE_CARD_STATIC } from '../lib/surface'
+import { SURFACE_CARD_STATIC, SURFACE_CARD_SUMMARY } from '../lib/surface'
+import { Disclosure } from '../components/ui/disclosure'
 import { cn } from '../lib/utils'
 
 const PAGE = 'min-w-0 p-4'
+// Info/chart tier; the summary tiles sit one step brighter, the disclosures one step dimmer.
 const CARD = cn('min-w-0 rounded-md border-none', SURFACE_CARD_STATIC)
+const SUMMARY_CARD = cn('min-w-0 rounded-md border-none', SURFACE_CARD_SUMMARY)
 
 export function NodePage() {
   const { nodeId = '' } = useParams()
@@ -76,7 +79,7 @@ export function NodePage() {
             <h1 id="node-detail-title" className="m-0 min-w-0 max-w-full break-words text-lg font-semibold leading-tight md:text-2xl">{nodeDisplayName(node)}</h1>
             <span className="inline-flex min-w-0"><ValidatorActivityBadge validator={node.validator} identityReason={node.validatorIdentityReason} /></span>
           </div>
-          <p className="m-0 mt-1 break-words text-[11px] text-muted-foreground">Node ID <code className="font-mono font-semibold text-foreground">{node.nodeId}</code></p>
+          <p className="m-0 mt-1 break-words text-[11px] text-muted-foreground">Node ID <code className="font-mono">{node.nodeId}</code></p>
         </div>
       </div>
       <dl className="m-0 flex flex-wrap gap-x-5 gap-y-2" aria-label="Node identity facts">
@@ -91,7 +94,7 @@ export function NodePage() {
 
     <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4" role="group" aria-label="Node key summary">
       <SummaryTile label="Head" value={formatNumber(node.currentHead)} detail={<HeadDelta node={node} />} />
-      <SummaryTile label="Sync" value={nodeComponentStateLabel(node.syncState)} detail={formatSyncDetail(node)} />
+      <SummaryTile label="Sync" value={nodeComponentStateLabel(node.syncState)} detail={syncOffsetLabel(node)} />
       <SummaryTile label="Peers" value={peerCount(node.peers)} detail={peerBreakdown(node.peers)} />
       <SummaryTile label="Process uptime" value={formatDuration(node.processUptimeMs)} />
     </div>
@@ -229,7 +232,7 @@ export function NodePage() {
       </div>
     </section>
 
-    <NodeDisclosure title="Peer diagnostics" summaryDetail="Peer insight and retained aggregate Peer history">
+    <Disclosure title="Peer diagnostics" description="Peer insight and retained aggregate Peer history">
       <PeerInsight insight={node.peers} />
       <PeerHistoryInsight
         history={peerHistoryQuery.data ? normalizePublicPeerHistory(peerHistoryQuery.data) : undefined}
@@ -237,9 +240,9 @@ export function NodePage() {
         loading={peerHistoryQuery.isPending}
       />
       <p className="m-0 rounded-md border border-border/60 bg-background/40 px-3 py-2 text-xs text-muted-foreground">Network insight is public and redacted: peer addresses and identity lists are never displayed.</p>
-    </NodeDisclosure>
+    </Disclosure>
 
-    <NodeDisclosure title="Identifiers and technical details" summaryDetail="Node ID, component states, and reference context">
+    <Disclosure title="Identifiers and technical details" description="Node ID, component states, and reference context">
       <dl className="m-0 grid grid-cols-[repeat(auto-fit,minmax(14rem,1fr))] gap-x-4 gap-y-2">
         <TechnicalFact label="Node ID" value={<code className="break-all font-mono">{node.nodeId}</code>} />
         <TechnicalFact label="Network key" value={<code className="break-all font-mono">{node.networkKey}</code>} />
@@ -251,7 +254,7 @@ export function NodePage() {
         <TechnicalFact label="Observed Network Head" value={formatNumber(node.networkReferenceHead)} />
         <TechnicalFact label="Reference confidence" value={node.networkReferenceConfidence || 'Unknown'} />
       </dl>
-    </NodeDisclosure>
+    </Disclosure>
   </section>
 }
 
@@ -266,7 +269,7 @@ function TechnicalFact({ label, value }: { label: string; value: ReactNode }) {
 
 function SummaryTile({ label, value, detail }: { label: string; value: ReactNode; detail?: ReactNode }) {
   return (
-    <CardX bordered={false} data-slot="node-summary-tile" className={cn('group min-w-0', CARD)} contentClassName="flex h-full flex-col gap-1">
+    <CardX bordered={false} data-slot="node-summary-tile" className={cn('group min-w-0', SUMMARY_CARD)} contentClassName="flex h-full flex-col gap-1">
       <span className="break-words text-xs font-medium tracking-wider text-muted-foreground">{label}</span>
       <strong className="min-w-0 break-words text-lg font-bold leading-none tracking-tight tabular-nums md:text-2xl">{value}</strong>
       {detail != null && detail !== '' && <small className="break-words text-[11px] text-muted-foreground">{detail}</small>}
@@ -293,18 +296,7 @@ function NodeInfoGroup({ title, label, note, children }: { title: string; label:
   )
 }
 
-function NodeDisclosure({ title, summaryDetail, children }: { title: string; summaryDetail?: string; children: ReactNode }) {
-  return (
-    <details data-slot="node-disclosure" className={cn('group mt-4 overflow-hidden', CARD)}>
-      <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-baseline gap-x-3 gap-y-1 px-4 py-2.5 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
-        <ChevronRight data-slot="node-disclosure-marker" size={16} aria-hidden="true" className="text-muted-foreground transition-transform group-open:rotate-90" />
-        <span className="font-semibold">{title}</span>
-        {summaryDetail && <span className="text-[11px] text-muted-foreground">{summaryDetail}</span>}
-      </summary>
-      <div className="grid min-w-0 gap-3 px-4 pb-4">{children}</div>
-    </details>
-  )
-}
+
 
 function MetricCardHeading({ label, hint }: { label: string; hint?: string }) {
   return <header className="min-w-0"><h3 className="m-0 text-sm font-medium">{label}</h3>{hint && <span className="text-[11px] text-muted-foreground">{hint}</span>}</header>
@@ -576,19 +568,6 @@ function processStatusDetail(state: string | null | undefined): string {
     : 'PlatON process · last-good value retained; collection ' + label
 }
 
-/** Sync progress is only asserted from the Server Observed Network Head when
- *  its confidence is high; a low-confidence reference is shown as context, not
- *  as a progress claim. */
-function formatSyncDetail(node: PublicNode): string {
-  if (node.currentHead == null || node.networkReferenceHead == null) return 'Reference unavailable; sync progress is Unknown'
-  if (node.networkReferenceConfidence !== 'high') {
-    return 'Reference confidence ' + (node.networkReferenceConfidence || 'unknown') + '; progress is not asserted'
-  }
-  const behind = node.networkReferenceHead - node.currentHead
-  if (behind <= 0) return 'At the Server Observed Network Head'
-  return behind.toLocaleString() + ' blocks behind the Server Observed Network Head'
-}
-
 function formatResyncDetail(node: PublicNode): string {
   if (node.resyncProgress) return node.resyncProgress
   return node.resyncState === 'normal' ? 'No resync in progress' : 'Resync progress is Unknown'
@@ -599,8 +578,8 @@ function formatReferenceHead(node: PublicNode): string {
 }
 
 function formatReferenceDetail(node: PublicNode): string {
-  if (node.networkReferenceHead == null) return 'Server Observed Network Head unavailable'
-  return 'Server Observed Network Head · ' + (node.networkReferenceConfidence || 'unknown') + ' confidence'
+  if (node.networkReferenceHead == null) return 'Observed Network Head unavailable'
+  return 'Observed Network Head · ' + (node.networkReferenceConfidence || 'unknown') + ' confidence'
 }
 
 function nodeComponentStateLabel(value: string | null | undefined): string {

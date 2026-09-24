@@ -384,14 +384,20 @@ for (const theme of ['light', 'dark'] as const) {
       ? 'rgba(255, 255, 255, 0.6)' : 'oklch(0.141 0.005 285.823 / 0.6)')
     const opaque = await normalizedStyle(page, 'background-color', theme === 'light'
       ? 'rgb(255, 255, 255)' : 'oklch(0.141 0.005 285.823)')
+    // Node Detail's three reading tiers: 60% summary, 50% info/chart, 40% disclosure.
+    const background50 = await normalizedStyle(page, 'background-color', theme === 'light'
+      ? 'rgba(255, 255, 255, 0.5)' : 'oklch(0.141 0.005 285.823 / 0.5)')
+    const background40 = await normalizedStyle(page, 'background-color', theme === 'light'
+      ? 'rgba(255, 255, 255, 0.4)' : 'oklch(0.141 0.005 285.823 / 0.4)')
     const font = await normalizedStyle(page, 'font-family', PUBLIC_FONT)
     const glow = await normalizedStyle(page, 'box-shadow',
       '0 0 20px oklch(0.596 0.145 163.225 / 10%), 0 0 0 1px oklch(0.596 0.145 163.225 / 10%)')
 
-    async function checkCard(card: Locator, lifts = false) {
+    async function checkCard(card: Locator, options: { lifts?: boolean; resting?: string; interactive?: boolean } = {}) {
+      const { lifts = false, resting = background, interactive = false } = options
       await expect(card).toBeVisible({ timeout: 15_000 })
       await page.mouse.move(2, 2)
-      await expectComputedColor(card, 'background-color', background)
+      await expectComputedColor(card, 'background-color', resting)
       await expect(card).toHaveCSS('font-family', font)
       await expectBorderless(card)
       await expect(card).toHaveCSS('backdrop-filter', 'none')
@@ -399,7 +405,9 @@ for (const theme of ['light', 'dark'] as const) {
       await expectQuietShadow(card)
       await expect(card).toHaveCSS('transform', 'none')
       await card.hover()
-      await expectComputedColor(card, 'background-color', hoverCapable ? opaque : background)
+      // Only a card that actually navigates or acts may go opaque on hover; a
+      // static Node Detail surface keeps its resting tier opacity.
+      await expectComputedColor(card, 'background-color', interactive && hoverCapable ? opaque : resting)
       await expectBorderless(card)
       if (hoverCapable && lifts) {
         await expectComputedColor(card, 'box-shadow', glow)
@@ -415,10 +423,10 @@ for (const theme of ['light', 'dark'] as const) {
     await expect(page.getByRole('combobox', { name: 'Sort' })).toHaveCSS('font-family', font)
     await expect(page.locator('[data-slot="node-card"] h2').first()).toHaveCSS('font-weight', '600')
     await expect(page.locator('[data-slot="node-card"] h2').first()).toHaveCSS('font-size', '16px')
-    await checkCard(page.getByRole('article').filter({ hasText: 'Active Nodes' }).first())
+    await checkCard(page.getByRole('article').filter({ hasText: 'Active Nodes' }).first(), { interactive: true })
     const nodeLink = page.getByRole('link', { name: /Node A/ })
     const nodeCard = page.locator('[data-slot="node-card"]').filter({ has: nodeLink })
-    await checkCard(nodeCard, true)
+    await checkCard(nodeCard, { lifts: true, interactive: true })
 
     // A real keyboard traversal retains the whole-card link's visible focus ring.
     await page.mouse.move(2, 2)
@@ -434,10 +442,22 @@ for (const theme of ['light', 'dark'] as const) {
     await expect(page.locator('[data-slot="home-shell"]')).toHaveCSS('font-family', font)
     // Cover every rendered information group, summary tile, and chart card,
     // rather than letting one passing representative hide a stale override.
-    for (const selector of ['[data-slot="node-info-group"]', '[data-slot="node-summary-tile"]', '[data-slot="node-metric-card"]']) {
+    // The Validator diagnostics borrow the shared disclosure presentation but
+    // must not paint a second card inside the Linked Validator card.
+    const nestedDisclosure = page.locator('[data-slot="home-shell"] details[data-surface="none"]')
+    await expect(nestedDisclosure).toHaveCount(1)
+    await expect(nestedDisclosure).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+
+    for (const [selector, resting] of [
+      ['[data-slot="node-summary-tile"]', background],
+      ['[data-slot="node-info-group"]', background50],
+      ['[data-slot="node-metric-card"]', background50],
+      ['[data-slot="linked-validator"]', background50],
+      ['details[data-slot="disclosure"][data-surface="card"]', background40],
+    ] as Array<[string, string]>) {
       const cards = page.locator('[data-slot="home-shell"] ' + selector)
       expect(await cards.count(), selector + ' fixture coverage').toBeGreaterThan(0)
-      for (const card of await cards.all()) await checkCard(card)
+      for (const card of await cards.all()) await checkCard(card, { resting })
     }
 
     await page.goto('/')

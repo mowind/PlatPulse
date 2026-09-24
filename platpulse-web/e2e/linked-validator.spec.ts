@@ -82,6 +82,9 @@ async function expectDetailMetrics(scope: Locator) {
     expect(gap).toBeLessThanOrEqual(8)
   }
   const columns = await metrics.evaluate(() => window.innerWidth >= 1024 ? 3 : 2)
+  const metricsBox = (await metrics.boundingBox())!
+  // gap-x-4 between columns, so one column is the row minus its gutters.
+  const columnWidth = (metricsBox.width - 16 * (columns - 1)) / columns
   const boxes = await cells.evaluateAll(elements => elements.map(element => {
     const box = element.getBoundingClientRect()
     return { x: box.x, y: box.y, right: box.right, bottom: box.bottom, width: box.width }
@@ -89,13 +92,23 @@ async function expectDetailMetrics(scope: Locator) {
   for (let index = 0; index < boxes.length; index++) {
     const box = boxes[index]
     expect(box.width).toBeGreaterThan(0)
-    expect(box.width).toBeCloseTo(boxes[0].width, 0)
-    expect(box.x).toBeCloseTo(boxes[index % columns].x, 0)
-    if (index % columns !== 0) {
-      expect(box.x).toBeGreaterThan(boxes[index - 1].right)
-      expect(box.y).toBeCloseTo(boxes[index - 1].y, 0)
-    } else if (index > 0) {
-      expect(box.y).toBeGreaterThanOrEqual(Math.max(...boxes.slice(index - columns, index).map(previous => previous.bottom)))
+    if (box.width > columnWidth * 1.5) {
+      // The documented escape hatch for an exceptionally long exact value: it
+      // takes the whole row rather than being folded into a narrow column.
+      expect(box.width, 'a spanning value uses the full group width').toBeCloseTo(metricsBox.width, 0)
+      expect(box.x, 'a spanning value starts its own row').toBeCloseTo(metricsBox.x, 0)
+    } else {
+      expect(box.width).toBeCloseTo(columnWidth, 0)
+      expect(box.x, 'an ordinary cell sits on a column edge').toBeGreaterThanOrEqual(metricsBox.x - 1)
+      expect(box.x).toBeLessThanOrEqual(metricsBox.x + metricsBox.width - box.width + 1)
+    }
+    expect(box.right).toBeLessThanOrEqual(metricsBox.x + metricsBox.width + 1)
+    const previous = boxes[index - 1]
+    if (previous && box.y < previous.bottom - 1) {
+      expect(box.x, 'cells on one row never overlap').toBeGreaterThanOrEqual(previous.right - 1)
+    } else if (previous) {
+      expect(box.x, 'every row starts at the first column').toBeCloseTo(metricsBox.x, 0)
+      expect(box.y).toBeGreaterThanOrEqual(previous.bottom - 1)
     }
   }
   const overflowing = await metrics.locator('*').evaluateAll(elements => elements

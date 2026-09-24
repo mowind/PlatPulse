@@ -313,7 +313,8 @@ describe('LinkedValidatorSection Node detail', () => {
     renderDetail({ validator: { ...insight, validatorNodeId: '0x' + 'a'.repeat(128) } })
     const diagnostics = detailRegion().querySelector('details')!
     expect(diagnostics.open).toBe(false)
-    expect(diagnostics.querySelector('summary')?.textContent).toBe('Validator diagnostics')
+    expect(diagnostics.querySelector('summary')?.textContent).toContain('Validator diagnostics')
+    expect(diagnostics.querySelector('summary')?.textContent).toContain('Provider, freshness, ranking and source details')
     expect(within(diagnostics).getByLabelText('Public Validator states')).toBeTruthy()
     expect(within(diagnostics).getByText('Last success')).toBeTruthy()
     const show = screen.getByRole('button', { name: 'Show full ID' })

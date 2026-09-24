@@ -117,7 +117,7 @@ export async function expectMetricRowsAligned(scope: Locator) {
 /** Open the Node Detail Peer diagnostics disclosure by pointer or keyboard
  *  and assert it opened. */
 export async function openPeerDisclosure(page: Page, via: 'click' | 'keyboard' = 'click') {
-  const disclosure = page.locator('details[data-slot="node-disclosure"]', { hasText: 'Peer diagnostics' })
+  const disclosure = page.locator('details[data-slot="disclosure"]', { hasText: 'Peer diagnostics' })
   const summary = disclosure.locator('summary')
   if (via === 'keyboard') {
     await summary.focus()
@@ -215,7 +215,8 @@ export async function expectComputedColor(locator: Locator, property: string, ex
   // Poll rather than read once: these surfaces transition (150ms on the card
   // surface), and a single read catches the interpolated value mid-transition
   // exactly the way toHaveCSS would not.
-  await expect
+  try {
+    await expect
     .poll(
       async () => {
         const actual = await locator.evaluate(
@@ -255,20 +256,35 @@ export async function expectComputedColor(locator: Locator, property: string, ex
       const left = canonical(pair[0])
       const right = canonical(pair[1])
       if (left === right) return true
-      // Fall back to component comparison for a bare colour with rounding.
+      // Fall back to component comparison for a bare colour with rounding. The
+      // canvas stores premultiplied alpha, so an identical colour written in two
+      // notations can come back two units apart in RGB (oklab(1 0 0 / 0.5) reads
+      // 253 while rgba(255,255,255,0.5) reads 255). Two of 255 still pins the
+      // colour far tighter than any real surface regression.
       const leftPx = sample(pair[0])
       const rightPx = sample(pair[1])
       return (
         leftPx.length === rightPx.length &&
-        leftPx.every((component, index) => Math.abs(component - rightPx[index]) <= 1)
+        leftPx.every((component, index) => Math.abs(component - rightPx[index]) <= 2)
       )
     },
     [actual, expected] as [string, string],
   )
       },
-      { message: () => property + ' should equal ' + expected, timeout: 5000 },
+      { timeout: 5000 },
     )
     .toBe(true)
+  } catch {
+    // Say what the element actually painted: without this the caller cannot tell
+    // which card, or which surface tier, regressed.
+    const detail = await locator.evaluate(
+      (element, prop) => element.tagName.toLowerCase()
+        + (element.getAttribute('data-slot') ? '[data-slot=' + element.getAttribute('data-slot') + ']' : '')
+        + ' ' + prop + ' = ' + getComputedStyle(element).getPropertyValue(prop).trim(),
+      property,
+    )
+    throw new Error(detail + ', expected ' + expected)
+  }
 }
 
 /**

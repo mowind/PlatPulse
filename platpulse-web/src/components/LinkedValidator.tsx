@@ -1,5 +1,5 @@
 import { useId, useState } from 'react'
-import { Copy } from 'lucide-react'
+import { Copy, Eye, EyeOff, Info } from 'lucide-react'
 import type { PublicNode, PublicValidatorInsight } from '../api/generated'
 import { Button } from './ui/button'
 import { formatAmountCompact, formatAmountExact } from '../lib/amount'
@@ -9,6 +9,8 @@ import { ExactAmount } from './ExactAmount'
 import { CardX } from './ui/card-x'
 import { formatUtcDateTime } from './StatusBadge'
 import { SURFACE_CARD_STATIC } from '../lib/surface'
+import { Disclosure } from './ui/disclosure'
+import { DataTooltip } from './ui/data-tooltip'
 import { ValidatorActivityBadge } from './ValidatorActivityBadge'
 import { cn } from '../lib/utils'
 
@@ -29,6 +31,32 @@ export function currentValidatorStatusLabel(status: string | null | undefined): 
 /** One shared wording for an unestablished staking verdict, used by the status
  *  explanation and the always-visible staking-status note. */
 const UNKNOWN_STAKING_EXPLANATION = 'Current staking validity is not established; this is not a negative conclusion.'
+
+/**
+ * The one Current Validator Status value that is not a verdict. An
+ * unestablished staking validity must not present with the weight of a decided
+ * identity (ADR 0005, #173), so it drops the pill and becomes a muted note
+ * instead of a third equally-weighted status chip.
+ */
+const UNKNOWN_STATUS_LABEL = 'Validator status unknown'
+
+/** The plain-language reading of that verdict, for the inline info control. It
+ *  restates UNKNOWN_STAKING_EXPLANATION rather than introducing a new word for
+ *  the same domain state. */
+const UNKNOWN_STAKING_TOOLTIP = 'This does not indicate a negative validator state.'
+
+/**
+ * The Node Detail metric grid: two shrinkable columns below lg and three at lg
+ * and above, every cell stacking its caption above the value, left aligned and
+ * wrapping rather than reserving a compact one-line slot. Held as one named
+ * recipe because all six cells need the identical override set, and kept off
+ * the card component so the Home card's container-query anatomy is untouched.
+ */
+const DETAIL_METRICS_GRID = 'grid grid-cols-2 items-start gap-x-4 gap-y-4 lg:grid-cols-3 [&>[data-slot=metric-row]]:grid-cols-1 [&_[data-slot=metric-row-label]]:min-w-0 [&_[data-slot=metric-row-label]]:whitespace-normal [&_[data-slot=metric-row-label]]:[overflow-wrap:anywhere] [&_[data-slot=metric-row-value]]:text-left [&_[data-slot=metric-row-value]]:text-sm [&_[data-slot=metric-row-value]]:font-semibold [&_[data-slot=metric-row-value]]:justify-start [&_[data-slot=metric-row-value]]:before:hidden [&_[data-slot=metric-row-detail]]:col-span-1 [&_[data-slot=metric-row-detail]]:whitespace-normal [&_[data-slot=metric-row-detail]]:overflow-visible [&_[data-slot=metric-row-detail]]:[overflow-wrap:anywhere]'
+
+/** A value too long for one column takes the whole row instead of being folded
+ *  into a narrow cell. The threshold matches the Home card's cumulative cells. */
+const LONG_VALUE = 'col-span-2 lg:col-span-3'
 
 /** The explicit special state of a confirmed-valid identity. */
 export function currentValidatorStatusQualifierLabel(qualifier: string | null | undefined): string | null {
@@ -307,7 +335,9 @@ function ValidatorIdentityAbsent({ node, variant }: { node: PublicNode; variant:
  */
 function ValidatorDetail({ node, validator }: { node: PublicNode; validator: PublicValidatorInsight }) {
   const statusLabel = currentValidatorStatusLabel(validator.currentValidatorStatus)
+  const stakingUnknown = statusLabel === UNKNOWN_STATUS_LABEL
   const qualifierLabel = currentValidatorStatusQualifierLabel(validator.currentValidatorStatusQualifier)
+  const rewards = formatAmountExact(validator.rewardAmount)
   const identifier = validator.validatorNodeId
   const identifierId = useId()
   const [identifierOpen, setIdentifierOpen] = useState(false)
@@ -326,7 +356,6 @@ function ValidatorDetail({ node, validator }: { node: PublicNode; validator: Pub
       ? 'The last successful Validator value is stale; the source has not refreshed it recently.' : null,
     node.validatorIdentityReason
       ? node.validatorIdentityReason + ' The last established association is retained until identification succeeds.' : null,
-    statusLabel === 'Validator status unknown' ? UNKNOWN_STAKING_EXPLANATION : null,
     validator.currentValidatorStatusState === 'stale'
       ? 'The last confirmed Validator status is retained; the source has not refreshed it recently.' : null,
     qualifierLabel ? 'This identity has a confirmed-valid staking identity but is ' + qualifierLabel.toLowerCase() + ', not normally producing.' : null,
@@ -367,7 +396,7 @@ function ValidatorDetail({ node, validator }: { node: PublicNode; validator: Pub
     <header className="flex min-w-0 flex-wrap items-center justify-between gap-2">
       <h3 className="m-0 text-xs font-medium tracking-wider text-muted-foreground">Linked Validator</h3>
       <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <span className="rounded-full border border-border px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">{statusLabel}</span>
+        {!stakingUnknown && <span className="rounded-full border border-border px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">{statusLabel}</span>}
         {qualifierLabel && <span className="rounded-full border border-amber-500/50 px-2 py-0.5 text-[10px] font-semibold text-amber-600">{qualifierLabel}</span>}
         <span className="text-xs text-muted-foreground" aria-label={'Validator Provider state: ' + validatorStateLabel(validator.state, validator.freshness)}>{validatorStateLabel(validator.state, validator.freshness)}</span>
         <ValidatorActivityBadge validator={validator} identityReason={node.validatorIdentityReason} />
@@ -375,9 +404,20 @@ function ValidatorDetail({ node, validator }: { node: PublicNode; validator: Pub
     </header>
     {validator.displayName && <p className="m-0 min-w-0 text-sm font-semibold [overflow-wrap:anywhere]">{validator.displayName}</p>}
     {overviewNotes.map(note => <p key={note} className="m-0 text-xs text-muted-foreground" role="status">{note}</p>)}
-    <div className="grid grid-cols-2 items-start gap-x-4 gap-y-4 lg:grid-cols-3 [&>[data-slot=metric-row]]:grid-cols-1 [&_[data-slot=metric-row-label]]:min-w-0 [&_[data-slot=metric-row-label]]:whitespace-normal [&_[data-slot=metric-row-label]]:[overflow-wrap:anywhere] [&_[data-slot=metric-row-value]]:text-left [&_[data-slot=metric-row-value]]:text-sm [&_[data-slot=metric-row-value]]:font-semibold [&_[data-slot=metric-row-value]]:justify-start [&_[data-slot=metric-row-value]]:before:hidden [&_[data-slot=metric-row-detail]]:col-span-1 [&_[data-slot=metric-row-detail]]:whitespace-normal [&_[data-slot=metric-row-detail]]:overflow-visible [&_[data-slot=metric-row-detail]]:[overflow-wrap:anywhere]" role="group" aria-label="Linked Validator metrics">
+    {stakingUnknown && <p data-slot="staking-status-note" className="m-0 flex min-w-0 flex-wrap items-center gap-1 text-[11px] text-muted-foreground" role="status">
+      {UNKNOWN_STAKING_EXPLANATION}
+      <DataTooltip as="span" content={UNKNOWN_STAKING_TOOLTIP} className="align-middle">
+        <span tabIndex={0} aria-label={UNKNOWN_STAKING_TOOLTIP} className="inline-flex min-h-6 min-w-6 items-center justify-center">
+          <Info className="size-3.5" aria-hidden="true" />
+        </span>
+      </DataTooltip>
+    </p>}
+    <div className={DETAIL_METRICS_GRID} role="group" aria-label="Linked Validator metrics">
       <MetricRow label="Cumulative blocks" value={blockCountLabel(validator.blockCount)} detail={metricNote(counterWarning)} />
-      <MetricRow label="Cumulative rewards" value={formatAmountExact(validator.rewardAmount)} />
+      {/* The source's exact rewards are never rounded, so a long amount takes the
+          whole row instead of being folded into one narrow column. Only the
+          fractional digits are de-emphasised: the magnitude reads first. */}
+      <MetricRow label="Cumulative rewards" value={<ExactAmount value={rewards} muteFraction />} className={rewards.length > 15 ? LONG_VALUE : undefined} />
       <MetricRow label="Network rank" value={rankLabel(validator)} detail={metricNote(rankWarning)} />
       <MetricRow label="Production rate" value={blockRateLabel(validator, 'detail')} detail={metricNote(rateWarning)} />
       <MetricRow label="PlatScan 24h rate" value={genBlocksRateLabel(validator, 'detail')} />
@@ -385,27 +425,33 @@ function ValidatorDetail({ node, validator }: { node: PublicNode; validator: Pub
     </div>
     {emptyNote && <p className="m-0 text-xs text-muted-foreground" role="status">{emptyNote}</p>}
     <div className="flex min-w-0 flex-col gap-1">
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <span className="text-xs text-muted-foreground">Validator ID</span>
-        <code className="min-w-0 font-mono text-xs [overflow-wrap:anywhere]">{identifier.length > 24 ? identifier.slice(0, 12) + '…' + identifier.slice(-8) : identifier}</code>
-        <Button variant="ghost" size="sm" aria-label="Copy full Validator identifier" onClick={() => { void copyIdentifier() }}>
-          <Copy className="size-3.5" aria-hidden="true" /> Copy full
-        </Button>
-        <Button variant="ghost" size="sm" aria-expanded={identifierOpen} aria-controls={identifierId} onClick={() => setIdentifierOpen(open => !open)}>
-          {identifierOpen ? 'Hide full ID' : 'Show full ID'}
-        </Button>
+      <div className="flex min-w-0 items-center gap-1">
+        <span className="shrink-0 text-xs text-muted-foreground">Validator ID</span>
+        <code className="min-w-0 flex-1 font-mono text-xs [overflow-wrap:anywhere]">{identifier.length > 24 ? identifier.slice(0, 12) + '…' + identifier.slice(-8) : identifier}</code>
+        <DataTooltip as="span" content="Copy full Validator identifier">
+          <Button variant="ghost" size="icon-sm" aria-label="Copy full Validator identifier" onClick={() => { void copyIdentifier() }}>
+            <Copy className="size-3.5" aria-hidden="true" />
+          </Button>
+        </DataTooltip>
+        <DataTooltip as="span" content={identifierOpen ? 'Hide full ID' : 'Show full ID'}>
+          <Button variant="ghost" size="icon-sm" aria-label={identifierOpen ? 'Hide full ID' : 'Show full ID'} aria-expanded={identifierOpen} aria-controls={identifierId} onClick={() => setIdentifierOpen(open => !open)}>
+            {identifierOpen ? <EyeOff className="size-3.5" aria-hidden="true" /> : <Eye className="size-3.5" aria-hidden="true" />}
+          </Button>
+        </DataTooltip>
       </div>
       {identifierOpen && <code id={identifierId} className="min-w-0 select-text rounded-md border border-border bg-background p-2 font-mono text-xs [overflow-wrap:anywhere]" aria-label={'Validator identifier: ' + identifier}>{identifier}</code>}
       <p role="status" aria-label="Identifier copy status" className={cn('m-0 text-xs text-muted-foreground', !copyStatus && 'sr-only')}>{copyStatus}</p>
     </div>
     {validator.rewardAmount != null && <p className="m-0 text-[11px] text-muted-foreground">Amounts use the Network native unit; detail shows all precision the source provides.</p>}
-    <details className="min-w-0 border-t border-border pt-2">
-      <summary className="min-h-11 cursor-pointer rounded-sm py-3 text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring">Validator diagnostics</summary>
-      <div className="flex min-w-0 flex-col gap-3 pt-2">
-        <ValidatorPublicStates node={node} validator={validator} />
-        <Provenance validator={validator} />
-      </div>
-    </details>
+    <Disclosure
+      surface="none"
+      className="border-t border-border"
+      title="Validator diagnostics"
+      description="Provider, freshness, ranking and source details"
+    >
+      <ValidatorPublicStates node={node} validator={validator} />
+      <Provenance validator={validator} />
+    </Disclosure>
   </CardX>
 }
 

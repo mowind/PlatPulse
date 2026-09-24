@@ -183,6 +183,29 @@
   }
 }
 
+/* Native disclosure expansion (PlatPulse deviation): Emerald ships no
+ * disclosure component, and PlatPulse uses native details/summary so keyboard
+ * operation, touch, in-page find and the no-script state come for free. Where
+ * the engine can animate a keyword height the content expands instead of
+ * snapping; engines without interpolate-size keep the instant, fully usable
+ * toggle. The reduced-motion block above already zeroes the duration.
+ */
+@supports (interpolate-size: allow-keywords) {
+  details[data-slot='disclosure'] {
+    interpolate-size: allow-keywords;
+  }
+
+  details[data-slot='disclosure']::details-content {
+    block-size: 0;
+    overflow: hidden;
+    transition: block-size 200ms ease, content-visibility 200ms allow-discrete;
+  }
+
+  details[data-slot='disclosure'][open]::details-content {
+    block-size: auto;
+  }
+}
+
 /* ---------------------------------------------------------------------------
  * Responsive data-label tables (restored)
  *

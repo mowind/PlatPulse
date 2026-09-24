@@ -16,6 +16,9 @@ export type MetricRowProps = {
   detail?: ReactNode
   progress?: number | null
   progressStatus?: ProgressStatus
+  /** Extra classes for the row itself. The Linked Validator grid uses this to
+   *  let one over-long exact value span the whole row. */
+  className?: string
 }
 
 /**
@@ -34,14 +37,14 @@ export type MetricRowProps = {
  * viewport breakpoint or a JavaScript size listener. Only its presentation
  * changes with width; both values carry the same fields.
  */
-export function MetricRow({ label, shortLabel, value, wideValue, detail, progress, progressStatus, layout = 'inline' }: MetricRowProps) {
+export function MetricRow({ label, shortLabel, value, wideValue, detail, progress, progressStatus, className, layout = 'inline' }: MetricRowProps) {
   const compact = layout === 'compact'
   return (
     <div
       data-slot="metric-row"
       data-kind={progress !== undefined ? 'resource' : 'information'}
       data-layout={layout}
-      className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-2 gap-y-1 text-xs"
+      className={cn('grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-2 gap-y-1 text-xs', className)}
     >
       <span
         data-slot="metric-row-label"

@@ -1,16 +1,16 @@
 import { act, cleanup, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ConsensusHeights, LastReportAge, networkHeadComparison } from './NodeDetailObservations'
+import { ConsensusHeights, LastReportAge, networkHeadComparison, syncOffsetLabel } from './NodeDetailObservations'
 
 const head = { currentHead: 100, freshness: '2026-01-01T00:00:00Z', health: 'healthy', rpcState: 'ok', networkReferenceHead: 102, networkReferenceConfidence: 'high' }
 const consensus = { state: 'ok', freshness: 'current', highestQcBlock: 100, highestLockBlock: 99, highestCommitBlock: 98 }
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks() })
 
 describe('Node height comparisons', () => {
-  it('subtracts the network reference from Node Head, including zero and positive deltas', () => {
-    expect(networkHeadComparison(head)).toEqual({ delta: '−2' })
-    expect(networkHeadComparison({ ...head, currentHead: 102 })).toEqual({ delta: '0' })
-    expect(networkHeadComparison({ ...head, currentHead: 104 })).toEqual({ delta: '+2' })
+  it('names the Observed Network Head reference and reads an exact match as a state', () => {
+    expect(networkHeadComparison(head)).toEqual({ offset: '−2 from Observed Network Head' })
+    expect(networkHeadComparison({ ...head, currentHead: 102 })).toEqual({ offset: 'At Observed Network Head' })
+    expect(networkHeadComparison({ ...head, currentHead: 104 })).toEqual({ offset: '+2 from Observed Network Head' })
   })
   it.each([
     { freshness: null }, { freshness: 'not-a-time' }, { freshness: 'current' },
@@ -20,24 +20,25 @@ describe('Node height comparisons', () => {
     { networkReferenceConfidence: 'low' }, { networkReferenceConfidence: 'unknown' },
   ])('explains unavailable or non-current operands: %j', (change) => {
     const result = networkHeadComparison({ ...head, ...change })
-    expect(result.delta).toBe('—')
+    expect(result.offset).toBe('—')
     expect(result.reason).toBeTruthy()
   })
-  it('shows consensus absolute heights and deltas against Node Head', () => {
+  it('shows consensus absolute heights and offsets against the Node Head', () => {
     render(<ConsensusHeights node={{ ...head, consensus }} />)
-    expect(within(screen.getByRole('group', { name: 'QC height' })).getByText('0 vs node head')).toBeTruthy()
-    expect(within(screen.getByRole('group', { name: 'Locked height' })).getByText('−1 vs node head')).toBeTruthy()
+    expect(within(screen.getByRole('group', { name: 'QC height' })).getByText('At Node Head')).toBeTruthy()
+    expect(within(screen.getByRole('group', { name: 'Locked height' })).getByText('−1 from Node Head')).toBeTruthy()
+    expect(within(screen.getByRole('group', { name: 'Committed height' })).getByText('−2 from Node Head')).toBeTruthy()
     expect(within(screen.getByRole('group', { name: 'Committed height' })).getByText('98')).toBeTruthy()
   })
   it.each([{ freshness: 'stale' }, { state: 'error' }])('retains marked last-good consensus but never its delta: %j', (change) => {
     render(<ConsensusHeights node={{ ...head, consensus: { ...consensus, ...change } }} />)
     expect(screen.getAllByText(/Last-good/)).toHaveLength(3)
-    expect(screen.getAllByText('— vs node head')).toHaveLength(3)
+    expect(screen.getAllByText('—')).toHaveLength(3)
     expect(screen.getByText('98')).toBeTruthy()
   })
   it('does not calculate consensus deltas from a failed Node RPC observation', () => {
     render(<ConsensusHeights node={{ ...head, rpcState: 'error', consensus }} />)
-    expect(screen.getAllByText('— vs node head')).toHaveLength(3)
+    expect(screen.getAllByText('—')).toHaveLength(3)
   })
   it('never replaces missing consensus heights with zero', () => {
     render(<ConsensusHeights node={{ ...head, consensus: { state: 'ok', freshness: 'current' } }} />)
@@ -47,19 +48,34 @@ describe('Node height comparisons', () => {
   it.each(['starting', 'disabled', 'unsupported'])('suppresses %s consensus evidence even with numeric values', (state) => {
     render(<ConsensusHeights node={{ ...head, consensus: { ...consensus, state } }} />)
     expect(screen.getAllByText('Unknown')).toHaveLength(3)
-    expect(screen.getAllByText('— vs node head')).toHaveLength(3)
+    expect(screen.getAllByText('—')).toHaveLength(3)
   })
   it('handles an absent consensus projection without inventing zero heights', () => {
     // Exercise a defensive runtime boundary beyond the generated DTO contract.
     const node = JSON.parse(JSON.stringify(head))
     render(<ConsensusHeights node={node} />)
     expect(screen.getAllByText('Unknown')).toHaveLength(3)
-    expect(screen.getAllByText('— vs node head')).toHaveLength(3)
+    expect(screen.getAllByText('—')).toHaveLength(3)
     expect(screen.queryByText('0')).toBeNull()
   })
   it('suppresses unknown consensus evidence even if it contains numbers', () => {
     render(<ConsensusHeights node={{ ...head, consensus: { ...consensus, freshness: 'unknown' } }} />)
     expect(screen.getAllByText('Unknown')).toHaveLength(3)
+  })
+})
+
+describe('Sync progress against the Observed Network Head', () => {
+  it('separates behind, level and ahead instead of calling every non-behind Node level', () => {
+    expect(syncOffsetLabel(head)).toBe('2 blocks behind Observed Network Head')
+    expect(syncOffsetLabel({ ...head, currentHead: 102 })).toBe('At Observed Network Head')
+    expect(syncOffsetLabel({ ...head, currentHead: 104 })).toBe('2 blocks ahead of Observed Network Head')
+  })
+  it('does not assert progress from a low-confidence reference', () => {
+    expect(syncOffsetLabel({ ...head, networkReferenceConfidence: 'low' })).toBe('Observed Network Head confidence low; progress is not asserted')
+  })
+  it.each([null, undefined])('reports Unknown when the head or reference is absent', value => {
+    expect(syncOffsetLabel({ ...head, currentHead: value })).toBe('Reference unavailable; sync progress is Unknown')
+    expect(syncOffsetLabel({ ...head, networkReferenceHead: value })).toBe('Reference unavailable; sync progress is Unknown')
   })
 })
 

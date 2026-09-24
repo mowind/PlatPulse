@@ -113,11 +113,19 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
               const element = document.querySelector(selector)
               return element ? element.getBoundingClientRect().top + window.scrollY : Number.NaN
             }
+            // The Validator diagnostics are one of the same shared disclosures but
+            // they sit inside the Linked Validator card, so the reading-order
+            // assertion names the page-level one it means.
+            const disclosureTop = (title: string) => {
+              const found = Array.from(document.querySelectorAll('details[data-slot="disclosure"]'))
+                .find(element => element.querySelector('summary')?.textContent?.includes(title))
+              return found ? found.getBoundingClientRect().top + window.scrollY : Number.NaN
+            }
             return {
               identity: top('[data-slot="node-identity-main"]'),
               summary: top('[aria-label="Node key summary"]'),
               metrics: top('[data-slot="node-metrics-section"]'),
-              peer: top('details[data-slot="node-disclosure"]'),
+              peer: disclosureTop('Peer diagnostics'),
             }
           })
           expect(order.identity, JSON.stringify(order)).toBeLessThan(order.summary)
@@ -177,7 +185,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
           }
 
           // Disclosure is keyboard-operable in both directions.
-          const peerDisclosure = page.locator('details[data-slot="node-disclosure"]', { hasText: 'Peer diagnostics' })
+          const peerDisclosure = page.locator('details[data-slot="disclosure"]', { hasText: 'Peer diagnostics' })
           const peerSummary = peerDisclosure.locator('summary')
           await peerSummary.focus()
           await page.keyboard.press('Enter')
@@ -222,7 +230,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
           expect(hovered.shadow, 'chart cards stay shadow-free').toBe(restingShadow)
           await expect(chartCard).toHaveCSS('box-shadow', 'none')
           await expect(chartCard).toHaveCSS('background-color', restingBackground)
-          for (const card of await page.locator('[data-slot="node-summary-tile"], [data-slot="node-info-group"], [data-slot="node-disclosure"], [data-slot="linked-validator"]').all()) {
+          for (const card of await page.locator('[data-slot="node-summary-tile"], [data-slot="node-info-group"], [data-slot="disclosure"], [data-slot="linked-validator"]').all()) {
             await page.mouse.move(2, 2)
             const background = await card.evaluate((element) => getComputedStyle(element).backgroundColor)
             await card.hover()
@@ -242,7 +250,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
 
           // Low-frequency technical details open by keyboard and stay in the
           // Public Projection.
-          const technicalDisclosure = page.locator('details[data-slot="node-disclosure"]', { hasText: 'Identifiers and technical details' })
+          const technicalDisclosure = page.locator('details[data-slot="disclosure"]', { hasText: 'Identifiers and technical details' })
           await technicalDisclosure.locator('summary').focus()
           await page.keyboard.press('Enter')
           await expect(technicalDisclosure).toHaveAttribute('open', '')
@@ -283,20 +291,23 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
     await loginAs(page)
     await openNodeDetail(page)
     const headDelta = page.locator('[data-slot="head-delta"]')
-    await expect(headDelta).toHaveText('+2 vs network reference')
-    await expect(page.getByRole('group', { name: 'QC height' })).toContainText('+2 vs node head')
-    await expect(page.getByRole('group', { name: 'Locked height' })).toContainText('+1 vs node head')
-    await expect(page.getByRole('group', { name: 'Committed height' })).toContainText('0 vs node head')
+    // Each height names its own reference, and an exact match is a state rather
+    // than a zero delta.
+    const heightOffset = (name: string) => page.getByRole('group', { name: name + ' height' }).locator('[data-slot="height-offset"]')
+    await expect(headDelta).toHaveText('+2 from Observed Network Head')
+    await expect(heightOffset('QC')).toHaveText('+2 from Node Head')
+    await expect(heightOffset('Locked')).toHaveText('+1 from Node Head')
+    await expect(heightOffset('Committed')).toHaveText('At Node Head')
     mode = 'unconfirmed'
     await page.reload()
-    await expect(headDelta).toContainText('— vs network reference')
+    await expect(headDelta).toContainText('—')
     await expect(headDelta).toContainText('Current Node Head not confirmed by Server')
     await expect(page.getByRole('group', { name: 'QC height' })).toContainText('102')
-    await expect(page.getByRole('group', { name: 'QC height' })).toContainText('— vs node head')
+    await expect(heightOffset('QC')).toHaveText('—')
     mode = 'low-confidence'
     await page.reload()
-    await expect(headDelta).toContainText('Network reference confidence low')
-    await expect(page.getByRole('group', { name: 'QC height' })).toContainText('+2 vs node head')
+    await expect(headDelta).toContainText('Observed Network Head confidence low')
+    await expect(heightOffset('QC')).toHaveText('+2 from Node Head')
     await expectNoHorizontalOverflow(page)
   })
 
@@ -306,7 +317,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
     await openNodeDetail(page)
     // Chromium reports a removed transition as a near-zero duration
     // ("1e-05s") rather than the literal "0s".
-    const transition = await page.locator('[data-slot="node-disclosure-marker"]').first().evaluate((element) => getComputedStyle(element).transitionDuration)
+    const transition = await page.locator('[data-slot="disclosure-marker"]').first().evaluate((element) => getComputedStyle(element).transitionDuration)
     expect(parseFloat(transition)).toBeLessThan(0.001)
     const chartTransition = await page.locator('[data-slot="node-metric-card"]').first().evaluate((card) => getComputedStyle(card).transitionDuration)
     expect(parseFloat(chartTransition)).toBeLessThan(0.001)
