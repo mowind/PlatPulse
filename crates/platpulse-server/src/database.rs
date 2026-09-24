@@ -343,8 +343,23 @@ impl ServerDatabase {
 
     /// Close the serialized pool. The operation is idempotent and can be
     /// called while the HTTP state still owns the database.
+    ///
+    /// SQLx's `Pool::close` can race a connection that is being returned at the
+    /// same instant: the returning connection observes the pool as open just
+    /// before it is marked closed, then lands in the idle set after `close` has
+    /// already scanned it. The connection would stay open and, under the
+    /// exclusive file locking a production deployment pins, keep the database
+    /// locked for the next offline reader. Re-close until every connection is
+    /// gone; each retry is bounded by the permits the previous `close` already
+    /// waited for, so an idle connection is always reclaimed.
     pub async fn close(&self) {
-        self.pool.close().await;
+        for _ in 0..8 {
+            self.pool.close().await;
+            if self.pool.size() == 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
     }
 }
 
