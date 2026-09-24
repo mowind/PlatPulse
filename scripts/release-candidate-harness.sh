@@ -404,7 +404,10 @@ jq -e '.status == "ready"' "$RUN_ROOT/ready.body" >/dev/null || fail "health/rea
 grep -qi '^strict-transport-security: max-age=31536000; includeSubDomains' "$RUN_ROOT/ready.headers" || fail 'native TLS response did not include HSTS'
 request web-index "$BASE_URL/"
 grep -q '<div id="root"' "$RUN_ROOT/web-index.body" || fail "packaged WebUI index was not served (request $LAST_REQUEST_ID)"
-WEB_ASSET_PATH="$(grep -oE '/assets/[^" ]+' "$RUN_ROOT/web-index.body" | head -n 1)"
+# Extract a real src/href reference, not the first literal '/assets/' in the
+# document: index.html's own comment explains that Vite hashes assets "under
+# /assets/.", which a bare path scan matched as the invalid path '/assets/.'.
+WEB_ASSET_PATH="$(grep -oE '(src|href)="/assets/[^"]+"' "$RUN_ROOT/web-index.body" | head -n 1 | sed -E 's/^(src|href)="//; s/"$//')"
 [[ "$WEB_ASSET_PATH" == /assets/* ]] || fail "packaged WebUI asset reference was missing (request $LAST_REQUEST_ID)"
 request web-asset "$BASE_URL$WEB_ASSET_PATH"
 cat > "$RUN_ROOT/owner-login.json" <<EOF
