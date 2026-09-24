@@ -164,10 +164,9 @@ test.describe('SCN-HOME-RESPONSIVE-ACCESSIBILITY / live refresh transport state'
         networkKey: string
         nodes: Array<{ nodeId: string; currentHead?: number | null; validator?: { activity?: string; activityState?: string } }>
       }>
-      // Simulate an authoritative Provider refresh of Node H. Validator
-      // Node Validator Activity is no longer rendered as a Home badge, so the
-      // refreshed projection is observed through a rendered Home value the same
-      // payload carries.
+      // Simulate an authoritative Provider refresh of Node H: both the
+      // Validator Activity badge and the Current Head value come from the same
+      // Public projection payload.
       for (const network of networks) {
         for (const node of network.nodes) {
           if (node.nodeId !== '0195f2a1-0060-4060-8060-000000000060') continue
@@ -189,12 +188,14 @@ test.describe('SCN-HOME-RESPONSIVE-ACCESSIBILITY / live refresh transport state'
     await expect.poll(() => networksCalls).toBe(1)
 
     // The refetched projection renders on the same layout-owned stream: no
-    // per-card or second Home SSE connection was opened, the card shows the
-    // Head the refreshed payload carried, and no Activity badge appears.
-    await expect(
-      page.getByRole('link', { name: /^Healthy Node H — Producing Card/ }).getByText('424,242', { exact: true }),
-    ).toHaveCount(1)
-    await expect(page.locator('[data-slot="node-card"] [data-slot="status-badge"]')).toHaveCount(0)
+    // per-card or second Home SSE connection was opened, and the card shows the
+    // refreshed Activity badge and the Head the refreshed payload carried.
+    const nodeH = page
+      .getByRole('link', { name: /^Node H — Producing Card/ })
+      .locator('xpath=ancestor::article[1]')
+    await expect(nodeH.locator('[data-slot="validator-activity"]')).toHaveAttribute('data-activity', 'active')
+    await expect(nodeH.getByText('424,242', { exact: true })).toHaveCount(1)
+    await expect(nodeH.locator('[data-slot="status-badge"]')).toHaveCount(0)
     expect(await realtimeOpened(page)).toBe(1)
     await expectNoHorizontalOverflow(page)
   })

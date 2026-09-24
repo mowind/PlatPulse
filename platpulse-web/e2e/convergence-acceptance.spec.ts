@@ -188,21 +188,22 @@ test.describe('Converged WebUI acceptance (issue #95)', () => {
     await expectNoHorizontalOverflow(page)
   })
 
-  test('compact Home node cards keep one whole-card navigation target at every fixed viewport', async ({ page }) => {
+  test('compact Home node cards keep one Node Detail navigation target at every fixed viewport', async ({ page }) => {
     await loginAs(page)
     await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()
 
     const cardLink = page.getByRole('link', { name: new RegExp(PUBLIC_NODE_NAME) }).first()
     await expect(cardLink).toBeVisible({ timeout: 15_000 })
 
-    // Whole-card target: the link wraps the Node label and the Network name,
-    // which stays plain text (no nested link), and the redundant
-    // "View Node Details" affordance is absent from Home.
-    await expect(cardLink).toContainText(PUBLIC_NETWORK_NAME)
+    // Single navigation target: the title link wraps the Node label, while the
+    // Network name stays plain text beside it (no nested link), and the
+    // redundant "View Node Details" affordance is absent from Home.
+    await expect(cardLink).toContainText(PUBLIC_NODE_NAME)
+    await expect(page.getByText(PUBLIC_NETWORK_NAME, { exact: true }).first()).toBeVisible()
     await expect(page.getByRole('link', { name: PUBLIC_NETWORK_NAME, exact: true })).toHaveCount(0)
     await expect(page.getByRole('link', { name: /View Node Details/ })).toHaveCount(0)
 
-    // Touch target: the whole card is the interactive target, at least 44px.
+    // Touch target: the Node Detail title link stays at least 44px.
     const box = await cardLink.boundingBox()
     expect(box!.width).toBeGreaterThanOrEqual(44)
     expect(box!.height).toBeGreaterThanOrEqual(44)
@@ -224,7 +225,7 @@ test.describe('Converged WebUI acceptance (issue #95)', () => {
     await page.keyboard.press('Enter')
     await expect(page).toHaveURL(new RegExp(`${escapedHref}$`))
     await expect(page.getByRole('heading', { level: 1 })).toBeVisible({ timeout: 15_000 })
-    // The fixture-specific Node A card is still a single whole-card target
+    // The fixture-specific Node A card is still a single Node Detail target
     // reachable from Home.
     await page.getByRole('link', { name: 'PlatPulse', exact: true }).click()
     await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()

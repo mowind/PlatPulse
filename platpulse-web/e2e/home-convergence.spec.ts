@@ -46,19 +46,18 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(hCard).toBeVisible({ timeout: 15_000 })
 
     // Header: the two-state Node Health marker precedes the Node/Network
-    // identity, and it is the card's only status cue. The current SPA renders
-    // Node Validator Activity nowhere, so no Activity badge is rendered in any
-    // state. The title is the stretched semantic link; the independent marker
-    // and sibling controls keep their own accessible names.
+    // identity and the Validator Activity badge (ADR 0006) sits at the
+    // top-right. The removed Health badge stays absent; the title is the
+    // semantic link and the independent marker and sibling controls keep their
+    // own accessible names.
     await expect(hCard.locator('[data-slot="status-badge"]')).toHaveCount(0)
     await expect(
       page.getByRole('link', { name: /^Node H — Producing Card/ }),
     ).toHaveCount(1)
 
-    // Business rows carry full labels; membership is a neutral header role.
-    // 'Validator' is that header role badge (asserted below), not a business
-    // row, and the linked-Validator section now also carries an exact
-    // 'Validator' Current Validator Status badge, so it stays out of this loop.
+    // Business rows carry full labels. The header's top-right badge is PlatScan
+    // Validator Activity (ADR 0006), not consensus membership, so no business
+    // row label collides with it.
     for (const label of ['Head', 'Txs', 'Peers', 'QC', 'Locked', 'Committed']) {
       await expect(hCard.getByText(label, { exact: true })).toBeVisible()
     }
@@ -71,9 +70,8 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(hCard.getByText('12,842,024', { exact: true })).toHaveCount(1)
     await expect(hCard.getByText('21', { exact: true })).toHaveCount(1)
     await expect(hCard.getByText('3', { exact: true })).toHaveCount(1)
-    await expect(hCard.locator('[data-slot="validator-role"]')).toHaveAttribute('aria-label', 'Role: Validator')
-    await expect(hCard.locator('[data-slot="validator-role"]').getByText('Node:', { exact: true })).toBeVisible()
-    await expect(hCard.locator('[data-slot="validator-role"]').getByText('Validator', { exact: true })).toBeVisible()
+    await expect(hCard.locator('[data-slot="validator-activity"]')).toHaveAttribute('data-activity', 'producing')
+    await expect(hCard.locator('[data-slot="validator-activity"] [data-slot="validator-activity-label"]')).toHaveText('Producing')
 
     // The identity block keeps the name row and the Network · Uptime helper
     // about 6px apart without the 44px controls inflating either line. Its
@@ -160,8 +158,7 @@ test.describe('Converged Public Home (issue #102)', () => {
     expect(box.width).toBeGreaterThanOrEqual(44)
     expect(box.height).toBeGreaterThanOrEqual(44)
 
-    // Without an Activity badge the Node Health marker is the only status cue
-    // in the header, and it stays inside the card at every viewport.
+    // The independent Node Health marker stays inside the card at every viewport.
     const badgeCard = nodeCard(page, /Node A/)
     await expect(badgeCard).toBeVisible({ timeout: 15_000 })
     const badgeCardBox = (await badgeCard.boundingBox())!
@@ -179,8 +176,8 @@ test.describe('Converged Public Home (issue #102)', () => {
     await loginAs(page)
 
     // Node K: missing Current Head Block Summary keeps Txs Unknown, an
-    // authoritative empty peer set stays 0, current non-membership stays
-    // No, and a Node without an effective Link has Unknown Activity.
+    // authoritative empty peer set stays 0, and a Node without an effective
+    // Link presents the unified Observing Activity with its real reason.
     const kCard = nodeCard(page, /Node K/)
     await expect(kCard).toBeVisible({ timeout: 15_000 })
     // Txs and resource values remain Unknown; uptime now belongs to the identity line.
@@ -195,7 +192,7 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(kCard.getByText('12,842,023', { exact: true })).toHaveCount(1)
     await expect(kCard.getByText('0', { exact: true })).toHaveCount(1)
     await expect(kCard.getByText('Empty; authoritative zero')).toBeVisible()
-    await expect(kCard.getByText('Non-validator', { exact: true })).toHaveCount(1)
+    await expect(kCard.locator('[data-slot="validator-activity"]')).toHaveAttribute('data-activity', 'observing')
     await expect(kCard.getByRole('img', { name: 'Healthy' })).toBeVisible()
 
     // Node L: stale last-good consensus keeps the values and marks them.
@@ -203,27 +200,32 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(lCard.getByText('13', { exact: true })).toHaveCount(1)
     await expect(lCard.getByText('12,842,023', { exact: true })).toHaveCount(3)
     await expect(lCard.getByText('12,842,022', { exact: true })).toHaveCount(1)
-    await expect(lCard.locator('[data-slot="validator-role"]')).toHaveAttribute('aria-label', 'Role: Validator (Stale)')
-    await expect(lCard.locator('[data-slot="validator-role"]').getByText('Validator', { exact: true })).toBeVisible()
-    await expect(lCard.getByText('Stale', { exact: true })).toHaveCount(4)
+    await expect(lCard.locator('[data-slot="validator-activity"]')).toHaveAttribute('data-activity', 'observing')
+    // The three stale consensus values (QC, Locked, Committed) print the Stale
+    // detail; the removed Node-role chip used to carry a fourth.
+    await expect(lCard.getByText('Stale', { exact: true })).toHaveCount(3)
 
     // Node M: effective Link with an authoritative no-live-validator result.
-    // No Activity badge exists, so only the consensus Validator membership row
-    // states anything.
+    // The Activity badge unifies to Observing while the explanation names the
+    // real reason (ADR 0006).
     const mCard = nodeCard(page, /Node M/)
     await expect(mCard.locator('[data-slot="status-badge"]')).toHaveCount(0)
+    await expect(mCard.locator('[data-slot="validator-activity"]')).toHaveAttribute('data-activity', 'observing')
     await expect(
       page.getByRole('link', { name: /^Node M — Validator Observing/ }),
     ).toHaveCount(1)
 
-    // Node N: a Provider error no longer surfaces as an Activity badge, and the
-    // independent Node Health marker is unchanged by it.
+    // Node N: a Provider error keeps the last-good Activity and marks it stale,
+    // and the independent Node Health marker is unchanged by it.
     await expect(
       page.getByRole('link', { name: /^Node N — Stale Last-Good/ }),
     ).toHaveCount(1)
+    const nCard = nodeCard(page, /Node N/)
+    await expect(nCard.locator('[data-slot="validator-activity"]')).toHaveAttribute('data-activity', 'locked')
+    await expect(nCard.locator('[data-slot="validator-activity"]')).toHaveAttribute('data-stale', 'true')
     await expect(mCard.getByRole('img', { name: 'Healthy' })).toBeVisible()
-    await expect(nodeCard(page, /Node N/).getByRole('img', { name: 'Healthy' })).toBeVisible()
-    await expect(nodeCard(page, /Node N/).locator('[data-slot="status-badge"]')).toHaveCount(0)
+    await expect(nCard.getByRole('img', { name: 'Healthy' })).toBeVisible()
+    await expect(nCard.locator('[data-slot="status-badge"]')).toHaveCount(0)
 
     // Node P has no Node observation; only the Agent-shared Host network
     // observation is known, and missing Node values never become 0 or No.
@@ -234,8 +236,8 @@ test.describe('Converged Public Home (issue #102)', () => {
       await expect(row.locator('[data-slot="metric-row-value"]')).toHaveText('Unknown')
     }
     await expect(pCard.getByText('Uptime Unknown', { exact: true })).toBeVisible()
-    await expect(pCard.locator('[data-slot="validator-role"]')).toHaveAttribute('aria-label', 'Role: Unknown')
-    await expect(pCard.locator('[data-slot="validator-role"]').getByText('Unknown', { exact: true })).toBeVisible()
+    await expect(pCard.locator('[data-slot="validator-activity"]')).toHaveAttribute('data-activity', 'observing')
+    await expect(pCard.locator('[data-slot="validator-activity"]')).toHaveAttribute('data-stale', 'false')
     await expect(pCard.getByText('0', { exact: true })).toHaveCount(0)
     await expect(pCard.getByText('Non-validator', { exact: true })).toHaveCount(0)
     await expect(pCard.getByText('one or more observations are stale or unknown')).toHaveCount(1)
@@ -332,7 +334,7 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(hCard).toBeVisible()
     await expect(hCard.getByText('Head', { exact: true })).toBeVisible()
     await expect(nodeCard(page, /Node P — Never Observed/)).toBeVisible()
-    await expect(nodeCard(page, /Node L/).getByText('Stale', { exact: true })).toHaveCount(4)
+    await expect(nodeCard(page, /Node L/).getByText('Stale', { exact: true })).toHaveCount(3)
 
     // Filtering stays operable on the dark surface and bounds the tab order.
     await page.getByRole('tab', { name: CONVERGENCE_NETWORK_NAME, exact: true }).click()

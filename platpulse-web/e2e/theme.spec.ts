@@ -413,7 +413,7 @@ for (const theme of ['light', 'dark'] as const) {
     await expect(page.locator('[data-slot="home-shell"]')).toHaveCSS('font-family', font)
     await expect(themeButton(page)).toHaveCSS('font-family', font)
     await expect(page.getByRole('combobox', { name: 'Sort' })).toHaveCSS('font-family', font)
-    await expect(page.locator('[data-slot="node-card"] h2').first()).toHaveCSS('font-weight', '700')
+    await expect(page.locator('[data-slot="node-card"] h2').first()).toHaveCSS('font-weight', '600')
     await expect(page.locator('[data-slot="node-card"] h2').first()).toHaveCSS('font-size', '16px')
     await checkCard(page.getByRole('article').filter({ hasText: 'Active Nodes' }).first())
     const nodeLink = page.getByRole('link', { name: /Node A/ })

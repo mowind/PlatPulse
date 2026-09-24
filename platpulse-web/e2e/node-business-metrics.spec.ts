@@ -9,20 +9,24 @@ import { expectNoHorizontalOverflow, homeNodeColumns, loginAs } from './helpers'
  * full-width line per metric is decided by the card's own width through a CSS
  * container query, so the same DOM is measured here at forced card widths.
  */
-test('business metrics preserve full values, compact rows and neutral roles', async ({ page }, testInfo) => {
+test('business metrics preserve full values with compact rows and distinct Validator Activity', async ({ page }, testInfo) => {
   await loginAs(page)
+  // Three distinct canonical Activity values exercise the badge's named states
+  // alongside the metric rows (ADR 0006 replaced the consensus role badge).
+  const activities = ['producing', 'verifying', 'observing']
   await page.route('**/api/public/v1/networks*', async route => {
     const response = await route.fetch()
     const [network]: PublicNetwork[] = await response.json()
     const base = network.nodes[0]
-    const nodes = [true, false, null].map((validator, i) => ({
+    const nodes = activities.map((activity, i) => ({
       ...base, nodeId: 'business-' + i, displayName: 'Node ' + i + ' Extremely Long Production Node Name That Must Not Squeeze The Role',
       // Node 1 carries the spec's own 11-character example heights, so the
       // tightest two-column track is exercised with the longest ordinary value.
       currentHead: i === 0 ? 9007199254740991 : 159320291,
       latestBlockTransactionCount: i === 0 ? 9007199254740991 : 12,
       peers: { ...base.peers, peerCount: i === 0 ? 9007199254740991 : 3 },
-      consensus: { state: 'ok', freshness: 'current', validator,
+      validator: base.validator ? { ...base.validator, activity, activityState: 'current' } : base.validator,
+      consensus: { state: 'ok', freshness: 'current', validator: i === 0 ? true : i === 1 ? false : null,
         highestQcBlock: i === 0 ? 9007199254740991 : 159320293,
         highestLockBlock: i === 0 ? 9007199254740990 : 159320292,
         highestCommitBlock: i === 0 ? 9007199254740989 : 159320291 },
@@ -41,8 +45,9 @@ test('business metrics preserve full values, compact rows and neutral roles', as
       }), width)
       for (let i = 0; i < 3; i++) {
         const card = cards.nth(i)
-        const badge = card.locator('[data-slot="card-x-header"] [data-slot="validator-role"]')
-        await expect(badge).toHaveAttribute('aria-label', 'Role: ' + ['Validator', 'Non-validator', 'Unknown'][i])
+        const badge = card.locator('[data-slot="card-x-header"] [data-slot="validator-activity"]')
+        await expect(badge).toHaveAttribute('data-activity', activities[i])
+        await expect(badge.locator('[data-slot="validator-activity-label"]')).toHaveText(['Producing', 'Verifying', 'Observing'][i])
         const metrics = card.locator('[data-slot="node-business-metrics"]')
         await expect(metrics.locator('[data-slot="metric-row-label"]')).toHaveText(['Head', 'QC', 'Locked', 'Committed', 'Txs', 'Peers'])
         await expect(metrics.locator('[data-slot="metric-row-value"]')).toHaveText(i === 0

@@ -118,7 +118,10 @@ test('refinement scenarios and measured evidence', async ({ page }, info) => {
       expect(geometry.find(item => item.slot === 'admin-action')?.paintedHeight).toBe(32)
       for (const item of geometry.filter(item => item.slot === 'tabs-trigger')) expect(item.height).toBe(26)
       const card = page.locator('[data-slot="node-card"]').first()
-      await expect(card.locator('[data-slot="card-x-header"]')).toHaveCSS('padding', '12px 16px')
+      // The compact Node card moves the Emerald header padding onto its inner
+      // identity region, so the header shell itself is unpadded.
+      await expect(card.locator('[data-slot="card-x-header"]')).toHaveCSS('padding', '0px')
+      await expect(card.locator('[data-node-region="identity"] [data-node-region-content]')).toHaveCSS('padding', '12px 16px 10px')
       await expect(card.locator('[data-slot="card-x-content"]')).toHaveCSS('padding', '0px 16px 16px')
       await expect(card.locator('h2')).toHaveCSS('font-size', '16px')
       if (scenario === 'unknown') {
