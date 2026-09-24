@@ -58,7 +58,7 @@ export function NodePage() {
         ? 'Metric history unavailable'
         : undefined
   const nodeDataProgressValue = nodeDataProgress(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)
-  const metricWindow = describeMetricWindow(metricHistory)
+  const metricWindowTitle = describeMetricWindow(metricHistory)
 
   return <section className={PAGE}>
     <div data-slot="node-detail-breadcrumb" className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
@@ -134,9 +134,8 @@ export function NodePage() {
     <LinkedValidatorSection node={node} variant="detail" />
 
     <section data-slot="node-metrics-section" className="mt-4" aria-labelledby="node-metrics-title">
-      <header className="mb-2 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-        <h2 id="node-metrics-title" className="m-0 text-lg font-semibold">{metricWindow.title}</h2>
-        <p className="m-0 text-[11px] text-muted-foreground">{metricWindow.detail}</p>
+      <header className="mb-2">
+        <h2 id="node-metrics-title" className="m-0 text-lg font-semibold">{metricWindowTitle}</h2>
       </header>
       <div className="grid auto-rows-fr grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
         <NodeMetricCard
@@ -170,6 +169,7 @@ export function NodePage() {
         <NodeMetricCard
           label="Host network"
           value={formatRate(node.hostNetworkTxBytesPerSec)}
+          valueLabel="Upload"
           tone="blue"
           series={[
             { label: 'Upload', points: metricHistory?.networkTxBytesPerSec ?? [] },
@@ -320,12 +320,14 @@ type MetricChartProps = {
   kind?: MetricChartKind
   windowSeconds?: number
   toneClass: string
+  legend?: ReactNode
 }
 
-function NodeMetricCard({ label, unit, value, detail, tone, series, showLegend = false, from, to, fixedMax, axisFormat, historyMessage, chartKind = 'line', windowSeconds, className = '' }: {
+function NodeMetricCard({ label, unit, value, valueLabel, detail, tone, series, showLegend = false, from, to, fixedMax, axisFormat, historyMessage, chartKind = 'line', windowSeconds, className = '' }: {
   label: string
   unit?: string
   value: string
+  valueLabel?: string
   detail?: string
   tone: MetricTone
   series: MetricSeries[]
@@ -345,31 +347,33 @@ function NodeMetricCard({ label, unit, value, detail, tone, series, showLegend =
     ? series.filter((item) => item.points.length === 0).map((item) => item.label)
     : []
   const toneClass = TONE_TEXT[tone]
+  // Multi-direction cards explain their curves under the plot, never under the
+  // title, so the header stays title-left / current-value-right on every card.
+  const legend = showLegend ? <MetricSeriesLegend label={label} series={series} toneClass={toneClass} /> : undefined
   return (
     <CardX bordered={false} role="article" data-slot="node-metric-card" className={cn('min-w-0', CARD, className)} contentClassName="flex h-full min-w-0 flex-col gap-2">
       <div data-slot="node-metric-header" className="flex min-w-0 items-start justify-between gap-3">
         <div className="min-w-0">
           <h3 className="m-0 text-sm font-medium">{label}</h3>
-          <div className="mt-0.5 flex min-h-4 min-w-0 items-center">
-            {showLegend
-              ? <MetricSeriesLegend label={label} series={series} toneClass={toneClass} />
-              : unit && <p className="m-0 text-[11px] leading-4 text-muted-foreground">{unit}</p>}
-          </div>
+          {unit && <p className="m-0 mt-0.5 text-[11px] leading-4 text-muted-foreground">{unit}</p>}
         </div>
-        <strong data-slot="node-metric-value" className="shrink-0 text-right text-xl font-bold leading-none tracking-tight tabular-nums">{value}</strong>
+        <div className="flex shrink-0 flex-col items-end gap-0.5">
+          <strong data-slot="node-metric-value" className="text-right text-xl font-bold leading-none tracking-tight tabular-nums">{value}</strong>
+          {valueLabel && <span className="text-[10px] leading-none text-muted-foreground">{valueLabel}</span>}
+        </div>
       </div>
       {detail && <p className="m-0 break-words text-[11px] leading-4 text-muted-foreground">{detail}</p>}
       {missingDirections.length > 0 && <p className="m-0 text-[11px] italic text-muted-foreground">{missingDirections.join(' and ')} unavailable in this window</p>}
-      <MetricChart label={label} series={series} from={from} to={to} fixedMax={fixedMax} axisFormat={axisFormat} message={historyMessage} kind={chartKind} windowSeconds={windowSeconds} toneClass={toneClass} />
+      <MetricChart label={label} series={series} from={from} to={to} fixedMax={fixedMax} axisFormat={axisFormat} message={historyMessage} kind={chartKind} windowSeconds={windowSeconds} toneClass={toneClass} legend={legend} />
     </CardX>
   )
 }
 
 function MetricSeriesLegend({ label, series, toneClass }: { label: string; series: MetricSeries[]; toneClass: string }) {
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1" aria-label={label + ' chart legend'}>
+    <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1" aria-label={label + ' chart legend'}>
       {series.map((item) => (
-        <span key={item.label} className="inline-flex min-w-0 items-center gap-1 text-[11px] text-muted-foreground">
+        <span key={item.label} className="inline-flex min-w-0 items-center gap-1.5 text-[10px] text-muted-foreground">
           <i className={cn('inline-block size-2 shrink-0 rounded-full', item.secondary ? 'bg-cyan-500' : cn('bg-current', toneClass))} aria-hidden="true" />
           {item.label}
         </span>
@@ -378,7 +382,7 @@ function MetricSeriesLegend({ label, series, toneClass }: { label: string; serie
   )
 }
 
-function MetricChart({ label, series, from, to, fixedMax, axisFormat, message, kind = 'line', windowSeconds, toneClass }: MetricChartProps) {
+function MetricChart({ label, series, from, to, fixedMax, axisFormat, message, kind = 'line', windowSeconds, toneClass, legend }: MetricChartProps) {
   const seconds = Number.isFinite(windowSeconds) && (windowSeconds ?? 0) > 0 ? Math.round(windowSeconds as number) : 60
   const gradientId = 'node-metric-fill-' + useId().replaceAll(':', '')
   const fromMs = from ? Date.parse(from) : Number.NaN
@@ -398,7 +402,7 @@ function MetricChart({ label, series, from, to, fixedMax, axisFormat, message, k
   const chartMessage = message ?? (hasPoints ? undefined : 'No samples in the last minute')
   const windowLabel = 'over the last ' + seconds + ' seconds'
 
-  return <div className="mt-auto grid min-w-0 grid-cols-[3rem_minmax(0,1fr)] grid-rows-[7.25rem_auto] lg:grid-rows-[6.25rem_auto] gap-x-2">
+  return <div className="mt-auto grid min-w-0 grid-cols-[3rem_minmax(0,1fr)] grid-rows-[7.25rem_auto_auto] lg:grid-rows-[6.25rem_auto_auto] gap-x-2">
     <div className="flex flex-col justify-between pr-1 text-right text-[11px] tabular-nums text-muted-foreground" aria-hidden="true">
       <span>{axisFormat(max)}</span>
       <span>{axisFormat(max / 2)}</span>
@@ -438,6 +442,7 @@ function MetricChart({ label, series, from, to, fixedMax, axisFormat, message, k
       {chartMessage && <text data-slot="node-metric-chart-empty" className="fill-muted-foreground text-[22px]" x="300" y="78" textAnchor="middle">{chartMessage}</text>}
     </svg>
     <div className="col-start-2 row-start-2 flex justify-between pt-1 text-[11px] tabular-nums text-muted-foreground" aria-hidden="true"><span>{seconds}s</span><span>0s</span></div>
+    {legend && <div data-slot="node-metric-legend" className="col-start-2 row-start-3 pt-1.5">{legend}</div>}
   </div>
 }
 
@@ -521,19 +526,13 @@ function formatMillisecondsAxis(value: number): string {
   return Math.round(value) + 'ms'
 }
 
-/** The fixed public metrics response owns the window; the section label and
- *  every chart read the real from/to/windowSeconds instead of inventing a range. */
-function describeMetricWindow(history: PublicNodeMetricHistory | undefined): { title: string; detail: string } {
-  if (!history) {
-    return { title: 'Latest 60 seconds', detail: 'Real retained samples from the fixed public metric-history window.' }
-  }
+/** The fixed public metrics response owns the window; the section label reads the
+ *  real windowSeconds instead of inventing a range. The retained-sample explanation
+ *  that used to sit opposite the label is deliberately gone. */
+function describeMetricWindow(history: PublicNodeMetricHistory | undefined): string {
+  if (!history) return 'Latest 60 seconds'
   const seconds = Number.isFinite(history.windowSeconds) && history.windowSeconds > 0 ? history.windowSeconds : 60
-  const from = formatUtcDateTime(history.from)
-  const to = formatUtcDateTime(history.to)
-  return {
-    title: 'Latest ' + seconds + ' seconds',
-    detail: 'Real retained samples from ' + from + ' to ' + to + ' UTC; missing intervals stay empty.',
-  }
+  return 'Latest ' + seconds + ' seconds'
 }
 
 function formatPercentAxis(value: number): string {

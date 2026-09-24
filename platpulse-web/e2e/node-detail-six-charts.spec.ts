@@ -163,6 +163,18 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             await expect(metrics.locator('[data-slot="node-metric-chart-empty"]')).toHaveCount(0)
             // Process CPU + process memory + two direction pairs = six lines.
             await expect(metrics.locator('[data-slot="node-metric-chart-line"]')).toHaveCount(6)
+            // The retained-sample explanation opposite the section label is gone.
+            await expect(page.getByText(/Real retained samples/)).toHaveCount(0)
+            // Curve legends sit under their plots, never in the header, so the
+            // header keeps title-left / current-value-right on every card.
+            for (const [heading, legend] of [
+              ['Host network', 'Host network chart legend'],
+              ['Peer connections', 'Peer connections chart legend'],
+            ] as const) {
+              const card = metrics.getByRole('article').filter({ has: page.getByRole('heading', { level: 3, name: heading }) })
+              await expect(card.locator('[data-slot="node-metric-header"] [data-slot="node-metric-legend"]')).toHaveCount(0)
+              await expect(card.locator('[data-slot="node-metric-legend"] [aria-label="' + legend + '"]')).toHaveCount(1)
+            }
           }
           if (scenario === 'unknown') {
             await expect(page.getByLabel('Node key summary').getByText('Unknown').first()).toBeVisible()

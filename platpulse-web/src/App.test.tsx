@@ -434,6 +434,31 @@ describe('App shell with private Home', () => {
     const connectionsLegend = screen.getByLabelText('Peer connections chart legend')
     expect(connectionsLegend.textContent).toContain('Inbound')
     expect(connectionsLegend.textContent).toContain('Outbound')
+    // The retained-sample explanation opposite the section label is gone; the
+    // label row carries nothing but "Latest 60 seconds".
+    expect(within(metricsSection).queryByText(/Real retained samples/)).toBeNull()
+    expect(metricsSection.querySelector('header')?.textContent).toBe('Latest 60 seconds')
+    // The Host network current value is the Upload (tx) rate, not Download, and
+    // it names that direction weakly under the right-aligned number.
+    const hostNetworkCard = within(metricsSection).getByRole('heading', { level: 3, name: 'Host network' }).closest('[data-slot="node-metric-card"]')
+    if (!hostNetworkCard) throw new Error('Host network card is missing')
+    expect(hostNetworkCard.querySelector('[data-slot="node-metric-header"] [data-slot="node-metric-value"]')?.textContent).toBe('2.00 KiB/s')
+    expect(hostNetworkCard.querySelector('[data-slot="node-metric-header"]')?.textContent).toContain('Upload')
+    const peerCard = within(metricsSection).getByRole('heading', { level: 3, name: 'Peer connections' }).closest('[data-slot="node-metric-card"]')
+    if (!peerCard) throw new Error('Peer connections card is missing')
+    // Curve legends sit under the plot, never in the header, so the header keeps
+    // title-left / current-value-right and the chart stays the visual subject.
+    for (const [card, legend, name] of [
+      [hostNetworkCard, networkLegend, 'Host network chart legend'],
+      [peerCard, connectionsLegend, 'Peer connections chart legend'],
+    ] as const) {
+      expect(card.querySelector('[data-slot="node-metric-header"] [aria-label="' + name + '"]')).toBeNull()
+      const slot = card.querySelector('[data-slot="node-metric-legend"]')
+      expect(slot?.contains(legend)).toBe(true)
+      const svg = card.querySelector('svg[role="img"]')
+      if (!svg) throw new Error(name + ' chart svg is missing')
+      expect(svg.compareDocumentPosition(legend) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    }
     expect(screen.getAllByText('12.5%').length).toBeGreaterThan(0)
     expect(screen.getByText('2.00 s')).toBeTruthy()
     expect(screen.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeTruthy()
