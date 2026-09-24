@@ -306,7 +306,7 @@ function ValidatorIdentityAbsent({ node, variant }: { node: PublicNode; variant:
     return (
       <section
         data-slot="linked-validator"
-        className="min-w-0 border-t border-border pt-3"
+        className="mt-4 min-w-0 border-t border-border pt-3"
         aria-label="Linked Validator identity"
       >
         <h3 className="m-0 text-xs font-medium tracking-wider text-muted-foreground">Validator identity</h3>
@@ -388,7 +388,7 @@ function ValidatorDetail({ node, validator }: { node: PublicNode; validator: Pub
     role="region"
     aria-label="Linked Validator"
     data-slot="linked-validator"
-    className={cn('min-w-0 rounded-md border-none', SURFACE_CARD_STATIC)}
+    className={cn('mt-4 min-w-0 rounded-md border-none', SURFACE_CARD_STATIC)}
     contentClassName="flex min-w-0 flex-col gap-3"
   >
     <header className="flex min-w-0 flex-wrap items-center justify-between gap-2">
