@@ -31,6 +31,7 @@ pub const MAX_PROVIDER_BODY_LEN: usize = 64 * 1024;
 /// upstream vocabulary into these exact values (#100, #101).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValidatorActivity {
+    Candidate,
     Active,
     Producing,
     Exiting,
@@ -42,6 +43,7 @@ pub enum ValidatorActivity {
 impl ValidatorActivity {
     pub fn as_str(&self) -> &'static str {
         match self {
+            ValidatorActivity::Candidate => "candidate",
             ValidatorActivity::Active => "active",
             ValidatorActivity::Producing => "producing",
             ValidatorActivity::Exiting => "exiting",
@@ -53,6 +55,7 @@ impl ValidatorActivity {
 
     pub fn from_canonical(value: &str) -> Option<Self> {
         match value.to_ascii_lowercase().as_str() {
+            "candidate" => Some(ValidatorActivity::Candidate),
             "active" => Some(ValidatorActivity::Active),
             "producing" => Some(ValidatorActivity::Producing),
             "exiting" => Some(ValidatorActivity::Exiting),
@@ -565,7 +568,9 @@ fn classify_activity(
     activity: Option<&str>,
 ) -> (CurrentValidatorStatus, Option<CurrentValidatorQualifier>) {
     match activity {
-        Some("active") | Some("producing") => (CurrentValidatorStatus::Validator, None),
+        Some("candidate") | Some("active") | Some("producing") => {
+            (CurrentValidatorStatus::Validator, None)
+        }
         Some("exiting") => (
             CurrentValidatorStatus::Validator,
             Some(CurrentValidatorQualifier::Exiting),
@@ -641,7 +646,8 @@ pub fn current_validator_status(
 
 fn platscan_status_activity(status: i64) -> Option<ValidatorActivity> {
     match status {
-        1 | 2 => Some(ValidatorActivity::Active),
+        1 => Some(ValidatorActivity::Candidate),
+        2 => Some(ValidatorActivity::Active),
         3 => Some(ValidatorActivity::Producing),
         4 => Some(ValidatorActivity::Exiting),
         5 => Some(ValidatorActivity::Exited),
@@ -3356,7 +3362,7 @@ mod tests {
     fn platscan_normalization_maps_statuses_and_allows_activity_only_snapshots() {
         let node_id = provider_node_id();
         for (status, activity) in [
-            (1, ValidatorActivity::Active),
+            (1, ValidatorActivity::Candidate),
             (2, ValidatorActivity::Active),
             (3, ValidatorActivity::Producing),
             (4, ValidatorActivity::Exiting),
@@ -3565,7 +3571,7 @@ mod tests {
         let mut responses = Vec::new();
         let mut expected = Vec::new();
         for (status, activity) in [
-            (1, ValidatorActivity::Active),
+            (1, ValidatorActivity::Candidate),
             (2, ValidatorActivity::Active),
             (3, ValidatorActivity::Producing),
             (4, ValidatorActivity::Exiting),
@@ -4063,6 +4069,119 @@ mod tests {
                 (true, "unsupported".to_owned())
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn candidate_activity_persists_as_its_own_canonical_value() {
+        let (_dir, db) = test_db().await;
+        let owner_id: String =
+            sqlx::query_scalar("SELECT user_id FROM users WHERE username = 'owner'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        let (validator, _) =
+            create_validator(&db, "platon-mainnet", "0xcandidate", None, &owner_id)
+                .await
+                .unwrap();
+        let provider = FakeProvider {
+            results: std::sync::Mutex::new(vec![
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
+                    provider_timestamp: Some("2025-01-01T00:00:00Z".to_owned()),
+                    activity: Some(ValidatorActivity::Candidate),
+                    ..Default::default()
+                })),
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
+                    provider_timestamp: Some("2025-01-01T00:01:00Z".to_owned()),
+                    activity: Some(ValidatorActivity::Active),
+                    ..Default::default()
+                })),
+            ]),
+            rankings: std::sync::Mutex::new(vec![
+                ranking_with(1, &[("0xcandidate", 1)]),
+                ranking_with(1, &[("0xcandidate", 1)]),
+            ]),
+            ..FakeProvider::default()
+        };
+
+        refresh_all(&db, &provider).await.unwrap();
+        let insight = load_insight(&db, &validator.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        // Candidate is stored under its own canonical value, not folded into
+        // Active: the persisted turn must pass the activity CHECK constraint.
+        assert_eq!(insight.activity.as_deref(), Some("candidate"));
+
+        refresh_all(&db, &provider).await.unwrap();
+        let insight = load_insight(&db, &validator.validator_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(insight.activity.as_deref(), Some("active"));
+    }
+
+    #[tokio::test]
+    async fn candidate_activity_migration_preserves_existing_last_good_rows() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("server.db");
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(&path)
+                    .create_if_missing(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .unwrap();
+        // Build the schema immediately before 0060, then seed a last-good
+        // Validator insight exactly as the pre-split Server would have stored it.
+        migrator_through(59).run(&pool).await.unwrap();
+        seed_legacy_network_agent_and_node(&pool).await;
+        sqlx::query("INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES ('validator-keep', 'platon-mainnet', '0xkeep', NULL, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, stake_amount, counter_state, change_state, candidate_observations, updated_at) VALUES ('validator-keep', 'platscan', 'success', '2026-01-01T00:00:00Z', 'active', '2026-01-02T00:00:00Z', '2026-01-02T00:00:00Z', '42', 'normal', 'normal', 0, '2026-01-02T00:00:00Z')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        #[cfg(unix)]
+        restrict_database_permissions(&path);
+
+        let db = initialize(ServerDatabaseConfig::new(&path)).await.unwrap();
+
+        // The table rebuild copies the stored row verbatim: no last-good value
+        // is rewritten or erased by the widened CHECK.
+        let row: (String, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT outcome, activity, stake_amount FROM current_validator_insights WHERE validator_id = 'validator-keep'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            row,
+            (
+                "success".to_owned(),
+                Some("active".to_owned()),
+                Some("42".to_owned())
+            )
+        );
+        // The widened CHECK now admits the split Candidate value.
+        sqlx::query(
+            "UPDATE current_validator_insights SET activity = 'candidate' WHERE validator_id = 'validator-keep'",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+        let activity: Option<String> = sqlx::query_scalar(
+            "SELECT activity FROM current_validator_insights WHERE validator_id = 'validator-keep'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(activity.as_deref(), Some("candidate"));
     }
 
     #[tokio::test]
@@ -5876,6 +5995,12 @@ mod tests {
         };
         assert_eq!(
             view(Some("success"), Some("active")).status,
+            CurrentValidatorStatus::Validator
+        );
+        // A candidate is a currently valid staking identity: it stays Validator,
+        // it is only a distinct Activity from Active.
+        assert_eq!(
+            view(Some("success"), Some("candidate")).status,
             CurrentValidatorStatus::Validator
         );
         assert_eq!(view(Some("success"), Some("producing")).state, "current");

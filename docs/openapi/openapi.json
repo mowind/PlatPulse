@@ -12891,7 +12891,7 @@
         "properties": {
           "activity": {
             "type": "string",
-            "description": "Canonical last-good Validator Activity (`active`, `producing`,\n`exiting`, `exited`, `verifying`, `locked`) or `observing`/`unknown`.\nHome never infers this from names, endpoints, consensus membership,\nrank data, or Provider data: only an effective explicit Node Validator\nLink exposes it on a Public Node (#100)."
+            "description": "Canonical last-good Validator Activity (`candidate`, `active`,\n`producing`, `exiting`, `exited`, `verifying`, `locked`) or\n`observing`/`unknown`.\nHome never infers this from names, endpoints, consensus membership,\nrank data, or Provider data: only an effective explicit Node Validator\nLink exposes it on a Public Node (#100)."
           },
           "activityState": {
             "type": "string",

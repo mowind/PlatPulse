@@ -1,4 +1,4 @@
-import { Activity, Box, Eye, ShieldCheck, type LucideIcon } from 'lucide-react'
+import { Activity, Box, Eye, ShieldCheck, UserCheck, type LucideIcon } from 'lucide-react'
 
 import type { PublicValidatorInsight } from '../api/generated'
 import { cn } from '../lib/utils'
@@ -8,13 +8,13 @@ import { DataTooltip } from './ui/data-tooltip'
 /**
  * The PlatScan Validator Activity presented on Home cards and Node detail.
  * `activity` is the Server-owned canonical projection of PlatScan's
- * numeric `data.status`: 1|2 active, 3 producing, 4 exiting, 5 exited,
- * 6 verifying, 7 locked, plus the Public-only `observing` label for an
- * authoritative empty identity and `unknown` for unavailable evidence.
+ * numeric `data.status`: 1 candidate, 2 active, 3 producing, 4 exiting,
+ * 5 exited, 6 verifying, 7 locked, plus the Public-only `observing` label for
+ * an authoritative empty identity and `unknown` for unavailable evidence.
  * The UI only renders this value: it never infers a status from Node Health,
  * consensus membership, rank, rewards, or the local Node role.
  */
-type ActivityTone = 'verifying' | 'producing' | 'active' | 'muted'
+type ActivityTone = 'verifying' | 'producing' | 'candidate' | 'active' | 'muted'
 
 type ActivityPresentation = {
   /** The full status name: always the accessible and explained value. */
@@ -26,6 +26,7 @@ type ActivityPresentation = {
 const PRESENTATION: Record<string, ActivityPresentation> = {
   verifying: { label: 'Verifying', icon: ShieldCheck, tone: 'verifying' },
   producing: { label: 'Producing', icon: Box, tone: 'producing' },
+  candidate: { label: 'Candidate', icon: UserCheck, tone: 'candidate' },
   active: { label: 'Active', icon: Activity, tone: 'active' },
   observing: { label: 'Observing', icon: Eye, tone: 'muted' },
   exiting: { label: 'Exiting', icon: Eye, tone: 'muted' },
@@ -43,6 +44,7 @@ const PRESENTATION: Record<string, ActivityPresentation> = {
 const SIZERS = [
   { label: 'Verifying', className: "after:content-['Verifying']" },
   { label: 'Producing', className: "after:content-['Producing']" },
+  { label: 'Candidate', className: "after:content-['Candidate']" },
   { label: 'Observing', className: "after:content-['Observing']" },
   { label: 'Exiting', className: "after:content-['Exiting']" },
   { label: 'Active', className: "after:content-['Active']" },
@@ -59,6 +61,11 @@ const TONE_CLASS: Record<ActivityTone, string> = {
     'border-teal-600/20 bg-teal-600/5 text-teal-600 dark:border-teal-400/25 dark:bg-teal-400/10 dark:text-teal-400',
   producing:
     'border-emerald-600/20 bg-emerald-600/5 text-emerald-600 dark:border-emerald-400/25 dark:bg-emerald-400/10 dark:text-emerald-400',
+  // Candidate is a currently valid staking identity outside the current
+  // consensus round: an outline chip keeps it legible and clearly below the
+  // filled Producing/Active states without leaving the Emerald palette.
+  candidate:
+    'border-emerald-600/30 bg-transparent text-emerald-700 dark:border-emerald-400/30 dark:text-emerald-400',
   // Active is the calm Emerald state: it keeps Producing's background tint and a
   // lighter border, and only the foreground is lifted from the old 70% wash to a
   // solid, theme-correct shade. Emerald-700 clears 4.5:1 on a light surface and
@@ -75,7 +82,7 @@ function capitalize(value: string): string {
 /**
  * Resolve the canonical Activity token to its presentation. An unlisted token
  * keeps its own name with the neutral treatment rather than being forced into
- * one of the four named states; the full value stays reachable in the
+ * one of the named states; the full value stays reachable in the
  * explanation.
  */
 function resolveActivity(

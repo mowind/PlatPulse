@@ -392,6 +392,7 @@ describe('Public Home dashboard', () => {
     const cases = [
       { name: 'Active Node', validator: linked('active', 'current'), activity: 'active', label: 'Active' },
       { name: 'Producing Node', validator: linked('producing', 'current'), activity: 'producing', label: 'Producing' },
+      { name: 'Candidate Node', validator: linked('candidate', 'current'), activity: 'candidate', label: 'Candidate' },
       { name: 'Verifying Node', validator: linked('verifying', 'current'), activity: 'verifying', label: 'Verifying' },
       { name: 'Observing Node', validator: linked('observing', 'current'), activity: 'observing', label: 'Observing' },
       { name: 'Unlinked Node', validator: null, activity: 'observing', label: 'Observing' },

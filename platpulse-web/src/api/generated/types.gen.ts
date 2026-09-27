@@ -2087,8 +2087,9 @@ export type PublicValidatorBlockTotal = {
 
 export type PublicValidatorInsight = {
     /**
-     * Canonical last-good Validator Activity (`active`, `producing`,
-     * `exiting`, `exited`, `verifying`, `locked`) or `observing`/`unknown`.
+     * Canonical last-good Validator Activity (`candidate`, `active`,
+     * `producing`, `exiting`, `exited`, `verifying`, `locked`) or
+     * `observing`/`unknown`.
      * Home never infers this from names, endpoints, consensus membership,
      * rank data, or Provider data: only an effective explicit Node Validator
      * Link exposes it on a Public Node (#100).

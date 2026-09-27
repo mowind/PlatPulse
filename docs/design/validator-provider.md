@@ -225,9 +225,10 @@ array. Tests replay the raw responses offline; CI does not contact PlatScan.
   "ranking": ... } ] }`. `code` must be integer `0`, `totalCount` must be a
   non-negative integer, and every row must carry a valid 130-character
   `0x`-hex `nodeId` and the next in-sequence global rank (#158).
-- Status mapping: 1 Candidate and 2 Active map to `active`, 3 Producing maps
-  to `producing`, 4 Exiting maps to `exiting`, 5 Exited maps to `exited`,
-  6 Verifying maps to `verifying`, and 7 Locked maps to `locked`.
+- Status mapping: 1 Candidate maps to `candidate`, 2 Active maps to
+  `active`, 3 Producing maps to `producing`, 4 Exiting maps to `exiting`,
+  5 Exited maps to `exited`, 6 Verifying maps to `verifying`, and 7 Locked
+  maps to `locked`.
 - The strictly validated empty form (empty `data.nodeId` and status `0`) is
   `AuthoritativeEmpty`, an authoritative no-live-Validator outcome. HTTP
   `404` is **not** an absence: the deployment answers an absent identifier with

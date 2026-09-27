@@ -55,12 +55,13 @@ const svgOf = (badge: HTMLElement): SVGElement => {
 /** The layout-only part of the badge's class list. Colour utilities vary by
  *  tone; size, spacing, radius and focus ring must not. */
 const geometryOf = (badge: HTMLElement) =>
-  [...badge.classList].filter((name) => !/(?:emerald|teal|muted|border-border)/.test(name)).sort()
+  [...badge.classList].filter((name) => !/(?:emerald|teal|muted|border-border|bg-transparent)/.test(name)).sort()
 
 describe('ValidatorActivityBadge', () => {
   it.each([
     ['verifying', 'Verifying', 'verifying', 'lucide-shield-check'],
     ['producing', 'Producing', 'producing', 'lucide-box'],
+    ['candidate', 'Candidate', 'candidate', 'lucide-user-check'],
     ['active', 'Active', 'active', 'lucide-activity'],
     ['observing', 'Observing', 'muted', 'lucide-eye'],
   ])('renders %s as %s with the %s tone', (activity, label, tone, icon) => {
@@ -89,7 +90,7 @@ describe('ValidatorActivityBadge', () => {
     }
   })
 
-  it('preserves an unlisted status verbatim instead of forcing it into the four named states', () => {
+  it('preserves an unlisted status verbatim instead of forcing it into the named states', () => {
     const badge = renderBadge(linked('slashing'))
     expect(labelOf(badge)).toBe('Slashing')
     expect(badge.getAttribute('data-tone')).toBe('muted')
@@ -101,7 +102,7 @@ describe('ValidatorActivityBadge', () => {
   it('holds one width across every status by sizing against the same labels', () => {
     const reference = sizersOf(renderBadge(linked('verifying')))
     expect(reference.length).toBeGreaterThan(0)
-    for (const activity of ['producing', 'active', 'observing', 'exiting', 'exited', 'locked', 'unknown']) {
+    for (const activity of ['producing', 'candidate', 'active', 'observing', 'exiting', 'exited', 'locked', 'unknown']) {
       const badge = renderBadge(linked(activity))
       expect(sizersOf(badge)).toEqual(reference)
       cleanup()
@@ -125,11 +126,11 @@ describe('ValidatorActivityBadge', () => {
     expect(classes).not.toMatch(/emerald|teal/)
   })
 
-  it('keeps one badge geometry and one 14px currentColor glyph across the four states', () => {
+  it('keeps one badge geometry and one 14px currentColor glyph across the named states', () => {
     const reference = geometryOf(renderBadge(linked('verifying')))
     expect(reference.length).toBeGreaterThan(0)
     cleanup()
-    for (const activity of ['producing', 'active', 'observing'] as const) {
+    for (const activity of ['producing', 'candidate', 'active', 'observing'] as const) {
       const badge = renderBadge(linked(activity))
       expect(geometryOf(badge)).toEqual(reference)
       const svg = svgOf(badge)

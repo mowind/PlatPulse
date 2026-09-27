@@ -103,7 +103,7 @@ Home is organized Network → PlatON Node, never Agent → Node. Agent and Host 
 
 When Site Access Mode is Public, anonymous Guests can read the allowed Home projection paths; when Private, Home routes require an authenticated Owner or Viewer session. Every Active Node returned by the Public projection appears on Home. The Admin `visibility` field/filter is a legacy compatibility surface and is not used by current Public SQL to hide a Node.
 
-Validator Activity is copied from the Server Public DTO, not inferred in React. `empty`/`not_found` is `observing`; a successful canonical value is `current` or `stale` according to Server freshness; an error with last-good Activity is canonical Activity with `stale`; success without Activity and `unsupported` are `unknown`. Canonical values include `active`, `producing`, `exiting`, `exited`, `verifying`, and `locked`.
+Validator Activity is copied from the Server Public DTO, not inferred in React. `empty`/`not_found` is `observing`; a successful canonical value is `current` or `stale` according to Server freshness; an error with last-good Activity is canonical Activity with `stale`; success without Activity and `unsupported` are `unknown`. Canonical values include `candidate`, `active`, `producing`, `exiting`, `exited`, `verifying`, and `locked`.
 
 For retired, deleted, forbidden, or unknown Nodes, Public routes use non-leaking unavailable semantics such as “This Node is no longer available.” Admin routes may distinguish forbidden from not-found.
 
