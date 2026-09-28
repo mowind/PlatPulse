@@ -9,7 +9,10 @@ import {
   PEER_COUNTRIES_HEADING,
   countryDisplayName,
   formatGeoCount,
+  geoUnknownLocationLabel,
+  geoUnknownReasons,
 } from './geoPresentation'
+import { cn } from '../lib/utils'
 
 /**
  * ECharts is loaded on demand rather than imported at module scope: only Home
@@ -56,9 +59,13 @@ function loadECharts() {
  * PlatPulse keeps its own data semantics: the map plots Peer records by
  * country from Server-provided country representative points, never node
  * locations and never a Peer address, and stale or unknown data stays visible
- * as such. ECharts paints into a canvas, which carries no per-country element,
- * so the same figures are also exposed as a screen-reader list, the container
- * is a labelled image, and the counters stay real text.
+ * as such. The corner chip keeps the Server's own Peer-record denominator and,
+ * beside it, the Unknown country bucket the Server reports — a coverage gap,
+ * never an offline, health or connection claim. That count left the exceptional
+ * notice, which is now kept for the map with nothing to plot. ECharts paints
+ * into a canvas, which carries no per-country element, so the same figures are
+ * also exposed as a screen-reader list, the container is a labelled image, and
+ * the counters stay real text.
  *
  * The chart instance is created once and updated with setOption, so a data or
  * theme change never destroys and rebuilds the canvas.
@@ -219,6 +226,26 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
 
   const scopedPeerCount = hasProjection && !loading ? overview.availablePeerCount : null
   const unknownCount = overview.unknownCountryCount
+  // The second corner figure exists only beside a real denominator. The Server
+  // computes available = known + unknown and gates all three on the same basis,
+  // so a non-zero Unknown bucket always has a chip to sit in and no fallback
+  // figure has to be invented here.
+  const shownUnknownCount =
+    scopedPeerCount !== null && unknownCount != null && unknownCount > 0 ? unknownCount : null
+  const unknownReasons = shownUnknownCount === null ? [] : geoUnknownReasons(overview)
+  const countersLabel = scopedPeerCount === null
+    ? null
+    : formatGeoCount(scopedPeerCount) + ' Peer records in scope for ' + overview.scopeLabel +
+      (shownUnknownCount === null
+        ? ''
+        : ', ' + formatGeoCount(shownUnknownCount) + ' with no retained country attribution')
+  const countersTitle = scopedPeerCount === null
+    ? null
+    : 'Peer records in scope for ' + overview.scopeLabel + '; not unique Peers or Node locations.' +
+      (shownUnknownCount === null
+        ? ''
+        : ' ' + geoUnknownLocationLabel(shownUnknownCount) +
+          (unknownReasons.length > 0 ? ': ' + unknownReasons.join('; ') : '') + '.')
   const countsAvailable = overview.knownCountryCount != null && unknownCount != null
   const neverObserved = overview.scope === 'unobserved'
   const primaryNotice = failed && needsBasemap ? 'Map unavailable'
@@ -236,9 +263,13 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
     : overview.peerObservation === 'unknown' ? 'Observation status unknown'
     : overview.peerObservation === 'mixed' ? 'Observation status varies'
     : null
-  const unknownNotice = hasProjection && !loading && unknownCount != null && unknownCount > 0
-    ? formatGeoCount(unknownCount) + ' unknown locations' : null
-  const notice = [primaryNotice, unknownNotice].filter(Boolean).join(' · ')
+  // The Unknown count is a coverage figure, not an exception, so it lives in
+  // the corner chip. The one notice it can still raise is the map with nothing
+  // to plot at all: no resolved country, only unlocated records.
+  const noLocationsNotice =
+    primaryNotice === null && overview.knownCountryCount === 0 && shownUnknownCount !== null
+      ? 'No locations to show' : null
+  const notice = primaryNotice ?? noLocationsNotice
   const mapDescription =
     formatGeoCount(overview.countries.length) +
     (overview.countries.length === 1 ? ' country has ' : ' countries have ') +
@@ -248,20 +279,43 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
   return (
     <section aria-label={PEER_COUNTRIES_HEADING} data-state={status} data-network-filter={networkFilter} data-scope={overview.scope} className="relative h-full">
       {/* Normal stays quiet; exceptions are visible without moving the canvas. */}
-      {notice && <span data-slot="map-status" className="absolute top-0 left-0 z-10 max-w-[calc(100%-88px)] md:max-w-[80%] rounded-md bg-background/90 px-2 py-1 text-xs text-muted-foreground" role="status"><span>{primaryNotice}</span>{unknownNotice && <span>{primaryNotice ? " · " : ""}{unknownNotice}</span>}</span>}
+      {notice && (
+        <span
+          data-slot="map-status"
+          role="status"
+          className={cn(
+            'absolute top-0 left-0 z-10 rounded-md bg-background/90 px-2 py-1 text-xs text-muted-foreground',
+            // The corner chip reserves the complementary width, so the two can
+            // never overlap however long either text grows.
+            scopedPeerCount !== null
+              ? 'max-w-[45%] md:max-w-[55%]'
+              : 'max-w-[calc(100%-88px)] md:max-w-[80%]',
+          )}
+        >
+          {notice}
+        </span>
+      )}
       {scopedPeerCount !== null && (
         <p
           data-slot="geo-counters"
           role="note"
-          aria-label={`${formatGeoCount(scopedPeerCount)} Peer records in scope for ${overview.scopeLabel}`}
-          title={`Peer records in scope for ${overview.scopeLabel}; not unique Peers or Node locations.`}
-          className="pointer-events-none md:pointer-events-auto absolute top-0 right-0 z-2 flex items-center gap-2 rounded bg-background/60 px-2 py-0.5 text-[10px] text-muted-foreground backdrop-blur-lg"
+          aria-label={countersLabel ?? undefined}
+          title={countersTitle ?? undefined}
+          className="pointer-events-none md:pointer-events-auto absolute top-0 right-0 z-2 flex max-w-[calc(55%-8px)] flex-wrap items-center justify-end gap-2 rounded bg-background/60 px-2 py-0.5 text-[10px] text-muted-foreground backdrop-blur-lg md:max-w-[calc(45%-8px)]"
         >
           <span data-slot="geo-counter" className="flex items-center gap-1">
             <span data-slot="geo-counter-dot" className="inline-block size-1.5 animate-pulse rounded-full bg-emerald-600" aria-hidden="true" />
-            <span className="md:sr-only">Peers: </span>
+            <span>Peers: </span>
             {formatGeoCount(scopedPeerCount)}
           </span>
+          {/* Static and neutral: the Unknown bucket is a coverage gap, never the
+              amber this map already uses for last-good country results. */}
+          {shownUnknownCount !== null && (
+            <span data-slot="geo-counter-unknown" className="flex items-center gap-1">
+              <span data-slot="geo-counter-unknown-dot" className="inline-block size-1.5 rounded-full bg-muted-foreground" aria-hidden="true" />
+              {formatGeoCount(shownUnknownCount)} unknown
+            </span>
+          )}
         </p>
       )}
       {failed ? (
@@ -279,7 +333,8 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
       )}
       {/* The canvas has no per-country element, so the same figures stay
           available as text: screen-reader users get every observed country,
-          its count, and whether some of those records are stale. */}
+          its count, whether some of those records are stale, and — when the
+          Unknown bucket is non-zero — its count and the Server's reasons. */}
       <ul className="sr-only" data-slot="geo-country-list">
         {overview.countries.map((country) => (
           <li key={country.code}>
@@ -288,6 +343,12 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
               (country.point ? '' : ' (no representative point, not plotted)')}
           </li>
         ))}
+        {shownUnknownCount !== null && (
+          <li data-slot="geo-unknown-list-item">
+            {geoUnknownLocationLabel(shownUnknownCount) +
+              (unknownReasons.length > 0 ? ': ' + unknownReasons.join('; ') : '')}
+          </li>
+        )}
       </ul>
     </section>
   )

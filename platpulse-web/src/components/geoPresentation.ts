@@ -57,6 +57,13 @@ export function geoUnknownReasons(insight: Pick<PublicGeoInsight,
   ].flatMap(([value, reason]) => (typeof value === 'number' && value > 0 ? [formatGeoCount(value) + ' ' + reason] : []))
 }
 
+/** The Server-owned Unknown country bucket as one countable phrase. `unknown`
+ * is the vocabulary Geo Insight already uses, and a location is what the map
+ * could not plot. The browser never derives the number, only its grammar. */
+export function geoUnknownLocationLabel(count: number): string {
+  return `${formatGeoCount(count)} unknown location${count === 1 ? '' : 's'}`
+}
+
 /** The Peer-record basis of the Geo projection. Records are counted per Node
  * and are never deduplicated by IP, so the wording is fixed here too. */
 export function geoPeerRecordBasis(availablePeerCount: number | null | undefined): string {

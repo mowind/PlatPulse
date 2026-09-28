@@ -20,7 +20,11 @@ import {
  *    description states the observed-country count and the scope it covers;
  *  - the screen-reader country list, [data-slot="geo-country-list"], one <li>
  *    per observed country with its count, its stale count, and whether it had
- *    a representative point to plot;
+ *    a representative point to plot, plus one final entry for the Server's
+ *    Unknown country bucket;
+ *  - the corner chip, [data-slot="geo-counters"], which keeps the in-scope
+ *    Peer-record total and, when the Unknown bucket is non-zero, that count
+ *    beside it as a labelled subset;
  *  - abnormal states have a minimal visible role="status".
  *
  * The scatter encoding itself (8px/14px symbols, the white 10px numeral, the
@@ -87,9 +91,15 @@ function geoChart(page: Page) {
   return page.locator('[data-slot="geo-chart"]')
 }
 
-/** The screen-reader country list: one <li> per observed country. */
+/** The screen-reader country list: one <li> per observed country. The list's
+ *  final Unknown entry is a count of records with no country, not a country. */
 function countryItems(page: Page) {
-  return mapRegion(page).locator('[data-slot="geo-country-list"] li')
+  return mapRegion(page).locator('[data-slot="geo-country-list"] li:not([data-slot="geo-unknown-list-item"])')
+}
+
+/** The Unknown country bucket in the corner chip, or a null locator. */
+function unknownCounter(page: Page) {
+  return mapRegion(page).locator('[data-slot="geo-counter-unknown"]')
 }
 
 function mapStatus(page: Page) {
@@ -870,7 +880,7 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     await expectNoHorizontalOverflow(page)
   })
 
-  test('isolated DTO fixture: keeps every projection state honest, including never observed and a zero basis', async ({ page }) => {
+  test('isolated DTO fixture: keeps every projection state honest, including never observed and a zero basis', async ({ page }, testInfo) => {
     await openHomeWithGeo(page)
     const map = mapRegion(page)
 
@@ -901,6 +911,43 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     await expect(mapStatus(page)).toContainText('No data', { timeout: 30_000 })
     await expect(geoChart(page).locator('canvas').first()).toBeVisible({ timeout: 30_000 })
     await expect(map.locator('[data-slot="geo-counter"]')).toHaveText(/^Peers: 0$/)
+    await expect(countryItems(page)).toHaveCount(0)
+    await expectQuietMap(page)
+
+    // Records the Server could not attribute a country to are a coverage gap,
+    // not an error: they sit beside the total in the corner chip and raise no
+    // notice while the map still has countries to plot. All Networks doubles
+    // the two-Network fixture, so 5 + 2 known/Unknown is 10 + 4 on screen.
+    await page.unroute('**/api/public/v1/networks*')
+    await withGeoProjection(page, () => ({
+      state: 'current', scope: 'complete',
+      countries: [{ countryCode: 'SE', count: 5, staleCount: 0, centroidLat: 60.1282, centroidLon: 18.6435 }],
+      knownCountryCount: 5, unknownCountryCount: 2, availablePeerCount: 7,
+      unknownWithPublicIpCount: 0, unknownWithoutRemoteIpCount: 2,
+      attribution: null, lastGoodAt: null, staleSince: null, databaseAgeSeconds: null, errorReason: null,
+    }), 'current')
+    await page.reload()
+    await expect(map.locator('[data-slot="geo-counter"]')).toHaveText('Peers: 14', { timeout: 30_000 })
+    await expect(unknownCounter(page)).toHaveText('4 unknown')
+    await expect(mapStatus(page)).toHaveCount(0)
+    await expect(countryItems(page)).toHaveCount(1)
+    await expect(map.locator('[data-slot="geo-unknown-list-item"]')).toHaveCount(1)
+    await expectQuietMap(page)
+    await capture(page, testInfo, 'fixture-unknown-' + testInfo.project.name)
+
+    // With no resolved country at all the map says so in one plain sentence and
+    // leaves the count to the chip, instead of the old "N unknown locations".
+    await page.unroute('**/api/public/v1/networks*')
+    await withGeoProjection(page, () => ({
+      state: 'current', scope: 'complete', countries: [],
+      knownCountryCount: 0, unknownCountryCount: 2, availablePeerCount: 2,
+      unknownWithPublicIpCount: 2, unknownWithoutRemoteIpCount: 0,
+      attribution: null, lastGoodAt: null, staleSince: null, databaseAgeSeconds: null, errorReason: null,
+    }), 'current')
+    await page.reload()
+    await expect(mapStatus(page)).toHaveText('No locations to show', { timeout: 30_000 })
+    await expect(map.locator('[data-slot="geo-counter"]')).toHaveText('Peers: 4')
+    await expect(unknownCounter(page)).toHaveText('4 unknown')
     await expect(countryItems(page)).toHaveCount(0)
     await expectQuietMap(page)
   })

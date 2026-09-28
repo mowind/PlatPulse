@@ -72,6 +72,9 @@ function network(overrides: { geo?: Record<string, unknown>; nodes?: Array<{ nod
       countries: [seCountry, deCountry, xkCountry],
       knownCountryCount: 6,
       unknownCountryCount: 1,
+      // Server-shaped: the two reason buckets always sum to the Unknown count.
+      unknownWithPublicIpCount: 0,
+      unknownWithoutRemoteIpCount: 1,
       availablePeerCount: 7,
       ...overrides.geo,
     },
@@ -103,15 +106,25 @@ describe('GeoWorldMap', () => {
     expect(label).toContain('not a Peer location or a Node deployment location')
   })
 
-  it('writes nothing onto the map but one in-scope Peer total', async () => {
+  it('keeps the in-scope Peer total and the Unknown bucket in one pointer-inert chip', async () => {
     stubBasemap()
     const { container } = renderMap()
     await screen.findByRole('img')
     const counters = container.querySelector('[data-slot="geo-counters"]')
     expect(counters?.textContent).toContain('7')
-    expect(counters?.getAttribute('aria-label')).toBe('7 Peer records in scope for All Networks')
+    expect(counters?.getAttribute('aria-label'))
+      .toBe('7 Peer records in scope for All Networks, 1 with no retained country attribution')
     expect(counters?.getAttribute('title')).toContain('not unique Peers or Node locations')
+    expect(counters?.getAttribute('title')).toContain('1 unknown location: 1 without a usable public remote IP')
     expect(counters?.className).toContain('pointer-events-none')
+    const unknown = counters?.querySelector('[data-slot="geo-counter-unknown"]')
+    expect(unknown?.textContent).toBe('1 unknown')
+    // The second dot states a coverage gap, so it never pulses like the live
+    // Peer total and never takes the map's amber.
+    const dot = unknown?.querySelector('[data-slot="geo-counter-unknown-dot"]')
+    expect(dot).toBeTruthy()
+    expect(dot?.className).not.toContain('animate-pulse')
+    expect(dot?.className).toContain('bg-muted-foreground')
   })
 
   it('keeps every country reachable as text, including one with no representative point', async () => {
@@ -123,6 +136,7 @@ describe('GeoWorldMap', () => {
     expect(list).toContain('3 records')
     expect(list).toContain('2 records, 1 stale')
     expect(list).toContain('no representative point, not plotted')
+    expect(list).toContain('1 unknown location: 1 without a usable public remote IP')
   })
 
   it('creates one chart instance, updates it in place, and disposes on unmount', async () => {
@@ -211,8 +225,12 @@ describe('GeoWorldMap', () => {
     stubBasemap()
     const { unmount } = renderMap({ networks: [network({ geo: { state: 'stale' } })] })
     await screen.findByRole('img')
-    expect(screen.getByRole('status').textContent).toBe('Map data stale · 1 unknown locations')
-    expect(screen.getByRole('note', { name: '7 Peer records in scope for All Networks' }).textContent).toBe('Peers: 7')
+    // Staleness keeps the notice; the Unknown count lives in the chip beside
+    // the total instead of becoming a second error-looking line.
+    expect(screen.getByRole('status').textContent).toBe('Map data stale')
+    const counters = screen.getByRole('note', { name: /^7 Peer records in scope for All Networks/ })
+    expect(counters.querySelector('[data-slot="geo-counter"]')?.textContent).toBe('Peers: 7')
+    expect(counters.querySelector('[data-slot="geo-counter-unknown"]')?.textContent).toBe('1 unknown')
     unmount()
 
     stubBasemap()
@@ -230,6 +248,53 @@ describe('GeoWorldMap', () => {
     unmount()
     const loading = renderMap({ loading: true })
     expect(loading.container.querySelector('[data-slot="geo-counters"]')).toBeNull()
+  })
+
+  it('shows one figure and no notice while every record has a retained country', async () => {
+    stubBasemap()
+    const { container } = renderMap({
+      networks: [network({
+        geo: {
+          // The same six records, all current: nothing stale and nothing
+          // unlocated, so the map stays quiet.
+          countries: [seCountry, { ...deCountry, staleCount: 0 }, xkCountry],
+          knownCountryCount: 6,
+          unknownCountryCount: 0,
+          unknownWithPublicIpCount: 0,
+          unknownWithoutRemoteIpCount: 0,
+          availablePeerCount: 6,
+        },
+      })],
+    })
+    await screen.findByRole('img')
+    expect(container.querySelector('[data-slot="geo-counter-unknown"]')).toBeNull()
+    expect(container.querySelector('[data-slot="map-status"]')).toBeNull()
+    expect(container.querySelector('[data-slot="geo-counters"]')?.getAttribute('aria-label'))
+      .toBe('6 Peer records in scope for All Networks')
+    expect(container.querySelector('[data-slot="geo-counters"]')?.getAttribute('title'))
+      .toBe('Peer records in scope for All Networks; not unique Peers or Node locations.')
+  })
+
+  it('states the empty map plainly when no country was resolved', async () => {
+    stubBasemap()
+    const { container } = renderMap({
+      networks: [network({
+        geo: {
+          countries: [],
+          knownCountryCount: 0,
+          unknownCountryCount: 5,
+          unknownWithPublicIpCount: 5,
+          unknownWithoutRemoteIpCount: 0,
+          availablePeerCount: 5,
+        },
+      })],
+    })
+    await screen.findByRole('img')
+    expect(screen.getByRole('status').textContent).toBe('No locations to show')
+    expect(container.querySelector('[data-slot="geo-counter"]')?.textContent).toBe('Peers: 5')
+    expect(container.querySelector('[data-slot="geo-counter-unknown"]')?.textContent).toBe('5 unknown')
+    expect(container.querySelector('[data-slot="geo-country-list"]')?.textContent)
+      .toContain('5 unknown locations: 5 without a retained country result')
   })
 
   it('keeps the rest of Home alive when the map cannot render', async () => {

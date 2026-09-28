@@ -103,11 +103,15 @@ test.describe('Geo provider selection and background country resolution', () => 
       // boundary, so the Server reports the database as Stale while still
       // serving the retained country result as last-good.
       await expect(countries).toHaveAttribute('data-state', 'stale')
-      await expect(countries.getByRole('status')).toContainText('Map data stale')
-      await expect(countries.getByRole('status')).toContainText('2 unknown locations')
+      await expect(countries.getByRole('status')).toHaveText('Map data stale')
+      // The two unresolved records sit in the corner chip beside the total, not
+      // in the notice: they are a coverage gap, not a connection state.
       await expect(
         countries.locator('[data-slot="geo-counter"]'),
       ).toHaveText('Peers: 3')
+      await expect(
+        countries.locator('[data-slot="geo-counter-unknown"]'),
+      ).toHaveText('2 unknown')
       // No raw Peer address, database path, or internal error crosses the
       // Public or Admin boundary.
       await expect(publicPage.getByText('89.160.20.112')).toHaveCount(0)

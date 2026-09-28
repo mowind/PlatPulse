@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { expect, test } from '@playwright/test'
-import { loginAs } from './helpers'
+import { expectNoHorizontalOverflow, loginAs } from './helpers'
 
 // Frozen real Public DTO from the before/after run; geo overrides below are
 // explicitly UI fixtures, not production observations or relocated markers.
@@ -113,5 +113,54 @@ test('mobile contain layout, touch targets, rotation and honest exception states
     await expect(map).toHaveAttribute('data-state', state)
     await expect(map.getByRole('status')).toContainText(state === 'stale' ? 'Map data stale' : state === 'empty' ? 'No data' : /No observations yet|Data unknown/)
     if (state === 'stale') await expect(page.locator('[data-slot="geo-country-list"]')).toContainText('1,001 stale')
+  }
+})
+
+// The Unknown country bucket is a coverage gap, not a connection state: it
+// belongs beside the denominator in the corner chip, it must never push an
+// exception notice off the map, and its dot must not imply live activity.
+test('unknown locations stay in the corner chip clear of the notice on a phone', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'phone-390-touch', 'One serial viewport sequence')
+  test.setTimeout(120_000)
+  const clone = structuredClone(frozen)
+  const networks = [clone[1]]
+  networks[0].geo = {
+    ...networks[0].geo, state: 'stale', scope: 'complete',
+    availablePeerCount: 1000, knownCountryCount: 999, unknownCountryCount: 1,
+    unknownWithPublicIpCount: 0, unknownWithoutRemoteIpCount: 1,
+    countries: [{ countryCode: 'CN', count: 999, staleCount: 0, centroidLat: 35.86, centroidLon: 104.2 }],
+  }
+  networks[0].peers.freshness = 'current'
+  await page.route('**/api/public/v1/networks*', route => route.fulfill({ json: networks }))
+  await page.route('**/api/public/v1/events*', route => route.abort())
+  await loginAs(page)
+
+  const map = page.getByRole('region', { name: 'Peer countries' })
+  const status = map.getByRole('status')
+  const counters = map.locator('[data-slot="geo-counters"]')
+  const unknown = counters.locator('[data-slot="geo-counter-unknown"]')
+  await expect(counters).toBeVisible({ timeout: 30_000 })
+  await expect(status).toHaveText('Map data stale')
+  await expect(counters.locator('[data-slot="geo-counter"]')).toHaveText('Peers: 1,000')
+  await expect(unknown).toHaveText('1 unknown')
+  await expect(map.locator('[data-slot="geo-unknown-list-item"]'))
+    .toHaveText('1 unknown location: 1 without a usable public remote IP')
+  // The live Peer total pulses; the coverage figure does not.
+  await expect.poll(() => counters.locator('[data-slot="geo-counter-dot"]')
+    .evaluate(el => getComputedStyle(el).animationName)).not.toBe('none')
+  expect(await counters.locator('[data-slot="geo-counter-unknown-dot"]')
+    .evaluate(el => getComputedStyle(el).animationName)).toBe('none')
+
+  await map.scrollIntoViewIfNeeded()
+  for (const width of [320, 360, 390, 430]) {
+    await page.setViewportSize({ width, height: 844 })
+    await page.waitForTimeout(150)
+    const statusBox = (await status.boundingBox())!
+    const counterBox = (await counters.boundingBox())!
+    const overlaps = statusBox.x < counterBox.x + counterBox.width && counterBox.x < statusBox.x + statusBox.width
+      && statusBox.y < counterBox.y + counterBox.height && counterBox.y < statusBox.y + statusBox.height
+    expect(overlaps, 'the notice and the chip stay clear at ' + width + 'px').toBe(false)
+    expect(statusBox.width, 'the notice keeps usable width at ' + width + 'px').toBeGreaterThan(60)
+    await expectNoHorizontalOverflow(page)
   }
 })
