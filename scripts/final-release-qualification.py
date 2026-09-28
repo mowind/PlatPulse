@@ -48,11 +48,9 @@ SECRET_ASSIGNMENT_RE = re.compile(r"(?i)((?:password|passwd|secret|token|credent
 FORBIDDEN_PATH_MARKERS = ("geolite", "pepper", "credential", "private-key", "privkey", "token")
 FORBIDDEN_SUFFIXES = {".mmdb", ".pem", ".key", ".p12", ".pfx", ".jks", ".p8", ".crt", ".csr"}
 KNOWN_NOT_RUN_SCENARIOS = {"partial_receipt", "worker_failure", "agent_outage", "transport_timeout", "alert_outbox_restart"}
-# Credential markers apply to every artifact member; the GeoLite/MMDB markers do
-# not apply to documentation that legitimately states PlatPulse does not
-# distribute GeoLite data or MaxMind credentials.
-CREDENTIAL_BYTES = (b"pp_agent_", b"pp_enroll_", b"PRIVATE KEY")
-DOCUMENTATION_SUFFIXES = {".md", ".txt", ".rst", ".example", ".service", ".timer", ".yml", ".yaml", ".toml"}
+# Licensed MaxMind GeoLite data is an MMDB container; detect it by the format's
+# terminal magic instead of by prose that mentions GeoLite in docs or WebUI text.
+MMDB_MAGIC = b"\xab\xcd\xefMaxMind.com"
 
 
 class QualificationError(RuntimeError):
@@ -401,7 +399,7 @@ class FinalQualification:
         for root in scan_roots:
             scan_tree(root)
 
-        forbidden_bytes = (b"pp_agent_", b"pp_enroll_", b"PRIVATE KEY", b".mmdb", b"GeoLite")
+        forbidden_bytes = (b"pp_agent_", b"pp_enroll_", b"PRIVATE KEY", MMDB_MAGIC)
         native_dir = self.native_artifacts
         native_artifacts = [
             path for path in native_dir.iterdir()
@@ -440,8 +438,7 @@ class FinalQualification:
                             if member.isfile() and member.size < 4 * 1024 * 1024:
                                 stream = bundle.extractfile(member)
                                 payload = stream.read() if stream is not None else b""
-                                markers = CREDENTIAL_BYTES if Path(member_name).suffix in DOCUMENTATION_SUFFIXES else forbidden_bytes
-                                for marker in markers:
+                                for marker in forbidden_bytes:
                                     if marker in payload:
                                         findings.append(f"{relative}:{member.name} contains forbidden marker {marker.decode(errors='replace')}")
                 else:
