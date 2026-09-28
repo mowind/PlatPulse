@@ -1962,6 +1962,16 @@ export type PublicNode = {
     validatorIdentityState?: string | null;
 };
 
+/**
+ * Public Node Detail response: every `PublicNode` field plus the Node Peer
+ * Country View over exactly this Node's current Peer records. The Node list
+ * keeps `PublicNode`, so a Home or Network response never carries one country
+ * projection per Node.
+ */
+export type PublicNodeDetail = PublicNode & {
+    geo: PublicGeoInsight;
+};
+
 export type PublicNodeMetricHistory = {
     blockIntervalMs: Array<PublicMetricPoint>;
     dataDirectoryPercent: Array<PublicMetricPoint>;
@@ -5137,9 +5147,9 @@ export type PublicNodeDetailError = PublicNodeDetailErrors[keyof PublicNodeDetai
 
 export type PublicNodeDetailResponses = {
     /**
-     * Published Node projection
+     * Published Node projection with the Node Peer Country View
      */
-    200: PublicNode;
+    200: PublicNodeDetail;
 };
 
 export type PublicNodeDetailResponse = PublicNodeDetailResponses[keyof PublicNodeDetailResponses];

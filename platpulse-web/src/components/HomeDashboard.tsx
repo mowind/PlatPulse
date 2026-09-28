@@ -7,6 +7,7 @@ import { peerInsightCollectionStatus, peerInsightFreshnessStatus, peerInsightVal
 import { NodeHealthMarker, formatRelativeTime, formatUtcDateTime } from './StatusBadge'
 import GeoMapBoundary from './GeoMapBoundary'
 import GeoWorldMap from './GeoWorldMap'
+import { geoMapStatus, homeGeoOverview } from '../homeGeo'
 import { formatNodeDataBytes } from '../formatBytes'
 import { formatDuration } from '../formatDuration'
 import { nodeDataProgress } from '../nodeData'
@@ -75,6 +76,13 @@ export default function HomeDashboard({
   }, [networkFilter, records, sortBy])
 
   const hasProjection = !loading && (error === null || hasLastGood)
+  // The map receives a projection, never raw Network input; the same overview
+  // also covers the selected Network filter.
+  const geoOverview = useMemo(
+    () => homeGeoOverview(networks, networkFilter),
+    [networks, networkFilter],
+  )
+  const geoStatus = geoMapStatus(geoOverview, { loading, hasProjection })
   const nodeGridRef = useNodeRegionHeights(visibleRecords, hasProjection)
   const scopedNetworks = networkFilter === 'all' ? networks : networks.filter(network => network.networkKey === networkFilter)
   const healthyCount = hasProjection ? visibleRecords.filter(({ node }) => isHealthy(node.health)).length : null
@@ -136,7 +144,7 @@ export default function HomeDashboard({
             world's own aspect ratio and so no longer crops it. */}
         <div data-slot="home-map" className="order-first min-w-0 aspect-[2/1] lg:order-none xl:aspect-auto xl:h-88">
           <GeoMapBoundary>
-            <GeoWorldMap networks={networks} networkFilter={networkFilter} loading={loading} hasProjection={hasProjection} />
+            <GeoWorldMap overview={geoOverview} status={geoStatus} />
           </GeoMapBoundary>
         </div>
       </div>

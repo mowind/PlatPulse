@@ -268,6 +268,10 @@ _Avoid_: Embedded asset, PlatPulse-managed download
 The Server-owned country projection over the current Peer records of a Network's Active Nodes. Its country and Unknown buckets count Peer records per Node (never IP-deduplicated Peers), and its Known/Unknown total, scope completeness, and Geo Provider/database status are separate dimensions from Peer collection freshness. Country resolution runs in a bounded background path, never inside the report receipt transaction.
 _Avoid_: Node deployment map, unique Peer count, Browser geolocation, Lookup inside report ingestion
 
+**Node Peer Country View**:
+The Server-owned country projection over the current Peer records of exactly one PlatON Node. It shares Geo Insight's Geo Location Cache, selected Geo Provider, record counting and Unknown rules, but its scope is a single Node: it is complete or never-observed, with no partial state. It describes where that Node's Peers are, never where the Node itself is deployed.
+_Avoid_: Node deployment map, Node location, filtered Geo Insight, unique Peer count
+
 **Block Production Attribution**:
 The evidence describing how an observed block relates to a monitored Node. It keeps Coinbase, Seal Signer Match, and Protocol Proposer distinct rather than collapsing them into one inferred producer flag.
 _Avoid_: Miner flag, Validator guess, Default false

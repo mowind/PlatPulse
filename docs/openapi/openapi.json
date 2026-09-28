@@ -5907,11 +5907,11 @@
         ],
         "responses": {
           "200": {
-            "description": "Published Node projection",
+            "description": "Published Node projection with the Node Peer Country View",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PublicNode"
+                  "$ref": "#/components/schemas/PublicNodeDetail"
                 }
               }
             }
@@ -12518,6 +12518,25 @@
             "description": "Server-owned automatic-identity state for this Node (#173):\n`identified`, `missing_public_key`, `invalid_public_key`,\n`network_identity_missing`, or `network_identity_mismatch`. `None`\nmeans no automatic discovery pass has run yet. It is separate from\nCurrent Validator Status: identity correspondence can be established\nwhile the Provider still cannot confirm current staking validity."
           }
         }
+      },
+      "PublicNodeDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/PublicNode"
+          },
+          {
+            "type": "object",
+            "required": [
+              "geo"
+            ],
+            "properties": {
+              "geo": {
+                "$ref": "#/components/schemas/PublicGeoInsight"
+              }
+            }
+          }
+        ],
+        "description": "Public Node Detail response: every `PublicNode` field plus the Node Peer\nCountry View over exactly this Node's current Peer records. The Node list\nkeeps `PublicNode`, so a Home or Network response never carries one country\nprojection per Node."
       },
       "PublicNodeMetricHistory": {
         "type": "object",

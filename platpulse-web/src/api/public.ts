@@ -9,7 +9,7 @@ import {
   publicNodePeerHistory,
   type PublicBlockHistoryItem,
   type PublicNetwork,
-  type PublicNode,
+  type PublicNodeDetail,
   type PublicNodeMetricHistory,
   type PublicPeerHistory,
 } from './generated'
@@ -80,7 +80,7 @@ export async function fetchNetworks(signal?: AbortSignal, generation?: number): 
   )
 }
 
-export async function fetchNode(nodeId: string, signal?: AbortSignal, generation?: number): Promise<PublicNode> {
+export async function fetchNode(nodeId: string, signal?: AbortSignal, generation?: number): Promise<PublicNodeDetail> {
   const context = contextOf(signal, generation)
   return requestGenerated(
     () => publicNodeDetail({ path: { node_id: nodeId }, signal: context.signal, headers: headersOf(context) }),

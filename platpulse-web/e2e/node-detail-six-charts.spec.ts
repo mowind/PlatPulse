@@ -350,4 +350,173 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
     await expect(page.getByRole('heading', { level: 1, name: PUBLIC_NODE_NAME })).toBeVisible({ timeout: 15_000 })
     await expect(page.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeVisible()
   })
+  test('the Node Peer Country View fills the first row across the fixed viewports', async ({ page }, testInfo) => {
+    // Home's states, word for word, on the Node scope: the same uncarded map
+    // over this Node's current Peer records, never a Node deployment map.
+    const scenarios = [
+      {
+        mode: 'current',
+        geo: {
+          state: 'current', scope: 'complete',
+          countries: [{ countryCode: 'SE', count: 1, staleCount: 0, centroidLat: 59.33, centroidLon: 18.06 }],
+          knownCountryCount: 1, unknownCountryCount: 2,
+          unknownWithPublicIpCount: 0, unknownWithoutRemoteIpCount: 2,
+          availablePeerCount: 3,
+        },
+        notice: null as string | null,
+        counters: '3 Peer records in scope for Node A, 2 with no retained country attribution',
+      },
+      {
+        mode: 'stale',
+        geo: {
+          state: 'stale', scope: 'complete',
+          countries: [{ countryCode: 'SE', count: 1, staleCount: 1, centroidLat: 59.33, centroidLon: 18.06 }],
+          knownCountryCount: 1, unknownCountryCount: 2,
+          unknownWithPublicIpCount: 0, unknownWithoutRemoteIpCount: 2,
+          availablePeerCount: 3,
+        },
+        notice: 'Map data stale',
+        counters: '3 Peer records in scope for Node A, 2 with no retained country attribution',
+      },
+      {
+        mode: 'all-unknown',
+        geo: {
+          state: 'current', scope: 'complete', countries: [],
+          knownCountryCount: 0, unknownCountryCount: 3,
+          unknownWithPublicIpCount: 3, unknownWithoutRemoteIpCount: 0,
+          availablePeerCount: 3,
+        },
+        notice: 'No locations to show',
+        counters: '3 Peer records in scope for Node A, 3 with no retained country attribution',
+      },
+      {
+        mode: 'unobserved',
+        geo: {
+          state: 'current', scope: 'unobserved', countries: [],
+          knownCountryCount: null, unknownCountryCount: null,
+          unknownWithPublicIpCount: null, unknownWithoutRemoteIpCount: null,
+          availablePeerCount: null,
+        },
+        notice: 'No observations yet',
+        counters: null,
+      },
+      {
+        mode: 'disabled',
+        geo: {
+          state: 'disabled', scope: 'unavailable', countries: null,
+          knownCountryCount: null, unknownCountryCount: null,
+          unknownWithPublicIpCount: null, unknownWithoutRemoteIpCount: null,
+          availablePeerCount: null,
+        },
+        notice: 'Peer countries · Disabled by server',
+        counters: null,
+      },
+    ]
+    let scenario = scenarios[0]
+    await page.route(nodeRoute, async (route) => {
+      const response = await route.fetch()
+      const body = (await response.json()) as Record<string, unknown>
+      // Pin the Peer Count tile and the map to the same figure so the rendered
+      // agreement is deterministic. The Server-side invariant (both derive from
+      // COUNT(*) of current_node_peers) is pinned by the Rust projection test.
+      body.peers = { ...(body.peers as Record<string, unknown>), peerCount: 3, inboundCount: 2, outboundCount: 1 }
+      body.geo = scenario.geo
+      await route.fulfill({ response, json: body })
+    })
+    await loginAs(page)
+
+    for (const step of scenarios) {
+      scenario = step
+      await openNodeDetail(page)
+      const map = page.getByRole('region', { name: 'Node Peer countries' })
+      await expect(map).toBeVisible({ timeout: 15_000 })
+      // `data-state` is the Server's Geo database state; the Node scope is
+      // `data-scope` (complete or unobserved, never partial).
+      await expect(map).toHaveAttribute('data-state', step.geo.state)
+      await expect(map).toHaveAttribute('data-scope', step.geo.scope)
+      // A Node scope is not Home's Network selection, so the Home data hook
+      // is absent rather than repurposed.
+      expect(await map.getAttribute('data-network-filter')).toBeNull()
+      if (step.notice) await expect(map.getByRole('status')).toContainText(step.notice)
+
+      const layout = await page.evaluate(() => {
+        const row = document.querySelector('[data-slot="node-overview"]') as HTMLElement
+        const summary = row.querySelector('[aria-label="Node key summary"]') as HTMLElement
+        const slot = row.querySelector('[data-slot="node-map"]') as HTMLElement
+        const rect = (element: HTMLElement) => {
+          const box = element.getBoundingClientRect()
+          return { top: box.top + window.scrollY, left: box.left, width: box.width, height: box.height }
+        }
+        return {
+          summary: rect(summary),
+          map: rect(slot),
+          mapBackground: getComputedStyle(slot).backgroundColor,
+          mapCardish: /(^|\s)bg-/.test(slot.className),
+        }
+      })
+      const viewportWidth = page.viewportSize()?.width ?? 0
+      expect(layout.map.height, step.mode + ' keeps the map track').toBeGreaterThan(0)
+      if (viewportWidth >= 1024) {
+        // From lg the tiles and the wider map share one row, tiles left.
+        expect(layout.map.left, step.mode).toBeGreaterThan(layout.summary.left)
+        expect(layout.map.width, step.mode).toBeGreaterThan(layout.summary.width)
+      } else {
+        // Below lg the map sits above the tiles, both full width.
+        expect(layout.map.top, step.mode).toBeLessThan(layout.summary.top)
+        expect(Math.abs(layout.map.left - layout.summary.left), step.mode).toBeLessThanOrEqual(1)
+      }
+      // Uncarded: the map introduces neither a fourth card surface nor a
+      // fourth reading tier (design §11.1).
+      expect(layout.mapBackground, step.mode).toBe('rgba(0, 0, 0, 0)')
+      expect(layout.mapCardish, step.mode).toBe(false)
+
+      if (step.counters) {
+        await expect(map.getByRole('note')).toHaveAttribute('aria-label', step.counters)
+      }
+      if (step.mode === 'current' || step.mode === 'stale') {
+        await expect(map.locator('[data-slot="geo-country-list"]')).toContainText('Sweden')
+      }
+      if (step.mode === 'current') {
+        // The map denominator and the Peer Count tile are one Server figure.
+        await expect(page.locator('[data-slot="node-summary-tile"]').filter({ hasText: 'Peers' }).locator('strong')).toHaveText('3')
+      }
+      await expectNoHorizontalOverflow(page)
+
+      // Evidence: the first row at this fixed viewport in both themes, so the
+      // map track, the uncarded surface and the tile/ map rhythm can be
+      // checked against the approved composition.
+      await page.evaluate(() => window.scrollTo(0, 0))
+      await setTheme(page, 'light')
+      await page.screenshot({ path: testInfo.outputPath('node-peer-country-view-' + step.mode + '-light.png'), fullPage: true })
+      await setTheme(page, 'dark')
+      await page.screenshot({ path: testInfo.outputPath('node-peer-country-view-' + step.mode + '-dark.png'), fullPage: true })
+    }
+  })
+  test('an unusable basemap keeps the Node map track and says so', async ({ page }) => {
+    // The committed world geometry is a static asset; a Server that cannot
+    // serve it must degrade inside the map slot, not take the page down.
+    await page.route('**/assets/geo/world-countries-echarts-www-v1.json', (route) => route.abort())
+    await page.route(nodeRoute, async (route) => {
+      const response = await route.fetch()
+      const body = (await response.json()) as Record<string, unknown>
+      body.geo = {
+        state: 'current', scope: 'complete',
+        countries: [{ countryCode: 'SE', count: 1, staleCount: 0, centroidLat: 59.33, centroidLon: 18.06 }],
+        knownCountryCount: 1, unknownCountryCount: 0,
+        unknownWithPublicIpCount: 0, unknownWithoutRemoteIpCount: 0,
+        availablePeerCount: 1,
+      }
+      await route.fulfill({ response, json: body })
+    })
+    await loginAs(page)
+    await openNodeDetail(page)
+    const map = page.getByRole('region', { name: 'Node Peer countries' })
+    await expect(map.getByRole('status')).toContainText('Map unavailable', { timeout: 15_000 })
+    // The failed basemap keeps the track: the slot never collapses and no
+    // canvas is created in place of the world.
+    const track = page.locator('[data-slot="node-map"]')
+    expect((await track.boundingBox())?.height ?? 0).toBeGreaterThan(0)
+    await expect(map.locator('[data-slot="geo-chart"]')).toHaveCount(0)
+    await expectNoHorizontalOverflow(page)
+  })
 })

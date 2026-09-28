@@ -1,11 +1,14 @@
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { PublicNetwork } from '../api/generated'
+import type { PublicNetwork, PublicNodeDetail } from '../api/generated'
+import { geoMapStatus, homeGeoOverview, nodeGeoOverview } from '../homeGeo'
+import { NODE_PEER_COUNTRIES_HEADING } from './geoPresentation'
 
 /**
  * GeoWorldMap renders through ECharts, which paints into a canvas with no
  * per-country element. The encoding itself is covered by
  * mapChartOption.test.ts; these tests cover the component's own contract —
+ * that it is driven purely by an already-projected overview plus a status,
  * the accessible image, the counters, the screen-reader country list, the
  * states it announces, and the chart lifecycle. ECharts is stubbed so the
  * suite stays canvas-free.
@@ -84,15 +87,38 @@ function network(overrides: { geo?: Record<string, unknown>; nodes?: Array<{ nod
   } as unknown as PublicNetwork
 }
 
-function renderMap(props: Partial<Parameters<typeof GeoWorldMap>[0]> = {}) {
-  return render(
-    <GeoWorldMap
-      networks={props.networks ?? [network()]}
-      networkFilter={props.networkFilter ?? 'all'}
-      loading={props.loading ?? false}
-      hasProjection={props.hasProjection ?? true}
-    />,
-  )
+/** A Node Detail projection carrying only the fields the map consumes. */
+function nodeDetail(overrides: { geo?: Record<string, unknown>; displayName?: string; peers?: Record<string, unknown> } = {}): PublicNodeDetail {
+  return {
+    nodeId: 'node-1',
+    displayName: overrides.displayName ?? 'Validator A',
+    peers: { state: 'ok', freshness: 'current', ...overrides.peers },
+    geo: {
+      state: 'current',
+      scope: 'complete',
+      countries: [seCountry, deCountry],
+      knownCountryCount: 5,
+      unknownCountryCount: 1,
+      unknownWithPublicIpCount: 0,
+      unknownWithoutRemoteIpCount: 1,
+      availablePeerCount: 6,
+      ...overrides.geo,
+    },
+  } as unknown as PublicNodeDetail
+}
+
+type MapOptions = { networkFilter?: string; loading?: boolean; hasProjection?: boolean }
+
+function propsFor(networks: PublicNetwork[], options: MapOptions = {}) {
+  const overview = homeGeoOverview(networks, options.networkFilter ?? 'all')
+  return {
+    overview,
+    status: geoMapStatus(overview, { loading: options.loading ?? false, hasProjection: options.hasProjection ?? true }),
+  }
+}
+
+function renderMap(networks: PublicNetwork[] = [network()], options: MapOptions = {}) {
+  return render(<GeoWorldMap {...propsFor(networks, options)} />)
 }
 
 describe('GeoWorldMap', () => {
@@ -167,7 +193,7 @@ describe('GeoWorldMap', () => {
     expect(mocks.setOption.mock.lastCall?.[0].series[0].tooltip).toEqual({ show: false })
     act(() => { resize() })
     await waitFor(() => expect(mocks.resize).toHaveBeenCalled())
-    view.rerender(<GeoWorldMap networks={[network()]} networkFilter="mainnet" loading={false} hasProjection />)
+    view.rerender(<GeoWorldMap {...propsFor([network()], { networkFilter: 'mainnet' })} />)
     expect(mocks.init).toHaveBeenCalledTimes(1)
     const click = mocks.on.mock.calls.find(([name]) => name === 'click')?.[1]
     act(() => click({ target: undefined }))
@@ -185,19 +211,12 @@ describe('GeoWorldMap', () => {
     // An SSE-driven refetch returns a new Network array with equal country
     // values. Re-applying the option would make ECharts re-parse the world
     // geometry and rebuild the graphic for no visible change.
-    view.rerender(
-      <GeoWorldMap networks={[network()]} networkFilter="all" loading={false} hasProjection />,
-    )
+    view.rerender(<GeoWorldMap {...propsFor([network()])} />)
     await waitFor(() => expect(mocks.setOption).toHaveBeenCalledTimes(1))
 
     // A real country change still reaches the canvas.
     view.rerender(
-      <GeoWorldMap
-        networks={[network({ geo: { countries: [{ ...seCountry, count: 9 }, deCountry, xkCountry] } })]}
-        networkFilter="all"
-        loading={false}
-        hasProjection
-      />,
+      <GeoWorldMap {...propsFor([network({ geo: { countries: [{ ...seCountry, count: 9 }, deCountry, xkCountry] } })])} />,
     )
     await waitFor(() => expect(mocks.setOption.mock.calls.length).toBeGreaterThan(1))
   })
@@ -207,9 +226,14 @@ describe('GeoWorldMap', () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
     const { default: FreshMap } = await import('./GeoWorldMap')
-    render(
-      <FreshMap networks={[network({ geo: { state: 'disabled' } })]} networkFilter="all" loading={false} hasProjection />,
-    )
+    render(<FreshMap {...propsFor([network({ geo: { state: 'disabled' } })])} />)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('never requests a basemap when the projection itself is unavailable', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    renderMap([network()], { hasProjection: false })
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
@@ -217,13 +241,13 @@ describe('GeoWorldMap', () => {
     vi.resetModules()
     stubBasemap({ type: 'text/html' })
     const { default: FreshMap } = await import('./GeoWorldMap')
-    render(<FreshMap networks={[network()]} networkFilter="all" loading={false} hasProjection />)
+    render(<FreshMap {...propsFor([network()])} />)
     expect(await screen.findByText('Map unavailable')).toBeTruthy()
   })
 
   it('announces stale and never-observed scopes without inventing a zero', async () => {
     stubBasemap()
-    const { unmount } = renderMap({ networks: [network({ geo: { state: 'stale' } })] })
+    const { unmount } = renderMap([network({ geo: { state: 'stale' } })])
     await screen.findByRole('img')
     // Staleness keeps the notice; the Unknown count lives in the chip beside
     // the total instead of becoming a second error-looking line.
@@ -234,26 +258,26 @@ describe('GeoWorldMap', () => {
     unmount()
 
     stubBasemap()
-    renderMap({
-      networks: [network({ geo: { state: 'current', scope: 'unobserved', countries: [], knownCountryCount: null, unknownCountryCount: null, availablePeerCount: null } })],
-    })
+    renderMap([
+      network({ geo: { state: 'current', scope: 'unobserved', countries: [], knownCountryCount: null, unknownCountryCount: null, availablePeerCount: null } }),
+    ])
     await screen.findByRole('img')
     expect(document.body.textContent).toContain('No observations yet')
   })
 
   it('never invents a Peer total while the projection is unavailable or loading', async () => {
     stubBasemap()
-    const { container, unmount } = renderMap({ hasProjection: false })
+    const { container, unmount } = renderMap([network()], { hasProjection: false })
     expect(container.querySelector('[data-slot="geo-counters"]')).toBeNull()
     unmount()
-    const loading = renderMap({ loading: true })
+    const loading = renderMap([network()], { loading: true })
     expect(loading.container.querySelector('[data-slot="geo-counters"]')).toBeNull()
   })
 
   it('shows one figure and no notice while every record has a retained country', async () => {
     stubBasemap()
-    const { container } = renderMap({
-      networks: [network({
+    const { container } = renderMap([
+      network({
         geo: {
           // The same six records, all current: nothing stale and nothing
           // unlocated, so the map stays quiet.
@@ -264,8 +288,8 @@ describe('GeoWorldMap', () => {
           unknownWithoutRemoteIpCount: 0,
           availablePeerCount: 6,
         },
-      })],
-    })
+      }),
+    ])
     await screen.findByRole('img')
     expect(container.querySelector('[data-slot="geo-counter-unknown"]')).toBeNull()
     expect(container.querySelector('[data-slot="map-status"]')).toBeNull()
@@ -277,8 +301,8 @@ describe('GeoWorldMap', () => {
 
   it('states the empty map plainly when no country was resolved', async () => {
     stubBasemap()
-    const { container } = renderMap({
-      networks: [network({
+    const { container } = renderMap([
+      network({
         geo: {
           countries: [],
           knownCountryCount: 0,
@@ -287,8 +311,8 @@ describe('GeoWorldMap', () => {
           unknownWithoutRemoteIpCount: 0,
           availablePeerCount: 5,
         },
-      })],
-    })
+      }),
+    ])
     await screen.findByRole('img')
     expect(screen.getByRole('status').textContent).toBe('No locations to show')
     expect(container.querySelector('[data-slot="geo-counter"]')?.textContent).toBe('Peers: 5')
@@ -297,7 +321,27 @@ describe('GeoWorldMap', () => {
       .toContain('5 unknown locations: 5 without a retained country result')
   })
 
-  it('keeps the rest of Home alive when the map cannot render', async () => {
+  it('names the Node unit, drops the Network filter hook, and keeps the same states', async () => {
+    stubBasemap()
+    const overview = nodeGeoOverview(nodeDetail())
+    const { container } = render(
+      <GeoWorldMap
+        overview={overview}
+        status={geoMapStatus(overview, { loading: false, hasProjection: true })}
+        heading={NODE_PEER_COUNTRIES_HEADING}
+      />,
+    )
+    const region = screen.getByRole('region', { name: NODE_PEER_COUNTRIES_HEADING })
+    expect(region.getAttribute('data-scope')).toBe('complete')
+    // A Node scope is not a Home Network selection, so the Home data hook is
+    // absent rather than repurposed.
+    expect(region.getAttribute('data-network-filter')).toBeNull()
+    expect(await screen.findByRole('img', { name: /^Node Peer countries map/ })).toBeTruthy()
+    expect(container.querySelector('[data-slot="geo-counters"]')?.getAttribute('aria-label'))
+      .toBe('6 Peer records in scope for Validator A, 1 with no retained country attribution')
+  })
+
+  it('keeps the rest of the page alive when the map cannot render', async () => {
     vi.resetModules()
     stubBasemap({ type: 'text/html' })
     const [{ default: FreshMap }, { default: FreshBoundary }] = await Promise.all([
@@ -305,10 +349,11 @@ describe('GeoWorldMap', () => {
       import('./GeoMapBoundary'),
     ])
     render(
-      <FreshBoundary>
-        <FreshMap networks={[network()]} networkFilter="all" loading={false} hasProjection />
+      <FreshBoundary label={NODE_PEER_COUNTRIES_HEADING}>
+        <FreshMap {...propsFor([network()])} heading={NODE_PEER_COUNTRIES_HEADING} />
       </FreshBoundary>,
     )
     expect(await screen.findByText('Map unavailable')).toBeTruthy()
+    expect(screen.getByRole('region', { name: NODE_PEER_COUNTRIES_HEADING })).toBeTruthy()
   })
 })

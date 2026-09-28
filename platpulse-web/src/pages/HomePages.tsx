@@ -14,6 +14,8 @@ import { PeerInsight, peerInsightCollectionStatus, peerInsightFreshnessStatus, p
 import { PeerHistoryInsight, normalizePublicPeerHistory } from '../components/PeerHistoryInsight'
 import { formatUtcDateTime, NodeHealthMarker } from '../components/StatusBadge'
 import { LinkedValidatorSection } from '../components/LinkedValidator'
+import GeoMapBoundary from '../components/GeoMapBoundary'
+import GeoWorldMap from '../components/GeoWorldMap'
 import { RealtimeNotice } from '../components/RealtimeNotice'
 import { formatNodeDataBytes } from '../formatBytes'
 import { formatDuration } from '../formatDuration'
@@ -21,6 +23,8 @@ import { nodeDataProgress } from '../nodeData'
 import { MetricRow } from '../components/MetricRow'
 import { ValidatorActivityBadge } from '../components/ValidatorActivityBadge'
 import { ConsensusHeights, HeadDelta, LastReportAge, syncOffsetLabel } from '../components/NodeDetailObservations'
+import { geoMapStatus, nodeGeoOverview } from '../homeGeo'
+import { NODE_PEER_COUNTRIES_HEADING } from '../components/geoPresentation'
 import { CardX } from '../components/ui/card-x'
 import { Alert, AlertDescription } from '../components/ui/alert'
 import { Spinner } from '../components/ui/spinner'
@@ -47,6 +51,11 @@ export function NodePage() {
   if (!nodeQuery.data) return <section className={PAGE}><RealtimeNotice realtime={realtime} /><p role="status" className="mt-3 text-sm text-muted-foreground">Node unavailable.</p><Link className="mt-3 inline-flex min-h-11 min-w-11 items-center text-sm font-medium text-emerald-600 hover:underline dark:text-emerald-400" to="/">Back to Home</Link></section>
 
   const node = nodeQuery.data
+  // The Node Peer Country View is a projection of exactly this Node. The Node
+  // response has already loaded, so the map slot is never Starting or
+  // Unavailable here; its status is the Server's own Geo state.
+  const nodeGeo = nodeGeoOverview(node)
+  const nodeGeoStatus = geoMapStatus(nodeGeo, { loading: false, hasProjection: true })
   const health = nodeHealthPresentation(node.health)
   const blockInterval = latestBlockInterval(historyQuery.data)
   const metricHistory = metricsQuery.data
@@ -92,11 +101,22 @@ export function NodePage() {
 
     {health.tone !== 'ok' && <p className="m-0 mt-2 break-words text-sm text-warning-foreground dark:text-warning">{node.healthReason}</p>}
 
-    <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4" role="group" aria-label="Node key summary">
-      <SummaryTile label="Head" value={formatNumber(node.currentHead)} detail={<HeadDelta node={node} />} />
-      <SummaryTile label="Sync" value={nodeComponentStateLabel(node.syncState)} detail={syncOffsetLabel(node)} />
-      <SummaryTile label="Peers" value={peerCount(node.peers)} detail={peerBreakdown(node.peers)} />
-      <SummaryTile label="Process uptime" value={formatDuration(node.processUptimeMs)} />
+    {/* The first row pairs the four summary tiles with the Node Peer Country
+        View. The DOM keeps the tiles first for reading order; below lg the map
+        takes the top of the row, exactly as Home does. The map is uncarded, so
+        §11.1's card-container rule is unchanged. */}
+    <div data-slot="node-overview" className="mt-4 grid min-w-0 items-end gap-4 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
+      <div className="grid min-w-0 auto-rows-fr grid-cols-2 gap-3" role="group" aria-label="Node key summary">
+        <SummaryTile label="Head" value={formatNumber(node.currentHead)} detail={<HeadDelta node={node} />} />
+        <SummaryTile label="Sync" value={nodeComponentStateLabel(node.syncState)} detail={syncOffsetLabel(node)} />
+        <SummaryTile label="Peers" value={peerCount(node.peers)} detail={peerBreakdown(node.peers)} />
+        <SummaryTile label="Process uptime" value={formatDuration(node.processUptimeMs)} />
+      </div>
+      <div data-slot="node-map" className="order-first min-w-0 aspect-[2/1] lg:order-none xl:aspect-auto xl:h-88">
+        <GeoMapBoundary label={NODE_PEER_COUNTRIES_HEADING}>
+          <GeoWorldMap overview={nodeGeo} status={nodeGeoStatus} heading={NODE_PEER_COUNTRIES_HEADING} />
+        </GeoMapBoundary>
+      </div>
     </div>
 
     <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-3">

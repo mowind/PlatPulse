@@ -1,7 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { PEER_COUNTRIES_HEADING } from './geoPresentation'
 
-type GeoMapBoundaryProps = { children: ReactNode }
+type GeoMapBoundaryProps = { children: ReactNode; label?: string }
 type GeoMapBoundaryState = { failed: boolean }
 
 /**
@@ -30,7 +30,7 @@ export default class GeoMapBoundary extends Component<GeoMapBoundaryProps, GeoMa
   render() {
     if (this.state.failed) {
       return (
-        <section className="relative block h-full min-h-40 w-full" aria-label={PEER_COUNTRIES_HEADING}>
+        <section className="relative block h-full min-h-40 w-full" aria-label={this.props.label ?? PEER_COUNTRIES_HEADING}>
           <span className="sr-only" role="status">Map unavailable</span>
         </section>
       )

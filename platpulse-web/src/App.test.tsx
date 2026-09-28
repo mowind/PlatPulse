@@ -287,6 +287,18 @@ describe('App shell with private Home', () => {
           receivedAt: '2026-08-20T00:00:00Z',
           staleSince: '2026-08-20T00:05:00Z',
         },
+        // Geo is Disabled in this fixture: the Node Peer Country View keeps
+        // its track and states Home's honest Disabled notice. The Enabled,
+        // stale, never-observed and unusable-basemap states are covered by
+        // the map's own contract tests.
+        geo: {
+          state: 'disabled',
+          scope: 'unavailable',
+          countries: null,
+          knownCountryCount: null,
+          unknownCountryCount: null,
+          availablePeerCount: null,
+        },
       }, 200),
       '/api/public/v1/nodes/node-1/history?limit=2': () => jsonResponse([{
         nodeId: 'node-1',
@@ -402,6 +414,23 @@ describe('App shell with private Home', () => {
     expect(document.querySelector('[data-slot="node-hero-card"]')).toBeNull()
     expect(summary.querySelectorAll('[data-slot="node-summary-tile"]')).toHaveLength(4)
     expect(document.querySelectorAll('[data-slot="node-info-group"]')).toHaveLength(3)
+    // The first row pairs the four tiles with the uncarded Node Peer Country
+    // View. Reading order keeps the tiles first, CSS lifts the map above them
+    // below lg, and the Node scope names its own unit so it cannot be read as
+    // Home's Network map.
+    const overviewRow = document.querySelector('[data-slot="node-overview"]')
+    if (!overviewRow) throw new Error('Node overview row is missing')
+    expect(overviewRow.contains(summary)).toBe(true)
+    const nodeMap = screen.getByRole('region', { name: 'Node Peer countries' })
+    expect(nodeMap.getAttribute('data-state')).toBe('disabled')
+    expect(nodeMap.getAttribute('data-scope')).toBe('unavailable')
+    expect(nodeMap.getAttribute('data-network-filter')).toBeNull()
+    expect(nodeMap.textContent).toContain('Peer countries · Disabled by server')
+    const mapSlot = overviewRow.querySelector('[data-slot="node-map"]')
+    expect(mapSlot?.className).toContain('order-first')
+    expect(mapSlot?.className).toContain('aspect-[2/1]')
+    expect(mapSlot?.contains(nodeMap)).toBe(true)
+    expect(summary.compareDocumentPosition(nodeMap) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     for (const title of ['Chain & consensus', 'PlatON process & Node Data', /^Host resources/]) {
       expect(screen.getByRole('heading', { level: 2, name: title })).toBeTruthy()
     }

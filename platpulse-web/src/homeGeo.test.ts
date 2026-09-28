@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { PublicNetwork } from './api/generated'
-import { homeGeoOverview } from './homeGeo'
+import type { PublicNetwork, PublicNodeDetail } from './api/generated'
+import { geoMapStatus, homeGeoOverview, nodeGeoOverview } from './homeGeo'
 
 type NetworkOverrides = {
   networkKey: string
@@ -175,5 +175,114 @@ describe('homeGeoOverview', () => {
     expect(overview.state).toBe('error')
     expect(overview.errorReason).toBe('Geo lookup is unavailable')
     expect(overview.lastGoodAt).toBe('2026-07-01T00:00:00Z')
+  })
+})
+
+type NodeOverrides = { geo?: Record<string, unknown>; displayName?: string; peers?: Record<string, unknown> }
+
+function node(overrides: NodeOverrides = {}): PublicNodeDetail {
+  return {
+    nodeId: 'node-1',
+    displayName: overrides.displayName ?? 'Validator A',
+    peers: { state: 'ok', freshness: 'current', ...overrides.peers },
+    geo: { state: 'current', scope: 'complete', ...overrides.geo },
+  } as unknown as PublicNodeDetail
+}
+
+describe('nodeGeoOverview', () => {
+  it('projects exactly one Node scope with its own Geo Insight', () => {
+    const overview = nodeGeoOverview(node({
+      geo: {
+        state: 'stale',
+        scope: 'complete',
+        countries: [de, se],
+        knownCountryCount: 5,
+        unknownCountryCount: 2,
+        unknownWithoutRemoteIpCount: 2,
+        unknownWithPublicIpCount: 0,
+        availablePeerCount: 7,
+        attribution: 'GeoLite Data created by MaxMind',
+        lastGoodAt: '2026-08-01T00:00:00Z',
+      },
+    }))
+
+    expect(overview.scopeLabel).toBe('Validator A')
+    // A Node scope is not a Home Network selection.
+    expect(overview.scopeKey).toBeNull()
+    expect(overview.networksInScope).toBe(1)
+    expect(overview.networksWithBasis).toBe(1)
+    expect(overview.state).toBe('stale')
+    expect(overview.scope).toBe('complete')
+    // The map always reads most-count-first, whatever order the Server sent.
+    expect(overview.countries).toEqual([
+      { code: 'SE', count: 3, staleCount: 0, point: { lat: 60.1282, lon: 18.6435 } },
+      { code: 'DE', count: 2, staleCount: 1, point: { lat: 51.1657, lon: 10.4515 } },
+    ])
+    expect(overview.knownCountryCount).toBe(5)
+    expect(overview.unknownCountryCount).toBe(2)
+    expect(overview.unknownWithoutRemoteIpCount).toBe(2)
+    expect(overview.availablePeerCount).toBe(7)
+    expect(overview.attribution).toBe('GeoLite Data created by MaxMind')
+    expect(overview.lastGoodAt).toBe('2026-08-01T00:00:00Z')
+    expect(overview.peerObservation).toBe('current')
+  })
+
+  it('stays unobserved without a fabricated zero when the Node has no basis', () => {
+    const overview = nodeGeoOverview(node({
+      geo: { scope: 'unobserved', countries: null, knownCountryCount: null, unknownCountryCount: null, availablePeerCount: null },
+    }))
+
+    expect(overview.scope).toBe('unobserved')
+    expect(overview.networksWithBasis).toBe(0)
+    expect(overview.knownCountryCount).toBeNull()
+    expect(overview.unknownCountryCount).toBeNull()
+    expect(overview.availablePeerCount).toBeNull()
+    expect(overview.countries).toEqual([])
+  })
+
+  it('keeps a Disabled Geo state unavailable and a missing projection Unknown', () => {
+    const disabled = nodeGeoOverview(node({ geo: { state: 'disabled', scope: 'unavailable', countries: null, knownCountryCount: null, unknownCountryCount: null, availablePeerCount: null } }))
+    expect(disabled.state).toBe('disabled')
+    expect(disabled.scope).toBe('unavailable')
+    expect(disabled.availablePeerCount).toBeNull()
+
+    const missing = nodeGeoOverview({ nodeId: 'node-2' } as unknown as PublicNodeDetail)
+    expect(missing.state).toBe('unknown')
+    expect(missing.scope).toBe('unavailable')
+    expect(missing.scopeLabel).toBe('node-2')
+    expect(missing.countries).toEqual([])
+  })
+
+  it('never presents a single Node as Partial when the scope is not a Node scope', () => {
+    const overview = nodeGeoOverview(node({
+      geo: {
+        state: 'current', scope: 'partial', countries: [se],
+        knownCountryCount: 3, unknownCountryCount: 1, availablePeerCount: 4,
+      },
+    }))
+    // One Node is complete or never-observed; Partial is Home's Network
+    // vocabulary, so an untrusted scope reads Unknown rather than Partial.
+    expect(overview.scope).toBe('unavailable')
+    expect(overview.state).toBe('unknown')
+  })
+
+  it('reads Peer freshness as its own dimension and rejects a made-up value', () => {
+    expect(nodeGeoOverview(node({ peers: { state: 'ok', freshness: 'stale' } })).peerObservation).toBe('stale')
+    expect(nodeGeoOverview(node({ peers: { state: 'unknown', freshness: 'unknown' } })).peerObservation).toBe('unknown')
+    expect(nodeGeoOverview(node({ peers: { state: 'ok', freshness: 'weird' } })).peerObservation).toBe('unknown')
+  })
+})
+
+describe('geoMapStatus', () => {
+  it('passes the Server state through and adds only the client slots', () => {
+    const empty = homeGeoOverview([], 'all')
+    expect(geoMapStatus(empty, { loading: true, hasProjection: true })).toBe('starting')
+    expect(geoMapStatus(empty, { loading: false, hasProjection: false })).toBe('unavailable')
+    expect(geoMapStatus(empty, { loading: false, hasProjection: true })).toBe('empty')
+
+    const current = homeGeoOverview([network({ networkKey: 'mainnet' })], 'all')
+    expect(geoMapStatus(current, { loading: false, hasProjection: true })).toBe('current')
+    const disabled = homeGeoOverview([network({ networkKey: 'mainnet', geo: { state: 'disabled' } })], 'all')
+    expect(geoMapStatus(disabled, { loading: false, hasProjection: true })).toBe('disabled')
   })
 })

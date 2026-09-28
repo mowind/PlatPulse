@@ -1,4 +1,4 @@
-import type { PublicNetwork } from './api/generated'
+import type { PublicCountryCount, PublicNetwork, PublicNodeDetail } from './api/generated'
 import type { RepresentativePoint } from './worldGeometry'
 
 /**
@@ -26,8 +26,12 @@ export type HomeGeoCountry = {
 }
 
 export type HomeGeoOverview = {
-  /** The Network scope the counts cover: `All Networks` or one display name. */
+  /** The scope the counts cover: `All Networks`, one Network display name,
+   * or the Node display name for the Node Peer Country View. */
   scopeLabel: string
+  /** Home's Network filter key, exposed as the map's `data-network-filter`
+   * hook. It is null when the scope is not a Network selection. */
+  scopeKey: string | null
   networksInScope: number
   /** In-scope Networks that published a Known/Unknown denominator. */
   networksWithBasis: number
@@ -81,12 +85,7 @@ export function homeGeoOverview(networks: PublicNetwork[], networkFilter: string
     for (const country of geo.countries ?? []) {
       const existing = countries.get(country.countryCode)
       if (!existing) {
-        countries.set(country.countryCode, {
-          code: country.countryCode,
-          count: country.count,
-          staleCount: country.staleCount,
-          point: representativePoint(country.centroidLat, country.centroidLon),
-        })
+        countries.set(country.countryCode, geoCountry(country))
         continue
       }
       existing.count += country.count
@@ -94,20 +93,19 @@ export function homeGeoOverview(networks: PublicNetwork[], networkFilter: string
       // A Server representative point is filled in from the first Network
       // that has one; countries whose coordinates are missing on every
       // Network stay unplottable instead of being placed at a guessed spot.
-      existing.point ??= representativePoint(country.centroidLat, country.centroidLon)
+      existing.point ??= geoCountry(country).point
     }
   }
 
   const worst = worstGeoNetwork(inScope)
   return {
     scopeLabel,
+    scopeKey: networkFilter,
     networksInScope: inScope.length,
     networksWithBasis,
     state: combinedState(inScope),
     scope: combinedScope(inScope),
-    countries: [...countries.values()].sort(
-      (left, right) => right.count - left.count || left.code.localeCompare(right.code),
-    ),
+    countries: [...countries.values()].sort(byCountThenCode),
     knownCountryCount,
     unknownCountryCount,
     unknownWithPublicIpCount,
@@ -120,6 +118,94 @@ export function homeGeoOverview(networks: PublicNetwork[], networkFilter: string
     databaseAgeSeconds: worst?.geo?.databaseAgeSeconds ?? null,
     peerObservation: combinedPeerObservation(inScope),
   }
+}
+
+/**
+ * Node Peer Country View overview (issue #201): the same projection shape as
+ * Home for exactly one Node's Geo Insight, so the shared map component and
+ * its state vocabulary need no Node-specific branch. The Server owns the
+ * scope and every count; this only reshapes fields the API already returned.
+ */
+export function nodeGeoOverview(node: PublicNodeDetail): HomeGeoOverview {
+  const geo = node.geo ?? {}
+  const countries = (geo.countries ?? []).map(geoCountry).sort(byCountThenCode)
+  const hasBasis = geo.knownCountryCount != null && geo.unknownCountryCount != null
+  const rawScope = geo.scope
+  const scope = normalizeNodeGeoScope(rawScope)
+  // A Node scope is complete, never-observed, or unavailable (Geo Disabled or
+  // failed). Partial describes a Network with unobserved Nodes, so a payload
+  // claiming it for one Node is not a Node scope and reads Unknown instead of
+  // borrowing that Network wording.
+  const nodeScope = rawScope === 'complete' || rawScope === 'unobserved' || rawScope === 'unavailable'
+  return {
+    scopeLabel: node.displayName ?? node.nodeId,
+    // The Node scope is not a Home Network selection, so the map carries no
+    // Network-filter hook.
+    scopeKey: null,
+    networksInScope: 1,
+    networksWithBasis: hasBasis ? 1 : 0,
+    state: nodeScope ? normalizeGeoState(geo.state) : 'unknown',
+    scope,
+    countries,
+    knownCountryCount: geo.knownCountryCount ?? null,
+    unknownCountryCount: geo.unknownCountryCount ?? null,
+    unknownWithPublicIpCount: geo.unknownWithPublicIpCount ?? null,
+    unknownWithoutRemoteIpCount: geo.unknownWithoutRemoteIpCount ?? null,
+    availablePeerCount: geo.availablePeerCount ?? null,
+    attribution: geo.attribution ?? null,
+    errorReason: geo.errorReason ?? null,
+    lastGoodAt: geo.lastGoodAt ?? null,
+    staleSince: geo.staleSince ?? null,
+    databaseAgeSeconds: geo.databaseAgeSeconds ?? null,
+    peerObservation: peerFreshness(node.peers?.freshness),
+  }
+}
+
+/** What the map slot presents: the Server's own Geo database state, or one of
+ * the slots only the client knows. `starting` is an in-flight projection,
+ * `unavailable` is no projection at all, and `empty` is a scope with no
+ * unit in it. */
+export type GeoMapStatus = HomeGeoState | 'starting' | 'empty' | 'unavailable'
+
+/** The map status is the one piece of state the caller already knows and the
+ * component must not recompute: pass the loaded overview with whether its
+ * source request is still loading or has no projection. */
+export function geoMapStatus(
+  overview: HomeGeoOverview,
+  source: { loading: boolean; hasProjection: boolean },
+): GeoMapStatus {
+  if (source.loading) return 'starting'
+  if (!source.hasProjection) return 'unavailable'
+  if (overview.networksInScope === 0) return 'empty'
+  return overview.state
+}
+
+function normalizeGeoState(value: string | null | undefined): HomeGeoState {
+  return value != null && isHomeGeoState(value) ? value : 'unknown'
+}
+
+/** A Node scope is complete, never-observed, or unavailable (Geo Disabled or
+ * failed), never partial. Any other value is not a Node scope this map can
+ * trust, so it degrades to unavailable. */
+function normalizeNodeGeoScope(value: string | null | undefined): HomeGeoScope {
+  return value === 'complete' || value === 'unobserved' || value === 'unavailable'
+    ? value
+    : 'unavailable'
+}
+
+/** One Server country count as the map's country shape. */
+function geoCountry(country: PublicCountryCount): HomeGeoCountry {
+  return {
+    code: country.countryCode,
+    count: country.count,
+    staleCount: country.staleCount,
+    point: representativePoint(country.centroidLat, country.centroidLon),
+  }
+}
+
+/** The one ordering every Peer country map uses. */
+function byCountThenCode(left: HomeGeoCountry, right: HomeGeoCountry): number {
+  return right.count - left.count || left.code.localeCompare(right.code)
 }
 
 function representativePoint(lat: number | null | undefined, lon: number | null | undefined): RepresentativePoint | null {

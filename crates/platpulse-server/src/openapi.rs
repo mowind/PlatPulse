@@ -171,6 +171,7 @@ impl Modify for AgentBearerScheme {
         crate::http::public::SessionProjection,
         crate::http::public::PublicNetwork,
         crate::http::public::PublicNode,
+        crate::http::public::PublicNodeDetail,
         crate::http::public::PublicPeerInsight,
         crate::http::public::PublicCountryCount,
         crate::http::public::PublicGeoInsight,

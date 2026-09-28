@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ECharts } from 'echarts/core'
-import type { PublicNetwork } from '../api/generated'
-import { homeGeoOverview } from '../homeGeo'
+import type { GeoMapStatus, HomeGeoOverview } from '../homeGeo'
 import { WORLD_MAP_NAME, loadWorldGeoJson, regionNameByCode, type WorldGeoJson } from '../worldGeometry'
 import { mapChartOption, type MapCountry } from './mapChartOption'
 import {
@@ -16,8 +15,9 @@ import { cn } from '../lib/utils'
 
 /**
  * ECharts is loaded on demand rather than imported at module scope: only Home
- * needs the map, and the library is around 530 KiB minified. Keeping it out of
- * the entry chunk means Login, Admin, Network and Node Detail never pay for it.
+ * and the Node Detail Peer Country View draw a map, and the library is around
+ * 530 KiB minified. Keeping it out of the entry chunk means Login, Admin and
+ * the rest of Node Detail never pay for it.
  */
 type EChartsCore = typeof import('echarts/core')
 let echartsPromise: Promise<EChartsCore> | null = null
@@ -41,7 +41,9 @@ function loadECharts() {
 }
 
 /**
- * Home Peer country map (issue #133), rendered by ECharts following
+ * Peer country map for Home (#133) and the Node Detail Node Peer Country View
+ * (#201). Both callers hand it an already-projected overview plus a status, so
+ * it never knows about Networks or Nodes. It is rendered by ECharts following
  * komari-theme-emerald@c2c5e88 NodeEarthMaps.vue: the same geometry, the same
  * silent transparent geo coordinate system, the same scatter symbol, the same
  * 8px/14px sizes, white 10px aggregate numerals, and the same tooltip box. The
@@ -71,16 +73,25 @@ function loadECharts() {
  * theme change never destroys and rebuilds the canvas.
  */
 
-type GeoWorldMapProps = {
-  networks: PublicNetwork[]
-  /** Home Network filter; the map always covers the same scope as the list. */
-  networkFilter: string
-  loading: boolean
-  /** False when the Public Projection itself is unavailable. */
-  hasProjection: boolean
-}
+/** The statuses that cannot draw a world map, so the basemap is never
+ * fetched for them; enabling Geo later loads it without a reload. */
+const UNDRAWABLE_STATUSES: ReadonlySet<GeoMapStatus> = new Set([
+  'disabled',
+  'empty',
+  'starting',
+  'unknown',
+  'unavailable',
+])
 
-type MapStatus = 'starting' | 'empty' | 'unknown' | 'disabled' | 'current' | 'stale' | 'error'
+type GeoWorldMapProps = {
+  /** The already-projected scope the map draws. This component never derives
+   * a scope, an aggregate, or a status from raw Network or Node input. */
+  overview: HomeGeoOverview
+  /** What the slot is presenting: a Server Geo state or a client-only slot. */
+  status: GeoMapStatus
+  /** Accessible name of the surface; Node Detail names its own unit. */
+  heading?: string
+}
 
 /** One registration per page load, shared by every mount of the map. */
 let worldMapPromise: Promise<{ geojson: WorldGeoJson; names: Map<string, string> }> | null = null
@@ -120,7 +131,7 @@ function useIsDark() {
   return dark
 }
 
-export default function GeoWorldMap({ networks, networkFilter, loading, hasProjection }: GeoWorldMapProps) {
+export default function GeoWorldMap({ overview, status, heading = PEER_COUNTRIES_HEADING }: GeoWorldMapProps) {
   const container = useRef<HTMLDivElement>(null)
   const chart = useRef<ECharts | null>(null)
   const optionRef = useRef<ReturnType<typeof mapChartOption> | null>(null)
@@ -128,20 +139,7 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
   const [failed, setFailed] = useState(false)
   const dark = useIsDark()
 
-  const overview = useMemo(() => homeGeoOverview(networks, networkFilter), [networks, networkFilter])
-  const status: MapStatus = loading
-    ? 'starting'
-    : !hasProjection
-      ? 'unknown'
-      : networks.length === 0
-        ? 'empty'
-        : overview.state
-
-  // The basemap is only fetched when a map can actually be drawn: a Disabled
-  // Geo Provider, a Starting projection, and a scope without a country basis
-  // never trigger the request, and enabling Geo later loads the map without a
-  // reload.
-  const needsBasemap = status !== 'disabled' && status !== 'empty' && status !== 'starting' && status !== 'unknown'
+  const needsBasemap = !UNDRAWABLE_STATUSES.has(status)
   useEffect(() => {
     if (!needsBasemap) return
     let live = true
@@ -224,7 +222,11 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
     chart.current?.setOption(option)
   }, [world, countries, dark])
 
-  const scopedPeerCount = hasProjection && !loading ? overview.availablePeerCount : null
+  // A Loading, Unavailable or Empty slot has no real scope to count, so the
+  // chip is absent rather than carrying a fabricated denominator.
+  const hasScopedDenominator =
+    status !== 'starting' && status !== 'unavailable' && status !== 'empty'
+  const scopedPeerCount = hasScopedDenominator ? overview.availablePeerCount : null
   const unknownCount = overview.unknownCountryCount
   // The second corner figure exists only beside a real denominator. The Server
   // computes available = known + unknown and gates all three on the same basis,
@@ -251,7 +253,7 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
   const primaryNotice = failed && needsBasemap ? 'Map unavailable'
     : status === 'disabled' ? PEER_COUNTRIES_DISABLED_NOTICE
     : status === 'starting' ? 'Loading data'
-    : !hasProjection ? 'Data unavailable'
+    : status === 'unavailable' ? 'Data unavailable'
     : status === 'empty' ? 'No data'
     : neverObserved ? 'No observations yet'
     : status === 'error' ? 'Data unavailable'
@@ -277,7 +279,7 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
     '. Each marker is a Server-provided country representative point, not a Peer location or a Node deployment location.'
 
   return (
-    <section aria-label={PEER_COUNTRIES_HEADING} data-state={status} data-network-filter={networkFilter} data-scope={overview.scope} className="relative h-full">
+    <section aria-label={heading} data-state={status} data-network-filter={overview.scopeKey ?? undefined} data-scope={overview.scope} className="relative h-full">
       {/* Normal stays quiet; exceptions are visible without moving the canvas. */}
       {notice && (
         <span
@@ -326,7 +328,7 @@ export default function GeoWorldMap({ networks, networkFilter, loading, hasProje
         <div
           ref={container}
           role="img"
-          aria-label={PEER_COUNTRIES_HEADING + ' map. ' + mapDescription}
+          aria-label={heading + ' map. ' + mapDescription}
           data-slot="geo-chart"
           className="h-full w-full"
         />

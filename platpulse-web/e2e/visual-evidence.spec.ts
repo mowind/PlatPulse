@@ -111,6 +111,18 @@ test('capture Emerald migration evidence', async ({ page }, testInfo) => {
   await waitForChartsSettled(page)
   await page.screenshot({ path: dir + '/public.node-detail.png', fullPage: true })
 
+  // The Node Peer Country View first row: the wider map track beside the four
+  // summary tiles, with the map's in-scope figure agreeing with the Peer Count
+  // tile because both read the same retained Peer records. The locator capture
+  // is the reviewable evidence for the approved §11.1 composition.
+  const peerCountries = page.getByRole('region', { name: 'Node Peer countries' })
+  await expect(peerCountries).toBeVisible()
+  const peerRecords = peerCountries.getByRole('note')
+  await expect(peerRecords).toBeVisible({ timeout: 15_000 })
+  const tileCount = (await page.locator('[data-slot="node-summary-tile"]').filter({ hasText: 'Peers' }).locator('strong').textContent()) ?? ''
+  expect(await peerRecords.getAttribute('aria-label')).toContain(tileCount.trim() + ' Peer records in scope')
+  await page.locator('[data-slot="node-overview"]').screenshot({ path: dir + '/public.node-detail-peer-countries.png' })
+
   // The Network overview page is deleted; its evidence capture is gone with it.
 
   for (const [name, path] of PAGES) {

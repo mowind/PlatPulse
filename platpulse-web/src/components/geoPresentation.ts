@@ -100,5 +100,7 @@ export function countryDisplayName(code: string): string {
 }
 
 export const PEER_COUNTRIES_HEADING = 'Peer countries'
+/** The same map on Node Detail names the unit it covers (#201). */
+export const NODE_PEER_COUNTRIES_HEADING = 'Node Peer countries'
 export const PEER_COUNTRIES_DISABLED_NOTICE = 'Peer countries · Disabled by server'
 export const PEER_COUNTRIES_LIST_LABEL = 'Peer countries by count'
