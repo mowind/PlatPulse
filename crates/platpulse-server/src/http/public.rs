@@ -2187,7 +2187,7 @@ async fn load_geo_distribution(
             .is_some_and(|created| created > rebuild_before.as_str());
         match (country_code, retainable) {
             (Some(country_code), true) => {
-                let stale = !expires_at.as_deref().is_some_and(|expires| expires > now);
+                let stale = expires_at.as_deref().is_none_or(|expires| expires <= now);
                 distribution.known_country_count += 1;
                 let bucket = distribution.countries.entry(country_code).or_default();
                 bucket.count += 1;

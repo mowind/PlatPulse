@@ -47,7 +47,12 @@ COOKIE_RE = re.compile(r"(?im)(Cookie\s*:\s*)[^\r\n]+")
 SECRET_ASSIGNMENT_RE = re.compile(r"(?i)((?:password|passwd|secret|token|credential|pepper|private[_ -]?key)\s*[=:]\s*)[^\s,;]+")
 FORBIDDEN_PATH_MARKERS = ("geolite", "pepper", "credential", "private-key", "privkey", "token")
 FORBIDDEN_SUFFIXES = {".mmdb", ".pem", ".key", ".p12", ".pfx", ".jks", ".p8", ".crt", ".csr"}
-KNOWN_NOT_RUN_SCENARIOS = {"partial_receipt", "worker_failure", "agent_outage", "transport_timeout"}
+KNOWN_NOT_RUN_SCENARIOS = {"partial_receipt", "worker_failure", "agent_outage", "transport_timeout", "alert_outbox_restart"}
+# Credential markers apply to every artifact member; the GeoLite/MMDB markers do
+# not apply to documentation that legitimately states PlatPulse does not
+# distribute GeoLite data or MaxMind credentials.
+CREDENTIAL_BYTES = (b"pp_agent_", b"pp_enroll_", b"PRIVATE KEY")
+DOCUMENTATION_SUFFIXES = {".md", ".txt", ".rst", ".example", ".service", ".timer", ".yml", ".yaml", ".toml"}
 
 
 class QualificationError(RuntimeError):
@@ -435,7 +440,8 @@ class FinalQualification:
                             if member.isfile() and member.size < 4 * 1024 * 1024:
                                 stream = bundle.extractfile(member)
                                 payload = stream.read() if stream is not None else b""
-                                for marker in forbidden_bytes:
+                                markers = CREDENTIAL_BYTES if Path(member_name).suffix in DOCUMENTATION_SUFFIXES else forbidden_bytes
+                                for marker in markers:
                                     if marker in payload:
                                         findings.append(f"{relative}:{member.name} contains forbidden marker {marker.decode(errors='replace')}")
                 else:

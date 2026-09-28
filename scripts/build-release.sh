@@ -166,6 +166,7 @@ build_rpm() {
   cp -a "$root/." "$package_root"
   local rpm_requires="ca-certificates, shadow-utils, coreutils, glibc-common, systemd"
   cat > "$spec" <<EOF
+%global _build_id_links none
 Name: platpulse-$kind
 Version: $VERSION
 Release: 1
@@ -219,7 +220,9 @@ fi
 printf 'deb=%s\nrpm=%s\n' "$DEB_STATUS" "$RPM_STATUS" > "$OUTPUT/package-results.txt"
 
 SBOM="$OUTPUT/platpulse-release-$VERSION-linux-$ARCH.spdx.json"
-if command -v syft >/dev/null 2>&1; then
+if [[ "${PLATPULSE_SKIP_SBOM:-0}" -eq 1 ]]; then
+  printf 'sbom=skipped-fixture; not releasable\n' > "$OUTPUT/sbom-results.txt"
+elif command -v syft >/dev/null 2>&1; then
   SBOM_CONTEXT="$OUTPUT/sbom-context"
   SBOM_RAW="$OUTPUT/.sbom.raw.json"
   rm -rf "$SBOM_CONTEXT"
@@ -238,8 +241,6 @@ doc["documentNamespace"] = f"https://github.com/mowind/PlatPulse/releases/{versi
 output.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n")
 PY
   rm -rf "$SBOM_CONTEXT" "$SBOM_RAW"
-elif [[ "${PLATPULSE_SKIP_SBOM:-0}" -eq 1 ]]; then
-  printf 'sbom=skipped-fixture; not releasable\n' > "$OUTPUT/sbom-results.txt"
 else
   echo 'syft is required for a dependency-aware release SBOM' >&2
   exit 2
