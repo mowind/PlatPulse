@@ -44,23 +44,34 @@ test('mobile contain layout, touch targets, rotation and honest exception states
       expect(cards[2].y).toBe(cards[3].y)
       expect(cards[0].x).toBe(cards[2].x)
       await page.waitForTimeout(120)
-      // Hit actual painted pixels. With the polygons silent (upstream's own
-      // option), the opaque emerald marker is the only pointer target; the
-      // translucent China polygon no longer opens a tooltip of its own.
+      // Hit the painted marker, not the polygon border. With the polygons silent
+      // (upstream's own option), the opaque emerald marker is the only pointer
+      // target; the active country's 1px emerald border is green too, so a plain
+      // median over every green pixel can land on the border and miss the 14px
+      // disc. Score each green pixel by its green neighbourhood and keep the
+      // densest one: the filled disc wins, a one-pixel border loses.
       const point = await canvas.evaluate((el) => {
         const c = el as HTMLCanvasElement
         const ctx = c.getContext('2d')!
         const pixels = ctx.getImageData(0, 0, c.width, c.height).data
-        const candidates: Array<{x:number;y:number}> = []
-        for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) {
-          const i = (y*c.width+x)*4
-          const [r,g,b,a] = pixels.slice(i,i+4)
-          if (g > r+40 && g > b+20 && a > 150) candidates.push({x,y})
+        const isGreen = (x: number, y: number) => {
+          if (x < 0 || y < 0 || x >= c.width || y >= c.height) return false
+          const i = (y * c.width + x) * 4
+          return pixels[i+1] > pixels[i]+40 && pixels[i+1] > pixels[i+2]+20 && pixels[i+3] > 150
         }
-        const p = candidates[Math.floor(candidates.length/2)]
-        if (!p) return null
+        let best: { x: number; y: number } | null = null
+        let bestScore = -1
+        for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) {
+          if (!isGreen(x, y)) continue
+          let score = 0
+          for (let dy = -4; dy <= 4; dy++) for (let dx = -4; dx <= 4; dx++) {
+            if (isGreen(x+dx, y+dy)) score += 1
+          }
+          if (score > bestScore) { bestScore = score; best = {x,y} }
+        }
+        if (!best) return null
         const rect = c.getBoundingClientRect()
-        return {x:rect.x+p.x/c.width*rect.width,y:rect.y+p.y/c.height*rect.height}
+        return {x:rect.x+best.x/c.width*rect.width,y:rect.y+best.y/c.height*rect.height}
       })
       expect(point, 'marker').not.toBeNull()
       await page.touchscreen.tap(point!.x, point!.y)

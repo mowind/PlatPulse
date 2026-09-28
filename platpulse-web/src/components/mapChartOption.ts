@@ -90,12 +90,17 @@ export type MapOptionInput = {
  * series that paints the polygons; a `scatter` with upstream's symbol, 1px
  * white ring and 10px white aggregate numeral; and upstream's tooltip box.
  *
- * Both layers set only `left/top/width` — exactly as upstream does — so each
- * layer fills the available width and derives its own height from the map's
- * natural aspect ratio (ECharts' default `aspectScale`). A track shorter than
- * that natural height therefore crops the poles instead of shrinking the world;
- * this is upstream's own composition. Setting an explicit `height` (or
- * `preserveAspect: 'contain'`) would letterbox or stretch the world instead.
+ * Both layers fill the whole track box (`left/top/width/height` are all set),
+ * so the world is never cropped at any band. Upstream sets only
+ * `left/top/width` and lets each layer derive its own height from the map's
+ * natural aspect ratio (ECharts' default `aspectScale`), which gives this
+ * geometry a 1.94:1 world. Because the phone and tablet track below xl is a
+ * 2:1 box — flatter than 1.94:1 — that derived height overflowed the track and
+ * the canvas sliced the poles off the top and bottom. Filling the track instead
+ * scales the world by the ~3% those two ratios differ, which is invisible, keeps
+ * every coastline whole, and holds at the fixed 22rem desktop band too.
+ * `preserveAspect` stays at ECharts' default: a contain fit would letterbox the
+ * world away from the track edges.
  * The `map` series keeps its polygons silent (`tooltip.show: false`): only the
  * scatter marker answers, which is what upstream does.
  */
@@ -109,7 +114,7 @@ export function mapChartOption({
 }: MapOptionInput): EChartsOption {
   const colors = dark ? DARK_PALETTE : LIGHT_PALETTE
   // Both coordinate systems use the same fit, independent of data.
-  const layout = { left: 'center' as const, top: 'center' as const, width: '100%' as const }
+  const layout = { left: 'center' as const, top: 'center' as const, width: '100%' as const, height: '100%' as const }
   const byCode = new Map(countries.map(country => [country.code, country]))
 
   // One datum per country, matching ECharts' region name. A datum whose

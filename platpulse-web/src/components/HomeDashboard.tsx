@@ -140,8 +140,8 @@ export default function HomeDashboard({
             Below xl the track is proportional (2:1) so phones and tablets keep
             the compact map the mobile acceptance measured. From xl, where Home
             reaches its 1280px ceiling and the map column stops changing, the
-            track uses upstream's fixed 22rem band, which is tall enough for the
-            world's own aspect ratio and so no longer crops it. */}
+            track uses upstream's fixed 22rem band. The map fills whichever band
+            it is given, so the world is never cropped at either size. */}
         <div data-slot="home-map" className="order-first min-w-0 aspect-[2/1] lg:order-none xl:aspect-auto xl:h-88">
           <GeoMapBoundary>
             <GeoWorldMap overview={geoOverview} status={geoStatus} />

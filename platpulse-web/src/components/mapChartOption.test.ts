@@ -42,14 +42,16 @@ describe('mapChartOption', () => {
     expect(option.geo.map).toBe('platpulse-world')
     expect(option.geo.roam).toBe(false)
     expect(option.geo.silent).toBe(true)
-    // Upstream sets only left/top/width: each layer fills the width and derives
-    // its own height from the world's aspect ratio. An explicit height or a
-    // contain fit would letterbox or stretch the world instead.
+    // Both layers fill the whole track box. Deriving the height from the world's
+    // natural 1.94:1 ratio instead overflowed the 2:1 phone/tablet track and cut
+    // the poles off, so the layer is told the track's height as well as its
+    // width. preserveAspect stays at ECharts' default: a contain fit would
+    // letterbox the world away from the track edges.
     for (const layer of [option.geo, option.series[0]]) {
       expect(layer.left).toBe('center')
       expect(layer.top).toBe('center')
       expect(layer.width).toBe('100%')
-      expect(layer.height).toBeUndefined()
+      expect(layer.height).toBe('100%')
       expect(layer.preserveAspect).toBeUndefined()
     }
     expect(option.geo.itemStyle).toEqual({ areaColor: 'transparent', borderColor: 'transparent' })

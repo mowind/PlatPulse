@@ -21,29 +21,31 @@ function positions(value: unknown): number[][] {
 const points = world.features.flatMap((feature) => positions(feature.geometry.coordinates))
 
 /**
- * Upstream's composition: both layers set only left/top/width, so the world
- * always fills the canvas width and derives its height from the map's natural
- * aspect ratio. A track shorter than that natural height crops the poles
- * instead of shrinking or stretching the world — so the invariant is
- * horizontal fit (never cropped) plus a vertically centred world, not "every
- * vertex stays inside the box".
+ * Both layers fill the whole track box, so the world's full longitude span maps
+ * to the canvas width and its full latitude span to the canvas height. Deriving
+ * the height from the map's natural ~1.94:1 ratio instead overflowed the 2:1
+ * phone/tablet track and cropped the poles, so the invariant is "every vertex
+ * stays inside the box" plus the world filling both dimensions — nothing
+ * cropped, nothing letterboxed.
  */
-function expectWorldFillsWidth(chart: ECharts, width: number, height: number) {
+function expectWorldFillsBox(chart: ECharts, width: number, height: number) {
   expect(points.length).toBeGreaterThan(0)
   for (const finder of [{ seriesIndex: 0 }, { geoIndex: 0 }]) {
     const pixels = points.map((point) => chart.convertToPixel(finder, point))
     const xs = pixels.map((point) => point[0])
     const ys = pixels.map((point) => point[1])
-    const span = Math.max(...xs) - Math.min(...xs)
-    // The full -180..180 span maps to the canvas width; nothing is cropped
-    // horizontally and nothing is letterboxed on the left or right.
-    expect(span, 'world fills the canvas width').toBeGreaterThan(width - 1)
-    expect(span, 'world never overflows the canvas width').toBeLessThan(width + 1)
+    const spanX = Math.max(...xs) - Math.min(...xs)
+    const spanY = Math.max(...ys) - Math.min(...ys)
+    // The full -180..180 span maps to the width and the full latitude span to
+    // the height; nothing is cropped or letterboxed on any edge.
+    expect(spanX, 'world fills the canvas width').toBeGreaterThan(width - 1)
+    expect(spanX, 'world never overflows the canvas width').toBeLessThan(width + 1)
+    expect(spanY, 'world fills the canvas height').toBeGreaterThan(height - 1)
+    expect(spanY, 'world never overflows the canvas height').toBeLessThan(height + 1)
     expect(Math.min(...xs), 'west edge').toBeGreaterThanOrEqual(-0.5)
     expect(Math.max(...xs), 'east edge').toBeLessThanOrEqual(width + 0.5)
-    // The world is vertically centred, so a height shorter than its natural
-    // height crops the two poles equally.
-    expect(Math.min(...ys) + Math.max(...ys), 'world is vertically centred').toBeCloseTo(height, 0)
+    expect(Math.min(...ys), 'north edge').toBeGreaterThanOrEqual(-0.5)
+    expect(Math.max(...ys), 'south edge').toBeLessThanOrEqual(height + 0.5)
   }
   for (const point of [[0, 80], [-70, -55], [175, -40], [18, 60]]) {
     expect(chart.convertToPixel({ geoIndex: 0 }, point)).toEqual(
@@ -57,7 +59,7 @@ function expectWorldFillsWidth(chart: ECharts, width: number, height: number) {
 const sizes = [[288, 144], [328, 164], [358, 179], [398, 199], [440, 200], [760, 200], [850, 200], [1330, 350], [760, 380], [1330, 665]]
 
 describe.each([false, true])('world map viewport (dark=%s)', (dark) => {
-  it.each(sizes)('fills the width and centres on %dx%d, then on resize', (width, height) => {
+  it.each(sizes)('fills %dx%d without cropping, then on resize', (width, height) => {
     const chart = init(null, undefined, { renderer: 'svg', ssr: true, width, height })
     try {
       chart.setOption(mapChartOption({
@@ -68,11 +70,11 @@ describe.each([false, true])('world map viewport (dark=%s)', (dark) => {
         dark,
         reducedMotion: true,
       }))
-      expectWorldFillsWidth(chart, width, height)
+      expectWorldFillsBox(chart, width, height)
       // Exercise the mounted instance's resize path in both aspect ratios.
       for (const [nextWidth, nextHeight] of [[288, 144], [1330, 350], [width, height]]) {
         chart.resize({ width: nextWidth, height: nextHeight })
-        expectWorldFillsWidth(chart, nextWidth, nextHeight)
+        expectWorldFillsBox(chart, nextWidth, nextHeight)
       }
     } finally {
       chart.dispose()

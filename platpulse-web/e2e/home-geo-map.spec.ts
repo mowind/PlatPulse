@@ -742,9 +742,8 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     expect(routineBand.height, 'the map keeps a readable height').toBeGreaterThanOrEqual(190)
     expect((await worldBox(page)).height, 'actual world grows beyond the old 136px map').toBeGreaterThan(136)
     const compactOverview = await overviewBox(page)
-    // The map uses upstream's fixed 22rem band beside the six statistics, so the
-    // canvas keeps the world's own rendered aspect ratio (~1.94:1) inside a
-    // fixed-height track instead of a proportional 2:1 one.
+    // The map uses upstream's fixed 22rem band beside the six statistics; the
+    // world fills that fixed-height track instead of a proportional 2:1 one.
     const mapBand = (await page.locator('[data-slot="home-map"]').boundingBox())!
     expect(Math.round(mapBand.height), 'the map keeps the fixed 352px band').toBe(352)
     expect(Math.round(routineBand.height), 'the canvas fills the fixed band').toBe(352)

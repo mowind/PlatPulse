@@ -50,13 +50,11 @@ function loadECharts() {
  * option itself lives in mapChartOption.ts so the encoding can be tested
  * without a canvas.
  *
- * The layer sets only left/top/width, exactly as upstream does, so the world
- * fills the track width and derives its own height. The desktop track is
- * upstream's fixed 22rem (352px) band, which is slightly taller than the world
- * at Home's 1280px ceiling: the world therefore fits without cropping instead
- * of overflowing a shorter proportional track. Below xl the track stays
- * proportional (2:1), so phones and tablets keep the compact map the mobile
- * acceptance measured.
+ * Each layer fills its whole track box, so the world is never cropped. Deriving
+ * the height from the world's own 1.94:1 ratio instead overflowed the 2:1 track
+ * phones and tablets use below xl and cut the poles off; the world now scales by
+ * the ~3% those two ratios differ. The track itself is unchanged: proportional
+ * 2:1 below xl, upstream's fixed 22rem (352px) band from xl.
  *
  * PlatPulse keeps its own data semantics: the map plots Peer records by
  * country from Server-provided country representative points, never node
@@ -323,8 +321,7 @@ export default function GeoWorldMap({ overview, status, heading = PEER_COUNTRIES
       {failed ? (
         <div className="h-full" aria-hidden="true" />
       ) : (
-        // The layer fills the track; the desktop band is tall enough for the
-        // world's own aspect ratio, so nothing is cropped there.
+        // The layer fills the track, so the world is never cropped.
         <div
           ref={container}
           role="img"
