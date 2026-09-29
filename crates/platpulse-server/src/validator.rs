@@ -4146,6 +4146,20 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+        // Reproduce the runtime failure when a Candidate observation reaches
+        // a database that has not applied migration 0060 yet.
+        let error = sqlx::query(
+            "UPDATE current_validator_insights SET activity = 'candidate' WHERE validator_id = 'validator-keep'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap_err();
+        let database_error = error.as_database_error().unwrap();
+        assert_eq!(database_error.code().as_deref(), Some("275"));
+        assert_eq!(
+            database_error.message(),
+            "CHECK constraint failed: activity IN ('active', 'producing', 'exiting', 'exited', 'verifying', 'locked')"
+        );
         pool.close().await;
         #[cfg(unix)]
         restrict_database_permissions(&path);
