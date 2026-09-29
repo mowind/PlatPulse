@@ -213,7 +213,22 @@ describe('App shell with private Home', () => {
     }
   })
 
-  it('renders the ordinary Node Detail layout without a Linked Validator region', async () => {
+  const notValidatorInsight = {
+    validatorId: 'validator-2',
+    validatorNodeId: '0x' + 'b'.repeat(128),
+    nodeId: 'node-2',
+    state: 'empty',
+    freshness: 'current',
+    source: 'platscan',
+    activity: 'observing',
+    activityState: 'current',
+    currentValidatorStatus: 'not_validator',
+    currentValidatorStatusState: 'current',
+  }
+  it.each([
+    { label: 'no Node Validator Link', validator: undefined },
+    { label: 'an authoritative not_validator verdict', validator: notValidatorInsight },
+  ])('renders the ordinary Node Detail layout with $label and no Linked Validator region', async ({ validator: validatorInsight }) => {
     window.history.replaceState({}, '', '/')
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
@@ -269,6 +284,7 @@ describe('App shell with private Home', () => {
           unknownCountryCount: null,
           availablePeerCount: null,
         },
+        ...(validatorInsight ? { validator: validatorInsight } : {}),
       }, 200),
       '/api/public/v1/nodes/node-2/history?limit=2': () => jsonResponse([{
         nodeId: 'node-2',

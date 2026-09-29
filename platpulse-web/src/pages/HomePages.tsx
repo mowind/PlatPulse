@@ -67,7 +67,7 @@ export function NodePage() {
         : undefined
   const nodeDataProgressValue = nodeDataProgress(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)
   const metricWindowTitle = describeMetricWindow(metricHistory)
-  const validatorNode = nodeIsValidator(node)
+  const validatorNode = nodeUsesValidatorComposition(node)
 
   return <section className={PAGE}>
     <div data-slot="node-detail-breadcrumb" className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
@@ -314,12 +314,17 @@ function NodeInfoGroup({ title, label, note, children }: { title: string; label:
 
 
 
-function nodeIsValidator(node: PublicNode): boolean {
-  // Only an explicit Node Validator Link proves validator identity. Consensus
-  // pool membership is not a staking verdict (ADR 0006), and a link whose status
-  // is still Unknown must keep its Linked Validator region rather than silently
-  // dropping it.
-  return node.validator != null
+function nodeUsesValidatorComposition(node: PublicNode): boolean {
+  const validator = node.validator
+  // Only an explicit Node Validator Link proves a staking identity, and the
+  // Server's Current Validator Status is the only staking verdict (ADR
+  // 0005/0006); consensus membership is never used. An authoritative
+  // `not_validator` verdict means the chain key has no current staking
+  // identity, so the Node takes the ordinary composition and renders no Linked
+  // Validator region at all — never a "Not a Validator" card. An unestablished
+  // `unknown` verdict is not a negative one, so a linked identity keeps its
+  // region and the existing non-verdict presentation.
+  return validator != null && (validator.currentValidatorStatus ?? '').toLowerCase() !== 'not_validator'
 }
 
 function nodeRoleLabel(node: PublicNode): string {
