@@ -120,4 +120,12 @@ describe('Last report display clock', () => {
     expect(screen.getByText('Future timestamp · check clock')).toBeTruthy()
     expect(screen.queryByText(/ago/)).toBeNull()
   })
+  it('folds the precise UTC timestamp into the title in the inline variant', () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date('2026-01-01T00:00:10Z'))
+    render(<LastReportAge timestamp="2026-01-01T00:00:00Z" variant="inline" />)
+    const age = screen.getByText('10s ago')
+    expect(age.tagName).toBe('TIME')
+    expect(age.getAttribute('title')).toBe('2026-01-01 00:00:00.000 UTC')
+    expect(screen.queryByText('2026-01-01 00:00:00.000 UTC')).toBeNull()
+  })
 })

@@ -213,6 +213,144 @@ describe('App shell with private Home', () => {
     }
   })
 
+  it('renders the ordinary Node Detail layout without a Linked Validator region', async () => {
+    window.history.replaceState({}, '', '/')
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/public/v1/networks': () => jsonResponse([], 200),
+      '/api/public/v1/nodes/node-2': () => jsonResponse({
+        nodeId: 'node-2',
+        displayName: 'Sync One',
+        networkKey: 'mainnet',
+        health: 'healthy',
+        healthReason: 'Observations current',
+        freshness: '2026-08-20T00:00:05Z',
+        rpcState: 'ok',
+        syncState: 'ok',
+        consensusState: 'ok',
+        processState: 'ok',
+        resyncState: 'normal',
+        networkReferenceConfidence: 'high',
+        currentHead: 159_971_062,
+        latestBlockTransactionCount: 1,
+        networkReferenceHead: 159_971_063,
+        processCpuPercent: 0.4,
+        processMemoryPercent: 2.1,
+        processStartedAt: '2026-08-19T22:20:00Z',
+        processUptimeMs: 6_120_000,
+        lastReportAt: '2026-08-20T00:00:05Z',
+        nodeDataDirectorySizeBytes: 1_099_511_627_776,
+        nodeDataDirectoryCapacityBytes: 2_000_000_000_000,
+        hostCpuPercent: 3,
+        hostMemoryPercent: 9.7,
+        hostStoragePercent: 24.7,
+        hostNetworkRxBytesPerSec: 121 * 1024,
+        hostNetworkTxBytesPerSec: 271 * 1024,
+        consensus: {
+          state: 'ok',
+          freshness: 'current',
+          highestQcBlock: 159_971_064,
+          highestLockBlock: 159_971_063,
+          highestCommitBlock: 159_971_062,
+        },
+        peers: {
+          state: 'ok',
+          freshness: 'current',
+          peerCount: 30,
+          inboundCount: 10,
+          outboundCount: 20,
+          receivedAt: '2026-08-20T00:00:00Z',
+        },
+        geo: {
+          state: 'disabled',
+          scope: 'unavailable',
+          countries: null,
+          knownCountryCount: null,
+          unknownCountryCount: null,
+          availablePeerCount: null,
+        },
+      }, 200),
+      '/api/public/v1/nodes/node-2/history?limit=2': () => jsonResponse([{
+        nodeId: 'node-2',
+        height: 159_971_062,
+        blockTimeMs: 1_755_638_400_000,
+        transactionCount: 1,
+        observedAt: '2026-08-20T00:00:00Z',
+      }, {
+        nodeId: 'node-2',
+        height: 159_971_061,
+        blockTimeMs: 1_755_638_399_000,
+        transactionCount: 1,
+        observedAt: '2026-08-19T23:59:59Z',
+      }], 200),
+      '/api/public/v1/nodes/node-2/metrics': () => jsonResponse({
+        from: '2026-08-19T23:59:00Z',
+        to: '2026-08-20T00:00:00Z',
+        windowSeconds: 60,
+        processCpuPercent: [{ sampledAt: '2026-08-19T23:59:00Z', value: 0.3 }, { sampledAt: '2026-08-20T00:00:00Z', value: 0.4 }],
+        processMemoryPercent: [{ sampledAt: '2026-08-19T23:59:00Z', value: 2 }, { sampledAt: '2026-08-20T00:00:00Z', value: 2.1 }],
+        dataDirectoryPercent: [{ sampledAt: '2026-08-20T00:00:00Z', value: 55 }],
+        networkRxBytesPerSec: [{ sampledAt: '2026-08-20T00:00:00Z', value: 121 * 1024 }],
+        networkTxBytesPerSec: [{ sampledAt: '2026-08-20T00:00:00Z', value: 271 * 1024 }],
+        peerInboundCount: [{ sampledAt: '2026-08-20T00:00:00Z', value: 10 }],
+        peerOutboundCount: [{ sampledAt: '2026-08-20T00:00:00Z', value: 20 }],
+        blockIntervalMs: [{ sampledAt: '2026-08-20T00:00:00Z', value: 1000 }],
+        transactionCount: [{ sampledAt: '2026-08-20T00:00:00Z', value: 1 }],
+      }, 200),
+    })
+
+    render(<App />)
+    await screen.findByRole('region', { name: 'Home' })
+    await act(async () => {
+      window.history.pushState({}, '', '/nodes/node-2')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'Sync One' })).toBeTruthy()
+    // No Linked Validator region and none of its Unknown-heavy Validator noise.
+    expect(screen.queryByRole('region', { name: 'Linked Validator' })).toBeNull()
+    expect(screen.queryByText('Linked Validator')).toBeNull()
+    expect(screen.queryByText('Not a Validator')).toBeNull()
+    expect(screen.queryByText('Validator diagnostics')).toBeNull()
+    expect(screen.queryByText('Validator')).toBeNull()
+
+    const summary = screen.getByRole('group', { name: 'Node key summary' })
+    for (const label of ['Head', 'Sync', 'Peers', 'Uptime', 'Block interval', 'Transactions / block']) {
+      expect(within(summary).getByText(label)).toBeTruthy()
+    }
+    expect(summary.querySelectorAll('[data-slot="node-summary-tile"]')).toHaveLength(6)
+    expect(within(summary).getByText('1 block behind')).toBeTruthy()
+    expect(within(summary).getByText('10 inbound · 20 outbound')).toBeTruthy()
+
+    const chainState = screen.getByRole('region', { name: 'Node chain state' })
+    for (const label of ['QC Head', 'Locked Head', 'Committed Head', 'Observed Head', 'Network Head', 'Head lag']) {
+      expect(within(chainState).getByText(label)).toBeTruthy()
+    }
+    expect(within(chainState).getByText('1 block')).toBeTruthy()
+    expect(chainState.textContent).not.toContain('Unknown')
+
+    const process = screen.getByRole('region', { name: 'PlatON process' })
+    expect(within(process).getByText('State')).toBeTruthy()
+    expect(within(process).getByText('Storage')).toBeTruthy()
+    expect(within(process).getByText('Data usage')).toBeTruthy()
+    expect(within(process).queryByText('CPU')).toBeNull()
+
+    const host = screen.getByRole('region', { name: 'Shared Host resources' })
+    expect(within(host).getByText('CPU')).toBeTruthy()
+    expect(within(host).getByText('Network')).toBeTruthy()
+    expect(within(host).getByText('↑ 271 KiB/s')).toBeTruthy()
+    expect(within(host).getByText('↓ 121 KiB/s')).toBeTruthy()
+
+    // Leave the module-level browser router at Home for the following tests.
+    await act(async () => {
+      window.history.pushState({}, '', '/')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+    await screen.findByRole('region', { name: 'Home' })
+  })
+
   it('renders the production public Node Detail continuous reading contract', async () => {
     window.history.replaceState({}, '', '/')
     mockFetch({

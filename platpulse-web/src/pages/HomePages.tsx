@@ -1,5 +1,5 @@
-import { ArrowLeft } from 'lucide-react'
-import { useId } from 'react'
+import { ArrowLeft, Check, Copy } from 'lucide-react'
+import { useId, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Link, useParams } from 'react-router'
 import {
@@ -20,7 +20,7 @@ import { formatDuration } from '../formatDuration'
 import { nodeDataProgress } from '../nodeData'
 import { MetricRow } from '../components/MetricRow'
 import { ValidatorActivityBadge } from '../components/ValidatorActivityBadge'
-import { ConsensusHeights, HeadDelta, LastReportAge, syncOffsetLabel } from '../components/NodeDetailObservations'
+import { ConsensusHeights, HeadDelta, LastReportAge, syncOffsetLabel, validHeight } from '../components/NodeDetailObservations'
 import { geoMapStatus, nodeGeoOverview } from '../homeGeo'
 import { NODE_PEER_COUNTRIES_HEADING } from '../components/geoPresentation'
 import { CardX } from '../components/ui/card-x'
@@ -28,6 +28,8 @@ import { Alert, AlertDescription } from '../components/ui/alert'
 import { Spinner } from '../components/ui/spinner'
 import { SURFACE_CARD_STATIC, SURFACE_CARD_SUMMARY } from '../lib/surface'
 import { Disclosure } from '../components/ui/disclosure'
+import { DataTooltip } from '../components/ui/data-tooltip'
+import { Button } from '../components/ui/button'
 import { cn } from '../lib/utils'
 
 const PAGE = 'min-w-0 p-4'
@@ -65,6 +67,7 @@ export function NodePage() {
         : undefined
   const nodeDataProgressValue = nodeDataProgress(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)
   const metricWindowTitle = describeMetricWindow(metricHistory)
+  const validatorNode = nodeIsValidator(node)
 
   return <section className={PAGE}>
     <div data-slot="node-detail-breadcrumb" className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
@@ -77,78 +80,90 @@ export function NodePage() {
     </div>
     {nodeQuery.isRefetchError && <p role="status" className="mt-2 text-sm text-destructive">Node refresh failed; showing the last successful Node data.</p>}
 
-    <header className="mt-2 flex min-w-0 flex-col gap-3 md:flex-row md:items-start md:justify-between" aria-labelledby="node-detail-title">
-      <div data-slot="node-identity-main" className="flex min-w-0 flex-1 items-start gap-2">
-        <NodeHealthMarker health={node.health} />
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <h1 id="node-detail-title" className="m-0 min-w-0 max-w-full break-words text-lg font-semibold leading-tight md:text-2xl">{nodeDisplayName(node)}</h1>
-            <span className="inline-flex min-w-0"><ValidatorActivityBadge validator={node.validator} identityReason={node.validatorIdentityReason} /></span>
-          </div>
-          <p className="m-0 mt-1 break-words text-[11px] text-muted-foreground">Node ID <code className="font-mono">{node.nodeId}</code></p>
-        </div>
-      </div>
-      <dl className="m-0 flex flex-wrap gap-x-5 gap-y-2" aria-label="Node identity facts">
-        <div className="min-w-0">
-          <dt className="text-xs font-medium tracking-wider text-muted-foreground">Last report</dt>
-          <dd className="m-0 text-sm tabular-nums"><LastReportAge timestamp={node.lastReportAt} /></dd>
-        </div>
-      </dl>
-    </header>
+    {validatorNode ? <ValidatorIdentityHeader node={node} /> : <CompactNodeHeader node={node} />}
 
     {health.tone !== 'ok' && <p className="m-0 mt-2 break-words text-sm text-warning-foreground dark:text-warning">{node.healthReason}</p>}
 
-    {/* The first row pairs the four summary tiles with the Node Peer Country
-        View. The DOM keeps the tiles first for reading order; below lg the map
-        takes the top of the row, exactly as Home does. The map is uncarded, so
-        §11.1's card-container rule is unchanged. */}
-    <div data-slot="node-overview" className="mt-4 grid min-w-0 items-end gap-4 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
-      <div className="grid min-w-0 auto-rows-fr grid-cols-2 gap-3" role="group" aria-label="Node key summary">
-        <SummaryTile label="Head" value={formatNumber(node.currentHead)} detail={<HeadDelta node={node} />} />
-        <SummaryTile label="Sync" value={nodeComponentStateLabel(node.syncState)} detail={syncOffsetLabel(node)} />
-        <SummaryTile label="Peers" value={peerCount(node.peers)} detail={peerBreakdown(node.peers)} />
-        <SummaryTile label="Process uptime" value={formatDuration(node.processUptimeMs)} />
-      </div>
-      <div data-slot="node-map" className="order-first min-w-0 aspect-[2/1] lg:order-none xl:aspect-auto xl:h-88">
-        <GeoMapBoundary label={NODE_PEER_COUNTRIES_HEADING}>
-          <GeoWorldMap overview={nodeGeo} status={nodeGeoStatus} heading={NODE_PEER_COUNTRIES_HEADING} />
-        </GeoMapBoundary>
-      </div>
-    </div>
-
-    <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-3">
-      <NodeInfoGroup title="Chain & consensus" label="Node chain and consensus observations">
-        <ConsensusHeights node={node} />
-        <MetricRow label="Validator" value={formatValidatorMembership(node)} />
-        <MetricRow label="Resync" value={nodeComponentStateLabel(node.resyncState)} detail={formatResyncDetail(node)} />
-        <MetricRow label="Network reference" value={formatReferenceHead(node)} detail={formatReferenceDetail(node)} />
-      </NodeInfoGroup>
-
-      <NodeInfoGroup title="PlatON process & Node Data" label="PlatON process resources">
-        <MetricRow label="CPU" value={formatPercent(node.processCpuPercent)} progress={node.processCpuPercent} />
-        <MetricRow label="Memory" value={formatPercent(node.processMemoryPercent)} progress={node.processMemoryPercent} />
-        <MetricRow label="Started" value={formatUtcDateTime(node.processStartedAt)} />
-        <MetricRow label="Process state" value={nodeComponentStateLabel(node.processState)} />
-        <div className="mt-1 grid grid-cols-1 gap-2 border-t border-dashed border-border/60 pt-2" role="group" aria-label="Node data directory">
-          <MetricRow
-            label="Directory usage"
-            value={formatPercent(nodeDataProgressValue)}
-            detail={(formatNodeDataBytes(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes) ?? 'Unknown') + ' · directory size against the hosting filesystem capacity, not whole-Host disk usage'}
-            progress={nodeDataProgressValue}
-          />
+    {/* The first row pairs the summary tiles with the Node Peer Country View. A
+        Validator keeps its established composition; an ordinary Node leads with
+        six compact operational tiles and its Chain state, so the map never
+        becomes the first thing read. The map is uncarded, so §11.1's
+        card-container rule is unchanged. */}
+    {validatorNode ? (
+      <div data-slot="node-overview" className="mt-4 grid min-w-0 items-end gap-4 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
+        <div className="grid min-w-0 auto-rows-fr grid-cols-2 gap-3" role="group" aria-label="Node key summary">
+          <SummaryTile label="Head" value={formatNumber(node.currentHead)} detail={<HeadDelta node={node} />} />
+          <SummaryTile label="Sync" value={nodeComponentStateLabel(node.syncState)} detail={syncOffsetLabel(node)} />
+          <SummaryTile label="Peers" value={peerCount(node.peers)} detail={peerBreakdown(node.peers)} />
+          <SummaryTile label="Process uptime" value={formatDuration(node.processUptimeMs)} />
         </div>
-      </NodeInfoGroup>
+        <div data-slot="node-map" className="order-first min-w-0 aspect-[2/1] lg:order-none xl:aspect-auto xl:h-64">
+          <GeoMapBoundary label={NODE_PEER_COUNTRIES_HEADING}>
+            <GeoWorldMap overview={nodeGeo} status={nodeGeoStatus} heading={NODE_PEER_COUNTRIES_HEADING} />
+          </GeoMapBoundary>
+        </div>
+      </div>
+    ) : (
+      <div data-slot="node-overview" className="mt-4 grid min-w-0 gap-4 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
+        <div className="flex min-w-0 flex-col gap-3">
+          <div className="grid min-w-0 auto-rows-fr grid-cols-2 gap-3 sm:grid-cols-3" role="group" aria-label="Node key summary">
+            <SummaryTile dense label="Head" value={formatNumber(node.currentHead)} detail={headLagDetail(node)} />
+            <SummaryTile dense label="Sync" value={nodeComponentStateLabel(node.syncState)} detail={syncLagDetail(node)} />
+            <SummaryTile dense label="Peers" value={peerCount(node.peers)} detail={peerDirectionSummary(node.peers)} />
+            <SummaryTile dense label="Uptime" value={formatDuration(node.processUptimeMs)} />
+            <SummaryTile dense label="Block interval" value={blockInterval.value} detail={blockInterval.value === 'Unknown' ? blockInterval.detail : undefined} />
+            <SummaryTile dense label="Transactions / block" value={formatNumber(node.latestBlockTransactionCount)} />
+          </div>
+          <ChainStateGroup node={node} />
+        </div>
+        <div data-slot="node-map" className="min-w-0 aspect-[2/1] xl:aspect-auto xl:h-full">
+          <GeoMapBoundary label={NODE_PEER_COUNTRIES_HEADING}>
+            <GeoWorldMap overview={nodeGeo} status={nodeGeoStatus} heading={NODE_PEER_COUNTRIES_HEADING} />
+          </GeoMapBoundary>
+        </div>
+      </div>
+    )}
 
-      <NodeInfoGroup title="Host resources" label="Shared Host resources" note="Collected once per Agent; shared by every Node it monitors">
-        <MetricRow label="Host CPU" value={formatPercent(node.hostCpuPercent)} progress={node.hostCpuPercent} />
-        <MetricRow label="Host memory" value={formatPercent(node.hostMemoryPercent)} progress={node.hostMemoryPercent} />
-        <MetricRow label="Host storage" value={formatPercent(node.hostStoragePercent)} progress={node.hostStoragePercent} />
-        <MetricRow label="Host upload" value={formatRate(node.hostNetworkTxBytesPerSec)} />
-        <MetricRow label="Host download" value={formatRate(node.hostNetworkRxBytesPerSec)} />
-      </NodeInfoGroup>
-    </div>
+    {validatorNode ? (
+      <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-3">
+        <NodeInfoGroup title="Chain & consensus" label="Node chain and consensus observations">
+          <ConsensusHeights node={node} />
+          <MetricRow label="Validator" value={formatValidatorMembership(node)} />
+          <MetricRow label="Resync" value={nodeComponentStateLabel(node.resyncState)} detail={formatResyncDetail(node)} />
+          <MetricRow label="Network reference" value={formatReferenceHead(node)} detail={formatReferenceDetail(node)} />
+        </NodeInfoGroup>
 
-    <LinkedValidatorSection node={node} variant="detail" />
+        <NodeInfoGroup title="PlatON process & Node Data" label="PlatON process resources">
+          <MetricRow label="CPU" value={formatPercent(node.processCpuPercent)} progress={node.processCpuPercent} />
+          <MetricRow label="Memory" value={formatPercent(node.processMemoryPercent)} progress={node.processMemoryPercent} />
+          <MetricRow label="Started" value={formatUtcDateTime(node.processStartedAt)} />
+          <MetricRow label="Process state" value={nodeComponentStateLabel(node.processState)} />
+          <div className="mt-1 grid grid-cols-1 gap-2 border-t border-dashed border-border/60 pt-2" role="group" aria-label="Node data directory">
+            <MetricRow
+              label="Directory usage"
+              value={formatPercent(nodeDataProgressValue)}
+              detail={(formatNodeDataBytes(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes) ?? 'Unknown') + ' · directory size against the hosting filesystem capacity, not whole-Host disk usage'}
+              progress={nodeDataProgressValue}
+            />
+          </div>
+        </NodeInfoGroup>
+
+        <NodeInfoGroup title="Host resources" label="Shared Host resources" note="Collected once per Agent; shared by every Node it monitors">
+          <MetricRow label="Host CPU" value={formatPercent(node.hostCpuPercent)} progress={node.hostCpuPercent} />
+          <MetricRow label="Host memory" value={formatPercent(node.hostMemoryPercent)} progress={node.hostMemoryPercent} />
+          <MetricRow label="Host storage" value={formatPercent(node.hostStoragePercent)} progress={node.hostStoragePercent} />
+          <MetricRow label="Host upload" value={formatRate(node.hostNetworkTxBytesPerSec)} />
+          <MetricRow label="Host download" value={formatRate(node.hostNetworkRxBytesPerSec)} />
+        </NodeInfoGroup>
+      </div>
+    ) : (
+      <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
+        <ProcessGroup node={node} nodeDataProgressValue={nodeDataProgressValue} />
+        <HostResourcesGroup node={node} />
+      </div>
+    )}
+
+    {validatorNode && <LinkedValidatorSection node={node} variant="detail" />}
 
     <section data-slot="node-metrics-section" className="mt-4" aria-labelledby="node-metrics-title">
       <header className="mb-2">
@@ -161,7 +176,7 @@ export function NodePage() {
           value={formatPercent(node.processCpuPercent)}
           detail={processStatusDetail(node.processState)}
           tone="blue"
-          fixedMax={100}
+          fixedMax={percentChartMax(metricHistory?.processCpuPercent ?? [])}
           series={[{ label: 'Process CPU', points: metricHistory?.processCpuPercent ?? [] }]}
           from={metricHistory?.from}
           to={metricHistory?.to}
@@ -175,7 +190,7 @@ export function NodePage() {
           value={formatPercent(node.processMemoryPercent)}
           detail={processStatusDetail(node.processState)}
           tone="cyan"
-          fixedMax={100}
+          fixedMax={percentChartMax(metricHistory?.processMemoryPercent ?? [])}
           series={[{ label: 'Process memory', points: metricHistory?.processMemoryPercent ?? [] }]}
           from={metricHistory?.from}
           to={metricHistory?.to}
@@ -268,12 +283,12 @@ function TechnicalFact({ label, value }: { label: string; value: ReactNode }) {
   )
 }
 
-function SummaryTile({ label, value, detail }: { label: string; value: ReactNode; detail?: ReactNode }) {
+function SummaryTile({ label, value, detail, dense = false }: { label: string; value: ReactNode; detail?: ReactNode; dense?: boolean }) {
   return (
     <CardX bordered={false} data-slot="node-summary-tile" className={cn('group min-w-0', SUMMARY_CARD)} contentClassName="flex h-full flex-col gap-1">
-      <span className="break-words text-xs font-medium tracking-wider text-muted-foreground">{label}</span>
-      <strong className="min-w-0 break-words text-lg font-bold leading-none tracking-tight tabular-nums md:text-2xl">{value}</strong>
-      {detail != null && detail !== '' && <small className="break-words text-[11px] text-muted-foreground">{detail}</small>}
+      <span className={cn('break-words font-medium tracking-wider text-muted-foreground', dense ? 'text-[11px]' : 'text-xs')}>{label}</span>
+      <strong className={cn('min-w-0 break-words font-bold leading-none tracking-tight tabular-nums', dense ? 'text-base md:text-lg' : 'text-lg md:text-2xl')}>{value}</strong>
+      {detail != null && detail !== '' && <small className={cn('break-words text-muted-foreground', dense ? 'text-[10px]' : 'text-[11px]')}>{detail}</small>}
     </CardX>
   )
 }
@@ -298,6 +313,224 @@ function NodeInfoGroup({ title, label, note, children }: { title: string; label:
 }
 
 
+
+function nodeIsValidator(node: PublicNode): boolean {
+  // Only an explicit Node Validator Link proves validator identity. Consensus
+  // pool membership is not a staking verdict (ADR 0006), and a link whose status
+  // is still Unknown must keep its Linked Validator region rather than silently
+  // dropping it.
+  return node.validator != null
+}
+
+function nodeRoleLabel(node: PublicNode): string {
+  const activity = typeof node.validator?.activity === 'string' ? node.validator.activity.trim().toLowerCase() : ''
+  if (activity === 'exiting' || activity === 'exited' || activity === 'locked' || activity === 'candidate') {
+    return activity[0].toUpperCase() + activity.slice(1)
+  }
+  return 'Observer'
+}
+
+function nodeSyncStateLabel(node: PublicNode): string | null {
+  const label = nodeComponentStateLabel(node.syncState)
+  return label === 'Unknown' ? null : label
+}
+
+const TONE_OK = 'text-success'
+const TONE_WARNING = 'text-warning-foreground dark:text-warning'
+const TONE_ERROR = 'text-destructive'
+const TONE_MUTED = 'text-muted-foreground'
+const HEAD_LAG_WARNING_MAX = 10
+
+type HeadLagPresentation = { blocks: number; label: string; detail?: string; toneClass: string }
+
+/** Head lag = Observed Network Head − this Node's Head, computed from the two
+ *  heights the Server already publishes. Without both heights there is no lag
+ *  row at all. A reference the Server has not rated high-confidence is reported
+ *  without a health verdict, so the number is never asserted from weak evidence. */
+function headLagPresentation(node: PublicNode): HeadLagPresentation | null {
+  if (!validHeight(node.currentHead) || !validHeight(node.networkReferenceHead)) return null
+  const blocks = node.networkReferenceHead - node.currentHead
+  const confirmed = node.networkReferenceConfidence === 'high'
+  const toneClass = !confirmed
+    ? TONE_MUTED
+    : blocks <= 1
+      ? TONE_OK
+      : blocks <= HEAD_LAG_WARNING_MAX
+        ? TONE_WARNING
+        : TONE_ERROR
+  const label = blocks === 0
+    ? 'At network head'
+    : blocks < 0
+      ? Math.abs(blocks).toLocaleString() + ' block' + (blocks === -1 ? '' : 's') + ' ahead'
+      : blocks.toLocaleString() + ' block' + (blocks === 1 ? '' : 's')
+  const detail = confirmed ? undefined : 'Network Head confidence ' + (node.networkReferenceConfidence || 'unknown')
+  return { blocks, label, detail, toneClass }
+}
+
+function headLagDetail(node: PublicNode): string | undefined {
+  const lag = headLagPresentation(node)
+  if (!lag) return undefined
+  if (lag.blocks === 0) return 'At network head'
+  return Math.abs(lag.blocks).toLocaleString() + (lag.blocks > 0 ? ' from network head' : ' ahead of network head')
+}
+
+function syncLagDetail(node: PublicNode): string | undefined {
+  const lag = headLagPresentation(node)
+  if (!lag) return undefined
+  if (lag.blocks === 0) return 'At network head'
+  return Math.abs(lag.blocks).toLocaleString() + ' block' + (Math.abs(lag.blocks) === 1 ? '' : 's') + (lag.blocks > 0 ? ' behind' : ' ahead')
+}
+
+function peerDirectionSummary(insight: PublicNode['peers']): string {
+  if (insight.inboundCount != null && insight.outboundCount != null) {
+    return insight.inboundCount.toLocaleString() + ' inbound · ' + insight.outboundCount.toLocaleString() + ' outbound'
+  }
+  return peerBreakdown(insight)
+}
+
+/** CPU/Memory curves are read against the bucket the window actually reached; a
+ *  fixed 0–100% axis flattens a low-utilisation Node onto the baseline. The
+ *  samples themselves are never rescaled, only the displayed range. */
+function percentChartMax(points: PublicMetricPoint[]): number {
+  const values = points.map((point) => point.value).filter(Number.isFinite)
+  const max = values.length > 0 ? Math.max(...values) : 0
+  for (const bucket of [5, 10, 25, 50]) if (max <= bucket) return bucket
+  return 100
+}
+
+function processStateDot(state: string | null | undefined): string {
+  const value = typeof state === 'string' ? state.trim().toLowerCase() : ''
+  if (value === 'ok') return 'bg-success'
+  if (value === 'starting') return 'bg-warning'
+  if (value === 'error') return 'bg-destructive'
+  return 'bg-muted-foreground'
+}
+
+function ValidatorIdentityHeader({ node }: { node: PublicNode }) {
+  return <header className="mt-2 flex min-w-0 flex-col gap-3 md:flex-row md:items-start md:justify-between" aria-labelledby="node-detail-title">
+    <div data-slot="node-identity-main" className="flex min-w-0 flex-1 items-start gap-2">
+      <NodeHealthMarker health={node.health} />
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <h1 id="node-detail-title" className="m-0 min-w-0 max-w-full break-words text-lg font-semibold leading-tight md:text-2xl">{nodeDisplayName(node)}</h1>
+          <span className="inline-flex min-w-0"><ValidatorActivityBadge validator={node.validator} identityReason={node.validatorIdentityReason} /></span>
+        </div>
+        <p className="m-0 mt-1 break-words text-[11px] text-muted-foreground">Node ID <code className="font-mono">{node.nodeId}</code></p>
+      </div>
+    </div>
+    <dl className="m-0 flex flex-wrap gap-x-5 gap-y-2" aria-label="Node identity facts">
+      <div className="min-w-0">
+        <dt className="text-xs font-medium tracking-wider text-muted-foreground">Last report</dt>
+        <dd className="m-0 text-sm tabular-nums"><LastReportAge timestamp={node.lastReportAt} /></dd>
+      </div>
+    </dl>
+  </header>
+}
+
+function CompactNodeHeader({ node }: { node: PublicNode }) {
+  const syncStateLabel = nodeSyncStateLabel(node)
+  return <header className="mt-2 flex min-w-0 flex-col gap-1" aria-labelledby="node-detail-title">
+    <div data-slot="node-identity-main" className="flex min-w-0 flex-1 items-start gap-2">
+      <NodeHealthMarker health={node.health} />
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+          <h1 id="node-detail-title" className="m-0 min-w-0 max-w-full break-words text-lg font-semibold leading-tight md:text-2xl">{nodeDisplayName(node)}</h1>
+          {syncStateLabel != null && <span className="text-sm font-medium text-muted-foreground">{syncStateLabel}</span>}
+          {syncStateLabel != null && <span aria-hidden="true" className="text-muted-foreground">·</span>}
+          <span className="text-xs text-muted-foreground">{nodeRoleLabel(node)}</span>
+          <span aria-hidden="true" className="text-muted-foreground">·</span>
+          <LastReportAge timestamp={node.lastReportAt} variant="inline" />
+        </div>
+        <NodeIdLine nodeId={node.nodeId} />
+      </div>
+    </div>
+  </header>
+}
+
+function NodeIdLine({ nodeId }: { nodeId: string }) {
+  const [copied, setCopied] = useState(false)
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(nodeId)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // Clipboard access can be denied; the full identifier stays selectable.
+    }
+  }
+  return <p className="m-0 mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+    <span>Node ID</span>
+    <code className="break-all font-mono">{nodeId}</code>
+    <DataTooltip as="span" content="Copy full Node ID">
+      <Button variant="ghost" size="icon-sm" aria-label="Copy full Node ID" className="text-muted-foreground" onClick={() => { void copy() }}>
+        {copied ? <Check className="size-3.5" aria-hidden="true" /> : <Copy className="size-3.5" aria-hidden="true" />}
+      </Button>
+    </DataTooltip>
+  </p>
+}
+
+function ChainStateGroup({ node }: { node: PublicNode }) {
+  const consensus = node.consensus
+  const qcValue = consensus?.highestQcBlock
+  const lockedValue = consensus?.highestLockBlock
+  const committedValue = consensus?.highestCommitBlock
+  const observedValue = node.currentHead
+  const networkValue = node.networkReferenceHead
+  const qc = validHeight(qcValue) ? qcValue : null
+  const locked = validHeight(lockedValue) ? lockedValue : null
+  const committed = validHeight(committedValue) ? committedValue : null
+  const observed = validHeight(observedValue) ? observedValue : null
+  const network = validHeight(networkValue) ? networkValue : null
+  const lag = headLagPresentation(node)
+  const hasRows = qc != null || locked != null || committed != null || observed != null || network != null || lag != null
+  const staleParts = [
+    typeof consensus?.freshness === 'string' && consensus.freshness !== 'current' ? 'freshness ' + consensus.freshness : null,
+    typeof consensus?.state === 'string' && consensus.state !== 'ok' ? 'collection ' + consensus.state : null,
+  ].filter((part): part is string => part != null)
+  return <NodeInfoGroup title="Chain state" label="Node chain state">
+    {qc != null && <MetricRow label="QC Head" value={qc.toLocaleString()} />}
+    {locked != null && <MetricRow label="Locked Head" value={locked.toLocaleString()} />}
+    {committed != null && <MetricRow label="Committed Head" value={committed.toLocaleString()} />}
+    {observed != null && <MetricRow label="Observed Head" value={observed.toLocaleString()} />}
+    {network != null && <MetricRow label="Network Head" value={network.toLocaleString()} />}
+    {lag != null && <MetricRow label="Head lag" value={<span className={lag.toneClass}>{lag.label}</span>} detail={lag.detail} />}
+    {!hasRows && <p className="m-0 text-[11px] text-muted-foreground">Chain state has not been observed yet.</p>}
+    {staleParts.length > 0 && <p data-slot="chain-state-stale" className="m-0 text-[11px] text-muted-foreground">Last-good consensus observation · {staleParts.join(' · ')}</p>}
+  </NodeInfoGroup>
+}
+
+function ProcessGroup({ node, nodeDataProgressValue }: { node: PublicNode; nodeDataProgressValue: number | null }) {
+  const bytes = formatNodeDataBytes(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)
+  const uptime = formatDuration(node.processUptimeMs)
+  return <NodeInfoGroup title="Process" label="PlatON process">
+    <MetricRow
+      label="State"
+      value={<span className="inline-flex items-center gap-1.5"><span className={cn('inline-block size-2 shrink-0 rounded-full', processStateDot(node.processState))} aria-hidden="true" />{nodeComponentStateLabel(node.processState)}</span>}
+    />
+    {uptime !== 'Unknown' && <MetricRow label="Started" value={uptime + ' ago'} detail={node.processStartedAt != null ? formatUtcDateTime(node.processStartedAt) : undefined} />}
+    <div className="mt-1 grid grid-cols-1 gap-2 border-t border-dashed border-border/60 pt-2" role="group" aria-label="Node data directory">
+      {bytes != null && <MetricRow label="Storage" value={bytes} />}
+      <MetricRow
+        label="Data usage"
+        value={formatPercent(nodeDataProgressValue)}
+        detail={(bytes ?? 'Unknown') + ' · directory size against the hosting filesystem capacity, not whole-Host disk usage'}
+        progress={nodeDataProgressValue}
+      />
+    </div>
+  </NodeInfoGroup>
+}
+
+function HostResourcesGroup({ node }: { node: PublicNode }) {
+  return <NodeInfoGroup title="Host resources" label="Shared Host resources" note="Collected once per Agent; shared by every Node it monitors">
+    <MetricRow label="CPU" value={formatPercent(node.hostCpuPercent)} progress={node.hostCpuPercent} />
+    <MetricRow label="Memory" value={formatPercent(node.hostMemoryPercent)} progress={node.hostMemoryPercent} />
+    <MetricRow label="Storage" value={formatPercent(node.hostStoragePercent)} progress={node.hostStoragePercent} />
+    <MetricRow
+      label="Network"
+      value={<span className="inline-flex flex-wrap items-center justify-end gap-x-2 tabular-nums"><span>↑ {formatRate(node.hostNetworkTxBytesPerSec)}</span><span>↓ {formatRate(node.hostNetworkRxBytesPerSec)}</span></span>}
+    />
+  </NodeInfoGroup>
+}
 
 type MetricSeries = {
   label: string

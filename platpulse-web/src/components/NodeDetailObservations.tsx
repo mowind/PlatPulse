@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import type { PublicNode } from '../api/generated'
+import { cn } from '../lib/utils'
 
 /** This clock changes display age only, never Server-owned freshness. */
-export function LastReportAge({ timestamp }: { timestamp?: string | null }) {
+export function LastReportAge({ timestamp, variant = 'stacked' }: { timestamp?: string | null; variant?: 'stacked' | 'inline' }) {
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | undefined
@@ -27,16 +28,27 @@ export function LastReportAge({ timestamp }: { timestamp?: string | null }) {
     : seconds < 3600 ? Math.floor(seconds / 60) + 'm ' + seconds % 60 + 's ago'
       : seconds < 86400 ? Math.floor(seconds / 3600) + 'h ' + Math.floor(seconds % 3600 / 60) + 'm ago'
         : Math.floor(seconds / 86400) + 'd ' + Math.floor(seconds % 86400 / 3600) + 'h ago'
+  const iso = new Date(time).toISOString()
+  const full = iso.replace('T', ' ').replace('Z', ' UTC')
+  const future = time > now
+  // The inline variant keeps the relative age as the only visible line and the
+  // precise UTC timestamp as its title, so a compact header never spends two
+  // lines on one fact.
+  if (variant === 'inline') {
+    return <time data-slot="last-report-age" dateTime={iso} title={full}
+      className={cn('text-xs tabular-nums', future ? 'text-warning-foreground dark:text-warning' : 'text-muted-foreground')}
+    >{future ? 'Future timestamp · check clock' : age}</time>
+  }
   return <span data-slot="last-report-age" className="flex flex-col gap-0.5">
-    <span className={time > now ? 'text-warning-foreground dark:text-warning' : undefined}>{time > now ? 'Future timestamp · check clock' : age}</span>
-    <time dateTime={new Date(time).toISOString()} className="text-[11px] text-muted-foreground">{new Date(time).toISOString().replace('T', ' ').replace('Z', ' UTC')}</time>
+    <span className={future ? 'text-warning-foreground dark:text-warning' : undefined}>{future ? 'Future timestamp · check clock' : age}</span>
+    <time dateTime={iso} className="text-[11px] text-muted-foreground">{full}</time>
   </span>
 }
 
 type HeadObservation = Pick<PublicNode, 'currentHead' | 'freshness' | 'rpcState' | 'health'>
 type NetworkObservation = HeadObservation & Pick<PublicNode, 'networkReferenceHead' | 'networkReferenceConfidence'>
 
-function validHeight(value: number | null | undefined): value is number {
+export function validHeight(value: number | null | undefined): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 }
 
