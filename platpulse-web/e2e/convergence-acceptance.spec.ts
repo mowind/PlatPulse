@@ -4,7 +4,6 @@ import {
   expectNoHorizontalOverflow,
   expectVisibleInteractiveTargets,
   loginAs,
-  openPeerDisclosure,
   setPageZoom,
 } from './helpers'
 
@@ -155,12 +154,12 @@ test.describe('Converged WebUI acceptance (issue #95)', () => {
     await expect(page.getByRole('heading', { level: 1, name: PUBLIC_NODE_NAME })).toBeVisible({
       timeout: 15_000,
     })
-    // Continuous reading (issue #149): no Details/Network tabs, and the Peer
-    // diagnostics disclosure opens in place at every fixed viewport.
+    // Continuous reading (issue #149): no Details/Network tabs, and the retired
+    // Peer diagnostics region no longer renders at any fixed viewport.
     await expect(page.getByRole('tab')).toHaveCount(0)
     await expect(page.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeVisible()
-    await openPeerDisclosure(page)
-    await expect(page.getByRole('heading', { name: 'Peer history' })).toBeVisible()
+    await expect(page.getByText('Peer diagnostics')).toHaveCount(0)
+    await expect(page.getByRole('heading', { name: 'Peer history' })).toHaveCount(0)
 
     // Node Detail → Home via the breadcrumb: the Network overview route is
     // gone, so the "All Networks" link returns to the Home dashboard.

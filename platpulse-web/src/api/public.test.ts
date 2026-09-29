@@ -60,12 +60,11 @@ describe('Public adapter and query namespace', () => {
     invalidatePublicResource('node', 'node-1', 8)
     vi.advanceTimersByTime(PUBLIC_INVALIDATION_COALESCE_MS)
 
-    expect(invalidate).toHaveBeenCalledTimes(4)
+    expect(invalidate).toHaveBeenCalledTimes(3)
     expect(invalidate.mock.calls.map(([options]) => options)).toEqual([
       { queryKey: [...publicKeys.node('node-1'), 0], exact: true, refetchType: 'active' },
       { queryKey: [...publicKeys.history('node-1'), 0], exact: true, refetchType: 'active' },
       { queryKey: [...publicKeys.metrics('node-1'), 0], exact: true, refetchType: 'active' },
-      { queryKey: [...publicKeys.peerHistory('node-1'), 0], exact: true, refetchType: 'active' },
     ])
   })
 

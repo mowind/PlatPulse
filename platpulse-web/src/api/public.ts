@@ -6,12 +6,10 @@ import {
   publicNodeDetail,
   publicNodeHistory,
   publicNodeMetrics,
-  publicNodePeerHistory,
   type PublicBlockHistoryItem,
   type PublicNetwork,
   type PublicNodeDetail,
   type PublicNodeMetricHistory,
-  type PublicPeerHistory,
 } from './generated'
 import {
   requestGenerated,
@@ -52,7 +50,6 @@ export const publicKeys = {
   node: (nodeId: string) => ['public', 'node', nodeId] as const,
   history: (nodeId: string) => ['public', 'node', nodeId, 'history'] as const,
   metrics: (nodeId: string) => ['public', 'node', nodeId, 'metrics'] as const,
-  peerHistory: (nodeId: string) => ['public', 'node', nodeId, 'peer-history'] as const,
   validators: ['public', 'validator'] as const,
 } as const
 
@@ -160,14 +157,6 @@ export async function ensureSiteAccessModeKnown(): Promise<SiteAccessMode> {
   return siteAccessModeCache ?? 'private'
 }
 
-export async function fetchNodePeerHistory(nodeId: string, signal?: AbortSignal, generation?: number): Promise<PublicPeerHistory> {
-  const context = contextOf(signal, generation)
-  return requestGenerated(
-    () => publicNodePeerHistory({ path: { node_id: nodeId }, signal: context.signal, headers: headersOf(context) }),
-    'Unable to load Peer history',
-  )
-}
-
 export async function fetchNodeMetrics(nodeId: string, signal?: AbortSignal, generation?: number): Promise<PublicNodeMetricHistory> {
   const context = contextOf(signal, generation)
   return requestGenerated(
@@ -208,14 +197,6 @@ export function usePublicNodeHistory(nodeId: string, generation: number) {
   return useQuery({
     queryKey: [...publicKeys.history(nodeId), generation],
     queryFn: ({ signal }) => fetchNodeHistory(nodeId, signal, generation),
-    enabled: nodeId.length > 0,
-  })
-}
-
-export function usePublicNodePeerHistory(nodeId: string, generation: number) {
-  return useQuery({
-    queryKey: [...publicKeys.peerHistory(nodeId), generation],
-    queryFn: ({ signal }) => fetchNodePeerHistory(nodeId, signal, generation),
     enabled: nodeId.length > 0,
   })
 }
@@ -328,7 +309,7 @@ export function invalidatePublicResource(resource: string, resourceId?: string, 
     switch (resource) {
       case 'node':
         return resourceId
-          ? [publicKeys.node(resourceId), publicKeys.history(resourceId), publicKeys.metrics(resourceId), publicKeys.peerHistory(resourceId)]
+          ? [publicKeys.node(resourceId), publicKeys.history(resourceId), publicKeys.metrics(resourceId)]
           : [publicKeys.nodes, publicKeys.networks]
       case 'network':
         return [publicKeys.networks]

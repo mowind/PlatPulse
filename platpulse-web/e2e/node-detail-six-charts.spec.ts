@@ -125,12 +125,12 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
               identity: top('[data-slot="node-identity-main"]'),
               summary: top('[aria-label="Node key summary"]'),
               metrics: top('[data-slot="node-metrics-section"]'),
-              peer: disclosureTop('Peer diagnostics'),
+              technical: disclosureTop('Identifiers and technical details'),
             }
           })
           expect(order.identity, JSON.stringify(order)).toBeLessThan(order.summary)
           expect(order.summary, JSON.stringify(order)).toBeLessThan(order.metrics)
-          expect(order.metrics, JSON.stringify(order)).toBeLessThan(order.peer)
+          expect(order.metrics, JSON.stringify(order)).toBeLessThan(order.technical)
 
           // The accepted A container (issue #151): an uncarded identity block,
           // four summary tiles, and three parallel observation panels that sit
@@ -196,21 +196,17 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             await expect(hostCard.locator('[data-slot="node-metric-chart-empty"]')).toHaveCount(0)
           }
 
-          // Disclosure is keyboard-operable in both directions.
-          const peerDisclosure = page.locator('details[data-slot="disclosure"]', { hasText: 'Peer diagnostics' })
-          const peerSummary = peerDisclosure.locator('summary')
-          await peerSummary.focus()
+          // Disclosure is keyboard-operable in both directions, and the retired
+          // Peer diagnostics region no longer renders.
+          await expect(page.getByText('Peer diagnostics')).toHaveCount(0)
+          const technicalDisclosure = page.locator('details[data-slot="disclosure"]', { hasText: 'Identifiers and technical details' })
+          const technicalSummary = technicalDisclosure.locator('summary')
+          await technicalSummary.focus()
           await page.keyboard.press('Enter')
-          await expect(peerDisclosure).toHaveAttribute('open', '')
-          for (const card of await peerDisclosure.locator('[data-slot="peer-insight"], [data-slot="peer-history-insight"]').all()) {
-            await page.mouse.move(2, 2)
-            const background = await card.evaluate(element => getComputedStyle(element).backgroundColor)
-            await card.hover()
-            await expect(card).toHaveCSS('background-color', background)
-          }
-          await peerSummary.focus()
+          await expect(technicalDisclosure).toHaveAttribute('open', '')
+          await technicalSummary.focus()
           await page.keyboard.press('Enter')
-          await expect(peerDisclosure).not.toHaveAttribute('open', '')
+          await expect(technicalDisclosure).not.toHaveAttribute('open', '')
 
           // Accessibility, touch targets, and no page-level horizontal scroll.
           await expectVisibleInteractiveTargets(page)

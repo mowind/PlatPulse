@@ -82,16 +82,6 @@ async function goToAdmin() {
   })
 }
 
-/** Open the Node Detail Peer diagnostics disclosure and return it. */
-function openPeerDisclosure(): HTMLDetailsElement {
-  const disclosure = screen.getByText('Peer diagnostics').closest('details')
-  if (!disclosure) throw new Error('Peer diagnostics disclosure is missing')
-  const summary = disclosure.querySelector('summary')
-  if (!summary) throw new Error('Peer diagnostics disclosure has no summary to activate')
-  fireEvent.click(summary)
-  return disclosure as HTMLDetailsElement
-}
-
 /** Minimal EventSource stand-in so Admin SSE behavior is testable in jsdom. */
 class FakeEventSource {
   static latest: FakeEventSource | null = null
@@ -335,12 +325,6 @@ describe('App shell with private Home', () => {
         blockIntervalMs: [{ sampledAt: '2026-08-19T23:59:00Z', value: 1800 }, { sampledAt: '2026-08-20T00:00:00Z', value: 2000 }],
         transactionCount: [{ sampledAt: '2026-08-19T23:59:00Z', value: 3 }, { sampledAt: '2026-08-20T00:00:00Z', value: 4 }],
       }, 200),
-      '/api/public/v1/nodes/node-1/peer-history': () => jsonResponse({
-        state: 'ok',
-        freshness: 'current',
-        fiveMinute: [],
-        hourly: [],
-      }, 200),
     })
 
     render(<App />)
@@ -514,12 +498,12 @@ describe('App shell with private Home', () => {
       expect(screen.queryByRole('navigation', { name: 'Prototype variants' })).toBeNull()
     }
 
-    // Continuous reading replaces the Details/Network tabs. Peer diagnostics
-    // and low-frequency technical details are keyboard-operable disclosures.
+    // Continuous reading replaces the Details/Network tabs. Validator
+    // diagnostics and low-frequency technical details are keyboard-operable
+    // disclosures; the retired Peer diagnostics region no longer renders.
     expect(screen.queryByRole('tab')).toBeNull()
-    const peerDisclosure = openPeerDisclosure()
-    expect(screen.getByRole('heading', { name: 'Peer history' })).toBeTruthy()
-    expect(peerDisclosure.hasAttribute('open')).toBe(true)
+    expect(screen.queryByText('Peer diagnostics')).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'Peer history' })).toBeNull()
     const technicalDisclosure = screen.getByText('Identifiers and technical details').closest('details')
     if (!technicalDisclosure) throw new Error('Technical details disclosure is missing')
     expect(within(technicalDisclosure).getByText('Reference confidence')).toBeTruthy()
@@ -763,7 +747,6 @@ describe('App shell with private Home', () => {
         networkRxBytesPerSec: [], networkTxBytesPerSec: [], peerInboundCount: [], peerOutboundCount: [],
         blockIntervalMs: [], transactionCount: [],
       }, 200),
-      '/api/public/v1/nodes/node-1/peer-history': () => jsonResponse({ state: 'ok', freshness: 'current', fiveMinute: [], hourly: [] }, 200),
     })
     vi.stubGlobal('EventSource', FakeEventSource)
     window.history.replaceState({}, '', '/nodes/node-1')
@@ -777,8 +760,6 @@ describe('App shell with private Home', () => {
     expect(screen.getAllByRole('img', { name: /line chart over the last 60 seconds/ })).toHaveLength(4)
     expect(screen.getAllByRole('img', { name: /bar chart over the last 60 seconds/ })).toHaveLength(2)
     expect(screen.getAllByText('No samples in the last minute')).toHaveLength(6)
-    openPeerDisclosure()
-    expect(screen.getByRole('heading', { name: 'Peer history' })).toBeTruthy()
 
     await act(async () => {
       expect(FakeEventSource.latest).toBeTruthy()
@@ -793,7 +774,6 @@ describe('App shell with private Home', () => {
     window.dispatchEvent(new Event('offline'))
     expect(await screen.findByText('You are offline')).toBeTruthy()
     expect(screen.getByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
-    expect(screen.getByRole('heading', { name: 'Peer history' })).toBeTruthy()
     expect(screen.getByText(/last successful Node data/i)).toBeTruthy()
   })
 

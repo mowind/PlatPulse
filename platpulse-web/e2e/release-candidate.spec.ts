@@ -6,7 +6,6 @@ import {
   expectNoHorizontalOverflow,
   expectVisibleInteractiveTargets,
   loginAs,
-  openPeerDisclosure,
   setPageZoom,
 } from './helpers'
 
@@ -26,8 +25,11 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     // single page and keyboard-operable disclosures.
     await expect(page.getByRole('tab')).toHaveCount(0)
     await expect(page.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeVisible()
-    await openPeerDisclosure(page, 'keyboard')
-    await expect(page.getByRole('heading', { name: 'Peer history' })).toBeVisible()
+    await expect(page.getByText('Peer diagnostics')).toHaveCount(0)
+    const technicalDisclosure = page.locator('details[data-slot="disclosure"]', { hasText: 'Identifiers and technical details' })
+    await technicalDisclosure.locator('summary').focus()
+    await page.keyboard.press('Enter')
+    await expect(technicalDisclosure).toHaveAttribute('open', '')
     await expectVisibleInteractiveTargets(page)
     await setPageZoom(page, 2)
     await expectNoHorizontalOverflow(page)
@@ -75,7 +77,7 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expect(page).toHaveURL(/\/admin$/)
   })
 
-  test('Public Node Detail Peer insight exposes bounded summaries without peer identities', async ({ page }) => {
+  test('Public Node Detail omits the retired Peer insight region and never exposes peer identities', async ({ page }) => {
     await loginAs(page)
     // Home keeps the Network display name as plain text (issue #97), so the
     // whole-card Node link is the only public route into Node Detail.
@@ -85,12 +87,10 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expect(nodeLink).toBeFocused()
     await page.keyboard.press('Enter')
     await expect(page.getByRole('heading', { level: 1, name: 'Node A' })).toBeVisible()
-    await openPeerDisclosure(page)
-    const detailPeer = page.getByRole('region', { name: 'Peer insight' }).last()
-    await expect(detailPeer).toContainText('Peer data current')
-    await expect(detailPeer).toContainText('Consensus')
-    await expect(detailPeer).toContainText('3')
-    // Raw peer identities never cross the Public boundary.
+    // The retired Peer diagnostics region no longer renders, and raw peer
+    // identities never cross the Public boundary.
+    await expect(page.getByText('Peer diagnostics')).toHaveCount(0)
+    await expect(page.getByRole('heading', { name: 'Peer history' })).toHaveCount(0)
     await expect(page.getByText('203.0.113.9')).toHaveCount(0)
     await expect(page.getByText('peer-a-inbound')).toHaveCount(0)
     await setPageZoom(page, 2)
@@ -218,8 +218,8 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expect.poll(() => metrics.locator('[data-slot="node-metric-card"]').first().evaluate((card) => getComputedStyle(card, '::before').content)).toBe('none')
     await expect(page.getByText('Bounded Block History')).toHaveCount(0)
     await expect(page.getByRole('button', { name: 'Export public history' })).toHaveCount(0)
-    await openPeerDisclosure(page)
-    await expect(page.getByRole('heading', { name: 'Peer history' })).toBeVisible()
+    await expect(page.getByText('Peer diagnostics')).toHaveCount(0)
+    await expect(page.getByRole('heading', { name: 'Peer history' })).toHaveCount(0)
     await expectNoHorizontalOverflow(page)
   })
 

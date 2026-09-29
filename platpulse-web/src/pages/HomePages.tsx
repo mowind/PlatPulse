@@ -6,12 +6,10 @@ import {
   usePublicNode,
   usePublicNodeHistory,
   usePublicNodeMetrics,
-  usePublicNodePeerHistory,
 } from '../api/public'
 import type { PublicMetricPoint, PublicNode, PublicNodeMetricHistory } from '../api/generated'
 import { useHomeRealtimeContext } from '../layouts/HomeLayout'
-import { PeerInsight, peerInsightCollectionStatus, peerInsightFreshnessStatus, peerInsightValueStatus } from '../components/PeerInsight'
-import { PeerHistoryInsight, normalizePublicPeerHistory } from '../components/PeerHistoryInsight'
+import { peerInsightCollectionStatus, peerInsightFreshnessStatus, peerInsightValueStatus } from '../components/PeerInsight'
 import { formatUtcDateTime, NodeHealthMarker } from '../components/StatusBadge'
 import { LinkedValidatorSection } from '../components/LinkedValidator'
 import GeoMapBoundary from '../components/GeoMapBoundary'
@@ -43,7 +41,6 @@ export function NodePage() {
   const nodeQuery = usePublicNode(nodeId, generation)
   const historyQuery = usePublicNodeHistory(nodeId, generation)
   const metricsQuery = usePublicNodeMetrics(nodeId, generation)
-  const peerHistoryQuery = usePublicNodePeerHistory(nodeId, generation)
 
   if (resetting) return <section className={PAGE}><RealtimeNotice realtime={realtime} /><p role="status" className="mt-3 text-sm text-muted-foreground">Revalidating Node access…</p></section>
   if (nodeQuery.isPending) return <section className={cn(PAGE, 'relative min-h-32')}><RealtimeNotice realtime={realtime} /><Spinner label="Loading Node"><span className="text-sm text-muted-foreground">Loading Node…</span></Spinner></section>
@@ -245,16 +242,6 @@ export function NodePage() {
         />
       </div>
     </section>
-
-    <Disclosure title="Peer diagnostics" description="Peer insight and retained aggregate Peer history">
-      <PeerInsight insight={node.peers} />
-      <PeerHistoryInsight
-        history={peerHistoryQuery.data ? normalizePublicPeerHistory(peerHistoryQuery.data) : undefined}
-        error={Boolean(peerHistoryQuery.error)}
-        loading={peerHistoryQuery.isPending}
-      />
-      <p className="m-0 rounded-md border border-border/60 bg-background/40 px-3 py-2 text-xs text-muted-foreground">Network insight is public and redacted: peer addresses and identity lists are never displayed.</p>
-    </Disclosure>
 
     <Disclosure title="Identifiers and technical details" description="Node ID, component states, and reference context">
       <dl className="m-0 grid grid-cols-[repeat(auto-fit,minmax(14rem,1fr))] gap-x-4 gap-y-2">

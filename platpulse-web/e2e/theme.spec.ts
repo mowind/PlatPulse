@@ -323,7 +323,7 @@ test('keeps Home and the public Node Detail readable in both themes', async ({ p
   await expectReadable(page, page.getByText('Process uptime').first())
   await expectReadable(page, page.getByRole('heading', { level: 3, name: 'Host network' }))
   await expect(page.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeVisible()
-  await expect(page.getByText('Peer diagnostics')).toBeVisible()
+  await expect(page.getByText('Peer diagnostics')).toHaveCount(0)
   await expectNoHorizontalOverflow(page)
 
   // The same surface in Dark.

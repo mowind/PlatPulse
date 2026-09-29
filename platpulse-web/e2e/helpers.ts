@@ -114,21 +114,6 @@ export async function expectMetricRowsAligned(scope: Locator) {
   expect(offenders, 'every metric row keeps its label and value on one aligned line without overflow').toEqual([])
 }
 
-/** Open the Node Detail Peer diagnostics disclosure by pointer or keyboard
- *  and assert it opened. */
-export async function openPeerDisclosure(page: Page, via: 'click' | 'keyboard' = 'click') {
-  const disclosure = page.locator('details[data-slot="disclosure"]', { hasText: 'Peer diagnostics' })
-  const summary = disclosure.locator('summary')
-  if (via === 'keyboard') {
-    await summary.focus()
-    await page.keyboard.press('Enter')
-  } else {
-    await summary.click()
-  }
-  await expect(disclosure).toHaveAttribute('open', '')
-  return disclosure
-}
-
 /** Every visible control in a fixed-viewport scenario must remain a usable
  * 44px touch target. The selector is intentionally limited to native
  * interactive elements; it does not depend on component implementation
