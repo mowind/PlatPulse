@@ -104,19 +104,16 @@ export function NodePage() {
         </div>
       </div>
     ) : (
-      <div data-slot="node-overview" className="mt-4 grid min-w-0 gap-4 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
-        <div className="flex min-w-0 flex-col gap-3">
-          <div className="grid min-w-0 auto-rows-fr grid-cols-2 gap-3 sm:grid-cols-3" role="group" aria-label="Node key summary">
-            <SummaryTile dense label="Head" value={formatNumber(node.currentHead)} detail={headLagDetail(node)} />
-            <SummaryTile dense label="Sync" value={nodeComponentStateLabel(node.syncState)} detail={syncLagDetail(node)} />
-            <SummaryTile dense label="Peers" value={peerCount(node.peers)} detail={peerDirectionSummary(node.peers)} />
-            <SummaryTile dense label="Uptime" value={formatDuration(node.processUptimeMs)} />
-            <SummaryTile dense label="Block interval" value={blockInterval.value} detail={blockInterval.value === 'Unknown' ? blockInterval.detail : undefined} />
-            <SummaryTile dense label="Transactions / block" value={formatNumber(node.latestBlockTransactionCount)} />
-          </div>
-          <ChainStateGroup node={node} />
+      <div data-slot="node-overview" className="mt-4 grid min-w-0 items-end gap-4 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
+        <div className="grid min-w-0 auto-rows-fr grid-cols-2 gap-3 sm:grid-cols-3" role="group" aria-label="Node key summary">
+          <SummaryTile dense label="Head" value={formatNumber(node.currentHead)} detail={headLagDetail(node)} />
+          <SummaryTile dense label="Sync" value={nodeComponentStateLabel(node.syncState)} detail={syncLagDetail(node)} />
+          <SummaryTile dense label="Peers" value={peerCount(node.peers)} detail={peerDirectionSummary(node.peers)} />
+          <SummaryTile dense label="Uptime" value={formatDuration(node.processUptimeMs)} />
+          <SummaryTile dense label="Block interval" value={blockInterval.value} detail={blockInterval.value === 'Unknown' ? blockInterval.detail : undefined} />
+          <SummaryTile dense label="Transactions / block" value={formatNumber(node.latestBlockTransactionCount)} />
         </div>
-        <div data-slot="node-map" className="min-w-0 aspect-[2/1] xl:aspect-auto xl:h-full">
+        <div data-slot="node-map" className="min-w-0 aspect-[2/1] xl:aspect-auto xl:h-64">
           <GeoMapBoundary label={NODE_PEER_COUNTRIES_HEADING}>
             <GeoWorldMap overview={nodeGeo} status={nodeGeoStatus} heading={NODE_PEER_COUNTRIES_HEADING} />
           </GeoMapBoundary>
@@ -157,7 +154,8 @@ export function NodePage() {
         </NodeInfoGroup>
       </div>
     ) : (
-      <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
+      <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-3">
+        <ChainStateGroup node={node} />
         <ProcessGroup node={node} nodeDataProgressValue={nodeDataProgressValue} />
         <HostResourcesGroup node={node} />
       </div>
