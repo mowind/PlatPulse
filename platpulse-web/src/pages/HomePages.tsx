@@ -21,12 +21,14 @@ import { nodeDataProgress } from '../nodeData'
 import { MetricRow } from '../components/MetricRow'
 import { ValidatorActivityBadge } from '../components/ValidatorActivityBadge'
 import { LastReportAge, networkHeadComparison, validHeight } from '../components/NodeDetailObservations'
+import { SummaryMetricCard } from '../components/SummaryMetricCard'
+import { OverviewBand } from '../components/OverviewBand'
 import { geoMapStatus, nodeGeoOverview } from '../homeGeo'
 import { NODE_PEER_COUNTRIES_HEADING } from '../components/geoPresentation'
 import { CardX } from '../components/ui/card-x'
 import { Alert, AlertDescription } from '../components/ui/alert'
 import { Spinner } from '../components/ui/spinner'
-import { SURFACE_CARD_STATIC, SURFACE_CARD_SUMMARY } from '../lib/surface'
+import { SURFACE_CARD_STATIC } from '../lib/surface'
 import { Disclosure } from '../components/ui/disclosure'
 import { DataTooltip } from '../components/ui/data-tooltip'
 import { Button } from '../components/ui/button'
@@ -35,7 +37,6 @@ import { cn } from '../lib/utils'
 const PAGE = 'min-w-0 p-4'
 // Info/chart tier; the summary tiles sit one step brighter, the disclosures one step dimmer.
 const CARD = cn('min-w-0 rounded-md border-none', SURFACE_CARD_STATIC)
-const SUMMARY_CARD = cn('min-w-0 rounded-md border-none', SURFACE_CARD_SUMMARY)
 
 export function NodePage() {
   const { nodeId = '' } = useParams()
@@ -85,26 +86,26 @@ export function NodePage() {
 
     {health.tone !== 'ok' && <p className="m-0 mt-2 break-words text-sm text-warning-foreground dark:text-warning">{node.healthReason}</p>}
 
-    {/* Both roles share geometry and DOM order; only performance is conditional. */}
-    <div data-slot="node-overview" className="mt-4 grid min-w-0 items-stretch gap-4 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
-      <div className="grid min-w-0 auto-rows-fr grid-cols-2 gap-3 sm:grid-cols-3" role="group" aria-label="Node key summary">
+    {/* Both roles share geometry and DOM order; only performance is conditional.
+        The band is Home's own OverviewBand, so card size, the 5:6 column split
+        and the map track cannot drift between the two pages. */}
+    <OverviewBand
+      className="mt-4"
+      dataSlot="node-overview"
+      mapSlot="node-map"
+      metricsLabel="Node key summary"
+      metrics={<>
         <SummaryTile label="Head" value={formatNumber(node.currentHead)} detail={headLagDetail(node)} />
         <SummaryTile label="Sync" value={nodeComponentStateLabel(node.syncState)} detail={headLagDetail(node)} />
         <SummaryTile label="Peers" value={peerCount(node.peers)} detail={peerDirectionSummary(node.peers)} />
         <SummaryTile label="Uptime" value={formatDuration(node.processUptimeMs)} />
         <SummaryTile label="Block interval" value={blockInterval.value} detail={blockInterval.value === 'Unknown' ? blockInterval.detail : undefined} />
         <SummaryTile label="Transactions / block" value={formatNumber(node.latestBlockTransactionCount)} />
-      </div>
-      {/* Home parity: below xl the track is proportional at 2:1 and from xl it uses
-          the same fixed 22rem band as Home. The map band sets the row height and the
-          KPI grid stretches to it (auto-rows-fr above), so the map never collapses to
-          the KPI stack height and the two columns stay flush top and bottom. */}
-      <div data-slot="node-map" className="min-w-0 aspect-[2/1] xl:aspect-auto xl:h-88">
-        <GeoMapBoundary label={NODE_PEER_COUNTRIES_HEADING}>
-          <GeoWorldMap overview={nodeGeo} status={nodeGeoStatus} heading={NODE_PEER_COUNTRIES_HEADING} />
-        </GeoMapBoundary>
-      </div>
-    </div>
+      </>}
+      map={<GeoMapBoundary label={NODE_PEER_COUNTRIES_HEADING}>
+        <GeoWorldMap overview={nodeGeo} status={nodeGeoStatus} heading={NODE_PEER_COUNTRIES_HEADING} />
+      </GeoMapBoundary>}
+    />
 
     <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-3">
       <ChainStateGroup node={node} />
@@ -245,14 +246,10 @@ function TechnicalFact({ label, value }: { label: string; value: ReactNode }) {
   )
 }
 
+/** Node Detail's six key metrics: Home's exact summary card, read-only (no
+ *  hover ring) and keeping its own `node-summary-tile` slot. */
 function SummaryTile({ label, value, detail }: { label: string; value: ReactNode; detail?: ReactNode }) {
-  return (
-    <CardX bordered={false} data-slot="node-summary-tile" className={cn('group min-w-0', SUMMARY_CARD)} size="small" contentClassName="flex h-full min-h-24 flex-col gap-1">
-      <span className={'break-words text-[11px] font-medium tracking-wider text-muted-foreground'}>{label}</span>
-      <strong className={'min-w-0 break-words text-base font-bold leading-none tracking-tight tabular-nums md:text-lg'}>{value}</strong>
-      {detail != null && detail !== '' && <small className={'break-words text-[10px] text-muted-foreground'}>{detail}</small>}
-    </CardX>
-  )
+  return <SummaryMetricCard label={label} value={value} caption={detail} hoverable={false} dataSlot="node-summary-tile" />
 }
 
 function NodeInfoGroup({ title, label, note, children }: { title: string; label: string; note?: string; children: ReactNode }) {

@@ -25,7 +25,8 @@ import { LinkedValidatorSection, validatorDataStatus, type ValidatorDataStatus }
 import { ValidatorTotalCard } from './ValidatorTotals'
 import { ValidatorActivityBadge } from './ValidatorActivityBadge'
 import { SURFACE_CARD_INTERACTIVE } from '../lib/surface'
-import { HomeSummaryCard } from './HomeSummaryCard'
+import { SummaryMetricCard } from './SummaryMetricCard'
+import { OverviewBand } from './OverviewBand'
 import { Button } from './ui/button'
 import { Dialog, DialogTrigger, DialogContent, DialogTitle, DialogDescription } from './ui/dialog'
 
@@ -118,13 +119,19 @@ export default function HomeDashboard({
         </p>
       )}
 
-      {/* The map track is deliberately wider than the statistics track (5:6),
-            matching the Emerald reference where the map is the larger half of
-            the band. When the six tiles are shorter than the map band they sit
-            on its floor, so the gap down to the Network group is the same 16px
-            rhythm that separates that group from the Node cards. */}
-        <div data-slot="home-overview" className="grid min-w-0 items-end gap-4 p-4 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
-        <div className="grid min-w-0 auto-rows-fr grid-cols-2 gap-2 sm:grid-cols-3" aria-label="Home summary">
+      {/* Home's overview band. The map track is deliberately wider than the
+            statistics track (5:6), matching the Emerald reference where the map
+            is the larger half. When the six tiles are shorter than the map band
+            they sit on its floor, so the gap down to the Network group is the
+            same 16px rhythm that separates that group from the Node cards.
+            Node Detail renders this same band, so the two pages cannot drift. */}
+      <OverviewBand
+        className="p-4"
+        dataSlot="home-overview"
+        mapSlot="home-map"
+        metricsLabel="Home summary"
+        mapFirst
+        metrics={<>
           <SummaryCard label="Active Nodes" value={hasProjection ? visibleRecords.length : null} tone="green" icon="server" />
           <SummaryCard label="Healthy Nodes" value={healthyCount} tone="green" icon="heart" />
           <ValidatorTotalCard networks={scopedNetworks} metric="blocks" availability={loading ? 'loading' : hasProjection ? 'ready' : 'unavailable'} />
@@ -132,22 +139,11 @@ export default function HomeDashboard({
             tone={healthyCount !== null && visibleRecords.length === healthyCount ? 'green' : 'red'} icon="alert" />
           <SummaryCard label="Networks" value={hasProjection ? scopedNetworks.length : null} tone="green" icon="network" />
           <ValidatorTotalCard networks={scopedNetworks} metric="rewards" availability={loading ? 'loading' : hasProjection ? 'ready' : 'unavailable'} />
-        </div>
-        {/* Upstream's DOM places the map first and the six cards after it, so on a
-            phone the map sits at the top of the overview and the cards follow.
-            The DOM keeps the statistics first for assistive reading and CSS
-            order restores upstream's visual order below lg.
-            Below xl the track is proportional (2:1) so phones and tablets keep
-            the compact map the mobile acceptance measured. From xl, where Home
-            reaches its 1280px ceiling and the map column stops changing, the
-            track uses upstream's fixed 22rem band. The map fills whichever band
-            it is given, so the world is never cropped at either size. */}
-        <div data-slot="home-map" className="order-first min-w-0 aspect-[2/1] lg:order-none xl:aspect-auto xl:h-88">
-          <GeoMapBoundary>
-            <GeoWorldMap overview={geoOverview} status={geoStatus} />
-          </GeoMapBoundary>
-        </div>
-      </div>
+        </>}
+        map={<GeoMapBoundary>
+          <GeoWorldMap overview={geoOverview} status={geoStatus} />
+        </GeoMapBoundary>}
+      />
 
       <div className="relative p-4 pt-0 md:static">
         <div className="flex flex-nowrap items-start gap-2 md:items-center" aria-label="Node filters and sorting">
@@ -231,7 +227,7 @@ const SUMMARY_ICONS = {
 function SummaryCard({ label, value, tone, icon }: {
   label: string; value: number | null; tone: 'green' | 'red'; icon: keyof typeof SUMMARY_ICONS
 }) {
-  return <HomeSummaryCard label={label} value={value === null ? 'Unknown' : value.toLocaleString()}
+  return <SummaryMetricCard label={label} value={value === null ? 'Unknown' : value.toLocaleString()}
     tone={value !== null && value > 0 ? tone : 'green'} icon={SUMMARY_ICONS[icon]} />
 }
 

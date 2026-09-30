@@ -2,7 +2,7 @@ import type { PublicNetwork } from '../api/generated'
 import { Blocks, Coins, Info } from 'lucide-react'
 import { formatAmountExact, formatAmountOverview, sumKnownAmounts } from '../lib/amount'
 import { ExactAmount } from './ExactAmount'
-import { HomeSummaryCard } from './HomeSummaryCard'
+import { SummaryMetricCard } from './SummaryMetricCard'
 import { Button } from './ui/button'
 import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogDescription } from './ui/dialog'
 
@@ -87,7 +87,7 @@ export function ValidatorTotalCard({ networks, metric, availability = 'ready' }:
     : [networks.length > 0 ? scope : null, availability === 'loading' ? 'Loading coverage…' : 'Coverage unavailable']
   ).filter(Boolean).join(' · ')
   const shown = metric === 'blocks' ? <ExactAmount value={exact} split /> : formatAmountOverview(total.knownSum)
-  return <HomeSummaryCard label={label} value={shown} caption={caption} icon={metric === 'blocks' ? Blocks : Coins}
+  return <SummaryMetricCard label={label} value={shown} caption={caption} icon={metric === 'blocks' ? Blocks : Coins}
     action={<Dialog>
       <DialogTrigger asChild><Button variant="ghost" size="icon" className="-mr-2 shrink-0" aria-label={label + ' breakdown and exact values'}><Info className="size-[18px]" strokeWidth={2} aria-hidden="true" data-icon={label} /></Button></DialogTrigger>
       <DialogContent className="max-h-[85dvh] overflow-y-auto rounded-md shadow-sm">
@@ -111,5 +111,5 @@ export function ValidatorTotalCard({ networks, metric, availability = 'ready' }:
         </div>}
       </DialogContent>
     </Dialog>}>
-  </HomeSummaryCard>
+  </SummaryMetricCard>
 }

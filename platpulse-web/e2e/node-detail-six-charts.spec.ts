@@ -381,7 +381,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
         await expect(performance.locator('header').getByText('Active', { exact: true })).toHaveCount(0)
       }
       const summary = page.getByRole('group', { name: 'Node key summary' })
-      expect(await summary.locator('[data-slot="node-summary-tile"] > div > span').allTextContents()).toEqual(['Head', 'Sync', 'Peers', 'Uptime', 'Block interval', 'Transactions / block'])
+      expect(await summary.locator('[data-slot="node-summary-tile"] [data-slot="card-x-content"] > div:first-child > span').allTextContents()).toEqual(['Head', 'Sync', 'Peers', 'Uptime', 'Block interval', 'Transactions / block'])
       for (const name of ['Node chain state', 'PlatON process', 'Shared Host resources']) {
         await expect(page.getByRole('region', { name })).toBeVisible()
       }
@@ -542,12 +542,13 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
         // From lg the tiles and the wider map share one row, tiles left.
         expect(layout.map.left, step.mode).toBeGreaterThan(layout.summary.left)
         expect(layout.map.width / layout.summary.width, step.mode + ' uses 5:6 tracks').toBeCloseTo(6 / 5, 1)
-        // Home parity: the fixed 22rem map band sets the row height and the KPI
-        // grid stretches to it, so both columns share top and bottom edges.
-        expect(Math.abs(layout.map.top - layout.summary.top), step.mode + ' top-aligns the KPI grid with the map band').toBeLessThanOrEqual(1)
+        // Home parity: the map band sets the row height and the content-height
+        // KPI grid sits on the band's floor (items-end), so the two columns
+        // share a bottom edge while the taller map may start above the tiles.
+        expect(layout.map.top, step.mode + ' keeps the map at or above the KPI grid').toBeLessThanOrEqual(layout.summary.top + 1)
         expect(
           Math.abs((layout.map.top + layout.map.height) - (layout.summary.top + layout.summary.height)),
-          step.mode + ' stretches the KPI grid to the map band',
+          step.mode + ' bottom-aligns the KPI grid with the map band',
         ).toBeLessThanOrEqual(1)
         // Home parity: proportional 2:1 below xl, the fixed 22rem band from xl.
         if (viewportWidth >= 1280) {
